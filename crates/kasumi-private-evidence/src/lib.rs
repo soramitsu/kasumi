@@ -1,7 +1,9 @@
 //! Tenant-private, append-only custody of original evidence bytes.
 //!
 //! A manifest is published only after every immutable chunk has been durably
-//! written and read back. A missing manifest hides orphan chunks. Reading a
+//! written, never before them: in its chunks' atomic batch or a later one. A
+//! missing manifest hides orphan chunks. Every append reads its component back
+//! exactly before it reports success. Reading a
 //! manifest verifies every chunk and the complete byte digest before returning
 //! data. This proves custody integrity inside the authenticated Kasumi tenant;
 //! it does not verify the external evidence's signatures, finality or meaning.
@@ -19,7 +21,12 @@ use kasumi_types::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, path::Path, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+    sync::Arc,
+    time::Duration,
+};
 use thiserror::Error;
 use tokio::time::Instant;
 use uuid::Uuid;
@@ -35,6 +42,12 @@ pub const REQUIRED_MAX_BATCH_BYTES: usize = 896 << 10;
 const FORMAT: &str = "kasumi.private_evidence.v1";
 const READ_GROUP: usize = 8;
 const ID_FRAME: &[u8] = b"kasumi.private-evidence.id.v1\0";
+const BATCH_FRAME: &[u8] = b"kasumi.private-evidence.batch.v1\0";
+const BATCH_KEY_PREFIX: &str = "private-evidence/batch/";
+/// Documents in one append batch, inside Kasumi's per-batch operation limit.
+const MAX_APPEND_BATCH_DOCUMENTS: usize = 128;
+/// Encoded bytes kept free in each append batch for its key and framing.
+const APPEND_BATCH_FRAMING_BYTES: usize = 512;
 
 #[derive(Debug, Error)]
 pub enum CustodyError {
@@ -312,6 +325,117 @@ fn put(collection: &str, id: String, body: serde_json::Value) -> MutationBatch {
             expected: Precondition::Absent,
         }],
     }
+}
+
+/// One immutable document of a component, before it is written.
+#[derive(Clone, Debug)]
+struct PendingDocument {
+    collection: String,
+    id: String,
+    body: serde_json::Value,
+    /// Original payload bytes the document carries; zero for a manifest.
+    payload_bytes: usize,
+    /// Index of its component in the caller's input.
+    component: usize,
+}
+
+impl PendingDocument {
+    fn put(&self) -> Mutation {
+        Mutation::Put {
+            collection: self.collection.clone(),
+            id: self.id.clone(),
+            body: self.body.clone(),
+            expected: Precondition::Absent,
+        }
+    }
+}
+
+/// The permanent idempotency key of one append batch. A single put keeps its
+/// document ID, exactly like `append`; several puts use a digest of their ordered
+/// targets, so retrying the same batch replays its retained receipt.
+fn append_batch_key(operations: &[Mutation]) -> String {
+    if let [operation] = operations {
+        return operation.target().1.to_owned();
+    }
+    let mut digest = Sha256::new();
+    digest.update(BATCH_FRAME);
+    for operation in operations {
+        let (collection, id) = operation.target();
+        for field in [collection, id] {
+            digest.update((field.len() as u64).to_be_bytes());
+            digest.update(field.as_bytes());
+        }
+    }
+    format!("{BATCH_KEY_PREFIX}{}", hex::encode(digest.finalize()))
+}
+
+fn append_batch(documents: &[PendingDocument]) -> Result<MutationBatch> {
+    let operations: Vec<_> = documents.iter().map(PendingDocument::put).collect();
+    let batch = MutationBatch {
+        idempotency_key: append_batch_key(&operations),
+        read_set: Vec::new(),
+        operations,
+    };
+    let encoded = serde_json::to_vec(&batch).map_err(|_| CustodyError::Invalid("encoding"))?;
+    if encoded.len() > REQUIRED_MAX_BATCH_BYTES {
+        return Err(CustodyError::Invalid("batch limit"));
+    }
+    Ok(batch)
+}
+
+/// Pack documents in their given order into as few append batches as the required
+/// batch bounds allow. The order is kept, so a manifest never precedes its chunks.
+fn append_groups(documents: Vec<PendingDocument>) -> Result<Vec<Vec<PendingDocument>>> {
+    let mut groups = Vec::new();
+    let mut group: Vec<PendingDocument> = Vec::new();
+    let mut group_bytes = APPEND_BATCH_FRAMING_BYTES;
+    for document in documents {
+        let bytes = serde_json::to_vec(&document.put())
+            .map_err(|_| CustodyError::Invalid("encoding"))?
+            .len()
+            + 1;
+        if !group.is_empty()
+            && (group.len() == MAX_APPEND_BATCH_DOCUMENTS
+                || group_bytes + bytes > REQUIRED_MAX_BATCH_BYTES)
+        {
+            groups.push(std::mem::take(&mut group));
+            group_bytes = APPEND_BATCH_FRAMING_BYTES;
+        }
+        group_bytes += bytes;
+        group.push(document);
+    }
+    if !group.is_empty() {
+        groups.push(group);
+    }
+    Ok(groups)
+}
+
+/// Backend admission for one custody write: append-only puts of distinct documents
+/// in the two evidence collections, without a read set, within the required batch
+/// bounds and under the batch's derived permanent key.
+pub fn validate_append_batch(batch: &MutationBatch, manifests: &str, chunks: &str) -> Result<()> {
+    let targets: BTreeSet<_> = batch.operations.iter().map(Mutation::target).collect();
+    let encoded = serde_json::to_vec(batch).map_err(|_| CustodyError::Invalid("encoding"))?;
+    if !batch.read_set.is_empty()
+        || batch.operations.is_empty()
+        || batch.operations.len() > MAX_APPEND_BATCH_DOCUMENTS
+        || targets.len() != batch.operations.len()
+        || encoded.len() > REQUIRED_MAX_BATCH_BYTES
+        || batch.idempotency_key != append_batch_key(&batch.operations)
+        || batch.operations.iter().any(|operation| {
+            !matches!(
+                operation,
+                Mutation::Put {
+                    collection,
+                    expected: Precondition::Absent,
+                    ..
+                } if collection == manifests || collection == chunks
+            )
+        })
+    {
+        return Err(CustodyError::Invalid("evidence append batch"));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -851,50 +975,13 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
                 Err(CustodyError::Conflict)
             };
         }
-        let payload_sha256 = sha256_hex(bytes);
-        let chunks = bytes.len().div_ceil(CHUNK_BYTES);
-        if chunks == 0 || chunks > MAX_CHUNKS {
-            return Err(CustodyError::Invalid("component chunk count"));
-        }
         let mut recovered = false;
-        let collection = self.chunk_collection.clone();
-        for (index, part) in bytes.chunks(CHUNK_BYTES).enumerate() {
-            let chunk = EvidenceChunk {
-                schema: FORMAT.into(),
-                identity: identity.clone(),
-                payload_sha256: payload_sha256.clone(),
-                index,
-                chunks,
-                data_sha256: sha256_hex(part),
-                data_hex: hex::encode(part),
-            };
+        for document in self.component_documents(identity, bytes, 0)? {
             recovered |= self
-                .put_exact(
-                    &collection,
-                    identity.chunk_id(index),
-                    body(&chunk)?,
-                    deadline,
-                )
+                .put_exact(&document.collection, document.id, document.body, deadline)
                 .await?
                 == AppendOutcome::Recovered;
         }
-        let manifest = EvidenceManifest {
-            schema: FORMAT.into(),
-            identity: identity.clone(),
-            payload_sha256,
-            payload_bytes: bytes.len(),
-            chunks,
-        };
-        let collection = self.manifest_collection.clone();
-        recovered |= self
-            .put_exact(
-                &collection,
-                identity.manifest_id(),
-                body(&manifest)?,
-                deadline,
-            )
-            .await?
-            == AppendOutcome::Recovered;
         let remaining = Self::remaining(deadline)
             .map_err(|_| CustodyError::UnknownOutcome(identity.manifest_id()))?;
         let retained = self
@@ -909,6 +996,238 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
         } else {
             AppendOutcome::Committed
         })
+    }
+
+    /// The chunk documents and then the manifest document that retain `bytes` as
+    /// `identity`.
+    fn component_documents(
+        &self,
+        identity: &EvidenceIdentity,
+        bytes: &[u8],
+        component: usize,
+    ) -> Result<Vec<PendingDocument>> {
+        let payload_sha256 = sha256_hex(bytes);
+        let chunks = bytes.len().div_ceil(CHUNK_BYTES);
+        if chunks == 0 || chunks > MAX_CHUNKS {
+            return Err(CustodyError::Invalid("component chunk count"));
+        }
+        let mut documents = Vec::with_capacity(chunks + 1);
+        for (index, part) in bytes.chunks(CHUNK_BYTES).enumerate() {
+            let chunk = EvidenceChunk {
+                schema: FORMAT.into(),
+                identity: identity.clone(),
+                payload_sha256: payload_sha256.clone(),
+                index,
+                chunks,
+                data_sha256: sha256_hex(part),
+                data_hex: hex::encode(part),
+            };
+            documents.push(PendingDocument {
+                collection: self.chunk_collection.clone(),
+                id: identity.chunk_id(index),
+                body: body(&chunk)?,
+                payload_bytes: part.len(),
+                component,
+            });
+        }
+        let manifest = EvidenceManifest {
+            schema: FORMAT.into(),
+            identity: identity.clone(),
+            payload_sha256,
+            payload_bytes: bytes.len(),
+            chunks,
+        };
+        documents.push(PendingDocument {
+            collection: self.manifest_collection.clone(),
+            id: identity.manifest_id(),
+            body: body(&manifest)?,
+            payload_bytes: 0,
+            component,
+        });
+        Ok(documents)
+    }
+
+    /// Submit one append batch and check its exact receipt: every document committed at
+    /// the receipt's revision. A lost reply is resolved only through the retained
+    /// receipt of this exact batch. Returns whether it was so recovered.
+    async fn put_batch(&mut self, batch: &MutationBatch, deadline: Instant) -> Result<bool> {
+        let unknown = || CustodyError::UnknownOutcome(batch.idempotency_key.clone());
+        let (receipt, recovered) =
+            match self.backend.mutate(batch, Self::remaining(deadline)?).await {
+                Ok(receipt) => (receipt, false),
+                Err(_) => {
+                    let remaining = Self::remaining(deadline).map_err(|_| unknown())?;
+                    let resolution = self
+                        .backend
+                        .resolve(&self.scope, batch, remaining)
+                        .await
+                        .map_err(|_| unknown())?
+                        .ok_or_else(unknown)?;
+                    let expected = batch.digest().map_err(|_| CustodyError::Inconsistent)?;
+                    if resolution.scope != self.scope || resolution.request_digest != expected {
+                        return Err(CustodyError::Inconsistent);
+                    }
+                    (
+                        resolution.outcome.map_err(|_| CustodyError::Rejected)?,
+                        true,
+                    )
+                }
+            };
+        let versions: BTreeMap<_, _> = batch
+            .operations
+            .iter()
+            .map(|operation| {
+                let (collection, id) = operation.target();
+                (document_receipt_path(collection, id), receipt.revision)
+            })
+            .collect();
+        if receipt.revision == 0 || receipt.versions != versions {
+            return Err(CustodyError::Inconsistent);
+        }
+        Ok(recovered)
+    }
+
+    /// The documents of a refused batch that are not stored yet, read in groups within
+    /// the read bound (eight rows and at most one chunk of payload). A stored document
+    /// must equal its proposed body exactly; anything else is a conflict.
+    async fn unstored(
+        &mut self,
+        documents: Vec<PendingDocument>,
+        deadline: Instant,
+    ) -> Result<Vec<PendingDocument>> {
+        let mut unstored = Vec::new();
+        let mut start = 0;
+        while start < documents.len() {
+            let collection = documents[start].collection.clone();
+            let mut end = start;
+            let mut payload = 0;
+            while end < documents.len()
+                && documents[end].collection == collection
+                && end - start < READ_GROUP
+                && payload + documents[end].payload_bytes <= CHUNK_BYTES
+            {
+                payload += documents[end].payload_bytes;
+                end += 1;
+            }
+            let ids: Vec<_> = documents[start..end]
+                .iter()
+                .map(|document| document.id.clone())
+                .collect();
+            let rows = self
+                .backend
+                .read_records(&collection, &ids, Self::remaining(deadline)?)
+                .await?;
+            if rows.len() != ids.len() {
+                return Err(CustodyError::Inconsistent);
+            }
+            for (document, row) in documents[start..end].iter().zip(rows) {
+                match row {
+                    None => unstored.push(document.clone()),
+                    Some(stored)
+                        if stored.id == document.id
+                            && stored.version > 0
+                            && stored.body == document.body => {}
+                    Some(_) => return Err(CustodyError::Conflict),
+                }
+            }
+            start = end;
+        }
+        Ok(unstored)
+    }
+
+    /// Retain up to eight exact original components together, each with the same
+    /// outcome `append` reports. One coherent read finds the components already
+    /// retained, which must equal their bytes. Every missing component's chunks and
+    /// then its manifest are written as append-only puts packed, in that order, into as
+    /// few atomic batches as the required batch bounds allow. Every written component
+    /// is then read back exactly before success is reported.
+    pub async fn append_many(
+        &mut self,
+        components: &[(EvidenceIdentity, &[u8])],
+        timeout: Duration,
+    ) -> Result<Vec<AppendOutcome>> {
+        if components.is_empty()
+            || components.len() > READ_GROUP
+            || components
+                .iter()
+                .any(|(_, bytes)| bytes.is_empty() || bytes.len() > self.max_component_bytes)
+        {
+            return Err(CustodyError::Invalid("component append bound"));
+        }
+        let deadline = Instant::now()
+            .checked_add(timeout)
+            .ok_or(CustodyError::Invalid("timeout"))?;
+        let identities: Vec<_> = components
+            .iter()
+            .map(|(identity, _)| identity.clone())
+            .collect();
+        // read_many admits every identity (scope, derivation, uniqueness) before I/O.
+        let retained = self
+            .read_many(&identities, Self::remaining(deadline)?)
+            .await?;
+        let mut missing = Vec::new();
+        for (index, ((_, bytes), retained)) in components.iter().zip(retained).enumerate() {
+            match retained {
+                Some(record) if record.bytes == *bytes => {}
+                Some(_) => return Err(CustodyError::Conflict),
+                None => missing.push(index),
+            }
+        }
+        let mut outcomes = vec![AppendOutcome::AlreadyPresent; components.len()];
+        if missing.is_empty() {
+            return Ok(outcomes);
+        }
+        let mut documents = Vec::new();
+        for &index in &missing {
+            let (identity, bytes) = &components[index];
+            documents.extend(self.component_documents(identity, bytes, index)?);
+        }
+        let mut recovered = BTreeSet::new();
+        for group in append_groups(documents)? {
+            let components: BTreeSet<_> = group.iter().map(|document| document.component).collect();
+            let batch_recovered = match self.put_batch(&append_batch(&group)?, deadline).await {
+                // An interrupted earlier upload may already hold some of these
+                // documents. Write only the remaining ones, once.
+                Err(CustodyError::Rejected) => {
+                    let rest = self.unstored(group, deadline).await?;
+                    if rest.is_empty() {
+                        false
+                    } else {
+                        self.put_batch(&append_batch(&rest)?, deadline).await?
+                    }
+                }
+                outcome => outcome?,
+            };
+            if batch_recovered {
+                recovered.extend(components);
+            }
+        }
+        let written: Vec<_> = missing
+            .iter()
+            .map(|&index| identities[index].clone())
+            .collect();
+        let unknown = || CustodyError::UnknownOutcome(written[0].manifest_id());
+        let remaining = Self::remaining(deadline).map_err(|_| unknown())?;
+        let readback = self
+            .read_many(&written, remaining)
+            .await
+            .map_err(|_| unknown())?;
+        for (&index, record) in missing.iter().zip(readback) {
+            if record
+                .as_ref()
+                .is_none_or(|record| record.bytes != components[index].1)
+            {
+                return Err(CustodyError::UnknownOutcome(
+                    identities[index].manifest_id(),
+                ));
+            }
+            outcomes[index] = if recovered.contains(&index) {
+                AppendOutcome::Recovered
+            } else {
+                AppendOutcome::Committed
+            };
+        }
+        Ok(outcomes)
     }
 }
 
@@ -949,6 +1268,80 @@ mod tests {
         mutation_calls: usize,
         read_calls: Vec<(String, Vec<String>)>,
         reverse_reads: bool,
+        /// Targets of every committed batch, in commit order.
+        batches: Vec<Vec<(String, String)>>,
+    }
+
+    impl MemoryBackend {
+        /// One atomic multi-document append: every put must be append-only and new,
+        /// or nothing is written and the refusal is retained as the batch's receipt.
+        fn mutate_documents(
+            &mut self,
+            batch: &MutationBatch,
+            digest: String,
+        ) -> anyhow::Result<WriteReceipt> {
+            validate_append_batch(batch, "evidence_manifests", "evidence_chunks")?;
+            let refused = batch.operations.iter().any(|operation| {
+                let (collection, id) = operation.target();
+                self.records
+                    .contains_key(&(collection.to_owned(), id.to_owned()))
+            });
+            let revision = self.records.len() as u64 + 1;
+            let outcome = if refused {
+                Err(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Conflict,
+                    "document exists",
+                ))
+            } else {
+                let mut versions = BTreeMap::new();
+                for operation in &batch.operations {
+                    let Mutation::Put {
+                        collection,
+                        id,
+                        body,
+                        ..
+                    } = operation
+                    else {
+                        bail!("append-only puts only");
+                    };
+                    self.records.insert(
+                        (collection.clone(), id.clone()),
+                        Document {
+                            id: id.clone(),
+                            version: revision,
+                            body: body.clone(),
+                        },
+                    );
+                    versions.insert(document_receipt_path(collection, id), revision);
+                }
+                self.batches.push(
+                    batch
+                        .operations
+                        .iter()
+                        .map(|operation| {
+                            let (collection, id) = operation.target();
+                            (collection.to_owned(), id.to_owned())
+                        })
+                        .collect(),
+                );
+                Ok(WriteReceipt { revision, versions })
+            };
+            self.receipts.insert(
+                batch.idempotency_key.clone(),
+                MutationReceipt {
+                    scope: self.scope.clone().unwrap(),
+                    request_digest: digest,
+                    outcome: outcome.clone(),
+                },
+            );
+            if matches!(
+                std::mem::take(&mut self.dispatch),
+                Dispatch::CommitThenError
+            ) {
+                bail!("reply lost after commit");
+            }
+            Ok(outcome?)
+        }
     }
 
     #[async_trait]
@@ -963,6 +1356,9 @@ mod tests {
             if let Some(receipt) = self.receipts.get(&batch.idempotency_key) {
                 ensure!(receipt.request_digest == digest, "changed original batch");
                 return Ok(receipt.outcome.clone()?);
+            }
+            if batch.operations.len() > 1 {
+                return self.mutate_documents(batch, digest);
             }
             let dispatch = std::mem::take(&mut self.dispatch);
             if matches!(dispatch, Dispatch::ErrorBeforeCommit) {
@@ -1001,6 +1397,7 @@ mod tests {
                     body: body.clone(),
                 },
             );
+            self.batches.push(vec![(collection.clone(), id.clone())]);
             if !matches!(dispatch, Dispatch::CommitThenErrorWithoutReceipt) {
                 self.receipts.insert(
                     batch.idempotency_key.clone(),
@@ -1575,5 +1972,259 @@ mod tests {
             .strict_read_audit = true;
         snapshot.incarnation = Uuid::from_u128(9).to_string();
         assert!(verify_installed_collection_definitions(&snapshot, &binding).is_err());
+    }
+
+    fn component(index: usize) -> EvidenceIdentity {
+        EvidenceIdentity::new(
+            identity().scope,
+            "ab".repeat(32),
+            format!("component-{index}"),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn append_many_writes_a_small_bundle_in_one_batch_and_reads_it_back() {
+        let mut custody = custody();
+        let ids: Vec<_> = (0..6).map(component).collect();
+        let bytes: Vec<Vec<u8>> = (0..6)
+            .map(|index| vec![index as u8; 10 + index * 11])
+            .collect();
+        let components: Vec<_> = ids
+            .iter()
+            .cloned()
+            .zip(bytes.iter().map(Vec::as_slice))
+            .collect();
+        let outcomes = custody
+            .append_many(&components, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(outcomes, vec![AppendOutcome::Committed; 6]);
+        // One presence read, one atomic batch of 6 chunks and 6 manifests, one manifest
+        // read and one chunk read back.
+        assert_eq!(custody.backend.mutation_calls, 1);
+        assert_eq!(custody.backend.batches.len(), 1);
+        assert_eq!(custody.backend.batches[0].len(), 12);
+        assert_eq!(custody.backend.read_calls.len(), 3);
+        // Exactly the documents `append` would write, readable by `read_many`.
+        let rows = custody
+            .read_many(&ids, Duration::from_secs(5))
+            .await
+            .unwrap();
+        for (row, expected) in rows.into_iter().zip(&bytes) {
+            assert_eq!(&row.unwrap().bytes, expected);
+        }
+        let mut single = self::custody();
+        for (id, bytes) in &components {
+            single
+                .append(id, bytes, Duration::from_secs(5))
+                .await
+                .unwrap();
+        }
+        let bodies = |records: &BTreeMap<(String, String), Document>| {
+            records
+                .iter()
+                .map(|(key, document)| (key.clone(), document.body.clone()))
+                .collect::<BTreeMap<_, _>>()
+        };
+        assert_eq!(
+            bodies(&single.backend.records),
+            bodies(&custody.backend.records)
+        );
+    }
+
+    #[tokio::test]
+    async fn append_many_replays_as_already_present_and_refuses_changed_bytes() {
+        let mut custody = custody();
+        let ids: Vec<_> = (0..3).map(component).collect();
+        let components: Vec<_> = ids
+            .iter()
+            .cloned()
+            .map(|id| (id, &b"original"[..]))
+            .collect();
+        custody
+            .append_many(&components, Duration::from_secs(5))
+            .await
+            .unwrap();
+        let writes = custody.backend.mutation_calls;
+        assert_eq!(
+            custody
+                .append_many(&components, Duration::from_secs(5))
+                .await
+                .unwrap(),
+            vec![AppendOutcome::AlreadyPresent; 3]
+        );
+        let mut changed = components.clone();
+        changed[1].1 = b"changed";
+        assert!(matches!(
+            custody.append_many(&changed, Duration::from_secs(5)).await,
+            Err(CustodyError::Conflict)
+        ));
+        assert_eq!(custody.backend.mutation_calls, writes);
+        // A component appended alone is found by a later batch, and the rest is written.
+        let fourth = component(3);
+        custody
+            .append(&fourth, b"alone", Duration::from_secs(5))
+            .await
+            .unwrap();
+        let fifth = component(4);
+        let outcomes = custody
+            .append_many(
+                &[(fourth, &b"alone"[..]), (fifth, &b"new"[..])],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            outcomes,
+            vec![AppendOutcome::AlreadyPresent, AppendOutcome::Committed]
+        );
+    }
+
+    #[tokio::test]
+    async fn append_many_splits_full_chunks_and_never_writes_a_manifest_first() {
+        let mut custody = custody();
+        let large = vec![7u8; 2 * CHUNK_BYTES + 1];
+        let ids = [component(0), component(1)];
+        custody
+            .append_many(
+                &[(ids[0].clone(), &large), (ids[1].clone(), &b"small"[..])],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert!(custody.backend.batches.len() >= 2);
+        for id in &ids {
+            let batch_of = |target: &str| {
+                custody
+                    .backend
+                    .batches
+                    .iter()
+                    .position(|batch| batch.iter().any(|(_, id)| id == target))
+                    .unwrap()
+            };
+            let manifest = batch_of(&id.manifest_id());
+            let chunks = if id == &ids[0] { 3 } else { 1 };
+            assert!((0..chunks).all(|index| batch_of(&id.chunk_id(index)) <= manifest));
+        }
+        for batch in &custody.backend.batches {
+            let operations = batch.len();
+            assert!(operations <= MAX_APPEND_BATCH_DOCUMENTS);
+        }
+        let rows = custody
+            .read_many(&ids, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(rows[0].as_ref().unwrap().bytes, large);
+    }
+
+    #[tokio::test]
+    async fn append_many_recovers_a_lost_reply_and_finishes_an_interrupted_upload() {
+        let mut custody = custody();
+        custody.backend.dispatch = Dispatch::CommitThenError;
+        let ids = [component(0), component(1)];
+        let outcomes = custody
+            .append_many(
+                &[
+                    (ids[0].clone(), &b"zero"[..]),
+                    (ids[1].clone(), &b"one"[..]),
+                ],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcomes, vec![AppendOutcome::Recovered; 2]);
+        // An earlier attempt stored a chunk but not its manifest: the batch is refused,
+        // and only the missing documents are written, once.
+        let mut interrupted = self::custody();
+        let id = component(2);
+        let documents = interrupted.component_documents(&id, b"two", 0).unwrap();
+        let chunk = &documents[0];
+        interrupted.backend.records.insert(
+            (chunk.collection.clone(), chunk.id.clone()),
+            Document {
+                id: chunk.id.clone(),
+                version: 1,
+                body: chunk.body.clone(),
+            },
+        );
+        let outcomes = interrupted
+            .append_many(
+                &[(id.clone(), &b"two"[..]), (component(3), &b"three"[..])],
+                Duration::from_secs(5),
+            )
+            .await
+            .unwrap();
+        assert_eq!(outcomes, vec![AppendOutcome::Committed; 2]);
+        assert_eq!(interrupted.backend.mutation_calls, 2);
+        // A stored document with other bytes is a conflict, not overwritten.
+        let mut forged = self::custody();
+        let documents = forged
+            .component_documents(&component(4), b"four", 0)
+            .unwrap();
+        let chunk = &documents[0];
+        let mut body = chunk.body.clone();
+        body["data_sha256"] = "00".repeat(32).into();
+        forged.backend.records.insert(
+            (chunk.collection.clone(), chunk.id.clone()),
+            Document {
+                id: chunk.id.clone(),
+                version: 1,
+                body,
+            },
+        );
+        assert!(matches!(
+            forged
+                .append_many(
+                    &[(component(4), &b"four"[..]), (component(5), &b"five"[..])],
+                    Duration::from_secs(5)
+                )
+                .await,
+            Err(CustodyError::Conflict)
+        ));
+    }
+
+    #[test]
+    fn append_batches_admit_only_derived_keys_and_append_only_evidence_puts() {
+        let documents = vec![
+            PendingDocument {
+                collection: "evidence_chunks".into(),
+                id: "c".into(),
+                body: serde_json::json!({}),
+                payload_bytes: 1,
+                component: 0,
+            },
+            PendingDocument {
+                collection: "evidence_manifests".into(),
+                id: "m".into(),
+                body: serde_json::json!({}),
+                payload_bytes: 0,
+                component: 0,
+            },
+        ];
+        let batch = append_batch(&documents).unwrap();
+        assert!(batch.idempotency_key.starts_with(BATCH_KEY_PREFIX));
+        validate_append_batch(&batch, "evidence_manifests", "evidence_chunks").unwrap();
+        let single = append_batch(&documents[..1]).unwrap();
+        assert_eq!(single.idempotency_key, "c");
+        validate_append_batch(&single, "evidence_manifests", "evidence_chunks").unwrap();
+        let mut renamed = batch.clone();
+        renamed.idempotency_key = "chosen".into();
+        let mut other_collection = batch.clone();
+        if let Mutation::Put { collection, .. } = &mut other_collection.operations[0] {
+            *collection = "accounts".into();
+        }
+        let mut overwrite = batch.clone();
+        if let Mutation::Put { expected, .. } = &mut overwrite.operations[1] {
+            *expected = Precondition::Any;
+        }
+        let mut repeated = batch.clone();
+        repeated.operations[1] = repeated.operations[0].clone();
+        repeated.idempotency_key = append_batch_key(&repeated.operations);
+        for refused in [renamed, other_collection, overwrite, repeated] {
+            assert!(
+                validate_append_batch(&refused, "evidence_manifests", "evidence_chunks").is_err()
+            );
+        }
     }
 }
