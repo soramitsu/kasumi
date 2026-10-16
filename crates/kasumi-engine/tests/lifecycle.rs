@@ -301,7 +301,10 @@ impl Fixture {
         tokio::time::timeout(Duration::from_secs(10), async {
             loop {
                 for (id, db) in &self.nodes {
-                    if db.raft_group().raft().metrics().borrow().current_leader == Some(*id)
+                    // The barrier can await a metrics publication; release
+                    // the watch read lock before polling it.
+                    let current_leader = db.raft_group().raft().metrics().borrow().current_leader;
+                    if current_leader == Some(*id)
                         && db.raft_group().linearizable_barrier().await.is_ok()
                     {
                         return db.clone();

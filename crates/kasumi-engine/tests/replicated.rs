@@ -116,28 +116,47 @@ async fn shutdown_nodes(
     node_owners.clear();
 }
 async fn leader(nodes: &BTreeMap<u64, Arc<Database>>, exclude: Option<u64>) -> u64 {
+    let mut last_barriers = BTreeMap::new();
     tokio::time::timeout(Duration::from_secs(10), async {
         loop {
             for (&id, db) in nodes {
-                if Some(id) != exclude
-                    && db.raft_group().raft().metrics().borrow().current_leader == Some(id)
-                    && matches!(
-                        tokio::time::timeout(
-                            Duration::from_millis(200),
-                            db.raft_group().linearizable_barrier()
-                        )
-                        .await,
-                        Ok(Ok(_))
+                if Some(id) == exclude {
+                    continue;
+                }
+                // A metrics borrow holds a read lock. Release it before the
+                // barrier, which may need the Raft worker to publish metrics.
+                let current_leader = db.raft_group().raft().metrics().borrow().current_leader;
+                if current_leader == Some(id) {
+                    match tokio::time::timeout(
+                        Duration::from_millis(200),
+                        db.raft_group().linearizable_barrier(),
                     )
-                {
-                    return id;
+                    .await
+                    {
+                        Ok(Ok(_)) => return id,
+                        Ok(Err(error)) => {
+                            last_barriers.insert(id, format!("{error:#}"));
+                        }
+                        Err(error) => {
+                            last_barriers.insert(id, error.to_string());
+                        }
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|error| {
+        let observations: Vec<_> = nodes
+            .iter()
+            .map(|(id, db)| (*id, db.raft_group().raft().metrics().borrow().clone()))
+            .collect();
+        panic!(
+            "no quorum-backed leader excluding {exclude:?}: {error}; \
+             last_barriers={last_barriers:?}; metrics={observations:?}"
+        )
+    })
 }
 fn batch() -> MutationBatch {
     MutationBatch {

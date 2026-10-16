@@ -1233,6 +1233,14 @@ fn protected_tls_certifies_all_129_installed_healthy_groups_and_rejects_raft_mem
 async fn installed_healthy_group_coverage() {
     const TENANTS: usize = 128;
     const GROUPS: usize = TENANTS + 1; // Control is a separately probed group.
+    let started = std::time::Instant::now();
+    let phase = |name| {
+        eprintln!(
+            "129-group readiness: phase={name} elapsed_ms={}",
+            started.elapsed().as_millis(),
+        );
+    };
+    phase("initialize");
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let root = directory.path().join("many-healthy-groups");
     // The generic one-tenant fixture resolves to at most 512 MiB of work
@@ -1252,6 +1260,7 @@ async fn installed_healthy_group_coverage() {
         crate::standalone::initialize_many_with_storage(&root, TENANTS, storage.clone())
             .await
             .unwrap();
+    phase("initialized");
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     assert_eq!(config.tenants.len(), TENANTS);
     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
@@ -1271,6 +1280,7 @@ async fn installed_healthy_group_coverage() {
     control.administrative_members.get_mut(&1).unwrap().endpoint =
         format!("https://localhost:{}", config.admin.listen.port());
     crate::standalone::configure_test_topology(&config, storage.clone()).await;
+    phase("topology-configured");
     drop(listeners);
 
     let memory = storage.memory().clone();
@@ -1287,6 +1297,7 @@ async fn installed_healthy_group_coverage() {
             memory.snapshot()
         )
     });
+    phase("runtime-opened");
     assert_eq!(runtime.tenants.len(), TENANTS);
     let management = runtime.administration.as_ref().unwrap().clone();
     let telemetry = runtime.telemetry.clone();
@@ -1354,6 +1365,7 @@ async fn installed_healthy_group_coverage() {
     }
 
     let value = healthy(&client, &ready, &operator, &management).await;
+    phase("first-healthy-certificate");
     // Serving reconciliation publishes committed routes before readiness can
     // certify them; an opened runtime intentionally has no data routes yet.
     for tenant in &config.tenants {
@@ -1464,6 +1476,7 @@ async fn installed_healthy_group_coverage() {
     assert_eq!(refreshed["readiness_coverage"]["healthy_groups"], GROUPS);
     assert_eq!(refreshed["readiness_coverage"]["complete"], true);
     assert_eq!(refreshed["readiness_coverage"]["fresh"], true);
+    phase("membership-rejected");
 
     // The only unhealthy installed group is beyond the bounded detail page.
     // Its fresh negative probe counts toward complete whole-node coverage.
@@ -1505,6 +1518,8 @@ async fn installed_healthy_group_coverage() {
     assert_eq!(failed["readiness_coverage"]["complete"], true);
     assert_eq!(failed["readiness_coverage"]["fresh"], true);
     assert_eq!(failed["groups"].as_array().unwrap().len(), 128);
+    phase("sealed-group-certified");
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
+    phase("shutdown-complete");
 }

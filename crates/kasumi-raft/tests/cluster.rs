@@ -106,7 +106,11 @@ impl Cluster {
                     if excluded.contains(&id) {
                         continue;
                     }
-                    if node.group.raft().metrics().borrow().state == ServerState::Leader
+                    // A watch borrow blocks publication of the metrics needed
+                    // by the barrier. Release it before waiting on the core.
+                    let is_leader =
+                        node.group.raft().metrics().borrow().state == ServerState::Leader;
+                    if is_leader
                         && matches!(
                             tokio::time::timeout(
                                 Duration::from_millis(250),
