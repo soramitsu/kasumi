@@ -164,6 +164,7 @@ fn diagnose_observation(phase: &str, observation: kasumi_raft::ApplyObservationR
 struct PendingScope {
     queried: Option<Arc<kasumi_store::TenantStorageSet>>,
     source: Option<Arc<kasumi_store::TenantStorageSet>>,
+    node_retirements: [Option<kasumi_store::NodeRetirement>; 2],
     snapshot_root: Option<Arc<kasumi_raft::SnapshotBufferOwner>>,
     entry_admissions: Option<EntryAdmissions>,
     installed: [Option<Arc<kasumi_store::NodeDisk>>; 2],
@@ -185,6 +186,7 @@ impl PendingScope {
             memory: None,
             queried: None,
             source: None,
+            node_retirements: std::array::from_fn(|_| None),
             snapshot_root: None,
             entry_admissions: None,
             installed: std::array::from_fn(|_| None),
@@ -195,7 +197,10 @@ impl PendingScope {
     }
 
     async fn drain(&mut self) -> Result<(), StorageError<u64>> {
-        if self.failures.iter().any(Option::is_some) || self.installed_baseline.is_none() {
+        if self.failures.iter().any(Option::is_some)
+            || self.installed_baseline.is_none()
+            || self.node_retirements.iter().any(Option::is_none)
+        {
             // An incomplete physical installation has no completed original
             // baseline; its returned constructor original remains in Builder.
             return Err(StorageIOError::write(&RetainedScope).into());
@@ -217,6 +222,17 @@ impl PendingScope {
         }
         if let Some(admissions) = &self.entry_admissions {
             admissions.retire_after_drain();
+        }
+        // Closing native handles does not retire the registered owner or its
+        // original metadata fee. Release these final store facades only after
+        // successful shutdown, then require the actual census receipts before
+        // removing the scope or any private paths.
+        self.queried = None;
+        self.source = None;
+        for retirement in self.node_retirements.iter_mut().flatten() {
+            if retirement.retry() != kasumi_store::StorageCensusDisposition::Retired {
+                return Err(StorageIOError::write(&RetainedScope).into());
+            }
         }
         Ok(())
     }
@@ -920,11 +936,15 @@ impl StoreBuilder<TypeConfig, ConformanceLog, ConformanceMachine, StoreScope> fo
             pending.installed_baseline = Some(baseline);
             let admissions = EntryAdmissions::prepare(&memory)?;
             pending.entry_admissions = Some(admissions.clone());
-            let store =
-                common::store(&queried_path, true, fixture_scratch.clone(), 1, "tenant-a").await?;
+            let (node, store) =
+                common::store_with_node(&queried_path, true, fixture_scratch.clone(), 1, "tenant-a")
+                    .await?;
+            pending.node_retirements[0] = Some(node.retire());
             pending.queried = Some(store.clone());
             let log = LogStore::open(store.clone(), 1).await?;
-            let source = common::store(&source_path, true, fixture_scratch, 1, "tenant-a").await?;
+            let (node, source) =
+                common::store_with_node(&source_path, true, fixture_scratch, 1, "tenant-a").await?;
+            pending.node_retirements[1] = Some(node.retire());
             pending.source = Some(source.clone());
             let source_log = LogStore::open(source.clone(), 1).await?;
             let snapshot_root = common::snapshot_owner();
@@ -1057,6 +1077,31 @@ fn openraft_storage_conformance_suite() -> FixtureResult<()> {
     }
     result.map_err(kasumi_raft::test_utils::FixtureFailure::from)?;
     cleanup.map_err(Into::into)
+}
+
+#[tokio::test]
+async fn conformance_cleanup_retains_paths_until_native_owner_retirement() -> FixtureResult<()> {
+    let builder = Builder::prepare()?;
+    let (scope, log, machine) = builder.build().await?;
+    let (held_node, directory) = {
+        let scopes = builder.cleanup.state().scopes.lock().await;
+        let pending = scopes[scope.index].as_ref().unwrap();
+        let node = kasumi_store::NodeStore::retained(
+            pending.memory.as_ref().unwrap().clone(),
+            pending.node_retirements[0].as_ref().unwrap().id(),
+        )
+        .expect("actual source owner still retained by its live facades");
+        (node, pending.directory.as_ref().unwrap().path().to_owned())
+    };
+    drop(machine);
+    drop(log);
+    drop(scope);
+    assert!(builder.cleanup.drain_final().await.is_err());
+    assert!(directory.is_dir(), "an unretired owner lost its private path");
+    drop(held_node);
+    builder.cleanup.drain_final().await?;
+    assert!(!directory.exists());
+    Ok(())
 }
 
 fn entry_digest(entry: &Entry<TypeConfig>) -> [u8; 32] {

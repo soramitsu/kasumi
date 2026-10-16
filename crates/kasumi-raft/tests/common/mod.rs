@@ -146,6 +146,19 @@ pub async fn store(
     node_id: u64,
     group: &str,
 ) -> kasumi_raft::test_utils::FixtureResult<Arc<kasumi_store::TenantStorageSet>> {
+    let (_, stores) = store_with_node(path, create, fixture_scratch, node_id, group).await?;
+    Ok(stores)
+}
+
+/// Keep the native owner available for fixtures that require its exact census
+/// retirement receipt in addition to the independent worker shutdown result.
+pub async fn store_with_node(
+    path: &Path,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    node_id: u64,
+    group: &str,
+) -> kasumi_raft::test_utils::FixtureResult<(NodeStore, Arc<kasumi_store::TenantStorageSet>)> {
     let node = if create {
         NodeStore::create_new_fixture(
             path,
@@ -163,7 +176,7 @@ pub async fn store(
     };
     let stores = if create {
         kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
-            node,
+            node.clone(),
             "tenant-a".into(),
             Arc::new(LocalKeyProvider::new([19; 32])),
             Arc::new(LocalKeyProvider::new([241; 32])),
@@ -171,7 +184,7 @@ pub async fn store(
         .await?
     } else {
         kasumi_store::TenantStorageSet::open_existing_fixture(
-            node,
+            node.clone(),
             "tenant-a".into(),
             Arc::new(LocalKeyProvider::new([19; 32])),
             Arc::new(LocalKeyProvider::new([241; 32])),
@@ -181,7 +194,7 @@ pub async fn store(
     if create {
         stores.write_batch(&[], &kasumi_raft::initial_storage_identity(node_id, group)?)?;
     }
-    Ok(stores)
+    Ok((node, stores))
 }
 
 pub fn config() -> Config {

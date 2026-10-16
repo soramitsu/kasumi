@@ -1480,6 +1480,13 @@ async fn installed_healthy_group_coverage() {
 
     // The only unhealthy installed group is beyond the bounded detail page.
     // Its fresh negative probe counts toward complete whole-node coverage.
+    // Keep that exact owner installed while the readiness worker observes it;
+    // otherwise reconciliation can replace it before the complete sweep ends.
+    let management_hold =
+        tokio::time::timeout(Duration::from_secs(10), management.test_hold_management())
+            .await
+            .unwrap()
+            .unwrap();
     last_store.seal();
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
@@ -1519,6 +1526,7 @@ async fn installed_healthy_group_coverage() {
     assert_eq!(failed["readiness_coverage"]["fresh"], true);
     assert_eq!(failed["groups"].as_array().unwrap().len(), 128);
     phase("sealed-group-certified");
+    drop(management_hold);
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
     phase("shutdown-complete");
