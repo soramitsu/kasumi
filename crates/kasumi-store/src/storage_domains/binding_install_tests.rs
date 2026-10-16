@@ -108,7 +108,9 @@ async fn installed_missing_binding_uses_registered_writer_and_decodes_exact_reco
         serde_json::to_vec(stores.custody().binding())?
     );
     stores.shutdown().await?;
+    drop((stores, pair.app, pair.custody));
     pair.node.shutdown().await?;
+    assert!(pair.node.retire().is_retired());
     assert_eq!(pair.memory.storage_census().snapshot().databases, 0);
     Ok(())
 }
@@ -455,7 +457,11 @@ async fn staged_binding_capacity_denial_settles_and_a_later_binding_put_commits(
     assert!(writer.report().confirmed());
     assert!(!writer.report().is_capacity_denied());
     assert_eq!(writer.retire(), StorageCensusDisposition::Retired);
+    pair.app.shutdown().await?;
+    pair.custody.shutdown().await?;
+    drop((pair.app, pair.custody));
     pair.node.shutdown().await?;
+    assert!(pair.node.retire().is_retired());
     assert_eq!(pair.memory.storage_census().snapshot().databases, 0);
     Ok(())
 }

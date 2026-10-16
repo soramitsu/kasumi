@@ -89,10 +89,11 @@ impl Installed {
     }
 
     /// Close the node and reopen the same installed file strictly.
-    async fn restart(&mut self) -> Result<()> {
+    async fn restart(self) -> Result<Self> {
         self.node.shutdown().await?;
+        assert!(self.node.retire().is_retired());
         assert_eq!(self.memory.storage_census().snapshot().databases, 0);
-        self.node = NodeStore::open_existing(
+        let node = NodeStore::open_existing(
             &self.path,
             ID,
             self.disk.clone(),
@@ -100,7 +101,7 @@ impl Installed {
             crate::test_utils::node_storage_config(),
         )
         .unwrap_or_else(|original| std::panic::panic_any(original));
-        Ok(())
+        Ok(Self { node, ..self })
     }
 
     fn writers(&self) -> usize {
@@ -282,7 +283,7 @@ async fn save_catalog_commit_denial_retires_its_child_and_retries_after_space_is
     drop(store);
 
     // Only the retried rotation is durable.
-    fixture.restart().await?;
+    fixture = fixture.restart().await?;
     let store = reopen(&fixture.node, "tenant".into(), app_provider()).await?;
     assert!(*store.catalog.read() == rotated);
     assert_eq!(
@@ -290,7 +291,9 @@ async fn save_catalog_commit_denial_retires_its_child_and_retries_after_space_is
         Some(b"value".as_slice())
     );
     store.shutdown().await?;
+    drop(store);
     fixture.node.shutdown().await?;
+    assert!(fixture.node.retire().is_retired());
     assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
     Ok(())
 }
@@ -399,7 +402,7 @@ async fn binding_install_commit_denial_publishes_nothing_across_restart_and_retr
     custody.shutdown().await?;
     drop((app, custody));
     fixture.disk.delete_file(filler)?;
-    fixture.restart().await?;
+    fixture = fixture.restart().await?;
     assert!(TenantStorageSet::catalogs_installed(
         &fixture.node,
         "tenant"
@@ -417,7 +420,7 @@ async fn binding_install_commit_denial_publishes_nothing_across_restart_and_retr
     stores.shutdown().await?;
     drop((stores, app, custody));
 
-    fixture.restart().await?;
+    fixture = fixture.restart().await?;
     let stores = TenantStorageSet::open_existing_fixture(
         fixture.node.clone(),
         "tenant".into(),
@@ -427,7 +430,10 @@ async fn binding_install_commit_denial_publishes_nothing_across_restart_and_retr
     .await?;
     assert_eq!(stores.custody().binding(), &binding);
     stores.shutdown().await?;
+    drop(stores);
     fixture.node.shutdown().await?;
+    assert!(fixture.node.retire().is_retired());
+    assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
     Ok(())
 }
 

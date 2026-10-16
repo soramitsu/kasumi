@@ -94,10 +94,10 @@ impl SegmentGroupBackend for FailingNodeSetupBackend {
 }
 
 #[test]
-fn failed_node_table_setup_observes_the_original_native_close() {
+fn failed_node_table_setup_retains_uncertain_commit_without_reclosing() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
-    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory);
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
     let backend = FailingNodeSetupBackend::new();
     let error = NodeStore::create_with_backend(
         backend.clone(),
@@ -106,39 +106,108 @@ fn failed_node_table_setup_observes_the_original_native_close() {
     )
     .err()
     .expect("the table setup sync is injected to fail");
-    let NodeStoreStartFailure::Opening(failure) = error.original() else {
+    let (original, unentered) = error.into_parts();
+    assert!(unentered.is_none(), "the original backend entered startup");
+    let NodeStoreStartFailure::Opening(failure) = original else {
         panic!("the exact admitted table request must retain its original startup failure");
     };
-    let tables = failure
-        .custody()
-        .tables()
-        .expect("failed original table request");
-    let report = tables.report();
-    let terminal = report.terminal().expect("actual attempted commit");
-    let TerminalObservation::Returned(Err(original)) = terminal.terminal() else {
-        panic!("injected table setup sync must retain the original commit error");
+    let opening_id = failure.opening_id();
+    let (opening, tables, verification, _, child_id, _, _, constructor) =
+        failure.into_custody().into_parts();
+    assert_eq!(opening.id(), opening_id);
+    assert!(verification.is_none());
+    assert!(constructor.is_none());
+    let tables = tables.expect("failed original table request");
+    let child_id = child_id.expect("the exact failed tables child is recorded");
+    assert_eq!(tables.id(), child_id);
+    let commit_original = {
+        let report = tables.report();
+        let terminal = report.terminal().expect("actual attempted commit");
+        let TerminalObservation::Returned(Err(original)) = terminal.terminal() else {
+            panic!("injected table setup sync must retain the original commit error");
+        };
+        let kasumi_kv::WriteTerminalError::Commit(kasumi_kv::CommitError(
+            kasumi_kv::StorageError::Io(original),
+        )) = original
+        else {
+            panic!("injected table setup sync must retain its original native I/O error");
+        };
+        assert!(
+            original
+                .to_string()
+                .contains("injected table setup sync failure")
+        );
+        assert_eq!(
+            terminal.settlement(),
+            kasumi_kv::WriteTerminalSettlement::Retained
+        );
+        assert!(!terminal.disposal_complete());
+        std::ptr::from_ref(original)
     };
-    let kasumi_kv::WriteTerminalError::Commit(kasumi_kv::CommitError(kasumi_kv::StorageError::Io(
-        original,
-    ))) = original
-    else {
-        panic!("injected table setup sync must retain its original native I/O error");
+    let close_original = {
+        let report = opening.report();
+        let engine = report.engine();
+        assert_eq!(
+            engine.native_disposition(),
+            BackendNativeDisposition::Retained
+        );
+        assert_eq!(
+            engine.settlement(),
+            kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
+        );
+        let close = engine
+            .database_close()
+            .expect("the original native close was attempted");
+        assert!(matches!(close.backend(), TerminalObservation::NotEntered));
+        let original = close
+            .first_not_entered_outcome()
+            .expect("original unentered close outcome");
+        assert_eq!(original.entry(), kasumi_kv::BackendCloseEntry::NotEntered);
+        std::ptr::from_ref(original)
     };
-    assert!(
-        original
-            .to_string()
-            .contains("injected table setup sync failure")
-    );
-    let opening = failure.custody().opening().report();
+    assert_eq!(backend.closes.load(Ordering::Acquire), 0);
+
+    // An uncertain durable commit keeps its writer gate and native custody.
+    // Acknowledging diagnostics must not turn that uncertainty into a close.
+    assert_eq!(tables.retire(), StorageCensusDisposition::Retained);
     assert_eq!(
-        opening.engine().native_disposition(),
-        BackendNativeDisposition::Drained
+        opening.close().unwrap(),
+        kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
+    );
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retained);
+    let tables = RegisteredNodeTables::retained(fixture_memory.clone(), child_id)
+        .expect("the same uncertain table transaction survives retirement");
+    {
+        let report = tables.report();
+        let terminal = report.terminal().unwrap();
+        let TerminalObservation::Returned(Err(kasumi_kv::WriteTerminalError::Commit(
+            kasumi_kv::CommitError(kasumi_kv::StorageError::Io(original)),
+        ))) = terminal.terminal()
+        else {
+            panic!("the original commit I/O error must survive retirement");
+        };
+        assert_eq!(std::ptr::from_ref(original), commit_original);
+        assert!(!terminal.disposal_complete());
+    }
+    let retained = RegisteredNodeOpening::retained(fixture_memory, opening_id)
+        .expect("the exact opening still owns the uncertain native transaction");
+    let report = retained.report();
+    let engine = report.engine();
+    assert_eq!(
+        engine.native_disposition(),
+        BackendNativeDisposition::Retained
     );
     assert_eq!(
-        opening.engine().settlement(),
-        kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
+        engine.settlement(),
+        kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
     );
-    assert_eq!(backend.closes.load(Ordering::Acquire), 1);
+    let close = engine.database_close().unwrap();
+    assert_eq!(
+        std::ptr::from_ref(close.first_not_entered_outcome().unwrap()),
+        close_original
+    );
+    assert!(matches!(close.backend(), TerminalObservation::NotEntered));
+    assert_eq!(backend.closes.load(Ordering::Acquire), 0);
 }
 
 #[test]
@@ -1445,12 +1514,21 @@ async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
         .unwrap();
     let error = store
         .get_bounded("closed-control", b"current", 8191)
-        .unwrap_err();
-    assert!(
-        error
-            .to_string()
-            .contains("encrypted record exceeds read budget")
-    );
+        .unwrap_err()
+        .downcast::<TenantPointReadFailure>()
+        .expect("the point read retains its exact native ciphertext refusal");
+    assert_eq!(error.stage(), "record bytes");
+    assert!(error.validation_error().is_none());
+    {
+        let report = error.reader().report();
+        assert!(matches!(
+            report.read_failure(),
+            TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
+        ));
+    }
+    let reader = error.into_reader();
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+    assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
     assert_eq!(
         store
             .get_bounded("closed-control", b"current", 8192)
@@ -1459,15 +1537,24 @@ async fn bounded_encrypted_reads_reject_payload_before_plaintext_allocation() {
         vec![7; 8192]
     );
     let mut visited = false;
-    assert!(
-        store
-            .visit("closed-control", 64, |_, _| {
-                visited = true;
-                Ok(())
-            })
-            .is_err()
-    );
+    let error = store
+        .visit("closed-control", 64, |_, _| {
+            visited = true;
+            Ok(())
+        })
+        .unwrap_err()
+        .downcast::<NodeScopedReadFailure>()
+        .expect("the visit retains its exact native ciphertext refusal");
+    assert!(matches!(
+        error.report().read_failure(),
+        TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
+    ));
     assert!(!visited);
+    assert_eq!(
+        error.try_retire_routine(),
+        StorageCensusDisposition::Retired
+    );
+    drop(error);
     assert!(
         store
             .get_bounded("closed-control", b"absent", 64)

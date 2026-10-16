@@ -1418,16 +1418,22 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
         struct FailBundleMemory {
+            census: crate::StorageCensus,
             backing: Arc<crate::test_utils::TestDiskMemory>,
             calls: AtomicUsize,
             fail_on: AtomicUsize,
+            _bookkeeping: DiskMemoryLease,
         }
 
         impl kasumi_kv::SourceMemoryProvider for FailBundleMemory {}
 
         impl NodeDiskMemoryAdmission for FailBundleMemory {
             fn storage_census(&self) -> &crate::StorageCensus {
-                self.backing.storage_census()
+                &self.census
+            }
+
+            fn quote_installed(&self, bytes: u64) -> std::io::Result<u64> {
+                self.backing.quote_installed(bytes)
             }
 
             fn reserve_installed(self: Arc<Self>, bytes: u64) -> std::io::Result<DiskMemoryLease> {
@@ -1495,11 +1501,25 @@ mod tests {
         }
 
         let backing = crate::test_utils::TestDiskMemory::new(MANIFEST_TEST_MEMORY_LIMIT, 4096);
+        let bookkeeping = backing
+            .clone()
+            .reserve_installed(
+                crate::disk_memory::add(
+                    crate::disk_memory::arc::<FailBundleMemory>().unwrap(),
+                    crate::StorageCensus::required_bytes(4096).unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
         let memory = Arc::new(FailBundleMemory {
+            census: crate::StorageCensus::allocate(4096).unwrap(),
             backing: backing.clone(),
             calls: AtomicUsize::new(0),
             fail_on: AtomicUsize::new(usize::MAX),
+            _bookkeeping: bookkeeping,
         });
+        let installed: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+        memory.census.bind_provider(&installed).unwrap();
         let scratch_directory = crate::test_utils::private_tempdir().unwrap();
         let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
         let directory = crate::test_utils::private_tempdir().unwrap();

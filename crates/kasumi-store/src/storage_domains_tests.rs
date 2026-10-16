@@ -1372,14 +1372,34 @@ async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse()
         .insert(disk_key.as_slice(), oversized.as_slice())?;
     tx.commit()?;
     let before = memory.snapshot().used_bytes;
+    let error = stores
+        .deployment_binding()
+        .err()
+        .expect("oversized encrypted envelope")
+        .downcast::<crate::NodeScopedReadFailure>()
+        .expect("the registered read retains its original bound refusal");
+    {
+        let report = error.report();
+        assert!(matches!(
+            report.read_failure(),
+            kasumi_kv::TerminalObservation::Returned(Err(
+                kasumi_kv::BoundedReadError::BoundExceeded
+            ))
+        ));
+        assert!(matches!(
+            error
+                .body_error()
+                .and_then(|error| error.downcast_ref::<crate::NodeReadAccessError>()),
+            Some(crate::NodeReadAccessError::Reported)
+        ));
+    }
+    // The native ciphertext bound rejects the row before the malformed key ID
+    // can reach decoding. Retire the exact reader before comparing admission.
     assert_eq!(
-        stores
-            .deployment_binding()
-            .err()
-            .expect("oversized encrypted envelope")
-            .to_string(),
-        "encrypted deployment envelope exceeds read budget"
+        error.try_retire_routine(),
+        crate::StorageCensusDisposition::Retired
     );
+    drop(error);
     assert_eq!(memory.snapshot().used_bytes, before);
     let tx = application.node.body().db.begin_read()?;
     let table = tx.open_table(RECORDS)?;
@@ -1439,15 +1459,30 @@ async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is
             &[NamespaceReplacement::from_table("data", &closed)],
         )
         .unwrap_err();
-    assert!(
-        matches!(
-            error.downcast_ref::<kasumi_kv::TransactionError>(),
+    let failure = error
+        .downcast::<crate::NodeScopedWriteFailure>()
+        .expect("the registered writer retains the original source failure");
+    {
+        let report = failure.report();
+        let kasumi_kv::TerminalObservation::Returned(Err(original)) = report.body() else {
+            panic!("replacement must reach the closed native source");
+        };
+        assert!(matches!(
+            original.downcast_ref::<kasumi_kv::TransactionError>(),
             Some(kasumi_kv::TransactionError(
                 kasumi_kv::StorageError::DatabaseClosed
             ))
-        ),
-        "replacement must reach the closed native source: {error:#}"
-    );
+        ));
+        let terminal = report
+            .terminal()
+            .expect("the attempted replacement has a transaction");
+        assert_eq!(
+            terminal.operation(),
+            Some(kasumi_kv::WriteTerminalOperation::Abort)
+        );
+        assert!(terminal.disposal_complete());
+    }
+    assert_eq!(failure.retire(), crate::StorageCensusDisposition::Retired);
     assert_eq!(
         app.get("data", b"old")?.as_deref(),
         Some(b"application".as_slice())

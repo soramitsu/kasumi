@@ -230,7 +230,8 @@ async fn production_catalog_save_uses_registered_writer_and_reopens_value() {
             .is_some_and(|read| read == &catalog)
     );
     node.shutdown().await.unwrap();
-    drop(node);
+    assert!(node.retire().is_retired());
+    assert_eq!(memory.storage_census().snapshot().databases, 0);
 
     let scratch_directory = private_tempdir().unwrap();
     let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
@@ -250,6 +251,7 @@ async fn production_catalog_save_uses_registered_writer_and_reopens_value() {
             .is_some_and(|read| read == &catalog)
     );
     reopened.shutdown().await.unwrap();
+    assert!(reopened.retire().is_retired());
     assert_eq!(memory.storage_census().snapshot().databases, 0);
 }
 

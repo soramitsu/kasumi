@@ -981,6 +981,9 @@ fn close_during_read_registration_returns_the_exact_cancelled_request() {
     opening.publish_ready_after_tables(&tables).unwrap();
     assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
 
+    // Skip the independent report reservation so close races the already
+    // preclaimed reader owner, not a request that has yet to enter admission.
+    memory.pause_skip.store(1, Ordering::Release);
     memory.pause_next.store(true, Ordering::Release);
     let queued = opening.clone();
     let worker = std::thread::spawn(move || queued.queue_read());

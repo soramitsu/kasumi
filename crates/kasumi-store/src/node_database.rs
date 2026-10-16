@@ -380,6 +380,18 @@ impl NodeDatabase {
         self.stop();
         let mut state = self.state.lock();
         if let Some(failure) = &state.interrupted {
+            // An explicit failed-close recovery may have completed after this
+            // original terminal was retained. Only its exact accepted physical
+            // transfers and retired children permit completion; preserve the
+            // same original report and never replay native close.
+            if state.registered.as_ref().is_some_and(|locator| {
+                locator.opening().is_ok_and(|opening| {
+                    let recovered = opening.report().failed_recovery_complete();
+                    recovered && opening.children_retired()
+                })
+            }) {
+                return state.terminal.complete();
+            }
             return Err(failure.clone());
         }
         if let Some(locator) = state.registered.as_ref() {
@@ -524,9 +536,12 @@ impl NodeDatabase {
                 return false;
             };
             let report = opening.report();
-            return report.engine().settlement() == kasumi_kv::DatabaseOpenSettlement::Disposed
-                && report.engine().disposal().complete()
-                && opening.children_retired();
+            let disposed = (report.engine().settlement()
+                == kasumi_kv::DatabaseOpenSettlement::Disposed
+                && report.engine().disposal().complete())
+                || report.failed_recovery_complete();
+            drop(report);
+            return disposed && opening.children_retired();
         }
         state.database.as_ref().is_some_and(|database| {
             let report = database.report();

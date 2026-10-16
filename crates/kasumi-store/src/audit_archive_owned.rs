@@ -412,7 +412,7 @@ mod tests {
                 disk.snapshot().retained_file_attempts,
                 before_close.retained_file_attempts + usize::try_from(node_files).unwrap()
             );
-            (shutdown, backend)
+            (shutdown, backend, failure)
         };
         assert_eq!(
             crate::NodeGroupIdentity::read(&node_path).unwrap(),
@@ -454,6 +454,23 @@ mod tests {
         assert_eq!(disk.snapshot().pending_bytes, retained_pending);
         assert_eq!(private_files::file_identity(&final_path).unwrap(), original);
         assert_eq!(std::fs::read(&final_path).unwrap(), segment.ciphertext);
+        let recovered_node = crate::NodeStore::retained(fixture_memory.clone(), opening_id)
+            .expect("the original composite node remains installed");
+        let native_closes = crate::NodeDiskFile::native_close_attempts();
+        let before_retry = fixture_memory.snapshot();
+        let pending = recovered_node.shutdown().await.unwrap_err();
+        assert_eq!(
+            pending.completion(),
+            kasumi_types::drain::DrainCompletion::Retained
+        );
+        assert_eq!(pending.issues().len(), original_close.2.issues().len());
+        for (original, repeated) in original_close.2.issues().iter().zip(pending.issues()) {
+            assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                original, repeated
+            ));
+        }
+        assert_eq!(crate::NodeDiskFile::native_close_attempts(), native_closes);
+        assert_eq!(fixture_memory.snapshot(), before_retry);
         disk.reconcile(&crate::CensusCancellation::default())
             .unwrap();
         assert_eq!(disk.snapshot().open_files, 0);
@@ -480,6 +497,20 @@ mod tests {
             };
             assert_eq!(std::ptr::from_ref(error) as usize, original_close.1);
         }
+        let completed = recovered_node.shutdown().await.unwrap_err();
+        assert_eq!(
+            completed.completion(),
+            kasumi_types::drain::DrainCompletion::Complete
+        );
+        assert_eq!(completed.issues().len(), original_close.2.issues().len());
+        for (original, repeated) in original_close.2.issues().iter().zip(completed.issues()) {
+            assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                original, repeated
+            ));
+        }
+        assert_eq!(crate::NodeDiskFile::native_close_attempts(), native_closes);
+        assert!(recovered_node.body().lifecycle.permits_drive());
+        drop(recovered_node);
         let before_retirement = fixture_memory.snapshot();
         assert_eq!(opening.retire(), crate::StorageCensusDisposition::Retired);
         let after_retirement = fixture_memory.snapshot();

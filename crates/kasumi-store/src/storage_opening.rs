@@ -293,6 +293,19 @@ fn settled_capacity_denial<E>(
         && (staged || committed)
 }
 impl OpeningState {
+    fn failed_recovery_complete(&self) -> bool {
+        let report = self.engine.report();
+        report.settlement() == DatabaseOpenSettlement::FailedDisposed
+            && report.disposal().complete()
+            && self.failed_transferred
+            && self.failed_recovery.success()
+            && self.outcomes_released
+            && self
+                .file
+                .physical()
+                .is_ok_and(|file| file.failed_transfer_accepted())
+    }
+
     fn transfer_failed(&mut self) -> FailedOpeningRecovery {
         if self.failed_transferred {
             return FailedOpeningRecovery::AwaitingDiskCensus;
@@ -455,13 +468,7 @@ impl StoragePayload for DatabaseOwner {
             return false;
         }
         if state.failed_transferred {
-            return settlement == DatabaseOpenSettlement::FailedDisposed
-                && state.failed_recovery.success()
-                && state.outcomes_released
-                && state
-                    .file
-                    .physical()
-                    .is_ok_and(|file| file.failed_transfer_accepted());
+            return state.failed_recovery_complete();
         }
         if matches!(
             settlement,
@@ -1321,6 +1328,13 @@ pub struct NodeOpeningReport<'a> {
     state: MutexGuard<'a, OpeningState>,
 }
 impl NodeOpeningReport<'_> {
+    /// The original failed owner was explicitly acknowledged and disposed, and
+    /// every exact physical transfer has since passed the installed disk census.
+    /// The original failures remain in this report until actual retirement.
+    pub(crate) fn failed_recovery_complete(&self) -> bool {
+        self.state.failed_recovery_complete()
+    }
+
     /// Explicitly acknowledge the terminal engine report and inspect the actual
     /// FileOwner logical errors. The callback borrows the original objects;
     /// returning projections or telemetry never constitutes this witness.
