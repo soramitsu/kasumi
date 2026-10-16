@@ -848,6 +848,33 @@ impl StorageCensus {
         }
     }
 
+    /// Inspect an exact active payload without cloning its native owner.
+    /// Callers must keep this predicate read-only and nonblocking: fixed identity,
+    /// atomics, and try-locked state only, with no provider/native callbacks.
+    /// Its boolean is a scheduling hint, never evidence of clean retirement.
+    /// Both observation guards end before the caller invokes drain_owner, which
+    /// independently owns and rechecks all destructive progress.
+    pub(crate) fn inspect_retained<T: StoragePayload>(
+        &self,
+        id: StorageOwnerId,
+        inspect: impl FnOnce(&T) -> bool,
+    ) -> bool {
+        let Some(slot) = self.slots.get(id.index) else {
+            return false;
+        };
+        let Ok(metadata) = slot.metadata.try_lock() else {
+            return false;
+        };
+        if metadata.generation != id.generation {
+            return false;
+        }
+        let Cell::Active { owner, .. } = &metadata.cell else {
+            return false;
+        };
+        let owner: &dyn Any = owner.as_ref();
+        owner.downcast_ref::<T>().is_some_and(inspect)
+    }
+
     /// Pre-effect admission to an existing exact owner may wait only for its
     /// metadata lock. Missing/retiring owners, poison and provider mismatch are
     /// definitive failures; no resource is reopened or storage work replayed.
