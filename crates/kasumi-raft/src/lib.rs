@@ -864,6 +864,8 @@ impl RaftGroup {
     /// future through diagnostic timeouts and stops; there is deliberately no
     /// timeout that abandons a queued SDK actor request or applied-state waiter.
     /// Followers and learners are observed through the leader's read index.
+    /// Standalone groups observe their writer without queuing; a busy writer
+    /// conservatively reports unready until the next observation.
     pub async fn readiness_probe(
         &self,
         local_id: u64,
@@ -880,10 +882,7 @@ impl RaftGroup {
                     return Ok(false);
                 }
             }
-            return Ok(matches!(
-                tokio::time::timeout(READINESS_OBSERVATION_DEADLINE, local.barrier()).await,
-                Ok(Ok(_))
-            ) && self.check_access().is_ok());
+            return Ok(local.readiness_observation() && self.check_access().is_ok());
         }
         if self.check_access().is_err() {
             return Ok(false);

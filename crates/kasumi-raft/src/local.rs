@@ -292,6 +292,18 @@ impl<M: RaftStateMachine<TypeConfig> + Send + Sync + 'static> LocalGroup<M> {
         }
     }
 
+    /// A retained readiness future must never reserve the writer mutex: its
+    /// owner may not poll it again until after this group has shut down.
+    pub(crate) fn readiness_observation(&self) -> bool {
+        if self.ended() {
+            return false;
+        }
+        let Ok(state) = self.state.try_lock() else {
+            return false;
+        };
+        state.is_some() && !self.ended()
+    }
+
     pub(crate) async fn barrier(&self) -> Result<Option<LogId<u64>>> {
         self.check()?;
         let _guard = self.state.lock().await;

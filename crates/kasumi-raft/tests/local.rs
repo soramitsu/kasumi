@@ -187,6 +187,69 @@ async fn cancelled_local_request_finishes_commit_and_remains_ordered() -> Fixtur
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retained_local_readiness_probe_does_not_block_shutdown() -> FixtureResult<()> {
+    use std::{future::Future, task::Poll};
+
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let stores = common::store(
+        &directory.path().join("retained-probe.kv"),
+        true,
+        disk,
+        1,
+        GROUP,
+    )
+    .await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = RaftGroup::local(
+        1,
+        GROUP.into(),
+        stores,
+        backend.clone(),
+        common::snapshot_owner(),
+    )
+    .await?;
+    let role = || kasumi_raft::ReadinessRole::Voter(Some([1].into()));
+    assert!(local.readiness_probe(1, role()).await?);
+    let (entered, ready) = tokio::sync::oneshot::channel();
+    let (release, pause) = std::sync::mpsc::channel();
+    local.fixture_local_before_apply(Box::new(move || {
+        entered.send(()).unwrap();
+        pause.recv_timeout(WAIT).unwrap();
+    }))?;
+    let writer = local.clone();
+    let request = tokio::spawn(async move {
+        writer
+            .write(ApplicationProposal::generated(b"probe-overlap".to_vec()))
+            .await
+    });
+    tokio::time::timeout(WAIT, ready).await??;
+
+    // The installed readiness owner retains its original future after its
+    // observation is cancelled, then drains it only after group shutdown.
+    let mut probe = Box::pin(local.readiness_probe(1, role()));
+    let observation = std::future::poll_fn(|cx| Poll::Ready(probe.as_mut().poll(cx))).await;
+    release.send(())?;
+    tokio::time::timeout(WAIT, request).await???;
+    assert_eq!(backend.values(), [b"probe-overlap".to_vec()]);
+    let shutdown = tokio::time::timeout(WAIT, local.shutdown()).await;
+    // Never poll the retained probe again. Cleanup also makes a regression
+    // failure release the reserved mutex permit before the fixture is removed.
+    drop(probe);
+    if shutdown.is_err() {
+        tokio::time::timeout(WAIT, local.shutdown()).await??;
+    }
+    assert!(
+        shutdown.is_ok(),
+        "a retained readiness probe prevented shutdown after its writer finished"
+    );
+    shutdown.unwrap()?;
+    assert!(matches!(observation, Poll::Ready(Ok(false))));
+    assert!(!local.readiness_probe(1, role()).await?);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn local_snapshot_failure_is_fenced_retained_and_drained() -> FixtureResult<()> {
     let (_scratch_directory, disk) = scratch()?;
     let directory = kasumi_store::test_utils::private_tempdir()?;
