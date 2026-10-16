@@ -1,3 +1,6 @@
+// Production backup/restore futures exceed the default layout-query depth.
+#![recursion_limit = "256"]
+
 use kasumi_engine::test_utils::{SnapshotFixture, reserved_payload_bytes};
 mod common;
 use kasumi_engine::{Database, SecurityAudit};

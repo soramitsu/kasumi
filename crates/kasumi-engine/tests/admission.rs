@@ -4,7 +4,10 @@ use kasumi_engine::admission::AdmissionConfig;
 use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex},
+};
 
 #[tokio::test]
 async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work_still_applies() {
@@ -58,28 +61,36 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
     )
     .await
     .unwrap();
-    let database =
-        kasumi_engine::test_utils::open_fixture(stores, policy, Limits::default(), audit.clone())
-            .await
-            .unwrap();
-    // The canonical bootstrap already installs native maintenance before Raft
-    // replay; a second installation after the initial log entry is invalid.
+    let database = kasumi_engine::open_local(stores, policy, Limits::default(), audit.clone())
+        .await
+        .unwrap();
+    // Production installs the native escrow and ordinary-operation protection
+    // before replay. The saturation below depends on both being present.
+    assert!(database.audit_maintenance_status().is_some());
     let group = database.raft_group().clone();
     // Startup and audit use the same healthy facade. A real retained reservation
     // exhausts capacity after startup; no governor is replaced or reconfigured.
-    let occupied = kasumi_engine::test_utils::reserved_payload_bytes(&admission)
-        .checked_sub(physical.initial_disk_metadata_bytes)
-        .unwrap();
-    let held_capacity = admission
-        .reserve(
-            (MAX_BYTES + NATIVE_HEADROOM).checked_sub(occupied).unwrap(),
-            None,
-        )
-        .unwrap();
-    assert_eq!(
-        kasumi_engine::test_utils::reserved_payload_bytes(&admission),
-        MAX_BYTES + NATIVE_HEADROOM + physical.initial_disk_metadata_bytes
-    );
+    let hold_capacity = {
+        let admission = admission.clone();
+        let target = MAX_BYTES + NATIVE_HEADROOM + physical.initial_disk_metadata_bytes;
+        move || {
+            let occupied = kasumi_engine::test_utils::reserved_payload_bytes(&admission);
+            let held = admission
+                .reserve(
+                    target
+                        .checked_sub(occupied)
+                        .expect("fixture payload exceeds the ordinary saturation target"),
+                    None,
+                )
+                .unwrap();
+            assert_eq!(
+                kasumi_engine::test_utils::reserved_payload_bytes(&admission),
+                target
+            );
+            held
+        }
+    };
+    let held_capacity = hold_capacity();
     let operation = Operation::CreateCollection(CollectionDefinition {
         retention_class: kasumi_types::CollectionRetentionClass::Operational,
         write_mode: kasumi_types::CollectionWriteMode::Mutable,
@@ -101,24 +112,28 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
         database.engine().generation().unwrap().state.revision,
         before
     );
-    // Followers and already-proposed records enter through Raft, not the local
-    // client admission gate. The exact same operation must materialize normally.
-    let command = Command {
-        context: context.clone(),
-        timestamp_ms: 1_000,
-        operation,
-    };
-    let result = group
-        .write(kasumi_raft::ApplicationProposal::generated(
-            serde_json::to_vec(&command).unwrap(),
-        ))
+    drop(held_capacity);
+    // Admit the same operation through the real proposer, then consume all
+    // remaining ordinary capacity before the local writer appends and applies it.
+    // Direct group.write would bypass the publication grant it must have first.
+    let apply_capacity = Arc::new(Mutex::new(None));
+    let held = apply_capacity.clone();
+    let hold_during_apply = hold_capacity.clone();
+    group
+        .fixture_local_before_apply(Box::new(move || {
+            *held.lock().unwrap() = Some(hold_during_apply());
+        }))
+        .unwrap();
+    let receipt = database
+        .administer(context.clone(), operation)
         .await
         .unwrap();
     assert!(
-        serde_json::from_slice::<Result<WriteReceipt>>(&result)
-            .unwrap()
-            .is_ok()
+        apply_capacity.lock().unwrap().is_some(),
+        "the admitted operation did not reach the local apply hook"
     );
+    assert_eq!(receipt.revision, before + 1);
+    assert_eq!(database.serving_failure_class(), None);
     assert!(
         database
             .engine()
@@ -128,6 +143,10 @@ async fn reserved_capacity_rejects_proposals_and_queries_but_committed_raft_work
             .collections
             .contains_key("docs")
     );
+    // The completed proposal released its temporary charges. Saturate again
+    // against the new generation before checking read-side admission.
+    drop(apply_capacity.lock().unwrap().take());
+    let held_capacity = hold_capacity();
     let query: QueryRequest = serde_json::from_value(json!({"collection":"docs"})).unwrap();
     assert_eq!(
         database.query(&context, query).await.unwrap_err().code,
