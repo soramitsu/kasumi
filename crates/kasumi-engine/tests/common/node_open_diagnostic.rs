@@ -48,19 +48,21 @@ pub(super) fn fail(id: u64, create: bool, error: &kasumi_store::NodeStoreStartFa
                 Observation(report.failed_recovery()),
             );
             let native = report.engine();
-            eprintln!(
-                "native opening: phase={:?}, opening_phase={:?}, settlement={:?}, disposition={:?}, original={}, partial_close={}, failed_disposal={}",
-                native.phase(),
-                native.opening_phase(),
-                native.settlement(),
-                native.native_disposition(),
-                Observation(native.opening()),
-                Observation(native.partial_close()),
-                Observation(native.failed_disposal()),
-            );
-            if let Some(fence) = native.fence().observation() {
+            native.with_partial_close_observation(|partial_close| {
+                eprintln!(
+                    "native opening: phase={:?}, opening_phase={:?}, settlement={:?}, disposition={:?}, original={}, partial_close={}, failed_disposal={}",
+                    native.phase(),
+                    native.opening_phase(),
+                    native.settlement(),
+                    native.native_disposition(),
+                    Observation(native.opening()),
+                    Observation(partial_close),
+                    Observation(native.failed_disposal()),
+                );
+            });
+            native.fence().with_observation(|fence| {
                 eprintln!("native opening fence: {}", Observation(fence));
-            }
+            });
             if let Some(close) = native.database_close() {
                 eprintln!(
                     "native database close: settlement={:?}, disposition={:?}, shutdown={}, backend={}, failed_disposal={}",

@@ -1,5 +1,7 @@
 use kasumi_engine::test_utils::SnapshotFixture;
-use kasumi_engine::test_utils::open_fixture_replicated;
+use kasumi_engine::test_utils::{
+    open_fixture_replicated, open_fixture_replicated_with_epoch_clock,
+};
 #[path = "common/bootstrap_vote_probe.rs"]
 mod bootstrap_vote_probe;
 mod common;
@@ -9,7 +11,7 @@ use bootstrap_vote_probe::BootstrapVoteProbe;
 use kasumi_engine::{
     Database, LifecycleSigner, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated,
 };
-use kasumi_raft::{Config, InProcessRouter, StateMachineBackend};
+use kasumi_raft::{InProcessRouter, StateMachineBackend, server_config};
 use kasumi_serving::{ControlTrust, control_stop_for, digest};
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
@@ -33,6 +35,24 @@ struct Fixture {
     signer: LifecycleSigner,
     partition_keys: BTreeMap<String, kasumi_serving::GenerationSigner>,
     installation: LifecycleInstallation,
+    epoch: Option<Arc<kasumi_clock::EpochClock>>,
+}
+struct FixedWallClock(u64);
+impl kasumi_clock::WallClock for FixedWallClock {
+    fn now_ms(&self) -> anyhow::Result<u64> {
+        Ok(self.0)
+    }
+}
+fn manual_epoch() -> (
+    Arc<kasumi_store::test_utils::ManualClock>,
+    Arc<kasumi_clock::EpochClock>,
+) {
+    let elapsed = Arc::new(kasumi_store::test_utils::ManualClock::new());
+    let epoch = Arc::new(
+        kasumi_clock::EpochClock::new(elapsed.clone(), Arc::new(FixedWallClock(1_700_000_000_000)))
+            .unwrap(),
+    );
+    (elapsed, epoch)
 }
 fn key() -> Ed25519KeyPair {
     Ed25519KeyPair::from_pkcs8(
@@ -50,6 +70,13 @@ impl Fixture {
         Self::configured(limits, max_state_bytes).await
     }
     async fn configured(limits: Limits, max_state_bytes: usize) -> Self {
+        Self::configured_with_epoch_clock(limits, max_state_bytes, None).await
+    }
+    async fn configured_with_epoch_clock(
+        limits: Limits,
+        max_state_bytes: usize,
+        epoch: Option<Arc<kasumi_clock::EpochClock>>,
+    ) -> Self {
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let incarnation = Uuid::new_v4();
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
@@ -174,6 +201,7 @@ impl Fixture {
             signer,
             partition_keys,
             installation,
+            epoch,
         };
         result.open(true).await;
         kasumi_engine::control::ControlPlane::new(result.leader().await)
@@ -266,20 +294,28 @@ impl Fixture {
                 .await
             })
             .unwrap();
-            let db = open_fixture_replicated(
-                id,
-                stores,
-                &self.bootstrap,
-                self.vote_probe.clone(),
-                Config {
-                    election_timeout_min: 1000,
-                    election_timeout_max: 1600,
-                    heartbeat_interval: 150,
-                    ..Config::default()
-                },
-                audit.clone(),
-            )
-            .await
+            let db = if let Some(epoch) = &self.epoch {
+                open_fixture_replicated_with_epoch_clock(
+                    id,
+                    stores,
+                    &self.bootstrap,
+                    self.vote_probe.clone(),
+                    server_config(),
+                    audit.clone(),
+                    epoch.clone(),
+                )
+                .await
+            } else {
+                open_fixture_replicated(
+                    id,
+                    stores,
+                    &self.bootstrap,
+                    self.vote_probe.clone(),
+                    server_config(),
+                    audit.clone(),
+                )
+                .await
+            }
             .unwrap();
             self.router.register(
                 format!("__kasumi_control/{}", self.bootstrap.incarnation),
@@ -431,10 +467,11 @@ impl Fixture {
         self.context_for(principal, 60_000)
     }
     fn context_for(&self, principal: &str, duration: u64) -> RequestContext {
-        let observation = kasumi_clock::EpochClock::system()
-            .unwrap()
-            .observe()
-            .unwrap();
+        let clock = self
+            .epoch
+            .clone()
+            .unwrap_or_else(|| kasumi_clock::EpochClock::system().unwrap());
+        let observation = clock.observe().unwrap();
         RequestContext {
             tenant: "__kasumi_control".into(),
             principal: principal.into(),
@@ -678,11 +715,16 @@ async fn control_topology_read_and_release_require_current_native_quorum_and_ori
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum_and_permanent_after_reopen()
  {
-    let mut f = Fixture::new().await;
+    // Credential liveness and replicated command timestamps share one epoch.
+    // Durable I/O may take arbitrary wall time without consuming the 2s proof.
+    let (elapsed, epoch) = manual_epoch();
+    let mut f =
+        Fixture::configured_with_epoch_clock(Limits::default(), 8 << 20, Some(epoch.clone())).await;
     let db = f.leader().await;
-    let epoch = db.engine().generation().unwrap().state.policy_epoch;
-    let request = f.intent(epoch);
+    let policy_epoch = db.engine().generation().unwrap().state.policy_epoch;
+    let request = f.intent(policy_epoch);
     let original = f.context_for("owner", 2000);
+    let original_expiry = original.authorization.expires_at_ms().unwrap();
     let receipt = db
         .lifecycle_control(
             original.clone(),
@@ -691,12 +733,16 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
         .await
         .unwrap_or_else(|error| panic!("{error:?}\n{}", f.diagnostics()));
     let proof = db
-        .observe_lifecycle_intent(original, request.command_id)
+        .observe_lifecycle_intent(original.clone(), request.command_id)
         .await
         .unwrap_or_else(|error| panic!("{error:?}\n{}", f.diagnostics()));
     let signed = f.signer.sign_intent(&proof).await.unwrap();
     let trust = ControlTrust::install(f.installation.root.clone()).unwrap();
     trust.verify_intent(&signed).unwrap();
+    assert_eq!(
+        signed.observation.intent.original_credential_expires_at_ms,
+        original_expiry
+    );
     let mut changed = request.clone();
     changed.phase = LifecyclePhase::Activate;
     assert_eq!(
@@ -722,12 +768,27 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
         .revision,
         receipt.revision
     );
-    tokio::time::sleep(Duration::from_millis(2100)).await;
-    assert!(f.signer.sign_intent(&proof).await.is_err());
-    assert!(
+    elapsed.advance(Duration::from_millis(1999));
+    assert_eq!(epoch.now_ms().unwrap(), original_expiry - 1);
+    original.authorization.check_live().unwrap();
+    f.signer.sign_intent(&proof).await.unwrap();
+    elapsed.advance(Duration::from_millis(1));
+    assert_eq!(epoch.now_ms().unwrap(), original_expiry);
+    assert_eq!(
+        original.authorization.check_live().unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        f.signer.sign_intent(&proof).await.unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
         db.observe_lifecycle_intent(f.context("owner"), request.command_id)
             .await
-            .is_err()
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Unauthorized
     );
     let mut bytes = Vec::new();
     db.engine()
@@ -764,10 +825,13 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .intents[&request.command_id],
         signed.observation.intent
     );
-    assert!(
+    assert_eq!(
         db.observe_lifecycle_intent(f.context("owner"), request.command_id)
             .await
-            .is_err()
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Unauthorized
     );
     drop(db);
     f.close().await;
@@ -775,7 +839,9 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fresh_control_materialization_requires_exact_retained_original_after_expiry_and_reopen() {
-    let mut f = Fixture::new().await;
+    let (elapsed, epoch) = manual_epoch();
+    let mut f =
+        Fixture::configured_with_epoch_clock(Limits::default(), 8 << 20, Some(epoch.clone())).await;
     let db = f.leader().await;
     let mut request = f.intent(db.engine().generation().unwrap().state.policy_epoch);
     let input = TargetMaterializationInput {
@@ -797,8 +863,9 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
     };
     request.phase_input_sha256 = input.digest().unwrap();
     let original_context = f.context_for("owner", 2000);
+    let original_expiry = original_context.authorization.expires_at_ms().unwrap();
     db.lifecycle_control(
-        original_context,
+        original_context.clone(),
         LifecycleControlCommand::CommitIntent(Box::new(request.clone())),
     )
     .await
@@ -813,6 +880,10 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
         .unwrap()
         .intents[&request.command_id]
         .clone();
+    assert_eq!(
+        materialization.original_credential_expires_at_ms,
+        original_expiry
+    );
     let origin = TargetOrigin {
         authority_manifest_sha256: f.installation.partitions[&request.authority_partition]
             .manifest_sha256
@@ -863,13 +934,38 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
     let mut wrong_source = resume.clone();
     wrong_source.source_incarnation = Uuid::new_v4();
     assert!(wrong_source.validate().is_err());
-    tokio::time::sleep(Duration::from_millis(2100)).await;
+    elapsed.advance(Duration::from_millis(1999));
+    assert_eq!(epoch.now_ms().unwrap(), original_expiry - 1);
+    original_context.authorization.check_live().unwrap();
+    let before_expiry = db
+        .observe_lifecycle_intent(original_context.clone(), request.command_id)
+        .await
+        .unwrap();
+    f.signer.sign_intent(&before_expiry).await.unwrap();
+    elapsed.advance(Duration::from_millis(1));
+    assert_eq!(epoch.now_ms().unwrap(), original_expiry);
+    assert_eq!(
+        original_context
+            .authorization
+            .check_live()
+            .unwrap_err()
+            .code,
+        ErrorCode::Unauthorized
+    );
+    assert_eq!(
+        f.signer.sign_intent(&before_expiry).await.unwrap_err().code,
+        ErrorCode::Unauthorized
+    );
+    drop(before_expiry);
     drop(db);
     let db = f.leader().await;
-    assert!(
+    assert_eq!(
         db.observe_lifecycle_intent(f.context("owner"), request.command_id)
             .await
-            .is_err()
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Unauthorized
     );
     let receipt = db
         .lifecycle_control(
@@ -937,10 +1033,13 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
             .intents[&resume.command_id],
         signed.observation.intent
     );
-    assert!(
+    assert_eq!(
         db.observe_lifecycle_intent(f.context("owner"), request.command_id)
             .await
-            .is_err()
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::Unauthorized
     );
     drop(db);
     f.close().await;

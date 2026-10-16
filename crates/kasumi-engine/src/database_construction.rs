@@ -51,6 +51,31 @@ impl DatabaseConstruction {
         Ok(construction)
     }
 
+    /// Only the explicit replicated control fixture may pair command time with
+    /// its finite credential observations. Production constructors never call it.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn with_fixture_control_clock(
+        stores: Arc<TenantStorageSet>,
+        audit: Arc<SecurityAudit>,
+        clock: Arc<kasumi_clock::EpochClock>,
+    ) -> anyhow::Result<Self> {
+        let mut construction = Self::new(stores, audit)?;
+        anyhow::ensure!(
+            construction.stores.application().tenant() == "__kasumi_control"
+                && matches!(
+                    construction.stores.application().storage_access().purpose(),
+                    kasumi_store::StoragePurpose::NodeControl
+                ),
+            "fixture control clock requires the exact node control store"
+        );
+        clock.now_ms()?;
+        construction.clocks = DatabaseClocks {
+            elapsed: clock.elapsed_clock(),
+            command: Arc::new(super::FixtureCommandClock(clock)),
+        };
+        Ok(construction)
+    }
+
     pub(crate) fn stores(&self) -> &Arc<TenantStorageSet> {
         &self.stores
     }

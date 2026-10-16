@@ -296,6 +296,24 @@ pub async fn open_fixture_replicated(
     .await
 }
 
+/// Deterministic clock injection for explicit NodeControl replicated fixtures.
+/// This helper is absent from production builds and rejects application stores.
+pub async fn open_fixture_replicated_with_epoch_clock(
+    node_id: u64,
+    stores: Arc<TenantStorageSet>,
+    bootstrap: &ReplicatedBootstrap,
+    transport: Arc<dyn kasumi_raft::RaftTransport>,
+    config: kasumi_raft::Config,
+    audit: Arc<SecurityAudit>,
+    clock: Arc<kasumi_clock::EpochClock>,
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    install_fixture_audit_placement(stores.application())?;
+    crate::bootstrap::fixtures::open_fixture_replicated_with_epoch_clock(
+        node_id, stores, bootstrap, transport, config, audit, clock,
+    )
+    .await
+}
+
 /// Deliberate Raft fixture for consensus-specific tests, never a standalone
 /// application opener. This helper is absent from production builds.
 pub async fn open_fixture_single_voter_raft(

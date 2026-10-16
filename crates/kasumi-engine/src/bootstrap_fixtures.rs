@@ -73,6 +73,30 @@ pub async fn open_fixture_replicated(
     Ok(database)
 }
 
+/// Replicated control fixture with one epoch for command timestamps and the
+/// caller's original finite credentials, retained unchanged across reopens.
+pub async fn open_fixture_replicated_with_epoch_clock(
+    node_id: u64,
+    stores: Arc<TenantStorageSet>,
+    bootstrap: &ReplicatedBootstrap,
+    transport: Arc<dyn RaftTransport>,
+    config: Config,
+    audit: Arc<SecurityAudit>,
+    clock: Arc<kasumi_clock::EpochClock>,
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    check(&stores)?;
+    let (database, _, _) = open_replicated_inner(
+        node_id,
+        stores,
+        transport,
+        config,
+        audit,
+        ReplicaRuntime::FixtureEpochEnrollment(bootstrap, &clock),
+    )
+    .await?;
+    Ok(database)
+}
+
 /// Explicit one-voter Raft runtime for tests of consensus transport and snapshot
 /// formats. Ordinary fixtures and every standalone deployment use local storage.
 pub async fn open_fixture_single_voter_raft(

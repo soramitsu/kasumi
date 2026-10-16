@@ -409,13 +409,15 @@ enum ReplicaRuntime<'a> {
     Existing(uuid::Uuid),
     #[cfg(any(test, feature = "test-utils"))]
     FixtureEnrollment(&'a ReplicatedBootstrap),
+    #[cfg(any(test, feature = "test-utils"))]
+    FixtureEpochEnrollment(&'a ReplicatedBootstrap, &'a Arc<kasumi_clock::EpochClock>),
 }
 impl ReplicaRuntime<'_> {
     fn maintenance(self) -> bool {
         match self {
             Self::FirstEnrollment(_) | Self::Existing(_) => true,
             #[cfg(any(test, feature = "test-utils"))]
-            Self::FixtureEnrollment(_) => false,
+            Self::FixtureEnrollment(_) | Self::FixtureEpochEnrollment(_, _) => false,
         }
     }
 }
@@ -480,7 +482,17 @@ async fn open_replicated_inner<'a>(
     ),
     crate::SnapshotFailure,
 > {
-    let construction = DatabaseConstruction::new(stores.clone(), security_audit.clone())?;
+    let construction = match runtime {
+        #[cfg(any(test, feature = "test-utils"))]
+        ReplicaRuntime::FixtureEpochEnrollment(_, clock) => {
+            DatabaseConstruction::with_fixture_control_clock(
+                stores.clone(),
+                security_audit.clone(),
+                clock.clone(),
+            )
+        }
+        _ => DatabaseConstruction::new(stores.clone(), security_audit.clone()),
+    }?;
     let store = stores.application().clone();
     crate::SnapshotFailure::ordinary(|| {
         anyhow::ensure!(
@@ -508,7 +520,8 @@ async fn open_replicated_inner<'a>(
         }
         ReplicaRuntime::FirstEnrollment(bootstrap) => (Cow::Borrowed(bootstrap), None),
         #[cfg(any(test, feature = "test-utils"))]
-        ReplicaRuntime::FixtureEnrollment(bootstrap) => (Cow::Borrowed(bootstrap), None),
+        ReplicaRuntime::FixtureEnrollment(bootstrap)
+        | ReplicaRuntime::FixtureEpochEnrollment(bootstrap, _) => (Cow::Borrowed(bootstrap), None),
     };
     // Existing mode validates its descriptor during the single authenticated
     // decode; enrollment validates the independently supplied initial inputs.
