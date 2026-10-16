@@ -2899,7 +2899,9 @@ fn file_verification_walk_close_failure_keeps_registered_custody_after_owner_dro
     let file = disk.open_file("data", Path::new("child/file")).unwrap();
     let before = disk.snapshot();
     native_file::fail_next_close(libc::EIO);
-    let (result, allocations) = crate::allocation_tests::measure(|| file.check_owner());
+    // Reads verify the retained descriptor; identity observation (like every
+    // mutation and sync) still walks the ancestry with a temporary descriptor.
+    let (result, allocations) = crate::allocation_tests::measure(|| file.identity());
     assert_eq!(result.unwrap_err().raw_os_error(), Some(libc::EIO));
     assert_eq!(allocations, 0);
     let ((), allocations) = crate::allocation_tests::measure(|| drop(file));

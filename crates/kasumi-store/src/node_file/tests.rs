@@ -792,21 +792,23 @@ fn resize_drains_a_write_after_its_extent_check_before_truncating() {
     backend.close().into_result().unwrap();
 }
 
-// Unlike the former root-level single file, root.kvroot has one enrolled
-// group-directory ancestor. Owner validation closes its temporary walk FD;
-// that close is independent of the retained payload/parent descriptors.
-fn checked_group_shutdown_walk(owner: &crate::node_file::segment_group::NodeSegmentGroup) -> u64 {
+// Owner validation verifies the retained payload descriptor and its name in
+// the retained parent, so it opens and closes no temporary walk descriptor;
+// the complete ancestor walk belongs to mutation, sync and identity.
+fn checked_group_shutdown_validation_closes(
+    owner: &crate::node_file::segment_group::NodeSegmentGroup,
+) -> u64 {
     let before = owner.disk().snapshot();
     let attempts = NodeFile::native_close_attempts();
     kasumi_kv::StorageAdmission::check_owner(owner).unwrap();
-    assert_eq!(NodeFile::native_close_attempts(), attempts + 1);
+    assert_eq!(NodeFile::native_close_attempts(), attempts);
     let after = owner.disk().snapshot();
     assert_eq!(after.open_files, before.open_files);
     assert_eq!(after.open_directories, before.open_directories);
     assert_eq!(after.charged_bytes, before.charged_bytes);
     assert_eq!(after.pending_bytes, before.pending_bytes);
     assert_eq!(after.retained_file_attempts, before.retained_file_attempts);
-    1
+    0
 }
 
 #[test]
@@ -826,7 +828,7 @@ fn retained_database_retries_node_close_only_after_proved_pre_entry_contention()
         kasumi_kv::DatabaseOpenSettlement::Ready
     );
     owner.publish_ready().unwrap();
-    let shutdown_walk = checked_group_shutdown_walk(&owner);
+    let shutdown_closes = checked_group_shutdown_validation_closes(&owner);
     let attempts = NodeFile::native_close_attempts();
     let before = owner.disk().snapshot();
     let files = before.open_files;
@@ -845,7 +847,7 @@ fn retained_database_retries_node_close_only_after_proved_pre_entry_contention()
         close.native_disposition(),
         kasumi_kv::BackendNativeDisposition::Retained
     );
-    assert_eq!(NodeFile::native_close_attempts(), attempts + shutdown_walk);
+    assert_eq!(NodeFile::native_close_attempts(), attempts + shutdown_closes);
     let busy = owner.disk().snapshot();
     assert_eq!(busy.open_files, files);
     assert_eq!(busy.open_directories, before.open_directories);
@@ -859,7 +861,7 @@ fn retained_database_retries_node_close_only_after_proved_pre_entry_contention()
     // A clean NodeDiskFile closes its data descriptor and retained parent.
     assert_eq!(
         NodeFile::native_close_attempts(),
-        attempts + shutdown_walk + 2 * u64::from(files)
+        attempts + shutdown_closes + 2 * u64::from(files)
     );
     let after = owner.disk().snapshot();
     assert_eq!(after.open_files, 0);
@@ -873,7 +875,7 @@ fn retained_database_retries_node_close_only_after_proved_pre_entry_contention()
     );
     assert_eq!(
         NodeFile::native_close_attempts(),
-        attempts + shutdown_walk + 2 * u64::from(files)
+        attempts + shutdown_closes + 2 * u64::from(files)
     );
     assert_eq!(
         opening.dispose().settlement(),
@@ -973,7 +975,7 @@ fn retained_database_retries_node_close_after_lower_arc_pre_entry_contention() {
         kasumi_kv::DatabaseOpenSettlement::Ready
     );
     owner.publish_ready().unwrap();
-    let shutdown_walk = checked_group_shutdown_walk(&owner);
+    let shutdown_closes = checked_group_shutdown_validation_closes(&owner);
     let attempts = NodeFile::native_close_attempts();
     let before = owner.disk().snapshot();
     let files = before.open_files;
@@ -989,7 +991,7 @@ fn retained_database_retries_node_close_after_lower_arc_pre_entry_contention() {
     ));
     assert_eq!(
         NodeFile::native_close_attempts(),
-        attempts + shutdown_walk + 2 * u64::from(files - 1)
+        attempts + shutdown_closes + 2 * u64::from(files - 1)
     );
     assert_eq!(held.close_owner_address(), address);
     let busy = owner.disk().snapshot();
@@ -1005,7 +1007,7 @@ fn retained_database_retries_node_close_after_lower_arc_pre_entry_contention() {
     );
     assert_eq!(
         NodeFile::native_close_attempts(),
-        attempts + shutdown_walk + 2 * u64::from(files)
+        attempts + shutdown_closes + 2 * u64::from(files)
     );
     let after = owner.disk().snapshot();
     assert_eq!(after.open_files, 0);
