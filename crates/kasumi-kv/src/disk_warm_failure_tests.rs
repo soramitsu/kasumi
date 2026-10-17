@@ -486,7 +486,7 @@ fn cached_identity_proof_one_grant_covers_complete_owner_before_allocation() {
     use super::super::warming::CachedIdentityProofWorkspace;
     use crate::directory::DirectoryReadWorkspace;
 
-    let bytes = DirectoryReadWorkspace::request_bytes()
+    let bytes = DirectoryReadWorkspace::warming_request_bytes()
         + (std::mem::size_of::<CachedIdentityProofWorkspace>()
             - std::mem::size_of::<DirectoryReadWorkspace>()) as u64;
     let admission = Admission::new(bytes - 1);

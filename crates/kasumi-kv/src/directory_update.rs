@@ -94,7 +94,7 @@ impl Output<'_, '_> {
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        let reference = self.backend.append_page(bytes)?;
+        let reference = self.backend.append_digested_page(bytes, sha256)?;
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;

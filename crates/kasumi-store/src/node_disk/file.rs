@@ -2080,20 +2080,21 @@ impl FileOwner {
     /// name in the retained parent. A read through this descriptor cannot
     /// observe a substituted file, so the complete ancestor walk of `verify` is
     /// kept for physical mutation, synchronization and identity observation.
-    fn verify_retained(&self, file: &File) -> io::Result<()> {
+    /// Returns the verified descriptor's metadata, so a caller compares its
+    /// length against the budget without a second fstat of the same descriptor.
+    fn verify_retained(&self, file: &File) -> io::Result<std::fs::Metadata> {
         let result = (|| {
             let metadata = stat_leaf(self.parent(), self.name(), self.identity.0)?;
-            if metadata.st_ino != self.identity.1
-                || Identity::of(&file.metadata()?) != self.identity
-            {
+            let descriptor = file.metadata()?;
+            if metadata.st_ino != self.identity.1 || Identity::of(&descriptor) != self.identity {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            Ok(())
+            Ok(descriptor)
         })();
         result.map_err(|error| self.record_error(error))
     }
 
-    fn check_retained(&self, file: &File) -> io::Result<()> {
+    fn check_retained(&self, file: &File) -> io::Result<std::fs::Metadata> {
         let mut state = self.disk.lock_state();
         if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
@@ -2414,20 +2415,13 @@ impl NodeDiskFile {
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
         // Verification failures latch inside check. A failed or uncertain
         // shared admission returns before verification and latches here.
-        self.0
+        let metadata = self
+            .0
             .check_retained(file)
             .inspect_err(|_| self.0.disk.fail())?;
         let mut state = self.0.disk.lock_state();
         self.0.check_enrollment(&mut state, &budget)?;
-        if file
-            .metadata()
-            .map_err(|error| {
-                self.0.disk.fail_locked(&mut state);
-                self.0.record_error(error)
-            })?
-            .len()
-            != budget.actual_len
-        {
+        if metadata.len() != budget.actual_len {
             self.0.disk.fail_locked(&mut state);
             return Err(io::ErrorKind::InvalidData.into());
         }
@@ -2729,14 +2723,7 @@ impl NodeDiskFile {
         self.ensure_open()?;
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        self.0.check_retained(file)?;
-        Ok(file
-            .metadata()
-            .map_err(|error| {
-                self.0.disk.fail();
-                self.0.record_error(error)
-            })?
-            .len())
+        Ok(self.0.check_retained(file)?.len())
     }
 
     /// Substitute only allocator-reported physical bytes at the real verified
@@ -2980,8 +2967,7 @@ impl NodeDiskFile {
         // The read goes through the retained descriptor, so it can only observe
         // the enrolled inode; the ancestry is re-walked before mutations.
         let outcome = (|| -> io::Result<()> {
-            self.0.verify_retained(file)?;
-            if file.metadata()?.len() != budget.actual_len {
+            if self.0.verify_retained(file)?.len() != budget.actual_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             file.read_exact_at(out, offset)

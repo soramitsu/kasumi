@@ -29,6 +29,7 @@ use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
 use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{
     DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
+    read_checks_owner,
 };
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
@@ -125,6 +126,31 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
+    }
+
+    fn append_checked(
+        &self,
+        bytes: &[u8],
+        sha256: Option<[u8; 32]>,
+    ) -> Result<DirectoryPageRef, CoreError> {
+        self.check_owner()?;
+        if bytes.len() != DIRECTORY_PAGE_BYTES {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory page input length differs",
+            )));
+        }
+        let reference = match sha256 {
+            Some(sha256) => self.backend.append_digested_page(bytes, sha256)?,
+            None => self.backend.append_page(bytes)?,
+        };
+        self.check_owner()?;
+        self.identity(reference)?;
+        if reference.sha256 != sha256.unwrap_or_else(|| page_digest(bytes)) {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "appended directory page digest differs",
+            )));
+        }
+        Ok(reference)
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, NativeCache<NativeIdentity>>, CoreError> {
@@ -235,11 +261,18 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
     /// Every page this adapter returns or retains passes here first, so each
     /// view reports `PageCheck::Digest` and readers never re-hash a hit.
     fn read_verified(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
-        self.check_owner()?;
+        // An arena checking this same owner around its own read leaves these
+        // two checks adjacent repeats; any other backend gets them here.
+        let checked = read_checks_owner(&self.backend, &self.admission);
+        if !checked {
+            self.check_owner()?;
+        }
         self.backend.read_page(reference, out)?;
         // A backend may fail/expire its retained owner while fulfilling I/O.
         // Never install or return those bytes under the earlier owner check.
-        self.check_owner()?;
+        if !checked {
+            self.check_owner()?;
+        }
         if self.backend.page_check() == PageCheck::Unchecked
             && page_digest(out) != reference.sha256
         {
@@ -271,7 +304,6 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
             cache.peek(identity)
         };
         if let Some(page) = page {
-            self.check_owner()?;
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "cached directory page identity differs",
@@ -280,8 +312,8 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
             out.copy_from_slice(page.as_bytes());
             self.check_owner()
         } else {
-            self.read_verified(reference, out)?;
-            self.check_owner()
+            // Ends with the owner check after its physical read.
+            self.read_verified(reference, out)
         }
     }
 
@@ -323,12 +355,24 @@ impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
         self.cached.append_page(bytes)
     }
 
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        self.cached.append_digested_page(bytes, sha256)
+    }
+
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.cached.sync_pages()
     }
 
     fn page_check(&self) -> PageCheck {
         PageCheck::Digest
+    }
+
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        Some(&self.cached.admission)
     }
 }
 
@@ -345,12 +389,24 @@ impl<B: DirectoryBackend> DirectoryBackend for PublicationDirectoryBackend<'_, B
         self.cached.append_page(bytes)
     }
 
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        self.cached.append_digested_page(bytes, sha256)
+    }
+
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.cached.sync_pages()
     }
 
     fn page_check(&self) -> PageCheck {
         PageCheck::Digest
+    }
+
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        Some(&self.cached.admission)
     }
 }
 
@@ -389,7 +445,8 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
         } else {
             self.cached.lock()?.peek(identity)
         };
-        self.cached.check_owner()?;
+        // A hit did no I/O since the entry check, and a load ended with the
+        // owner check after its read; the copy below is checked once more.
         if let Some(page) = page {
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
@@ -405,13 +462,21 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
             if self.stop_on_denial {
                 return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
             }
-            self.cached.read_verified(reference, out)?;
-            self.cached.check_owner()
+            // Ends with the owner check after its physical read.
+            self.cached.read_verified(reference, out)
         }
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         self.cached.append_page(bytes)
+    }
+
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        self.cached.append_digested_page(bytes, sha256)
     }
 
     fn sync_pages(&self) -> Result<(), CoreError> {
@@ -420,6 +485,10 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
 
     fn page_check(&self) -> PageCheck {
         PageCheck::Digest
+    }
+
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        Some(&self.cached.admission)
     }
 }
 
@@ -442,7 +511,8 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
                 CacheLoadError::Admission(error) => CoreError::from(error),
                 CacheLoadError::Load(error) => error,
             })?;
-        self.check_owner()?;
+        // A hit did no I/O since the entry check, and a fallback read ended
+        // with the owner check after its read; one final check follows.
         if let Some(page) = page {
             // Only digest-verified bytes enter the cache under a key carrying
             // that digest, so readers validate a hit without hashing it again.
@@ -457,21 +527,17 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
-        self.check_owner()?;
-        if bytes.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "directory page input length differs",
-            )));
-        }
-        let reference = self.backend.append_page(bytes)?;
-        self.check_owner()?;
-        self.identity(reference)?;
-        if page_digest(bytes) != reference.sha256 {
-            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                "appended directory page digest differs",
-            )));
-        }
-        Ok(reference)
+        self.append_checked(bytes, None)
+    }
+
+    /// The caller hashed exactly these bytes, so the returned reference must
+    /// name that digest; the identical bytes are not hashed a second time.
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        self.append_checked(bytes, Some(sha256))
     }
 
     fn sync_pages(&self) -> Result<(), CoreError> {
@@ -482,6 +548,10 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
 
     fn page_check(&self) -> PageCheck {
         PageCheck::Digest
+    }
+
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        Some(&self.admission)
     }
 }
 

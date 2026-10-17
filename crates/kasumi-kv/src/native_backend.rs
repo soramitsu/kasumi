@@ -9,6 +9,7 @@ use std::ffi::OsStr;
 use std::io;
 use std::mem::MaybeUninit;
 use std::panic::{AssertUnwindSafe, catch_unwind};
+use std::sync::Arc;
 
 /// The constructor's original sized body stays in this closed slot until both
 /// admitted control and body placement exist. Its flag permits one in-place move;
@@ -194,6 +195,14 @@ impl BackendRef {
         match self {
             Self::Original(original) => original.as_ref(),
             Self::Checked(checked) => checked.as_ref(),
+        }
+    }
+    /// True when each operation through this reference already checks
+    /// exactly `admission` before and after its physical effect.
+    pub(crate) fn checks_owner(&self, admission: &Arc<dyn crate::core::StorageAdmission>) -> bool {
+        match self {
+            Self::Original(_) => false,
+            Self::Checked(checked) => checked.checks(admission),
         }
     }
 }

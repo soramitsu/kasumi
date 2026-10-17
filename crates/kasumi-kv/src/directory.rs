@@ -144,12 +144,46 @@ pub(crate) enum PageCheck {
 pub(crate) trait DirectoryBackend: Send + Sync {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError>;
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError>;
+    /// Append `bytes` whose SHA-256 the caller computed from this same,
+    /// unmodified buffer. A backend that records page references may adopt
+    /// that digest rather than hash identical bytes again; any other backend
+    /// appends normally and must return a reference naming that digest.
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        let reference = self.append_page(bytes)?;
+        if reference.sha256 != sha256 {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "appended directory page digest differs",
+            )));
+        }
+        Ok(reference)
+    }
     fn sync_pages(&self) -> Result<(), CoreError>;
     /// A backend that verifies digests itself must do so for every page it
     /// returns, including cache hits and fallback reads.
     fn page_check(&self) -> PageCheck {
         PageCheck::Unchecked
     }
+    /// The owner whose physical check `read_page` performs on entry and, before
+    /// returning success, again after producing the returned bytes. A reader
+    /// holding this same owner need not repeat those two adjacent checks.
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        None
+    }
+}
+
+/// Whether `backend.read_page` already checks exactly `admission` around the
+/// read, so a caller's own checks immediately before and after are repeats.
+pub(crate) fn read_checks_owner<B: DirectoryBackend + ?Sized>(
+    backend: &B,
+    admission: &Arc<dyn StorageAdmission>,
+) -> bool {
+    backend
+        .read_owner()
+        .is_some_and(|owner| Arc::ptr_eq(owner, admission))
 }
 
 impl<T: DirectoryBackend + ?Sized> DirectoryBackend for &T {
@@ -159,11 +193,21 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for &T {
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
     }
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        (**self).append_digested_page(bytes, sha256)
+    }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
     }
     fn page_check(&self) -> PageCheck {
         (**self).page_check()
+    }
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        (**self).read_owner()
     }
 }
 
@@ -174,11 +218,21 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for Arc<T> {
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
     }
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        (**self).append_digested_page(bytes, sha256)
+    }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
     }
     fn page_check(&self) -> PageCheck {
         (**self).page_check()
+    }
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        (**self).read_owner()
     }
 }
 
@@ -189,8 +243,18 @@ impl<T: DirectoryBackend> DirectoryBackend for crate::native_owned_arc::NativeOw
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
     }
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        (**self).append_digested_page(bytes, sha256)
+    }
     fn page_check(&self) -> PageCheck {
         (**self).page_check()
+    }
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        (**self).read_owner()
     }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
@@ -1062,14 +1126,21 @@ struct ReadFrame {
 /// the caller's choice. The exact admission owner cannot be substituted.
 pub(crate) struct DirectoryReadWorkspace {
     // Page bytes and traversal shell share one actual constructor admission.
-    // Field order retires the allocation before its exact lease.
+    // Field order retires the allocations before their exact lease.
     buffer: Vec<u8>,
+    // Commit warming's copies of its shallowest expanded ancestors, one page
+    // each; empty for point and proof-only workspaces.
+    ancestors: Vec<u8>,
     admission: Arc<dyn StorageAdmission>,
     _lease: NativeResidentLease,
 }
 
+/// Expanded ancestors a warming workspace keeps; deeper ancestors reload.
+/// Two pages keep a whole three-level tree's walk free of ancestor reloads.
+pub(crate) const WARM_ANCESTORS: usize = 2;
+
 impl DirectoryReadWorkspace {
-    const fn payload_request_bytes() -> usize {
+    const fn payload_request_bytes(ancestors: usize) -> usize {
         std::mem::size_of::<Self>()
             + std::mem::size_of::<Bounds>()
             + std::mem::size_of::<[Option<ReadFrame>; MAX_HEIGHT]>()
@@ -1077,9 +1148,18 @@ impl DirectoryReadWorkspace {
             + 2 * std::mem::size_of::<Entry<'_>>()
             + DIRECTORY_PAGE_BYTES
             + ALLOCATION_ALLOWANCE
+            + if ancestors == 0 {
+                0
+            } else {
+                ancestors * DIRECTORY_PAGE_BYTES + ALLOCATION_ALLOWANCE
+            }
     }
     pub(crate) const fn request_bytes() -> u64 {
-        (Self::payload_request_bytes() + LEASE_ALLOWANCE) as u64
+        (Self::payload_request_bytes(0) + LEASE_ALLOWANCE) as u64
+    }
+    /// The grant of a workspace that also keeps warming's ancestor pages.
+    pub(crate) const fn warming_request_bytes() -> u64 {
+        (Self::payload_request_bytes(WARM_ANCESTORS) + LEASE_ALLOWANCE) as u64
     }
     pub(crate) fn new(admission: &Arc<dyn StorageAdmission>) -> Result<Self, CoreError> {
         Self::for_enclosing_owner::<Self>(admission)
@@ -1092,28 +1172,52 @@ impl DirectoryReadWorkspace {
     pub(crate) fn for_enclosing_owner<T>(
         admission: &Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
+        Self::admit::<T>(admission, 0)
+    }
+
+    /// As `for_enclosing_owner`, also admitting `WARM_ANCESTORS` pages in the
+    /// same grant so committed-generation warming never reloads those depths.
+    pub(crate) fn for_enclosing_warming_owner<T>(
+        admission: &Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        Self::admit::<T>(admission, WARM_ANCESTORS)
+    }
+
+    fn admit<T>(
+        admission: &Arc<dyn StorageAdmission>,
+        ancestors: usize,
+    ) -> Result<Self, CoreError> {
         let extra_shell = std::mem::size_of::<T>()
             .checked_sub(std::mem::size_of::<Self>())
             .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "enclosing directory owner is smaller than workspace",
             )))?;
-        let bytes = Self::payload_request_bytes()
+        let bytes = Self::payload_request_bytes(ancestors)
             .checked_add(extra_shell)
             .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
         let lease = reserve(admission, bytes)?;
-        let mut buffer = Vec::new();
-        buffer
-            .try_reserve_exact(DIRECTORY_PAGE_BYTES)
-            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
-        if buffer.capacity() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
-        }
-        buffer.resize(DIRECTORY_PAGE_BYTES, 0);
+        let page = |len: usize| -> Result<Vec<u8>, CoreError> {
+            let mut bytes = Vec::new();
+            if len == 0 {
+                return Ok(bytes);
+            }
+            bytes
+                .try_reserve_exact(len)
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+            if bytes.capacity() != len {
+                return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+            }
+            bytes.resize(len, 0);
+            Ok(bytes)
+        };
+        let buffer = page(DIRECTORY_PAGE_BYTES)?;
+        let ancestors = page(ancestors * DIRECTORY_PAGE_BYTES)?;
         admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             buffer,
+            ancestors,
             admission: admission.clone(),
             _lease: lease,
         })
@@ -1151,13 +1255,18 @@ impl<'a> DirectoryReader<'a> {
         reference: DirectoryPageRef,
         bounds: &Bounds,
     ) -> Result<PageInfo, CoreError> {
-        self.admission
-            .check_owner()
-            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        let checked = read_checks_owner(&self.backend, &self.admission);
+        if !checked {
+            self.admission
+                .check_owner()
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        }
         self.backend.read_page(reference, buffer)?;
-        self.admission
-            .check_owner()
-            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        if !checked {
+            self.admission
+                .check_owner()
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        }
         let info = validate_checked_page(buffer, root, reference, self.backend.page_check())?;
         bounds.check(buffer, info)?;
         Ok(info)
@@ -1199,7 +1308,7 @@ impl<'a> DirectoryReader<'a> {
                 + std::mem::size_of::<PageInfo>(),
         )?;
         let mut buffer = PageBuffer::new(&self.admission)?;
-        self.warm_generation_in(root, generation, reference, &mut buffer)
+        self.warm_generation_in(root, generation, reference, &mut buffer, &mut [])
     }
 
     /// As `warm_generation`, using previously admitted fixed scratch. This
@@ -1220,7 +1329,13 @@ impl<'a> DirectoryReader<'a> {
         let Some(reference) = root.page else {
             return Ok(());
         };
-        self.warm_generation_in(root, generation, reference, &mut workspace.buffer)
+        self.warm_generation_in(
+            root,
+            generation,
+            reference,
+            &mut workspace.buffer,
+            &mut workspace.ancestors,
+        )
     }
 
     fn warm_generation_in(
@@ -1229,8 +1344,16 @@ impl<'a> DirectoryReader<'a> {
         generation: u64,
         mut reference: DirectoryPageRef,
         buffer: &mut [u8],
+        ancestors: &mut [u8],
     ) -> Result<(), CoreError> {
         let mut frames = [None; MAX_HEIGHT];
+        // The shallowest expanded depths keep a copy of the immutable page they
+        // already loaded and validated, in pages admitted with the workspace.
+        // Their siblings' bounds then come from those bytes instead of
+        // reloading the ancestor; deeper ancestors still reload from the root.
+        let mut kept = [None::<PageInfo>; WARM_ANCESTORS];
+        let slot = |depth: usize| depth * DIRECTORY_PAGE_BYTES..(depth + 1) * DIRECTORY_PAGE_BYTES;
+        let copies = (ancestors.len() / DIRECTORY_PAGE_BYTES).min(WARM_ANCESTORS);
         let mut depth = 0;
         let mut bounds = Bounds::root(root);
         loop {
@@ -1241,6 +1364,10 @@ impl<'a> DirectoryReader<'a> {
                     count: info.count,
                     next_child: 1,
                 });
+                if depth < copies {
+                    ancestors[slot(depth)].copy_from_slice(buffer);
+                    kept[depth] = Some(info);
+                }
                 depth += 1;
                 reference = bounds.child(buffer, info, 0)?;
                 continue;
@@ -1256,14 +1383,22 @@ impl<'a> DirectoryReader<'a> {
                 }
                 frame.next_child += 1;
                 bounds = Bounds::root(root);
-                for frame in frames[..depth].iter().flatten() {
-                    let info = self.load(buffer, root, frame.reference, &bounds)?;
-                    if info.count != frame.count {
-                        return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                            "directory changed during cache warming",
-                        )));
-                    }
-                    reference = bounds.child(buffer, info, frame.next_child - 1)?;
+                for level in 0..depth {
+                    let frame = frames[level].expect("expanded ancestor");
+                    reference = match kept.get(level).copied().flatten() {
+                        Some(info) if level < copies => {
+                            bounds.child(&ancestors[slot(level)], info, frame.next_child - 1)?
+                        }
+                        _ => {
+                            let info = self.load(buffer, root, frame.reference, &bounds)?;
+                            if info.count != frame.count {
+                                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                                    "directory changed during cache warming",
+                                )));
+                            }
+                            bounds.child(buffer, info, frame.next_child - 1)?
+                        }
+                    };
                 }
                 break;
             }
@@ -1538,6 +1673,7 @@ mod tests {
         used: AtomicU64,
         peak: AtomicU64,
         failed: AtomicBool,
+        checks: AtomicUsize,
     }
 
     #[derive(Clone)]
@@ -1558,12 +1694,14 @@ mod tests {
                 used: AtomicU64::new(0),
                 peak: AtomicU64::new(0),
                 failed: AtomicBool::new(false),
+                checks: AtomicUsize::new(0),
             })))
         }
     }
 
     impl StorageAdmission for Admission {
         fn check_owner(&self) -> Result<(), OwnerFailed> {
+            self.0.checks.fetch_add(1, AtomicOrdering::Relaxed);
             if self.0.failed.load(AtomicOrdering::Relaxed) {
                 Err(OwnerFailed)
             } else {
@@ -1769,6 +1907,132 @@ mod tests {
     }
 
     #[test]
+    fn cached_page_loads_check_a_shared_owner_once_on_each_side() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        let backend = MemoryPages::default();
+        let admission = Admission::new(8 << 20);
+        let cached = CachedDirectoryBackend::new(
+            &backend,
+            admission.clone(),
+            GROUP,
+            CacheConfig {
+                byte_limit: 4 << 20,
+            },
+        );
+        let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 2).unwrap();
+        for id in 0..90 {
+            builder
+                .push(DirectoryKey::row("t", &long_key(id)), value(2, id as u64))
+                .unwrap();
+        }
+        let root = builder.finish().unwrap();
+        assert!(root.height >= 2);
+        let key = long_key(45);
+        let checks = || admission.0.checks.load(AtomicOrdering::Relaxed);
+        let shared = DirectoryReader::new(&cached, admission.clone());
+        assert_eq!(
+            shared.get(root, DirectoryKey::row("t", &key)).unwrap(),
+            Some(value(2, 45))
+        );
+        // Every page on the path is now a hit, which the cache checks on
+        // entry and after its copy for this same owner.
+        let before = checks();
+        assert_eq!(
+            shared.get(root, DirectoryKey::row("t", &key)).unwrap(),
+            Some(value(2, 45))
+        );
+        let shared_checks = checks() - before;
+        // A reader holding another owner still checks it around each load.
+        let other: Arc<dyn StorageAdmission> = Arc::new(Admission(admission.0.clone()));
+        let separate = DirectoryReader::new(&cached, other);
+        let before = checks();
+        assert_eq!(
+            separate.get(root, DirectoryKey::row("t", &key)).unwrap(),
+            Some(value(2, 45))
+        );
+        assert_eq!(checks() - before - shared_checks, 2 * root.height as usize);
+        // An owner failure is still refused on a hit.
+        admission.0.failed.store(true, AtomicOrdering::Relaxed);
+        assert!(matches!(
+            shared.get(root, DirectoryKey::row("t", &key)),
+            Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed))
+        ));
+    }
+
+    #[test]
+    fn digested_appends_through_the_cache_hash_each_page_once() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        // Records each page under the digest its caller supplies.
+        #[derive(Default)]
+        struct AdoptingPages(MemoryPages);
+        impl DirectoryBackend for AdoptingPages {
+            fn read_page(
+                &self,
+                reference: DirectoryPageRef,
+                out: &mut [u8],
+            ) -> Result<(), CoreError> {
+                self.0.read_page(reference, out)
+            }
+            fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
+                self.0.append_page(bytes)
+            }
+            fn append_digested_page(
+                &self,
+                bytes: &[u8],
+                sha256: [u8; 32],
+            ) -> Result<DirectoryPageRef, CoreError> {
+                let mut pages = self.0.pages.lock().unwrap();
+                let reference = DirectoryPageRef {
+                    arena_id: 1,
+                    page_index: pages.len() as u64,
+                    sha256,
+                };
+                pages.push(bytes.to_vec());
+                Ok(reference)
+            }
+            fn sync_pages(&self) -> Result<(), CoreError> {
+                self.0.sync_pages()
+            }
+        }
+        let backend = AdoptingPages::default();
+        let admission = Admission::new(8 << 20);
+        let cached = CachedDirectoryBackend::new(
+            &backend,
+            admission.clone(),
+            GROUP,
+            CacheConfig {
+                byte_limit: 4 << 20,
+            },
+        );
+        let page = [7u8; DIRECTORY_PAGE_BYTES];
+        let count = |append: &dyn Fn() -> Result<DirectoryPageRef, CoreError>| {
+            PAGE_DIGESTS.with(|count| count.set(Some(0)));
+            let reference = append();
+            (
+                reference,
+                PAGE_DIGESTS.with(|count| count.replace(None).unwrap()),
+            )
+        };
+        // The caller's one digest names the page; nothing below hashes again.
+        let (adopted, digests) = count(&|| cached.append_digested_page(&page, page_digest(&page)));
+        assert_eq!(digests, 1);
+        assert_eq!(adopted.unwrap().sha256, page_digest(&page));
+        // The ordinary append still has its own digest verified by the cache.
+        let (ordinary, digests) = count(&|| cached.append_page(&page));
+        assert_eq!(digests, 2);
+        assert_eq!(ordinary.unwrap().sha256, page_digest(&page));
+        // A backend that hashes for itself must match the caller's digest.
+        assert!(matches!(
+            MemoryPages::default().append_digested_page(&page, [0; 32]),
+            Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))
+        ));
+    }
+
+    #[test]
     fn verified_cache_hits_are_not_rehashed() {
         use crate::cache::CacheConfig;
         use crate::page_cache::CachedDirectoryBackend;
@@ -1919,6 +2183,135 @@ mod tests {
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
         assert_eq!(cached.stats().unwrap().uncached_loads, 0);
         assert_eq!(cached.stats().unwrap().evictions, 0);
+    }
+
+    #[test]
+    fn generation_warming_loads_each_visited_page_once_without_ancestor_reloads() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        struct Loads<'a, B: DirectoryBackend>(&'a B, AtomicUsize);
+        impl<B: DirectoryBackend> DirectoryBackend for Loads<'_, B> {
+            fn read_page(
+                &self,
+                reference: DirectoryPageRef,
+                out: &mut [u8],
+            ) -> Result<(), CoreError> {
+                self.1.fetch_add(1, AtomicOrdering::Relaxed);
+                self.0.read_page(reference, out)
+            }
+            fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
+                self.0.append_page(bytes)
+            }
+            fn sync_pages(&self) -> Result<(), CoreError> {
+                self.0.sync_pages()
+            }
+            fn page_check(&self) -> PageCheck {
+                self.0.page_check()
+            }
+        }
+        // Ordered keys of a chosen size; the size sets the tree's fanout.
+        fn key(id: usize, len: usize) -> Vec<u8> {
+            let mut key = vec![0x5a; len];
+            key[..8].copy_from_slice(&(id as u64).to_be_bytes());
+            key
+        }
+
+        // (keys, key bytes): a three-level tree, then a taller one whose
+        // deepest expanded ancestors exceed the workspace's kept pages.
+        for (count, len) in [(3_000, 400), (400, MAX_KEY_BYTES)] {
+            let backend = MemoryPages::default();
+            let admission = Admission::new(64 << 20);
+            let cached = CachedDirectoryBackend::new(
+                &backend,
+                admission.clone(),
+                GROUP,
+                CacheConfig {
+                    byte_limit: 32 << 20,
+                },
+            );
+            let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1).unwrap();
+            for id in 0..count {
+                builder
+                    .push(DirectoryKey::row("t", &key(id, len)), value(1, id as u64))
+                    .unwrap();
+            }
+            let old = builder.finish().unwrap();
+            DirectoryReader::new(&cached, admission.clone())
+                .warm_generation(old, 0)
+                .unwrap();
+            let mut workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
+            let mut mutator = DirectoryMutator::new(&backend, &mut workspace).unwrap();
+            let next = mutator
+                .set(
+                    old,
+                    2,
+                    DirectoryKey::row("t", &key(17, len)),
+                    Some(value(2, 17)),
+                )
+                .unwrap();
+            let next = mutator.finish(next).unwrap();
+            drop(workspace);
+            // The new root, then each child of every new internal page, once.
+            let expected = {
+                let pages = backend.pages.lock().unwrap();
+                let mut loads = 1;
+                let mut pending = vec![next.page.unwrap()];
+                while let Some(reference) = pending.pop() {
+                    let page = &pages[reference.page_index as usize];
+                    let info = validate_page(page, next, reference).unwrap();
+                    if info.level != 0 && info.generation >= 2 {
+                        loads += info.count;
+                        for index in 0..info.count {
+                            pending.push(
+                                DirectoryPageRef::decode(
+                                    &nth_entry(page, info, index).unwrap().value[..PAGE_REF_BYTES],
+                                )
+                                .unwrap(),
+                            );
+                        }
+                    }
+                }
+                loads
+            };
+            let owner: Arc<dyn StorageAdmission> = admission.clone();
+            let mut workspace = DirectoryReadWorkspace::for_enclosing_warming_owner::<
+                DirectoryReadWorkspace,
+            >(&owner)
+            .unwrap();
+            let mut warm = |copies: bool| {
+                let counted = Loads(&cached, AtomicUsize::new(0));
+                let reader = DirectoryReader::new(&counted, owner.clone());
+                if copies {
+                    reader
+                        .warm_generation_with_workspace(next, 2, &mut workspace)
+                        .unwrap();
+                } else {
+                    reader.warm_generation(next, 2).unwrap();
+                }
+                (
+                    counted.1.load(AtomicOrdering::Relaxed),
+                    cached.stats().unwrap().entries,
+                )
+            };
+            let (loads, entries) = warm(true);
+            if len == MAX_KEY_BYTES {
+                assert!(next.height as usize > WARM_ANCESTORS + 1);
+                assert!(loads > expected);
+            } else {
+                assert_eq!(next.height as usize, WARM_ANCESTORS + 1);
+                assert_eq!(loads, expected);
+            }
+            // Reuse retains nothing new and admits nothing beyond the workspace.
+            let used = admission.0.used.load(AtomicOrdering::Relaxed);
+            assert_eq!(warm(true), (loads, entries));
+            assert_eq!(admission.0.used.load(AtomicOrdering::Relaxed), used);
+            // Without ancestor pages every sibling reloads its ancestors, and
+            // the walk still reaches and retains exactly the same pages.
+            let (reloading, reloaded_entries) = warm(false);
+            assert!(reloading > loads);
+            assert_eq!(reloaded_entries, entries);
+        }
     }
 
     #[test]

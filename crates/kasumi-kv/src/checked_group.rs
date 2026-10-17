@@ -31,6 +31,12 @@ impl CheckedGroup {
             .map_err(|_| io::Error::other(OwnerFailed))
     }
 
+    /// Whether every checked operation verifies exactly this owner before
+    /// and after its physical effect.
+    pub(crate) fn checks(&self, admission: &Arc<dyn StorageAdmission>) -> bool {
+        Arc::ptr_eq(&self.admission, admission)
+    }
+
     fn checked<T>(&self, operation: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
         self.check()?;
         let result = operation();

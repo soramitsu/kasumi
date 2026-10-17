@@ -237,7 +237,12 @@ impl DirectoryArenaBackend {
         Ok(())
     }
 
-    fn append(&self, writer: &mut Writer, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
+    fn append(
+        &self,
+        writer: &mut Writer,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
         if writer
             .active
             .as_ref()
@@ -249,7 +254,7 @@ impl DirectoryArenaBackend {
         let reference = DirectoryPageRef {
             arena_id: active.id,
             page_index: active.pages,
-            sha256: page_digest(bytes),
+            sha256,
         };
         self.backend.write(
             GroupFile::directory(active.id),
@@ -260,6 +265,37 @@ impl DirectoryArenaBackend {
         check_owner(&self.admission)?;
         active.pages += 1;
         Ok(reference)
+    }
+}
+
+impl DirectoryArenaBackend {
+    fn append_page_with(
+        &self,
+        bytes: &[u8],
+        sha256: Option<[u8; 32]>,
+    ) -> Result<DirectoryPageRef, CoreError> {
+        check_owner(&self.admission)?;
+        if bytes.len() != DIRECTORY_PAGE_BYTES {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory append requires one page",
+            )));
+        }
+        let mut writer = self
+            .writer
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        check_owner(&self.admission)?;
+        if writer.poisoned {
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        let sha256 = sha256.unwrap_or_else(|| page_digest(bytes));
+        let result = self.append(&mut writer, bytes, sha256);
+        // Even an error after a private append fences this writer: retrying
+        // its offset could alias an immutable page reference held elsewhere.
+        if result.is_err() {
+            writer.poisoned = true;
+        }
+        result
     }
 }
 
@@ -280,6 +316,9 @@ impl DirectoryBackend for DirectoryArenaBackend {
             )));
         }
         let file = GroupFile::directory(reference.arena_id);
+        // A checked group verifies this same owner after each read below; an
+        // arena check right after one would repeat it with nothing between.
+        let checked = self.backend.checks_owner(&self.admission);
         let mut header = self
             .read_header
             .lock()
@@ -287,12 +326,16 @@ impl DirectoryBackend for DirectoryArenaBackend {
         // The owner may have expired while this reader waited for scratch.
         check_owner(&self.admission)?;
         self.backend.read(file, 0, &mut *header)?;
-        check_owner(&self.admission)?;
+        if !checked {
+            check_owner(&self.admission)?;
+        }
         validate_header(&header, self.group_id, reference.arena_id)?;
         drop(header);
         let at = HEADER_BYTES as u64 + reference.page_index * DIRECTORY_PAGE_BYTES as u64;
         let len = self.backend.len(file)?;
-        check_owner(&self.admission)?;
+        if !checked {
+            check_owner(&self.admission)?;
+        }
         if len < at + DIRECTORY_PAGE_BYTES as u64 || len > ARENA_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory arena length is invalid",
@@ -300,7 +343,9 @@ impl DirectoryBackend for DirectoryArenaBackend {
         }
         self.backend.read(file, at, out)?;
         record_io(&self.pages_read);
-        check_owner(&self.admission)?;
+        if !checked {
+            check_owner(&self.admission)?;
+        }
         if page_digest(out) != reference.sha256 {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory page digest differs",
@@ -314,28 +359,22 @@ impl DirectoryBackend for DirectoryArenaBackend {
         PageCheck::Digest
     }
 
+    /// Checked on entry, and after the page read by the checked group or here.
+    fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
+        Some(&self.admission)
+    }
+
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
-        check_owner(&self.admission)?;
-        if bytes.len() != DIRECTORY_PAGE_BYTES {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "directory append requires one page",
-            )));
-        }
-        let mut writer = self
-            .writer
-            .lock()
-            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        check_owner(&self.admission)?;
-        if writer.poisoned {
-            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
-        }
-        let result = self.append(&mut writer, bytes);
-        // Even an error after a private append fences this writer: retrying
-        // its offset could alias an immutable page reference held elsewhere.
-        if result.is_err() {
-            writer.poisoned = true;
-        }
-        result
+        self.append_page_with(bytes, None)
+    }
+
+    /// The caller's digest of these exact bytes names the appended page.
+    fn append_digested_page(
+        &self,
+        bytes: &[u8],
+        sha256: [u8; 32],
+    ) -> Result<DirectoryPageRef, CoreError> {
+        self.append_page_with(bytes, Some(sha256))
     }
 
     fn sync_pages(&self) -> Result<(), CoreError> {

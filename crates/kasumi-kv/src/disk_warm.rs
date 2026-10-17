@@ -25,7 +25,7 @@ pub(super) struct CachedIdentityProofWorkspace {
 
 impl CachedIdentityProofWorkspace {
     pub(super) fn new(admission: &Arc<dyn StorageAdmission>) -> Result<Self, CoreError> {
-        let directory = DirectoryReadWorkspace::for_enclosing_owner::<Self>(admission)?;
+        let directory = DirectoryReadWorkspace::for_enclosing_warming_owner::<Self>(admission)?;
         Ok(Self {
             locator: [0; segment::CACHED_VALUE_LOCATOR_BYTES],
             admission: admission.clone(),
