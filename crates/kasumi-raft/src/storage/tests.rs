@@ -48,13 +48,14 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
 
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let path = directory.path().join("cancelled-persistence.kv");
+    let node = NodeStore::create_new_fixture(
+        &path,
+        kasumi_store::test_utils::NODE_STORE_ID,
+        fixture_scratch.memory().clone(),
+        fixture_scratch.clone(),
+    )?;
     let store = TenantStore::initialize_catalog_fixture_with_clock(
-        NodeStore::create_new_fixture(
-            &path,
-            kasumi_store::test_utils::NODE_STORE_ID,
-            fixture_scratch.memory().clone(),
-            fixture_scratch.clone(),
-        )?,
+        node.clone(),
         "cancelled-persistence".into(),
         Arc::new(LocalKeyProvider::new([19; 32])),
         Arc::new(ManualClock::new()),
@@ -101,10 +102,13 @@ async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_fin
             .unwrap(),
         b"whole-write"
     );
-    domains.custody().store().shutdown().await.unwrap();
+    domains.shutdown().await?;
     drop(domains);
     drop(store);
-    // An abandoned response does not detach persistence from its drain lease.
+    // An abandoned response does not detach persistence from its drain lease:
+    // the node shuts down whole and its file reopens.
+    node.shutdown().await?;
+    drop(node);
     let reopened = NodeStore::open_existing_fixture(
         &path,
         kasumi_store::test_utils::NODE_STORE_ID,
@@ -213,6 +217,48 @@ async fn existing_fault_store(
             fixture_scratch.clone(),
         )
         .expect("explicit synthetic snapshot fixture must open its admitted native node"),
+        "snapshot-test".into(),
+        Arc::new(LocalKeyProvider::new([7; 32])),
+        Arc::new(ManualClock::new()),
+    )
+    .await
+}
+
+// Applying an entry plans control point reads through the installed physical
+// owner. The same FaultBackend bytes and fault counter still carry every write.
+async fn new_fault_store_on_disk(
+    disk: FaultBackend,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
+) -> Result<Arc<TenantStore>> {
+    TenantStore::initialize_catalog_fixture_with_clock(
+        NodeStore::create_fixture_backend_on_disk(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            persistent,
+            fixture_scratch,
+        )
+        .expect("explicit snapshot fixture must open its backend under installed admission"),
+        "snapshot-test".into(),
+        Arc::new(LocalKeyProvider::new([7; 32])),
+        Arc::new(ManualClock::new()),
+    )
+    .await
+}
+
+async fn existing_fault_store_on_disk(
+    disk: FaultBackend,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
+) -> Result<Arc<TenantStore>> {
+    TenantStore::open_existing_fixture_with_clock(
+        NodeStore::open_fixture_backend_on_disk(
+            disk,
+            kasumi_store::test_utils::storage_admission(),
+            persistent,
+            fixture_scratch,
+        )
+        .expect("explicit snapshot fixture must open its backend under installed admission"),
         "snapshot-test".into(),
         Arc::new(LocalKeyProvider::new([7; 32])),
         Arc::new(ManualClock::new()),
@@ -720,7 +766,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
         path: &std::path::Path,
         create: bool,
         fixture_scratch: Arc<kasumi_store::ScratchDisk>,
-    ) -> FixtureResult<Arc<TenantStore>> {
+    ) -> FixtureResult<(NodeStore, Arc<TenantStore>)> {
         let node = (if create {
             NodeStore::create_new_fixture(
                 path,
@@ -736,26 +782,25 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
                 fixture_scratch.clone(),
             )
         })?;
-        if create {
+        let store = if create {
             TenantStore::initialize_catalog_fixture(
-                node,
+                node.clone(),
                 "large-command".into(),
                 Arc::new(LocalKeyProvider::new([9; 32])),
             )
-            .await
-            .map_err(Into::into)
+            .await?
         } else {
             TenantStore::open_existing_fixture(
-                node,
+                node.clone(),
                 "large-command".into(),
                 Arc::new(LocalKeyProvider::new([9; 32])),
             )
-            .await
-            .map_err(Into::into)
-        }
+            .await?
+        };
+        Ok((node, store))
     }
     {
-        let store = open(&path, true, fixture_scratch.clone()).await?;
+        let (node, store) = open(&path, true, fixture_scratch.clone()).await?;
         let domains = kasumi_store::test_utils::initialize_custody_fixture(
             store.clone(),
             Arc::new(LocalKeyProvider::new([241; 32])),
@@ -765,7 +810,7 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
             &[],
             &crate::initial_storage_identity(1, "large-command/group")?,
         )?;
-        let mut log = LogStore::open(domains, 1).await?;
+        let mut log = LogStore::open(domains.clone(), 1).await?;
         let entry = Entry::<TypeConfig> {
             initialization: None,
             log_id: LogId::new(openraft::CommittedLeaderId::new(1, 1), 0),
@@ -779,8 +824,12 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
             stored.len() < bytes.len() + 128,
             "command must not expand into JSON integer arrays"
         );
+        // Reopening the file requires the first node's own shutdown.
+        drop(log);
+        domains.shutdown().await?;
+        node.shutdown().await?;
     }
-    let store = open(&path, false, fixture_scratch.clone()).await?;
+    let (_node, store) = open(&path, false, fixture_scratch.clone()).await?;
     let mut log = LogStore::open(
         kasumi_store::test_utils::open_existing_custody_fixture(
             store.clone(),

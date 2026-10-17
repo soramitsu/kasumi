@@ -3,7 +3,7 @@ use crate::selected_application::allocation_tests::{
     DeallocationObservation, observe_deallocation, observe_last_allocation, require_no_allocations,
 };
 use kasumi_store::{
-    DiskMemoryLease, EncryptedTable, NodeDiskMemoryAdmission, ScratchDisk,
+    DiskMemoryLease, EncryptedTable, NativeConstructorProbe, NodeDiskMemoryAdmission, ScratchDisk,
     StorageCensusDisposition, test_utils::TestDiskMemory,
 };
 use std::sync::atomic::AtomicUsize;
@@ -164,6 +164,18 @@ fn actual_first_quote_refusal_stays_in_prepaid_seat_after_foreign_result_disappe
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory.clone());
     let inventory = ScratchFailureInventory::new(2, simple_charge(&memory, 2)).unwrap();
+    // Census registration takes a seat before its provider is entered. Fixed
+    // receivers hold every seat without entering the provider, so the first
+    // census quote is refused before any seat, owner or provider attempt.
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let vacant = memory.storage_census().snapshot();
+    let mut receivers: [Option<NativeConstructorProbe>; 32] = std::array::from_fn(|_| None);
+    for receiver in receivers
+        .iter_mut()
+        .take(vacant.capacity - vacant.databases)
+    {
+        *receiver = Some(NativeConstructorProbe::prepare(provider.clone(), 0).unwrap());
+    }
     let before_fill = memory.snapshot();
     let mut fillers: [Option<DiskMemoryLease>; 32] = std::array::from_fn(|_| None);
     for slot in fillers.iter_mut().take(32 - before_fill.live_reservations) {
@@ -172,6 +184,7 @@ fn actual_first_quote_refusal_stays_in_prepaid_seat_after_foreign_result_disappe
     let full = memory.snapshot();
     let disk_before = disk.snapshot();
     let census_before = memory.storage_census().snapshot();
+    assert_eq!(census_before.databases, census_before.capacity);
     let guard = require_no_allocations(|| inventory.acquire().unwrap());
     let index = guard.index();
     let original = EncryptedTable::new(&disk, 8 << 20, kasumi_kv::CacheConfig { byte_limit: 0 })
@@ -189,7 +202,8 @@ fn actual_first_quote_refusal_stays_in_prepaid_seat_after_foreign_result_disappe
     let address = returned.creation().unwrap().with_diagnostic(|report| {
         let report = report.unwrap();
         let original = report.admission_error().unwrap();
-        assert_eq!(original.kind(), io::ErrorKind::OutOfMemory);
+        assert_eq!(original.kind(), io::ErrorKind::WouldBlock);
+        assert!(report.constructor_report().is_none());
         assert!(report.opening_error().is_none());
         std::ptr::from_ref(original) as usize
     });
@@ -224,12 +238,19 @@ fn actual_first_quote_refusal_stays_in_prepaid_seat_after_foreign_result_disappe
     drop(original);
     drop(free);
     let after = memory.snapshot();
-    assert_eq!(after.attempts, full.attempts + 1);
+    assert_eq!(after.attempts, full.attempts);
     assert_eq!(after.used_bytes, full.used_bytes);
     assert_eq!(after.live_reservations, full.live_reservations);
     assert_eq!(memory.storage_census().snapshot(), census_before);
     assert_eq!(disk.snapshot().live_files, disk_before.live_files);
     assert_eq!(disk.snapshot().charged_bytes, disk_before.charged_bytes);
+    for receiver in receivers.iter_mut().filter_map(Option::take) {
+        // Each receiver's own provider attempt is refused while grants stay
+        // saturated; cleanup then returns its seat.
+        assert!(!receiver.run());
+        assert_eq!(receiver.cleanup(), StorageCensusDisposition::Retired);
+    }
+    assert_eq!(memory.storage_census().snapshot(), vacant);
     drop(fillers);
     let retained = memory.snapshot();
     drop(inventory);

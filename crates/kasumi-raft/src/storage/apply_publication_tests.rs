@@ -124,7 +124,9 @@ impl StateMachineBackend for Backend {
 }
 struct Fixture {
     _directory: tempfile::TempDir,
+    _persistent_directory: tempfile::TempDir,
     scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
     disk: FaultBackend,
     domains: Arc<TenantStorageSet>,
     owner: Arc<SnapshotBufferOwner>,
@@ -138,8 +140,11 @@ async fn fixture(behavior: Behavior) -> FixtureResult<Fixture> {
         directory.path(),
         kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096),
     );
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent =
+        crate::control::tests::fixture_persistent(persistent_directory.path(), &scratch)?;
     let disk = FaultBackend::new();
-    let store = new_fault_store(disk.clone(), scratch.clone()).await?;
+    let store = new_fault_store_on_disk(disk.clone(), scratch.clone(), persistent.clone()).await?;
     let domains = kasumi_store::test_utils::initialize_custody_fixture(
         store,
         Arc::new(LocalKeyProvider::new([241; 32])),
@@ -164,7 +169,9 @@ async fn fixture(behavior: Behavior) -> FixtureResult<Fixture> {
     .await?;
     Ok(Fixture {
         _directory: directory,
+        _persistent_directory: persistent_directory,
         scratch,
+        persistent,
         disk,
         domains,
         owner,
@@ -223,7 +230,12 @@ async fn covered_replay_publishes_application_writes_without_rolling_custody_bac
         .apply([command(1, b"one"), command(2, b"two")])
         .await?;
     let selected = durable_cursor(&fixture.domains)?;
-    let recovered = existing_fault_store(fixture.disk.crash(), fixture.scratch.clone()).await?;
+    let recovered = existing_fault_store_on_disk(
+        fixture.disk.crash(),
+        fixture.scratch.clone(),
+        fixture.persistent.clone(),
+    )
+    .await?;
     let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         recovered,
         Arc::new(LocalKeyProvider::new([241; 32])),
@@ -316,7 +328,12 @@ async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> 
         Some(command(1, b"old").log_id)
     );
     assert_eq!(*fixture.backend.selected.0.lock().unwrap(), b"old");
-    let recovered = existing_fault_store(fixture.disk.crash(), fixture.scratch.clone()).await?;
+    let recovered = existing_fault_store_on_disk(
+        fixture.disk.crash(),
+        fixture.scratch.clone(),
+        fixture.persistent.clone(),
+    )
+    .await?;
     let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         recovered,
         Arc::new(LocalKeyProvider::new([241; 32])),

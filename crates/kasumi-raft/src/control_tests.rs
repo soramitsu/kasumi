@@ -269,8 +269,37 @@ pub(crate) async fn fixture_on_disk(
     Arc<LocalKeyProvider>,
     LogStore,
 )> {
+    fixture_on_disk_for_node(disk, create, fixture_scratch, persistent, 1).await
+}
+
+pub(crate) async fn fixture_on_disk_for_node(
+    disk: FaultBackend,
+    create: bool,
+    fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
+    node_id: u64,
+) -> Result<(
+    Arc<TenantStorageSet>,
+    Arc<LocalKeyProvider>,
+    Arc<LocalKeyProvider>,
+    LogStore,
+)> {
     let node = fault_node_on_disk(disk, create, fixture_scratch, persistent)?;
-    fixture_with_node(node, create, 1).await
+    fixture_with_node(node, create, node_id).await
+}
+
+/// Installed physical owner for `fixture_on_disk`, admitted by the scratch
+/// disk's own memory. Keep `directory` alive while any node uses the owner.
+pub(crate) fn fixture_persistent(
+    directory: &std::path::Path,
+    fixture_scratch: &kasumi_store::ScratchDisk,
+) -> Result<Arc<kasumi_store::NodeDisk>> {
+    Ok(kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            directory.join("control-fault.kv"),
+            fixture_scratch.memory().clone(),
+        )
+    })?)
 }
 
 fn fault_node_on_disk(

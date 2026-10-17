@@ -1,7 +1,9 @@
 //! Storage-adapter metadata fixtures; actual source backup/retirement production
 //! is separately exercised by the engine snapshot transfer test.
 use super::*;
-use crate::control::tests::{fixture, group, id, ordinary, retirement_entry};
+use crate::control::tests::{
+    fixture, fixture_on_disk, fixture_persistent, group, id, ordinary, retirement_entry,
+};
 use crate::control::{self, AppliedCursor, AppliedEntryContext, ControlLog, RetainedSeed, SEEDS};
 use crate::test_utils::FixtureResult;
 use crate::{RetiredSnapshotState, StateMachineBackend};
@@ -9,9 +11,15 @@ use openraft::storage::RaftLogStorageExt;
 
 async fn accepted_snapshot(
     fixture_scratch: Arc<kasumi_store::ScratchDisk>,
+    persistent: Arc<kasumi_store::NodeDisk>,
 ) -> FixtureResult<SnapshotEnvelope> {
-    let (domains, _, _, mut log) =
-        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    let (domains, _, _, mut log) = fixture_on_disk(
+        FaultBackend::new(),
+        true,
+        fixture_scratch.clone(),
+        persistent,
+    )
+    .await?;
     let entry = retirement_entry()?;
     let command = match &entry.payload {
         EntryPayload::Normal(value) => value,
@@ -125,8 +133,16 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let original = accepted_snapshot(fixture_scratch.clone()).await?;
-    let (domains, _, _, _) = fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let original = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
+    let (domains, _, _, _) = fixture_on_disk(
+        FaultBackend::new(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let backend = Arc::new(ClosedBackend::default());
     let mut machine = StateMachine::open(
         domains.clone(),
@@ -181,10 +197,17 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let original = accepted_snapshot(fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let original = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
     for change_epoch in [false, true] {
-        let (domains, _, _, _) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let (domains, _, _, _) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         let backend = Arc::new(ClosedBackend::default());
         let mut machine = StateMachine::open(
             domains.clone(),
@@ -256,10 +279,17 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let snapshot = accepted_snapshot(fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let snapshot = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
     let disk = FaultBackend::new();
-    let (domains, app_provider, custody_provider, mut log) =
-        fixture(disk.clone(), true, fixture_scratch.clone()).await?;
+    let (domains, app_provider, custody_provider, mut log) = fixture_on_disk(
+        disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let backend = Arc::new(ClosedBackend::default());
     let mut machine = StateMachine::open(
         domains.clone(),
@@ -326,10 +356,17 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let original = accepted_snapshot(fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let original = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
     for case in 0..8 {
-        let (domains, _, _, _) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let (domains, _, _, _) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         let mut machine = StateMachine::open(
             domains.clone(),
             Arc::new(ClosedBackend::default()),
@@ -399,9 +436,16 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let accepted = accepted_snapshot(fixture_scratch.clone()).await?;
-    let (domains, _, _, mut log) =
-        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let accepted = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
+    let (domains, _, _, mut log) = fixture_on_disk(
+        FaultBackend::new(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     // UUID-backed checkpoint differs, so this is a conflicting candidate.
     log.blocking_append([ordinary(0), retirement_entry()?])
         .await?;
@@ -481,27 +525,48 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let value = accepted_snapshot(fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let value = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
     let bytes = value.encode(64 << 20)?.read_bounded(64 << 20)?;
     let seed = FaultBackend::new();
-    let (initial, _, _, _) = fixture(seed.clone(), true, fixture_scratch.clone()).await?;
+    let (initial, _, _, _) = fixture_on_disk(
+        seed.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let baseline = seed.crash();
     drop(initial);
     let measured_disk = baseline.crash();
-    let (domains, _, _, _) = fixture(measured_disk.clone(), false, fixture_scratch.clone()).await?;
+    let (domains, _, _, _) = fixture_on_disk(
+        measured_disk.clone(),
+        false,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let start = measured_disk.operations();
     persist_snapshot(&domains, &bytes, 1 << 20, &value)?;
     let operations = measured_disk.operations() - start;
     assert!(operations > 10);
     for failure in 0..=operations {
         let disk = baseline.crash();
-        let (domains, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
+        let (domains, _, _, _) = fixture_on_disk(
+            disk.clone(),
+            false,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         disk.fail_after(failure);
         let result = persist_snapshot(&domains, &bytes, 1 << 20, &value);
         let crash = disk.crash();
         disk.disarm();
         drop(domains);
-        let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
+        let (reopened, _, _, _) =
+            fixture_on_disk(crash, false, fixture_scratch.clone(), persistent.clone()).await?;
         cleanup_snapshots(reopened.application(), 1 << 20)?;
         let image = load_snapshot(reopened.application(), 1 << 20)?;
         let boundary = control::retired_boundary(reopened.custody())?;
@@ -540,8 +605,16 @@ async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> F
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let value = accepted_snapshot(fixture_scratch.clone()).await?;
-    let (domains, _, _, _) = fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let value = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
+    let (domains, _, _, _) = fixture_on_disk(
+        FaultBackend::new(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     persist_snapshot(
         &domains,
         &value.encode(64 << 20)?.read_bounded(64 << 20)?,
@@ -565,8 +638,15 @@ async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> FixtureR
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let (domains, _, _, mut log) =
-        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let (domains, _, _, mut log) = fixture_on_disk(
+        FaultBackend::new(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let mut machine = StateMachine::open(
         domains.clone(),
         Arc::new(BytesBackend::default()),
@@ -600,9 +680,17 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
     let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let value = accepted_snapshot(fixture_scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+    let value = accepted_snapshot(fixture_scratch.clone(), persistent.clone()).await?;
     let disk = FaultBackend::new();
-    let (domains, _, _, _) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
+    let (domains, _, _, _) = fixture_on_disk(
+        disk.clone(),
+        true,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let mut machine = StateMachine::open(
         domains.clone(),
         Arc::new(ClosedBackend::default()),
@@ -633,7 +721,13 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
         older_capture.build_snapshot().await.is_err(),
         "cached newer snapshot cannot bypass custody validation"
     );
-    let (reopened, _, _, _) = fixture(disk.crash(), false, fixture_scratch.clone()).await?;
+    let (reopened, _, _, _) = fixture_on_disk(
+        disk.crash(),
+        false,
+        fixture_scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     assert!(
         StateMachine::open(
             reopened.clone(),
@@ -657,7 +751,15 @@ async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-    let (source, _, _, mut log) = fixture(FaultBackend::new(), true, scratch.clone()).await?;
+    let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+    let persistent = fixture_persistent(persistent_directory.path(), &scratch)?;
+    let (source, _, _, mut log) = fixture_on_disk(
+        FaultBackend::new(),
+        true,
+        scratch.clone(),
+        persistent.clone(),
+    )
+    .await?;
     let first = Entry {
         initialization: None,
         log_id: id(0),
@@ -684,7 +786,8 @@ async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary
         )?,
     )?;
     let disk = FaultBackend::new();
-    let (domains, _, _, _) = fixture(disk.clone(), true, scratch).await?;
+    let (domains, _, _, _) =
+        fixture_on_disk(disk.clone(), true, scratch, persistent.clone()).await?;
     let encoded = snapshot.encode(64 << 20)?;
     persist_snapshot(
         &domains,

@@ -467,7 +467,10 @@ pub(crate) mod tests {
     ) -> crate::test_utils::FixtureResult<Option<SnapshotEnvelope>> {
         super::load_snapshot(custody, MAX_CLOSED_SNAPSHOT_BYTES).map_err(Into::into)
     }
-    use crate::control::tests::{fixture, fixture_for_node, group, id, retirement_entry, seed};
+    use crate::control::tests::{
+        fixture_on_disk, fixture_on_disk_for_node, fixture_persistent, group, id, retirement_entry,
+        seed,
+    };
     use kasumi_store::test_utils::FaultBackend;
     use kasumi_types::{CustodyAction, CustodyReceipt, CustodyRequest, RetireSourceRequest};
     use openraft::storage::{RaftLogStorage, RaftLogStorageExt};
@@ -575,8 +578,15 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-        let (domains, _, _, mut log) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+        let (domains, _, _, mut log) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -646,8 +656,15 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-        let (domains, _, _, mut log) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+        let (domains, _, _, mut log) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -718,8 +735,15 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-        let (domains, app, _, mut log) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+        let (domains, app, _, mut log) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -765,6 +789,8 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
         let router = Arc::new(crate::InProcessRouter::default());
         let mut stores = Vec::new();
         let mut groups = Vec::new();
@@ -782,8 +808,14 @@ pub(crate) mod tests {
             )),
         };
         for node in voters {
-            let (domains, app, _, mut log) =
-                fixture_for_node(FaultBackend::new(), true, fixture_scratch.clone(), node).await?;
+            let (domains, app, _, mut log) = fixture_on_disk_for_node(
+                FaultBackend::new(),
+                true,
+                fixture_scratch.clone(),
+                persistent.clone(),
+                node,
+            )
+            .await?;
             log.blocking_append([members.clone(), retirement.clone()])
                 .await?;
             log.save_committed(Some(id(1))).await?;
@@ -844,8 +876,16 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
         let disk = FaultBackend::new();
-        let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
+        let (domains, _, _, mut log) = fixture_on_disk(
+            disk.clone(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -872,7 +912,13 @@ pub(crate) mod tests {
         drop(log);
         drop(domains);
         let measured = baseline.crash();
-        let (domains, _, _, _) = fixture(measured.clone(), false, fixture_scratch.clone()).await?;
+        let (domains, _, _, _) = fixture_on_disk(
+            measured.clone(),
+            false,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         let start = measured.operations();
         control::apply_custody(domains.custody(), &position, &command)?;
         let operations = measured.operations() - start;
@@ -883,13 +929,20 @@ pub(crate) mod tests {
         drop(domains);
         for failure in 0..=operations {
             let disk = baseline.crash();
-            let (domains, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
+            let (domains, _, _, _) = fixture_on_disk(
+                disk.clone(),
+                false,
+                fixture_scratch.clone(),
+                persistent.clone(),
+            )
+            .await?;
             disk.fail_after(failure);
             let result = control::apply_custody(domains.custody(), &position, &command);
             let crash = disk.crash();
             disk.disarm();
             drop(domains);
-            let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
+            let (reopened, _, _, _) =
+                fixture_on_disk(crash, false, fixture_scratch.clone(), persistent.clone()).await?;
             let actual = control::custody_state(reopened.custody())?;
             let (cursor, _) = applied(reopened.custody())?;
             if actual == initial {
@@ -916,8 +969,15 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-        let (domains, _, _, mut log) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
+        let (domains, _, _, mut log) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -956,9 +1016,16 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
         use sha2::{Digest, Sha256};
-        let (domains, _, _, mut log) =
-            fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+        let (domains, _, _, mut log) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -1059,8 +1126,16 @@ pub(crate) mod tests {
         let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let fixture_scratch =
             kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &fixture_scratch)?;
         let disk = FaultBackend::new();
-        let (domains, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch.clone()).await?;
+        let (domains, _, _, mut log) = fixture_on_disk(
+            disk.clone(),
+            true,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -1091,7 +1166,13 @@ pub(crate) mod tests {
         drop(log);
         drop(domains);
         let measure = baseline.crash();
-        let (domains, _, _, _) = fixture(measure.clone(), false, fixture_scratch.clone()).await?;
+        let (domains, _, _, _) = fixture_on_disk(
+            measure.clone(),
+            false,
+            fixture_scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         let snapshot = capture(domains.custody())?;
         let start = measure.operations();
         publish(domains.custody(), &snapshot)?;
@@ -1100,14 +1181,21 @@ pub(crate) mod tests {
         drop(domains);
         for failure in 0..=operations {
             let disk = baseline.crash();
-            let (domains, _, _, _) = fixture(disk.clone(), false, fixture_scratch.clone()).await?;
+            let (domains, _, _, _) = fixture_on_disk(
+                disk.clone(),
+                false,
+                fixture_scratch.clone(),
+                persistent.clone(),
+            )
+            .await?;
             let snapshot = capture(domains.custody())?;
             disk.fail_after(failure);
             let result = publish(domains.custody(), &snapshot);
             let crash = disk.crash();
             disk.disarm();
             drop(domains);
-            let (reopened, _, _, _) = fixture(crash, false, fixture_scratch.clone()).await?;
+            let (reopened, _, _, _) =
+                fixture_on_disk(crash, false, fixture_scratch.clone(), persistent.clone()).await?;
             assert_eq!(
                 control::custody_state(reopened.custody())?,
                 original,
@@ -1133,7 +1221,15 @@ pub(crate) mod tests {
         let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
         let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
-        let (source, _, _, mut log) = fixture(FaultBackend::new(), true, scratch.clone()).await?;
+        let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
+        let persistent = fixture_persistent(persistent_directory.path(), &scratch)?;
+        let (source, _, _, mut log) = fixture_on_disk(
+            FaultBackend::new(),
+            true,
+            scratch.clone(),
+            persistent.clone(),
+        )
+        .await?;
         log.blocking_append([membership(), retirement_entry()?])
             .await?;
         log.save_committed(Some(id(1))).await?;
@@ -1178,7 +1274,8 @@ pub(crate) mod tests {
             usize::try_from(u64::from_be_bytes(encoded[9..17].try_into()?))?,
             crate::snapshot_codec::MAX_METADATA - 4096
         );
-        let (target, _, _, _) = fixture(FaultBackend::new(), true, scratch).await?;
+        let (target, _, _, _) =
+            fixture_on_disk(FaultBackend::new(), true, scratch, persistent).await?;
         publish(target.custody(), &snapshot)?;
         let coverage_bytes = target
             .custody()
