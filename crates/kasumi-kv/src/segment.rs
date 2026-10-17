@@ -123,13 +123,66 @@ impl Crc32c {
         Self(!0)
     }
     pub(crate) fn update(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            self.0 = CRC_TABLE[((self.0 as u8) ^ byte) as usize] ^ (self.0 >> 8);
-        }
+        self.0 = crc32c_update(self.0, bytes);
     }
     pub(crate) fn finish(&self) -> u32 {
         !self.0
     }
+}
+
+/// Advance the reflected CRC-32C register over `bytes`. The SSE4.2 and ARMv8
+/// CRC instructions compute this same Castagnoli polynomial on the same
+/// register, so every checksum equals the table loop's on every input.
+fn crc32c_update(crc: u32, bytes: &[u8]) -> u32 {
+    #[cfg(target_arch = "x86_64")]
+    if std::arch::is_x86_feature_detected!("sse4.2") {
+        // SAFETY: SSE4.2 support was detected at runtime.
+        return unsafe { crc32c_sse42(crc, bytes) };
+    }
+    #[cfg(target_arch = "aarch64")]
+    if std::arch::is_aarch64_feature_detected!("crc") {
+        // SAFETY: the ARMv8 CRC extension was detected at runtime.
+        return unsafe { crc32c_armv8(crc, bytes) };
+    }
+    crc32c_table(crc, bytes)
+}
+
+fn crc32c_table(mut crc: u32, bytes: &[u8]) -> u32 {
+    for &byte in bytes {
+        crc = CRC_TABLE[((crc as u8) ^ byte) as usize] ^ (crc >> 8);
+    }
+    crc
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "sse4.2")]
+fn crc32c_sse42(crc: u32, bytes: &[u8]) -> u32 {
+    use std::arch::x86_64::{_mm_crc32_u8, _mm_crc32_u64};
+    let mut words = bytes.chunks_exact(8);
+    let mut wide = u64::from(crc);
+    for word in &mut words {
+        wide = _mm_crc32_u64(wide, le_u64(word));
+    }
+    let mut crc = wide as u32;
+    for &byte in words.remainder() {
+        crc = _mm_crc32_u8(crc, byte);
+    }
+    crc
+}
+
+#[cfg(target_arch = "aarch64")]
+#[target_feature(enable = "crc")]
+fn crc32c_armv8(crc: u32, bytes: &[u8]) -> u32 {
+    use std::arch::aarch64::{__crc32cb, __crc32cd};
+    let mut words = bytes.chunks_exact(8);
+    let mut crc = crc;
+    for word in &mut words {
+        crc = __crc32cd(crc, le_u64(word));
+    }
+    for &byte in words.remainder() {
+        crc = __crc32cb(crc, byte);
+    }
+    crc
 }
 pub(crate) fn crc32c(bytes: &[u8]) -> u32 {
     let mut crc = Crc32c::new();
@@ -2533,6 +2586,32 @@ mod tests {
     use super::*;
     use crate::group::{FaultTiming, GroupOp, InMemoryGroup};
     use crate::root::{RootRoll, Superblock};
+
+    #[test]
+    fn crc32c_hardware_path_matches_the_table_on_every_shape() {
+        assert_eq!(crc32c(b"123456789"), 0xe306_9283);
+        assert_eq!(crc32c(b""), 0);
+        let bytes: Vec<u8> = (0..4096u32)
+            .map(|i| (i.wrapping_mul(2_654_435_761) >> 13) as u8)
+            .collect();
+        for offset in [0, 1, 3, 7] {
+            for len in (0..=1100).chain([4092 - offset, 4096 - offset]) {
+                let input = &bytes[offset..offset + len];
+                assert_eq!(
+                    crc32c_update(!0, input),
+                    crc32c_table(!0, input),
+                    "offset {offset} len {len}"
+                );
+            }
+        }
+        // Streaming across any split equals one pass.
+        for split in [0, 1, 7, 8, 9, 63, 64, 1000] {
+            let mut crc = Crc32c::new();
+            crc.update(&bytes[..split]);
+            crc.update(&bytes[split..2048]);
+            assert_eq!(crc.finish(), !crc32c_table(!0, &bytes[..2048]));
+        }
+    }
 
     const SMALL: u64 = 1024;
 
