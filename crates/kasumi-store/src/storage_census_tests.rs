@@ -730,3 +730,57 @@ fn explicit_admission_lookup_fences_poison_without_waiting_or_reopening() {
     drop(owner);
     assert_eq!(memory.snapshot().live_reservations, 1);
 }
+
+#[test]
+fn occupancy_bits_follow_claims_and_vacates_so_sweeps_skip_only_vacant_slots() {
+    // Three bitmap words, the last one partial.
+    let memory = TestDiskMemory::new(1 << 24, 130);
+    let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+    let census = memory.storage_census();
+    assert_eq!(census.occupied_indices().count(), 0);
+    let parent = census
+        .register_native(provider.clone(), 0, |_| ReadyDatabase)
+        .unwrap();
+    let mut owners = Vec::new();
+    for index in 0..129usize {
+        owners.push(if index % 2 == 0 {
+            census
+                .register_child(provider.clone(), 0, &parent, || ReadyChild)
+                .unwrap()
+        } else {
+            census.register(memory.clone(), 0, || ReadyChild).unwrap()
+        });
+    }
+    let occupied = |census: &StorageCensus| census.occupied_indices().collect::<Vec<_>>();
+    assert_eq!(occupied(census), (0..130).collect::<Vec<_>>());
+    // Retire a scattered subset; the bits of exactly those slots clear.
+    let mut expected: Vec<usize> = (0..130).collect();
+    for (at, owner) in owners.into_iter().enumerate() {
+        if at % 3 == 0 {
+            let index = owner.id().index;
+            assert_eq!(owner.retire(), StorageCensusDisposition::Retired);
+            expected.retain(|occupied| *occupied != index);
+        } else {
+            // A dropped facade leaves its cell claimed for the census to retire.
+            drop(owner);
+        }
+    }
+    assert_eq!(occupied(census), expected);
+    for index in 0..census.capacity() {
+        assert_eq!(census.owner_at(index).is_some(), expected.contains(&index));
+    }
+    for _ in 0..8 {
+        if census
+            .occupied_indices()
+            .all(|index| index == parent.id().index)
+        {
+            break;
+        }
+        census.drain();
+    }
+    assert_eq!(occupied(census), vec![parent.id().index]);
+    assert_eq!(parent.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(census.occupied_indices().count(), 0);
+    assert_eq!(census.snapshot().readers, 0);
+    assert_eq!(memory.snapshot().live_reservations, 0);
+}

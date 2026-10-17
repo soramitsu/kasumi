@@ -120,6 +120,7 @@ impl StorageCensus {
             metadata.kind = StorageOwnerKind::SourcePool;
             metadata.parent = Some(child.take().expect("unpublished source control").publish());
             metadata.children_sealed = false;
+            self.mark_claimed(index);
             metadata.cell = Cell::SourceControl { servicing: false };
             return Ok(SourceControlClaim {
                 census: self as *const Self as usize,
@@ -315,6 +316,7 @@ impl StorageCensus {
         }
         if pending == CONTROL_DISPOSED {
             metadata.cell = Cell::Vacant;
+            self.mark_vacant(id.index);
             slot.pending.store(NONE, Ordering::Release);
             if let Some(parent) = metadata.parent.take() {
                 let previous = self.slots[parent.index]

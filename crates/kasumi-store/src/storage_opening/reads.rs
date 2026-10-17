@@ -619,7 +619,7 @@ impl RegisteredNodeOpening {
         // An earlier pass may have disposed a child payload and lost its typed
         // facade while metadata contention delayed lease/cell retirement.
         census.drain_disposed_children(opening_id);
-        for index in 0..census.capacity() {
+        for index in census.occupied_indices() {
             let Some(id) = census.owner_at(index) else {
                 continue;
             };

@@ -354,7 +354,7 @@ impl RegisteredNodeOpening {
     ) {
         let census = provider.storage_census();
         census.drain_disposed_children(opening_id);
-        for index in 0..census.capacity() {
+        for index in census.occupied_indices() {
             let Some(id) = census.owner_at(index) else {
                 continue;
             };

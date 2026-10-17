@@ -198,6 +198,7 @@ impl StorageCensus {
             metadata.kind = StorageOwnerKind::Reader;
             metadata.parent = Some(child.take().expect("unpublished source child").publish());
             metadata.children_sealed = false;
+            self.mark_claimed(index);
             metadata.cell = Cell::SourceReserved;
             metadata.source = Some(SourceSlot {
                 pool,
@@ -492,6 +493,7 @@ impl StorageCensus {
         }
         metadata.source = None; // Contains no destructible owner now.
         metadata.cell = Cell::Vacant;
+        self.mark_vacant(id.index);
         slot.pending.store(NONE, Ordering::Release);
         slot.source_completion
             .store(EXCHANGE_NONE, Ordering::Release);

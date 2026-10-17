@@ -101,6 +101,7 @@ impl StorageCensus {
                     .publish(),
             );
             replacement.children_sealed = false;
+            self.mark_claimed(replacement_index);
             replacement.cell = Cell::SourceReserved;
             replacement.source = Some(SourceSlot {
                 pool: claim.pool,
@@ -373,6 +374,7 @@ impl StorageCensus {
         }
         replacement.source = None;
         replacement.cell = Cell::Vacant;
+        self.mark_vacant(record.replacement.index);
         if let Some(parent) = replacement.parent.take() {
             let previous = self.slots[parent.index]
                 .children

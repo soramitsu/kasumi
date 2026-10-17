@@ -430,6 +430,7 @@ impl StorageCensus {
                 .store(generation, Ordering::Release);
             slot.native_constructor_delivery_pending
                 .store(true, Ordering::Release);
+            self.mark_claimed(index);
             metadata.cell = Cell::Constructing;
             return Ok(StorageOwnerId { index, generation });
         }
@@ -776,6 +777,7 @@ impl StorageCensus {
         }
         assert!(state.lease.is_none() && state.report_lease.is_none() && state.payload.is_none());
         metadata.cell = Cell::Vacant;
+        self.mark_vacant(id.index);
         slot.native_constructor_delivery_pending
             .store(false, Ordering::Release);
         if let Some(parent) = metadata.parent.take() {

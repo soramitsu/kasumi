@@ -259,6 +259,12 @@ pub struct StorageCensus {
     provider: AtomicPtr<()>,
     fenced: AtomicBool,
     slots: Box<[Slot]>,
+    // One bit per slot, admitted with the slot array. A claim sets its bit
+    // under the slot's metadata guard before the Vacant cell changes, and a
+    // vacate clears it under that guard only after the cell is Vacant again.
+    // A clear bit therefore proves the cell was Vacant, so sweeps skip that
+    // slot without taking its mutex; no sweep acts on a Vacant cell.
+    occupied: Box<[AtomicU64]>,
 }
 // An owner ID may cross a foreign transport boundary without its typed facade.
 // Mint process-wide generations so a different provider's same-index cell can
@@ -278,8 +284,13 @@ impl StorageCensus {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         Layout::array::<Slot>(capacity).map_err(|_| disk_memory::overflow())?;
-        disk_memory::allocation::<Slot>(
-            u64::try_from(capacity).map_err(|_| disk_memory::overflow())?,
+        disk_memory::add(
+            disk_memory::allocation::<Slot>(
+                u64::try_from(capacity).map_err(|_| disk_memory::overflow())?,
+            )?,
+            disk_memory::allocation::<AtomicU64>(
+                u64::try_from(capacity.div_ceil(64)).map_err(|_| disk_memory::overflow())?,
+            )?,
         )
     }
     pub fn allocate(capacity: usize) -> io::Result<Self> {
@@ -324,11 +335,71 @@ impl StorageCensus {
         // SAFETY: all elements are initialized before assume_init. Each loop
         // iteration uses only fixed inline constructors and an unshared mutex.
         let slots = unsafe { slots.assume_init() };
+        let occupied = (0..capacity.div_ceil(64))
+            .map(|_| AtomicU64::new(0))
+            .collect();
         Ok(Self {
             provider: AtomicPtr::new(std::ptr::null_mut()),
             fenced: AtomicBool::new(false),
             slots,
+            occupied,
         })
+    }
+    /// The caller holds this slot's metadata guard and is about to replace its
+    /// Vacant cell; no fallible step may follow before that cell write.
+    fn mark_claimed(&self, index: usize) {
+        self.occupied[index / 64].fetch_or(1 << (index % 64), Ordering::AcqRel);
+    }
+    /// The caller holds this slot's metadata guard and has just made it Vacant.
+    fn mark_vacant(&self, index: usize) {
+        self.occupied[index / 64].fetch_and(!(1 << (index % 64)), Ordering::AcqRel);
+    }
+    fn occupied_bit(&self, index: usize) -> bool {
+        self.occupied
+            .get(index / 64)
+            .is_some_and(|word| word.load(Ordering::Acquire) & (1 << (index % 64)) != 0)
+    }
+    /// False proves the cell was Vacant when observed. Debug builds recheck
+    /// every skipped slot under its own guard, so census tests exercise the
+    /// claim/vacate pairing that release sweeps rely on.
+    fn maybe_occupied(&self, index: usize) -> bool {
+        let occupied = self.occupied_bit(index);
+        #[cfg(debug_assertions)]
+        if !occupied
+            && let Some(slot) = self.slots.get(index)
+            && let Ok(metadata) = slot.metadata.try_lock()
+        {
+            // Claims and vacates change the bit only under this guard.
+            assert!(
+                self.occupied_bit(index) || matches!(metadata.cell, Cell::Vacant),
+                "census occupancy bit is clear for a claimed cell"
+            );
+        }
+        occupied
+    }
+    /// Indices whose cells may be occupied, ascending. Each bitmap word is read
+    /// once; a slot claimed after its word was read is not visited, exactly as
+    /// a sequential sweep misses a claim behind its position.
+    pub(crate) fn occupied_indices(&self) -> impl Iterator<Item = usize> + '_ {
+        self.occupied
+            .iter()
+            .enumerate()
+            .flat_map(move |(word_index, word)| {
+                let bits = word.load(Ordering::Acquire);
+                #[cfg(debug_assertions)]
+                for bit in 0..64 {
+                    let index = word_index * 64 + bit;
+                    if bits & (1 << bit) == 0 && index < self.slots.len() {
+                        self.maybe_occupied(index);
+                    }
+                }
+                std::iter::successors((bits != 0).then_some(bits), |bits| {
+                    let rest = bits & (bits - 1);
+                    (rest != 0).then_some(rest)
+                })
+                .map(move |bits| word_index * 64 + bits.trailing_zeros() as usize)
+            })
+            .filter(move |index| *index < self.slots.len())
     }
     pub fn bind_provider(&self, provider: &Arc<dyn NodeDiskMemoryAdmission>) -> io::Result<()> {
         if !std::ptr::eq(self, provider.storage_census()) {
@@ -432,6 +503,9 @@ impl StorageCensus {
         }
     }
     pub fn owner_at(&self, index: usize) -> Option<StorageOwnerId> {
+        if !self.maybe_occupied(index) {
+            return None;
+        }
         let metadata = self.slots.get(index)?.metadata.try_lock().ok()?;
         (!matches!(metadata.cell, Cell::Vacant)).then_some(StorageOwnerId {
             index,
@@ -813,6 +887,7 @@ impl StorageCensus {
             );
             metadata.lease = Some(lease);
             debug_assert!(metadata.source.is_none());
+            self.mark_claimed(index);
             metadata.cell = Cell::Constructing;
             // Effect-free construction/publication is the only allocation held
             // under this short metadata guard. Storage dispatch happens later.
@@ -968,7 +1043,9 @@ impl StorageCensus {
     /// Active children keep their facade/report rules; an unavailable metadata
     /// guard simply leaves the parent's outstanding count positive for retry.
     pub(crate) fn drain_disposed_children(&self, parent: StorageOwnerId) {
-        for (index, slot) in self.slots.iter().enumerate() {
+        // A Vacant cell has no parent, so only possibly occupied slots can match.
+        for index in self.occupied_indices() {
+            let slot = &self.slots[index];
             let id = {
                 let Ok(metadata) = slot.metadata.try_lock() else {
                     continue;
@@ -1244,6 +1321,7 @@ impl StorageCensus {
                     }
                     slot.pending.store(NONE, Ordering::Release);
                     metadata.cell = Cell::Vacant;
+                    self.mark_vacant(id.index);
                     if let Some(parent) = metadata.parent.take() {
                         let previous = self.slots[parent.index]
                             .children
