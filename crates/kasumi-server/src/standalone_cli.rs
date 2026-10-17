@@ -149,21 +149,6 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             }
             _ => anyhow::bail!("unknown maintenance operation"),
         },
-        // One-time first-release ROOT003 upgrade; delete with its module.
-        [command, action, configuration, save_directory]
-            if command == "maintenance" && action == "upgrade-storage-root" =>
-        {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &crate::standalone::upgrade_storage_root(
-                        Path::new(configuration),
-                        Path::new(save_directory),
-                    )
-                    .await?
-                )?
-            );
-        }
         [
             command,
             mode_flag,

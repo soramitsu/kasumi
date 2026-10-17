@@ -61,8 +61,7 @@ pub use group::{
 };
 pub use retained::*;
 pub use root::{
-    ROOT_SLOT_BYTES, RootSlot, RootSlotUpgrade, RootUpgradePlan,
-    TRANSACTION_SPACE_ROOTS_HEAP_BYTES, validate_transaction_space_roots,
+    ROOT_SLOT_BYTES, RootSlot, TRANSACTION_SPACE_ROOTS_HEAP_BYTES, validate_transaction_space_roots,
 };
 pub use tables::*;
 

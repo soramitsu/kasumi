@@ -62,8 +62,6 @@ mod transaction;
 #[cfg(test)]
 #[path = "segment_group/transaction_tests.rs"]
 mod transaction_tests;
-// One-time offline ROOT003 root upgrade; group opening never calls it.
-pub(crate) mod root_upgrade;
 
 const HEADER_BYTES: usize = 4096;
 // Every field and the checksum share the first 512-byte sector, so rewriting

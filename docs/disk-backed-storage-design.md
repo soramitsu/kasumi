@@ -281,10 +281,7 @@ cutoffs one below the newest confirmed segment and arena and creates no file.
 Beginning requires an empty garbage list. Every directory retirement path
 refuses work while Evacuating; the durable transition to Reclaiming clears
 the frozen worklist before its pages become eligible for certified retirement.
-Reopen rejects ROOT004 and earlier root formats without migration; only the
-one-time offline `kasumid maintenance upgrade-storage-root` rewrites the
-ROOT003 roots of the BPNG installation
-([operations](operations.md#one-time-upgrade-of-the-kasumi-kvroot003-installation)).
+ROOT004 and earlier root formats are rejected without migration.
 
 Reclamation runs only in `Reclaiming`, as sequential cohorts certified across
 foreground publications by a cohort nonce, pin stamps and the selection funnel
