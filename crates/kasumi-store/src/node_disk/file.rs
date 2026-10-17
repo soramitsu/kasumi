@@ -843,22 +843,21 @@ fn execute_prepared(
             file_extent(&metadata, disk.unit, disk.config.file_allocation_policy)
                 .inspect_err(|_| disk.fail_locked(state))?;
         let enrolled = AccountedFile::durable(resources.binding, bytes, pending, metadata.len());
-        if state
-            .accounted
-            .get(&identity)
-            .and_then(AccountedInode::file)
-            != Some(&enrolled)
-        {
-            report_enrollment_mismatch(
-                "exclusive-open",
-                identity,
-                state.accounted.get(&identity),
-                &enrolled,
-                &metadata,
-                disk.unit,
-            );
+        // No owner is registered (checked above), so released allocation is
+        // promised again before this owner can grow back into it.
+        if let Err(error) = disk.adopt_released_allocation(state, identity, enrolled) {
+            if error.kind() == io::ErrorKind::InvalidData {
+                report_enrollment_mismatch(
+                    "exclusive-open",
+                    identity,
+                    state.accounted.get(&identity),
+                    &enrolled,
+                    &metadata,
+                    disk.unit,
+                );
+            }
             disk.fail_locked(state);
-            return Err(io::ErrorKind::InvalidData.into());
+            return Err(error);
         }
         enrolled
     };
@@ -1886,7 +1885,11 @@ fn require_unenrolled_target(
         || bytes > enrolled.bytes
         || (enrolled.settled && {
             let (bytes, pending) = file_extent_from_parts(length, allocated, unit, policy)?;
-            *enrolled != AccountedFile::durable(binding, bytes, pending, length)
+            // Released allocation is still this enrolled inode; the next
+            // listing or exclusive open promises it again.
+            enrolled
+                .released(&AccountedFile::durable(binding, bytes, pending, length))
+                .is_none()
         })
     {
         return Err(io::ErrorKind::InvalidData.into());

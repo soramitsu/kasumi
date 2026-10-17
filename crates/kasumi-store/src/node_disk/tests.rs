@@ -3665,10 +3665,23 @@ fn standing_file_allowance_observation_accounts_excess_before_fencing() {
 }
 
 // Isolate the enrollment predicate from cluster timing and from one
-// filesystem's preallocation policy. The existing hook records a conservative
-// prior allocator observation through real account_materialization; neither the
+// filesystem's preallocation policy. The existing hook records a prior
+// allocator observation through real account_materialization; neither the
 // actual file nor its identity, EOF, paid ceiling or settled state is changed.
-fn exercise_pending_only_enrollment(smaller_prior_observation: bool) {
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PriorObservation {
+    /// The canonical actual observation.
+    Exact,
+    /// Conservative: less allocation than the closed file holds, as if it had
+    /// grown without an owner's write. Adopting it would refund credit.
+    Smaller,
+    /// More allocation than the closed file holds: APFS counted blocks past
+    /// EOF at the post-fsync observation and freed them after the close. The
+    /// lifecycle reopen failure recorded 92 such blocks, then refused the file.
+    Larger,
+}
+
+fn exercise_pending_only_enrollment(prior: PriorObservation) {
     for via_cursor in [false, true] {
         let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
         let (_directory, mut config) = installation();
@@ -3691,24 +3704,30 @@ fn exercise_pending_only_enrollment(smaller_prior_observation: bool) {
             AccountedFile::durable(original.binding, bytes, pending, actual.len())
         );
         let before = disk.snapshot();
-        let difference = if smaller_prior_observation { 512 } else { 0 };
-        file.observe_allocation_for_test(allocated - difference)
-            .unwrap();
-        let mut expected = original;
-        expected.pending += difference;
+        let (observed, refunded, released) = match prior {
+            PriorObservation::Exact => (allocated, 0, 0),
+            PriorObservation::Smaller => (allocated - 512, 512, 0),
+            PriorObservation::Larger => (allocated + 92 * disk.unit, 0, 92 * disk.unit),
+        };
+        file.observe_allocation_for_test(observed).unwrap();
+        let mut recorded = original;
+        recorded.pending = recorded.pending + refunded - released;
         assert_eq!(
             *disk.lock_state().accounted[&identity].file().unwrap(),
-            expected,
+            recorded,
             "only pending may differ from the canonical actual observation"
         );
         let admitted = disk.snapshot();
         assert_eq!(admitted.phase, NodeDiskPhase::Open);
         assert!(admitted.filesystem_admission_ready);
         assert_eq!(admitted.charged_bytes, before.charged_bytes);
-        assert_eq!(admitted.pending_bytes, before.pending_bytes + difference);
+        assert_eq!(
+            admitted.pending_bytes,
+            before.pending_bytes + refunded - released
+        );
         assert_eq!(
             admitted.filesystem_pending_bytes,
-            before.filesystem_pending_bytes + difference
+            before.filesystem_pending_bytes + refunded - released
         );
         file.close().unwrap();
         drop(file);
@@ -3718,11 +3737,25 @@ fn exercise_pending_only_enrollment(smaller_prior_observation: bool) {
         assert_eq!(unchanged.len(), actual.len());
         assert_eq!(unchanged.blocks(), actual.blocks());
 
+        let fenced = prior == PriorObservation::Smaller;
+        if !fenced {
+            // A create collision still names the enrolled inode. The conflict
+            // check adopts nothing and keeps the disk open.
+            assert_eq!(
+                disk.create_file("data", Path::new("extent"), DiskWork::Foreground)
+                    .unwrap_err()
+                    .kind(),
+                io::ErrorKind::AlreadyExists
+            );
+            assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+            assert_eq!(disk.snapshot().pending_bytes, admitted.pending_bytes);
+            assert_eq!(disk.snapshot().retained_file_attempts, 0);
+        }
         if via_cursor {
             let cancel = CensusCancellation::default();
             let directory = disk.open_directory("data", Path::new("")).unwrap();
             let mut cursor = directory.cursor(&cancel).unwrap();
-            if smaller_prior_observation {
+            if fenced {
                 assert_eq!(
                     cursor.next(&cancel).unwrap_err().kind(),
                     io::ErrorKind::InvalidData
@@ -3740,7 +3773,7 @@ fn exercise_pending_only_enrollment(smaller_prior_observation: bool) {
             cursor.close().unwrap();
             assert!(cursor.close_error().is_none());
             drop(cursor);
-        } else if smaller_prior_observation {
+        } else if fenced {
             assert_eq!(
                 disk.open_file("data", Path::new("extent"))
                     .unwrap_err()
@@ -3754,44 +3787,61 @@ fn exercise_pending_only_enrollment(smaller_prior_observation: bool) {
             assert_eq!(payload, [0x7b; 4096]);
             reopened.close().unwrap();
         }
+        // Acquisition promises released allocation again and adopts nothing
+        // else: growth keeps the conservative record and the refused file.
+        let (expected, pending, filesystem_pending) = if prior == PriorObservation::Larger {
+            (
+                original,
+                before.pending_bytes,
+                before.filesystem_pending_bytes,
+            )
+        } else {
+            (
+                recorded,
+                admitted.pending_bytes,
+                admitted.filesystem_pending_bytes,
+            )
+        };
         let after = disk.snapshot();
         assert_eq!(
             after.phase,
-            if smaller_prior_observation {
+            if fenced {
                 NodeDiskPhase::Failed
             } else {
                 NodeDiskPhase::Open
             }
         );
-        assert_eq!(after.filesystem_admission_ready, !smaller_prior_observation);
+        assert_eq!(after.filesystem_admission_ready, !fenced);
         assert_eq!(after.charged_bytes, admitted.charged_bytes);
-        assert_eq!(after.pending_bytes, admitted.pending_bytes);
-        assert_eq!(
-            after.filesystem_pending_bytes,
-            admitted.filesystem_pending_bytes
-        );
+        assert_eq!(after.pending_bytes, pending);
+        assert_eq!(after.filesystem_pending_bytes, filesystem_pending);
         assert_eq!(after.persistent_files, admitted.persistent_files);
         assert_eq!(
             *disk.lock_state().accounted[&identity].file().unwrap(),
             expected,
-            "acquisition must not adopt the later allocation or refund credit"
+            "acquisition adopts only released allocation and never refunds credit"
         );
         let unchanged = path.metadata().unwrap();
         assert_eq!(Identity::of(&unchanged), identity);
         assert_eq!(unchanged.len(), actual.len());
         assert_eq!(unchanged.blocks(), actual.blocks());
         // Explicit fixture teardown only, after all refusal and retained-credit
-        // assertions. Acquisition itself performs no reconciliation or retry.
+        // assertions. Acquisition itself performs no other reconciliation or retry.
         clean(&disk, &["extent"]);
     }
 }
 
 #[test]
 fn pending_only_enrollment_unchanged_observation_reopens_and_iterates() {
-    exercise_pending_only_enrollment(false);
+    exercise_pending_only_enrollment(PriorObservation::Exact);
 }
 
 #[test]
 fn pending_only_enrollment_drift_fences_without_releasing_credit() {
-    exercise_pending_only_enrollment(true);
+    exercise_pending_only_enrollment(PriorObservation::Smaller);
+}
+
+#[test]
+fn pending_only_enrollment_released_allocation_is_promised_again_on_reopen_and_iteration() {
+    exercise_pending_only_enrollment(PriorObservation::Larger);
 }

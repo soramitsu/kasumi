@@ -1,4 +1,5 @@
-//! Bounded, enrolled directory reads. No mutation or implicit adoption.
+//! Bounded, enrolled directory reads. No mutation or implicit adoption, except
+//! that a closed file's released allocation is promised again.
 use super::super::{AccountedFile, CensusCancellation, extent, file_extent};
 use super::*;
 use std::{
@@ -338,6 +339,7 @@ impl NodeDiskDirectoryCursor {
                 let identity = Identity::of(&metadata);
                 let kind = match state.accounted.get(&identity) {
                     Some(AccountedInode::File(entry)) if entry.binding == binding => {
+                        let entry = *entry;
                         census::regular_nonallocating(&metadata, parent.identity.0)?;
                         // Same enrollment predicate as exclusive file open:
                         // stable EOF alone cannot detect sparse materialization.
@@ -349,28 +351,26 @@ impl NodeDiskDirectoryCursor {
                             // this read cannot settle or refund that promise.
                             extent(&metadata, disk.unit)?
                         };
+                        let observed =
+                            AccountedFile::durable(binding, bytes, pending, metadata.len());
                         if metadata.len() != entry.actual_len
                             || entry.actual_len > entry.reserved_len
                             || bytes > entry.bytes
-                            || (entry.settled
-                                && *entry
-                                    != AccountedFile::durable(
-                                        binding,
-                                        bytes,
-                                        pending,
-                                        metadata.len(),
-                                    ))
+                            || (entry.settled && entry.released(&observed).is_none())
                         {
                             #[cfg(feature = "test-utils")]
                             super::super::file::report_enrollment_mismatch(
                                 "directory-cursor",
                                 identity,
                                 state.accounted.get(&identity),
-                                &AccountedFile::durable(binding, bytes, pending, metadata.len()),
+                                &observed,
                                 &metadata,
                                 disk.unit,
                             );
                             return Err(io::ErrorKind::InvalidData.into());
+                        }
+                        if entry.settled {
+                            disk.adopt_released_allocation(&mut state, identity, observed)?;
                         }
                         NodeDiskEntryKind::File
                     }

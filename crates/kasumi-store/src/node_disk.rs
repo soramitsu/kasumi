@@ -403,6 +403,22 @@ impl AccountedFile {
             settled: true,
         }
     }
+
+    /// The promise a fresh durable observation of this settled entry adds, or
+    /// `None` when it may not be adopted. Binding, EOF and the paid ceiling
+    /// must be exact; the filesystem may only have released allocation since
+    /// the last post-fsync observation (APFS can count blocks past EOF there
+    /// and free them once the descriptor closes). Allocation that grew without
+    /// an owner's write stays unexplained, and adopting it would refund credit.
+    fn released(&self, observed: &Self) -> Option<u64> {
+        let released = observed.pending.checked_sub(self.pending)?;
+        (*observed
+            == Self {
+                pending: observed.pending,
+                ..*self
+            })
+        .then_some(released)
+    }
 }
 
 /// Read-only directory enrollment. Namespace mutation settlement is a separate
@@ -1401,6 +1417,50 @@ impl NodeDisk {
             .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
         state.bytes = next;
         state.pending = own_pending;
+        Ok(())
+    }
+
+    /// Promise again the allocation a closed settled file released since its
+    /// last observation. The paid charge is unchanged and no credit returns.
+    /// The caller holds State and matched the observed inode's identity and
+    /// binding. A registered owner's budget stays authoritative: its own next
+    /// observation adopts the release, so its entry is left untouched.
+    fn adopt_released_allocation(
+        &self,
+        state: &mut State,
+        identity: Identity,
+        observed: AccountedFile,
+    ) -> io::Result<()> {
+        let released = state
+            .accounted
+            .get(&identity)
+            .and_then(AccountedInode::file)
+            .and_then(|entry| entry.released(&observed))
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if released == 0 || state.live.contains_key(&identity) {
+            return Ok(());
+        }
+        if state.phase == NodeDiskPhase::Failed || !self.device.lock().admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
+        let mut promises = self.device.lock();
+        let (Some(next), Some(own_next)) = (
+            promises.checked_add(released),
+            state.pending.checked_add(released),
+        ) else {
+            state.phase = NodeDiskPhase::Failed;
+            promises.fail_owner();
+            return Err(io::ErrorKind::InvalidData.into());
+        };
+        promises
+            .set_pending(next)
+            .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
+        state.pending = own_next;
+        *state
+            .accounted
+            .get_mut(&identity)
+            .and_then(AccountedInode::file_mut)
+            .expect("validated enrolled inode") = observed;
         Ok(())
     }
 }
