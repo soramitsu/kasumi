@@ -1820,7 +1820,9 @@ impl SourceRootsRef {
     /// new root's applied cursor proves nothing was applied since. The old
     /// cell keeps its own root until its last handle drops. `bootstrap` is the
     /// authenticated image a selection with no applied position is checked
-    /// against. None once consumers are sealed or before serving starts.
+    /// against. None once consumers are sealed or before serving starts. The
+    /// caller must publish the returned selection: dropping it unpublished
+    /// would retire the latest selected position later proposals need.
     pub(crate) fn rebase(
         &self,
         current: &SelectedApplication,
@@ -1900,26 +1902,14 @@ impl SourceRootsRef {
                 ApplicationBoundaryRef::Snapshot(&snapshot)
             }
         };
-        let selected = self.prepare()?.capture(boundary, false)?;
-        let rebased = selected
-            .cell
-            .position
-            .get()
-            .context("rebased application position absent")?;
-        ensure!(
-            applied_identity(rebased) == applied_identity(position)
-                && rebased.bootstrap().digest == position.bootstrap().digest,
-            "rebased application selection differs from its Generation"
-        );
-        Ok(Some(selected))
+        // Serving validation selected exactly this boundary: the new root's
+        // applied cursor equals the entry or snapshot, or there is none at a
+        // bootstrap, and a covered capture cannot settle after serving. The
+        // capture is now the latest selected position that later proposals
+        // are admitted against, so nothing fallible may follow: the caller
+        // publishes it at once.
+        self.prepare()?.capture(boundary, false).map(Some)
     }
-}
-
-fn applied_identity(position: &Position) -> Option<(Option<kasumi_raft::LogId<u64>>, bool)> {
-    position.applied().map(|applied| match applied {
-        kasumi_raft::SelectedAppliedRef::Entry { log_id, .. } => (Some(log_id), false),
-        kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. } => (meta.last_log_id, true),
-    })
 }
 
 // This exact-fork capability is the private boundary for the pending disk

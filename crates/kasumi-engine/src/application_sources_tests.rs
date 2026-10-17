@@ -478,6 +478,21 @@ async fn selected_sources_apply_that_races_a_rebase_wins()
     }
     drop(rebased);
     drop(applied_cell);
+    // The rebased selection is the position the next proposal is admitted at.
+    let next = database
+        .administer(
+            kasumi_types::RequestContext::trusted("selected-sources", "owner", [Action::Admin]),
+            kasumi_types::Operation::CreateCollection(kasumi_types::CollectionDefinition {
+                name: "more".into(),
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type": "object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await?;
+    assert_eq!(next.revision, receipt.revision + 1);
     database.shutdown().await?;
     drop(database);
     drop(engine);
