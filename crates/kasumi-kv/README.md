@@ -147,11 +147,13 @@ Each group runs one persisted maintenance cycle,
 `Idle -> Evacuating -> Reclaiming -> Packing -> Idle`, recorded in the root.
 
 - **Idle.** Bounded census steps measure the present segment and arena files
-  (one probe per identifier). A cycle begins when the measured bytes reach
-  `max(baseline * growth_percent / 100, baseline + slack_bytes)` or the file
-  count reaches the analogous file threshold, or when `request_compaction` asks
-  for one. Beginning is a single root publication that freezes the cutoffs one
-  below the newest confirmed segment and arena; it rolls and creates nothing.
+  (one probe per identifier). A cycle begins when the measured bytes, less
+  those the last reclamation kept only for pinned snapshots, reach
+  `max(baseline * growth_percent / 100, baseline + slack_bytes)`, or the file
+  count does so against the analogous file threshold, or when
+  `request_compaction` asks for one. Beginning is a single root publication
+  that freezes the cutoffs one below the newest confirmed segment and arena;
+  it rolls and creates nothing.
 - **Evacuating.** Every leaf that names a value at or below the segment cutoff,
   or lives in an arena at or below the arena cutoff, is rewritten once with its
   path in one bounded maintenance batch. The cycle-start directory is an
@@ -164,7 +166,9 @@ Each group runs one persisted maintenance cycle,
   file unreachability across the current root and every live pin, then retire,
   unlink and forget the unreferenced files. Foreground commits never restart or
   invalidate a cohort: every install goes through one selection funnel that
-  advances the cohort's certified chain and stamps new pins.
+  advances the cohort's certified chain and stamps new pins. The baseline it
+  publishes is the measured size less the reclaimed files and less the files
+  kept only for pinned roots.
 - **Packing.** One bounded density pass packs sparse pages level by level, with
   each level capped at its starting entry count plus 64 plans. Every step
   persists its cursor and remaining budget, including skips and level changes.
@@ -174,6 +178,16 @@ Each phase change is its own root publication; a reopen resumes from the record
 and never re-copies values a previous lifetime already relocated. Every
 maintenance data batch first reserves its complete `TransactionSpacePlan`, like
 a foreground commit.
+
+Idle frees the files a cycle kept only for pinned roots in a reclaim-only
+round: the same certified cohorts over that cycle's limits, with nothing
+evacuated. The round starts once no pin holds a root older than the one that
+ended the evacuation; that root, every later one and every new pin reference
+nothing below the limits. A reopen holds no pins, so after a completed
+reclamation it arms one round over every file a cycle beginning then would
+cover; a reopen mid-evacuation or mid-reclamation leaves this to the cycle in
+progress. An active round finishes before a cycle may begin. Rounds are
+volatile and leave the compaction record unchanged.
 
 `Database::begin_write` runs one inline step (`MaintenancePolicy::inline_units`
 read units and `inline_mutations` publications, 32 and 1 by default) before its
@@ -188,12 +202,14 @@ unknown outcomes and owner failure fence the owner, as for any write.
 Retained size oscillates between the baseline `B` and about `max(2B, B +
 slack_bytes)` plus one cycle's transient, where `B` can reach about `(1 + 2h)`
 times the live directory plus the live values under saturated writes (each leaf
-rewrite copies its path). A cycle copies all live values and every old leaf.
-Files reachable only from pinned snapshots survive until the first cycle after
-their pins are released. On a full disk evacuation defers, and nothing can be
-reclaimed until it finishes: keep about `B` of headroom. A cohort walk must
-finish within one process lifetime for reclamation to progress across crash
-loops; the node worker provides that for managed stores.
+rewrite copies its path). Files that only pinned snapshots reach come on top:
+neither `B` nor the trigger counts them, so pins cannot raise the next
+threshold, and they last until Idle's round after the pins older than the
+evacuation are released. A cycle copies all live values and every old leaf. On
+a full disk evacuation defers, and nothing can be reclaimed until it finishes:
+keep about `B` of headroom. A cohort walk must finish within one process
+lifetime for reclamation to progress across crash loops; the node worker
+provides that for managed stores.
 
 | Native Core bound | Limit |
 | --- | --- |

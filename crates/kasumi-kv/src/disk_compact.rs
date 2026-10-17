@@ -85,6 +85,12 @@ impl Compaction {
         }
         Ok(compaction)
     }
+
+    /// Files went away since the last census: measure again.
+    pub(super) fn remeasure(&mut self) {
+        self.measurement = None;
+        self.census = None;
+    }
 }
 
 impl DiskState {
@@ -132,11 +138,21 @@ impl DiskState {
         budget: MaintenanceBudget,
         progress: &mut MaintenanceProgress,
     ) -> Result<bool, CoreError> {
+        // An active round finishes first: a cycle begins only on an empty
+        // garbage list, and the round frees what pins held without one.
+        if self.round_active() {
+            return self.round_step(budget, progress);
+        }
+        // Files kept only for pinned roots are neither in the baseline nor
+        // counted against the trigger; Idle's round reclaims them instead.
         let policy = self.maintenance.policy;
+        let kept = self.reclaim.totals;
         let due = self.compact.requested
             || self.compact.measurement.is_some_and(|measurement| {
-                measurement.bytes() >= policy.trigger_bytes(record.baseline_bytes())
-                    || measurement.files() >= policy.trigger_files(record.baseline_files())
+                measurement.bytes().saturating_sub(kept.pin_retained_bytes)
+                    >= policy.trigger_bytes(record.baseline_bytes())
+                    || measurement.files().saturating_sub(kept.pin_retained_files)
+                        >= policy.trigger_files(record.baseline_files())
             });
         if due {
             if !can_mutate(budget, progress) {
@@ -155,17 +171,24 @@ impl DiskState {
                 // could not free anything yet.
                 drop(root);
                 self.compact.requested = false;
+                if self.round_ready()? {
+                    return self.round_step(budget, progress);
+                }
                 progress.idle = true;
                 return Ok(false);
             }
             let next = root.begin_compaction()?;
             self.owner.publish(&mut root, next)?;
             drop(root);
+            self.drop_owed_round();
             self.compact.requested = false;
             progress.units += 1;
             progress.mutations += 1;
             progress.phase_changed = true;
             return Ok(true);
+        }
+        if self.round_ready()? {
+            return self.round_step(budget, progress);
         }
         let stale = {
             let root = self.owner.lock()?;
@@ -236,6 +259,9 @@ impl DiskState {
                 return Ok(false);
             }
             self.publish_phase(Superblock::advance_to_reclaiming)?;
+            // This root and every later one reference nothing below the
+            // limits; only pins of older roots can still reach those files.
+            self.reclaim.evacuated = self.selected.generation;
             progress.mutations += 1;
             progress.phase_changed = true;
             return Ok(true);

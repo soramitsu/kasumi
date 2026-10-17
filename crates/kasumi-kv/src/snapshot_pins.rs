@@ -535,6 +535,23 @@ impl SnapshotPins {
         Ok(epoch)
     }
 
+    /// Cheap scheduling observation only, never an unlink proof: whether any
+    /// live pin holds a root older than `generation`. Acquisition pins only
+    /// the current root and a history transfer only an already pinned one, so
+    /// once no pin is older than a past current root, none can become so.
+    pub(crate) fn pinned_before(&self, generation: u64) -> Result<bool, CoreError> {
+        self.inner.check()?;
+        let state = self.inner.lock()?;
+        let older = state
+            .slots
+            .iter()
+            .filter_map(Entry::pinned)
+            .any(|slot| slot.root.generation < generation);
+        drop(state);
+        self.inner.check()?;
+        Ok(older)
+    }
+
     /// Cheap scheduling observation only, never root traversal/unlink proof.
     /// Current-root reader churn is irrelevant; a historical root retires only
     /// after its last independent pin (and all clones) disappears.
@@ -1412,5 +1429,30 @@ mod tests {
         assert_eq!(admission.reserves.load(Ordering::Acquire), reserves);
         assert_eq!(admission.used.load(Ordering::Acquire), used);
         drop((historical, stamped, current));
+    }
+
+    #[test]
+    fn pinned_before_sees_ordinary_protected_and_demoted_pins() {
+        let (_, pins) = setup(4);
+        let rights = pins.reserve_source_rights().unwrap();
+        assert!(!pins.pinned_before(u64::MAX).unwrap());
+        let ordinary = pins.acquire(root(3)).unwrap();
+        assert!(pins.pinned_before(4).unwrap());
+        assert!(!pins.pinned_before(3).unwrap());
+        let mut prepared = pins.prepare_protected(&rights).unwrap();
+        let protected = pins.install_protected(&mut prepared, root(1)).unwrap();
+        let clone = protected.clone();
+        assert!(pins.pinned_before(2).unwrap());
+        assert!(!pins.pinned_before(1).unwrap());
+        drop(protected);
+        // A history transfer demotes the same slot; its root stays pinned.
+        let mut history = pins.reserve_history(&clone).unwrap();
+        pins.commit_history(&mut history).unwrap();
+        drop(history);
+        assert!(pins.pinned_before(2).unwrap());
+        drop((clone, prepared));
+        assert!(!pins.pinned_before(3).unwrap());
+        drop(ordinary);
+        assert!(!pins.pinned_before(u64::MAX).unwrap());
     }
 }

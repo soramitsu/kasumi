@@ -14,7 +14,8 @@
 //! identifier at or below them predates the cycle, while every value or page
 //! written after the beginning lands in the active (or a newer) file, whose
 //! identifier is above them. The baseline is the retained size measured when
-//! the last cycle finished reclaiming; it schedules the next cycle.
+//! the last cycle finished reclaiming, less the files it kept only for pinned
+//! roots; it schedules the next cycle.
 
 use super::directory::DIRECTORY_END;
 use super::{CHECKSUM_AT, CoreError, Superblock};

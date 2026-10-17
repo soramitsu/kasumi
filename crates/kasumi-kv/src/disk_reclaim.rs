@@ -24,13 +24,24 @@
 //! - A cohort is invalidated (never rebound) when any condition fails; files
 //!   already recorded are then re-proved by a `RecordedGarbage` cohort, and
 //!   reopen re-proves recorded garbage before unlinking any of it.
+//!
+//! Files a cycle keeps only for pinned roots stay out of its baseline, and
+//! Idle reclaims them in a reclaim-only round: the same cohorts over the
+//! cycle's limits, with no evacuation and nothing persisted. The round starts
+//! once no pin holds a root older than the one that ended the evacuation.
+//! That root and every later one reference nothing below the limits, and
+//! acquisition only pins the current root, so the older pins, all captured
+//! by the cycle's cohorts, were the only roots that could reach those files.
+//! Reopen holds no pins and arms one round over every file below the newest.
+//! An active round finishes before Idle may begin a cycle: its recorded
+//! garbage must drain first, and it frees what pins held more cheaply.
 
 use super::maintenance::{
     Census, FileFloor, MaintenanceBudget, MaintenanceProgress, Measurement, can_mutate,
 };
 use super::*;
 use crate::reclaim::{Cohort, CohortKind, CohortStage, ReclaimCursor, ReclaimLimits, Seal};
-use crate::root::CompactionRecord;
+use crate::root::{CompactionPhase, CompactionRecord};
 
 /// Process-lifetime reclamation counters, reported by the status.
 #[derive(Clone, Copy, Debug, Default)]
@@ -38,7 +49,8 @@ pub(super) struct ReclaimTotals {
     pub(super) reclaimed_files: u64,
     pub(super) reclaimed_bytes: u64,
     pub(super) invalidations: u64,
-    /// Of the last completed cycle: old files kept only for pinned roots.
+    /// Of the last completed cycle or round: old files kept only for pinned
+    /// roots. The baseline leaves them out, and so does Idle's trigger check.
     pub(super) pin_retained_files: u64,
     pub(super) pin_retained_bytes: u64,
 }
@@ -47,13 +59,28 @@ pub(super) struct ReclaimTotals {
 pub(super) struct Reclamation {
     pub(super) floor: FileFloor,
     next_nonce: u64,
+    /// The Reclaiming phase's cycle, or a reclaim-only round in Idle.
     cycle: Option<ReclaimCycle>,
+    /// The round a completed cycle owes the files it kept for pinned roots.
+    owed: Option<OwedRound>,
+    /// The oldest root generation that references nothing below the limits
+    /// of the current or last cycle: the root that ended its evacuation, or
+    /// the one selected at reopen.
+    pub(super) evacuated: u64,
     pub(super) totals: ReclaimTotals,
+}
+
+#[derive(Clone, Copy)]
+struct OwedRound {
+    limits: ReclaimLimits,
+    /// The round starts once no pin holds a root older than this.
+    evacuated: u64,
 }
 
 struct ReclaimCycle {
     limits: ReclaimLimits,
     cursor: ReclaimCursor,
+    /// The phase measures before its first cohort; a round does not.
     census: Option<Census>,
     measurement: Option<Measurement>,
     reclaimed_files: u64,
@@ -63,6 +90,28 @@ struct ReclaimCycle {
     lowest_segment: Option<u64>,
     lowest_arena: Option<u64>,
     cohort: Option<Cohort>,
+}
+
+impl ReclaimCycle {
+    /// Candidates from `floor` up to the exclusive `limits`.
+    fn new(limits: ReclaimLimits, floor: FileFloor, census: Option<Census>) -> Self {
+        Self {
+            limits,
+            cursor: ReclaimCursor {
+                next_segment: floor.segment,
+                next_arena: floor.arena,
+            },
+            census,
+            measurement: None,
+            reclaimed_files: 0,
+            reclaimed_bytes: 0,
+            pin_retained_files: 0,
+            pin_retained_bytes: 0,
+            lowest_segment: None,
+            lowest_arena: None,
+            cohort: None,
+        }
+    }
 }
 
 enum CohortAction {
@@ -96,6 +145,22 @@ impl Reclamation {
                 "reclamation nonce is exhausted",
             )))
     }
+
+    /// After a completed range, nothing below the lowest file it kept, or
+    /// below its limits if it kept none, is present.
+    fn raise_floor(&mut self, cycle: &ReclaimCycle) {
+        let floor = &mut self.floor;
+        floor.segment = floor.segment.max(
+            cycle
+                .lowest_segment
+                .map_or(cycle.limits.segment, |id| id.min(cycle.limits.segment)),
+        );
+        floor.arena = floor.arena.max(
+            cycle
+                .lowest_arena
+                .map_or(cycle.limits.arena, |id| id.min(cycle.limits.arena)),
+        );
+    }
 }
 
 #[cfg(test)]
@@ -108,6 +173,10 @@ impl Reclamation {
     }
     pub(super) fn cohort_stage_for_test(&self) -> Option<CohortStage> {
         self.cycle.as_ref()?.cohort.as_ref().map(Cohort::stage)
+    }
+    /// The owed round's limits and the generation that holds it back.
+    pub(super) fn owed_round_for_test(&self) -> Option<(ReclaimLimits, u64)> {
+        self.owed.map(|owed| (owed.limits, owed.evacuated))
     }
     /// Fault hook: the next cohort would need a nonce past `u64::MAX`.
     pub(super) fn exhaust_nonces_for_test(&mut self) {
@@ -196,22 +265,7 @@ impl DiskState {
         let floor = self.reclaim.floor;
         let census = Census::start(floor, &root);
         drop(root);
-        self.reclaim.cycle = Some(ReclaimCycle {
-            limits,
-            cursor: ReclaimCursor {
-                next_segment: floor.segment,
-                next_arena: floor.arena,
-            },
-            census: Some(census),
-            measurement: None,
-            reclaimed_files: 0,
-            reclaimed_bytes: 0,
-            pin_retained_files: 0,
-            pin_retained_bytes: 0,
-            lowest_segment: None,
-            lowest_arena: None,
-            cohort: None,
-        });
+        self.reclaim.cycle = Some(ReclaimCycle::new(limits, floor, Some(census)));
         Ok(())
     }
 
@@ -239,13 +293,75 @@ impl DiskState {
             }
             return Ok(used != 0 || measured.is_some());
         }
+        match self.cohort_item(budget, progress)? {
+            Some(advanced) => Ok(advanced),
+            None => self.complete_reclaim_cycle(budget, progress),
+        }
+    }
+
+    /// Idle's cycle slot holds only a reclaim-only round.
+    pub(super) fn round_active(&self) -> bool {
+        self.reclaim.cycle.is_some()
+    }
+
+    /// Whether Idle has a reclaim-only round to step: an active one, or an
+    /// owed one that no pin older than its evacuated root holds back.
+    pub(super) fn round_ready(&self) -> Result<bool, CoreError> {
+        if self.reclaim.cycle.is_some() {
+            return Ok(true);
+        }
+        match self.reclaim.owed {
+            Some(owed) => Ok(!self.pins.pinned_before(owed.evacuated)?),
+            None => Ok(false),
+        }
+    }
+
+    /// One bounded item of Idle's reclaim-only round. Completion publishes
+    /// nothing: the baseline already leaves these files out.
+    pub(super) fn round_step(
+        &mut self,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<bool, CoreError> {
+        if self.reclaim.cycle.is_none() {
+            let owed = self.reclaim.owed.take().expect("owed round");
+            self.reclaim.cycle = Some(ReclaimCycle::new(owed.limits, self.reclaim.floor, None));
+        }
+        if let Some(advanced) = self.cohort_item(budget, progress)? {
+            return Ok(advanced);
+        }
+        let round = self.reclaim.cycle.take().expect("completed round");
+        self.reclaim.raise_floor(&round);
+        self.reclaim.totals.pin_retained_files = round.pin_retained_files;
+        self.reclaim.totals.pin_retained_bytes = round.pin_retained_bytes;
+        // Unlinked files leave the Idle measurement stale.
+        self.compact.remeasure();
+        progress.units += 1;
+        Ok(true)
+    }
+
+    /// A cycle that begins covers every file an owed round would, from the
+    /// same floor up to newer limits. Idle begins one only with no round
+    /// active.
+    pub(super) fn drop_owed_round(&mut self) {
+        debug_assert!(self.reclaim.cycle.is_none(), "cycle began during a round");
+        self.reclaim.owed = None;
+    }
+
+    /// Start or advance the cycle's cohorts by one item; `None` once its
+    /// candidate range is exhausted and no recorded garbage is left.
+    fn cohort_item(
+        &mut self,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<Option<bool>, CoreError> {
+        let cycle = self.reclaim.cycle.as_mut().expect("started cycle");
         if cycle.cohort.is_none() {
             let (cursor, limits) = (cycle.cursor, cycle.limits);
             let root = self.owner.lock()?;
             let recorded = !root.garbage().is_empty();
             if !recorded && cursor.exhausted(limits) {
-                drop(root);
-                return self.complete_reclaim_cycle(budget, progress);
+                return Ok(None);
             }
             let nonce = self.reclaim.next_nonce()?;
             let kind = if recorded {
@@ -266,7 +382,7 @@ impl DiskState {
             self.pins.begin_coverage(nonce, self.selected)?;
             self.reclaim.next_nonce = nonce;
             self.reclaim.cycle.as_mut().expect("started cycle").cohort = Some(cohort);
-            return Ok(true);
+            return Ok(Some(true));
         }
         let mut cohort = cycle.cohort.take().expect("checked cohort");
         let result = self.cohort_step(&mut cohort, budget, progress);
@@ -274,11 +390,11 @@ impl DiskState {
         match result {
             Ok(CohortAction::Continue) => {
                 cycle.cohort = Some(cohort);
-                Ok(true)
+                Ok(Some(true))
             }
             Ok(CohortAction::Stop) => {
                 cycle.cohort = Some(cohort);
-                Ok(false)
+                Ok(Some(false))
             }
             Ok(CohortAction::Finished) => {
                 if cohort.kind() == CohortKind::Candidates {
@@ -290,12 +406,12 @@ impl DiskState {
                     lowest(&mut cycle.lowest_arena, survivors.lowest_arena);
                 }
                 self.pins.end_coverage(cohort.nonce())?;
-                Ok(true)
+                Ok(Some(true))
             }
             Ok(CohortAction::Invalidated) => {
                 self.reclaim.totals.invalidations += 1;
                 self.pins.end_coverage(cohort.nonce())?;
-                Ok(true)
+                Ok(Some(true))
             }
             Err(error) => {
                 // Keep it for the error boundary: local failures end its
@@ -412,25 +528,27 @@ impl DiskState {
         if !can_mutate(budget, progress) {
             return Ok(false);
         }
+        // The retained files minus those kept only for pinned roots: what
+        // remains once the pins go, which Idle's round then reclaims.
         let cycle = self.reclaim.cycle.as_ref().expect("completed cycle");
         let measurement = cycle.measurement.expect("measured cycle");
-        let baseline_bytes = measurement.bytes().saturating_sub(cycle.reclaimed_bytes);
-        let baseline_files = measurement.files().saturating_sub(cycle.reclaimed_files);
+        let baseline_bytes = measurement
+            .bytes()
+            .saturating_sub(cycle.reclaimed_bytes)
+            .saturating_sub(cycle.pin_retained_bytes);
+        let baseline_files = measurement
+            .files()
+            .saturating_sub(cycle.reclaimed_files)
+            .saturating_sub(cycle.pin_retained_files);
         self.publish_phase(|root| root.advance_to_packing(baseline_bytes, baseline_files))?;
         let cycle = self.reclaim.cycle.take().expect("completed cycle");
-        let floor = &mut self.reclaim.floor;
-        floor.segment = floor.segment.max(
-            cycle
-                .lowest_segment
-                .map_or(cycle.limits.segment, |id| id.min(cycle.limits.segment)),
-        );
-        floor.arena = floor.arena.max(
-            cycle
-                .lowest_arena
-                .map_or(cycle.limits.arena, |id| id.min(cycle.limits.arena)),
-        );
+        self.reclaim.raise_floor(&cycle);
         self.reclaim.totals.pin_retained_files = cycle.pin_retained_files;
         self.reclaim.totals.pin_retained_bytes = cycle.pin_retained_bytes;
+        self.reclaim.owed = (cycle.pin_retained_files != 0).then_some(OwedRound {
+            limits: cycle.limits,
+            evacuated: self.reclaim.evacuated,
+        });
         self.start_packing();
         progress.units += 1;
         progress.mutations += 1;
@@ -512,5 +630,35 @@ impl DiskState {
         })();
         self.pins.end_coverage(nonce)?;
         result
+    }
+
+    /// Reopen holds no pins, so only the selected root can still reach a
+    /// file below the newest: arm one round over everything a cycle
+    /// beginning now would cover, the same exclusive limits Reclaiming
+    /// derives from its cutoffs. Armed after a completed cycle (Idle) or
+    /// reclamation (Packing), it runs in Idle's first steps, before any
+    /// cycle may begin. Evacuating protects its worklist and Reclaiming
+    /// resumes its own range.
+    pub(super) fn arm_reopen_round(&mut self) -> Result<(), CoreError> {
+        let root = self.owner.lock()?;
+        let record = root.compaction();
+        let armed = match record.phase() {
+            CompactionPhase::Idle => record.cycle() != 0,
+            CompactionPhase::Packing => true,
+            CompactionPhase::Evacuating | CompactionPhase::Reclaiming => false,
+        };
+        let Some(commit) = root.directory().filter(|_| armed) else {
+            return Ok(());
+        };
+        let (segment, arena) = root.compaction_cutoffs();
+        let limits = ReclaimLimits {
+            segment: segment
+                .saturating_add(1)
+                .min(commit.start.position.segment_id),
+            arena: arena.saturating_add(1),
+        };
+        drop(root);
+        self.reclaim.cycle = Some(ReclaimCycle::new(limits, self.reclaim.floor, None));
+        Ok(())
     }
 }

@@ -62,7 +62,8 @@ impl StorageCompactionPhase {
 pub struct MaintenanceProgress {
     pub units: usize,
     pub mutations: usize,
-    /// Nothing is due: the cycle is Idle and its measurement is current.
+    /// Nothing is due: the cycle is Idle, no reclaim-only round can run and
+    /// the measurement is current.
     pub idle: bool,
     pub deferred: Option<MaintenanceDeferral>,
     /// The phase after this step.
@@ -80,9 +81,11 @@ pub enum MaintenanceStep {
     Ran(MaintenanceProgress),
 }
 
-/// Scheduling policy. A cycle becomes due when the measured retained bytes
-/// reach `max(baseline * growth_percent / 100, baseline + slack_bytes)` or the
-/// file count reaches the analogous file threshold.
+/// Scheduling policy. A cycle becomes due when the measured retained bytes,
+/// less those the last reclamation kept only for pinned roots, reach
+/// `max(baseline * growth_percent / 100, baseline + slack_bytes)`, or the file
+/// count does so against the analogous file threshold. The baseline leaves
+/// those files out too.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MaintenancePolicy {
     pub growth_percent: u32,
@@ -163,9 +166,11 @@ pub struct StorageMaintenanceStatus {
     pub garbage_files: u64,
     pub baseline_bytes: u64,
     pub baseline_files: u64,
+    /// Thresholds for the measured figures less the snapshot-retained ones.
     pub trigger_bytes: u64,
     pub trigger_files: u64,
-    /// Old files the last completed reclamation kept only for pinned roots.
+    /// Old files the last completed cycle or reclaim-only round kept only for
+    /// pinned roots; neither the baseline nor the trigger check counts them.
     pub snapshot_retained_files: u64,
     pub snapshot_retained_bytes: u64,
     pub reclaimed_files_total: u64,

@@ -203,9 +203,12 @@ impl DiskOpening {
         state.writer = SegmentWriter::resume(group_id, &end);
         state.selected = selected;
         state.reclaim.floor = floor;
+        // Every pin of this lifetime holds the selected root or a later one.
+        state.reclaim.evacuated = selected.generation;
         state.compact = Compaction::resume(superblock.compaction(), &state.owner.admission)?;
         *state.owner.lock()? = superblock;
         state.finish_recorded_garbage()?;
+        state.arm_reopen_round()?;
         let _ = DirectoryReader::new(state.arena.as_ref(), state.owner.admission.clone()).next(
             selected,
             DirectoryKey::table("\0"),
