@@ -191,6 +191,8 @@ struct Cell {
     state: Mutex<CellState>,
     history_escape: Mutex<()>,
     position: OnceLock<Position>,
+    // Node evacuations finished before this cell's view selected its root.
+    evacuations: OnceLock<u64>,
     _metadata_parent: OnceLock<CellRef>,
     frozen: OnceLock<bool>,
     failure: OnceLock<RecordedFailure>,
@@ -239,6 +241,36 @@ impl std::fmt::Debug for SelectedApplication {
             .field(&self.cell.id)
             .finish()
     }
+}
+impl SelectedApplication {
+    pub(crate) fn id(&self) -> u64 {
+        self.cell.id
+    }
+    /// Its root was selected before the node finished `evacuations`, so it
+    /// may still name files the latest of them emptied.
+    pub(crate) fn predates(&self, evacuations: u64) -> bool {
+        self.cell
+            .evacuations
+            .get()
+            .is_none_or(|selected| *selected < evacuations)
+    }
+    /// No entry or snapshot has been applied since the bootstrap image.
+    pub(crate) fn at_bootstrap(&self) -> bool {
+        self.cell
+            .position
+            .get()
+            .is_some_and(|position| position.applied().is_none())
+    }
+}
+
+/// Evacuations the node database has finished; its cycle already counts the
+/// one in progress. A root selected before the latest of them can still name
+/// every file that evacuation emptied, and reclamation keeps those files.
+pub(crate) fn completed_evacuations(stores: &TenantStorageSet) -> Option<u64> {
+    let status = stores.application().storage_maintenance_status().ok()?;
+    Some(status.cycle.saturating_sub(u64::from(
+        status.phase == kasumi_store::StorageCompactionPhase::Evacuating,
+    )))
 }
 
 struct SourcePanic {
@@ -1059,6 +1091,7 @@ impl SourceRootsRef {
                 }),
                 history_escape: Mutex::new(()),
                 position: OnceLock::new(),
+                evacuations: OnceLock::new(),
                 _metadata_parent: OnceLock::new(),
                 frozen: OnceLock::new(),
                 failure: OnceLock::new(),
@@ -1282,6 +1315,11 @@ impl RootPreparation {
                 ApplicationSelectionMode::Reconstructing
             }
         };
+        // Observed before the view selects its root, so a later evacuation is
+        // never attributed to it; an unknown count reads as older than any.
+        if let Some(evacuations) = completed_evacuations(&self.roots.stores) {
+            let _ = self.cell.evacuations.set(evacuations);
+        }
         let acquired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
             if let Some(queued) = self.queued_source.take() {
                 let reader = queued.capture()?;
@@ -1693,6 +1731,46 @@ impl kasumi_raft::ApplicationSourceCustody for SourceRootsRef {
     }
 }
 
+fn add_quote(total: &mut u64, extra: u64) -> Result<()> {
+    *total = total
+        .checked_add(extra)
+        .context("selection boundary quote overflow")?;
+    Ok(())
+}
+/// Charge for cloning one stored membership's containers and strings.
+fn membership_bytes(
+    membership: &kasumi_raft::StoredMembership<u64, kasumi_raft::BasicNode>,
+) -> Result<u64> {
+    let membership = membership.membership();
+    let configs = membership.get_joint_config();
+    let mut bytes = allocated(
+        configs
+            .len()
+            .checked_mul(std::mem::size_of::<std::collections::BTreeSet<u64>>())
+            .context("membership vector quote overflow")?,
+    )?;
+    let set_node = allocated(11 * std::mem::size_of::<u64>() + 16 * std::mem::size_of::<usize>())?;
+    for config in configs {
+        // One full internal node per element also bounds clone's partially
+        // occupied leaf/root nodes; Vec clone requests exactly its length.
+        add_quote(
+            &mut bytes,
+            set_node
+                .checked_mul(config.len() as u64)
+                .context("membership voter quote overflow")?,
+        )?;
+    }
+    let map_node = allocated(
+        11 * (std::mem::size_of::<u64>() + std::mem::size_of::<kasumi_raft::BasicNode>())
+            + 16 * std::mem::size_of::<usize>(),
+    )?;
+    for (_, node) in membership.nodes() {
+        add_quote(&mut bytes, map_node)?;
+        add_quote(&mut bytes, allocated(node.addr.len())?)?;
+    }
+    Ok(bytes)
+}
+
 /// Restore outlives the borrowed adapter context. Charge the concrete clone
 /// before copying its membership containers and strings; drop it before grant.
 pub(crate) struct RestoreSelection {
@@ -1706,46 +1784,10 @@ impl SourceRootsRef {
         context: &kasumi_raft::SnapshotRestoreContext,
         prepared_owner_bytes: usize,
     ) -> Result<RestoreSelection> {
-        fn add(total: &mut u64, extra: u64) -> Result<()> {
-            *total = total
-                .checked_add(extra)
-                .context("restore selection quote overflow")?;
-            Ok(())
-        }
         let mut bytes = allocated(prepared_owner_bytes)?;
-        add(&mut bytes, allocated(context.backend_sha256.len())?)?;
-        add(&mut bytes, allocated(context.meta.snapshot_id.len())?)?;
-        let membership = context.meta.last_membership.membership();
-        let configs = membership.get_joint_config();
-        add(
-            &mut bytes,
-            allocated(
-                configs
-                    .len()
-                    .checked_mul(std::mem::size_of::<std::collections::BTreeSet<u64>>())
-                    .context("restore membership vector overflow")?,
-            )?,
-        )?;
-        let set_node =
-            allocated(11 * std::mem::size_of::<u64>() + 16 * std::mem::size_of::<usize>())?;
-        for config in configs {
-            // One full internal node per element also bounds clone's partially
-            // occupied leaf/root nodes; Vec clone requests exactly its length.
-            add(
-                &mut bytes,
-                set_node
-                    .checked_mul(config.len() as u64)
-                    .context("restore voter quote overflow")?,
-            )?;
-        }
-        let map_node = allocated(
-            11 * (std::mem::size_of::<u64>() + std::mem::size_of::<kasumi_raft::BasicNode>())
-                + 16 * std::mem::size_of::<usize>(),
-        )?;
-        for (_, node) in membership.nodes() {
-            add(&mut bytes, map_node)?;
-            add(&mut bytes, allocated(node.addr.len())?)?;
-        }
+        add_quote(&mut bytes, allocated(context.backend_sha256.len())?)?;
+        add_quote(&mut bytes, allocated(context.meta.snapshot_id.len())?)?;
+        add_quote(&mut bytes, membership_bytes(&context.meta.last_membership)?)?;
         let reservation = self.admission.reserve_application_source(bytes)?;
         let preparation = self.prepare()?;
         let context = kasumi_raft::SnapshotRestoreContext {
@@ -1765,6 +1807,119 @@ impl RestoreSelection {
         self.preparation
             .capture(ApplicationBoundaryRef::Snapshot(&self.context), frozen)
     }
+}
+
+impl SourceRootsRef {
+    /// Serving after reconstruction, with consumers and preparations open.
+    pub(crate) fn rebases_selections(&self) -> bool {
+        let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        gate.serving && !gate.consumers_closed && !gate.preparations_closed
+    }
+    /// Select the node's current root at `current`'s exact applied boundary,
+    /// for a Generation whose state does not change. Serving validation of the
+    /// new root's applied cursor proves nothing was applied since. The old
+    /// cell keeps its own root until its last handle drops. `bootstrap` is the
+    /// authenticated image a selection with no applied position is checked
+    /// against. None once consumers are sealed or before serving starts.
+    pub(crate) fn rebase(
+        &self,
+        current: &SelectedApplication,
+        bootstrap: Option<&kasumi_store::SnapshotImage>,
+    ) -> Result<Option<SelectedApplication>> {
+        if !self.rebases_selections() {
+            return Ok(None);
+        }
+        let position = current
+            .cell
+            .position
+            .get()
+            .context("selected application position absent")?;
+        // A frozen Generation's covered selection has no exact serving boundary.
+        ensure!(
+            current.cell.frozen.get() == Some(&false) && !position.is_covered_reconstruction(),
+            "only an exact unfrozen selection moves to a later root"
+        );
+        let applied = position.applied();
+        // Charge the owned boundary before cloning its membership and strings.
+        let bytes = match &applied {
+            None => 0,
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                membership,
+                command_sha256,
+                ..
+            }) => {
+                let mut bytes = allocated(command_sha256.len())?;
+                add_quote(&mut bytes, membership_bytes(membership)?)?;
+                bytes
+            }
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot {
+                meta,
+                backend_sha256,
+                ..
+            }) => {
+                let mut bytes = allocated(backend_sha256.len())?;
+                add_quote(&mut bytes, allocated(meta.snapshot_id.len())?)?;
+                add_quote(&mut bytes, membership_bytes(&meta.last_membership)?)?;
+                bytes
+            }
+        };
+        let _reservation = (bytes != 0)
+            .then(|| self.admission.reserve_application_source(bytes))
+            .transpose()?;
+        let entry;
+        let snapshot;
+        let boundary = match applied {
+            None => ApplicationBoundaryRef::Bootstrap(
+                bootstrap.context("bootstrap selection requires its authenticated image")?,
+            ),
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                previous,
+                membership,
+                command_sha256,
+            }) => {
+                entry = kasumi_raft::AppliedEntryContext {
+                    log_id,
+                    previous,
+                    membership: membership.clone(),
+                    command_sha256: command_sha256.to_owned(),
+                    retirement_seed: None,
+                };
+                ApplicationBoundaryRef::Entry(&entry)
+            }
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot {
+                meta,
+                backend_sha256,
+                ..
+            }) => {
+                snapshot = kasumi_raft::SnapshotRestoreContext {
+                    mode: kasumi_raft::SnapshotRestoreMode::Reopen,
+                    backend_sha256: backend_sha256.to_owned(),
+                    meta: meta.clone(),
+                };
+                ApplicationBoundaryRef::Snapshot(&snapshot)
+            }
+        };
+        let selected = self.prepare()?.capture(boundary, false)?;
+        let rebased = selected
+            .cell
+            .position
+            .get()
+            .context("rebased application position absent")?;
+        ensure!(
+            applied_identity(rebased) == applied_identity(position)
+                && rebased.bootstrap().digest == position.bootstrap().digest,
+            "rebased application selection differs from its Generation"
+        );
+        Ok(Some(selected))
+    }
+}
+
+fn applied_identity(position: &Position) -> Option<(Option<kasumi_raft::LogId<u64>>, bool)> {
+    position.applied().map(|applied| match applied {
+        kasumi_raft::SelectedAppliedRef::Entry { log_id, .. } => (Some(log_id), false),
+        kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. } => (meta.last_log_id, true),
+    })
 }
 
 // This exact-fork capability is the private boundary for the pending disk

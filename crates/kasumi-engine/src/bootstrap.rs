@@ -737,7 +737,7 @@ pub fn persisted_bootstrap_digest(store: &TenantStore) -> anyhow::Result<String>
         .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))
 }
 
-fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
+pub(crate) fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>> {
     let Some(manifest) = read_current_manifest(store)? else {
         return Ok(None);
     };

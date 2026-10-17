@@ -357,6 +357,135 @@ async fn selected_sources_local_command_publishes_entry_and_drains_surviving_gen
 }
 
 #[tokio::test]
+async fn selected_sources_rebase_moves_bootstrap_selection_to_the_current_root()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
+    let engine = TenantEngine::from_bootstrap("selected-sources", &fixture.image)?;
+    engine.install_storage_access(fixture.stores.application())?;
+    engine.install_application_sources(fixture.roots.clone(), &fixture.image)?;
+    // Reconstruction has not handed the source over to serving yet.
+    assert!(engine.stale_application_selection(u64::MAX)?.is_none());
+    fixture.roots.finish_reconstruction()?;
+    // This node has finished no evacuation, so nothing could be freed.
+    assert!(engine.stale_application_selection(0)?.is_none());
+    let initial = engine.generation()?;
+    let old = initial.application_selection.get().unwrap().cell.clone();
+    let revision = initial.state.revision;
+    drop(initial);
+    // Nothing has been applied, so the authenticated bootstrap is the boundary.
+    let stale = engine
+        .stale_application_selection(u64::MAX)?
+        .context("bootstrap selection predates a later evacuation")?;
+    assert!(engine.rebase_application_selection(stale)?);
+    let current = engine.generation()?;
+    let selected = current.application_selection.get().unwrap();
+    assert!(!CellRef::ptr_eq(&old, &selected.cell));
+    let position = selected.cell.position.get().unwrap();
+    assert!(position.applied().is_none());
+    assert!(!position.is_covered_reconstruction());
+    assert_eq!(position.bootstrap().digest, fixture.image.sha256());
+    assert_eq!(current.state.revision, revision);
+    // The superseded view closed with its last Generation handle.
+    assert!(old.state.lock().unwrap().closed);
+    drop(old);
+    drop(current);
+    drop(engine);
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_sources_apply_that_races_a_rebase_wins()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let audit_store = kasumi_store::TenantStore::initialize_catalog_fixture(
+        fixture.node.clone(),
+        crate::SECURITY_TENANT.into(),
+        Arc::new(LocalKeyProvider::new([121; 32])),
+    )
+    .await?;
+    let audit = crate::SecurityAudit::initialize(
+        audit_store,
+        Default::default(),
+        fixture.storage.admission.clone(),
+    )?;
+    crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
+    let engine = Arc::new(TenantEngine::from_bootstrap(
+        "selected-sources",
+        &fixture.image,
+    )?);
+    engine.install_storage_access(fixture.stores.application())?;
+    let incarnation = engine.generation()?.state.incarnation.clone();
+    let database = crate::service::construction::DatabaseConstruction::new(
+        fixture.stores.clone(),
+        audit.clone(),
+    )?
+    .start_local(
+        engine.clone(),
+        &fixture.image,
+        1,
+        format!("selected-sources/{incarnation}"),
+    )
+    .await?;
+    // The rebase observes the current selection outside the apply lock.
+    let stale = engine
+        .stale_application_selection(u64::MAX)?
+        .context("startup selection predates a later evacuation")?;
+    // An apply publishes its own selection before the rebase takes the lock.
+    let receipt = database
+        .administer(
+            kasumi_types::RequestContext::trusted("selected-sources", "owner", [Action::Admin]),
+            kasumi_types::Operation::CreateCollection(kasumi_types::CollectionDefinition {
+                name: "docs".into(),
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type": "object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await?;
+    let applied = engine.generation()?;
+    assert_eq!(applied.state.revision, receipt.revision);
+    let applied_cell = applied.application_selection.get().unwrap().cell.clone();
+    // The apply wins: the observed selection is no longer current, so the
+    // rebase publishes nothing and reports no error.
+    assert!(!engine.rebase_application_selection(stale)?);
+    assert!(Arc::ptr_eq(&engine.generation()?, &applied));
+    drop(applied);
+    // A later observation moves the apply's selection, keeping its state.
+    let stale = engine
+        .stale_application_selection(u64::MAX)?
+        .context("applied selection predates a later evacuation")?;
+    assert!(engine.rebase_application_selection(stale)?);
+    let rebased = engine.generation()?;
+    assert_eq!(rebased.state.revision, receipt.revision);
+    assert!(rebased.state.collections.contains_key("docs"));
+    let selected = rebased.application_selection.get().unwrap();
+    assert!(!CellRef::ptr_eq(&applied_cell, &selected.cell));
+    let applied_position = applied_cell.position.get().unwrap().applied();
+    let rebased_position = selected.cell.position.get().unwrap().applied();
+    match (applied_position, rebased_position) {
+        (
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id: applied, ..
+            }),
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id: rebased, ..
+            }),
+        ) => assert_eq!(applied, rebased),
+        other => panic!("the apply's entry boundary changed: {:?}", other.0.is_some()),
+    }
+    drop(rebased);
+    drop(applied_cell);
+    database.shutdown().await?;
+    drop(database);
+    drop(engine);
+    audit.shutdown().await?;
+    fixture.close().await
+}
+
+#[tokio::test]
 async fn selected_sources_prospective_denial_preserves_cursor_generation_and_original_then_retries()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend;

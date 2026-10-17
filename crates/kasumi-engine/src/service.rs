@@ -951,6 +951,9 @@ pub struct Database {
     audit_worker_started: AtomicBool,
     audit_worker_failures: AtomicU64,
     audit_worker_completed: AtomicU64,
+    // One more than the finished-evacuation count a rebase failure was last
+    // reported for; zero after a tick without one.
+    selection_rebase_warned: AtomicU64,
     proposal_gate: Arc<tokio::sync::Mutex<()>>,
     proposals: proposal_jobs::Jobs,
     backup_producers: backup_producer_jobs::Jobs,
@@ -1255,6 +1258,7 @@ impl Database {
             audit_worker_started: AtomicBool::new(false),
             audit_worker_failures: AtomicU64::new(0),
             audit_worker_completed: AtomicU64::new(0),
+            selection_rebase_warned: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             proposals: proposal_jobs::Jobs::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
@@ -1581,6 +1585,9 @@ impl Database {
                                 let term = db.group.current_term();
                                 db.engine.leases.expire_idle(pressured, term);
                                 let serving = db.engine.generation().is_ok();
+                                if serving {
+                                    db.rebase_stale_application_selection();
+                                }
                                 drop(work);
                                 serving
                             })
@@ -1599,6 +1606,50 @@ impl Database {
             .seal_monitor
             .try_lock()
             .expect("seal monitor is registered before database publication") = Some(task);
+    }
+
+    /// Reclamation keeps every file a pinned root names, and this tenant's
+    /// current Generation pins the root of its last applied position. Once
+    /// the node has finished an evacuation since that root was selected, move
+    /// the selection to the current root at the same boundary, so the files
+    /// the evacuation emptied are reclaimable even if this tenant never
+    /// applies again.
+    fn rebase_stale_application_selection(&self) {
+        let Some(evacuations) = crate::application_sources::completed_evacuations(&self.stores)
+        else {
+            return;
+        };
+        let result = self
+            .engine
+            .stale_application_selection(evacuations)
+            .and_then(|stale| match stale {
+                Some(stale) => self.engine.rebase_application_selection(stale).map(drop),
+                None => Ok(()),
+            });
+        let Err(error) = result else {
+            self.selection_rebase_warned.store(0, Ordering::Release);
+            return;
+        };
+        // The worker retries every tick; warn once per finished evacuation.
+        // Only fixed fields and closed codes leave the original error.
+        let marker = evacuations.saturating_add(1);
+        if self.selection_rebase_warned.swap(marker, Ordering::AcqRel) != marker {
+            let database_error_code = error
+                .chain()
+                .find_map(|source| source.downcast_ref::<Error>().map(|error| error.code));
+            let io_error_kind = error.chain().find_map(|source| {
+                source
+                    .downcast_ref::<std::io::Error>()
+                    .map(std::io::Error::kind)
+            });
+            tracing::warn!(
+                event = "application_selection_rebase_failed",
+                evacuations,
+                ?database_error_code,
+                ?io_error_kind,
+                "idle tenant still pins a root from before the latest evacuation"
+            );
+        }
     }
 
     async fn barrier(&self) -> Result<()> {

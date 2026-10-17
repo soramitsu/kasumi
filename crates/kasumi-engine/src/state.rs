@@ -121,6 +121,13 @@ impl Generation {
     }
 }
 
+/// A current application selection whose root predates the node's latest
+/// finished evacuation, observed outside the apply lock.
+pub(crate) struct StaleSelection {
+    id: u64,
+    bootstrap: Option<kasumi_store::SnapshotImage>,
+}
+
 /// A private candidate does not become visible until its response and custody
 /// transition have crossed the adapter's durable publication barrier.
 struct PreparedCommand {
@@ -578,6 +585,95 @@ impl TenantEngine {
         if let Some(sources) = self.application_sources.get() {
             kasumi_raft::ApplicationSourceCustody::seal_consumers(sources.as_ref());
         }
+    }
+    /// The current selection when its root was selected before the node
+    /// finished `evacuations`, while the source serves. Reclamation keeps
+    /// every file a pinned root names, so a tenant that stops applying would
+    /// otherwise keep what each later evacuation empties. A frozen Generation
+    /// keeps its covered selection. A selection with no applied position also
+    /// carries the authenticated bootstrap image its boundary is checked
+    /// against, loaded here outside the apply lock.
+    pub(crate) fn stale_application_selection(
+        &self,
+        evacuations: u64,
+    ) -> anyhow::Result<Option<StaleSelection>> {
+        if !self
+            .application_sources
+            .get()
+            .is_some_and(|sources| sources.rebases_selections())
+        {
+            return Ok(None);
+        }
+        let Some(current) = self.current.load_full() else {
+            return Ok(None);
+        };
+        let Some(selection) = current.application_selection.get() else {
+            return Ok(None);
+        };
+        if current.state.retired || !selection.predates(evacuations) {
+            return Ok(None);
+        }
+        let bootstrap = if selection.at_bootstrap() {
+            let store = self
+                .snapshot_store
+                .get()
+                .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+            let image = crate::bootstrap::load(store)?
+                .ok_or_else(|| anyhow::anyhow!("application bootstrap absent"))?;
+            anyhow::ensure!(
+                self.bootstrap_sha256.get().map(String::as_str) == Some(image.sha256()),
+                "stored bootstrap differs from the authenticated bootstrap image"
+            );
+            Some(image)
+        } else {
+            None
+        };
+        Ok(Some(StaleSelection {
+            id: selection.id(),
+            bootstrap,
+        }))
+    }
+    /// Move a stale selection to the node's current root at the same applied
+    /// boundary and publish a Generation that differs only in that selection,
+    /// so existing leases refresh against identical state. An apply or restore
+    /// that published first wins: the observed selection is no longer current
+    /// and nothing is published. Leases and in-flight reads keep the previous
+    /// Generation, and its root, until they end; its view closes with the
+    /// last handle.
+    pub(crate) fn rebase_application_selection(
+        &self,
+        stale: StaleSelection,
+    ) -> anyhow::Result<bool> {
+        let Some(sources) = self.application_sources.get() else {
+            return Ok(false);
+        };
+        if self.current.load().is_none() {
+            return Ok(false);
+        }
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let previous = apply.current();
+        let Some(selection) = previous
+            .application_selection
+            .get()
+            .filter(|selection| selection.id() == stale.id && !previous.state.retired)
+        else {
+            return Ok(false);
+        };
+        let Some(selected) = sources.rebase(selection, stale.bootstrap.as_ref())? else {
+            return Ok(false);
+        };
+        self.publish_generation(Some(Arc::new(Generation {
+            state: previous.state.clone(),
+            receipts: previous.receipts.clone(),
+            backup_bindings: previous.backup_bindings.clone(),
+            terminals: previous.terminals.clone(),
+            target_resolutions: previous.target_resolutions.clone(),
+            indexes: previous.indexes.clone(),
+            snapshot_accounting: previous.snapshot_accounting.clone(),
+            application_selection: std::sync::OnceLock::from(selected),
+            _read_reservations: vec![],
+        })));
+        Ok(true)
     }
     /// Admit the next committed publication's Engine capacity before a local
     /// proposal; its Entry sink then acquires nothing after commitment. Callers
