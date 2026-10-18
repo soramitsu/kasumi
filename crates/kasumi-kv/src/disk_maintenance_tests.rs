@@ -194,6 +194,47 @@ fn steady_stream(pins_every: Option<usize>) {
 }
 
 #[test]
+fn writes_skip_their_inline_step_after_a_driver_step() {
+    let group = InMemoryGroup::new();
+    let mut state = create(
+        Arc::new(group.clone()),
+        Admission::new(64 << 20),
+        CacheConfig { byte_limit: 0 },
+    );
+    geometry(&mut state);
+    let mut model = BTreeMap::new();
+    cold_rows(&mut state, &mut model, 1000);
+    state.request_compaction().unwrap();
+    // Without a driver, every write runs its inline step.
+    let before = state.maintenance.steps;
+    state.maintain_before_write().unwrap();
+    state.maintain_before_write().unwrap();
+    assert_eq!(state.maintenance.steps, before + 2);
+    // A driver step stands in for exactly the next write's inline step.
+    let budget = MaintenanceBudget {
+        units: 64,
+        mutations: 1,
+    };
+    state.driven_maintenance_step(budget).unwrap();
+    let before = state.maintenance.steps;
+    state.maintain_before_write().unwrap();
+    assert_eq!(state.maintenance.steps, before);
+    state.maintain_before_write().unwrap();
+    assert_eq!(state.maintenance.steps, before + 1);
+    // Inline steps alone still finish the cycle.
+    let mut writes = 0;
+    while state.maintenance_status().unwrap().cycles_completed == 0 {
+        state.maintain_before_write().unwrap();
+        writes += 1;
+        assert!(
+            writes < 100_000,
+            "inline steps alone did not finish the cycle"
+        );
+    }
+    check_model(&mut state, &model);
+}
+
+#[test]
 fn steady_commit_stream_plateaus() {
     steady_stream(None);
 }

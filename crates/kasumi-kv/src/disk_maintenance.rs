@@ -91,7 +91,8 @@ pub struct MaintenancePolicy {
     pub growth_percent: u32,
     pub slack_bytes: u64,
     pub slack_files: u64,
-    /// Budget of the step every `Database::begin_write` runs first.
+    /// Budget of the step `Database::begin_write` runs first, unless a
+    /// driver's `Database::run_maintenance` step ran since the previous write.
     pub inline_units: usize,
     pub inline_mutations: usize,
     pub capacity_backoff_steps: u64,
@@ -296,8 +297,10 @@ impl Census {
 #[derive(Default)]
 pub(super) struct Maintenance {
     pub(super) policy: MaintenancePolicy,
-    steps: u64,
+    pub(super) steps: u64,
     backoff_until: u64,
+    /// A driver step ran since the last write's inline check.
+    driven: bool,
     pub(super) last_deferral: Option<MaintenanceDeferral>,
     capacity_deferrals: u64,
     rejected_deferrals: u64,
@@ -370,6 +373,29 @@ impl DiskState {
 
     pub(crate) fn inline_maintenance_budget(&self) -> MaintenanceBudget {
         self.maintenance.policy.inline_budget()
+    }
+
+    /// One bounded step of an explicit driver. It stands in for the inline
+    /// step of the next write: that write cannot begin while a step runs,
+    /// and the driver keeps the cycle moving between writes.
+    pub(crate) fn driven_maintenance_step(
+        &mut self,
+        budget: MaintenanceBudget,
+    ) -> Result<MaintenanceProgress, CoreError> {
+        let progress = self.maintenance_step(budget)?;
+        self.maintenance.driven = true;
+        Ok(progress)
+    }
+
+    /// The step a write runs first, with the policy's inline budget, unless
+    /// a driver step ran since the previous write. A driver needs the write
+    /// gate, so writes that starve it still run every inline step.
+    pub(crate) fn maintain_before_write(&mut self) -> Result<(), CoreError> {
+        let budget = self.maintenance.policy.inline_budget();
+        if std::mem::take(&mut self.maintenance.driven) || budget.units == 0 {
+            return Ok(());
+        }
+        self.maintenance_step(budget).map(drop)
     }
 
     pub(crate) fn configure_maintenance(

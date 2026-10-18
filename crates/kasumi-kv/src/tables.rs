@@ -1008,7 +1008,8 @@ impl Database {
 
     /// One bounded step of the persisted compaction cycle under the write
     /// gate. Returns `Busy` instead of waiting while a writer holds the gate;
-    /// local deferrals are reported in the progress, never as errors.
+    /// local deferrals are reported in the progress, never as errors. A step
+    /// that ran replaces the inline step of the next `begin_write`.
     pub fn run_maintenance(
         &self,
         budget: crate::MaintenanceBudget,

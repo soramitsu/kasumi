@@ -935,28 +935,25 @@ impl Core {
     /// `budget.units` read-side items and `budget.mutations` durable
     /// publications. Capacity pressure and other local refusals return
     /// `Ok` with `deferred` set and back off by step count; I/O, corruption,
-    /// unknown outcomes and owner failure fence and return `Err`.
+    /// unknown outcomes and owner failure fence and return `Err`. Such a
+    /// driver step stands in for the next write's inline step.
     pub fn run_maintenance(
         &self,
         budget: crate::MaintenanceBudget,
     ) -> Result<crate::MaintenanceProgress, CoreError> {
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
-            state.disk()?.maintenance_step(budget)
+            state.disk()?.driven_maintenance_step(budget)
         })
     }
     /// The inline step every `Database::begin_write` runs before its
-    /// snapshot, with the policy's inline budget. Local deferrals never fail
-    /// the write; fatal maintenance errors do.
+    /// snapshot, with the policy's inline budget, unless a `run_maintenance`
+    /// step ran since the previous write. Local deferrals never fail the
+    /// write; fatal maintenance errors do.
     pub(crate) fn maintain_before_write(&self) -> Result<(), CoreError> {
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
-            let disk = state.disk()?;
-            let budget = disk.inline_maintenance_budget();
-            if budget.units != 0 {
-                disk.maintenance_step(budget)?;
-            }
-            Ok(())
+            state.disk()?.maintain_before_write()
         })
     }
     /// Test driver: finish the active cycle, or request one and finish it,
