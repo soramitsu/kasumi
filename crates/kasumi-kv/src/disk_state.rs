@@ -20,8 +20,8 @@ use crate::core::{
     Operation, StorageAdmission,
 };
 use crate::directory::{
-    DirectoryEdit, DirectoryKey, DirectoryMutator, DirectoryReader, DirectoryRecord, DirectoryRoot,
-    DirectoryValue, DirectoryWriteWorkspace, MAX_DIRECTORY_BATCH_EDITS,
+    AppendFloor, DirectoryEdit, DirectoryKey, DirectoryMutator, DirectoryReader, DirectoryRecord,
+    DirectoryRoot, DirectoryValue, DirectoryWriteWorkspace, MAX_DIRECTORY_BATCH_EDITS,
 };
 use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::native_backend::BackendRef;
@@ -659,6 +659,8 @@ impl DiskState {
                 Err(original) => return Err(original),
             };
         self.owner.check()?;
+        // Every page this publication appends lies at or above this floor.
+        let fresh = self.arena.append_floor();
         *stage = "directory_mutation";
         let generation = prepared.batch_seq();
         let mut shrank = false;
@@ -815,6 +817,7 @@ impl DiskState {
                     self.retain_committed(
                         operations,
                         &committed.values,
+                        fresh,
                         &mut publication.proof.directory,
                     )
                 })
@@ -829,6 +832,7 @@ impl DiskState {
         &self,
         operations: &[Operation],
         values: &[Option<ValueLocation>],
+        fresh: AppendFloor,
         workspace: &mut crate::directory::DirectoryReadWorkspace,
     ) -> Result<(), CoreError> {
         {
@@ -837,6 +841,7 @@ impl DiskState {
             match warmer.warm_generation_with_workspace(
                 self.selected,
                 self.selected.generation,
+                fresh,
                 workspace,
             ) {
                 Ok(()) => {}

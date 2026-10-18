@@ -164,10 +164,15 @@ fn point_membership_and_warming_reuse_one_buffer_without_new_admission() {
                 root == old
             );
             reader
-                .warm_generation_with_workspace(root, root.generation, &mut workspace)
+                .warm_generation_with_workspace(
+                    root,
+                    root.generation,
+                    AppendFloor::NONE,
+                    &mut workspace,
+                )
                 .unwrap();
             reader
-                .warm_generation_with_workspace(root, 0, &mut workspace)
+                .warm_generation_with_workspace(root, 0, AppendFloor::NONE, &mut workspace)
                 .unwrap();
         }
         assert_eq!(workspace.buffer.as_ptr(), pointer);
@@ -244,7 +249,7 @@ fn workspace_rejects_foreign_admission_and_failed_owner_before_io() {
         matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
     );
     assert!(
-        matches!(&(reader.warm_generation_with_workspace(root, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        matches!(&(reader.warm_generation_with_workspace(root, 0, AppendFloor::NONE, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
     );
     assert_eq!(foreign.calls.load(AtomicOrdering::Relaxed), 0);
     admission.owner_failed();
@@ -256,7 +261,7 @@ fn workspace_rejects_foreign_admission_and_failed_owner_before_io() {
         matches!(&(reader.contains_page_with_workspace(root, reference, &bytes, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
     );
     assert!(
-        matches!(&(reader.warm_generation_with_workspace(root, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
+        matches!(&(reader.warm_generation_with_workspace(root, 0, AppendFloor::NONE, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
     );
     assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), before);
     drop(workspace);
@@ -299,7 +304,7 @@ fn reused_workspace_preserves_candidate_validation_and_parent_bounds() {
         matches!(&(reader.contains_page_with_workspace(invalid, reference, &bytes, PageCheck::Unchecked, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
     );
     assert!(
-        matches!(&(reader.warm_generation_with_workspace(invalid, 0, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
+        matches!(&(reader.warm_generation_with_workspace(invalid, 0, AppendFloor::NONE, &mut workspace)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
     );
     assert_eq!(
         reader
@@ -359,7 +364,7 @@ fn reused_workspace_preserves_read_failures_and_post_io_owner_checks() {
             1 => reader
                 .contains_page_with_workspace(root, reference, &bytes, PageCheck::Unchecked, &mut workspace)
                 .map(|_| ()),
-            _ => reader.warm_generation_with_workspace(root, 0, &mut workspace),
+            _ => reader.warm_generation_with_workspace(root, 0, AppendFloor::NONE, &mut workspace),
         };
         let calls = admission.calls.load(AtomicOrdering::Relaxed);
         admission.deny_all.store(true, AtomicOrdering::Relaxed);

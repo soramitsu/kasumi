@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{
-    DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
+    AppendFloor, DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
 };
 use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::native_backend::BackendRef;
@@ -186,6 +186,20 @@ impl DirectoryArenaBackend {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         Ok(writer.active.as_ref().map(|active| active.id))
+    }
+
+    /// No later append takes a position below this floor, and every earlier
+    /// one lies below it: a roll only moves to a fresh, higher identifier.
+    /// With no active arena, or a poisoned writer, nothing is excluded.
+    pub(crate) fn append_floor(&self) -> AppendFloor {
+        match self.writer.lock() {
+            Ok(writer) if !writer.poisoned => {
+                writer.active.as_ref().map_or(AppendFloor::NONE, |active| {
+                    AppendFloor::at(active.id, active.pages)
+                })
+            }
+            _ => AppendFloor::NONE,
+        }
     }
 
     /// Durably allocate a fresh arena even when the current one has room.
@@ -881,6 +895,29 @@ mod tests {
         }
         let reference = arena.append_page(&[9; DIRECTORY_PAGE_BYTES]).unwrap();
         assert_eq!((reference.arena_id, reference.page_index), (2, 0));
+    }
+
+    #[test]
+    fn append_floor_lies_above_every_earlier_page_and_below_every_later_one() {
+        let (_, _, _, arena) = setup();
+        // A writer without an arena excludes nothing until its first roll.
+        assert_eq!(arena.append_floor(), AppendFloor::NONE);
+        let mut earlier: Vec<DirectoryPageRef> = Vec::new();
+        for page in 0..7u8 {
+            let floor = arena.append_floor();
+            assert!(
+                earlier
+                    .iter()
+                    .all(|&old| floor == AppendFloor::NONE || floor.precedes(old))
+            );
+            // Two pages per arena: every other append rolls a fresh one.
+            let reference = arena.append_page(&[page; DIRECTORY_PAGE_BYTES]).unwrap();
+            assert!(!floor.precedes(reference));
+            earlier.push(reference);
+        }
+        assert_eq!(earlier.last().unwrap().arena_id, 4);
+        arena.writer.lock().unwrap().poisoned = true;
+        assert_eq!(arena.append_floor(), AppendFloor::NONE);
     }
 
     #[test]

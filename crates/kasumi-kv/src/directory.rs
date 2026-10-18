@@ -1118,6 +1118,53 @@ struct ReadFrame {
     reference: DirectoryPageRef,
     count: usize,
     next_child: usize,
+    // Page offset of entry `next_child`, so the next sibling search resumes.
+    next_at: usize,
+}
+
+/// Where the pages of one publication begin. Pages are appended at strictly
+/// increasing (arena, index) positions that are never reused, so a reference
+/// below the floor names a page an earlier publication wrote.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct AppendFloor {
+    arena_id: u64,
+    page_index: u64,
+}
+
+impl AppendFloor {
+    /// No valid reference lies below it: nothing is excluded.
+    pub(crate) const NONE: Self = Self::at(0, 0);
+
+    pub(crate) const fn at(arena_id: u64, page_index: u64) -> Self {
+        Self {
+            arena_id,
+            page_index,
+        }
+    }
+
+    pub(crate) fn precedes(self, reference: DirectoryPageRef) -> bool {
+        (reference.arena_id, reference.page_index) < (self.arena_id, self.page_index)
+    }
+}
+
+/// The first child from entry `index` (at page offset `at`) on that was not
+/// appended before `floor`, with the offset of the entry that follows it.
+fn fresh_child(
+    bytes: &[u8],
+    info: PageInfo,
+    mut index: usize,
+    mut at: usize,
+    floor: AppendFloor,
+) -> Result<Option<(usize, usize)>, CoreError> {
+    while index < info.count {
+        let (entry, end) = page_entry(bytes, at, info.used)?;
+        if !floor.precedes(DirectoryPageRef::decode(&entry.value[..PAGE_REF_BYTES])?) {
+            return Ok(Some((index, end)));
+        }
+        index += 1;
+        at = end;
+    }
+    Ok(None)
 }
 
 /// Reusable point/proof/warming scratch admitted before an effectful operation.
@@ -1274,9 +1321,13 @@ impl<'a> DirectoryReader<'a> {
 
     /// Read selected pages created at or after `generation` through this
     /// backend, so a cached backend can retain the final published COW tree.
-    /// Older child pages are validated once and their subtrees are skipped.
-    /// Only pages reachable from `root` are read; earlier private mutations
-    /// from the same batch are never admitted through their orphaned roots.
+    /// A child appended before `floor` belongs to an earlier publication: it
+    /// is neither read nor expanded here, and its own readers validate it.
+    /// Any other child is read and validated once; one older than
+    /// `generation` has its subtree skipped. `AppendFloor::NONE` excludes no
+    /// child. Only pages reachable from `root` are read; earlier private
+    /// mutations from the same batch are never admitted through their
+    /// orphaned roots.
     ///
     /// One page buffer and a fixed path suffice. On sibling changes, ancestor
     /// bounds are reconstructed from the root rather than retaining a pair
@@ -1288,6 +1339,7 @@ impl<'a> DirectoryReader<'a> {
         &self,
         root: DirectoryRoot,
         generation: u64,
+        floor: AppendFloor,
     ) -> Result<(), CoreError> {
         self.admission
             .check_owner()
@@ -1308,7 +1360,7 @@ impl<'a> DirectoryReader<'a> {
                 + std::mem::size_of::<PageInfo>(),
         )?;
         let mut buffer = PageBuffer::new(&self.admission)?;
-        self.warm_generation_in(root, generation, reference, &mut buffer, &mut [])
+        self.warm_generation_in(root, generation, floor, reference, &mut buffer, &mut [])
     }
 
     /// As `warm_generation`, using previously admitted fixed scratch. This
@@ -1317,6 +1369,7 @@ impl<'a> DirectoryReader<'a> {
         &self,
         root: DirectoryRoot,
         generation: u64,
+        floor: AppendFloor,
         workspace: &mut DirectoryReadWorkspace,
     ) -> Result<(), CoreError> {
         workspace.check(&self.admission)?;
@@ -1332,6 +1385,7 @@ impl<'a> DirectoryReader<'a> {
         self.warm_generation_in(
             root,
             generation,
+            floor,
             reference,
             &mut workspace.buffer,
             &mut workspace.ancestors,
@@ -1342,6 +1396,7 @@ impl<'a> DirectoryReader<'a> {
         &self,
         root: DirectoryRoot,
         generation: u64,
+        floor: AppendFloor,
         mut reference: DirectoryPageRef,
         buffer: &mut [u8],
         ancestors: &mut [u8],
@@ -1358,51 +1413,84 @@ impl<'a> DirectoryReader<'a> {
         let mut bounds = Bounds::root(root);
         loop {
             let info = self.load(buffer, root, reference, &bounds)?;
-            if info.level != 0 && info.generation >= generation {
+            if info.level != 0
+                && info.generation >= generation
+                && let Some((child, next_at)) = fresh_child(buffer, info, 0, HEADER_BYTES, floor)?
+            {
                 frames[depth] = Some(ReadFrame {
                     reference,
                     count: info.count,
-                    next_child: 1,
+                    next_child: child + 1,
+                    next_at,
                 });
                 if depth < copies {
                     ancestors[slot(depth)].copy_from_slice(buffer);
                     kept[depth] = Some(info);
                 }
                 depth += 1;
-                reference = bounds.child(buffer, info, 0)?;
+                reference = bounds.child(buffer, info, child)?;
                 continue;
             }
             loop {
                 if depth == 0 {
                     return Ok(());
                 }
-                let frame = frames[depth - 1].as_mut().expect("expanded ancestor");
+                let frame = frames[depth - 1].expect("expanded ancestor");
                 if frame.next_child == frame.count {
                     depth -= 1;
                     continue;
                 }
-                frame.next_child += 1;
                 bounds = Bounds::root(root);
-                for level in 0..depth {
+                for level in 0..depth - 1 {
                     let frame = frames[level].expect("expanded ancestor");
-                    reference = match kept.get(level).copied().flatten() {
+                    match kept.get(level).copied().flatten() {
                         Some(info) if level < copies => {
-                            bounds.child(&ancestors[slot(level)], info, frame.next_child - 1)?
+                            bounds.child(&ancestors[slot(level)], info, frame.next_child - 1)?;
                         }
                         _ => {
-                            let info = self.load(buffer, root, frame.reference, &bounds)?;
-                            if info.count != frame.count {
-                                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                                    "directory changed during cache warming",
-                                )));
-                            }
-                            bounds.child(buffer, info, frame.next_child - 1)?
+                            let info = self.reload(buffer, root, frame, &bounds)?;
+                            bounds.child(buffer, info, frame.next_child - 1)?;
                         }
-                    };
+                    }
                 }
+                let level = depth - 1;
+                let (parent, info) = match kept.get(level).copied().flatten() {
+                    Some(info) if level < copies => (&ancestors[slot(level)], info),
+                    _ => {
+                        let info = self.reload(buffer, root, frame, &bounds)?;
+                        (&*buffer, info)
+                    }
+                };
+                let Some((child, next_at)) =
+                    fresh_child(parent, info, frame.next_child, frame.next_at, floor)?
+                else {
+                    depth -= 1;
+                    continue;
+                };
+                reference = bounds.child(parent, info, child)?;
+                let frame = frames[level].as_mut().expect("expanded ancestor");
+                frame.next_child = child + 1;
+                frame.next_at = next_at;
                 break;
             }
         }
+    }
+
+    /// Reload an expanded ancestor the workspace keeps no copy of.
+    fn reload(
+        &self,
+        buffer: &mut [u8],
+        root: DirectoryRoot,
+        frame: ReadFrame,
+        bounds: &Bounds,
+    ) -> Result<PageInfo, CoreError> {
+        let info = self.load(buffer, root, frame.reference, bounds)?;
+        if info.count != frame.count {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory changed during cache warming",
+            )));
+        }
+        Ok(info)
     }
 
     pub(crate) fn get(
@@ -2136,7 +2224,7 @@ mod tests {
         }
         let old = builder.finish().unwrap();
         let reader = DirectoryReader::new(&cached, admission.clone());
-        reader.warm_generation(old, 0).unwrap();
+        reader.warm_generation(old, 0, AppendFloor::NONE).unwrap();
         let mut expected = reachable(&backend, old);
         assert_eq!(cached.stats().unwrap().entries, expected.len());
         let before_private = backend.pages.lock().unwrap().len();
@@ -2172,14 +2260,18 @@ mod tests {
         );
         expected.extend(selected_pages);
         let reads = backend.reads.load(AtomicOrdering::Relaxed);
-        reader.warm_generation(selected, 2).unwrap();
+        reader
+            .warm_generation(selected, 2, AppendFloor::NONE)
+            .unwrap();
         assert_eq!(cached.stats().unwrap().entries, expected.len());
         assert_eq!(
             backend.reads.load(AtomicOrdering::Relaxed) - reads,
             final_new_pages
         );
         let reads = backend.reads.load(AtomicOrdering::Relaxed);
-        reader.warm_generation(selected, 2).unwrap();
+        reader
+            .warm_generation(selected, 2, AppendFloor::NONE)
+            .unwrap();
         assert_eq!(backend.reads.load(AtomicOrdering::Relaxed), reads);
         assert_eq!(cached.stats().unwrap().uncached_loads, 0);
         assert_eq!(cached.stats().unwrap().evictions, 0);
@@ -2238,7 +2330,7 @@ mod tests {
             }
             let old = builder.finish().unwrap();
             DirectoryReader::new(&cached, admission.clone())
-                .warm_generation(old, 0)
+                .warm_generation(old, 0, AppendFloor::NONE)
                 .unwrap();
             let mut workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
             let mut mutator = DirectoryMutator::new(&backend, &mut workspace).unwrap();
@@ -2284,10 +2376,10 @@ mod tests {
                 let reader = DirectoryReader::new(&counted, owner.clone());
                 if copies {
                     reader
-                        .warm_generation_with_workspace(next, 2, &mut workspace)
+                        .warm_generation_with_workspace(next, 2, AppendFloor::NONE, &mut workspace)
                         .unwrap();
                 } else {
-                    reader.warm_generation(next, 2).unwrap();
+                    reader.warm_generation(next, 2, AppendFloor::NONE).unwrap();
                 }
                 (
                     counted.1.load(AtomicOrdering::Relaxed),
@@ -2311,6 +2403,150 @@ mod tests {
             let (reloading, reloaded_entries) = warm(false);
             assert!(reloading > loads);
             assert_eq!(reloaded_entries, entries);
+        }
+    }
+
+    #[test]
+    fn generation_warming_reads_nothing_below_the_append_floor() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+        use std::collections::BTreeSet;
+
+        struct Reads<'a, B: DirectoryBackend>(&'a B, Mutex<Vec<DirectoryPageRef>>);
+        impl<B: DirectoryBackend> DirectoryBackend for Reads<'_, B> {
+            fn read_page(
+                &self,
+                reference: DirectoryPageRef,
+                out: &mut [u8],
+            ) -> Result<(), CoreError> {
+                self.1.lock().unwrap().push(reference);
+                self.0.read_page(reference, out)
+            }
+            fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
+                self.0.append_page(bytes)
+            }
+            fn sync_pages(&self) -> Result<(), CoreError> {
+                self.0.sync_pages()
+            }
+            fn page_check(&self) -> PageCheck {
+                self.0.page_check()
+            }
+        }
+        fn key(id: usize, len: usize) -> Vec<u8> {
+            let mut key = vec![0x5a; len];
+            key[..8].copy_from_slice(&(id as u64).to_be_bytes());
+            key
+        }
+
+        // A three-level tree, then a taller one whose deeper ancestors reload.
+        for (count, len) in [(3_000, 400), (400, MAX_KEY_BYTES)] {
+            let backend = MemoryPages::default();
+            let admission = Admission::new(64 << 20);
+            let cached = CachedDirectoryBackend::new(
+                &backend,
+                admission.clone(),
+                GROUP,
+                CacheConfig {
+                    byte_limit: 32 << 20,
+                },
+            );
+            let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1).unwrap();
+            for id in 0..count {
+                builder
+                    .push(DirectoryKey::row("t", &key(id, len)), value(1, id as u64))
+                    .unwrap();
+            }
+            let old = builder.finish().unwrap();
+            DirectoryReader::new(&cached, admission.clone())
+                .warm_generation(old, 0, AppendFloor::NONE)
+                .unwrap();
+            let warmed = cached.stats().unwrap().entries;
+            // The publication's pages are appended from here on.
+            let floor = AppendFloor::at(1, backend.pages.lock().unwrap().len() as u64);
+            let mut workspace = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
+            let mut mutator = DirectoryMutator::new(&backend, &mut workspace).unwrap();
+            // Two distant edits: two paths below one root, plus orphaned
+            // private pages the second edit replaced.
+            let next = mutator
+                .set(
+                    old,
+                    2,
+                    DirectoryKey::row("t", &key(17, len)),
+                    Some(value(2, 17)),
+                )
+                .unwrap();
+            let next = mutator
+                .set(
+                    next,
+                    2,
+                    DirectoryKey::row("t", &key(count - 9, len)),
+                    Some(value(2, 9)),
+                )
+                .unwrap();
+            let next = mutator.finish(next).unwrap();
+            drop(workspace);
+            let fresh = {
+                let pages = backend.pages.lock().unwrap();
+                let mut fresh = BTreeSet::new();
+                let mut pending = vec![next.page.unwrap()];
+                while let Some(reference) = pending.pop() {
+                    if floor.precedes(reference) {
+                        continue;
+                    }
+                    assert!(fresh.insert(reference.page_index));
+                    let page = &pages[reference.page_index as usize];
+                    let info = validate_page(page, next, reference).unwrap();
+                    assert_eq!(info.generation, 2);
+                    if info.level != 0 {
+                        for index in 0..info.count {
+                            pending.push(
+                                DirectoryPageRef::decode(
+                                    &nth_entry(page, info, index).unwrap().value[..PAGE_REF_BYTES],
+                                )
+                                .unwrap(),
+                            );
+                        }
+                    }
+                }
+                fresh
+            };
+            assert!(fresh.len() > next.height as usize);
+            let owner: Arc<dyn StorageAdmission> = admission.clone();
+            let mut workspace = DirectoryReadWorkspace::for_enclosing_warming_owner::<
+                DirectoryReadWorkspace,
+            >(&owner)
+            .unwrap();
+            for copies in [true, false] {
+                let reads = Reads(&cached, Mutex::new(Vec::new()));
+                let reader = DirectoryReader::new(&reads, owner.clone());
+                if copies {
+                    reader
+                        .warm_generation_with_workspace(next, 2, floor, &mut workspace)
+                        .unwrap();
+                } else {
+                    reader.warm_generation(next, 2, floor).unwrap();
+                }
+                let reads = reads.1.into_inner().unwrap();
+                // Only the publication's reachable pages are read, all of them.
+                assert!(reads.iter().all(|&reference| !floor.precedes(reference)));
+                assert_eq!(
+                    reads
+                        .iter()
+                        .map(|reference| reference.page_index)
+                        .collect::<BTreeSet<_>>(),
+                    fresh
+                );
+                if copies && len != MAX_KEY_BYTES {
+                    assert_eq!(reads.len(), fresh.len());
+                }
+                assert_eq!(cached.stats().unwrap().entries, warmed + fresh.len());
+            }
+            // A walk that excludes nothing finds nothing more to retain.
+            DirectoryReader::new(&cached, owner.clone())
+                .warm_generation(next, 2, AppendFloor::NONE)
+                .unwrap();
+            assert_eq!(cached.stats().unwrap().entries, warmed + fresh.len());
+            assert_eq!(cached.stats().unwrap().evictions, 0);
         }
     }
 

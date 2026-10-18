@@ -142,6 +142,7 @@ impl DiskState {
             Err(original) => return Err(original),
         };
         self.owner.check()?;
+        let fresh = self.arena.append_floor();
         let private = self.pages.maintenance_private_view();
         let result = (|| {
             let mut mutator = DirectoryMutator::new(&private, &mut directory_workspace)?;
@@ -168,7 +169,7 @@ impl DiskState {
             }
         };
         self.finish_maintenance(witness, prepared, root, workspace, &space, cursor)?;
-        self.warm_maintenance_pages(root)
+        self.warm_maintenance_pages(root, fresh)
             .map_err(|error| error.into_unknown_commit())
     }
 }

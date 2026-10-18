@@ -567,8 +567,8 @@ mod tests {
     }
     use crate::core::{AdmissionError, OwnerFailed, ResidentLease};
     use crate::directory::{
-        DirectoryBuilder, DirectoryKey, DirectoryMutator, DirectoryReader, DirectoryValue,
-        DirectoryWriteWorkspace,
+        AppendFloor, DirectoryBuilder, DirectoryKey, DirectoryMutator, DirectoryReader,
+        DirectoryValue, DirectoryWriteWorkspace,
     };
     use crate::segment::ValueLocation;
     use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
@@ -1120,7 +1120,7 @@ mod tests {
             },
         );
         DirectoryReader::new(&cached, admission.clone())
-            .warm_generation(old, 0)
+            .warm_generation(old, 0, AppendFloor::NONE)
             .unwrap();
         guarded.enabled.store(true, Ordering::Release);
         let before = cached.stats().unwrap();
@@ -1482,7 +1482,7 @@ mod tests {
             },
         );
         let reader = DirectoryReader::new(&cache, admission);
-        reader.warm_generation(root, 1).unwrap();
+        reader.warm_generation(root, 1, AppendFloor::NONE).unwrap();
         let stats = cache.stats().unwrap();
         assert_eq!(stats.entries, 0);
         assert_eq!(stats.loads, 1);

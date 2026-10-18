@@ -67,6 +67,7 @@ fn commit_warm_stops_before_refused_page_io_independently_of_tree_size() {
                 matches!(&(DirectoryReader::new(&warming, owner).warm_generation_with_workspace(
                     root,
                     root.generation,
+                    AppendFloor::NONE,
                     &mut workspace,
                 )), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
             );
@@ -99,7 +100,7 @@ fn commit_warm_retains_the_complete_fitting_tree_without_policy_training() {
     );
     let warming = cached.commit_warm_view();
     DirectoryReader::new(&warming, admission.clone())
-        .warm_generation(root, 1)
+        .warm_generation(root, 1, AppendFloor::NONE)
         .unwrap();
     let pages = backend.pages.lock().unwrap().len();
     assert!(pages > 2);
@@ -117,7 +118,7 @@ fn commit_warm_retains_the_complete_fitting_tree_without_policy_training() {
         (0, 0, 0, 0, 0)
     );
     DirectoryReader::new(&warming, admission.clone())
-        .warm_generation(root, 1)
+        .warm_generation(root, 1, AppendFloor::NONE)
         .unwrap();
     let reader = DirectoryReader::new(&cached, admission.clone());
     for name in names {

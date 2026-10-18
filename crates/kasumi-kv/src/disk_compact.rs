@@ -422,6 +422,7 @@ impl DiskState {
                 crate::CoreErrorCause::Corrupt("maintenance relocation has no location"),
             ))?);
         }
+        let fresh = self.arena.append_floor();
         let private = self.pages.maintenance_private_view();
         let result = (|| {
             let mut mutator = DirectoryMutator::new(&private, &mut directory_workspace)?;
@@ -473,7 +474,7 @@ impl DiskState {
                     .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .copy_relocated(identity(*source)?, identity(destination)?)?;
             }
-            self.warm_maintenance_pages(root)
+            self.warm_maintenance_pages(root, fresh)
         })();
         retained.map_err(|error: CoreError| error.into_unknown_commit())?;
         Ok(())
@@ -521,11 +522,18 @@ impl DiskState {
         Ok(())
     }
 
-    pub(super) fn warm_maintenance_pages(&self, root: DirectoryRoot) -> Result<(), CoreError> {
+    /// Retain the pages `root`'s publication appended at or above `fresh`.
+    pub(super) fn warm_maintenance_pages(
+        &self,
+        root: DirectoryRoot,
+        fresh: AppendFloor,
+    ) -> Result<(), CoreError> {
         let warming = self.pages.maintenance_view();
-        match DirectoryReader::new(&warming, self.owner.admission.clone())
-            .warm_generation(root, root.generation)
-        {
+        match DirectoryReader::new(&warming, self.owner.admission.clone()).warm_generation(
+            root,
+            root.generation,
+            fresh,
+        ) {
             Ok(()) => Ok(()),
             Err(error) if error.is_capacity_denied() => Ok(()),
             Err(error) => Err(error),
