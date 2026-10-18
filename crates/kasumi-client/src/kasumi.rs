@@ -271,30 +271,75 @@ impl Kasumi {
     /// Apply an atomic batch. An uncertain outcome (`UnknownOutcome` or
     /// `Unavailable`) is resolved by resending the identical batch, which
     /// carries the same idempotency key, until the call's deadline; the
-    /// database applies it at most once. An error after a dispatch, including
-    /// a deadline, can still hide a commit: resend the same batch later rather
+    /// database applies it at most once. Once an attempt was uncertain, a
+    /// later refusal cannot rule it out, so the call reports `UnknownOutcome`
+    /// with that refusal's reason. An error after a dispatch, including a
+    /// deadline, can still hide a commit: resend the same batch later rather
     /// than building a new one.
     pub async fn mutate(&self, batch: &MutationBatch) -> Result<WriteReceipt, ClientError> {
         let deadline = deadline(self.timeout)?;
         // The idempotency receipt belongs to the original principal. A source
         // rotation must not change authority between attempts of this batch.
-        let bearer = self.bearer()?;
-        let mut delay = Duration::from_millis(50);
-        loop {
+        let token = self.bearer()?;
+        let bearer: &str = &token;
+        resend_uncertain(deadline, move || {
             let mut client = self.client.clone();
             client.set_deadline(deadline);
-            let result = tokio::time::timeout_at(deadline, client.mutate(&bearer, batch))
-                .await
-                .map_err(|_| crate::snapshot_decode::resources::deadline())?;
-            match result {
-                Err(error) if uncertain(&error) && Instant::now() + delay < deadline => {
-                    tokio::time::sleep(delay).await;
-                    delay = (delay * 2).min(Duration::from_secs(1));
+            async move { client.mutate(bearer, batch).await }
+        })
+        .await
+    }
+}
+
+/// Send `attempt` until it settles or the deadline leaves no room for another
+/// backoff. A resend can be refused by a check that precedes the database's
+/// receipt lookup (admission, credential expiry, current policy), so after an
+/// uncertain attempt no later failure is reported as a definite one.
+async fn resend_uncertain<A, F>(
+    deadline: Instant,
+    mut attempt: A,
+) -> Result<WriteReceipt, ClientError>
+where
+    A: FnMut() -> F,
+    F: std::future::Future<Output = Result<WriteReceipt, ClientError>>,
+{
+    let mut delay = Duration::from_millis(50);
+    let mut sent_uncertain = false;
+    loop {
+        let result = tokio::time::timeout_at(deadline, attempt())
+            .await
+            .unwrap_or_else(|_| Err(crate::snapshot_decode::resources::deadline()));
+        match result {
+            Err(error) if uncertain(&error) => {
+                if Instant::now() + delay >= deadline {
+                    return Err(error);
                 }
-                result => return result,
+                sent_uncertain = true;
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(1));
             }
+            Err(error) if sent_uncertain => return Err(unresolved(&error)),
+            result => return result,
         }
     }
+}
+
+/// `UnknownOutcome` for a resend that failed after an uncertain attempt.
+fn unresolved(later: &ClientError) -> ClientError {
+    let reason = match later {
+        ClientError::Transport(status) => status.message().to_owned(),
+        other => other.to_string(),
+    };
+    let error = kasumi_types::Error::new(
+        ErrorCode::UnknownOutcome,
+        format!("an earlier attempt may have been applied and a resend failed: {reason}"),
+    );
+    let details = serde_json::to_vec(&error).unwrap_or_default();
+    ClientError::Transport(tonic::Status::with_details(
+        tonic::Code::Unavailable,
+        error.message,
+        details.into(),
+    ))
 }
 
 fn deadline(timeout: Duration) -> Result<Instant, ClientError> {
@@ -433,6 +478,78 @@ mod tests {
         ] {
             assert_eq!(uncertain(&error), expected, "{error}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_refused_resend_never_rules_out_an_earlier_uncertain_attempt() {
+        let database = |code, message: &str| {
+            let error = kasumi_types::Error::new(code, message);
+            ClientError::Transport(tonic::Status::with_details(
+                tonic::Code::Unknown,
+                message,
+                serde_json::to_vec(&error).unwrap().into(),
+            ))
+        };
+        let committed = || {
+            Ok(WriteReceipt {
+                revision: 9,
+                versions: Default::default(),
+            })
+        };
+        let unknown = || {
+            Err(database(
+                ErrorCode::UnknownOutcome,
+                "write deadline exceeded",
+            ))
+        };
+        let send = |script: Vec<Result<WriteReceipt, ClientError>>| async move {
+            let script = std::sync::Mutex::new(script.into_iter());
+            let attempts = std::sync::atomic::AtomicUsize::new(0);
+            let result = resend_uncertain(Instant::now() + Duration::from_secs(10), || {
+                attempts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let next = script.lock().unwrap().next().expect("scripted attempt");
+                async move { next }
+            })
+            .await;
+            (result, attempts.into_inner())
+        };
+        // A refusal before the receipt lookup follows an attempt that may
+        // still apply: admission, credential expiry and current policy.
+        for (code, reason) in [
+            (ErrorCode::ResourceExhausted, "memory admission refused"),
+            (ErrorCode::Unauthorized, "credential expired"),
+            (ErrorCode::Forbidden, "access denied"),
+            (ErrorCode::Sealed, "tenant sealed"),
+            (ErrorCode::Conflict, "access policy changed"),
+        ] {
+            let (result, attempts) = send(vec![unknown(), Err(database(code, reason))]).await;
+            let error = result.unwrap_err();
+            assert_eq!(
+                (error.code(), attempts),
+                (Some(ErrorCode::UnknownOutcome), 2),
+                "{code:?}"
+            );
+            assert!(error.to_string().contains(reason), "{error}");
+        }
+        let bare = ClientError::Transport(tonic::Status::unavailable("connection reset"));
+        let (result, _) = send(vec![Err(bare), Err(ClientError::Authorization)]).await;
+        assert_eq!(result.unwrap_err().code(), Some(ErrorCode::UnknownOutcome));
+        // Without an earlier uncertain attempt a refusal stays definite, and a
+        // resend that settles returns its receipt.
+        let (result, attempts) =
+            send(vec![Err(database(ErrorCode::Forbidden, "access denied"))]).await;
+        assert_eq!(
+            (result.unwrap_err().code(), attempts),
+            (Some(ErrorCode::Forbidden), 1)
+        );
+        let (result, attempts) = send(vec![unknown(), unknown(), committed()]).await;
+        assert_eq!((result.unwrap().revision, attempts), (9, 3));
+        // No room for another backoff returns the uncertain error itself.
+        let result = resend_uncertain(Instant::now() + Duration::from_millis(20), || async {
+            unknown()
+        })
+        .await;
+        assert_eq!(result.unwrap_err().code(), Some(ErrorCode::UnknownOutcome));
     }
 
     #[test]

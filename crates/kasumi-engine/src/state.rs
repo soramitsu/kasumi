@@ -2894,8 +2894,16 @@ fn apply_mutations(
             ));
         }
         let old = collection.documents.get(id);
+        // An absent create over an existing ID is a failed precondition below,
+        // as in a mutable collection, so a lost create race reads as CONFLICT.
         if collection.definition.write_mode == CollectionWriteMode::AppendOnly
-            && !matches!(mutation, Mutation::Put { expected: Precondition::Absent, .. } if old.is_none())
+            && !matches!(
+                mutation,
+                Mutation::Put {
+                    expected: Precondition::Absent,
+                    ..
+                }
+            )
         {
             return Err(Error::new(
                 ErrorCode::Forbidden,

@@ -412,7 +412,14 @@ pub(crate) async fn release_response<T>(
 ) -> Result<T> {
     let release = auth.audit_result(context, fence.check()).await;
     if mutation {
-        mutation_release(release)?;
+        // The response exists, so the effect was accepted. A seal, policy
+        // change or admission cancellation now withholds it but cannot reject it.
+        release.map_err(|_| {
+            Error::new(
+                ErrorCode::UnknownOutcome,
+                "write response release was fenced; resolve or retry the same idempotency key",
+            )
+        })?;
     } else {
         release?;
     }
@@ -459,6 +466,7 @@ mod tests {
     include!("api_tls_reload_tests.rs");
     include!("api_sdk_literal_tests.rs");
     include!("api_facade_tests.rs");
+    include!("api_data_cli_tests.rs");
     include!("rpc_seek_paging_tests.rs");
     use super::*;
     use crate::{
@@ -1734,7 +1742,15 @@ name: "docs".into(),
             let error = release_response(&fixture.auth, &context, fence, encoded, mutation)
                 .await
                 .unwrap_err();
-            assert_eq!(error.code, ErrorCode::Sealed);
+            // The committed write is withheld, never reported as refused.
+            assert_eq!(
+                error.code,
+                if mutation {
+                    ErrorCode::UnknownOutcome
+                } else {
+                    ErrorCode::Sealed
+                }
+            );
             let records = fixture.audit_store.scan("security.audit").unwrap();
             assert_eq!(records.len(), 1);
             let event: Value = serde_json::from_slice(records[0].value()).unwrap();

@@ -162,10 +162,11 @@ destination limit. Prepared restore generations consume additional resident
 memory and are capped per tenant.
 
 Cursors expire after at most 60 seconds, and any failover/incarnation change
-requires a new query. Each page checks current access. Receipt retention is
-24 hours by default and is included in snapshots. Receipts are scoped to the
-authenticated principal; changing principal does not resolve another user's
-operation.
+requires a new query. Each page checks current access. Mutation receipts are
+permanent within the tenant's `max_mutation_receipt_bytes` budget and are
+included in snapshots; once the budget is exhausted, new idempotency keys are
+refused with `QUOTA_EXCEEDED`. Receipts are scoped to the authenticated
+principal; changing principal does not resolve another user's operation.
 
 Required tenant audits survive Raft log compaction as state, and separately
 protected service records cover authentication and sealed-tenant events. They

@@ -42,9 +42,17 @@ them unchanged. A collection epoch fences query phantoms as well as updates.
 Schema epochs change when definitions change. The snapshot assertion also
 fences policy changes and restoration into another incarnation. Exact retained
 receipt replay precedes these assertions, while current authorization still
-precedes receipt disclosure. Native receipts retain the configured lifetime
-(24 hours by default). Applications needing permanent replay protection must
-store their permanent receipt in the same atomic batch as the business effects.
+precedes receipt disclosure. Native receipts are permanent: no lifetime, count
+cap or eviction applies. Each new idempotency key stores one row (scope, key,
+request digest, collection names and outcome) in the tenant's
+`max_mutation_receipt_bytes` budget (128 MiB by default), and a new key is
+admitted only while that budget still has room for the largest row its batch
+could produce, including a rejection message of up to 512 bytes. Once the
+budget is exhausted every new key is refused with `QUOTA_EXCEEDED`, while exact
+retries of retained keys still replay. A workload that writes several keys per
+business operation, such as an intent, a claim and a finishing batch, uses
+several rows per operation; raise the limit with an authorized limit change
+before it runs out. See [permanent mutation receipts](permanent-mutation-receipts.md).
 
 `Database::operation_receipt` returns an optional `MutationReceipt` containing
 the original principal/tenant/incarnation `scope`, retained `request_digest`, and
@@ -61,8 +69,7 @@ Neither method
 dispatches a mutation; an absent record remains unknown. A new invocation may
 use a renewed credential for the same authorized principal/resource, while every
 endpoint attempt within one invocation keeps the original credential snapshot
-and deadline. Receipt expiry and migration to permanent point storage remain
-separate release work.
+and deadline.
 
 ## Coherent reads
 
@@ -97,7 +104,8 @@ separate [staged transaction and read lease APIs](large-transactions-plan.md).
 The service authorizes every collection and audits strict reads before release,
 then rechecks current authority and key availability. The returned revision
 identifies the captured data generation, not any later read-audit entry. This
-operation is available in embedded Rust and native gRPC; the existing MCP tools
+operation is available in embedded Rust, native gRPC and
+[`kasumictl read-snapshot`](api.md#command-line-client); the existing MCP tools
 accept conditional batches but do not provide a coherent snapshot tool.
 
 For an expiry-sensitive read, set `time_bounds` to
@@ -143,8 +151,10 @@ early leader admission then rejects the entire reclaim batch.
 ## Append-only collections
 
 `write_mode` is `mutable` or `append_only`. Append-only collections accept only
-`put` with an `absent` precondition for an absent ID. Overwrite and deletion fail,
-including for administrators. Replacing a definition can strengthen mutable
+`put` with an `absent` precondition; every other write is `FORBIDDEN`, including
+for administrators. An `absent` put over an existing ID fails its precondition
+with `CONFLICT`, as in a mutable collection, so losing a create race is an
+ordinary retained precondition failure. Replacing a definition can strengthen mutable
 storage to append-only but cannot weaken it. Schema/index replacement still
 validates every retained document. This protects journal, audit, outbox and
 permanent receipt records from in-place mutation through data/admin APIs;

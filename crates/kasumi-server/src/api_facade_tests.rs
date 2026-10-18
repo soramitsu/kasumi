@@ -65,6 +65,7 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
     ));
     let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
     let bearer = token.strip_prefix("Bearer ").unwrap().to_owned();
+    let cli_bearer = bearer.clone();
     let credential_reads = Arc::new(AtomicUsize::new(0));
     let reads = credential_reads.clone();
     let db = tokio::time::timeout(
@@ -200,44 +201,102 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
         ["docs"]
     );
 
-    // The shell commands drive the same client and print one JSON per line.
-    async fn cli(db: &Kasumi, command: &str) -> anyhow::Result<Vec<Value>> {
-        let arguments: Vec<String> = command.split(' ').map(str::to_owned).collect();
-        let mut out = Vec::new();
-        crate::data_cli::execute(crate::data_cli::parse(&arguments)?, db, &mut out).await?;
-        Ok(String::from_utf8(out)?
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect())
+    // The shell commands drive the same client and print one JSON document.
+    // Each invocation has its own session and deadline.
+    let credential: Arc<dyn kasumi_transport::credentials::CredentialSource> =
+        Arc::new(move || -> anyhow::Result<zeroize::Zeroizing<String>> {
+            Ok(zeroize::Zeroizing::new(cli_bearer.clone()))
+        });
+    let session = || {
+        crate::data_cli::Session::new(
+            config.clone(),
+            credential.clone(),
+            kasumi_types::MutationReceiptScope {
+                tenant: "tenant-a".into(),
+                incarnation: fixture.incarnation.to_string(),
+                principal: "person".into(),
+            },
+            fixture.incarnation,
+            tokio::time::Instant::now() + Duration::from_secs(10),
+        )
+    };
+    async fn cli(session: crate::data_cli::Session, command: &str) -> Value {
+        let arguments: Vec<String> = ["--profile", "/unused"]
+            .into_iter()
+            .chain(command.split(' '))
+            .map(str::to_owned)
+            .collect();
+        let command = crate::data_cli::parse(&arguments).unwrap().command;
+        match crate::data_cli::execute(command, &session).await {
+            Ok(document) => serde_json::from_slice(&document).unwrap(),
+            Err(failure) => json!({"ok": false, "error": failure}),
+        }
     }
-    let receipt = cli(&db, r#"put docs d {"n":5,"tag":"cli"} --if absent --key cli-put"#)
-        .await
-        .unwrap();
-    assert!(receipt[0]["revision"].as_u64().unwrap() > 0);
-    cli(&db, r#"patch docs d {"tag":null,"extra":true}"#)
-        .await
-        .unwrap();
-    let document = cli(&db, "get docs d").await.unwrap();
-    assert_eq!(document[0]["body"], json!({"n": 5, "extra": true}));
-    let rows = cli(&db, r#"query docs {"/n":{"gte":3}} --sort -/n --limit 1 --all"#)
-        .await
-        .unwrap();
+    let written = cli(
+        session(),
+        r#"put docs d {"n":5,"tag":"cli"} --if absent --key cli-put"#,
+    )
+    .await;
     assert_eq!(
-        rows.iter().map(|row| row["id"].clone()).collect::<Vec<_>>(),
+        written["result"]["idempotency_key"],
+        json!("cli-put"),
+        "{written}"
+    );
+    assert!(written["result"]["receipt"]["revision"].as_u64().unwrap() > 0);
+    let patched = cli(session(), r#"patch docs d {"tag":null,"extra":true}"#).await;
+    assert_eq!(patched["ok"], json!(true), "{patched}");
+    let document = cli(session(), "get docs d").await;
+    assert_eq!(
+        document["result"]["document"]["body"],
+        json!({"n": 5, "extra": true})
+    );
+    let rows = cli(
+        session(),
+        r#"query docs {"/n":{"gte":3}} --sort -/n --limit 1 --all"#,
+    )
+    .await;
+    assert_eq!(
+        rows["result"]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|row| row["id"].clone())
+            .collect::<Vec<_>>(),
         [json!("d"), json!("c")]
     );
-    let json_rows = cli(&db, r#"query --json {"collection":"docs","filter":{"/n":{"gte":3}},"sort":["-/n"],"limit":1} --all"#)
-        .await
-        .unwrap();
-    assert_eq!(json_rows, rows);
-    let groups = cli(&db, r#"query --json {"collection":"docs","aggregate":{"n":{"count":"*"}}}"#)
-        .await
-        .unwrap();
-    assert_eq!(groups, [json!({"group": {}, "values": {"n": 4}})]);
-    assert_eq!(cli(&db, "collections").await.unwrap()[0]["name"], json!("docs"));
-    cli(&db, "delete docs d").await.unwrap();
-    let error = cli(&db, "get docs d").await.unwrap_err();
-    assert!(error.to_string().contains("docs/d not found"), "{error}");
+    assert_eq!(rows["result"]["more"], json!(false));
+    let paged = cli(
+        session(),
+        r#"query docs {"/n":{"gte":3}} --sort -/n --limit 1"#,
+    )
+    .await;
+    assert_eq!(paged["result"]["rows"].as_array().unwrap().len(), 1);
+    assert_eq!(paged["result"]["more"], json!(true));
+    assert_eq!(paged["result"]["revision"], rows["result"]["revision"]);
+    let json_rows = cli(session(), r#"query --json {"collection":"docs","filter":{"/n":{"gte":3}},"sort":["-/n"],"limit":1} --all"#)
+        .await;
+    assert_eq!(json_rows["result"]["rows"], rows["result"]["rows"]);
+    let groups = cli(
+        session(),
+        r#"query --json {"collection":"docs","aggregate":{"n":{"count":"*"}}}"#,
+    )
+    .await;
+    assert_eq!(
+        groups["result"]["aggregates"],
+        json!([{"group": {}, "values": {"n": 4}}])
+    );
+    assert_eq!(
+        cli(session(), "collections").await["result"]["collections"][0]["name"],
+        json!("docs")
+    );
+    assert_eq!(cli(session(), "delete docs d").await["ok"], json!(true));
+    assert_eq!(
+        cli(session(), "get docs d").await,
+        json!({"ok": true, "result": {"document": null}})
+    );
+    let missing = cli(session(), "get no-such-collection d").await;
+    assert_eq!(missing["error"]["class"], json!("not_found"), "{missing}");
+    assert_eq!(missing["error"]["code"], json!("NOT_FOUND"));
 
     drop((db, first, second, selected, totals, scanned));
     stop.send_replace(true);

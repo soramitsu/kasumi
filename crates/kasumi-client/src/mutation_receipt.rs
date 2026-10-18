@@ -117,6 +117,13 @@ pub(crate) fn verify_committed_write_receipt(
     Ok(receipt)
 }
 
+/// `ClientError::InvalidResponse` reasons for a well-formed retained receipt
+/// that is not this caller's invocation: the key's outcome belongs to other
+/// input, or to another original namespace. Neither is an outcome for the
+/// caller's batch, and neither authorizes a new mutation.
+pub const RECEIPT_FOR_OTHER_INPUT: &str = "receipt does not identify the exact original mutation";
+pub const RECEIPT_FOR_OTHER_SCOPE: &str = "receipt belongs to another original namespace";
+
 /// Verify a response from an authenticated native connection against the
 /// original batch. This is input matching, not independent authentication.
 /// No retained record means unknown, and never authorizes a new mutation.
@@ -142,17 +149,13 @@ pub fn verify_mutation_receipt(
         principal: scope.principal,
     };
     if scope != *expected_scope {
-        return Err(ClientError::InvalidResponse(
-            "receipt belongs to another original namespace",
-        ));
+        return Err(ClientError::InvalidResponse(RECEIPT_FOR_OTHER_SCOPE));
     }
     let expected = original
         .digest()
         .map_err(|_| ClientError::InvalidResponse("original mutation cannot be encoded"))?;
     if response.request_digest != expected {
-        return Err(ClientError::InvalidResponse(
-            "receipt does not identify the exact original mutation",
-        ));
+        return Err(ClientError::InvalidResponse(RECEIPT_FOR_OTHER_INPUT));
     }
     let outcome = match outcome {
         proto::receipt_response::Outcome::Committed(receipt) => {
@@ -326,7 +329,10 @@ mod tests {
             changed_precondition,
             changed_reads,
         ] {
-            assert!(verify_mutation_receipt(&scope(), &substituted, response.clone()).is_err());
+            assert!(matches!(
+                verify_mutation_receipt(&scope(), &substituted, response.clone()),
+                Err(ClientError::InvalidResponse(RECEIPT_FOR_OTHER_INPUT))
+            ));
         }
         for field in 0..3 {
             let mut substituted_scope = scope();
@@ -335,9 +341,10 @@ mod tests {
                 1 => substituted_scope.incarnation = "restored-target".into(),
                 _ => substituted_scope.principal = "another-principal".into(),
             }
-            assert!(
-                verify_mutation_receipt(&substituted_scope, &original, response.clone()).is_err()
-            );
+            assert!(matches!(
+                verify_mutation_receipt(&substituted_scope, &original, response.clone()),
+                Err(ClientError::InvalidResponse(RECEIPT_FOR_OTHER_SCOPE))
+            ));
         }
         let mut missing_scope = response.clone();
         missing_scope.scope = None;

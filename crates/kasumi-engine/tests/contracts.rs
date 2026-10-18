@@ -531,10 +531,33 @@ fn append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically() {
                 .contains_key("b")
         );
     }
+    // An absent create over an existing ID fails its precondition, exactly as
+    // in a mutable collection, and still applies nothing.
     assert_eq!(
         db.apply_command(
             &db.disk,
             6,
+            command(Operation::Mutate(batch(
+                "duplicate-create",
+                vec![
+                    put("b", "b", Precondition::Absent),
+                    put("a", "again", Precondition::Absent)
+                ]
+            )))
+        )
+        .unwrap()
+        .unwrap_err(),
+        Error::new(ErrorCode::Conflict, "document precondition failed")
+    );
+    assert!(
+        !db.generation().unwrap().state.collections["people"]
+            .documents
+            .contains_key("b")
+    );
+    assert_eq!(
+        db.apply_command(
+            &db.disk,
+            7,
             command(Operation::ReplaceCollection(definition()))
         )
         .unwrap()
@@ -545,7 +568,7 @@ fn append_only_mode_rejects_overwrite_delete_and_schema_weakening_atomically() {
     assert_eq!(db.generation().unwrap().state.schema_epoch, 1);
     db.apply_command(
         &db.disk,
-        7,
+        8,
         command(Operation::ReplaceCollection(immutable)),
     )
     .unwrap()

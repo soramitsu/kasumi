@@ -189,10 +189,14 @@ target/release/kasumictl --profile "$PROFILE" \
 target/release/kasumictl --profile "$PROFILE" get invoices inv-1
 ~~~
 
-<code>kasumictl</code> prints JSON Lines, accepts inline JSON,
+<code>kasumictl</code> prints one JSON document per command, with a stable error
+class and exit status for each failure, accepts inline JSON,
 <code>@file.json</code>, or standard input, and can follow every page with
 <code>--all</code>. Use <code>--key</code> for a stable idempotency key when a
-script may retry across process restarts. Credentials expire after one hour;
+script may retry across process restarts. Programs without a native client can
+use it as a subprocess for conditional batches, coherent
+<code>read-snapshot</code> reads and <code>resolve-mutation</code>; see the
+[command-line client](docs/api.md#command-line-client). Credentials expire after one hour;
 keep a profile renewed while the server is running:
 
 ~~~sh

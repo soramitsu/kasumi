@@ -332,8 +332,12 @@ read. See [transaction contracts](transactions.md).
 ## Command line
 
 `kasumictl --profile` runs the same reads and writes from a shell, using an
-installed client profile. Rows, groups and receipts print as one JSON object per
-line, ready for `jq`; a missing document exits with status 1.
+installed client profile. Each command prints one JSON document,
+`{"ok":true,"result":...}` or `{"ok":false,"error":{"class":...}}`, ready for
+`jq`; a missing document is `{"document":null}`, and each error class has its own
+exit status. The [command-line client](api.md#command-line-client) documents
+the output, the error classes, `read-snapshot`, `resolve-mutation` and the
+profile checks.
 
 ```sh
 kasumictl --profile /var/lib/kasumi/profiles/default.json get invoices inv-1
@@ -343,17 +347,20 @@ kasumictl --profile /var/lib/kasumi/profiles/default.json put invoices inv-2 '{"
 kasumictl --profile /var/lib/kasumi/profiles/default.json patch invoices inv-2 '{"status":"paid"}' --if 7
 kasumictl --profile /var/lib/kasumi/profiles/default.json delete invoices inv-2
 kasumictl --profile /var/lib/kasumi/profiles/default.json mutate @batch.json
+kasumictl --profile /var/lib/kasumi/profiles/default.json read-snapshot @snapshot.json
+kasumictl --profile /var/lib/kasumi/profiles/default.json resolve-mutation @batch.json
 kasumictl --profile /var/lib/kasumi/profiles/default.json collections
 ```
 
 JSON arguments can be inline, `@path` or `-` for standard input. `query` prints
-the first page and notes when more remain; `--all` follows every cursor,
+the first page with `"more": true` when more remain; `--all` follows every cursor,
 including with `query --json @query.json --all`, and
 `--seek` selects [seek paging](#seek-paging) for walks of any size. Writes
 use a fresh idempotency key unless `--key` names one, and resend it themselves
 after an uncertain outcome. Use a stable `--key` when a script may retry a
 write across invocations. A failed write reports its key so an uncertain
-outcome can be resolved by retrying the identical batch with that key.
+outcome can be resolved by retrying the identical batch with that key, or by
+`resolve-mutation` with that batch.
 
 ## Limits
 

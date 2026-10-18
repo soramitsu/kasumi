@@ -165,11 +165,15 @@ match db.query(&QueryRequest::new("invoices").filter(Filter::new().eq("/note", "
 `insert`, `upsert`, `replace`, `patch` and `delete` write one document;
 `collections` lists schemas and indexes. `get_as::<T>` and
 `QueryPage::decode::<T>` deserialize bodies into application types. The same
-operations are available from a shell with `kasumictl --profile`; see the
-[command line](query-language.md#command-line). `ClientError::code()` returns Kasumi's own error code, which is more
+operations, coherent snapshots and receipt resolution are available to scripts
+and other languages through `kasumictl --profile`; see the
+[command-line client](#command-line-client). `ClientError::code()` returns Kasumi's own error code, which is more
 specific than the gRPC status. `mutate` resends the identical batch after
 `UNKNOWN_OUTCOME` or `UNAVAILABLE` until its deadline; the idempotency key makes
-that safe. All attempts within one mutation use the same credential snapshot
+that safe. A resend can be refused before the database looks up its receipt,
+for example by admission or an expired credential, so once an attempt was
+uncertain any later failure is reported as `UNKNOWN_OUTCOME` with the later
+reason. All attempts within one mutation use the same credential snapshot
 to preserve the original principal. Credential renewal is observed by the next
 operation. `Kasumi` talks to one endpoint; replicated deployments with several
 members use the routing `KasumiClientPool`.
@@ -304,6 +308,169 @@ manifest using status or identical finalize. Terminal identities never expire
 or silently evict; the explicit permanent record quota must have capacity before
 begin accepts upload payload. See [large transaction contracts](large-transactions-plan.md)
 for resource limits, expiry, cancellation and snapshot lease invalidation.
+
+## Command-line client
+
+`kasumictl --profile <profile.json>` is a complete data client for scripts and
+for languages without a native client. Run it as a subprocess, pass JSON
+arguments inline, as `@path` or as `-` for standard input, and read exactly one
+JSON document from standard output. It uses the same `kasumi_client` handles
+as Rust applications: point reads, queries and writes go through `Kasumi`;
+snapshots and receipt resolution go through `KasumiClientPool`. Pass only file
+paths: the bearer file named by the profile is reread for each operation, and no
+credential is accepted as an argument or environment variable.
+
+```sh
+kasumictl --profile <profile.json> [<option>...] <command> [<argument>...]
+```
+
+Options come before the command, in any order. A command line whose first
+argument is `--profile` or another option below is a data command; any other is
+administrative. Standard input can supply only one JSON argument per call.
+
+| Command | Success `result` |
+| --- | --- |
+| `get <collection> <id>` | `{"document": {"id", "version", "body"}}`, or `{"document": null}` for a proven-absent document |
+| `query <collection> [<filter>] [<flags>]`, `query --json <query> [--all]` | `{"revision", "rows", "aggregates", "more"}`; `more` reports another page, and `--all` reads every page of one snapshot into memory |
+| `put`, `patch`, `delete` with `[--if absent\|any\|<version>] [--key <key>]` | As `mutate`, for a one-document batch |
+| `mutate <batch>` | `{"idempotency_key", "request_digest", "receipt": {"revision", "versions"}}` |
+| `read-snapshot <request>` | `{"snapshot": <SnapshotReadResponse>, "read_assertions": [...]}` |
+| `resolve-mutation <batch> [--scope <scope>]` | `{"outcome", "idempotency_key", "request_digest", "scope"}` plus `receipt` when committed or `error` when rejected |
+| `collections` | `{"collections": [<CollectionDefinition>...]}` |
+
+`mutate` takes the complete typed `MutationBatch`, so one batch from standard
+input can create documents with `"expected": "absent"`, update others at an
+exact observed `{"version": n}`, carry `read_set` assertions, and apply all of
+them atomically under the caller's `idempotency_key`. `request_digest` is
+`MutationBatch::digest()`, the identity a retained receipt is matched against.
+`receipt.versions` maps each `/collection/id` the batch wrote to the revision it
+now has; both segments are JSON Pointer escaped (`~` as `~0`, `/` as `~1`). A
+`put`, `patch` or `delete` without `--key` uses a fresh key, which its result
+and failures report.
+
+`read-snapshot` takes the native `ReadSnapshotRequest` (`documents`, `queries`
+and an explicit `time_bounds`) and reads every named document from one
+coherent generation: each entry has its exact `version` and body, or `null` for
+proven absence. `read_assertions` is
+`SnapshotReadResponse::read_assertions()`: the snapshot identity plus each
+observed version or absence, ready to use as the `read_set` of the next batch.
+The expected incarnation is the profile's database incarnation.
+
+`resolve-mutation` takes the complete original batch, not only its key, and
+reads the retained outcome without dispatching anything. It verifies the
+receipt's request digest and its scope. Idempotency keys and their outcomes
+belong to the principal that wrote them, so the lookup always uses the
+profile's tenant and principal: the scope defaults to the profile's tenant,
+incarnation and principal, and
+`--scope '{"tenant":...,"incarnation":...,"principal":...}'` may differ only in
+`incarnation`, to name the original incarnation after a restore; any other
+difference is `invalid_request`. `outcome` is `committed` with the original
+`receipt`, `rejected` with the retained `error` (classified as in the table
+below), or `unknown` when no outcome is retained. `unknown` is never evidence
+that the batch did not commit: resend the identical batch or resolve again
+later, and never build a different batch for the same operation. A retained
+outcome under the same key for a different batch or scope is a `conflict`. A
+failed lookup, whatever its class, describes only the lookup and leaves the
+batch as unresolved as before. Resolve every uncertain batch before the
+application's credential changes principal: a new principal neither finds the
+old outcomes nor replays the old keys. Receipts are permanent within the
+tenant's `max_mutation_receipt_bytes` budget; see
+[transaction contracts](transactions.md#atomic-read-dependencies).
+
+Options are checked before anything connects:
+
+| Option | Check |
+| --- | --- |
+| `--profile <path>` | Required. The installed client profile; it and its bearer file must be readable, owner-only files |
+| `--expect-profile-sha256 <hex>` | SHA-256 of the exact profile bytes, as `ClientProfile::load_with_sha256` reads them |
+| `--expect-tenant`, `--expect-incarnation`, `--expect-principal`, `--expect-family-id` | Given together; `ClientProfile::require_database_binding` compares them with the profile |
+| `--timeout-ms <n>` | One deadline for the whole invocation, 1 to 3600000 (default 30000), starting when the arguments are parsed. It bounds reading `@path` and standard input, loading the profile, connecting and every request; an uncertain write is resent unchanged until it elapses, and nothing new is sent after it |
+
+Supply the expected values from the application's own trusted configuration;
+a profile cannot vouch for itself. A data command also requires a database
+profile.
+
+Success prints `{"ok":true,"result":...}` and exits 0. Failure prints
+`{"ok":false,"error":{"class":...,"code":...,"message":...}}`, where `code` is
+the database's own error code or `null`. Every failure of a `put`, `patch`,
+`delete`, `mutate` or `resolve-mutation` whose batch was parsed adds
+`idempotency_key`. The document is one line followed by a newline, and nothing
+else is written to standard output.
+
+| Exit | `class` | Meaning and next step |
+| --- | --- | --- |
+| 1 | `internal` | Unexpected client or response failure, or `CORRUPTION` on a read |
+| 2 | `invalid_request` | The command line, a JSON argument or the request is invalid (`INVALID_ARGUMENT`, `SCHEMA_VIOLATION`, `INDEX_REQUIRED`), including arguments that are not UTF-8, a second `-`, standard input not closed before the deadline, or a `--scope` for another tenant or principal. Local mistakes are reported before the profile is read |
+| 3 | `profile_rejected` | The profile or its bearer file is missing, unreadable, not owner-only or malformed, the profile is not a database credential, or it differs from an `--expect-*` check; nothing connected |
+| 4 | `unauthorized` | The server refused the credential, or current policy refuses the operation (`UNAUTHORIZED`, `FORBIDDEN`). This includes any write to an `append_only` collection other than an absent create. `code: null` means the bearer file could not be read for the call itself |
+| 5 | `not_found` | A collection, or the document a `patch` needs, does not exist (`NOT_FOUND`) |
+| 6 | `conflict` | Definite rejection (`CONFLICT`, `ALREADY_EXISTS`) not proven to be a failed precondition: the idempotency key already identifies a different batch, or the receipt check below did not finish before the deadline. Either way this batch did not apply; for compare-and-set, read again and build a new batch with a new key |
+| 7 | `precondition_failed` | Definite rejection of exactly this batch, proven by its retained receipt: a document precondition (including an absent create over an existing ID), read assertion, unique index or archived identity conflicted with current state. Resending gives the same rejection; read again and build a new batch with a new key |
+| 8 | `resource_exhausted` | A size, quota or client decode limit was exceeded (`QUOTA_EXCEEDED`, `RESOURCE_EXHAUSTED`), including a new key once the receipt budget is full |
+| 9 | `unavailable` | Nothing was applied: a read failed (`UNAVAILABLE`, `AUDIT_UNAVAILABLE`, `CURSOR_EXPIRED`, `SEALED`, transport, deadline), or a write was refused before the server accepted it (`SEALED`) or was never sent (connection refused, deadline); retry later. For `resolve-mutation` only the lookup failed |
+| 10 | `uncertain` | A write may have been applied: `UNKNOWN_OUTCOME`, `UNAVAILABLE`, `AUDIT_UNAVAILABLE` or `CORRUPTION` on a write, a lost or unverifiable reply, the deadline, or any failure of a resend after an uncertain attempt. Resend the identical batch or `resolve-mutation` it |
+
+A write's failure is definite only when the request was never sent, or when
+the server refused it with a database code before accepting it. The server
+reports any failure after it accepted a write as `UNKNOWN_OUTCOME`, and the
+client reports any failure that follows an uncertain attempt the same way.
+After every failure of a sent write, `kasumictl` reads that exact batch's
+retained receipt on the same connection, within what remains of the deadline:
+a committed receipt prints the normal success document, a retained rejection
+prints that rejection's class, and a key retained for a different batch is
+`conflict`. Otherwise the attempt's own class stands. Kasumi reports both a
+failed precondition and a reused key as `CONFLICT`; reuse is never retained,
+so it stays `conflict`. A command that stops unexpectedly, such as by a panic,
+still prints its document: `uncertain` for a write, `internal` otherwise. Any
+other exit status, such as termination by a signal, has no document; treat an
+interrupted write as `uncertain`.
+
+In an `append_only` collection, an absent create over an existing ID fails its
+precondition and is `precondition_failed`, exactly as in a mutable collection;
+any other write there is `unauthorized`.
+
+### Calling it from another language
+
+- Start `kasumictl` with an argument list, not a shell. Write the JSON argument
+  to standard input and close it; give the subprocess its own timeout a few
+  seconds longer than `--timeout-ms`.
+- Read standard output to its end and parse exactly one document. The exit
+  status and `error.class` always agree; branch on either.
+- Store the exact bytes of every batch before sending it, keyed by its
+  idempotency key, and resend or resolve with those bytes. `request_digest`
+  covers the canonical batch: object key order and whitespace do not matter,
+  but the spelling of every number does, so `10.5` and `10.50`, or `1.5e-7` and
+  `0.00000015`, are different batches, and the second one conflicts with the
+  first's key. Never rebuild a batch from parsed values.
+- Parse output without losing precision. Numbers keep their exact decimal text;
+  in Python use `json.loads(text, parse_float=decimal.Decimal)`. JavaScript's
+  `JSON.parse` rounds integers above 2^53 and every decimal to a binary float,
+  so use a lossless parser or carry amounts as strings.
+- After `uncertain` (10), resend the identical batch or `resolve-mutation` it
+  until it is `committed` or `rejected`; `unknown` settles nothing.
+- For compare-and-set, treat `conflict` (6) and `precondition_failed` (7) the
+  same way: the batch did not apply, so read again and build a new batch with a
+  new key.
+- After `unavailable` (9) for a write, nothing was applied and the same batch
+  can be sent again later.
+
+A command journal records an intent, claims work by compare-and-set and writes
+a permanent receipt together with the claim's completion:
+
+```sh
+PINS="--expect-profile-sha256 $PROFILE_SHA256 --expect-tenant default
+  --expect-incarnation $INCARNATION --expect-principal $PRINCIPAL --expect-family-id $FAMILY_ID"
+kasumictl --profile "$PROFILE" $PINS read-snapshot - <<'JSON'
+{"documents":[{"collection":"intents","id":"op-1"},{"collection":"claims","id":"op-1"},
+ {"collection":"receipts","id":"op-1"}],"queries":[],"time_bounds":null}
+JSON
+# Build the batch from the snapshot: its read_assertions become read_set, an
+# absent claim is created with "expected":"absent", an observed claim is
+# updated with {"version": n}. Keep the exact batch until it is resolved.
+kasumictl --profile "$PROFILE" $PINS mutate - < finish-op-1.json
+# After an uncertain outcome:
+kasumictl --profile "$PROFILE" $PINS resolve-mutation - < finish-op-1.json
+```
 
 ## MCP 2026-07-28
 

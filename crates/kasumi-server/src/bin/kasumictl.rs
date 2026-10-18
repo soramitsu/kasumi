@@ -54,20 +54,35 @@ fn leader_hint(status: &tonic::Status) {
 }
 
 #[tokio::main]
-async fn main() -> Result<()> {
-    let arguments = std::env::args().skip(1).collect::<Vec<_>>();
-    run(&arguments).await
+async fn main() -> std::process::ExitCode {
+    let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
+    if arguments
+        .first()
+        .is_some_and(|first| kasumi_server::data_cli::selects_data(first))
+    {
+        // Data commands print one JSON document and exit with its class
+        // status, including for arguments that are not UTF-8.
+        let status = kasumi_server::data_cli::run(arguments, &mut std::io::stdout().lock()).await;
+        return std::process::ExitCode::from(status);
+    }
+    let Some(arguments) = arguments
+        .into_iter()
+        .map(|argument| argument.into_string().ok())
+        .collect::<Option<Vec<_>>>()
+    else {
+        eprintln!("Error: arguments must be UTF-8");
+        return std::process::ExitCode::FAILURE;
+    };
+    match run(&arguments).await {
+        Ok(()) => std::process::ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("Error: {error:?}");
+            std::process::ExitCode::FAILURE
+        }
+    }
 }
 
 async fn run(arguments: &[String]) -> Result<()> {
-    if let [flag, profile, command @ ..] = arguments
-        && flag == "--profile"
-    {
-        // Parse before loading the profile, so mistakes never connect.
-        let command = kasumi_server::data_cli::parse(command)?;
-        let db = kasumi_client::Kasumi::from_profile(profile).await?;
-        return kasumi_server::data_cli::execute(command, &db, &mut std::io::stdout().lock()).await;
-    }
     if let [operation, path] = arguments
         && operation == "schema-reference"
     {
@@ -380,31 +395,30 @@ mod tests {
 
     #[tokio::test]
     async fn data_commands_are_parsed_before_the_profile_is_read() {
-        let error = run(&[
-            "--profile".into(),
-            "/nonexistent/profile.json".into(),
-            "fetch".into(),
-            "docs".into(),
-        ])
-        .await
-        .unwrap_err();
-        assert!(
-            error.to_string().contains("unknown data command"),
-            "{error}"
+        async fn data(command: &[&str]) -> (u8, serde_json::Value) {
+            let command = ["--profile", "/nonexistent/profile.json"]
+                .iter()
+                .chain(command)
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>();
+            let mut out = Vec::new();
+            let status = kasumi_server::data_cli::run(command, &mut out).await;
+            (status, serde_json::from_slice(&out).unwrap())
+        }
+        let (status, document) = data(&["fetch", "docs"]).await;
+        assert_eq!(status, 2);
+        assert_eq!(document["ok"], json!(false));
+        assert_eq!(document["error"]["class"], json!("invalid_request"));
+        let message = document["error"]["message"].as_str().unwrap();
+        assert!(message.contains("unknown data command"), "{message}");
+        let (status, document) = data(&["get", "docs", "a"]).await;
+        assert_eq!(
+            status, 3,
+            "a valid command reaches profile loading: {document}"
         );
-        let error = run(&[
-            "--profile".into(),
-            "/nonexistent/profile.json".into(),
-            "get".into(),
-            "docs".into(),
-            "a".into(),
-        ])
-        .await
-        .unwrap_err();
-        assert!(
-            error.downcast_ref::<kasumi_client::ClientError>().is_some(),
-            "a valid command reaches profile loading: {error:#}"
-        );
+        assert_eq!(document["error"]["class"], json!("profile_rejected"));
+        let message = document["error"]["message"].as_str().unwrap();
+        assert!(message.contains("/nonexistent/profile.json"), "{message}");
     }
 
     fn lookup() -> ReadSchemaActivation {
