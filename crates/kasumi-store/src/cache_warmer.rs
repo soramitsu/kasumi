@@ -5,15 +5,15 @@
 //! its actual JoinHandle even if a waiter or the last public node is dropped.
 use crate::{NodeStore, NodeStoreLocator, NodeStoreLookup, disk_memory};
 use anyhow::{Result, ensure};
-#[cfg(test)]
-use kasumi_kv::CacheWarmupState;
-use kasumi_kv::{CacheWarmup, CacheWarmupStatus, MaintenanceBudget, MaintenanceStep};
+use kasumi_kv::{
+    CacheWarmup, CacheWarmupState, CacheWarmupStatus, MaintenanceBudget, MaintenanceStep,
+};
 use kasumi_serving::{BackgroundWork, BackgroundWorkBudget};
 use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use parking_lot::Mutex;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const STEP_WORK: usize = 1;
 /// The storage maintenance share of one worker iteration: bounded read units
@@ -26,6 +26,11 @@ const RUNNING_DELAY: Duration = Duration::from_millis(1);
 /// A writer held the database write gate; retry soon without waiting on it.
 const BUSY_DELAY: Duration = Duration::from_millis(10);
 const IDLE_DELAY: Duration = Duration::from_millis(250);
+/// A publication resets an unfinished warm attempt and discards its progress,
+/// so warming that keeps being restarted never finishes. Once the worker sees
+/// an attempt replaced before completing, it warms at the idle pace until
+/// this long passes without another restart.
+const RESTART_WINDOW: Duration = Duration::from_secs(60);
 
 /// Lifecycle observations from the node's automatic worker. A completed native
 /// pass can still be capacity-limited; `progress.complete` is not residency.
@@ -51,15 +56,36 @@ pub struct CacheWorkerStatus {
     /// The last step that ran was not idle: a census, a due cycle or an
     /// active phase still has work.
     pub maintenance_pending: bool,
+    /// Unfinished warm attempts that were replaced, and when the last was seen.
+    pub warm_restarts: u64,
+    pub last_warm_restart: Option<Instant>,
+}
+
+/// Record the native warm status of a step, noting an unfinished attempt that
+/// a publication replaced since the previous step.
+fn observe_native(status: &mut CacheWorkerStatus, native: CacheWarmupStatus, now: Instant) {
+    if status.native.is_some_and(|previous| {
+        previous.state == CacheWarmupState::Running
+            && previous.attempt_generation != native.attempt_generation
+    }) {
+        status.warm_restarts = status.warm_restarts.saturating_add(1);
+        status.last_warm_restart = Some(now);
+    }
+    status.native = Some(native);
 }
 
 /// The pause before the next iteration: run again soon while warming or
 /// maintenance made undeferred progress, briefly while a writer held the gate
 /// and maintenance still has work, and otherwise idle. A writer holding the
-/// gate while nothing is pending does not shorten the idle pause.
-fn next_delay(status: &CacheWorkerStatus) -> Duration {
+/// gate while nothing is pending does not shorten the idle pause, and neither
+/// does warming whose attempt was restarted within `RESTART_WINDOW`.
+fn next_delay(status: &CacheWorkerStatus, now: Instant) -> Duration {
     let blocked = status.native.is_some_and(|n| n.provider_limited);
-    let warming = !blocked && status.progress.is_some_and(|p| p.work != 0 && !p.complete);
+    let restarted = status
+        .last_warm_restart
+        .is_some_and(|at| now.saturating_duration_since(at) < RESTART_WINDOW);
+    let warming =
+        !blocked && !restarted && status.progress.is_some_and(|p| p.work != 0 && !p.complete);
     let maintaining = matches!(
         status.last_maintenance,
         Some(MaintenanceStep::Ran(progress))
@@ -323,7 +349,7 @@ impl Worker {
                             status.steps = status.steps.saturating_add(1);
                             status.work = status.work.saturating_add(progress.work as u64);
                             status.progress = Some(progress);
-                            status.native = Some(native);
+                            observe_native(&mut status, native, Instant::now());
                         }
                         // Local maintenance deferrals arrive as progress; an
                         // error here is fatal and the database is fenced.
@@ -367,7 +393,7 @@ impl Worker {
             // join has been observed and reported. Retain failures for shutdown.
             self.child.lock().take();
             drop(child);
-            let delay = next_delay(&self.status.lock());
+            let delay = next_delay(&self.status.lock(), Instant::now());
             tokio::select! {
                 _ = wake.notified() => {},
                 _ = tokio::time::sleep(delay) => {},

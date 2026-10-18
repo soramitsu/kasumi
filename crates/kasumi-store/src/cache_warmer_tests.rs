@@ -768,24 +768,116 @@ fn worker_delay_follows_warm_and_maintenance_outcomes() {
         maintenance_pending,
         ..Default::default()
     };
+    let now = Instant::now();
     // Undeferred maintenance progress keeps the worker running.
     assert_eq!(
-        next_delay(&status(ran(false, 7, None), true)),
+        next_delay(&status(ran(false, 7, None), true), now),
         RUNNING_DELAY
     );
     // Nothing due, a deferral backoff, or a step that spent nothing: idle.
-    assert_eq!(next_delay(&status(ran(true, 3, None), false)), IDLE_DELAY);
     assert_eq!(
-        next_delay(&status(
-            ran(false, 0, Some(kasumi_kv::MaintenanceDeferral::Capacity)),
-            true
-        )),
+        next_delay(&status(ran(true, 3, None), false), now),
         IDLE_DELAY
     );
-    assert_eq!(next_delay(&status(ran(false, 0, None), true)), IDLE_DELAY);
+    assert_eq!(
+        next_delay(
+            &status(
+                ran(false, 0, Some(kasumi_kv::MaintenanceDeferral::Capacity)),
+                true
+            ),
+            now
+        ),
+        IDLE_DELAY
+    );
+    assert_eq!(
+        next_delay(&status(ran(false, 0, None), true), now),
+        IDLE_DELAY
+    );
     // A held write gate retries soon only while maintenance has work.
     let busy = Some(kasumi_kv::MaintenanceStep::Busy);
-    assert_eq!(next_delay(&status(busy, true)), BUSY_DELAY);
-    assert_eq!(next_delay(&status(busy, false)), IDLE_DELAY);
-    assert_eq!(next_delay(&status(None, false)), IDLE_DELAY);
+    assert_eq!(next_delay(&status(busy, true), now), BUSY_DELAY);
+    assert_eq!(next_delay(&status(busy, false), now), IDLE_DELAY);
+    assert_eq!(next_delay(&status(None, false), now), IDLE_DELAY);
+    // Warming runs again soon, unless an unfinished attempt was replaced
+    // within the restart window; maintenance progress still runs at once.
+    let warming = CacheWorkerStatus {
+        progress: Some(kasumi_kv::CacheWarmup {
+            work: 1,
+            complete: false,
+            fully_resident: false,
+        }),
+        ..Default::default()
+    };
+    assert_eq!(next_delay(&warming, now), RUNNING_DELAY);
+    let restarted = CacheWorkerStatus {
+        last_warm_restart: Some(now),
+        ..warming
+    };
+    assert_eq!(next_delay(&restarted, now), IDLE_DELAY);
+    assert_eq!(
+        next_delay(&restarted, now + RESTART_WINDOW - Duration::from_millis(1)),
+        IDLE_DELAY
+    );
+    assert_eq!(next_delay(&restarted, now + RESTART_WINDOW), RUNNING_DELAY);
+    let maintaining = CacheWorkerStatus {
+        last_maintenance: ran(false, 7, None),
+        maintenance_pending: true,
+        ..restarted
+    };
+    assert_eq!(next_delay(&maintaining, now), RUNNING_DELAY);
+}
+
+#[test]
+fn worker_counts_only_unfinished_attempts_that_were_replaced() {
+    let native = |state, attempt| CacheWarmupStatus {
+        state,
+        complete: state == CacheWarmupState::Resident,
+        provider_limited: false,
+        cumulative_work: 0,
+        attempt_generation: attempt,
+        byte_limit: 1 << 20,
+    };
+    let start = Instant::now();
+    let mut status = CacheWorkerStatus::default();
+    observe_native(
+        &mut status,
+        native(CacheWarmupState::Running, Some(7)),
+        start,
+    );
+    observe_native(
+        &mut status,
+        native(CacheWarmupState::Running, Some(7)),
+        start,
+    );
+    assert_eq!((status.warm_restarts, status.last_warm_restart), (0, None));
+    // A publication replaced the unfinished attempt 7.
+    let later = start + Duration::from_secs(1);
+    observe_native(
+        &mut status,
+        native(CacheWarmupState::Running, Some(9)),
+        later,
+    );
+    assert_eq!(
+        (status.warm_restarts, status.last_warm_restart),
+        (1, Some(later))
+    );
+    // A completed attempt followed by a new one is not a restart.
+    observe_native(
+        &mut status,
+        native(CacheWarmupState::Resident, Some(9)),
+        later,
+    );
+    observe_native(
+        &mut status,
+        native(CacheWarmupState::Running, Some(12)),
+        later + Duration::from_secs(1),
+    );
+    assert_eq!(
+        (status.warm_restarts, status.last_warm_restart),
+        (1, Some(later))
+    );
+    assert_eq!(
+        status.native,
+        Some(native(CacheWarmupState::Running, Some(12)))
+    );
 }
