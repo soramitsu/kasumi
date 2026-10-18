@@ -298,6 +298,73 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
     assert_eq!(missing["error"]["class"], json!("not_found"), "{missing}");
     assert_eq!(missing["error"]["code"], json!("NOT_FOUND"));
 
+    // A `session` answers each request line with the status and document the
+    // same command reports alone, over one kept connection.
+    let kept = session().shared();
+    let answer = |line: &str| {
+        let kept = &kept;
+        let line = line.to_owned();
+        async move {
+            let (id, document, status) =
+                crate::data_cli::answer(kept, Duration::from_secs(10), &line).await;
+            (
+                id,
+                status,
+                serde_json::from_slice::<Value>(&document).unwrap(),
+            )
+        }
+    };
+    let (id, status, put) = answer(
+        r#"{"id":1,"argv":["put","docs","s","{\"n\":7}","--if","absent","--key","session-put"]}"#,
+    )
+    .await;
+    assert_eq!((id, status), (json!(1), 0), "{put}");
+    assert_eq!(put["result"]["idempotency_key"], json!("session-put"));
+    let (id, status, patched) = answer(
+        &json!({"id": "two", "argv": ["patch", "docs", "s", "-"], "input": r#"{"m":true}"#})
+            .to_string(),
+    )
+    .await;
+    assert_eq!((id, status), (json!("two"), 0), "{patched}");
+    let (_, status, got) = answer(r#"{"id":3,"argv":["get","docs","s"]}"#).await;
+    assert_eq!(status, 0);
+    assert_eq!(
+        got["result"]["document"]["body"],
+        json!({"n": 7, "m": true})
+    );
+    let (_, status, absent) = answer(r#"{"id":4,"argv":["get","no-such-collection","s"]}"#).await;
+    assert_eq!(
+        (status, absent["error"]["class"].clone()),
+        (5, json!("not_found"))
+    );
+    for (line, message) in [
+        ("not json", "invalid session request"),
+        (r#"{"id":5,"argv":["session"]}"#, "cannot start a session"),
+        (r#"{"id":6,"argv":["patch","docs","s","-"]}"#, "no `input`"),
+        (
+            r#"{"id":7,"argv":["get","docs","s"],"timeout_ms":0}"#,
+            "timeout_ms",
+        ),
+    ] {
+        let (_, status, refused) = answer(line).await;
+        assert_eq!(
+            (status, refused["error"]["class"].clone()),
+            (2, json!("invalid_request")),
+            "{line}"
+        );
+        assert!(
+            refused["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{refused}"
+        );
+    }
+    assert_eq!(
+        answer(r#"{"id":8,"argv":["delete","docs","s"]}"#).await.1,
+        0
+    );
+
     drop((db, first, second, selected, totals, scanned));
     stop.send_replace(true);
     tokio::time::timeout(Duration::from_secs(10), serving)

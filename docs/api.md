@@ -454,6 +454,36 @@ any other write there is `unauthorized`.
 - After `unavailable` (9) for a write, nothing was applied and the same batch
   can be sent again later.
 
+### Sessions
+
+A program that issues many commands keeps one `session` instead of starting a
+process per command. The session checks the profile once and keeps its
+connection, so a command costs one round trip rather than a process start,
+profile check and TLS handshake. The bearer file is still read for every call,
+so a rotated credential takes effect at once.
+
+```sh
+kasumictl --profile "$PROFILE" $PINS session
+```
+
+Each line of standard input is one request; each answer is one line on
+standard output, in order:
+
+```json
+{"id": 7, "argv": ["mutate", "-"], "input": "{\"idempotency_key\":\"op-1\",…}", "timeout_ms": 30000}
+{"id": 7, "status": 0, "document": {"ok": true, "result": {…}}}
+```
+
+`argv` holds the command words of a single invocation, without options. `input`
+is the text of its `-` argument, because standard input carries the requests.
+`timeout_ms` bounds that request and defaults to `--timeout-ms`. `status` and
+`document` are exactly the exit status and document of the same command run
+alone. Requests run one at a time; `id` is returned unchanged. If the profile
+is rejected, the session answers once with `"id": null` and exits with
+`profile_rejected`. It exits 0 when standard input closes. A session that ends
+before answering a request leaves that write `uncertain`, exactly like an
+interrupted process. Resend the identical batch or `resolve-mutation` it.
+
 A command journal records an intent, claims work by compare-and-set and writes
 a permanent receipt together with the claim's completion:
 

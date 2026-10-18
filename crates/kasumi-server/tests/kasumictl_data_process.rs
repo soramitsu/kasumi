@@ -107,6 +107,23 @@ fn every_data_command_line_prints_one_document_and_its_class_status() {
 }
 
 #[test]
+fn a_session_whose_profile_is_rejected_answers_once_without_connecting() {
+    let output = kasumictl(
+        &words(&format!("--profile {PROFILE} session")),
+        br#"{"id":1,"argv":["get","docs","a"]}"#,
+    );
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+    let reply = document(&output);
+    assert_eq!(reply["id"], Value::Null);
+    assert_eq!(reply["status"], json!(3));
+    assert_eq!(
+        reply["document"]["error"]["class"],
+        json!("profile_rejected")
+    );
+    assert!(output.stderr.is_empty(), "{output:?}");
+}
+
+#[test]
 fn standard_input_left_open_ends_at_the_deadline() {
     let started = Instant::now();
     let mut child = Command::new(env!("CARGO_BIN_EXE_kasumictl"))

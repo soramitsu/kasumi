@@ -44,12 +44,15 @@ kasumictl --profile <profile.json> [<option>...] <command>
   read-snapshot <request>
   resolve-mutation <batch> [--scope <scope>]
   collections
+  session      one request per line on standard input:
+               {\"id\":…,\"argv\":[<command words>],\"input\":<text for ->,\"timeout_ms\":…}
+               answered with {\"id\":…,\"status\":…,\"document\":…} over one connection
 Options, in any order before the command, checked before connecting:
   --profile <profile.json>   (required)
   --expect-profile-sha256 <hex>
   --expect-tenant <tenant> --expect-incarnation <uuid>
     --expect-principal <principal> --expect-family-id <uuid>   (all four together)
-  --timeout-ms <milliseconds>   (default 30000, from process start)
+  --timeout-ms <milliseconds>   (default 30000, from process start; per request in a session)
 JSON arguments are inline, @path to read a file, or - for standard input (once).
 Sort fields are JSON Pointers; prefix with - to sort descending (e.g. -/amount).
 Every command prints one JSON document and exits with its error class status.";
@@ -374,6 +377,30 @@ pub fn selects_data(first: &OsStr) -> bool {
 /// command. The invocation's deadline starts here.
 pub fn parse(arguments: &[String]) -> Result<Invocation> {
     let started = Instant::now();
+    let (options, rest) = parse_options(arguments)?;
+    let deadline = started + options.timeout;
+    let input = JsonInput {
+        deadline,
+        stdin_taken: Cell::new(false),
+        session_input: None,
+    };
+    Ok(Invocation {
+        profile: options.profile,
+        checks: options.checks,
+        timeout: options.timeout,
+        deadline,
+        command: parse_command(rest, &input)?,
+    })
+}
+
+/// The options before a command, shared by single commands and a `session`.
+struct Options {
+    profile: PathBuf,
+    checks: ProfileChecks,
+    timeout: Duration,
+}
+
+fn parse_options(arguments: &[String]) -> Result<(Options, &[String])> {
     let mut options = BTreeMap::new();
     let mut rest = arguments;
     while let Some((flag, tail)) = rest.split_first()
@@ -441,18 +468,14 @@ pub fn parse(arguments: &[String]) -> Result<Invocation> {
             timeout
         }
     };
-    let deadline = started + timeout;
-    let input = JsonInput {
-        deadline,
-        stdin_taken: Cell::new(false),
-    };
-    Ok(Invocation {
-        profile: PathBuf::from(profile),
-        checks: ProfileChecks { sha256, binding },
-        timeout,
-        deadline,
-        command: parse_command(rest, &input)?,
-    })
+    Ok((
+        Options {
+            profile: PathBuf::from(profile),
+            checks: ProfileChecks { sha256, binding },
+            timeout,
+        },
+        rest,
+    ))
 }
 
 fn identity(value: &str, flag: &str) -> Result<Uuid> {
@@ -694,6 +717,9 @@ fn validate_snapshot(request: &ReadSnapshotRequest) -> Result<()> {
 struct JsonInput {
     deadline: Instant,
     stdin_taken: Cell<bool>,
+    /// In a `session`, `-` is the request's own `input`, never the process's
+    /// standard input, which carries the request stream.
+    session_input: Option<Cell<Option<String>>>,
 }
 
 impl JsonInput {
@@ -704,7 +730,12 @@ impl JsonInput {
                 !self.stdin_taken.replace(true),
                 "only one JSON argument can be read from standard input"
             );
-            self.read(None)?
+            match &self.session_input {
+                Some(input) => input
+                    .take()
+                    .context("this session request has no `input` for its `-` argument")?,
+                None => self.read(None)?,
+            }
         } else if let Some(path) = argument.strip_prefix('@') {
             self.read(Some(PathBuf::from(path)))?
         } else {
@@ -755,6 +786,30 @@ pub struct Session {
     scope: MutationReceiptScope,
     incarnation: Uuid,
     deadline: Instant,
+    /// A `session` command's connection and pool, reused by all its requests.
+    shared: Option<Arc<SessionClients>>,
+}
+
+/// Connected clients kept between the requests of one `session`. Requests run
+/// one at a time, so neither lock is contended.
+#[derive(Default)]
+struct SessionClients {
+    kasumi: tokio::sync::Mutex<Option<Kasumi>>,
+    pool: std::sync::Mutex<Option<KasumiClientPool>>,
+}
+
+impl SessionClients {
+    /// Forget both clients after a failure that may have broken the connection;
+    /// the next request connects again.
+    fn reset(&self) {
+        if let Ok(mut kasumi) = self.kasumi.try_lock() {
+            *kasumi = None;
+        }
+        *self
+            .pool
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+    }
 }
 
 impl Session {
@@ -807,6 +862,27 @@ impl Session {
             scope,
             incarnation,
             deadline,
+            shared: None,
+        }
+    }
+
+    /// This session's material with clients kept between requests.
+    pub(crate) fn shared(self) -> Self {
+        Self {
+            shared: Some(Arc::default()),
+            ..self
+        }
+    }
+
+    /// The same material and kept clients, bounded by one request's deadline.
+    fn with_deadline(&self, deadline: Instant) -> Self {
+        Self {
+            config: self.config.clone(),
+            credential: self.credential.clone(),
+            scope: self.scope.clone(),
+            incarnation: self.incarnation,
+            deadline,
+            shared: self.shared.clone(),
         }
     }
 
@@ -823,7 +899,22 @@ impl Session {
     }
 
     /// A refused or silent connection is reported before anything was sent.
+    /// In a `session` the first request connects and later ones reuse it; the
+    /// bearer is still loaded for every call, so a rotated credential applies.
     async fn kasumi(&self) -> std::result::Result<Kasumi, ClientError> {
+        let Some(shared) = &self.shared else {
+            return self.connect().await;
+        };
+        let mut kept = shared.kasumi.lock().await;
+        if let Some(db) = kept.as_ref() {
+            return Ok(db.clone());
+        }
+        let db = self.connect().await?;
+        *kept = Some(db.clone());
+        Ok(db)
+    }
+
+    async fn connect(&self) -> std::result::Result<Kasumi, ClientError> {
         let credential = self.credential.clone();
         let connect = Kasumi::connect(&self.config, move || credential.load());
         tokio::time::timeout_at(self.deadline, connect)
@@ -837,6 +928,22 @@ impl Session {
     }
 
     fn pool(&self) -> std::result::Result<KasumiClientPool, Failure> {
+        let Some(shared) = &self.shared else {
+            return self.new_pool();
+        };
+        let mut kept = shared
+            .pool
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(pool) = kept.as_ref() {
+            return Ok(pool.clone());
+        }
+        let pool = self.new_pool()?;
+        *kept = Some(pool.clone());
+        Ok(pool)
+    }
+
+    fn new_pool(&self) -> std::result::Result<KasumiClientPool, Failure> {
         KasumiClientPool::new(
             BTreeMap::from([(1, self.config.clone())]),
             self.credential.clone(),
@@ -886,6 +993,15 @@ impl Session {
 /// one JSON document and return the exit status. Mistakes, including
 /// arguments that are not UTF-8, are reported before the profile is read.
 pub async fn run(arguments: Vec<OsString>, out: &mut impl Write) -> u8 {
+    if let Some(words) = arguments
+        .iter()
+        .map(|argument| argument.to_str().map(str::to_owned))
+        .collect::<Option<Vec<_>>>()
+        && let Ok((options, rest)) = parse_options(&words)
+        && matches!(rest, [command] if command == "session")
+    {
+        return serve(options, tokio::io::stdin(), out).await;
+    }
     let (document, status) = match invoke(arguments).await {
         Ok(document) => (document, 0),
         Err(failure) => (failure.document(), failure.class.exit_code()),
@@ -898,6 +1014,139 @@ pub async fn run(arguments: Vec<OsString>, out: &mut impl Write) -> u8 {
         return ErrorClass::Internal.exit_code();
     }
     status
+}
+
+/// One request of a `session`: the command words of a single invocation, with
+/// `input` as the text of its `-` argument and its own deadline.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionRequest {
+    #[serde(default)]
+    id: Value,
+    argv: Vec<String>,
+    #[serde(default)]
+    input: Option<String>,
+    #[serde(default)]
+    timeout_ms: Option<u64>,
+}
+
+/// `kasumictl --profile <profile.json> [<option>...] session`: load the profile
+/// once, then answer one JSON request per line of standard input with one line
+/// `{"id":…,"status":…,"document":…}` until standard input closes. `status` and
+/// `document` are exactly the exit status and document of the same command run
+/// alone, and requests run one at a time over one kept connection. A session
+/// whose process ends before answering a write leaves that write `uncertain`.
+async fn serve(
+    options: Options,
+    input: impl tokio::io::AsyncRead + Unpin,
+    out: &mut impl Write,
+) -> u8 {
+    use tokio::io::AsyncBufReadExt;
+    let base = match Session::open(
+        &options.profile,
+        &options.checks,
+        Instant::now() + options.timeout,
+    ) {
+        Ok(session) => session.shared(),
+        Err(error) => {
+            let failure = Failure::new(ErrorClass::ProfileRejected, format!("{error:#}"));
+            let _ = reply(
+                out,
+                &Value::Null,
+                &failure.document(),
+                failure.class.exit_code(),
+            );
+            return failure.class.exit_code();
+        }
+    };
+    let mut lines = tokio::io::BufReader::new(input).lines();
+    loop {
+        let line = match lines.next_line().await {
+            Ok(Some(line)) => line,
+            Ok(None) => return 0,
+            Err(_) => return ErrorClass::Internal.exit_code(),
+        };
+        if line.trim().is_empty() {
+            continue;
+        }
+        let (id, document, status) = answer(&base, options.timeout, &line).await;
+        if reply(out, &id, &document, status).is_err() {
+            return ErrorClass::Internal.exit_code();
+        }
+    }
+}
+
+pub(crate) async fn answer(base: &Session, timeout: Duration, line: &str) -> (Value, Vec<u8>, u8) {
+    let invalid = |id: Value, message: String| {
+        let failure = Failure::new(ErrorClass::InvalidRequest, message);
+        (id, failure.document(), failure.class.exit_code())
+    };
+    let request: SessionRequest = match serde_json::from_str(line) {
+        Ok(request) => request,
+        Err(error) => return invalid(Value::Null, format!("invalid session request: {error}")),
+    };
+    let timeout = match request.timeout_ms.map(Duration::from_millis) {
+        None => timeout,
+        Some(timeout) if !timeout.is_zero() && timeout <= MAX_TIMEOUT => timeout,
+        Some(_) => {
+            return invalid(
+                request.id,
+                format!(
+                    "timeout_ms must be between 1 and {}",
+                    MAX_TIMEOUT.as_millis()
+                ),
+            );
+        }
+    };
+    let deadline = Instant::now() + timeout;
+    let input = JsonInput {
+        deadline,
+        stdin_taken: Cell::new(false),
+        session_input: Some(Cell::new(request.input)),
+    };
+    let command = match request.argv.first().map(String::as_str) {
+        Some("session") => Err(anyhow::anyhow!("a session request cannot start a session")),
+        _ => parse_command(&request.argv, &input),
+    };
+    let command = match command {
+        Ok(command) => command,
+        Err(error) => return invalid(request.id, format!("{error:#}")),
+    };
+    let session = base.with_deadline(deadline);
+    let outcome = guarded(interrupted(&command), async move {
+        execute(command, &session).await
+    })
+    .await;
+    let (document, status) = match outcome {
+        Ok(document) => (document, 0),
+        Err(failure) => (failure.document(), failure.class.exit_code()),
+    };
+    // A transport failure may have broken the kept connection; the next request
+    // connects again rather than reusing it.
+    if [
+        ErrorClass::Internal,
+        ErrorClass::Unavailable,
+        ErrorClass::Uncertain,
+    ]
+    .iter()
+    .any(|class| class.exit_code() == status)
+        && let Some(shared) = &base.shared
+    {
+        shared.reset();
+    }
+    (request.id, document, status)
+}
+
+/// One answered request: its id, the command's exit status and its document.
+fn reply(out: &mut impl Write, id: &Value, document: &[u8], status: u8) -> std::io::Result<()> {
+    let mut line = Vec::with_capacity(document.len() + 48);
+    line.extend_from_slice(b"{\"id\":");
+    serde_json::to_writer(&mut line, id)?;
+    write!(line, ",\"status\":{status},\"document\":")?;
+    line.extend_from_slice(document);
+    line.extend_from_slice(b"}\n");
+    out.write_all(&line)?;
+    out.flush()
 }
 
 async fn invoke(arguments: Vec<OsString>) -> std::result::Result<Vec<u8>, Failure> {
