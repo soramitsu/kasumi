@@ -34,10 +34,57 @@ cached objects borrow byte credit without consuming individual ledger slots.
 Its configured byte ceiling includes payloads, pages, hash backing, retained
 reader versions, provider overhead and unused admitted credit. All fitting
 objects remain cached; frequency and recency affect eviction only under pressure.
-The generated server profile sets a 2 GiB aggregate reservation cap, a 1 GiB
-ceiling per persistent group and 512 MiB per scratch cache. These ceilings share
-the installed total and are not independently reserved allocations. They remain
-initial defaults pending the full capacity qualification.
+
+The generated server profile (`kasumid init --mode standalone` and
+`kasumid example-config`) derives its aggregate reservation cap from the disks
+of the installation it describes. The cap is a 2 GiB payload for request work,
+retained sources and the native cache, plus what an idle runtime holds: the
+installed metadata of the persistent and scratch disks, each lease with its
+allocation fee, and five 64 MiB audit units (the audit-maintenance escrow and
+its protected floor, two units each, and the service security-audit
+workspace). A fresh standalone installation therefore reports at least 2 GiB free
+(`max_inflight_bytes` minus the reported `reserved_bytes`) at idle. Ordinary
+work still leaves the 128 MiB maintenance floor free, and retained sources and
+the cache leave the work reserve described below. The generated persistent disk
+allows 100,000 files, 10,000 subdirectories, 1,024 open files and 256 open
+directories, which quote about 118 MB. The generated total is therefore about
+2.42 GiB: 2,601,562,764 bytes for an installation path of 35 characters, plus
+17 bytes per further character. Each file or subdirectory slot adds about
+0.5 KB of quote (two preallocated ledger banks, rounded up to powers of two),
+each open-file slot 67 KB and each open-directory slot 53 KB. To raise a cap,
+raise `max_inflight_bytes` by the added quote as well, or the payload pays for
+it. Reaching a cap refuses that operation with a storage-full error before any
+effect. Installations measured on 2026-10-20 held under ten files and
+directories each and a few dozen descriptors. The earlier profile allowed one
+million files, one million subdirectories and 4,096 handles of each kind
+inside a fixed 2 GiB total: their 1.51 GB quote left about 0.38 GB free at
+idle. On the BoI journal convoy (two strict reads and three writes per step, a
+fresh instance per point, two interleaved 45-second rounds, 2026-10-20), the
+generated profile served 9.5 to 16.2 calls per second from one to sixteen
+sessions and refused at most four reads per run; the earlier sizing on the same
+binary served 5.1 to 15.2 and, at sixteen sessions, refused about 355 attempts
+per run and failed 8 to 10 reads after their retries. The 1 GiB
+ceiling per persistent group and 512 MiB per scratch cache share the total;
+they are not independently reserved allocations.
+
+The total must fit below the RSS high-water mark, which defaults to half of
+host or container memory, so the generated profile needs about 4.9 GiB
+(5.2 GB) of memory instead of 4 GiB. On a smaller host `kasumid init` fails
+with an error that names both figures and the memory the generated profile
+needs, and `kasumid serve` logs `admission_exceeds_high_water` with both
+figures before `daemon_failed`. For an existing configuration, lower
+`max_inflight_bytes` together with the disk caps whose metadata it covers, set
+`high_water_bytes` up to the detected memory, or add memory.
+
+Existing installations keep the values written at their initialization. To
+adopt this sizing, stop the daemon and set `persistent_disk.max_persistent_files`
+to 100000, `persistent_disk.max_persistent_subdirectories` to 10000,
+`persistent_disk.max_open_files` to 1024, `persistent_disk.max_open_directories`
+to 256 and `admission.max_inflight_bytes` to 2602000000, which covers any
+installation path up to 4,096 characters. The installation must hold fewer
+files and subdirectories than the new caps. Alternatively, keep the old caps
+and raise `max_inflight_bytes` to 4000000000, which needs about 7.5 GiB of
+memory. Run `kasumid check-config` on the edited file before starting it.
 
 `cache_work_reserve_bytes` and `cache_work_reserve_slots` keep optional cache
 growth out of shared capacity needed for required work. Null resolves to

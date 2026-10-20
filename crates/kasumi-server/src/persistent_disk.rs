@@ -114,18 +114,23 @@ pub(crate) fn initial_config(
 ) -> Result<NodeDiskConfig> {
     directory_policy.validate()?;
     file_allocation_policy.validate()?;
+    // Admission charges installed metadata for every namespace and handle slot
+    // (about 0.5 KB per file or subdirectory, 67 KB per open file and 53 KB
+    // per open directory), so these caps size the generated admission total.
+    // Installations hold about ten files and directories and a few dozen
+    // descriptors; one million of each and 4,096 handles quoted 1.51 GB.
     Ok(NodeDiskConfig {
         native_storage: kasumi_store::NodeStorageConfig::new(1 << 30, 64),
         roots,
         max_bytes: 128 << 30,
         maintenance_reserve_bytes: 1 << 30,
         min_free_bytes: 256 << 20,
-        max_open_files: 4096,
-        max_open_directories: 4096,
+        max_open_files: 1024,
+        max_open_directories: 256,
         directory_policy,
         file_allocation_policy,
-        max_persistent_files: 1_000_000,
-        max_persistent_subdirectories: 1_000_000,
+        max_persistent_files: 100_000,
+        max_persistent_subdirectories: 10_000,
         census_work_per_step: 1_000_000,
         max_depth: 64,
         max_name_bytes: 255,
@@ -324,8 +329,8 @@ mod tests {
             "max_persistent_subdirectories",
             "census_work_per_step",
         ];
-        for name in limits {
-            assert_eq!(encoded["persistent_disk"][name], 1_000_000);
+        for (name, generated) in limits.into_iter().zip([100_000, 10_000, 1_000_000]) {
+            assert_eq!(encoded["persistent_disk"][name], generated);
             let mut missing = encoded.clone();
             missing["persistent_disk"]
                 .as_object_mut()

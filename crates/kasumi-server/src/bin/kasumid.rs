@@ -23,6 +23,13 @@ async fn main() -> std::process::ExitCode {
         }
         Err(error) => {
             if daemon {
+                // Only the typed figures leave the chain, which may also hold
+                // provider details that stay out of the daemon log.
+                if let Some(refusal) = error.chain().find_map(|cause| {
+                    cause.downcast_ref::<kasumi_engine::admission::TotalExceedsHighWater>()
+                }) {
+                    kasumi_server::logging::admission_exceeds_high_water(refusal);
+                }
                 kasumi_server::logging::daemon_failed();
             } else {
                 // An invoked CLI command retains its human-readable operator error.

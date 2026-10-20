@@ -1027,6 +1027,42 @@ pub(crate) fn local_audit_placements(tenant: &str) -> BTreeMap<String, TenantAud
     ])
 }
 
+/// Resolve only the existing parent. The installation itself does not exist
+/// yet, and a selected archive never supplies another accounting root.
+fn prospective_directory(directory: &Path) -> Result<PathBuf> {
+    let parent = directory.parent().context("installation parent missing")?;
+    let name = directory.file_name().context("installation name missing")?;
+    Ok(std::fs::canonicalize(parent)?.join(name))
+}
+
+fn installation_roots(prospective_directory: &Path) -> BTreeMap<String, PathBuf> {
+    BTreeMap::from([
+        ("data".into(), prospective_directory.join("data")),
+        ("backups".into(), prospective_directory.join("backups")),
+    ])
+}
+
+/// The generated persistent and scratch disks of a new installation at
+/// `directory`, exactly as initialization writes them into its configuration.
+pub(crate) fn installation_disks(
+    directory: &Path,
+    directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
+) -> Result<(NodeDiskConfig, kasumi_store::ScratchDiskConfig)> {
+    let prospective_directory = prospective_directory(directory)?;
+    Ok((
+        crate::persistent_disk::initial_config(
+            installation_roots(&prospective_directory),
+            directory_policy,
+            file_allocation_policy,
+        )?,
+        kasumi_store::ScratchDiskConfig {
+            directory: prospective_directory.join("scratch"),
+            ..example_config(directory_policy, file_allocation_policy)?.scratch_disk
+        },
+    ))
+}
+
 /// Creates an exclusive private directory. Failure leaves a visibly incomplete
 /// private installation; it never overwrites or adopts an existing directory.
 pub async fn initialize(
@@ -1039,9 +1075,31 @@ pub async fn initialize(
 ) -> Result<InitializedInstallation> {
     network.validate()?;
     validate_initial_audit_placements(tenant, &tenant_audit_placements)?;
-    let storage = crate::runtime_memory::RuntimeStorage::installed(
-        &example_config(directory_policy, file_allocation_policy)?.admission,
-    )?;
+    ensure!(
+        directory.is_absolute(),
+        "installation directory must be absolute"
+    );
+    // The installed core is sized from the disks this installation will own,
+    // so their metadata is not paid from the generated payload.
+    let (persistent, scratch) =
+        installation_disks(directory, directory_policy, file_allocation_policy)?;
+    let admission = crate::runtime::generated_admission(&persistent, &scratch)?;
+    let storage =
+        crate::runtime_memory::RuntimeStorage::installed(&admission).map_err(|error| {
+            // Nothing is configured yet, so state what the host must provide.
+            match (
+                error
+                    .chain()
+                    .any(|cause| cause.is::<kasumi_engine::admission::TotalExceedsHighWater>()),
+                admission.max_inflight_bytes,
+            ) {
+                (true, Some(total)) => error.context(format!(
+                    "the generated profile admits {total} bytes, so initialization needs at least {} bytes of host or container memory",
+                    total.saturating_mul(2)
+                )),
+                _ => error,
+            }
+        })?;
     initialize_with_storage(
         directory,
         tenant,
@@ -1203,17 +1261,10 @@ async fn initialize_owned(
         directory.is_absolute(),
         "installation directory must be absolute"
     );
-    // Resolve only the existing parent. The installation itself does not exist
-    // yet, and a selected archive never supplies another accounting root.
-    let parent = directory.parent().context("installation parent missing")?;
-    let name = directory.file_name().context("installation name missing")?;
-    let prospective_directory = std::fs::canonicalize(parent)?.join(name);
+    let prospective_directory = prospective_directory(directory)?;
     let data = prospective_directory.join("data");
     let persistent_config = storage.new_installation_disk_config(
-        BTreeMap::from([
-            ("data".into(), data.clone()),
-            ("backups".into(), prospective_directory.join("backups")),
-        ]),
+        installation_roots(&prospective_directory),
         directory_policy,
         file_allocation_policy,
     )?;

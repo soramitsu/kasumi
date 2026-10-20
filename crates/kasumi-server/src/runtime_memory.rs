@@ -19,6 +19,9 @@ enum DiskFactory {
     Installed,
     #[cfg(test)]
     IsolatedFixture,
+    /// Isolated devices with the generated installation disk profile.
+    #[cfg(test)]
+    IsolatedInstallation,
 }
 impl RuntimeStorage {
     pub(crate) fn installed(policy: &AdmissionConfig) -> Result<Self> {
@@ -53,6 +56,17 @@ impl RuntimeStorage {
         );
         let memory = MemoryCore::new(existing_policy.clone())?;
         Self::fixture(existing_policy, memory)
+    }
+    /// What a generated installation admits, on a fresh core rather than the
+    /// process one: exactly `policy`, nothing added for metadata, and new
+    /// installations keep the generated disk caps instead of the fixture's.
+    #[cfg(test)]
+    pub(crate) fn isolated_installation(policy: AdmissionConfig) -> Result<Self> {
+        Ok(Self {
+            memory: MemoryCore::new(policy.clone())?,
+            policy,
+            factory: DiskFactory::IsolatedInstallation,
+        })
     }
     #[cfg(test)]
     pub(crate) fn memory(&self) -> &Arc<MemoryCore> {
@@ -102,9 +116,11 @@ impl RuntimeStorage {
         let opened = match self.factory {
             DiskFactory::Installed => NodeDisk::open(config, self.memory.clone(), &cancel),
             #[cfg(test)]
-            DiskFactory::IsolatedFixture => kasumi_store::test_utils::retry_disk_registry(|| {
-                NodeDisk::open_fixture(config, self.memory.clone(), &cancel)
-            }),
+            DiskFactory::IsolatedFixture | DiskFactory::IsolatedInstallation => {
+                kasumi_store::test_utils::retry_disk_registry(|| {
+                    NodeDisk::open_fixture(config, self.memory.clone(), &cancel)
+                })
+            }
         };
         Ok(match opened {
             Err(DiskOpenError::OwnerFenced { .. }) => match self.factory {
@@ -112,7 +128,7 @@ impl RuntimeStorage {
                     NodeDisk::reopen_fenced(config, self.memory.clone(), &cancel)
                 }
                 #[cfg(test)]
-                DiskFactory::IsolatedFixture => {
+                DiskFactory::IsolatedFixture | DiskFactory::IsolatedInstallation => {
                     kasumi_store::test_utils::retry_disk_registry(|| {
                         NodeDisk::reopen_fenced(config, self.memory.clone(), &cancel)
                     })
@@ -125,9 +141,11 @@ impl RuntimeStorage {
         Ok(match self.factory {
             DiskFactory::Installed => ScratchDisk::open(config, self.memory.clone()),
             #[cfg(test)]
-            DiskFactory::IsolatedFixture => kasumi_store::test_utils::retry_disk_registry(|| {
-                ScratchDisk::open_fixture(config, self.memory.clone())
-            }),
+            DiskFactory::IsolatedFixture | DiskFactory::IsolatedInstallation => {
+                kasumi_store::test_utils::retry_disk_registry(|| {
+                    ScratchDisk::open_fixture(config, self.memory.clone())
+                })
+            }
         }?)
     }
     #[cfg(test)]
@@ -169,6 +187,8 @@ impl RuntimeStorage {
         )?;
         Ok(match self.factory {
             DiskFactory::Installed => config,
+            #[cfg(test)]
+            DiskFactory::IsolatedInstallation => config,
             #[cfg(test)]
             DiskFactory::IsolatedFixture => Self::fixture_disk_profile(config),
         })

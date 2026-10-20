@@ -2524,6 +2524,49 @@ pub(crate) fn control_context(policy: &Policy) -> Result<RequestContext> {
     })
 }
 
+/// Bytes a newly generated profile leaves free at idle for request work,
+/// retained sources and the native cache.
+pub(crate) const GENERATED_PAYLOAD_BYTES: u64 = 2 << 30;
+
+/// Admission written into a new installation or example. Its total is the
+/// payload plus what a runtime holds while idle, so none of that is paid from
+/// the payload: the installed metadata of both disks, each lease with its
+/// allocation fee, and five audit maintenance units (node audit maintenance's
+/// escrow and protected floor, two units each, and the service security
+/// audit's retained workspace). A device shared by both disks is charged once
+/// in production; counting it twice keeps isolated fixtures exact.
+pub(crate) fn generated_admission(
+    persistent: &kasumi_store::NodeDiskConfig,
+    scratch: &kasumi_store::ScratchDiskConfig,
+) -> Result<kasumi_engine::admission::AdmissionConfig> {
+    let mut total = kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES
+        .checked_mul(5)
+        .and_then(|audit| audit.checked_add(GENERATED_PAYLOAD_BYTES));
+    for required in [
+        kasumi_store::NodeDisk::memory_requirements(persistent)?,
+        kasumi_store::ScratchDisk::memory_requirements(scratch)?,
+    ] {
+        for component in [
+            required.owner_bytes,
+            required.registry_bytes,
+            required.device_bytes,
+            required.registration_bytes,
+        ] {
+            let charged =
+                kasumi_engine::admission::MemoryCore::required_installed_reservation_bytes(
+                    component,
+                )?;
+            total = total.and_then(|total| total.checked_add(charged));
+        }
+    }
+    Ok(kasumi_engine::admission::AdmissionConfig {
+        max_inflight_bytes: Some(total.context("generated admission total overflow")?),
+        cache_work_reserve_bytes: Some(64 << 20),
+        cache_work_reserve_slots: Some(64),
+        ..Default::default()
+    })
+}
+
 /// Credential-free operator example, also emitted by `kasumid example-config`.
 pub fn example_config(
     directory_policy: kasumi_store::DirectoryPolicy,
@@ -2531,6 +2574,25 @@ pub fn example_config(
 ) -> Result<RuntimeConfig> {
     directory_policy.validate()?;
     file_allocation_policy.validate()?;
+    let persistent_disk = crate::persistent_disk::initial_config(
+        BTreeMap::from([
+            ("data".into(), "/var/lib/kasumi/data".into()),
+            ("verifier".into(), "/var/lib/kasumi/verifier".into()),
+            ("targets".into(), "/var/lib/kasumi/targets".into()),
+            ("archives".into(), "/var/lib/kasumi/archives".into()),
+            ("backups".into(), "/var/lib/kasumi/backups".into()),
+        ]),
+        directory_policy,
+        file_allocation_policy,
+    )?;
+    let scratch_disk = kasumi_store::ScratchDiskConfig {
+        directory: "/var/lib/kasumi/scratch".into(),
+        max_bytes: 64 << 30,
+        min_free_bytes: 256 << 20,
+        file_allocation_policy,
+        native_cache_bytes: 512 << 20,
+    };
+    let admission = generated_admission(&persistent_disk, &scratch_disk)?;
     let tls = || TlsFiles {
         certificate: "/etc/kasumi/server.pem".into(),
         private_key: "/etc/kasumi/server-key.pem".into(),
@@ -2560,24 +2622,8 @@ pub fn example_config(
         strict_read_audit: false,
     };
     Ok(RuntimeConfig {
-        persistent_disk: crate::persistent_disk::initial_config(
-            BTreeMap::from([
-                ("data".into(), "/var/lib/kasumi/data".into()),
-                ("verifier".into(), "/var/lib/kasumi/verifier".into()),
-                ("targets".into(), "/var/lib/kasumi/targets".into()),
-                ("archives".into(), "/var/lib/kasumi/archives".into()),
-                ("backups".into(), "/var/lib/kasumi/backups".into()),
-            ]),
-            directory_policy,
-            file_allocation_policy,
-        )?,
-        scratch_disk: kasumi_store::ScratchDiskConfig {
-            directory: "/var/lib/kasumi/scratch".into(),
-            max_bytes: 64 << 30,
-            min_free_bytes: 256 << 20,
-            file_allocation_policy,
-            native_cache_bytes: 512 << 20,
-        },
+        persistent_disk,
+        scratch_disk,
         tenant_audit_placements: BTreeMap::from([
             (
                 CONTROL_TENANT.into(),
@@ -2637,12 +2683,7 @@ pub fn example_config(
             },
         )]),
         format: 1,
-        admission: kasumi_engine::admission::AdmissionConfig {
-            max_inflight_bytes: Some(2 << 30),
-            cache_work_reserve_bytes: Some(64 << 20),
-            cache_work_reserve_slots: Some(64),
-            ..Default::default()
-        },
+        admission,
         backup_destinations: BTreeMap::new(),
         mode: DeploymentMode::Replicated,
         database_path: "/var/lib/kasumi/data/node.kv".into(),

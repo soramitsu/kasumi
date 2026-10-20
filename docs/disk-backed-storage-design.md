@@ -391,7 +391,9 @@ requires one file record, not one record per key, so explicit namespace caps can
 support datasets much larger than RAM. Include both layers in the total budget,
 expose the caps and qualify maximum-group creation/reopen with a small descriptor
 cache. The initial server policy's one-million file and one-million subdirectory
-limits make their fixed cost particularly important. Removing the duplicate
+limits made their fixed cost particularly important (1.51 GB with 4,096 handles
+of each kind); the generated policy now allows 100,000 files and 10,000
+subdirectories and adds their quote to its admission total. Removing the duplicate
 vector is an optional optimization, requiring preserved NodeDisk enrollment and
 envelope-state receipts; fresh stat/envelope checks alone cannot replace exact
 ownership and close custody. Checkpoint summary maps likewise require their
@@ -1066,9 +1068,10 @@ the previous native cache's lease allowance and were not reflected in its
 the native cache still reported substantial room. The aggregate implementation
 below now includes provider overhead in that statistic.
 
-The generated configuration already sets an explicit **2 GiB total admission
-cap** in [`example_config`](../crates/kasumi-server/src/runtime.rs), a **1 GiB
-ceiling per persistent group** in
+The generated configuration sets an explicit **total admission cap** in
+[`example_config`](../crates/kasumi-server/src/runtime.rs) (a 2 GiB payload plus
+the installed disk metadata and audit escrows, see
+[node memory admission](admission.md)), a **1 GiB ceiling per persistent group** in
 [`initial_config`](../crates/kasumi-server/src/persistent_disk.rs), and **512 MiB
 per scratch cache**. It does not use the omitted admission total's
 `min(high_water / 4, 512 MiB)` default. These cache ceilings share one installed

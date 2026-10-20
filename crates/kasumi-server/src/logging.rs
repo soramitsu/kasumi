@@ -46,6 +46,17 @@ pub fn daemon_failed() {
     );
 }
 
+/// The configured admission total cannot start below the RSS high-water mark.
+/// Both figures come from configuration and detected memory, never a provider.
+pub fn admission_exceeds_high_water(refusal: &kasumi_engine::admission::TotalExceedsHighWater) {
+    tracing::error!(
+        event = "admission_exceeds_high_water",
+        max_inflight_bytes = refusal.max_inflight_bytes,
+        high_water_bytes = refusal.high_water_bytes,
+        "admission.max_inflight_bytes exceeds the RSS high-water mark, which defaults to half of host or container memory; lower it together with the persistent_disk file and handle caps whose metadata it covers, set high_water_bytes up to the detected memory, or add memory"
+    );
+}
+
 pub fn daemon_starting() {
     tracing::info!(
         event = "daemon_starting",

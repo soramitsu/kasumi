@@ -1588,3 +1588,118 @@ async fn installed_healthy_group_coverage() {
     serving.await.unwrap().unwrap();
     phase("shutdown-complete");
 }
+
+#[test]
+fn generated_standalone_profile_leaves_its_payload_free_at_idle() {
+    // The same installed TLS, Raft and archive-worker stack as the protected
+    // observability fixture, so the same stack allowance.
+    std::thread::Builder::new()
+        .name("generated standalone profile".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(generated_standalone_profile_idle_budget()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn generated_standalone_profile_idle_budget() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let root = directory.path().join("kasumi");
+    let directory_policy = kasumi_store::DirectoryPolicy::fixture();
+    let file_allocation_policy = kasumi_store::FileAllocationPolicy::fixture();
+    // `kasumid init` sizes the process core from the disks it will own. Use
+    // that policy and those disk caps on a fresh core: fixture storage would
+    // add its disk metadata to the total instead of charging the payload.
+    let (persistent, scratch) =
+        crate::standalone::installation_disks(&root, directory_policy, file_allocation_policy)
+            .unwrap();
+    let policy = generated_admission(&persistent, &scratch).unwrap();
+    let total = policy.max_inflight_bytes.unwrap();
+    let storage =
+        crate::runtime_memory::RuntimeStorage::isolated_installation(policy.clone()).unwrap();
+    let installation = crate::standalone::initialize_with_storage(
+        &root,
+        "tenant-a",
+        directory_policy,
+        file_allocation_policy,
+        crate::standalone::StandaloneNetwork::fixture(),
+        crate::standalone::local_audit_placements("tenant-a"),
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
+    assert_eq!(config.admission, policy);
+    assert_eq!(config.persistent_disk, persistent);
+    assert_eq!(config.scratch_disk, scratch);
+    let mut control = ClientProfile::load(&installation.control_profile).unwrap();
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect::<Vec<_>>();
+    config.mcp.listen = listeners[0].local_addr().unwrap();
+    config.native.listen = listeners[1].local_addr().unwrap();
+    config.admin.listen = listeners[2].local_addr().unwrap();
+    config.mcp.protocol = crate::mcp::McpConfig::new(format!(
+        "https://localhost:{}/mcp",
+        config.mcp.listen.port()
+    ))
+    .unwrap();
+    control.mcp_endpoint = config.mcp.protocol.public_url.clone();
+    control.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
+    control.administrative_members.get_mut(&1).unwrap().endpoint =
+        format!("https://localhost:{}", config.admin.listen.port());
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
+    drop(listeners);
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let (stop, shutdown) = watch::channel(false);
+    let serving = tokio::spawn(runtime.serve(shutdown));
+    let client = http(&control, true);
+    let operator = control.bearer().unwrap();
+    let ready = format!(
+        "{}/ready",
+        control.administrative_member().unwrap().endpoint
+    );
+    // Read the idle runtime's own report several times: background workers
+    // take and return small leases between samples.
+    let mut least_free = u64::MAX;
+    let mut disk = serde_json::Value::Null;
+    for _ in 0..8 {
+        let value: serde_json::Value = ready_response(&client, &ready, &operator, "generated_idle")
+            .await
+            .json()
+            .await
+            .unwrap();
+        assert_eq!(value["ready"], true);
+        assert_eq!(value["admission"]["sample_usable"], true);
+        assert_eq!(value["admission"]["pressured"], false);
+        let reserved = value["admission"]["reserved_bytes"].as_u64().unwrap();
+        least_free = least_free.min(total.checked_sub(reserved).unwrap());
+        disk = value["persistent_disk"].clone();
+        tokio::time::sleep(Duration::from_millis(250)).await;
+    }
+    eprintln!(
+        "generated standalone idle: total={total} least_free={least_free} payload={GENERATED_PAYLOAD_BYTES} persistent_files={} persistent_directories={} open_files={} open_directories={}",
+        disk["persistent_files"],
+        disk["persistent_directories"],
+        disk["open_files"],
+        disk["open_directories"],
+    );
+    assert!(
+        least_free >= GENERATED_PAYLOAD_BYTES,
+        "a fresh generated installation leaves {least_free} of {total} bytes free at idle, less than its {GENERATED_PAYLOAD_BYTES}-byte payload"
+    );
+    stop.send(true).unwrap();
+    serving.await.unwrap().unwrap();
+}

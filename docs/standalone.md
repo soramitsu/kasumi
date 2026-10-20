@@ -251,11 +251,13 @@ Use the resulting checkpoint as the exact source checkpoint in a stopped local
 recovery request.
 
 The first-release directory owner requires `persistent_disk.max_open_directories`
-explicitly; the generated installed policy uses 4,096 directory owners alongside
-4,096 file owners. There is no default or legacy field alias. The inode ledger
-uses one physical-identity key space for files and directories. The one-million
-limit continues to bound census work and separately retained regular-file count;
-it is not a combined file/directory admission cap.
+explicitly; the generated installed policy uses 256 directory owners alongside
+1,024 file owners. There is no default or legacy field alias. The inode ledger
+uses one physical-identity key space for files and directories. The generated
+100,000-file and 10,000-subdirectory limits bound census work and the separately
+retained regular-file and subdirectory counts; they are not a combined
+file/directory admission cap. Their admitted metadata sizes the generated
+admission total ([node memory admission](admission.md)).
 
 The required `--directory-policy` file contains exactly `extent_bytes` and `max_entries`, both positive integers. The generated persistent disk configuration retains these explicit values; there is no production default. `extent_bytes` is a per-directory allocated-byte ceiling reserved before managed file namespace effects. `max_entries` limits positive membership changes; deletion retains cleanup access. Supply values qualified for the installed filesystem and supported namespace operations. Numeric validation alone does not establish that qualification. This target proposal has not yet established a supported filesystem growth bound, so production namespace admission remains a release blocker.
 

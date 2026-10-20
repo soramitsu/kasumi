@@ -74,6 +74,13 @@ impl AdmissionConfig {
     fn resolve_budgets(&self, high: u64) -> anyhow::Result<(u64, u64)> {
         let low = self.low_water_bytes.unwrap_or(high.saturating_mul(7) / 8);
         let total = self.max_inflight_bytes.unwrap_or((high / 4).min(512 << 20));
+        if high > 0 && total > high {
+            return Err(TotalExceedsHighWater {
+                max_inflight_bytes: total,
+                high_water_bytes: high,
+            }
+            .into());
+        }
         anyhow::ensure!(
             high > 0 && low < high && total > 0 && total <= high,
             "invalid resolved admission budgets"
@@ -141,6 +148,25 @@ impl AdmissionConfig {
         Ok(())
     }
 }
+
+/// The configured total does not fit below the RSS high-water mark, so the
+/// governor refuses to start. Both figures are configuration-derived numbers,
+/// never provider output, so a daemon may log them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TotalExceedsHighWater {
+    pub max_inflight_bytes: u64,
+    pub high_water_bytes: u64,
+}
+impl std::fmt::Display for TotalExceedsHighWater {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            formatter,
+            "invalid resolved admission budgets: admission.max_inflight_bytes ({}) exceeds the RSS high-water mark ({}), which defaults to half of host or container memory; lower max_inflight_bytes together with the persistent_disk file and handle caps whose metadata it covers, set high_water_bytes up to the detected memory, or add memory",
+            self.max_inflight_bytes, self.high_water_bytes
+        )
+    }
+}
+impl std::error::Error for TotalExceedsHighWater {}
 
 mod apply_escrow;
 pub(crate) use apply_escrow::{ApplyEscrow, ApplyScope};
@@ -1695,6 +1721,35 @@ mod tests {
             })
             .is_err()
         );
+    }
+    #[test]
+    fn total_above_high_water_names_both_figures_and_what_to_lower() {
+        let config = AdmissionConfig {
+            max_inflight_bytes: Some(2_601_529_804),
+            ..Default::default()
+        };
+        // A 4 GiB host resolves a 2 GiB mark; the total no longer fits.
+        let error = config.resolve_budgets(2 << 30).unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<TotalExceedsHighWater>(),
+            Some(&TotalExceedsHighWater {
+                max_inflight_bytes: 2_601_529_804,
+                high_water_bytes: 2 << 30,
+            })
+        );
+        let message = error.to_string();
+        for expected in [
+            "invalid resolved admission budgets",
+            "2601529804",
+            "2147483648",
+            "max_inflight_bytes",
+            "high_water_bytes",
+        ] {
+            assert!(message.contains(expected), "{message}");
+        }
+        // A total at the mark still resolves, and so does the omitted default.
+        assert!(config.resolve_budgets(2_601_529_804).is_ok());
+        assert!(AdmissionConfig::default().resolve_budgets(2 << 30).is_ok());
     }
     #[test]
     fn fixture_total_resolution_preserves_the_original_runtime_payload_boundary() {
