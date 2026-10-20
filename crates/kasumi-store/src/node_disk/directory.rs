@@ -336,11 +336,13 @@ impl NodeDiskDirectory {
         }
         let result = (|| {
             self.verify(&state)?;
-            self.owner()
-                .file
-                .as_ref()
-                .expect("live directory descriptor")
-                .sync_all()?;
+            self.owner().disk.synchronized(|| {
+                self.owner()
+                    .file
+                    .as_ref()
+                    .expect("live directory descriptor")
+                    .sync_all()
+            })?;
             self.verify(&state)
         })();
         result.inspect_err(|_| self.owner().disk.fail_locked(&mut state))

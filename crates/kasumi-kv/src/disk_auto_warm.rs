@@ -20,12 +20,55 @@ pub(super) struct AutoWarm {
     // Fixed owner-local scheduling metadata, included in DiskState admission.
     // These copies are never used for data reads or physical reclamation.
     roots: Vec<Option<DirectoryRoot>>,
+    pub(super) deferred: DeferredIdentities,
+}
+
+/// Identities a publication superseded while an older snapshot pin still
+/// reached them, so they stayed cached. The engine releases that pin after the
+/// publication, and nothing else proves them again before a complete warm pass,
+/// which every publication restarts: kept unchecked, they would accumulate per
+/// commit until the cache filled the shared admission budget. Each later
+/// publication proves them again. Fixed capacity: an identity deferred while
+/// this is full stays cached until a warm pass or reclamation removes it.
+pub(super) struct DeferredIdentities(Vec<NativeIdentity>);
+
+impl DeferredIdentities {
+    pub(super) const CAPACITY: usize = 1024;
+
+    /// Whether the identity is now deferred; never grows the fixed backing.
+    pub(super) fn push(&mut self, identity: NativeIdentity) -> bool {
+        if self.0.len() == Self::CAPACITY {
+            return false;
+        }
+        self.0.push(identity);
+        true
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(super) fn get(&self, index: usize) -> NativeIdentity {
+        self.0[index]
+    }
+
+    pub(super) fn set(&mut self, index: usize, identity: NativeIdentity) {
+        self.0[index] = identity;
+    }
+
+    /// Remove a range in place, moving later identities down.
+    pub(super) fn remove(&mut self, range: std::ops::Range<usize>) {
+        self.0.drain(range);
+    }
 }
 
 impl AutoWarm {
     pub(super) const fn backing_bytes() -> usize {
         std::mem::size_of::<[Option<DirectoryRoot>; MAX_PINNED_ROOTS]>()
             + (std::mem::align_of::<Option<DirectoryRoot>>() - 1)
+            + ALLOCATION_ALLOWANCE
+            + std::mem::size_of::<[NativeIdentity; DeferredIdentities::CAPACITY]>()
+            + (std::mem::align_of::<NativeIdentity>() - 1)
             + ALLOCATION_ALLOWANCE
     }
 
@@ -41,6 +84,13 @@ impl AutoWarm {
         for _ in 0..MAX_PINNED_ROOTS {
             roots.push(None);
         }
+        let mut deferred = Vec::new();
+        deferred
+            .try_reserve_exact(DeferredIdentities::CAPACITY)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if deferred.capacity() != DeferredIdentities::CAPACITY {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
         Ok(Self {
             state: CacheWarmupState::Pending,
             complete: false,
@@ -51,6 +101,7 @@ impl AutoWarm {
             pinned_bytes: 0,
             evictions: 0,
             roots,
+            deferred: DeferredIdentities(deferred),
         })
     }
 }

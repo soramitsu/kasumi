@@ -974,7 +974,9 @@ impl SegmentWriter {
         }
         let active = self.active.expect("a batch has at least one record");
         self.flush(backend)?;
-        backend.sync(GroupFile::segment(active))?;
+        // Ordered before the directory pages and the records that bind them;
+        // the publication that follows a commit makes all of them durable.
+        backend.sync_ordered(GroupFile::segment(active))?;
         Ok(PreparedBatch {
             identity: PreparedIdentity {
                 group_id: self.group_id,
@@ -988,12 +990,15 @@ impl SegmentWriter {
         })
     }
 
-    /// Bind and acknowledge one batch. The caller must synchronize every page
-    /// reachable from `directory_root` before calling this method. A durable
-    /// preparation record carries the exact root so replay can reconstruct a
-    /// torn commit rather than mistaking arbitrary root damage for a tear.
-    /// Failures before the commit write are known uncommitted; failures during
-    /// its write or synchronization are `UnknownCommit`. Either fences writer.
+    /// Bind and acknowledge one batch. The caller must synchronize, at least
+    /// ordered, every page reachable from `directory_root` before calling this
+    /// method. A preparation record, ordered before the commit record, carries
+    /// the exact root so replay can reconstruct a torn commit rather than
+    /// mistaking arbitrary root damage for a tear. Both records are only
+    /// ordered; the caller's root publication makes them durable before the
+    /// commit is reported. Failures before the commit write are known
+    /// uncommitted; failures during its write or synchronization are
+    /// `UnknownCommit`. Either fences writer.
     pub(crate) fn finish_batch(
         &mut self,
         backend: &dyn SegmentGroupBackend,
@@ -1060,7 +1065,7 @@ impl SegmentWriter {
         *stage = "directory_write";
         backend.write(file, self.end, &record)?;
         *stage = "directory_sync";
-        backend.sync(file)?;
+        backend.sync_ordered(file)?;
         self.end += DIRECTORY_RECORD_BYTES as u64;
         self.stage_at = self.end;
         let op_count = prepared.values.len() as u32;
@@ -1088,7 +1093,9 @@ impl SegmentWriter {
             .write(file, self.end, &commit)
             .map_err(CoreError::unknown_io)?;
         *stage = "commit_sync";
-        backend.sync(file).map_err(CoreError::unknown_io)?;
+        // Ordered before the root publication, whose full synchronization
+        // makes this commit durable before the caller reports it.
+        backend.sync_ordered(file).map_err(CoreError::unknown_io)?;
         self.end += COMMIT_RECORD_BYTES as u64;
         self.stage_at = self.end;
         self.last_batch_seq = batch_seq;

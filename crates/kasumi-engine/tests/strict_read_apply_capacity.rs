@@ -256,3 +256,25 @@ async fn concurrent_pinned_strict_reads_refuse_before_proposal_and_keep_the_tena
     drop(held);
     fixture.finish().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn strict_read_whose_audit_admission_is_refused_stays_resource_exhausted() {
+    let fixture = Fixture::open().await;
+    // Room for the read's own retained output, not for its audit: the audit's
+    // source grant must leave the cache-work reserve free. Admission refuses
+    // that audit before anything is proposed: the read is withheld with
+    // retryable backpressure, not AUDIT_UNAVAILABLE, which the transport
+    // reports as UNAVAILABLE and clients resend until a deadline.
+    let held = Fixture::exhaust_ordinary_capacity(&fixture.admission, 32 << 20);
+    let error = fixture
+        .database
+        .read_snapshot(&context("refused-read"), snapshot())
+        .await
+        .map(|response| response.revision)
+        .unwrap_err();
+    assert_eq!(error.code, ErrorCode::ResourceExhausted, "{error:?}");
+    assert!(!read_audited(&fixture.database, "refused-read"));
+    assert_eq!(fixture.database.serving_failure_class(), None);
+    drop(held);
+    fixture.finish().await;
+}

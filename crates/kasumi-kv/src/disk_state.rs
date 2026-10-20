@@ -793,8 +793,10 @@ impl DiskState {
                 chain: committed.chain,
             },
         };
-        // The log commit is durable. Any subsequent failure is indeterminate
-        // to this caller and fences; reopen decides from that exact commit.
+        // The log commit is ordered before this publication, whose full
+        // synchronization makes both durable. Any subsequent failure is
+        // indeterminate to this caller and fences; reopen decides from the
+        // log and root the device kept.
         *stage = "root_publication";
         self.install_selected(witness, commit, &committed.values, None)
             .map_err(|error| match error {

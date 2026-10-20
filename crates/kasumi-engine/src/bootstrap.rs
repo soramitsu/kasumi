@@ -1255,15 +1255,22 @@ pub async fn restore_local(
         kasumi_raft::initial_storage_identity(1, &format!("{}/{}", target.tenant(), incarnation))?,
     )
     .await?;
-    let phase = VerificationPhase::start("restore.start_prepared", Some(deadline));
-    let database = start_prepared(
-        construction,
-        restored.engine,
-        &restored.bytes,
-        LocalRuntime::Production,
-    )
-    .await?;
-    phase.complete();
+    // The started database owns the restored engine. The materialization
+    // workspace and verification registration end with this block, before the
+    // mandatory audit below admits its proposal workspace and source grant.
+    let database = {
+        let restored = restored;
+        let phase = VerificationPhase::start("restore.start_prepared", Some(deadline));
+        let database = start_prepared(
+            construction,
+            restored.engine,
+            &restored.bytes,
+            LocalRuntime::Production,
+        )
+        .await?;
+        phase.complete();
+        database
+    };
     let phase = VerificationPhase::start("restore.maintenance_audit", Some(deadline));
     database.install_archive_destination(
         source.destination_alias.clone(),

@@ -294,6 +294,15 @@ impl ChargeOrigin {
     fn preserves_cache_headroom(self) -> bool {
         matches!(self, Self::NativeCache | Self::DocumentSource)
     }
+    /// Cache-work reserves a charge of this origin leaves free. A retained
+    /// source keeps one for transient required work. Every proposal admits a
+    /// source grant while its own workspace is held, and a strict read and its
+    /// audit hold more than one reserve with default limits. Optional cache
+    /// credit therefore keeps two more, so a cache that grew while idle cannot
+    /// refuse the next request's grant by itself.
+    fn cache_work_reserves(self) -> u64 {
+        if self == Self::NativeCache { 3 } else { 1 }
+    }
 }
 #[derive(Clone, Copy)]
 enum ReserveKindError {
@@ -408,13 +417,20 @@ struct PreparedCore {
 }
 
 impl MemoryState {
-    fn cache_headroom_fits(&self, state: &State, total: u64, additional_slots: usize) -> bool {
+    fn cache_headroom_fits(
+        &self,
+        state: &State,
+        total: u64,
+        additional_slots: usize,
+        origin: ChargeOrigin,
+    ) -> bool {
         self.cache_headroom_fits_with_protection(
             state,
             total,
             additional_slots,
             state.ordinary_protected,
             state.ordinary_protected_slots,
+            origin.cache_work_reserves(),
         )
     }
     // The proposed protection is the complete new floor, including existing
@@ -427,8 +443,17 @@ impl MemoryState {
         additional_slots: usize,
         protected_bytes: u64,
         protected_slots: usize,
+        reserves: u64,
     ) -> bool {
         let (bytes, slots) = self.config.cache_work_headroom(self.max_bytes);
+        let (Some(bytes), Some(slots)) = (
+            bytes.checked_mul(reserves),
+            usize::try_from(reserves)
+                .ok()
+                .and_then(|reserves| slots.checked_mul(reserves)),
+        ) else {
+            return false;
+        };
         let available_bytes = bytes
             .checked_add(protected_bytes)
             .and_then(|reserve| total.checked_add(reserve));
@@ -759,9 +784,14 @@ impl MemoryCore {
         if !state.usable
             || state.pressured
             || protected.zip(protected_slots).is_none_or(|(bytes, slots)| {
-                !self
-                    .data
-                    .cache_headroom_fits_with_protection(&state, state.bytes, 0, bytes, slots)
+                !self.data.cache_headroom_fits_with_protection(
+                    &state,
+                    state.bytes,
+                    0,
+                    bytes,
+                    slots,
+                    1,
+                )
             })
         {
             return Err(Error::new(
@@ -871,7 +901,7 @@ impl MemoryCore {
                             },
                         ))
                     || (origin.preserves_cache_headroom()
-                        && !self.data.cache_headroom_fits(&state, total, 1))
+                        && !self.data.cache_headroom_fits(&state, total, 1, origin))
             })
         {
             #[cfg(any(test, feature = "test-utils"))]
@@ -1334,7 +1364,7 @@ impl Reservation {
                     || ((origin.preserves_cache_headroom()
                         || (origin == ChargeOrigin::ScopedApplicationSource
                             && !active_maintenance))
-                        && !self.core.data.cache_headroom_fits(&state, total, 0))
+                        && !self.core.data.cache_headroom_fits(&state, total, 0, origin))
             })
         {
             return Err(ReserveKindError::Exhausted);

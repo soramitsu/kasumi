@@ -13,12 +13,16 @@ mod retention;
 
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashMap,
-    sync::{Arc, LazyLock, Mutex, Weak},
+    collections::{HashMap, VecDeque},
+    sync::{Arc, Condvar, LazyLock, Mutex, PoisonError, Weak},
     time::{SystemTime, UNIX_EPOCH},
 };
 
 pub const SECURITY_TENANT: &str = "__kasumi_security";
+
+/// Records one leader commits in one store batch. Each record is at most
+/// MAX_AUDIT_EVENT_BYTES, so a batch stays far inside the store's limits.
+const MAX_RECORD_BATCH: usize = 64;
 
 /// Share one writer across all databases and authentication adapters on a node.
 /// Its reserved store must use a wrapping key distinct from customer tenants.
@@ -32,6 +36,10 @@ struct AuditWriter {
     // clones held by blocking jobs after every outer Arc<SecurityAudit> drops.
     store: Arc<TenantStore>,
     sequence: Mutex<AuditSequence>,
+    // Records wait here while another caller commits. Lock order: a leader
+    // may take `records` while holding `sequence`, never the reverse.
+    records: Mutex<RecordQueue>,
+    recorded: Condvar,
     budget: AuditRetentionBudget,
     destination: Arc<dyn kasumi_store::AuditArchiveDestination>,
     maintenance: tokio::sync::Mutex<()>,
@@ -43,6 +51,9 @@ struct AuditWriter {
     worker_pause: Mutex<Option<Arc<retention::WorkerPause>>>,
     #[cfg(test)]
     record_fault: Mutex<Option<jobs::RecordFault>>,
+    /// Store batches written by record leaders.
+    #[cfg(test)]
+    record_commits: std::sync::atomic::AtomicUsize,
     workspace: Mutex<Option<crate::admission::Reservation>>,
     admission: Arc<crate::admission::NodeAdmission>,
     work: Arc<WorkFence>,
@@ -59,6 +70,64 @@ struct AuditSequence {
     failed: bool,
     failures: u64,
     last_failure: Option<String>,
+}
+
+/// Validated records in arrival order. Each caller keeps its ticket until the
+/// leader that committed or refused its record leaves the outcome here.
+#[derive(Default)]
+struct RecordQueue {
+    next_ticket: u64,
+    waiting: VecDeque<QueuedRecord>,
+    outcomes: HashMap<u64, Result<()>>,
+    /// A caller is taking or committing a batch.
+    leading: bool,
+}
+
+struct QueuedRecord {
+    ticket: u64,
+    event: SecurityEvent,
+    transport: Option<TransportAuditMetadata>,
+}
+
+/// A leader's claim on the records it took. Dropping it, also on unwind,
+/// leaves each record its outcome and releases leadership.
+struct Leadership<'a> {
+    writer: &'a AuditWriter,
+    tickets: Vec<u64>,
+    outcomes: Vec<Result<()>>,
+}
+impl Drop for Leadership<'_> {
+    fn drop(&mut self) {
+        let mut queue = self
+            .writer
+            .records
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let mut outcomes = std::mem::take(&mut self.outcomes).into_iter();
+        for ticket in self.tickets.drain(..) {
+            let outcome = outcomes.next().unwrap_or_else(|| {
+                Err(anyhow::anyhow!(
+                    "service audit record stopped before its commit outcome was known"
+                ))
+            });
+            queue.outcomes.insert(ticket, outcome);
+        }
+        queue.leading = false;
+        self.writer.recorded.notify_all();
+    }
+}
+
+/// Every record still marked admitted takes one shared batch failure instead.
+fn refuse_admitted(
+    mut outcomes: Vec<Result<()>>,
+    error: impl Fn() -> anyhow::Error,
+) -> Vec<Result<()>> {
+    for outcome in &mut outcomes {
+        if outcome.is_ok() {
+            *outcome = Err(error());
+        }
+    }
+    outcomes
 }
 
 // Keep resource ownership before the registration: draining must not finish
@@ -194,6 +263,8 @@ impl SecurityAudit {
                 failures: 0,
                 last_failure: None,
             }),
+            records: Mutex::new(RecordQueue::default()),
+            recorded: Condvar::new(),
             budget,
             destination,
             maintenance: tokio::sync::Mutex::new(()),
@@ -205,6 +276,8 @@ impl SecurityAudit {
             worker_pause: Mutex::new(None),
             #[cfg(test)]
             record_fault: Mutex::new(None),
+            #[cfg(test)]
+            record_commits: Default::default(),
             work: Arc::new(WorkFence::default()),
             workspace: Mutex::new(Some(workspace)),
             admission,
@@ -281,6 +354,9 @@ impl SecurityAudit {
         self.begin()?.record(event, None)
     }
 
+    /// Validated records queue in arrival order. A caller that finds no batch
+    /// in progress leads one: it commits the records queued by then together.
+    /// Every caller returns the outcome of the commit that held its record.
     fn record_inner(
         &self,
         event: SecurityEvent,
@@ -299,23 +375,149 @@ impl SecurityAudit {
         if let Some(metadata) = &transport {
             metadata.validate()?;
         }
-        let mut sequence = self
+        let mut queue = self
             .writer
-            .sequence
+            .records
             .lock()
-            .map_err(|_| anyhow::anyhow!("service audit state unavailable"))?;
-        ensure!(
-            !sequence.failed,
-            "service audit persistence requires recovery"
-        );
+            .unwrap_or_else(PoisonError::into_inner);
+        let ticket = queue.next_ticket;
+        queue.next_ticket = ticket
+            .checked_add(1)
+            .context("service audit record tickets exhausted")?;
+        queue.waiting.push_back(QueuedRecord {
+            ticket,
+            event,
+            transport,
+        });
+        loop {
+            if let Some(outcome) = queue.outcomes.remove(&ticket) {
+                return outcome;
+            }
+            if queue.leading {
+                queue = self
+                    .writer
+                    .recorded
+                    .wait(queue)
+                    .unwrap_or_else(PoisonError::into_inner);
+            } else {
+                queue.leading = true;
+                drop(queue);
+                self.lead_records();
+                queue = self
+                    .writer
+                    .records
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+            }
+        }
+    }
+
+    /// Commit the records queued once the sequence is held, so the batch
+    /// includes every record that queued behind an earlier commit or
+    /// maintenance turn. Leadership ends when `Leadership` drops.
+    fn lead_records(&self) {
+        let mut leadership = Leadership {
+            writer: &self.writer,
+            tickets: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let sequence = self.writer.sequence.lock();
+        let records: Vec<QueuedRecord> = {
+            let mut queue = self
+                .writer
+                .records
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let count = queue.waiting.len().min(MAX_RECORD_BATCH);
+            queue.waiting.drain(..count).collect()
+        };
+        leadership.tickets = records.iter().map(|record| record.ticket).collect();
+        leadership.outcomes = match sequence {
+            Ok(mut sequence) => self.commit_records(&mut sequence, records),
+            Err(_) => records
+                .iter()
+                .map(|_| Err(anyhow::anyhow!("service audit state unavailable")))
+                .collect(),
+        };
+    }
+
+    /// Records take consecutive sequences in arrival order. A record that
+    /// fails its own encoding, size or hot-budget check refuses only itself,
+    /// as it would alone; the others are written with the head in one batch.
+    fn commit_records(
+        &self,
+        sequence: &mut AuditSequence,
+        records: Vec<QueuedRecord>,
+    ) -> Vec<Result<()>> {
+        if sequence.failed {
+            return records
+                .iter()
+                .map(|_| {
+                    Err(anyhow::anyhow!(
+                        "service audit persistence requires recovery"
+                    ))
+                })
+                .collect();
+        }
+        let mut updated = sequence.head.clone();
+        let mut operations = Vec::with_capacity(records.len() + 1);
+        let mut tail = None;
+        // Ok marks a record admitted to this batch until the batch commits.
+        let outcomes: Vec<Result<()>> = records
+            .into_iter()
+            .map(|record| {
+                let (operation, digest) = self.admit_record(&mut updated, record)?;
+                operations.push(operation);
+                tail = Some(digest);
+                Ok(())
+            })
+            .collect();
+        if operations.is_empty() {
+            return outcomes;
+        }
+        match updated.write() {
+            Ok(head) => operations.push(head),
+            Err(error) => {
+                let message = format!("{error:#}");
+                return refuse_admitted(outcomes, || anyhow::anyhow!("{message}"));
+            }
+        }
+        #[cfg(test)]
+        self.writer
+            .record_commits
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Err(error) = self.writer.store.write_batch(&operations) {
+            // Unknown fsync outcomes fence every queued writer until reopen.
+            // Each writer in this batch reports the same retained issue.
+            sequence.failed = true;
+            let issue = self.record_terminal("audit persistence", 0, error);
+            return refuse_admitted(outcomes, || {
+                kasumi_types::drain::DrainFailure::retained(issue.clone()).into()
+            });
+        }
+        sequence.head = updated;
+        sequence.hot_tail_sha256 = tail;
+        if sequence.head.position.hot_bytes >= self.writer.budget.starts_at() {
+            self.writer.wake.notify_one();
+        }
+        outcomes
+    }
+
+    /// One record's sequence, exact encoding and hot-budget check after the
+    /// records admitted before it. A refusal leaves `head` unchanged.
+    fn admit_record(
+        &self,
+        head: &mut retention::Head,
+        record: QueuedRecord,
+    ) -> Result<(WriteOp, String)> {
         let timestamp_ms =
             u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
         let entry = SecurityAuditRecord {
             format: kasumi_types::SECURITY_AUDIT_RECORD_FORMAT,
-            sequence: sequence.head.position.next_sequence,
+            sequence: head.position.next_sequence,
             timestamp_ms,
-            event,
-            transport,
+            event: record.event,
+            transport: record.transport,
         };
         let encoded = serde_json::to_vec(&entry)?;
         ensure!(
@@ -323,46 +525,24 @@ impl SecurityAudit {
             "security audit event exceeds record limit"
         );
         let tail = kasumi_types::audit_record_sha256(&encoded);
-        let mut updated = sequence.head.clone();
-        updated.position.next_sequence = updated
+        let next_sequence = head
             .position
             .next_sequence
             .checked_add(1)
             .context("service audit sequence overflow")?;
-        updated.position.hot_bytes = updated
+        let hot_bytes = head
             .position
             .hot_bytes
             .checked_add(encoded.len() as u64 + 8)
             .context("service audit byte count overflow")?;
         ensure!(
-            updated.position.hot_bytes <= self.writer.budget.hot_bytes,
+            hot_bytes <= self.writer.budget.hot_bytes,
             "service audit hot budget exhausted; archive maintenance is pending"
         );
-        if let Err(error) = self.writer.store.write_batch(&[
-            WriteOp::put(
-                "security.audit",
-                sequence.head.position.next_sequence.to_be_bytes(),
-                encoded,
-            ),
-            updated.write()?,
-        ]) {
-            // Unknown fsync outcomes fence every queued writer until reopen.
-            sequence.failed = true;
-            return Err(
-                kasumi_types::drain::DrainFailure::retained(self.record_terminal(
-                    "audit persistence",
-                    0,
-                    error,
-                ))
-                .into(),
-            );
-        }
-        sequence.head = updated;
-        sequence.hot_tail_sha256 = Some(tail);
-        if sequence.head.position.hot_bytes >= self.writer.budget.starts_at() {
-            self.writer.wake.notify_one();
-        }
-        Ok(())
+        let operation = WriteOp::put("security.audit", entry.sequence.to_be_bytes(), encoded);
+        head.position.next_sequence = next_sequence;
+        head.position.hot_bytes = hot_bytes;
+        Ok((operation, tail))
     }
 
     /// Wait for previously admitted audit work; concurrent callers may still enqueue.
@@ -943,3 +1123,7 @@ mod tests {
 #[cfg(test)]
 #[path = "security_audit_existing_tests.rs"]
 mod existing_tests;
+
+#[cfg(test)]
+#[path = "security_audit_batch_tests.rs"]
+mod batch_tests;

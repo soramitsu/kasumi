@@ -58,6 +58,18 @@ this owner; an external writer that ignores its exclusive locks is outside that
 ownership contract. Lifecycle incarnation bindings remain a separate required
 boundary and are not replaced by this disk identity.
 
+A file owner remembers what its last successful sync established after its
+last write: nothing, ordered (written to the device behind a barrier, so
+allocation is materialized) or durable. A sync or settlement asking for a level
+already reached verifies identity but issues no second physical sync. Every
+write, resize or truncation resets the level, and a newly opened descriptor
+starts with nothing. The blocking read, write and sync syscalls run with the
+disk's shared state unlocked: phase, enrollment and identity are checked, and
+the admission seal recorded, under it before the effect, and the accounting is
+updated under it after. The file's own lock keeps every other operation on that
+file out meanwhile, and a live owner keeps census out. An effect that overlaps
+another owner's failure latch reports failure.
+
 Persistent quota includes closed files. Device promises include reserved bytes
 not yet observed in allocated blocks, including sparse extents after handle
 close. A successful sync retires only promises represented by observed blocks;

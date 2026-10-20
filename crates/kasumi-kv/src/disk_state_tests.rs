@@ -837,6 +837,71 @@ fn recovery_uses_last_commit_position_before_a_later_abandoned_segment() {
     assert_eq!(value(&mut state, &current, b"a").unwrap(), b"after-reopen");
 }
 
+/// A commit only orders its operation records, directory pages, preparation
+/// and commit records and first root copy; the second root copy's full
+/// synchronization flushes them all. An acknowledged commit leaves nothing
+/// staged. An unacknowledged one reopens as either the previous or the new
+/// commit whatever prefix of its barriers the device kept, and only a kept
+/// commit record recovers the new one.
+#[test]
+fn ordered_commit_barriers_recover_at_every_kept_prefix() {
+    let admission = Admission::new(32 << 20);
+    let group = InMemoryGroup::with_ordered_syncs();
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    state
+        .commit(&[
+            Operation::create_table("accounts"),
+            Operation::put("accounts", b"a", b"first"),
+        ])
+        .unwrap();
+    assert_eq!(group.pending_barriers(), 0);
+    state
+        .commit(&[Operation::put("accounts", b"a", b"second")])
+        .unwrap();
+    assert_eq!(group.pending_barriers(), 0);
+    let mut acknowledged = DiskState::open(
+        Arc::new(group.crash()),
+        admission.clone(),
+        GROUP,
+        LARGE_CACHE,
+    )
+    .unwrap();
+    let root = acknowledged.snapshot().unwrap();
+    assert_eq!(value(&mut acknowledged, &root, b"a").unwrap(), b"second");
+    drop((root, acknowledged));
+
+    // Stop the next commit at its only full synchronization.
+    group.fail(GroupOp::RootSync, 1, FaultTiming::BeforeEffect);
+    assert!(
+        state
+            .commit(&[Operation::put("accounts", b"a", b"third")])
+            .is_err()
+    );
+    drop(state);
+    let pending = group.pending_barriers();
+    assert_eq!(pending, 5);
+    let mut recovered = Vec::new();
+    for keep in 0..=pending {
+        let restarted = group.crash_keeping_barriers(keep);
+        let mut state =
+            DiskState::open(Arc::new(restarted), admission.clone(), GROUP, LARGE_CACHE).unwrap();
+        let root = state.snapshot().unwrap();
+        recovered.push(value(&mut state, &root, b"a").unwrap());
+        // The writer resumes from whatever the device kept.
+        state
+            .commit(&[Operation::put("accounts", b"a", b"resumed")])
+            .unwrap();
+        let root = state.snapshot().unwrap();
+        assert_eq!(value(&mut state, &root, b"a").unwrap(), b"resumed");
+    }
+    // Operation records, directory pages and the preparation record alone
+    // leave an abandoned batch; the commit record replays without its root.
+    let expected = std::iter::repeat_n(b"second".to_vec(), 4)
+        .chain(std::iter::repeat_n(b"third".to_vec(), 2))
+        .collect::<Vec<_>>();
+    assert_eq!(recovered, expected);
+}
+
 #[path = "disk_reclaim_tests.rs"]
 mod disk_reclaim;
 

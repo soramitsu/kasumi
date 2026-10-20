@@ -47,6 +47,13 @@ installed audit-maintenance protection. Ordinary required workspace admission
 is unchanged, and optional cache retention never borrows the audit thread's
 protected escrow. The reserve preserves bounded read and maintenance room; it
 does not guarantee that every maximum-size write or concurrent operation fits.
+Retained source and document charges, including the grant every proposal
+admits, must leave that same reserve free, and a proposal admits its grant
+while its own workspace is held: with default limits a strict read and its
+audit hold about 70 MB, more than one reserve. Optional cache credit therefore
+leaves the reserve three times, so that a cache warmed while idle cannot by
+itself refuse the next request's grant. Before this, a cache that reached the
+retained-source floor refused every proposal until it shrank.
 Cache growth, metadata replacement and pressure behavior are under validation
 in the [disk-cache evidence record](evidence/disk-backed-cache-20260930/README.md).
 
@@ -105,6 +112,15 @@ would otherwise use. The database proposal gate keeps at most one such grant
 outstanding, and the Entry sink spends it instead of reserving after commit.
 Concurrent reads can therefore reject a request with `ResourceExhausted` or
 `AuditUnavailable`, but cannot fail a committed entry and close the tenant.
+A strict read whose audit admission refuses before proposing returns
+`ResourceExhausted`: nothing was proposed and the read is withheld, so the
+caller backs off and retries. A snapshot read pre-admits its maximum workspace
+(three result limits plus three document limits) for evaluation, then keeps only
+its evaluation's logical peak, which covers the response, through its audit and
+release; the transport charges response encoding to its own fence. Queued strict
+reads holding their maximum had left no room for the gate holder's grant. `AuditUnavailable`, which the transport reports
+as UNAVAILABLE and clients resend until their deadline, remains for an audit
+whose durability could not be confirmed.
 Entries without a local gated proposer (startup replay, covered reconstruction,
 metadata or membership entries and replicated followers) still reserve while
 applying.
@@ -162,7 +178,7 @@ read audits still persist before this release gate.
 | Memory/work category | Current bounds/accounting |
 | --- | --- |
 | Documents and schemas | Deterministic tenant/document/collection/schema quotas; full resident usage appears in RSS. |
-| Proposal workspace | Three times configured maximum batch bytes plus 64 KiB framing per copy; reservation persists through actual Raft completion. |
+| Proposal workspace | Three times configured maximum batch bytes plus 64 KiB framing per copy; a read audit, complete before admission, counts its own encoded command instead of the maximum batch, and a mutation batch counts its own encoded command within the fixed 8 MiB request envelope instead of the envelope. Neither follows the tenant's current budget, so a replay of a committed identity is still admitted after the budget is lowered. Reservation persists through actual Raft completion. |
 | Text writers | An additional 15,000,000-byte writer-buffer allowance on relevant client proposals; sequential collection writers use the configured Tantivy buffer. |
 | Structured/search queries | Candidate/group/result limits plus reserved candidate, sort, group and output workspace; cancellation checkpoints and a deadline. |
 | Cursor results | Tenant byte/count/age quotas plus a shared reservation of three times maximum result bytes; continuation pages reserve a separate copy allowance. Old generations are released after evaluation. |

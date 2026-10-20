@@ -607,7 +607,10 @@ impl Charge {
     // This also settles a reservation whose capacity was never physically used.
     pub(crate) fn shrink(&mut self, file: &File, ciphertext_len: u64) -> io::Result<()> {
         self.check_owner(file)?;
-        file.sync_all().inspect_err(|_| self.fail_owner())?;
+        crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
+            crate::sync_trace::sync(|| file.sync_all())
+        })
+        .inspect_err(|_| self.fail_owner())?;
         let metadata = file.metadata().inspect_err(|_| self.fail_owner())?;
         let bytes = self.disk.file_ceiling(ciphertext_len)?;
         let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {

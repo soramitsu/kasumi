@@ -252,6 +252,145 @@ fn explicit_settlement_returns_only_unused_promises_and_requires_exact_extent() 
     clean(&disk, &["file"]);
 }
 
+/// A synchronization is physical only when this exclusive owner wrote since
+/// its last one reached the requested level. An ordered sync suffices for
+/// settlement; durability still needs one full sync after it.
+#[test]
+fn synchronization_after_the_last_write_is_not_repeated() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, config) = installation();
+    let disk = open(config, fixture_memory);
+    let barrier = cfg!(target_vendor = "apple");
+    let file = disk
+        .create_file("data", Path::new("file"), DiskWork::Foreground)
+        .unwrap();
+    // Creation already synchronized the empty file and its parent.
+    let created = disk.physical_synchronizations();
+    file.sync_all().unwrap();
+    file.sync_ordered().unwrap();
+    file.settle_growth(0).unwrap();
+    assert_eq!(disk.physical_synchronizations(), created);
+
+    file.reserve_growth(0, 64 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(16 << 10).unwrap();
+    file.write_all_at(&[7; 64], 0).unwrap();
+    let ((), allocations) = crate::allocation_tests::measure(|| {
+        file.sync_ordered().unwrap();
+        file.sync_ordered().unwrap();
+        file.settle_growth(16 << 10).unwrap();
+    });
+    assert_eq!(allocations, 0, "ordered synchronization allocated");
+    let ordered = disk.physical_synchronizations();
+    assert_eq!(
+        ordered,
+        if barrier {
+            (created.0 + 1, created.1)
+        } else {
+            (created.0, created.1 + 1)
+        }
+    );
+    // Settlement returned the unused growth without another sync.
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        namespace_charge(&disk) + (16 << 10)
+    );
+    file.sync_all().unwrap();
+    file.sync_all().unwrap();
+    file.sync_ordered().unwrap();
+    let durable = disk.physical_synchronizations();
+    assert_eq!(durable, (ordered.0, ordered.1 + u64::from(barrier)));
+
+    // Every physical mutation makes the next synchronization real again.
+    file.write_all_at(&[8; 64], 64).unwrap();
+    file.settle_growth(16 << 10).unwrap();
+    file.sync_all().unwrap();
+    assert_eq!(disk.physical_synchronizations(), (durable.0, durable.1 + 1));
+    file.reserve_growth(16 << 10, 32 << 10, DiskWork::Foreground)
+        .unwrap();
+    file.grow_reserved(32 << 10).unwrap();
+    file.sync_all().unwrap();
+    file.settle_growth(32 << 10).unwrap();
+    assert_eq!(disk.physical_synchronizations(), (durable.0, durable.1 + 2));
+    assert_eq!(
+        disk.snapshot().charged_bytes,
+        namespace_charge(&disk) + (32 << 10)
+    );
+
+    // A reopened descriptor's history is unknown.
+    drop(file);
+    let file = disk.open_file("data", Path::new("file")).unwrap();
+    file.sync_all().unwrap();
+    assert_eq!(disk.physical_synchronizations(), (durable.0, durable.1 + 3));
+    let mut bytes = [0; 64];
+    file.read_exact_at(&mut bytes, 64).unwrap();
+    assert_eq!(bytes, [8; 64]);
+    drop(file);
+    clean(&disk, &["file"]);
+}
+
+/// A file's blocking synchronization runs without the disk-wide State: other
+/// files' writes, reads, syncs and settlement complete meanwhile. A failure
+/// latched while that sync runs still makes it report failure.
+#[test]
+fn file_synchronization_does_not_hold_disk_state_across_the_syscall() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, config) = installation();
+    let disk = open(config, fixture_memory);
+    let slow = disk
+        .create_file("data", Path::new("slow"), DiskWork::Foreground)
+        .unwrap();
+    let other = disk
+        .create_file("data", Path::new("other"), DiskWork::Foreground)
+        .unwrap();
+    for file in [&slow, &other] {
+        file.reserve_growth(0, 16 << 10, DiskWork::Foreground)
+            .unwrap();
+        file.grow_reserved(4096).unwrap();
+        file.write_all_at(&[1; 64], 0).unwrap();
+    }
+    let arm = || {
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *disk.sync_pause.lock().unwrap() = Some(file::SyncPause {
+            entered,
+            release: release_rx,
+        });
+        (entered_rx, release)
+    };
+    let timeout = std::time::Duration::from_secs(5);
+    let (entered, release) = arm();
+    std::thread::scope(|scope| {
+        let paused = scope.spawn(|| slow.sync_all());
+        entered.recv_timeout(timeout).unwrap();
+        other.write_all_at(&[2; 64], 64).unwrap();
+        let mut bytes = [0; 64];
+        other.read_exact_at(&mut bytes, 64).unwrap();
+        assert_eq!(bytes, [2; 64]);
+        other.sync_all().unwrap();
+        other.settle_growth(4096).unwrap();
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+        release.send(()).unwrap();
+        paused.join().unwrap().unwrap();
+    });
+    let synchronized = disk.physical_synchronizations();
+    slow.sync_all().unwrap();
+    assert_eq!(disk.physical_synchronizations(), synchronized);
+
+    slow.write_all_at(&[3; 64], 64).unwrap();
+    let (entered, release) = arm();
+    std::thread::scope(|scope| {
+        let paused = scope.spawn(|| slow.sync_all());
+        entered.recv_timeout(timeout).unwrap();
+        disk.fail();
+        release.send(()).unwrap();
+        assert!(paused.join().unwrap().is_err());
+    });
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    drop((slow, other));
+    clean(&disk, &["slow", "other"]);
+}
+
 fn seed(config: &NodeDiskConfig, name: &str, len: u64) {
     let file = std::fs::OpenOptions::new()
         .read(true)

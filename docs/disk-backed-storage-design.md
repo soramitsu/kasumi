@@ -189,7 +189,8 @@ construction, point/successor lookup and incremental copy-on-write mutations.
 Mutations copy the search path with two page buffers and fixed admitted scratch,
 balance splits by bytes, remove empty pages and shrink unary roots. Old roots
 remain immutable. Operational errors poison the private mutation batch, and
-`finish` synchronizes its pages before an owner may publish it.
+`finish` orders its pages before the records that bind them; the owner's root
+publication flushes them before it may select the root.
 
 The segmented superblock now encodes a selected directory root together with
 its exact batch sequence, chain and replay position, plus separate durable arena
@@ -211,6 +212,51 @@ commit roots after the superblock's exact anchor without rebuilding a resident
 key map. The replayed commit boundary is distinct from the writer's resume
 position, which may follow a later abandoned batch. Interrupted arena allocation
 is repaired only from the selected intent and exact identity-header prefix.
+
+### Commit synchronization
+
+A commit flushes the device once. Its operation records, directory pages,
+preparation and commit records and first root copy are each synchronized with
+an ordering-only sync (`sync_ordered`, `sync_root_ordered`: `F_BARRIERFSYNC` on
+Apple platforms, a full sync elsewhere): every byte before the barrier reaches
+stable storage no later than any byte written after it. The second root copy's
+full sync (`F_FULLFSYNC` on Apple platforms) flushes the device's volatile cache,
+which makes every earlier barrier's bytes durable too. Only then does the owner
+select the new root in memory or report the commit, so no reader or caller
+observes a commit that a power loss could still remove.
+
+Why this keeps ordering and durability:
+
+- A crash leaves a prefix of the barrier sequence, as it left a prefix of the
+  synchronized steps before: operation records alone or with directory pages
+  are an abandoned batch; a preparation record without its commit record is a
+  torn commit; a commit record replays without its root; the first root copy
+  selects the commit. The second copy is written only after the first is
+  ordered, so at most one slot tears. `InMemoryGroup::with_ordered_syncs`
+  models staged barriers, and a DiskState test recovers every kept prefix.
+- Durability is reported after the same last step as before, the second root
+  copy's full sync; a device without barrier support gets a full sync instead.
+- Failures keep their dispositions: a failed commit-record sync is still
+  `UnknownCommit`, and a failed or interrupted publication fences the owner.
+  Reopen decides from whatever prefix the device kept.
+
+Segment rolls, arena rolls, envelope completion, abort truncation and every
+namespace effect keep full synchronization.
+
+The installed group's file owner records what its last successful
+synchronization established after the owner's last write: nothing, ordered or
+durable. A request for a level already reached is not repeated, though identity
+is still verified. Settlement needs only materialized allocation, so an ordered
+sync suffices; a full sync is still issued when durability is requested after an
+ordered one. Only the exclusive owner writes its file and every write resets
+the level, so skipping cannot leave a written byte unsynchronized; a reopened
+descriptor starts with nothing. Transaction completion therefore settles the
+tails and checks the root without repeating the syncs the commit already did,
+and it verifies the group directory instead of synchronizing it again: every
+name a transaction creates is synchronized with its parent at creation, and
+unlink and shrink are refused while a transaction is open. A steady-state commit
+on the installed group issues five ordered syncs and one full sync, down from
+twelve full syncs.
 
 `DiskState` now registers snapshots in an admitted registry with an internal
 limit of 256 slots. Each independent pin owns one admitted allocation; clones
@@ -410,8 +456,9 @@ have unknown outcomes; preadmission does not make those effects infallible.
 Only explicit pre-effect refusal returns `TransactionReserveError::CapacityDenied`.
 Generic `StorageFull` or `OutOfMemory` from an entered I/O operation retains its
 original error and fences the owner. Pristine cancellation requires exact claim
-identity and no entered effect. Positive completion synchronizes and checks the
-actual consumed prefixes and file lengths before returning unused rights.
+identity and no entered effect. Positive completion checks the actual consumed
+prefixes and file lengths, synchronizing any file written since its last
+synchronization, before returning unused rights.
 Abandonment never uses Drop as a refund or rollback proof.
 
 A directory-workspace refusal after a complete prepared log batch first settles
@@ -726,6 +773,17 @@ values occupying capacity during foreground publication. The new source prunes
 touched obsolete identities before filling the new generation, preserving a
 fitting current/pinned union. Focused regressions pass, while broader validation
 and the remaining C03 completion criteria are open.
+
+An identity that only a captured older pin still reaches stays cached for that
+reader, and the publication records it in a fixed list (1,024 identities) in
+the automatic-warm metadata. The engine pins its installed root while the next
+entry applies, so every foreground publication supersedes such identities.
+Each later publication proves the recorded ones again under its own capture:
+it removes those no root reaches, keeps those an older pin still reaches and
+forgets the rest. Before this, they waited for a complete warm pass, which
+every publication restarts, and the cache grew by each commit's replaced path
+until it filled the shared admission budget. Identities beyond a full list are
+left to the warm pass and reclamation, as before.
 
 A publication-scoped intrusive candidate chain lives inside the cache entries,
 with its link/mark fields included in each slot's charge. A dedicated private

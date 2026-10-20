@@ -162,6 +162,12 @@ pub(crate) trait DirectoryBackend: Send + Sync {
         Ok(reference)
     }
     fn sync_pages(&self) -> Result<(), CoreError>;
+    /// Like `sync_pages`, but only orders the appended pages before every
+    /// later write of the owning group; its next full synchronization makes
+    /// them durable. The default is the full `sync_pages`.
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        self.sync_pages()
+    }
     /// A backend that verifies digests itself must do so for every page it
     /// returns, including cache hits and fallback reads.
     fn page_check(&self) -> PageCheck {
@@ -203,6 +209,9 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for &T {
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
     }
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        (**self).sync_pages_ordered()
+    }
     fn page_check(&self) -> PageCheck {
         (**self).page_check()
     }
@@ -227,6 +236,9 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for Arc<T> {
     }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
+    }
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        (**self).sync_pages_ordered()
     }
     fn page_check(&self) -> PageCheck {
         (**self).page_check()
@@ -258,6 +270,9 @@ impl<T: DirectoryBackend> DirectoryBackend for crate::native_owned_arc::NativeOw
     }
     fn sync_pages(&self) -> Result<(), CoreError> {
         (**self).sync_pages()
+    }
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        (**self).sync_pages_ordered()
     }
 }
 

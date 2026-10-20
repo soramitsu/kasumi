@@ -285,6 +285,18 @@ pub trait SegmentGroupBackend: Send + Sync {
     fn write(&self, file: GroupFile, at: u64, bytes: &[u8]) -> io::Result<()>;
     fn set_len(&self, file: GroupFile, length: u64) -> io::Result<()>;
     fn sync(&self, file: GroupFile) -> io::Result<()>;
+    /// Like `sync`, but only orders: the bytes written to `file` reach stable
+    /// storage no later than any byte written to a group file after this call
+    /// returns. The device may keep them in a volatile cache until the next
+    /// full `sync`, `sync_root` or `sync_names` of any group file, so callers
+    /// report durability only after one. The default is the full `sync`.
+    fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        self.sync(file)
+    }
+    /// `sync_ordered` for the root file. The default is the full `sync_root`.
+    fn sync_root_ordered(&self) -> io::Result<()> {
+        self.sync_root()
+    }
     fn unlink(&self, file: GroupFile) -> io::Result<()>;
     /// Synchronize the group directory. A failure leaves the durability of
     /// every name unknown; the caller fences and reopens.
@@ -346,6 +358,12 @@ macro_rules! forward_group_backend {
             }
             fn sync(&self, file: GroupFile) -> io::Result<()> {
                 (**self).sync(file)
+            }
+            fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+                (**self).sync_ordered(file)
+            }
+            fn sync_root_ordered(&self) -> io::Result<()> {
+                (**self).sync_root_ordered()
             }
             fn unlink(&self, file: GroupFile) -> io::Result<()> {
                 (**self).unlink(file)
@@ -417,6 +435,12 @@ mod memory {
         Retained(io::ErrorKind),
     }
 
+    /// The exact image one ordering synchronization handed to the device.
+    enum Barrier {
+        File(GroupFile, Vec<u8>),
+        Root(Vec<u8>),
+    }
+
     struct GroupState {
         root_volatile: Vec<u8>,
         root_durable: Vec<u8>,
@@ -432,6 +456,11 @@ mod memory {
         close_error: Option<io::ErrorKind>,
         close_attempts: usize,
         transaction: Option<(super::TransactionSpacePlan, bool)>,
+        // Present only when ordering synchronization is modeled: images staged
+        // in order by `sync_ordered` and `sync_root_ordered`. A full sync
+        // persists all of them first, as a device cache flush would; a crash
+        // keeps only a chosen prefix.
+        barriers: Option<Vec<Barrier>>,
     }
 
     impl GroupState {
@@ -448,6 +477,30 @@ mod memory {
                 close_error: None,
                 close_attempts: 0,
                 transaction: None,
+                barriers: None,
+            }
+        }
+
+        /// Persist every staged barrier image in order.
+        fn flush_barriers(&mut self) {
+            let Some(barriers) = self.barriers.as_mut() else {
+                return;
+            };
+            for barrier in std::mem::take(barriers) {
+                match barrier {
+                    Barrier::File(file, image) => {
+                        if let Some(entry) = self.files.get_mut(&file) {
+                            entry.durable = image;
+                        }
+                    }
+                    Barrier::Root(image) => self.root_durable = image,
+                }
+            }
+        }
+
+        fn enter_effect(&mut self) {
+            if let Some((_, entered)) = self.transaction.as_mut() {
+                *entered = true;
             }
         }
 
@@ -509,6 +562,43 @@ mod memory {
             }
         }
 
+        /// A group that models ordering synchronization: `sync_ordered` and
+        /// `sync_root_ordered` stage barriers that become durable only with a
+        /// later full sync of any group file, or as a kept prefix in a crash.
+        /// Injected faults apply to full synchronizations only.
+        pub fn with_ordered_syncs() -> Self {
+            let group = Self::new();
+            group.state().barriers = Some(Vec::new());
+            group
+        }
+
+        /// Ordering synchronizations not yet flushed by a full one.
+        pub fn pending_barriers(&self) -> usize {
+            self.state().barriers.as_ref().map_or(0, Vec::len)
+        }
+
+        /// Restart as if the device kept the durable images and the first
+        /// `keep` pending barriers, in order, and lost every later one. This
+        /// group is unchanged, so every prefix can be tried from one state.
+        pub fn crash_keeping_barriers(&self, keep: usize) -> Self {
+            let state = self.state();
+            let barriers = state.barriers.as_ref().expect("ordered syncs are modeled");
+            assert!(keep <= barriers.len());
+            let mut root = state.root_durable.clone();
+            let mut images = BTreeMap::new();
+            for barrier in &barriers[..keep] {
+                match barrier {
+                    Barrier::File(file, image) => {
+                        images.insert(*file, image.clone());
+                    }
+                    Barrier::Root(image) => root = image.clone(),
+                }
+            }
+            Self::restarted(&state, root, |file, entry| {
+                images.get(&file).unwrap_or(&entry.durable).clone()
+            })
+        }
+
         /// Fail the `nth` next call of `op`, counting from one.
         pub fn fail(&self, op: GroupOp, nth: usize, timing: FaultTiming) {
             assert!(nth > 0);
@@ -553,16 +643,28 @@ mod memory {
         fn crash_with(&self, tear: impl FnOnce(&mut GroupState)) -> Self {
             let mut state = self.state();
             tear(&mut state);
+            let root = state.root_durable.clone();
+            Self::restarted(&state, root, |_, entry| entry.durable.clone())
+        }
+
+        /// A fresh group holding `root` and, for every durable name, the
+        /// image `durable` selects.
+        fn restarted(
+            state: &GroupState,
+            root: Vec<u8>,
+            durable: impl Fn(GroupFile, &MemFile) -> Vec<u8>,
+        ) -> Self {
             let files = state
                 .files
                 .iter()
                 .filter(|(_, entry)| entry.name_durable)
                 .map(|(file, entry)| {
+                    let image = durable(*file, entry);
                     (
                         *file,
                         MemFile {
-                            volatile: entry.durable.clone(),
-                            durable: entry.durable.clone(),
+                            volatile: image.clone(),
+                            durable: image,
                             linked: true,
                             name_durable: true,
                         },
@@ -570,8 +672,9 @@ mod memory {
                 })
                 .collect();
             let mut restarted = GroupState::new();
-            restarted.root_volatile = state.root_durable.clone();
-            restarted.root_durable = state.root_durable.clone();
+            restarted.barriers = state.barriers.as_ref().map(|_| Vec::new());
+            restarted.root_volatile = root.clone();
+            restarted.root_durable = root;
             restarted.files = files;
             restarted.durable_names = state.durable_names.clone();
             restarted.strays = state.strays.clone();
@@ -745,6 +848,7 @@ mod memory {
             if fault == Some(FaultTiming::BeforeEffect) {
                 return Err(injected(GroupOp::RootSync));
             }
+            state.flush_barriers();
             state.root_durable = state.root_volatile.clone();
             match fault {
                 Some(_) => Err(injected(GroupOp::RootSync)),
@@ -869,12 +973,46 @@ mod memory {
             if fault == Some(FaultTiming::BeforeEffect) {
                 return Err(injected(GroupOp::Sync));
             }
+            state.linked(file)?;
+            state.flush_barriers();
             let entry = state.linked(file)?;
             entry.durable = entry.volatile.clone();
             match fault {
                 Some(_) => Err(injected(GroupOp::Sync)),
                 None => Ok(()),
             }
+        }
+
+        fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+            let mut state = self.open_state()?;
+            if state.barriers.is_none() {
+                drop(state);
+                return self.sync(file);
+            }
+            state.enter_effect();
+            let image = state.linked(file)?.volatile.clone();
+            state
+                .barriers
+                .as_mut()
+                .expect("ordered syncs are modeled")
+                .push(Barrier::File(file, image));
+            Ok(())
+        }
+
+        fn sync_root_ordered(&self) -> io::Result<()> {
+            let mut state = self.open_state()?;
+            if state.barriers.is_none() {
+                drop(state);
+                return self.sync_root();
+            }
+            state.enter_effect();
+            let image = state.root_volatile.clone();
+            state
+                .barriers
+                .as_mut()
+                .expect("ordered syncs are modeled")
+                .push(Barrier::Root(image));
+            Ok(())
         }
 
         fn unlink(&self, file: GroupFile) -> io::Result<()> {
@@ -900,6 +1038,7 @@ mod memory {
             if fault == Some(FaultTiming::BeforeEffect) {
                 return Err(injected(GroupOp::SyncNames));
             }
+            state.flush_barriers();
             let state = &mut *state;
             // Unlinks whose own parent synchronization failed become durable.
             state.files.retain(|_, entry| entry.linked);

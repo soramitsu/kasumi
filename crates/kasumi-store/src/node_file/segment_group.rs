@@ -155,6 +155,14 @@ fn envelope(id: Uuid, kind: u8, state: u8, file_id: u64) -> [u8; HEADER_BYTES] {
     bytes
 }
 
+fn sync_site(file: GroupFile) -> crate::sync_trace::Site {
+    match file.kind {
+        GroupFileKind::Segment => crate::sync_trace::Site::KvSegment,
+        GroupFileKind::Directory => crate::sync_trace::Site::KvDirectory,
+        GroupFileKind::Checkpoint => crate::sync_trace::Site::KvCheckpoint,
+    }
+}
+
 fn invalid(message: &'static str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, message)
 }
@@ -1012,9 +1020,11 @@ impl NodeSegmentGroup {
         if slot.dirty.load(Ordering::Acquire) {
             // Closing needs a settled extent. This synchronizes the file and
             // credits only growth it did not use.
-            let settled = handle
-                .observed_len()
-                .and_then(|len| handle.settle_growth(len));
+            let settled = crate::sync_trace::site(crate::sync_trace::Site::EvictSettle, || {
+                handle
+                    .observed_len()
+                    .and_then(|len| handle.settle_growth(len))
+            });
             self.effect(settled)?;
             slot.dirty.store(false, Ordering::Release);
         }
@@ -1138,11 +1148,14 @@ impl NodeSegmentGroup {
             written?;
             return Err(io::ErrorKind::Interrupted.into());
         }
-        self.effect(
-            handle
-                .write_all_at(&bytes, 0)
-                .and_then(|()| handle.sync_all()),
-        )?;
+        self.effect(crate::sync_trace::site(
+            crate::sync_trace::Site::Envelope,
+            || {
+                handle
+                    .write_all_at(&bytes, 0)
+                    .and_then(|()| handle.sync_all())
+            },
+        ))?;
         resources.entries[position].envelope = Envelope::Complete;
         Ok(())
     }
@@ -1240,7 +1253,17 @@ impl NodeSegmentGroup {
     }
 
     pub(crate) fn sync_root(&self) -> io::Result<()> {
-        self.with_root(|root| self.effect(root.sync_all()))
+        crate::sync_trace::site(crate::sync_trace::Site::KvRoot, || {
+            self.with_root(|root| self.effect(root.sync_all()))
+        })
+    }
+
+    /// Order the root file before every later write to the device; the next
+    /// full synchronization of any group file makes it durable.
+    pub(crate) fn sync_root_ordered(&self) -> io::Result<()> {
+        crate::sync_trace::site(crate::sync_trace::Site::KvRoot, || {
+            self.with_root(|root| self.effect(root.sync_ordered()))
+        })
     }
 
     /// Stream through one bounded native cursor without holding our lock
@@ -1391,6 +1414,10 @@ impl NodeSegmentGroup {
     /// synchronizes the name before success; the envelope follows with the
     /// first kv mutation.
     pub(crate) fn create(&self, file: GroupFile) -> io::Result<()> {
+        crate::sync_trace::site(crate::sync_trace::Site::Create, || self.create_traced(file))
+    }
+
+    fn create_traced(&self, file: GroupFile) -> io::Result<()> {
         if file.id == 0 {
             return Err(io::ErrorKind::InvalidInput.into());
         }
@@ -1552,9 +1579,11 @@ impl NodeSegmentGroup {
             if resources.growth_target == Some(file) {
                 resources.growth_target = None;
             }
-            self.effect(handle.settle_growth(current))?;
-            slot.dirty.store(false, Ordering::Release);
-            self.effect(handle.shrink(requested))
+            crate::sync_trace::site(crate::sync_trace::Site::Shrink, || {
+                self.effect(handle.settle_growth(current))?;
+                slot.dirty.store(false, Ordering::Release);
+                self.effect(handle.shrink(requested))
+            })
         } else {
             self.grow_in_transaction(resources, handle, file, current, requested)?;
             slot.dirty.store(true, Ordering::Release);
@@ -1563,13 +1592,29 @@ impl NodeSegmentGroup {
     }
 
     pub(crate) fn sync(&self, file: GroupFile) -> io::Result<()> {
-        self.with_file(file, false, |_, _, handle| self.effect(handle.sync_all()))
+        crate::sync_trace::site(sync_site(file), || {
+            self.with_file(file, false, |_, _, handle| self.effect(handle.sync_all()))
+        })
+    }
+
+    /// Order one data file's bytes before every later write to the device;
+    /// the next full synchronization of any group file makes them durable.
+    pub(crate) fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        crate::sync_trace::site(sync_site(file), || {
+            self.with_file(file, false, |_, _, handle| {
+                self.effect(handle.sync_ordered())
+            })
+        })
     }
 
     /// Remove the exact owned name and synchronize the parent. An absent
     /// name is complete once its parent synchronization succeeds. Only
     /// success lets the caller credit the file's space or forget it.
     pub(crate) fn unlink(&self, file: GroupFile) -> io::Result<()> {
+        crate::sync_trace::site(crate::sync_trace::Site::Unlink, || self.unlink_traced(file))
+    }
+
+    fn unlink_traced(&self, file: GroupFile) -> io::Result<()> {
         self.require_healthy()?;
         let mut guard = self.state.write();
         let (resources, slots) = guard.open_mut()?;
@@ -1630,7 +1675,9 @@ impl NodeSegmentGroup {
             self.fence();
             return Err(io::ErrorKind::Other.into());
         }
-        self.effect(guard.open()?.directory()?.sync_all())
+        crate::sync_trace::site(crate::sync_trace::Site::KvNames, || {
+            self.effect(guard.open()?.directory()?.sync_all())
+        })
     }
 
     /// One-shot native drain of every owned descriptor. A failed close keeps
@@ -1950,6 +1997,12 @@ impl SegmentGroupBackend for NodeSegmentGroup {
     fn sync(&self, file: GroupFile) -> io::Result<()> {
         NodeSegmentGroup::sync(self, file)
     }
+    fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        NodeSegmentGroup::sync_ordered(self, file)
+    }
+    fn sync_root_ordered(&self) -> io::Result<()> {
+        NodeSegmentGroup::sync_root_ordered(self)
+    }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         NodeSegmentGroup::unlink(self, file)
     }
@@ -2152,7 +2205,9 @@ impl StorageAdmission for NodeSegmentGroup {
                 Envelope::Interrupted => return Err(io::ErrorKind::InvalidInput.into()),
                 Envelope::Complete => physical(actual, 0)?,
             };
-            handle.settle_growth(expected)?;
+            crate::sync_trace::site(crate::sync_trace::Site::GrowthSettle, || {
+                handle.settle_growth(expected)
+            })?;
             slots[index].dirty.store(false, Ordering::Release);
             resources.growth_target = None;
             Ok(())

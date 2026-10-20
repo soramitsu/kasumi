@@ -196,7 +196,9 @@ impl NodeSegmentGroup {
                 GroupFileKind::Directory => "directory_tail_settle",
                 GroupFileKind::Checkpoint => "checkpoint_tail_settle",
             };
-            self.effect(handle.settle_growth(initial))?;
+            crate::sync_trace::site(crate::sync_trace::Site::ReserveSettle, || {
+                self.effect(handle.settle_growth(initial))
+            })?;
             slots[index].dirty.store(false, Ordering::Release);
             *stage = match existing.file.kind {
                 GroupFileKind::Segment => "segment_tail_growth_quote",
@@ -267,8 +269,11 @@ impl NodeSegmentGroup {
         let created = transaction.created;
         // Visit only the two existing tails and the actually created prefixes.
         // Historical group membership does not enlarge per-transaction work.
+        let settle_site = crate::sync_trace::Site::FinishSettle;
         for existing in plan.segment.into_iter().chain(plan.directory) {
-            self.settle_transaction_file(resources, slots, existing.file, existing.initial_len)?;
+            crate::sync_trace::site(settle_site, || {
+                self.settle_transaction_file(resources, slots, existing.file, existing.initial_len)
+            })?;
         }
         for (kind, range, count) in [
             (GroupFileKind::Segment, plan.new_segments, created[0]),
@@ -279,16 +284,26 @@ impl NodeSegmentGroup {
                     .first_id
                     .checked_add(offset)
                     .ok_or(io::ErrorKind::InvalidData)?;
-                self.settle_transaction_file(
-                    resources,
-                    slots,
-                    GroupFile { kind, id },
-                    range.minimum_len,
-                )?;
+                crate::sync_trace::site(settle_site, || {
+                    self.settle_transaction_file(
+                        resources,
+                        slots,
+                        GroupFile { kind, id },
+                        range.minimum_len,
+                    )
+                })?;
             }
         }
-        self.effect(resources.root()?.sync_all())?;
-        self.effect(resources.directory()?.sync_all())?;
+        crate::sync_trace::site(crate::sync_trace::Site::FinishRoot, || {
+            self.effect(resources.root()?.sync_all())
+        })?;
+        // Every name this transaction created was synchronized with its parent
+        // before its first byte, and unlink and shrink are refused while a
+        // transaction is open: no namespace change remains for a directory
+        // sync to flush. Keep the directory's identity verification.
+        crate::sync_trace::site(crate::sync_trace::Site::FinishNames, || {
+            self.effect(resources.directory()?.verified_identity().map(|_| ()))
+        })?;
         self.effect(
             resources
                 .transaction
@@ -298,6 +313,7 @@ impl NodeSegmentGroup {
                 .finish(),
         )?;
         drop(resources.transaction.take());
+        crate::sync_trace::commit(&self.path);
         Ok(())
     }
     fn settle_transaction_file(

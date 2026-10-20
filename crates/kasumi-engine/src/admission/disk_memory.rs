@@ -443,16 +443,20 @@ mod tests {
         let core = node.memory().clone();
         let baseline = core.snapshot();
         let overhead = core.quote_cache_memory(0).unwrap().overhead_bytes();
-        let credit = total - baseline.reserved_bytes - reserve - overhead;
+        // Required work keeps one reserve, retained source grants two more.
+        let credit = total - baseline.reserved_bytes - 3 * reserve - overhead;
         let mut cache = core.clone().reserve_cache_memory(credit).unwrap();
         let before = core.snapshot();
-        assert_eq!(before.reserved_bytes, total - reserve);
+        assert_eq!(before.reserved_bytes, total - 3 * reserve);
         assert_eq!(
             cache.try_grow_to(credit + 1),
             Err(kasumi_kv::AdmissionError::CapacityDenied)
         );
         assert_eq!(core.snapshot().reserved_bytes, before.reserved_bytes);
-        let work = core.clone().reserve_installed(reserve - overhead).unwrap();
+        let work = core
+            .clone()
+            .reserve_installed(3 * reserve - overhead)
+            .unwrap();
         assert_eq!(core.snapshot().reserved_bytes, total);
         core.data.state.lock().unwrap().pressured = true;
         assert!(cache.shrink_to(0));
@@ -467,6 +471,37 @@ mod tests {
     }
 
     #[test]
+    fn cache_at_its_ceiling_leaves_a_request_its_source_grant() {
+        // A warmer fills optional cache credit until admission refuses it.
+        // Every proposal then admits a retained source grant, which keeps one
+        // cache-work reserve free, while its own workspace is still held: a
+        // strict read and its audit hold more than one reserve by default.
+        let policy = cache_policy();
+        let reserve = policy.cache_work_reserve_bytes.unwrap();
+        let node = NodeAdmission::with_fixed_memory(policy, 2 << 30, 0).unwrap();
+        let core = node.memory().clone();
+        let mut cache = core.clone().reserve_cache_memory(0).unwrap();
+        let mut credit = 0;
+        while cache.try_grow_to(credit + (64 << 10)).is_ok() {
+            credit += 64 << 10;
+        }
+        let full = core.snapshot();
+        let free = core.data.max_bytes - full.reserved_bytes;
+        assert!((3 * reserve..3 * reserve + (64 << 10)).contains(&free));
+        // A journal step's publication grant is about 100 KiB.
+        let workspace = node.reserve(reserve + reserve / 2, None).unwrap();
+        let grant = node.reserve_document_source(128 << 10).unwrap();
+        drop((grant, workspace));
+        // The exact retained-source floor still keeps one reserve free.
+        let grant = node.reserve_document_source(free - reserve).unwrap();
+        assert!(node.reserve_document_source(1).is_err());
+        let work = core.clone().reserve_installed(reserve / 2).unwrap();
+        drop((work, grant));
+        assert_eq!(core.snapshot().reserved_bytes, full.reserved_bytes);
+        assert!(cache.shrink_to(0));
+    }
+
+    #[test]
     fn cache_respects_slot_headroom_on_acquisition_and_growth() {
         let policy = cache_policy();
         let reserve = policy.cache_work_reserve_slots.unwrap();
@@ -475,7 +510,7 @@ mod tests {
         let core = node.memory().clone();
         let mut cache = core.clone().reserve_cache_memory(1).unwrap();
         let mut work = Vec::new();
-        while core.snapshot().live_reservations < limit - reserve {
+        while core.snapshot().live_reservations < limit - 3 * reserve {
             work.push(core.clone().reserve_installed(0).unwrap());
         }
         cache.try_grow_to(2).unwrap();
@@ -517,7 +552,8 @@ mod tests {
         let (reserve, _) = core.data.config.cache_work_headroom(core.data.max_bytes);
         let protected = core.data.state.lock().unwrap().ordinary_protected;
         let overhead = core.quote_cache_memory(0).unwrap().overhead_bytes();
-        let credit = core.data.max_bytes - baseline.reserved_bytes - reserve - protected - overhead;
+        let credit =
+            core.data.max_bytes - baseline.reserved_bytes - 3 * reserve - protected - overhead;
         let scope = pool.enter_scope();
         let mut cache = core.clone().reserve_cache_memory(credit).unwrap();
         assert_eq!(

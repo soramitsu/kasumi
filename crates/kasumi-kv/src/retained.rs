@@ -995,6 +995,12 @@ impl SegmentGroupBackend for SharedBackend {
     fn sync(&self, file: GroupFile) -> io::Result<()> {
         self.0.sync(file)
     }
+    fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        self.0.sync_ordered(file)
+    }
+    fn sync_root_ordered(&self) -> io::Result<()> {
+        self.0.sync_root_ordered()
+    }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         self.0.unlink(file)
     }

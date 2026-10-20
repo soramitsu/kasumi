@@ -3,7 +3,7 @@ use crate::{
     NodeDiskMemoryAdmission, NodeDiskPhase,
     test_utils::{TestDiskMemory, private_tempdir, retry_disk_registry},
 };
-use kasumi_kv::{Core, FileSpaceRange, TransactionReserveError, TransactionSpacePlan};
+use kasumi_kv::{Core, FileSpaceRange, Operation, TransactionReserveError, TransactionSpacePlan};
 
 const ID: Uuid = Uuid::from_u128(0x11eebbaaddcc112211eebbaaddcc1122);
 const GROUP: [u8; 16] = [0x61; 16];
@@ -30,6 +30,50 @@ fn fixture() -> (
     group.publish_ready().unwrap();
     (directory, memory, disk, group, core)
 }
+/// After the first commits created the files, every commit orders its
+/// operation records, directory pages, preparation and commit records and
+/// first root copy, and flushes the device once, with the second root copy.
+/// Settling the touched files and finishing the transaction repeat nothing.
+#[test]
+fn steady_state_commits_flush_the_device_once_each() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let memory = TestDiskMemory::new(256 << 20, 64);
+    let disk = retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+    let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 4);
+    group.acquire_prepared(&NodeOpeningMode::Create).unwrap();
+    let core = Core::create_with_backend(
+        group.clone(),
+        group.clone(),
+        GROUP,
+        kasumi_kv::CacheConfig::default(),
+    )
+    .unwrap();
+    group.publish_ready().unwrap();
+    core.commit(&[
+        Operation::create_table("items"),
+        Operation::put("items", b"key", b"first"),
+    ])
+    .unwrap();
+    core.commit(&[Operation::put("items", b"key", b"second")])
+        .unwrap();
+    let before = disk.physical_synchronizations();
+    for round in 0..4u8 {
+        core.commit(&[Operation::put("items", b"key", [round; 32])])
+            .unwrap();
+    }
+    let after = disk.physical_synchronizations();
+    let synchronized = (after.0 - before.0, after.1 - before.1);
+    if cfg!(target_vendor = "apple") {
+        assert_eq!(synchronized, (4 * 5, 4));
+    } else {
+        assert_eq!(synchronized, (0, 4 * 6));
+    }
+    let view = core.snapshot().unwrap();
+    let value = core.get_admitted(&view, "items", b"key", 64).unwrap();
+    assert_eq!(value.unwrap().as_bytes(), [3; 32]);
+}
+
 fn plan(count: u64) -> TransactionSpacePlan {
     TransactionSpacePlan {
         group_id: GROUP,

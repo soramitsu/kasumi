@@ -48,6 +48,26 @@ pub(super) struct Warmup {
     pub(super) last_work: usize,
 }
 
+/// Which captured root, if any, still reaches a cached identity. The selected
+/// root is always examined first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CachedReach {
+    Selected,
+    /// Only an older pinned root reaches it: dead once that pin is released.
+    Pinned,
+    Unreachable,
+}
+
+impl CachedReach {
+    fn from_root(selected: bool) -> Self {
+        if selected {
+            Self::Selected
+        } else {
+            Self::Pinned
+        }
+    }
+}
+
 #[derive(Default)]
 pub(super) struct WarmProgress {
     pub(super) work: usize,
@@ -304,6 +324,17 @@ impl DiskState {
         capture: &SnapshotRoots,
         workspace: &mut CachedIdentityProofWorkspace,
     ) -> Result<bool, CoreError> {
+        Ok(self.cached_identity_reach(candidate, capture, workspace)? != CachedReach::Unreachable)
+    }
+
+    /// Like `cached_identity_is_live_with`, distinguishing an identity the
+    /// selected root reaches from one that only a captured older pin reaches.
+    pub(super) fn cached_identity_reach(
+        &self,
+        candidate: &CacheCandidate<NativeIdentity>,
+        capture: &SnapshotRoots,
+        workspace: &mut CachedIdentityProofWorkspace,
+    ) -> Result<CachedReach, CoreError> {
         if !Arc::ptr_eq(&workspace.admission, &self.owner.admission) {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "cache proof workspace belongs to another admission owner",
@@ -345,7 +376,7 @@ impl DiskState {
                         PageCheck::Digest,
                         &mut workspace.directory,
                     )? {
-                        return Ok(true);
+                        return Ok(CachedReach::from_root(root == self.selected));
                     }
                 }
             }
@@ -393,12 +424,12 @@ impl DiskState {
                                 "cached value logical version differs",
                             )));
                         }
-                        return Ok(true);
+                        return Ok(CachedReach::from_root(root == self.selected));
                     }
                 }
             }
         }
-        Ok(false)
+        Ok(CachedReach::Unreachable)
     }
 
     fn retain_warm_value(

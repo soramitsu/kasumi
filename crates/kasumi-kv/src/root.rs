@@ -1121,12 +1121,17 @@ fn publish(
         backend.write_root(first.other(), &previous.encode()?)?;
         backend.sync_root()?;
     }
-    for slot in [first, first.other()] {
-        backend
-            .write_root(slot, &bytes)
-            .map_err(CoreError::unknown_io)?;
-        backend.sync_root().map_err(CoreError::unknown_io)?;
-    }
+    // The first copy is only ordered before the second, so a crash still
+    // tears at most one slot. The second copy's full synchronization makes
+    // both durable, with every group write ordered before this publication.
+    backend
+        .write_root(first, &bytes)
+        .map_err(CoreError::unknown_io)?;
+    backend.sync_root_ordered().map_err(CoreError::unknown_io)?;
+    backend
+        .write_root(first.other(), &bytes)
+        .map_err(CoreError::unknown_io)?;
+    backend.sync_root().map_err(CoreError::unknown_io)?;
     Ok(())
 }
 

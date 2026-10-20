@@ -151,8 +151,11 @@ shared encrypted scratch-disk governor.
 It never materializes another logical tenant or query index. Each record remains
 bounded, and all cross-record identity/accounting checks run before any dependency
 is trusted. Target restore separately reserves its actual materialization and
-creates that state once. The real 3 GiB/RSS gates and shared temporary-disk admission
-remain unfinished.
+creates that state once. A local restore releases that reservation as soon as the
+restored database has started, before its mandatory restore audit admits a proposal
+workspace and source grant under the retained-source floor; holding both refused
+that grant under the default 512 MiB budget. The real 3 GiB/RSS gates and shared
+temporary-disk admission remain unfinished.
 
 ## Operator commands
 

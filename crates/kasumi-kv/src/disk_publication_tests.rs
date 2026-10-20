@@ -114,6 +114,70 @@ fn pinned_old_root_and_replacement_remain_resident_when_the_union_fits() {
 }
 
 #[test]
+fn identities_kept_for_a_released_pin_leave_at_the_next_publication() {
+    let (mut state, reads, _) = resident_fixture();
+    let before = state.cache_stats().unwrap();
+    // A reader keeps the first root pinned across two publications.
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![8; 8192])])
+        .unwrap();
+    // While pinned, the replaced page and values stay resident for it.
+    assert_resident_rows(
+        &mut state,
+        &reads,
+        &old,
+        &[(b"a", 1), (b"b", 2), (b"hot", 3)],
+    );
+    let pinned = state.cache_stats().unwrap();
+    assert_eq!(pinned.entries, before.entries + 3);
+    drop(old);
+    // No root reaches them once the pin is gone; the next publication's
+    // proof removes them. Nothing waits for a warm pass.
+    state
+        .commit(&[Operation::put("accounts", b"hot", vec![9; 8192])])
+        .unwrap();
+    let after = state.cache_stats().unwrap();
+    assert_eq!(after.entries, before.entries);
+    assert_eq!(after.cached_bytes, before.cached_bytes);
+    assert_eq!(after.evictions, pinned.evictions);
+    let current = state.snapshot().unwrap();
+    assert_resident_rows(
+        &mut state,
+        &reads,
+        &current,
+        &[(b"a", 7), (b"b", 8), (b"hot", 9)],
+    );
+}
+
+#[test]
+fn rewrites_under_the_installed_pin_keep_cache_entries_bounded() {
+    let (mut state, _, _) = resident_fixture();
+    // The engine pins its installed root while the next entry applies, then
+    // installs the published root and releases the replaced one.
+    let mut installed = state.snapshot().unwrap();
+    let mut entries = Vec::new();
+    for round in 0..16u8 {
+        state
+            .commit(&[Operation::put("accounts", b"a", vec![round; 8192])])
+            .unwrap();
+        installed = state.snapshot().unwrap();
+        let stats = state.cache_stats().unwrap();
+        assert_eq!(stats.evictions, 0);
+        entries.push(stats.entries);
+    }
+    drop(installed);
+    // Each round keeps only the path the previous round replaced.
+    assert!(
+        entries[1..].iter().all(|&count| count == entries[1]),
+        "superseded identities accumulated: {entries:?}"
+    );
+}
+
+#[test]
 fn pressured_commit_preserves_old_snapshot_and_final_batch_visibility_across_reopen() {
     let (mut state, reads, admission) = resident_fixture();
     let old = state.snapshot().unwrap();

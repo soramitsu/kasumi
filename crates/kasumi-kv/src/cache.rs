@@ -513,6 +513,22 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         self.find(key).is_some()
     }
 
+    /// The retained payload of one identity for an external reachability
+    /// proof, without altering frequency, recency or statistics. Only
+    /// `remove_if_unchanged` may act on it, and only while it still matches.
+    pub(crate) fn candidate(&self, key: K) -> Result<Option<CacheCandidate<K>>, AdmissionError> {
+        self.admission
+            .check_owner()
+            .map_err(|_| AdmissionError::OwnerFailed)?;
+        let version = self.structural_version.ok_or(AdmissionError::OwnerFailed)?;
+        Ok(self.find(key).map(|slot| CacheCandidate {
+            key,
+            bytes: self.slots[slot].as_ref().unwrap().value.clone(),
+            version,
+            slot,
+        }))
+    }
+
     /// Start one serialized publication's intrusive candidate chain. The
     /// inline scope and complete-key entry links are included in the ordinary
     /// cache/slot charges. Beginning, marking and draining allocate nothing.

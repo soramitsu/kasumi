@@ -75,6 +75,34 @@ async fn snapshot_audit_batches_every_strict_collection_in_one_durable_revision(
     fixture.close().await;
 }
 
+/// An admitted snapshot keeps its logical peak, not its pre-admitted maximum
+/// workspace, while it waits for its audit and release.
+#[tokio::test]
+async fn admitted_snapshot_retains_its_logical_peak_not_the_maximum_workspace() {
+    let fixture = snapshot_audit_fixture().await;
+    let request = snapshot_audit_request();
+    let maximum = snapshot_workspace(
+        &fixture.db.engine.generation().unwrap().state.limits,
+        &request,
+    )
+    .unwrap();
+    let snapshot = fixture
+        .db
+        .read_snapshot(&fixture.context, request)
+        .await
+        .unwrap();
+    let held = fixture.db.admission().snapshot().resident_reserved_bytes;
+    drop(snapshot);
+    let released = fixture.db.admission().snapshot().resident_reserved_bytes;
+    let retained = held - released;
+    assert!(retained >= OUTPUT_CHARGE_BYTES, "retained {retained}");
+    assert!(
+        retained < maximum / 100,
+        "retained {retained} of the {maximum}-byte maximum workspace"
+    );
+    fixture.close().await;
+}
+
 #[tokio::test]
 async fn snapshot_audit_includes_tenant_strict_collections_and_leaves_unrestricted_reads_unmodified()
  {

@@ -122,6 +122,14 @@ impl SegmentGroupBackend for CheckedGroup {
         self.checked(|| self.backend.as_ref().sync(file))
     }
 
+    fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        self.checked(|| self.backend.as_ref().sync_ordered(file))
+    }
+
+    fn sync_root_ordered(&self) -> io::Result<()> {
+        self.checked(|| self.backend.as_ref().sync_root_ordered())
+    }
+
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         self.checked(|| self.backend.as_ref().unlink(file))
     }

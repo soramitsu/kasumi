@@ -528,6 +528,12 @@ pub struct NodeDisk {
     parent_sync_failure: AtomicBool,
     #[cfg(test)]
     namespace_failure: std::sync::atomic::AtomicU8,
+    // Physical file synchronizations by owners of this disk: [ordered, full].
+    #[cfg(test)]
+    synchronizations: [std::sync::atomic::AtomicU64; 2],
+    // Pauses the next file synchronization after it released State.
+    #[cfg(test)]
+    sync_pause: Mutex<Option<file::SyncPause>>,
     // Every covered collection/path/descriptor owner is destroyed first.
     _memory_charge: Lease,
 }
@@ -925,6 +931,10 @@ impl NodeDisk {
             #[cfg(test)]
             parent_sync_failure: AtomicBool::new(false),
             #[cfg(test)]
+            synchronizations: Default::default(),
+            #[cfg(test)]
+            sync_pause: Mutex::new(None),
+            #[cfg(test)]
             namespace_failure: std::sync::atomic::AtomicU8::new(0),
             _memory_charge: charge,
         });
@@ -936,6 +946,7 @@ impl NodeDisk {
             // or descriptor destructor, even for dormant fault-injection hooks.
             drop(disk.after_file_close.lock().unwrap());
             drop(disk.shrink_failure.lock().unwrap());
+            drop(disk.sync_pause.lock().unwrap());
         }
         let mut promises = disk.device.lock();
         let next = promises
@@ -1341,6 +1352,55 @@ impl NodeDisk {
             .map(|operation| operation.observed())
     }
 
+    /// Every physical synchronization that flushes the device's volatile
+    /// cache, by an owner of this disk.
+    fn synchronized<R>(&self, sync: impl FnOnce() -> io::Result<R>) -> io::Result<R> {
+        let result = crate::sync_trace::sync(sync);
+        #[cfg(test)]
+        if result.is_ok() {
+            self.synchronizations[1].fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    /// An ordering synchronization that reports the level it reached.
+    fn synchronized_ordered(
+        &self,
+        sync: impl FnOnce() -> io::Result<file::Synced>,
+    ) -> io::Result<file::Synced> {
+        let result = crate::sync_trace::sync(sync);
+        #[cfg(test)]
+        if let Ok(reached) = &result {
+            let full = usize::from(*reached == file::Synced::Durable);
+            self.synchronizations[full].fetch_add(1, Ordering::Relaxed);
+        }
+        result
+    }
+
+    /// Hold a file synchronization that already released State until the
+    /// test releases it.
+    #[cfg(test)]
+    fn sync_checkpoint(&self) {
+        let pause = self.sync_pause.lock().unwrap().take();
+        if let Some(pause) = pause {
+            let _ = pause.entered.send(());
+            pause
+                .release
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("release file synchronization fixture");
+        }
+    }
+
+    /// Physical file synchronizations issued through this disk's owners, as
+    /// (ordered, full). An ordered sync without a barrier counts as full.
+    #[cfg(test)]
+    pub(crate) fn physical_synchronizations(&self) -> (u64, u64) {
+        (
+            self.synchronizations[0].load(Ordering::Relaxed),
+            self.synchronizations[1].load(Ordering::Relaxed),
+        )
+    }
+
     #[cfg(test)]
     pub(crate) fn with_state_locked_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
         let _guard = self.lock_state();
@@ -1358,7 +1418,7 @@ impl NodeDisk {
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(|p| {
+        crate::sync_trace::lock(&self.state, crate::sync_trace::Lock::State).unwrap_or_else(|p| {
             let mut state = p.into_inner();
             state.phase = NodeDiskPhase::Failed;
             self.device.lock().fail_owner();

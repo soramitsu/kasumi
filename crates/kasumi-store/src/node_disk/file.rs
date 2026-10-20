@@ -65,7 +65,56 @@ struct Budget {
     reserved_len: u64,
     actual_len: u64,
     settled: bool,
+    synced: Synced,
     close_outcome: Option<super::native_file::CloseOutcome>,
+}
+
+/// What the last successful synchronization through this owner established
+/// for every byte, length and allocation written through it. The owner is
+/// exclusive, so only its own physical mutations change the file; each one
+/// lowers this to `No` before its effect. Unknown history is `No`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum Synced {
+    /// A mutation since the last synchronization may still be volatile.
+    No,
+    /// Written to the device, with allocation materialized, and ordered
+    /// before every later write to the device by a barrier. The device may
+    /// still hold it in its volatile cache until a full sync of any file.
+    Ordered,
+    /// Flushed through the device's volatile cache: durable.
+    Durable,
+}
+
+/// Write the file's data and metadata to the device, then order them before
+/// every later write to that device without flushing its volatile cache:
+/// `F_BARRIERFSYNC` on Apple platforms. Returns the level reached. A
+/// filesystem without barrier support, and every other platform, gets the
+/// full sync, which orders too.
+fn sync_ordered_native(file: &File) -> io::Result<Synced> {
+    #[cfg(target_vendor = "apple")]
+    loop {
+        // SAFETY: the borrowed descriptor stays open for this call, and the
+        // command takes no argument.
+        if unsafe { libc::fcntl(file.as_raw_fd(), libc::F_BARRIERFSYNC) } != -1 {
+            return Ok(Synced::Ordered);
+        }
+        let error = io::Error::last_os_error();
+        match error.raw_os_error() {
+            Some(libc::EINTR) => continue,
+            Some(libc::ENOTSUP | libc::ENOTTY | libc::EINVAL) => break,
+            _ => return Err(error),
+        }
+    }
+    file.sync_all().map(|()| Synced::Durable)
+}
+
+/// An effect that ran while State was released reports failure when another
+/// owner latched the disk meanwhile; only a census after drain reopens it.
+fn overlapped_failure(state: &State) -> io::Result<()> {
+    if state.phase == NodeDiskPhase::Failed {
+        return Err(io::ErrorKind::Other.into());
+    }
+    Ok(())
 }
 
 impl Budget {
@@ -357,6 +406,12 @@ pub(super) use custody::CustodySlots;
 #[cfg(test)]
 pub(super) struct ClosePause {
     pub(super) stage: CloseStage,
+    pub(super) entered: std::sync::mpsc::Sender<()>,
+    pub(super) release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+pub(super) struct SyncPause {
     pub(super) entered: std::sync::mpsc::Sender<()>,
     pub(super) release: std::sync::mpsc::Receiver<()>,
 }
@@ -800,15 +855,17 @@ fn execute_prepared(
             let file = resources.provisional_file.as_ref().expect("created file");
             #[cfg(test)]
             disk.namespace_checkpoint(NamespaceFailure::CreateFileSync)?;
-            file.sync_all()?;
+            disk.synchronized(|| file.sync_all())?;
             #[cfg(test)]
             disk.namespace_checkpoint(NamespaceFailure::CreateParentSync)?;
-            resources
-                .parent
-                .as_ref()
-                .expect("prepared parent")
-                .file()
-                .sync_all()?;
+            disk.synchronized(|| {
+                resources
+                    .parent
+                    .as_ref()
+                    .expect("prepared parent")
+                    .file()
+                    .sync_all()
+            })?;
             verify_parent(
                 &disk.roots[&resources.root],
                 &resources.parent_names,
@@ -880,6 +937,8 @@ fn execute_prepared(
         reserved_len: enrolled.reserved_len,
         actual_len: enrolled.actual_len,
         settled: enrolled.settled,
+        // A created file was synchronized empty with its parent above.
+        synced: if create { Synced::Durable } else { Synced::No },
         close_outcome: None,
     };
     Ok(identity)
@@ -1110,7 +1169,7 @@ fn execute_publication(
             {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            actual.sync_all()?;
+            disk.synchronized(|| actual.sync_all())?;
         }
         verify_parent(
             &disk.roots[&target.root],
@@ -1227,15 +1286,17 @@ fn execute_publication(
         // post-publication verification fails. Every error remains inline.
         #[cfg(test)]
         disk.namespace_checkpoint(NamespaceFailure::PublishSourceSync)?;
-        owner
-            .retiring_parent
-            .as_ref()
-            .expect("retained source parent")
-            .file()
-            .sync_all()?;
+        disk.synchronized(|| {
+            owner
+                .retiring_parent
+                .as_ref()
+                .expect("retained source parent")
+                .file()
+                .sync_all()
+        })?;
         #[cfg(test)]
         disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
-        owner.parent().sync_all()?;
+        disk.synchronized(|| owner.parent().sync_all())?;
         verify_parent(
             &disk.roots[&old_root],
             &old_parent_names,
@@ -1510,6 +1571,7 @@ impl NodeDisk {
             reserved_len: 0,
             actual_len: 0,
             settled: false,
+            synced: Synced::No,
             close_outcome: None,
         });
         drop(budget.lock().expect("unpublished budget"));
@@ -1700,7 +1762,7 @@ impl NodeDisk {
                 actual.set_len(len)?;
                 #[cfg(test)]
                 self.namespace_checkpoint(NamespaceFailure::ReclaimFileSync)?;
-                actual.sync_all()?;
+                self.synchronized(|| actual.sync_all())?;
                 owner.verify(actual)?;
                 let metadata = actual.metadata()?;
                 if metadata.len() != len {
@@ -1708,7 +1770,7 @@ impl NodeDisk {
                 }
                 #[cfg(test)]
                 self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
-                owner.parent().sync_all()?;
+                self.synchronized(|| owner.parent().sync_all())?;
                 let metadata = actual.metadata()?;
                 let allocated = metadata
                     .blocks()
@@ -1726,7 +1788,7 @@ impl NodeDisk {
                 }
                 file_extent(&metadata, self.unit, self.config.file_allocation_policy)
             } else {
-                actual.sync_all()?;
+                self.synchronized(|| actual.sync_all())?;
                 let transition = ParentTransition::prepare(
                     self,
                     &mut state,
@@ -1741,7 +1803,7 @@ impl NodeDisk {
                 }
                 #[cfg(test)]
                 self.namespace_checkpoint(NamespaceFailure::ReclaimParentSync)?;
-                owner.parent().sync_all()?;
+                self.synchronized(|| owner.parent().sync_all())?;
                 verify_parent(
                     &self.roots[&owner.root],
                     &owner.parent_names,
@@ -2041,7 +2103,7 @@ impl FileOwner {
     }
 
     fn lock_budget(&self) -> io::Result<std::sync::MutexGuard<'_, Budget>> {
-        self.budget().lock().map_err(|_| {
+        crate::sync_trace::lock(self.budget(), crate::sync_trace::Lock::File).map_err(|_| {
             self.disk.fail();
             io::Error::from(io::ErrorKind::InvalidData)
         })
@@ -2470,15 +2532,37 @@ impl NodeDiskFile {
         }
         *stage = "enrollment";
         self.0.check_enrollment(&mut state, &budget)?;
-        // Serialize the owner seal through physical verification and sync. A
-        // previously failed owner must not initiate another backend operation.
-        let outcome = (|| -> io::Result<std::fs::Metadata> {
-            *stage = "identity_before_sync";
-            self.0.verify(file)?;
+        // A previously failed owner must not initiate another backend
+        // operation: the seal is checked and the identity verified under State.
+        let synced = budget.synced;
+        *stage = "identity_before_sync";
+        if let Err(error) = self.0.verify(file) {
+            self.0.disk.fail_locked(&mut state);
+            return Err(self.0.record_error(error));
+        }
+        // The extent is observed only after every admitted write reached the
+        // device. A successful ordered or full sync after this exclusive
+        // owner's last write already did that. The blocking sync runs without
+        // State; the budget lock keeps this file unchanged meanwhile.
+        if synced == Synced::No {
             *stage = "sync";
-            file.sync_all()?;
-            *stage = "identity_after_sync";
-            self.0.verify(file)?;
+            drop(state);
+            let synchronized = self.0.disk.synchronized(|| file.sync_all());
+            state = self.0.disk.lock_state();
+            if let Err(error) = synchronized {
+                self.0.disk.fail_locked(&mut state);
+                return Err(self.0.record_error(error));
+            }
+            *stage = "overlapped_failure";
+            overlapped_failure(&state)?;
+        } else {
+            crate::sync_trace::skipped();
+        }
+        let outcome = (|| -> io::Result<std::fs::Metadata> {
+            if synced == Synced::No {
+                *stage = "identity_after_sync";
+                self.0.verify(file)?;
+            }
             *stage = "metadata";
             file.metadata()
         })();
@@ -2555,6 +2639,9 @@ impl NodeDiskFile {
         budget.reserved_len = actual_len;
         budget.actual_len = actual_len;
         budget.settled = true;
+        if synced == Synced::No {
+            budget.synced = Synced::Durable;
+        }
         self.0.record_enrollment(&mut state, &budget);
         Ok(())
     }
@@ -2626,6 +2713,7 @@ impl NodeDiskFile {
         // From the first physical operation onward every error is uncertain.
         // Keep the previous budget until both syncs and exact observations pass.
         budget.settled = false;
+        budget.synced = Synced::No;
         owner.record_enrollment(&mut state, &budget);
         let outcome = (|| -> io::Result<std::fs::Metadata> {
             let file = budget.file.as_ref().expect("live persistent descriptor");
@@ -2634,7 +2722,7 @@ impl NodeDiskFile {
             file.set_len(len)?;
             #[cfg(test)]
             owner.shrink_checkpoint(ShrinkFailure::FileSync)?;
-            file.sync_all()?;
+            owner.disk.synchronized(|| file.sync_all())?;
             owner.verify(file)?;
             let metadata = file.metadata()?;
             if metadata.len() != len {
@@ -2642,7 +2730,7 @@ impl NodeDiskFile {
             }
             #[cfg(test)]
             owner.shrink_checkpoint(ShrinkFailure::DirectorySync)?;
-            owner.parent().sync_all()?;
+            owner.disk.synchronized(|| owner.parent().sync_all())?;
             // A new path observation after directory sync must still identify
             // the same physical file before any capacity is released.
             owner.verify(file)?;
@@ -2715,6 +2803,7 @@ impl NodeDiskFile {
         budget.reserved_len = len;
         budget.actual_len = len;
         budget.settled = true;
+        budget.synced = Synced::Durable;
         owner.record_enrollment(&mut state, &budget);
         Ok(())
     }
@@ -2898,6 +2987,7 @@ impl NodeDiskFile {
         // Keep the admission seal serialized through the backend call and
         // retain uncertainty even if set_len changes the file before failing.
         budget.settled = false;
+        budget.synced = Synced::No;
         self.0.record_enrollment(&mut state, &budget);
         if let Err(error) = budget.file.as_ref().expect("live descriptor").set_len(len) {
             self.0.disk.fail_locked(&mut state);
@@ -2938,13 +3028,19 @@ impl NodeDiskFile {
             return Err(io::ErrorKind::InvalidData.into());
         }
         budget.settled = false;
+        budget.synced = Synced::No;
         self.0.record_enrollment(&mut state, &budget);
-        if let Err(error) = budget
+        // The admission seal above is recorded before the effect. The write
+        // itself runs without State: this owner's budget lock excludes every
+        // other operation on the file, and the live owner excludes census.
+        drop(state);
+        let written = budget
             .file
             .as_ref()
             .expect("live descriptor")
-            .write_all_at(data, offset)
-        {
+            .write_all_at(data, offset);
+        let mut state = self.0.disk.lock_state();
+        if let Err(error) = written {
             self.0.disk.fail_locked(&mut state);
             return Err(self.0.record_error(error));
         }
@@ -2952,7 +3048,7 @@ impl NodeDiskFile {
             budget.actual_len = budget.actual_len.max(end);
         }
         self.0.record_enrollment(&mut state, &budget);
-        Ok(())
+        overlapped_failure(&state)
     }
 
     pub fn read_exact_at(&self, out: &mut [u8], offset: u64) -> io::Result<()> {
@@ -2966,14 +3062,21 @@ impl NodeDiskFile {
         self.0.check_enrollment(&mut state, &budget)?;
         // The read goes through the retained descriptor, so it can only observe
         // the enrolled inode; the ancestry is re-walked before mutations.
-        let outcome = (|| -> io::Result<()> {
-            if self.0.verify_retained(file)?.len() != budget.actual_len {
+        let verified = self.0.verify_retained(file).and_then(|metadata| {
+            if metadata.len() != budget.actual_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            file.read_exact_at(out, offset)
-        })();
-        outcome.map_err(|error| {
+            Ok(())
+        });
+        if let Err(error) = verified {
             self.0.disk.fail_locked(&mut state);
+            return Err(self.0.record_error(error));
+        }
+        // Reads of other files and their writers' syscalls need not wait for
+        // this one; the budget lock keeps this file's mutations out.
+        drop(state);
+        file.read_exact_at(out, offset).map_err(|error| {
+            self.0.disk.fail();
             self.0.record_error(error)
         })
     }
@@ -2981,6 +3084,19 @@ impl NodeDiskFile {
     /// Verified materialization retires only pending filesystem promises; the
     /// complete persistent extent charge remains after this owner closes.
     pub fn sync_all(&self) -> io::Result<()> {
+        self.synchronize(Synced::Durable)
+    }
+
+    /// Order every byte written through this owner before every later write
+    /// to the same device, without flushing the device's volatile cache. The
+    /// next full sync of any file on the device makes these bytes durable;
+    /// callers report durability only after one. Settlement accepts this
+    /// materialization. On platforms without a barrier this is `sync_all`.
+    pub fn sync_ordered(&self) -> io::Result<()> {
+        self.synchronize(Synced::Ordered)
+    }
+
+    fn synchronize(&self, required: Synced) -> io::Result<()> {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
@@ -2989,18 +3105,51 @@ impl NodeDiskFile {
             return Err(io::ErrorKind::Other.into());
         }
         self.0.check_enrollment(&mut state, &budget)?;
-        let outcome = (|| -> io::Result<()> {
+        let synced = budget.synced;
+        let verified = (|| -> io::Result<()> {
             self.0.verify(file)?;
             if file.metadata()?.len() != budget.actual_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            file.sync_all()?;
-            self.0.verify(file)
+            Ok(())
         })();
-        outcome.map_err(|error| {
+        if let Err(error) = verified {
             self.0.disk.fail_locked(&mut state);
-            self.0.record_error(error)
-        })?;
+            return Err(self.0.record_error(error));
+        }
+        // Only this exclusive owner writes the file, and its last
+        // synchronization after its last write already reached this level.
+        if synced >= required {
+            crate::sync_trace::skipped();
+            drop(state);
+            return self.0.observe(&mut budget);
+        }
+        // The blocking sync runs without State, so other files' reads, writes
+        // and syncs proceed. The budget lock keeps this file unchanged, and
+        // identity is verified again under State before the result counts.
+        drop(state);
+        #[cfg(test)]
+        self.0.disk.sync_checkpoint();
+        let synchronized = match required {
+            Synced::Durable => self
+                .0
+                .disk
+                .synchronized(|| file.sync_all())
+                .map(|()| Synced::Durable),
+            _ => self
+                .0
+                .disk
+                .synchronized_ordered(|| sync_ordered_native(file)),
+        };
+        let mut state = self.0.disk.lock_state();
+        let reached = synchronized
+            .and_then(|reached| self.0.verify(file).map(|()| reached))
+            .map_err(|error| {
+                self.0.disk.fail_locked(&mut state);
+                self.0.record_error(error)
+            })?;
+        overlapped_failure(&state)?;
+        budget.synced = reached;
         drop(state);
         self.0.observe(&mut budget)
     }
@@ -3025,7 +3174,7 @@ impl NodeDiskFile {
             if file.metadata()?.len() != budget.actual_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            file.sync_all()?;
+            self.0.disk.synchronized(|| file.sync_all())?;
             #[cfg(test)]
             if self
                 .0
@@ -3035,13 +3184,14 @@ impl NodeDiskFile {
             {
                 return Err(io::ErrorKind::Other.into());
             }
-            self.0.parent().sync_all()?;
+            self.0.disk.synchronized(|| self.0.parent().sync_all())?;
             self.0.verify(file)
         })();
         if let Err(error) = outcome {
             self.0.disk.fail_locked(&mut state);
             return Err(self.0.record_error(error));
         }
+        budget.synced = Synced::Durable;
         drop(state);
         self.0.observe(&mut budget)
     }

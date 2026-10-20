@@ -213,16 +213,7 @@ impl Database {
             self.submit(context.clone(), Operation::AuditBatch(events))
         })
         .await
-        .map_err(|error| {
-            if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
-                error
-            } else {
-                Error::new(
-                    ErrorCode::AuditUnavailable,
-                    "required read audit could not be confirmed durable",
-                )
-            }
-        })?;
+        .map_err(read_audit_failure)?;
         self.access()?;
         // Every collection is checked after the single durable publication.
         // A policy change while the batch was queued cannot release this snapshot.

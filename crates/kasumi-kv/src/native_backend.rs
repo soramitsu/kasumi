@@ -429,6 +429,12 @@ impl SegmentGroupBackend for BackendRef {
     fn sync(&self, file: GroupFile) -> io::Result<()> {
         self.as_ref().sync(file)
     }
+    fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        self.as_ref().sync_ordered(file)
+    }
+    fn sync_root_ordered(&self) -> io::Result<()> {
+        self.as_ref().sync_root_ordered()
+    }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         self.as_ref().unlink(file)
     }

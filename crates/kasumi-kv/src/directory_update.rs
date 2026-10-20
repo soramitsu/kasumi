@@ -773,8 +773,9 @@ impl Editor<'_> {
 }
 
 impl DirectoryMutator<'_> {
-    /// Synchronize every appended page before handing the private root to
-    /// the owner's durable root/log publication. This never publishes it.
+    /// Order every appended page before the log records that bind the private
+    /// root and the root publication that selects it; that publication's full
+    /// synchronization makes them durable. This never publishes the root.
     pub(crate) fn finish(&mut self, root: DirectoryRoot) -> Result<DirectoryRoot, CoreError> {
         if self.failed {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
@@ -784,7 +785,7 @@ impl DirectoryMutator<'_> {
             .admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
-            .and_then(|()| self.backend.sync_pages())
+            .and_then(|()| self.backend.sync_pages_ordered())
             .and_then(|()| {
                 self.admission
                     .check_owner()

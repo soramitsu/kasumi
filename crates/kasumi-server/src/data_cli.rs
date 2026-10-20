@@ -927,20 +927,33 @@ impl Session {
         Ok(db.clone().with_timeout(self.remaining()?))
     }
 
+    /// The pool for one request. In a `session` the kept pool, with the
+    /// connections its members opened, moves to this request; `keep_pool`
+    /// returns it. Requests run one at a time.
     fn pool(&self) -> std::result::Result<KasumiClientPool, Failure> {
-        let Some(shared) = &self.shared else {
-            return self.new_pool();
-        };
-        let mut kept = shared
-            .pool
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if let Some(pool) = kept.as_ref() {
-            return Ok(pool.clone());
+        let kept = self.shared.as_ref().and_then(|shared| {
+            shared
+                .pool
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .take()
+        });
+        match kept {
+            Some(pool) => Ok(pool),
+            None => self.new_pool(),
         }
-        let pool = self.new_pool()?;
-        *kept = Some(pool.clone());
-        Ok(pool)
+    }
+
+    /// Keep a used pool's connections for the session's next request. A
+    /// per-request clone of an unconnected pool opened a new TLS session for
+    /// every snapshot read, and the server records each one durably.
+    fn keep_pool(&self, pool: KasumiClientPool) {
+        if let Some(shared) = &self.shared {
+            *shared
+                .pool
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(pool);
+        }
     }
 
     fn new_pool(&self) -> std::result::Result<KasumiClientPool, Failure> {
@@ -1346,8 +1359,9 @@ pub async fn execute(
             let snapshot =
                 tokio::time::timeout_at(session.deadline, pool.read_snapshot(&request, &options))
                     .await
-                    .unwrap_or_else(|_| Err(elapsed("snapshot read")))
-                    .map_err(Failure::read)?;
+                    .unwrap_or_else(|_| Err(elapsed("snapshot read")));
+            session.keep_pool(pool);
+            let snapshot = snapshot.map_err(Failure::read)?;
             success(&Snapshot {
                 read_assertions: snapshot.read_assertions(),
                 snapshot: &snapshot,
@@ -1386,6 +1400,7 @@ pub async fn execute(
             )
             .await
             .unwrap_or_else(|_| Err(elapsed("receipt lookup")));
+            session.keep_pool(pool);
             let (outcome, receipt, error) = match resolved {
                 Ok(Some(retained)) => match retained.outcome {
                     Ok(receipt) => ("committed", Some(receipt), None),

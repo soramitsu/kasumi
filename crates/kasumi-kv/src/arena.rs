@@ -392,6 +392,19 @@ impl DirectoryBackend for DirectoryArenaBackend {
     }
 
     fn sync_pages(&self) -> Result<(), CoreError> {
+        self.sync_active(false)
+    }
+
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        self.sync_active(true)
+    }
+}
+
+impl DirectoryArenaBackend {
+    /// Synchronize the active arena, or with `ordered` only order its pages
+    /// before every later group write. Rolled arenas were synchronized
+    /// before their successor was created.
+    fn sync_active(&self, ordered: bool) -> Result<(), CoreError> {
         check_owner(&self.admission)?;
         let mut writer = self
             .writer
@@ -402,7 +415,12 @@ impl DirectoryBackend for DirectoryArenaBackend {
         }
         let result = (|| {
             if let Some(active) = &writer.active {
-                self.backend.sync(GroupFile::directory(active.id))?;
+                let file = GroupFile::directory(active.id);
+                if ordered {
+                    self.backend.sync_ordered(file)?;
+                } else {
+                    self.backend.sync(file)?;
+                }
                 record_io(&self.syncs);
             }
             check_owner(&self.admission)

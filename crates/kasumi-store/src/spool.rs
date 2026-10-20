@@ -209,7 +209,10 @@ impl EncryptedSpool {
     pub(crate) fn sync_all(&mut self) -> io::Result<()> {
         self.check_owner()?;
         self.flush_block()?;
-        self.file.sync_all().inspect_err(|_| self.owner_failed())
+        crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
+            crate::sync_trace::sync(|| self.file.sync_all())
+        })
+        .inspect_err(|_| self.owner_failed())
     }
 
     /// Enter sync and native closure once without consuming the exact spool.

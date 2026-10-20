@@ -367,6 +367,10 @@ impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
         self.cached.sync_pages()
     }
 
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        self.cached.sync_pages_ordered()
+    }
+
     fn page_check(&self) -> PageCheck {
         PageCheck::Digest
     }
@@ -399,6 +403,10 @@ impl<B: DirectoryBackend> DirectoryBackend for PublicationDirectoryBackend<'_, B
 
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.cached.sync_pages()
+    }
+
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        self.cached.sync_pages_ordered()
     }
 
     fn page_check(&self) -> PageCheck {
@@ -483,6 +491,10 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
         self.cached.sync_pages()
     }
 
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        self.cached.sync_pages_ordered()
+    }
+
     fn page_check(&self) -> PageCheck {
         PageCheck::Digest
     }
@@ -543,6 +555,12 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
     fn sync_pages(&self) -> Result<(), CoreError> {
         self.check_owner()?;
         self.backend.sync_pages()?;
+        self.check_owner()
+    }
+
+    fn sync_pages_ordered(&self) -> Result<(), CoreError> {
+        self.check_owner()?;
+        self.backend.sync_pages_ordered()?;
         self.check_owner()
     }
 

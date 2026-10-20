@@ -37,6 +37,21 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
         trusted_ca_pem: ca_pem.clone(),
         server_certificate_pins: BTreeSet::from([server_identity.certificate_pin()]),
     };
+    // Every accepted TLS session is recorded durably before it serves.
+    struct CountingHandshakes {
+        inner: Arc<dyn crate::tls::TlsHandshakeAudit>,
+        accepted: Arc<AtomicUsize>,
+    }
+    #[async_trait::async_trait]
+    impl crate::tls::TlsHandshakeAudit for CountingHandshakes {
+        async fn record(&self, event: &crate::tls::TlsHandshakeEvent) -> anyhow::Result<()> {
+            if matches!(event.outcome, crate::tls::TlsHandshakeOutcome::Accepted) {
+                self.accepted.fetch_add(1, Ordering::SeqCst);
+            }
+            self.inner.record(event).await
+        }
+    }
+    let accepted = Arc::new(AtomicUsize::new(0));
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let reject_next = Arc::new(AtomicBool::new(false));
     let reject = reject_next.clone();
@@ -60,7 +75,10 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
         .unwrap(),
         tonic::service::Routes::new(service).into_axum_router(),
         crate::tls::ListenerLimits::default(),
-        fixture.audit.clone(),
+        Arc::new(CountingHandshakes {
+            inner: fixture.audit.clone(),
+            accepted: accepted.clone(),
+        }),
         shutdown,
     ));
     let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
@@ -331,6 +349,25 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
     assert_eq!(
         got["result"]["document"]["body"],
         json!({"n": 7, "m": true})
+    );
+    // Snapshot reads reuse the session's connection too: each new TLS session
+    // costs a durable security-audit record before it can serve a request.
+    let snapshot =
+        json!({"documents": [{"collection": "docs", "id": "s"}], "queries": [], "time_bounds": null})
+            .to_string();
+    let before = accepted.load(Ordering::SeqCst);
+    for id in 10..13 {
+        let line = json!({"id": id, "argv": ["read-snapshot", "-"], "input": snapshot});
+        let (_, status, read) = answer(&line.to_string()).await;
+        assert_eq!(status, 0, "{read}");
+        assert_eq!(
+            read["result"]["snapshot"]["documents"][0]["document"]["body"],
+            json!({"n": 7, "m": true})
+        );
+    }
+    assert!(
+        accepted.load(Ordering::SeqCst) - before <= 1,
+        "each session snapshot read opened a new connection"
     );
     let (_, status, absent) = answer(r#"{"id":4,"argv":["get","no-such-collection","s"]}"#).await;
     assert_eq!(

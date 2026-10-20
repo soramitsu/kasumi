@@ -210,6 +210,56 @@ struct ProposalWork {
 // The first pass allocates no bytes. Exactly counted capacity is then allocated
 // under the prospective original proposal grant, before consensus submission.
 fn proposal_input_len(command: &Command) -> anyhow::Result<usize> {
+    encoded_len(command)
+}
+/// The exact length `proposal_input_len` reports for the command this context
+/// and operation become, stamped as `OperationInput::into_command` stamps it,
+/// without building that command.
+fn preflight_command_len(context: &RequestContext, operation: &Operation) -> anyhow::Result<usize> {
+    // Field for field the serialized shape of `Command`.
+    #[derive(serde::Serialize)]
+    struct Shape<'a> {
+        context: &'a RequestContext,
+        timestamp_ms: u64,
+        operation: &'a Operation,
+    }
+    encoded_len(&Shape {
+        context,
+        timestamp_ms: u64::MAX,
+        operation,
+    })
+}
+/// The command payload a proposal's admission quote covers, three times over
+/// with its framing, before the command exists.
+fn command_payload_quote(
+    context: &RequestContext,
+    operation: &Operation,
+    limits: &Limits,
+) -> Result<usize> {
+    let exact = || {
+        preflight_command_len(context, operation)
+            .map_err(|_| Error::new(ErrorCode::InvalidArgument, "command encoding failed"))
+    };
+    Ok(match operation {
+        Operation::ActivateSchema(_) => MAX_SCHEMA_CHANGESET_BYTES,
+        // Permanent receipt replay is ordered before today's tenant batch
+        // admission, so the quote must not follow the tenant's budget: lowering
+        // it cannot hide an already committed outcome. The batch is complete
+        // before admission, so quote its own encoded command within the
+        // immutable 8 MiB request envelope; a replay quotes the same bytes. A
+        // new identity still meets the configured limit in apply_batch. The
+        // envelope itself (about 33 MiB with its copies) limited how many
+        // writes could wait for the proposal gate at once.
+        Operation::Mutate(_) => exact()?.min(8 << 20),
+        // A read audit is complete before admission: quote its own encoded
+        // command, not the tenant's maximum batch. Every strict read
+        // submits one, and the maximum quote (about 40 MiB) limited how
+        // many strict reads could be in flight at once.
+        Operation::Audit(_) | Operation::AuditBatch(_) => exact()?.min(limits.max_batch_bytes),
+        _ => limits.max_batch_bytes,
+    })
+}
+fn encoded_len(value: &impl serde::Serialize) -> anyhow::Result<usize> {
     struct Count(usize);
     impl std::io::Write for Count {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
@@ -224,7 +274,7 @@ fn proposal_input_len(command: &Command) -> anyhow::Result<usize> {
         }
     }
     let mut count = Count(0);
-    serde_json::to_writer(&mut count, command)?;
+    serde_json::to_writer(&mut count, value)?;
     Ok(count.0)
 }
 fn encode_proposal_input(command: &Command, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
@@ -725,8 +775,15 @@ impl SnapshotOutput {
     fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotReadResponse>> {
         self.response.as_ref().map_err(|error| error.clone())?;
         self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
+        // Retain the evaluation's logical peak, which covers the response it
+        // holds, not the pre-admitted maximum workspace: the result size is
+        // known now, and the transport charges its encoding to the response
+        // fence. A strict read keeps this charge while its audit waits for the
+        // proposal gate; at the maximum (three result limits, about 27 MiB) a
+        // few queued reads left no room for any proposal's source grant.
+        let peak = self.memory.peak_bytes();
         let mut reservation = self.memory.into_workspace();
-        reservation.retain_workspace();
+        reservation.retain(peak);
         let charge = Arc::new(reservation);
         Ok(RegisteredOutput {
             response: AdmittedOutput::new(
@@ -1014,6 +1071,25 @@ impl std::ops::Deref for ResponseDatabase<'_> {
             Self::Borrowed(database) => database,
             Self::Owned(database) => database,
         }
+    }
+}
+
+/// A strict read is released only after its audit is durable. Admission
+/// backpressure refuses that audit before anything is proposed: keep it a
+/// definite, retryable `ResourceExhausted`. As `AuditUnavailable`, which the
+/// transport reports as UNAVAILABLE, clients resent the read until their
+/// deadline and reported DeadlineExceeded instead.
+fn read_audit_failure(error: Error) -> Error {
+    if matches!(
+        error.code,
+        ErrorCode::Forbidden | ErrorCode::Sealed | ErrorCode::ResourceExhausted
+    ) {
+        error
+    } else {
+        Error::new(
+            ErrorCode::AuditUnavailable,
+            "required read audit could not be confirmed durable",
+        )
     }
 }
 
@@ -2184,15 +2260,8 @@ impl Database {
         };
         let patch_workspace =
             merge_patch_proposal_workspace(operation, stage_state, &generation.state, &context)?;
-        let max_command_payload = match operation {
-            Operation::ActivateSchema(_) => MAX_SCHEMA_CHANGESET_BYTES,
-            // Permanent receipt replay is ordered before today's tenant batch
-            // admission. Retain the immutable request envelope so lowering a
-            // tenant budget cannot hide an already committed outcome. A new
-            // identity still meets the configured limit in apply_batch.
-            Operation::Mutate(_) => 8 << 20,
-            _ => generation.state.limits.max_batch_bytes,
-        };
+        let max_command_payload =
+            command_payload_quote(&context, operation, &generation.state.limits)?;
         let command_budget = max_command_payload
             .saturating_add(64 << 10)
             .saturating_mul(3)
@@ -2576,16 +2645,7 @@ impl Database {
                 self.submit(context.clone(), Operation::AuditBatch(events))
             })
             .await
-            .map_err(|error| {
-                if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
-                    error
-                } else {
-                    Error::new(
-                        ErrorCode::AuditUnavailable,
-                        "required read audit could not be confirmed durable",
-                    )
-                }
-            })?;
+            .map_err(read_audit_failure)?;
         }
         // Recheck every collection after the last asynchronous audit. A policy
         // change during an earlier release must not leak the assembled result.
@@ -2647,16 +2707,7 @@ impl Database {
                 self.submit(context.clone(), Operation::Audit(event))
             })
             .await
-            .map_err(|error| {
-                if matches!(error.code, ErrorCode::Forbidden | ErrorCode::Sealed) {
-                    error
-                } else {
-                    Error::new(
-                        ErrorCode::AuditUnavailable,
-                        "required read audit could not be confirmed durable",
-                    )
-                }
-            })?;
+            .map_err(read_audit_failure)?;
         }
         self.access()?;
         let action = match kind {

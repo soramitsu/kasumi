@@ -9,6 +9,9 @@ description = "Encrypted durable storage, snapshots and backup objects for Kasum
 
 [features]
 test-utils = []
+# Development diagnostic: count and time physical synchronizations per call
+# site (see src/sync_trace.rs). Off in every release and test build.
+sync-trace = []
 
 [dependencies]
 kasumi-transport.workspace = true

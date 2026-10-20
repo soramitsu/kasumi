@@ -1286,22 +1286,26 @@ fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDisk
     step(state, Step::ObserveChild)?;
     record_child(disk, state)?;
     step(state, Step::SyncChild)?;
-    state
-        .pending_directory
-        .as_ref()
-        .expect("retained operation")
-        .child
-        .as_ref()
-        .expect("opened child")
-        .sync_all()?;
+    disk.synchronized(|| {
+        state
+            .pending_directory
+            .as_ref()
+            .expect("retained operation")
+            .child
+            .as_ref()
+            .expect("opened child")
+            .sync_all()
+    })?;
     step(state, Step::SyncParent)?;
-    state
-        .pending_directory
-        .as_ref()
-        .expect("retained operation")
-        .parent
-        .file()
-        .sync_all()?;
+    disk.synchronized(|| {
+        state
+            .pending_directory
+            .as_ref()
+            .expect("retained operation")
+            .parent
+            .file()
+            .sync_all()
+    })?;
     step(state, Step::Verify)?;
     state
         .pending_directory
@@ -1474,13 +1478,15 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
         return Err(io::Error::last_os_error());
     }
     step(state, Step::SyncParent)?;
-    state
-        .pending_directory
-        .as_ref()
-        .expect("retained operation")
-        .parent
-        .file()
-        .sync_all()?;
+    disk.synchronized(|| {
+        state
+            .pending_directory
+            .as_ref()
+            .expect("retained operation")
+            .parent
+            .file()
+            .sync_all()
+    })?;
     step(state, Step::Verify)?;
     let operation = state
         .pending_directory

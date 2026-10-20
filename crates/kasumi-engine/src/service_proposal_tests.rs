@@ -26,6 +26,63 @@ fn merge_patch_workspace_fixture() -> (TenantState, RequestContext) {
 }
 
 #[test]
+fn read_audit_quote_is_its_exact_preflight_command_length() {
+    let (_, context) = merge_patch_workspace_fixture();
+    let events = (0..3)
+        .map(|index| AuditEvent {
+            event_id: uuid::Uuid::new_v4().to_string(),
+            principal: context.principal.clone(),
+            action: "read".into(),
+            request_id: context.request_id.clone(),
+            timestamp_ms: 1,
+            data_revision: Some(7),
+            outcome: "authorized_release".into(),
+            collection: Some(format!("collection-{index}")),
+        })
+        .collect::<Vec<_>>();
+    let operation = Operation::AuditBatch(events);
+    let quoted = preflight_command_len(&context, &operation).unwrap();
+    let input = proposal_input::OperationInput::ordinary(operation).into_command(context);
+    assert_eq!(proposal_input_len(&input.command).unwrap(), quoted);
+    // A strict read's audit no longer quotes the tenant's maximum batch.
+    assert!(quoted < Limits::default().max_batch_bytes / 1000);
+}
+
+#[test]
+fn mutation_quote_is_its_exact_command_within_the_request_envelope() {
+    let (state, context) = merge_patch_workspace_fixture();
+    let operation = Operation::Mutate(
+        MutationBatch::new()
+            .upsert("docs", "a", json!({"envelope": "A".repeat(6000)}))
+            .upsert("docs", "b", json!({"state": "begun"})),
+    );
+    let quoted = command_payload_quote(&context, &operation, &state.limits).unwrap();
+    assert_eq!(quoted, preflight_command_len(&context, &operation).unwrap());
+    let input = proposal_input::OperationInput::ordinary(operation.clone()).into_command(context.clone());
+    assert_eq!(proposal_input_len(&input.command).unwrap(), quoted);
+    // Neither the envelope maximum nor the tenant's current budget: a lowered
+    // budget still admits the replay of an already committed identity.
+    let mut lowered = state.limits.clone();
+    lowered.max_batch_bytes = 1024;
+    assert_eq!(
+        command_payload_quote(&context, &operation, &lowered).unwrap(),
+        quoted
+    );
+    assert!(quoted < (8 << 20) / 1000);
+    // A command beyond the envelope quotes the envelope; submission then
+    // refuses it as too large, as before.
+    let oversized = Operation::Mutate(MutationBatch::new().upsert(
+        "docs",
+        "a",
+        json!({"envelope": "A".repeat(9 << 20)}),
+    ));
+    assert_eq!(
+        command_payload_quote(&context, &oversized, &state.limits).unwrap(),
+        8 << 20
+    );
+}
+
+#[test]
 fn merge_patch_proposal_workspace_covers_limits_raised_while_queued() {
     let (mut state, context) = merge_patch_workspace_fixture();
     state.limits.max_document_bytes = 4096;

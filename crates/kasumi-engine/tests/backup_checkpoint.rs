@@ -68,7 +68,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
     // The former proportional verifier cannot fit alongside those same reserves.
     assert!(fixture.db.audit_maintenance_status().is_some());
     assert!(resident * 3 + (256 << 20) + 2 * AuditRetentionBudget::MAINTENANCE_BYTES > maximum);
-    let production_payload = fixture.production_payload_baseline();
+    let production_payload = fixture.production_payload_baseline().await;
     let proof = fixture
         .db
         .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
@@ -112,7 +112,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         .clone();
     let admission = fixture.audit.admission().clone();
     assert!(fixture.db.audit_maintenance_status().is_some());
-    let production_payload = fixture.production_payload_baseline();
+    let production_payload = fixture.production_payload_baseline().await;
     // Keep the real service/tenant maintenance pools plus the native destination
     // charge installed throughout verification, materialization and publication.
     let destination_workspace = admission.reserve(128 << 20, None).unwrap();
@@ -130,6 +130,9 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
+    // A shut down node keeps its census registration until its last facade
+    // is retired.
+    let mut node_retirement = node.clone().retire();
     let target = TenantStore::initialize_catalog_fixture(
         node.clone(),
         "checkpoint".into(),
@@ -165,18 +168,23 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     let proposal_metadata = Database::fixture_proposal_metadata_bytes().unwrap();
     let expected_live =
         production_payload + (128 << 20) + snapshot_owner_bytes() + proposal_metadata;
-    let restored_payload = fixture.reserved_payload();
+    let restored_payload = fixture.settled_payload().await;
     assert!(
         restored_payload >= expected_live && restored_payload - expected_live <= 1 << 20,
         "target node metadata remains bounded"
     );
     let restore_metadata = restored_payload - expected_live;
     // Restore's mandatory audit proposal installs its own fixed registry. A
-    // successful drain releases that registry while the group facade stays live.
+    // successful drain releases that registry and retires the selected
+    // application source (its Cell, retained decode workspace and the selected
+    // reader's native leases) while the group facade stays live.
     restored.shutdown().await.unwrap();
-    assert_eq!(
-        fixture.reserved_payload(),
-        production_payload + (128 << 20) + snapshot_owner_bytes() + restore_metadata
+    let selected_source = (restored_payload - proposal_metadata)
+        .checked_sub(fixture.settled_payload().await)
+        .expect("drain releases the proposal registry");
+    assert!(
+        selected_source > 0 && selected_source <= 1 << 20,
+        "drain retires only the bounded selected source"
     );
     domains.custody().store().shutdown().await.unwrap();
     target.shutdown().await.unwrap();
@@ -184,8 +192,17 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     drop(restored);
     drop(domains);
     drop(target);
-    let before_reopen_payload = fixture.reserved_payload();
-    let before_reopen_reservations = admission.snapshot().live_reservations;
+    drop(node);
+    assert_eq!(
+        node_retirement.retry(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
+    let (before_reopen_payload, before_reopen_reservations) = fixture.settled().await;
+    assert_eq!(
+        before_reopen_payload,
+        production_payload + (128 << 20),
+        "restore retains nothing once its node is retired"
+    );
     let node = fixture
         .physical
         .storage
@@ -194,8 +211,8 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
             kasumi_store::test_utils::NODE_STORE_ID,
         )
         .unwrap();
-    let before_catalog_open = fixture.reserved_payload();
-    let before_catalog_reservations = admission.snapshot().live_reservations;
+    let mut node_retirement = node.clone().retire();
+    let (before_catalog_open, before_catalog_reservations) = fixture.settled().await;
     // Reopening each decoded catalog retains its typed allocation charge with
     // its owner. The restored catalog's shape can differ from the source.
     let target = TenantStore::open_existing_fixture(
@@ -205,30 +222,24 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     )
     .await
     .unwrap();
-    let after_application_catalog = fixture.reserved_payload();
+    let (after_application_catalog, reservations) = fixture.settled().await;
     let application_catalog_charge = after_application_catalog
         .checked_sub(before_catalog_open)
         .expect("application catalog charge cannot reduce installed memory");
     assert!(application_catalog_charge > 0 && application_catalog_charge <= 1 << 20);
-    assert_eq!(
-        admission.snapshot().live_reservations,
-        before_catalog_reservations + 1
-    );
+    assert_eq!(reservations, before_catalog_reservations + 1);
     let domains = kasumi_store::test_utils::open_existing_custody_fixture(
         target,
         Arc::new(LocalKeyProvider::new([241; 32])),
     )
     .await
     .unwrap();
-    let custody_catalog_charge = fixture
-        .reserved_payload()
+    let (after_custody_catalog, reservations) = fixture.settled().await;
+    let custody_catalog_charge = after_custody_catalog
         .checked_sub(after_application_catalog)
         .expect("custody catalog charge cannot reduce installed memory");
     assert!(custody_catalog_charge > 0 && custody_catalog_charge <= 1 << 20);
-    assert_eq!(
-        admission.snapshot().live_reservations,
-        before_catalog_reservations + 2
-    );
+    assert_eq!(reservations, before_catalog_reservations + 2);
     let reopened =
         kasumi_engine::open_local(domains, policy(), Limits::default(), fixture.audit.clone())
             .await
@@ -237,8 +248,9 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         reopened.engine().generation().unwrap().state.document_count,
         1
     );
+    // Reopening selects the same source shape the restored database retained.
     assert_eq!(
-        fixture.reserved_payload(),
+        fixture.settled_payload().await,
         production_payload
             + (128 << 20)
             + snapshot_owner_bytes()
@@ -249,13 +261,17 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     reopened.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
     drop(reopened);
-    assert_eq!(fixture.reserved_payload(), before_reopen_payload);
+    drop(node);
     assert_eq!(
-        admission.snapshot().live_reservations,
-        before_reopen_reservations
+        node_retirement.retry(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
+    assert_eq!(
+        fixture.settled().await,
+        (before_reopen_payload, before_reopen_reservations)
     );
     drop(destination_workspace);
-    assert_eq!(fixture.reserved_payload(), production_payload);
+    assert_eq!(fixture.settled_payload().await, production_payload);
     fixture.close().await;
 }
 
@@ -382,7 +398,7 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
         .checkpoint()
         .clone();
     let admission = fixture.audit.admission().clone();
-    let production_payload = fixture.production_payload_baseline();
+    let production_payload = fixture.production_payload_baseline().await;
     let backend = PausedBackend {
         inner: kasumi_store::test_utils::FaultBackend::new(),
         pause: Arc::new(Mutex::new(None)),
@@ -395,8 +411,11 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
         fixture.store.scratch_disk().clone(),
     )
     .unwrap();
+    // A node keeps its census registration until it is shut down and its last
+    // facade is retired; the target below holds another facade.
+    let mut node_retirement = node.clone().retire();
     let target = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "checkpoint".into(),
         Arc::new(LocalKeyProvider::new([0xD8; 32])),
     )
@@ -421,10 +440,21 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     let audit = fixture.audit.clone();
     let owned_admission = admission.clone();
     let request = common::local_restore_request(context(), &checkpoint, uuid::Uuid::new_v4());
-    let task = tokio::spawn(async move {
+    let mut task = tokio::spawn(async move {
         kasumi_engine::restore_local(&source, domains, request, owned_admission, audit).await
     });
-    started_rx.await.unwrap();
+    // The paused backend keeps `started_tx` until a write takes it, so a
+    // restore that ends before publication must fail this test, not hang it.
+    tokio::select! {
+        started = started_rx => started.unwrap(),
+        outcome = &mut task => panic!(
+            "restore ended before its publication write: {:?}",
+            outcome.map(|result| result.err().map(|error| format!("{error:#}")))
+        ),
+        _ = tokio::time::sleep(std::time::Duration::from_secs(120)) => {
+            panic!("restore reached no publication write within 120 s")
+        }
+    }
     assert!(
         backend.blocked.load(Ordering::SeqCst),
         "publication blocked the async executor"
@@ -439,12 +469,20 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     assert!(fixture.reserved_payload() > production_payload);
     release_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while weak.upgrade().is_some() || fixture.reserved_payload() != production_payload {
+        while weak.upgrade().is_some() {
             tokio::task::yield_now().await;
         }
     })
     .await
     .unwrap();
+    // Only the test's own node remains; the drained restore kept nothing else.
+    node.shutdown().await.unwrap();
+    drop(node);
+    assert_eq!(
+        node_retirement.retry(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
+    assert_eq!(fixture.settled_payload().await, production_payload);
     // Cancellation before the final manifest cannot publish a partial genesis.
     let node = NodeStore::open_fixture_backend_on_disk(
         backend.crash(),
@@ -499,8 +537,25 @@ impl Fixture {
             .checked_sub(self.physical.initial_disk_metadata_bytes)
             .expect("actual installed disk metadata remains charged")
     }
-    fn production_payload_baseline(&self) -> u64 {
-        let bytes = self.reserved_payload();
+    /// Payload and ledger slots while no service-audit retention pass is in
+    /// flight. Each pass, every 250 ms, briefly adds its own native read
+    /// leases, so exact comparisons keep the lowest samples of two periods.
+    async fn settled(&self) -> (u64, usize) {
+        let live = || self.audit.admission().snapshot().live_reservations;
+        let (mut payload, mut reservations) = (self.reserved_payload(), live());
+        let until = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+        while tokio::time::Instant::now() < until {
+            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+            payload = payload.min(self.reserved_payload());
+            reservations = reservations.min(live());
+        }
+        (payload, reservations)
+    }
+    async fn settled_payload(&self) -> u64 {
+        self.settled().await.0
+    }
+    async fn production_payload_baseline(&self) -> u64 {
+        let bytes = self.settled_payload().await;
         assert!(
             bytes >= 3 * AuditRetentionBudget::MAINTENANCE_BYTES + snapshot_owner_bytes(),
             "production maintenance lanes and the serving snapshot inventory stay charged"
@@ -1466,6 +1521,130 @@ async fn local_restore_binds_exact_source_purpose_even_without_cold_archives() {
     )
     .await
     .unwrap();
+    restored.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+    fixture.close().await;
+}
+
+/// Restore phase boundaries emitted on the test's own thread, each with the
+/// payload the node ledger charged at that instant.
+#[derive(Clone)]
+struct PhasePayloads {
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+    observed: Arc<std::sync::Mutex<Vec<(String, String, u64)>>>,
+}
+impl PhasePayloads {
+    fn at(&self, phase: &str, event: &str) -> u64 {
+        self.observed
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(name, kind, _)| name == phase && kind == event)
+            .unwrap_or_else(|| panic!("{phase} {event} was not observed"))
+            .2
+    }
+}
+impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for PhasePayloads {
+    fn on_event(&self, event: &tracing::Event<'_>, _: tracing_subscriber::layer::Context<'_, S>) {
+        #[derive(Default)]
+        struct Fields {
+            phase: String,
+            event: String,
+        }
+        impl tracing::field::Visit for Fields {
+            fn record_str(&mut self, field: &tracing::field::Field, value: &str) {
+                match field.name() {
+                    "phase" => self.phase = value.into(),
+                    "event" => self.event = value.into(),
+                    _ => {}
+                }
+            }
+            fn record_debug(&mut self, _: &tracing::field::Field, _: &dyn std::fmt::Debug) {}
+        }
+        let mut fields = Fields::default();
+        event.record(&mut fields);
+        let payload = reserved_payload_bytes(&self.admission);
+        self.observed
+            .lock()
+            .unwrap()
+            .push((fields.phase, fields.event, payload));
+    }
+}
+
+#[tokio::test]
+async fn local_restore_releases_materialization_workspace_before_its_mandatory_audit() {
+    use tracing_subscriber::layer::SubscriberExt;
+    let fixture = Fixture::new().await;
+    fixture.write("retained").await;
+    let checkpoint = fixture
+        .db
+        .backup_checkpoint_named(context(), "approved", uuid::Uuid::new_v4())
+        .await
+        .unwrap()
+        .checkpoint()
+        .clone();
+    let node = fixture
+        .physical
+        .storage
+        .create_new(
+            fixture.directory.path().join("restore-audit.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let target = TenantStore::initialize_catalog_fixture(
+        node.clone(),
+        "checkpoint".into(),
+        Arc::new(LocalKeyProvider::new([0xD8; 32])),
+    )
+    .await
+    .unwrap();
+    let domains = kasumi_store::test_utils::initialize_custody_fixture(
+        target,
+        Arc::new(LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
+    let source = kasumi_engine::RestoreSource {
+        destination_alias: "approved".into(),
+        destination: fixture.destination.clone(),
+        keys: Arc::new(LocalKeyProvider::new([0xD8; 32])),
+        timeout_ms: 60_000,
+    };
+    let phases = PhasePayloads {
+        admission: fixture.audit.admission().clone(),
+        observed: Default::default(),
+    };
+    let dispatch = tracing::Dispatch::new(
+        tracing_subscriber::registry()
+            .with(tracing_subscriber::filter::filter_fn(|metadata| {
+                metadata.target() == "kasumi_engine::restore_phase"
+            }))
+            .with(phases.clone()),
+    );
+    let restored = {
+        // This current-thread runtime polls the restore on this thread.
+        let _phases = tracing::dispatcher::set_default(&dispatch);
+        kasumi_engine::restore_local(
+            &source,
+            domains,
+            common::local_restore_request(context(), &checkpoint, uuid::Uuid::new_v4()),
+            fixture.audit.admission().clone(),
+            fixture.audit.clone(),
+        )
+        .await
+        .unwrap()
+    };
+    // The mandatory audit admits a proposal workspace and a source grant that
+    // must leave the cache-work reserve and installed protection free. The
+    // started database owns the restored engine, so the materialization
+    // workspace, with its fixed 64 MiB floor, is released between these two
+    // adjacent phase events; background work moves the ledger far less.
+    let started = phases.at("restore.start_prepared", "restore_phase_ended");
+    let audited = phases.at("restore.maintenance_audit", "restore_phase_started");
+    assert!(
+        started.saturating_sub(audited) >= 32 << 20,
+        "materialization workspace still charged for the audit: {started} -> {audited}"
+    );
     restored.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
     fixture.close().await;

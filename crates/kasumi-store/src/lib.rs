@@ -114,6 +114,7 @@ pub use scratch_table::{
     ScratchOperationFailure, ScratchTableValue,
 };
 mod storage_domains;
+mod sync_trace;
 pub use serving_access::{StorageAccess, StoragePurpose};
 pub use storage_domains::{
     PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
