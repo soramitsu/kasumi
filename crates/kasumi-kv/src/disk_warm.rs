@@ -53,17 +53,18 @@ pub(super) struct Warmup {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CachedReach {
     Selected,
-    /// Only an older pinned root reaches it: dead once that pin is released.
-    Pinned,
+    /// Only this older pinned root reaches it: dead once that pin is released.
+    /// The root is immutable, so it reaches the identity while any pin holds it.
+    Pinned(DirectoryRoot),
     Unreachable,
 }
 
 impl CachedReach {
-    fn from_root(selected: bool) -> Self {
-        if selected {
+    fn from_root(root: DirectoryRoot, selected: DirectoryRoot) -> Self {
+        if root == selected {
             Self::Selected
         } else {
-            Self::Pinned
+            Self::Pinned(root)
         }
     }
 }
@@ -376,7 +377,7 @@ impl DiskState {
                         PageCheck::Digest,
                         &mut workspace.directory,
                     )? {
-                        return Ok(CachedReach::from_root(root == self.selected));
+                        return Ok(CachedReach::from_root(root, self.selected));
                     }
                 }
             }
@@ -424,7 +425,7 @@ impl DiskState {
                                 "cached value logical version differs",
                             )));
                         }
-                        return Ok(CachedReach::from_root(root == self.selected));
+                        return Ok(CachedReach::from_root(root, self.selected));
                     }
                 }
             }

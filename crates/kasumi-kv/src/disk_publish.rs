@@ -9,6 +9,12 @@ use super::warming::{CachedIdentityProofWorkspace, CachedReach};
 use super::*;
 use crate::snapshot_pins::SnapshotRoots;
 
+#[cfg(test)]
+thread_local! {
+    /// Deferred identities this thread's publications proved again.
+    pub(super) static DEFERRED_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) struct PublicationCache {
     cache: NativeSharedCache,
     capture: SnapshotRoots,
@@ -78,9 +84,9 @@ impl DiskState {
             )? {
                 CachedReach::Selected => {}
                 // The engine still pins the root this publication replaced
-                // until it installs the new one. Prove it again later.
-                CachedReach::Pinned => {
-                    self.auto_warm.deferred.push(candidate.key);
+                // until it installs the new one. Prove it again once released.
+                CachedReach::Pinned(root) => {
+                    self.auto_warm.deferred.push(candidate.key, root);
                 }
                 CachedReach::Unreachable => {
                     self.pins
@@ -115,9 +121,12 @@ impl DiskState {
     }
 
     /// Prove the first `count` deferred identities again under this
-    /// publication's capture: remove those no root reaches any more, keep
-    /// those an older pin still reaches, and forget the rest. Identities this
-    /// publication deferred follow them unchanged.
+    /// publication's capture, but only those whose recorded root it no longer
+    /// holds: a captured root is immutable, so it still reaches the others and
+    /// their proof would repeat the same digest-checked walk on every commit.
+    /// Remove those no root reaches any more, keep those an older pin still
+    /// reaches, and forget the rest. Identities this publication deferred
+    /// follow them unchanged.
     fn prune_deferred(
         &mut self,
         count: usize,
@@ -125,7 +134,7 @@ impl DiskState {
     ) -> Result<(), CoreError> {
         let mut kept = 0;
         for index in 0..count {
-            let identity = self.auto_warm.deferred.get(index);
+            let (identity, pinned) = self.auto_warm.deferred.get(index);
             let candidate = self
                 .cache
                 .lock()
@@ -133,21 +142,27 @@ impl DiskState {
                 .candidate(identity)?;
             // An evicted, pruned or reclaimed identity needs nothing more.
             let Some(candidate) = candidate else { continue };
-            let reach = match self.cached_identity_reach(
-                &candidate,
-                &publication.capture,
-                &mut publication.proof,
-            ) {
-                Ok(reach) => reach,
-                // Optional cleanup never fails a durable publication: keep
-                // the identity for a later proof.
-                Err(error) if error.is_capacity_denied() => CachedReach::Pinned,
-                Err(error) => return Err(error),
+            let reach = if publication.capture.roots().contains(&pinned) {
+                CachedReach::Pinned(pinned)
+            } else {
+                #[cfg(test)]
+                DEFERRED_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
+                match self.cached_identity_reach(
+                    &candidate,
+                    &publication.capture,
+                    &mut publication.proof,
+                ) {
+                    Ok(reach) => reach,
+                    // Optional cleanup never fails a durable publication:
+                    // keep the identity for a later proof.
+                    Err(error) if error.is_capacity_denied() => CachedReach::Pinned(pinned),
+                    Err(error) => return Err(error),
+                }
             };
             match reach {
                 CachedReach::Selected => {}
-                CachedReach::Pinned => {
-                    self.auto_warm.deferred.set(kept, identity);
+                CachedReach::Pinned(root) => {
+                    self.auto_warm.deferred.set(kept, identity, root);
                     kept += 1;
                 }
                 CachedReach::Unreachable => {

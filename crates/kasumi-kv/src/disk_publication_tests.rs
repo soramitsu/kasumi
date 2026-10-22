@@ -178,6 +178,36 @@ fn rewrites_under_the_installed_pin_keep_cache_entries_bounded() {
 }
 
 #[test]
+fn identities_a_still_captured_pin_reaches_are_proven_only_after_its_release() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, _, _) = resident_fixture();
+    // A reader keeps the first root pinned across many publications.
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let before = proofs();
+    for round in 0..8u8 {
+        state
+            .commit(&[Operation::put("accounts", b"hot", vec![round; 8192])])
+            .unwrap();
+    }
+    // That root still reaches every identity kept for it, so no publication
+    // walks the directory to prove them again while it stays captured.
+    let held = state.auto_warm.deferred.len();
+    assert!(held > 0);
+    assert!((0..held).all(|index| state.auto_warm.deferred.get(index).1 == old.root()));
+    assert_eq!(proofs(), before);
+    drop(old);
+    // The next publication proves each of them once and removes them all.
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![9; 8192])])
+        .unwrap();
+    assert_eq!(proofs(), before + held);
+    assert_eq!(state.auto_warm.deferred.len(), 0);
+}
+
+#[test]
 fn pressured_commit_preserves_old_snapshot_and_final_batch_visibility_across_reopen() {
     let (mut state, reads, admission) = resident_fixture();
     let old = state.snapshot().unwrap();
