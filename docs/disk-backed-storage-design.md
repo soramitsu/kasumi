@@ -777,15 +777,22 @@ fitting current/pinned union. Focused regressions pass, while broader validation
 and the remaining C03 completion criteria are open.
 
 An identity that only a captured older pin still reaches stays cached for that
-reader, and the publication records it in a fixed list (1,024 identities) in
-the automatic-warm metadata. The engine pins its installed root while the next
-entry applies, so every foreground publication supersedes such identities.
-Each later publication proves the recorded ones again under its own capture:
-it removes those no root reaches, keeps those an older pin still reaches and
-forgets the rest. Before this, they waited for a complete warm pass, which
-every publication restarts, and the cache grew by each commit's replaced path
-until it filled the shared admission budget. Identities beyond a full list are
-left to the warm pass and reclamation, as before.
+reader, and the publication records it in a fixed list (1,024 identities) in the
+automatic-warm metadata. The engine pins its installed root while the next entry
+applies, so every foreground publication supersedes such identities. Each
+recorded identity keeps the pinned root that reached it and the generation of
+the selected root that no longer did. A later publication that still captures
+that pinned root keeps the identity without a proof, because a captured root is
+immutable. Otherwise it proves the identity under only its captured roots older
+than that generation: every later root descends from that selected one and
+reaches only its identities or newly appended ones. It removes those no root
+reaches, keeps those an older pin still reaches and forgets the rest. When no
+older root is captured, which is the usual case once the engine has released the
+root a commit replaced, the identity is removed without a read. Before this,
+they waited for a complete warm pass, which every publication restarts, and the
+cache grew by each commit's replaced path until it filled the shared admission
+budget. Identities beyond a full list are left to the warm pass and reclamation,
+as before.
 
 A publication-scoped intrusive candidate chain lives inside the cache entries,
 with its link/mark fields included in each slot's charge. A dedicated private

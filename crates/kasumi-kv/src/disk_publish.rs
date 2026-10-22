@@ -86,7 +86,9 @@ impl DiskState {
                 // The engine still pins the root this publication replaced
                 // until it installs the new one. Prove it again once released.
                 CachedReach::Pinned(root) => {
-                    self.auto_warm.deferred.push(candidate.key, root);
+                    self.auto_warm
+                        .deferred
+                        .push(candidate.key, root, self.selected.generation);
                 }
                 CachedReach::Unreachable => {
                     self.pins
@@ -124,6 +126,10 @@ impl DiskState {
     /// publication's capture, but only those whose recorded root it no longer
     /// holds: a captured root is immutable, so it still reaches the others and
     /// their proof would repeat the same digest-checked walk on every commit.
+    /// That proof examines only captured roots older than the selected root
+    /// that superseded the identity, and an identity no such root can reach
+    /// needs no read: after the engine releases the root a commit replaced,
+    /// the next commit removes its identities without walking them again.
     /// Remove those no root reaches any more, keep those an older pin still
     /// reaches, and forget the rest. Identities this publication deferred
     /// follow them unchanged.
@@ -134,7 +140,7 @@ impl DiskState {
     ) -> Result<(), CoreError> {
         let mut kept = 0;
         for index in 0..count {
-            let (identity, pinned) = self.auto_warm.deferred.get(index);
+            let (identity, pinned, superseded) = self.auto_warm.deferred.get(index);
             let candidate = self
                 .cache
                 .lock()
@@ -144,11 +150,19 @@ impl DiskState {
             let Some(candidate) = candidate else { continue };
             let reach = if publication.capture.roots().contains(&pinned) {
                 CachedReach::Pinned(pinned)
+            } else if !publication
+                .capture
+                .roots()
+                .iter()
+                .any(|root| root.generation < superseded)
+            {
+                CachedReach::Unreachable
             } else {
                 #[cfg(test)]
                 DEFERRED_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
-                match self.cached_identity_reach(
+                match self.cached_identity_reach_before(
                     &candidate,
+                    superseded,
                     &publication.capture,
                     &mut publication.proof,
                 ) {
@@ -162,7 +176,9 @@ impl DiskState {
             match reach {
                 CachedReach::Selected => {}
                 CachedReach::Pinned(root) => {
-                    self.auto_warm.deferred.set(kept, identity, root);
+                    self.auto_warm
+                        .deferred
+                        .set(kept, identity, root, superseded);
                     kept += 1;
                 }
                 CachedReach::Unreachable => {

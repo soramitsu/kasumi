@@ -336,12 +336,6 @@ impl DiskState {
         capture: &SnapshotRoots,
         workspace: &mut CachedIdentityProofWorkspace,
     ) -> Result<CachedReach, CoreError> {
-        if !Arc::ptr_eq(&workspace.admission, &self.owner.admission) {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "cache proof workspace belongs to another admission owner",
-            )));
-        }
-        self.owner.check()?;
         let roots = std::iter::once(self.selected).chain(
             capture
                 .roots()
@@ -349,6 +343,41 @@ impl DiskState {
                 .copied()
                 .filter(|&root| root != self.selected),
         );
+        self.cached_identity_reach_from(candidate, roots, workspace)
+    }
+
+    /// Like `cached_identity_reach` for an identity the selected root of
+    /// generation `superseded` no longer reached. Every later root descends
+    /// from that one and reaches only its identities or newly appended ones,
+    /// the same reasoning that lets reclamation consult only pins before an
+    /// evacuated generation, so only a captured older root can reach it.
+    pub(super) fn cached_identity_reach_before(
+        &self,
+        candidate: &CacheCandidate<NativeIdentity>,
+        superseded: u64,
+        capture: &SnapshotRoots,
+        workspace: &mut CachedIdentityProofWorkspace,
+    ) -> Result<CachedReach, CoreError> {
+        let roots = capture
+            .roots()
+            .iter()
+            .copied()
+            .filter(|root| root.generation < superseded);
+        self.cached_identity_reach_from(candidate, roots, workspace)
+    }
+
+    fn cached_identity_reach_from(
+        &self,
+        candidate: &CacheCandidate<NativeIdentity>,
+        roots: impl Iterator<Item = DirectoryRoot>,
+        workspace: &mut CachedIdentityProofWorkspace,
+    ) -> Result<CachedReach, CoreError> {
+        if !Arc::ptr_eq(&workspace.admission, &self.owner.admission) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cache proof workspace belongs to another admission owner",
+            )));
+        }
+        self.owner.check()?;
         let private = self.pages.maintenance_private_view();
         let reader = DirectoryReader::new(&private, self.owner.admission.clone());
         match candidate.key {

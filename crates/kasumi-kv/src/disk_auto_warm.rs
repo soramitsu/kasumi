@@ -25,24 +25,33 @@ pub(super) struct AutoWarm {
 
 /// Identities a publication superseded while an older snapshot pin still
 /// reached them, so they stayed cached, each with the pinned root that reached
-/// it. The engine releases that pin after the publication, and nothing else
-/// proves them again before a complete warm pass, which every publication
-/// restarts: kept unchecked, they would accumulate per commit until the cache
-/// filled the shared admission budget. Each later publication proves again
-/// those whose root it no longer captures; a captured root is immutable, so it
-/// still reaches the others. Fixed capacity: an identity deferred while this is
-/// full stays cached until a warm pass or reclamation removes it.
-pub(super) struct DeferredIdentities(Vec<(NativeIdentity, DirectoryRoot)>);
+/// it and the generation of the selected root that no longer did. The engine
+/// releases that pin after the publication, and nothing else proves them again
+/// before a complete warm pass, which every publication restarts: kept
+/// unchecked, they would accumulate per commit until the cache filled the
+/// shared admission budget. Each later publication proves again those whose
+/// root it no longer captures; a captured root is immutable, so it still
+/// reaches the others. Every later root descends from that selected one and
+/// reaches only its identities or newly appended ones, so that proof examines
+/// only captured roots older than it, and none when no such root is captured.
+/// Fixed capacity: an identity deferred while this is full stays cached until
+/// a warm pass or reclamation removes it.
+pub(super) struct DeferredIdentities(Vec<(NativeIdentity, DirectoryRoot, u64)>);
 
 impl DeferredIdentities {
     pub(super) const CAPACITY: usize = 1024;
 
     /// Whether the identity is now deferred; never grows the fixed backing.
-    pub(super) fn push(&mut self, identity: NativeIdentity, root: DirectoryRoot) -> bool {
+    pub(super) fn push(
+        &mut self,
+        identity: NativeIdentity,
+        root: DirectoryRoot,
+        superseded: u64,
+    ) -> bool {
         if self.0.len() == Self::CAPACITY {
             return false;
         }
-        self.0.push((identity, root));
+        self.0.push((identity, root, superseded));
         true
     }
 
@@ -50,13 +59,20 @@ impl DeferredIdentities {
         self.0.len()
     }
 
-    /// The deferred identity and the pinned root that reached it.
-    pub(super) fn get(&self, index: usize) -> (NativeIdentity, DirectoryRoot) {
+    /// The deferred identity, the pinned root that reached it and the
+    /// generation of the selected root that no longer reached it.
+    pub(super) fn get(&self, index: usize) -> (NativeIdentity, DirectoryRoot, u64) {
         self.0[index]
     }
 
-    pub(super) fn set(&mut self, index: usize, identity: NativeIdentity, root: DirectoryRoot) {
-        self.0[index] = (identity, root);
+    pub(super) fn set(
+        &mut self,
+        index: usize,
+        identity: NativeIdentity,
+        root: DirectoryRoot,
+        superseded: u64,
+    ) {
+        self.0[index] = (identity, root, superseded);
     }
 
     /// Remove a range in place, moving later identities down.
@@ -70,8 +86,10 @@ impl AutoWarm {
         std::mem::size_of::<[Option<DirectoryRoot>; MAX_PINNED_ROOTS]>()
             + (std::mem::align_of::<Option<DirectoryRoot>>() - 1)
             + ALLOCATION_ALLOWANCE
-            + std::mem::size_of::<[(NativeIdentity, DirectoryRoot); DeferredIdentities::CAPACITY]>()
-            + (std::mem::align_of::<(NativeIdentity, DirectoryRoot)>() - 1)
+            + std::mem::size_of::<
+                [(NativeIdentity, DirectoryRoot, u64); DeferredIdentities::CAPACITY],
+            >()
+            + (std::mem::align_of::<(NativeIdentity, DirectoryRoot, u64)>() - 1)
             + ALLOCATION_ALLOWANCE
     }
 

@@ -199,11 +199,106 @@ fn identities_a_still_captured_pin_reaches_are_proven_only_after_its_release() {
     assert!((0..held).all(|index| state.auto_warm.deferred.get(index).1 == old.root()));
     assert_eq!(proofs(), before);
     drop(old);
-    // The next publication proves each of them once and removes them all.
+    // No captured root is older than the roots that superseded them, so the
+    // next publication removes them all without walking them again.
     state
         .commit(&[Operation::put("accounts", b"b", vec![9; 8192])])
         .unwrap();
-    assert_eq!(proofs(), before + held);
+    assert_eq!(proofs(), before);
+    assert_eq!(state.auto_warm.deferred.len(), 0);
+}
+
+#[test]
+fn identities_the_installed_pin_kept_leave_without_a_second_walk() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, _, _) = resident_fixture();
+    // The engine pins its installed root while the next entry applies, then
+    // installs the published root and releases the replaced one.
+    let mut installed = state.snapshot().unwrap();
+    let before = proofs();
+    let mut held = Vec::new();
+    for round in 0..16u8 {
+        state
+            .commit(&[Operation::put("accounts", b"a", vec![round; 8192])])
+            .unwrap();
+        // Only what this publication replaced stays, kept for the installed
+        // root; what the previous one kept left once its root was released.
+        let deferred = state.auto_warm.deferred.len();
+        assert!(deferred > 0);
+        assert!(
+            (0..deferred).all(|index| state.auto_warm.deferred.get(index).1 == installed.root())
+        );
+        held.push(deferred);
+        installed = state.snapshot().unwrap();
+    }
+    assert!(
+        held[1..].iter().all(|&count| count == held[1]),
+        "deferred identities accumulated: {held:?}"
+    );
+    // None of them was walked a second time.
+    assert_eq!(proofs(), before);
+    drop(installed);
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![9; 8192])])
+        .unwrap();
+    assert_eq!(state.auto_warm.deferred.len(), 0);
+    assert_eq!(proofs(), before);
+}
+
+#[test]
+fn a_released_root_hands_its_identities_to_an_older_pin_that_still_reaches_them() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, reads, _) = resident_fixture();
+    // Two readers pin consecutive roots; both reach the original "a" row.
+    let older = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![8; 8192])])
+        .unwrap();
+    let newer = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![9; 8192])])
+        .unwrap();
+    let deferred = |state: &DiskState| {
+        (0..state.auto_warm.deferred.len())
+            .map(|index| state.auto_warm.deferred.get(index))
+            .collect::<Vec<_>>()
+    };
+    let kept = deferred(&state);
+    assert!(
+        kept.iter()
+            .all(|&(_, root, _)| root == older.root() || root == newer.root())
+    );
+    // Releasing the first root leaves the newer pin as the only older root
+    // that can still reach what the "a" rewrite superseded: those are walked
+    // once under it and stay. What the "b" rewrite superseded before the newer
+    // root existed needs no walk; nothing captured is older than it.
+    let walked = kept
+        .iter()
+        .filter(|&&(_, root, superseded)| {
+            root == older.root() && superseded > newer.root().generation
+        })
+        .count();
+    assert!(walked > 0);
+    let before = proofs();
+    drop(older);
+    state
+        .commit(&[Operation::put("accounts", b"hot", vec![7; 8192])])
+        .unwrap();
+    assert_eq!(proofs(), before + walked);
+    let kept = deferred(&state);
+    assert!(!kept.is_empty());
+    assert!(kept.iter().all(|&(_, root, _)| root == newer.root()));
+    assert_resident_rows(
+        &mut state,
+        &reads,
+        &newer,
+        &[(b"a", 1), (b"b", 8), (b"hot", 3)],
+    );
+    drop(newer);
+    state
+        .commit(&[Operation::put("accounts", b"hot", vec![6; 8192])])
+        .unwrap();
+    assert_eq!(proofs(), before + walked);
     assert_eq!(state.auto_warm.deferred.len(), 0);
 }
 
