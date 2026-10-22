@@ -18,6 +18,215 @@ fn resident_fixture() -> (DiskState, Arc<Reads>, Arc<Admission>) {
     (state, reads, admission)
 }
 
+fn reconcile_retained_identities(state: &mut DiskState) -> Result<(), CoreError> {
+    let mut publication = state.prepare_cache_publication()?.unwrap();
+    state.reconcile_publication(&mut publication)
+}
+
+#[test]
+fn unchanged_pinned_root_avoids_repeated_deferred_identity_reads() {
+    let (mut state, reads, _) = resident_fixture();
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let count = state.auto_warm.deferred.len();
+    assert!(count >= 2, "fixture must defer a page and a value");
+    // With no prior positive proof, the original full directory/segment
+    // check still runs. The next pass has the same roots and payloads.
+    for index in 0..count {
+        let mut identity = state.auto_warm.deferred.get(index);
+        identity.root = None;
+        state.auto_warm.deferred.set(index, identity);
+    }
+    let before = reads.count();
+    reconcile_retained_identities(&mut state).unwrap();
+    assert!(
+        reads.count() > before,
+        "first proof must inspect original storage"
+    );
+    let before = reads.count();
+    let accounting = state.cache_stats().unwrap();
+    for _ in 0..16 {
+        reconcile_retained_identities(&mut state).unwrap();
+    }
+    assert_eq!(
+        reads.count(),
+        before,
+        "unchanged pinned identities were rescanned"
+    );
+    assert_eq!(state.auto_warm.deferred.len(), count);
+    assert_eq!(state.cache_stats().unwrap(), accounting);
+    assert_eq!(value(&mut state, &old, b"a").unwrap(), vec![1; 8192]);
+    // Once the exact old root leaves, the full proof must retire its obsolete
+    // identities even if another snapshot occupies the freed registry slot.
+    drop(old);
+    let current = state.snapshot().unwrap();
+    let before = reads.count();
+    reconcile_retained_identities(&mut state).unwrap();
+    assert!(reads.count() > before);
+    assert_eq!(state.auto_warm.deferred.len(), 0);
+    assert_eq!(value(&mut state, &current, b"a").unwrap(), vec![7; 8192]);
+}
+
+#[test]
+fn replaced_cached_payload_cannot_reuse_a_pinned_root_witness() {
+    let (mut state, _, _) = resident_fixture();
+    let _old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let identity = (0..state.auto_warm.deferred.len())
+        .map(|index| state.auto_warm.deferred.get(index))
+        .find(|identity| matches!(identity.key, NativeIdentity::Value { .. }))
+        .unwrap();
+    {
+        let mut cache = state.cache.lock().unwrap();
+        let candidate = cache.candidate(identity.key).unwrap().unwrap();
+        let mut corrupt = candidate.bytes.as_bytes().to_vec();
+        corrupt[0] ^= 1;
+        drop(candidate);
+        cache.remove(identity.key);
+        cache
+            .load(identity.key, corrupt.len(), |out| {
+                out.copy_from_slice(&corrupt);
+                Ok::<_, CoreError>(())
+            })
+            .unwrap();
+        assert_ne!(
+            cache.candidate(identity.key).unwrap().unwrap().incarnation,
+            identity.incarnation,
+        );
+    }
+    assert!(matches!(
+        reconcile_retained_identities(&mut state)
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::Corrupt(_))
+    ));
+}
+
+#[test]
+fn pinned_root_witness_never_masks_owner_failure() {
+    let (mut state, _, admission) = resident_fixture();
+    let _old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    assert!(state.auto_warm.deferred.len() > 0);
+    let mut publication = state.prepare_cache_publication().unwrap().unwrap();
+    admission.owner_failed();
+    assert!(matches!(
+        state
+            .reconcile_publication(&mut publication)
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::OwnerFailed)
+    ));
+}
+
+#[test]
+fn deferred_root_witnesses_reject_foreign_capture_and_proof_owners() {
+    let (mut state, _, _) = resident_fixture();
+    let _old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let (foreign, _, _) = resident_fixture();
+    let count = state.auto_warm.deferred.len();
+    let mut publication = state.prepare_cache_publication().unwrap().unwrap();
+    publication.replace_capture_for_test(foreign.pins.capture().unwrap());
+    assert!(matches!(
+        state
+            .reconcile_publication(&mut publication)
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::InvalidInput(_))
+    ));
+    drop(publication);
+    assert_eq!(state.auto_warm.deferred.len(), count);
+    let mut publication = state.prepare_cache_publication().unwrap().unwrap();
+    publication.proof =
+        crate::disk_state::warming::CachedIdentityProofWorkspace::new(&foreign.owner.admission)
+            .unwrap();
+    assert!(matches!(
+        state
+            .reconcile_publication(&mut publication)
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::InvalidInput(_))
+    ));
+    assert_eq!(state.auto_warm.deferred.len(), count);
+}
+
+#[test]
+fn deferred_witness_root_compares_the_complete_root_not_just_generation() {
+    let (mut state, reads, _) = resident_fixture();
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let count = state.auto_warm.deferred.len();
+    for index in 0..count {
+        let mut identity = state.auto_warm.deferred.get(index);
+        let mut different_root = identity.root.unwrap();
+        different_root.page.as_mut().unwrap().sha256[0] ^= 1;
+        assert_eq!(different_root.generation, old.root().generation);
+        identity.root = Some(different_root);
+        state.auto_warm.deferred.set(index, identity);
+    }
+    let before = reads.count();
+    reconcile_retained_identities(&mut state).unwrap();
+    assert!(
+        reads.count() > before,
+        "different root digest reused an old witness"
+    );
+    for index in 0..count {
+        assert_eq!(state.auto_warm.deferred.get(index).root, Some(old.root()));
+    }
+}
+
+#[test]
+fn retired_witness_rechecks_other_pins_before_removing_a_shared_identity() {
+    let (mut state, _, _) = resident_fixture();
+    let first = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![8; 8192])])
+        .unwrap();
+    let second = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let shared = (0..state.auto_warm.deferred.len())
+        .map(|index| state.auto_warm.deferred.get(index))
+        .find(|identity| {
+            matches!(identity.key, NativeIdentity::Value { .. })
+                && identity.root == Some(first.root())
+                && state
+                    .cache
+                    .lock()
+                    .unwrap()
+                    .candidate(identity.key)
+                    .unwrap()
+                    .unwrap()
+                    .bytes
+                    .as_bytes()
+                    == [1; 8192]
+        })
+        .unwrap();
+    drop(first);
+    reconcile_retained_identities(&mut state).unwrap();
+    let witness = (0..state.auto_warm.deferred.len())
+        .map(|index| state.auto_warm.deferred.get(index))
+        .find(|identity| identity.key == shared.key)
+        .unwrap();
+    assert_eq!(witness.root, Some(second.root()));
+    assert_eq!(value(&mut state, &second, b"a").unwrap(), vec![1; 8192]);
+    drop(second);
+    reconcile_retained_identities(&mut state).unwrap();
+    assert!(!state.cache.lock().unwrap().contains(shared.key));
+}
+
 fn assert_resident_rows(
     state: &mut DiskState,
     reads: &Reads,

@@ -84,6 +84,9 @@ pub(crate) struct CacheCursor {
 pub(crate) struct CacheCandidate<K> {
     pub(crate) key: K,
     pub(crate) bytes: CachedBytes,
+    // Owner-local, never reused after this identity leaves or changes key.
+    // This is only a positive retention hint, never read/removal authority.
+    pub(crate) incarnation: u64,
     version: u64,
     slot: usize,
 }
@@ -234,6 +237,7 @@ impl Drop for CachedOwner {
 struct Entry<K> {
     key: K,
     value: CachedOwner,
+    incarnation: u64,
     previous: usize,
     next: usize,
     marked: bool,
@@ -524,6 +528,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         Ok(self.find(key).map(|slot| CacheCandidate {
             key,
             bytes: self.slots[slot].as_ref().unwrap().value.clone(),
+            incarnation: self.slots[slot].as_ref().unwrap().incarnation,
             version,
             slot,
         }))
@@ -595,6 +600,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         Ok(Some(CacheCandidate {
             key,
             bytes: entry.value.clone(),
+            incarnation: entry.incarnation,
             version: self.structural_version.unwrap(),
             slot,
         }))
@@ -731,6 +737,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
                     candidate: Some(CacheCandidate {
                         key: entry.key,
                         bytes: entry.value.clone(),
+                        incarnation: entry.incarnation,
                         version,
                         slot,
                     }),
@@ -840,6 +847,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             (successor != NONE).then(|| self.slots[successor].as_ref().unwrap().key);
         let mut entry = self.take_slot(index);
         entry.key = new_key;
+        entry.incarnation = 0;
         self.insert(entry);
         if let Some(successor_key) = successor_key {
             let successor = self.find(successor_key).unwrap();
@@ -929,6 +937,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
                 self.insert(Entry {
                     key: new_key,
                     value: CachedOwner::new(source),
+                    incarnation: 0,
                     previous: NONE,
                     next: NONE,
                     marked: false,
@@ -1017,6 +1026,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         self.insert(Entry {
             key,
             value: CachedOwner::new(value.clone()),
+            incarnation: 0,
             previous: NONE,
             next: NONE,
             marked: false,
@@ -1147,6 +1157,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             self.insert(Entry {
                 key,
                 value: CachedOwner::new(value.clone()),
+                incarnation: 0,
                 previous: NONE,
                 next: NONE,
                 marked: false,
@@ -1210,6 +1221,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
                     self.insert(Entry {
                         key,
                         value: CachedOwner::new(value.clone()),
+                        incarnation: 0,
                         previous: NONE,
                         next: NONE,
                         marked: false,
@@ -1454,6 +1466,12 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
 
     fn insert(&mut self, mut entry: Entry<K>) {
         self.bump_structure();
+        // Rehash moves existing entries unchanged. New or relocated identities
+        // receive a never-reused stamp. Exhaustion already fences candidate
+        // acquisition, so zero can never authorize witness reuse.
+        if entry.incarnation == 0 {
+            entry.incarnation = self.structural_version.unwrap_or(0);
+        }
         let mask = self.slots.len() - 1;
         let mut index = key_hash(entry.key) as usize & mask;
         while self.slots[index].is_some() {
@@ -3507,6 +3525,197 @@ mod tests {
         assert_eq!(lru_keys(&cache), order);
         assert!(!cache.remove_candidate(&mut cursor, &candidate).unwrap());
         assert!(cache.candidate_step(&mut cursor, 1).unwrap().restarted);
+    }
+
+    #[test]
+    fn incarnation_survives_unrelated_insert_rehash_recency_and_backward_shift() {
+        let (mut cache, _) = cache_for(16, 64);
+        let keys: Vec<_> = (0..10000)
+            .filter(|key| key_hash(*key) as usize & 63 == 63)
+            .take(9)
+            .collect();
+        assert_eq!(keys.len(), 9);
+        for &key in &keys[..8] {
+            drop(load(&mut cache, key, 64));
+        }
+        let originals: Vec<_> = keys[..8]
+            .iter()
+            .map(|&key| cache.candidate(key).unwrap().unwrap())
+            .collect();
+        assert!(originals.iter().all(|candidate| candidate.incarnation != 0));
+        let old_slots = cache.slots.len();
+        drop(load(&mut cache, keys[8], 64));
+        assert!(
+            cache.slots.len() > old_slots,
+            "must exercise an actual rehash"
+        );
+        for original in &originals {
+            let fresh = cache.candidate(original.key).unwrap().unwrap();
+            assert_eq!(fresh.incarnation, original.incarnation);
+            assert!(CachedBytes::ptr_eq(&fresh.bytes, &original.bytes));
+            assert_ne!(fresh.version, original.version);
+        }
+        let target = keys[7];
+        let old_slot = cache.find(target).unwrap();
+        drop(cache.get(target).unwrap());
+        assert!(cache.remove(keys[0]));
+        assert_ne!(
+            cache.find(target).unwrap(),
+            old_slot,
+            "must shift a collision"
+        );
+        for original in &originals[1..] {
+            assert_eq!(
+                cache.candidate(original.key).unwrap().unwrap().incarnation,
+                original.incarnation
+            );
+        }
+        let mut cursor = CacheCursor::default();
+        let scanned = next_candidate(&cache, &mut cursor);
+        assert_eq!(
+            scanned.incarnation,
+            cache.candidate(scanned.key).unwrap().unwrap().incarnation
+        );
+        cache.begin_publication_candidates().unwrap();
+        cache.mark_publication_candidate(target).unwrap();
+        let marked = cache.pop_publication_candidate().unwrap().unwrap();
+        assert_eq!(marked.incarnation, originals[7].incarnation);
+        cache.clear_publication_candidates().unwrap();
+    }
+
+    #[test]
+    fn incarnation_changes_after_same_key_reload_and_clear_without_reusing_payload() {
+        let (mut cache, admission) = cache_for(8, 64);
+        drop(load(&mut cache, 1, 64));
+        let original = cache.candidate(1).unwrap().unwrap();
+        assert!(cache.remove(1));
+        let replacement = cache
+            .load(1, 64, |bytes| {
+                bytes.fill(255);
+                Ok::<_, ()>(())
+            })
+            .unwrap();
+        let reloaded = cache.candidate(1).unwrap().unwrap();
+        assert!(reloaded.incarnation > original.incarnation);
+        assert!(!CachedBytes::ptr_eq(&reloaded.bytes, &original.bytes));
+        assert_eq!(original.bytes.as_bytes(), &[1; 64]);
+        assert_eq!(replacement.as_bytes(), &[255; 64]);
+        assert!(!cache.remove_if_unchanged(&original).unwrap());
+        let previous_incarnation = reloaded.incarnation;
+        drop((original, reloaded, replacement));
+        cache.clear();
+        assert!(cache.candidate(1).unwrap().is_none());
+        drop(load(&mut cache, 1, 64));
+        assert!(cache.candidate(1).unwrap().unwrap().incarnation > previous_incarnation);
+        drop(cache);
+        assert_eq!(admission.used(), 0);
+    }
+
+    #[test]
+    fn incarnation_changes_on_relocation_roundtrip_and_new_shared_alias_only() {
+        let (mut cache, admission) = cache_for(8, 64);
+        drop(load(&mut cache, 1, 64));
+        let original = cache.candidate(1).unwrap().unwrap();
+        cache.relocate(1, 2);
+        let relocated = cache.candidate(2).unwrap().unwrap();
+        assert!(relocated.incarnation > original.incarnation);
+        assert!(CachedBytes::ptr_eq(&relocated.bytes, &original.bytes));
+        cache.relocate(2, 1);
+        let returned = cache.candidate(1).unwrap().unwrap();
+        assert!(returned.incarnation > relocated.incarnation);
+        assert!(CachedBytes::ptr_eq(&returned.bytes, &original.bytes));
+        assert!(cache.alias_if_fits(1, 3).unwrap());
+        let alias = cache.candidate(3).unwrap().unwrap();
+        assert!(alias.incarnation > returned.incarnation);
+        assert!(CachedBytes::ptr_eq(&alias.bytes, &returned.bytes));
+        assert_eq!(
+            cache.candidate(1).unwrap().unwrap().incarnation,
+            returned.incarnation
+        );
+        cache.relocate(1, 1);
+        assert!(cache.alias_if_fits(1, 3).unwrap());
+        assert!(cache.copy_relocated(1, 3).unwrap());
+        assert_eq!(
+            cache.candidate(1).unwrap().unwrap().incarnation,
+            returned.incarnation
+        );
+        assert_eq!(
+            cache.candidate(3).unwrap().unwrap().incarnation,
+            alias.incarnation
+        );
+        drop((original, relocated, returned, alias, cache));
+        assert_eq!(admission.used(), 0);
+    }
+
+    #[test]
+    fn incarnation_exhaustion_never_wraps_or_authorizes_new_candidates() {
+        let (mut cache, admission) = cache_for(8, 64);
+        drop(load(&mut cache, 1, 64));
+        let original = cache.candidate(1).unwrap().unwrap();
+        cache.structural_version = Some(u64::MAX - 1);
+        drop(load(&mut cache, 2, 64));
+        assert_eq!(cache.candidate(2).unwrap().unwrap().incarnation, u64::MAX);
+        drop(load(&mut cache, 3, 64));
+        assert_eq!(cache.structural_version, None);
+        for key in 1..=3 {
+            assert!(cache.contains(key));
+            assert!(matches!(
+                cache.candidate(key),
+                Err(AdmissionError::OwnerFailed)
+            ));
+        }
+        assert_eq!(
+            cache.remove_if_unchanged(&original),
+            Err(AdmissionError::OwnerFailed)
+        );
+        assert_eq!(
+            cache.begin_publication_candidates(),
+            Err(AdmissionError::OwnerFailed)
+        );
+        cache.clear();
+        drop(load(&mut cache, 1, 64));
+        assert_eq!(cache.structural_version, None);
+        assert!(matches!(
+            cache.candidate(1),
+            Err(AdmissionError::OwnerFailed)
+        ));
+        drop((original, cache));
+        assert_eq!(admission.used(), 0);
+    }
+
+    #[test]
+    fn incarnation_does_not_authorize_candidate_acquisition_after_owner_refusal() {
+        let (mut cache, admission) = cache_for(8, 64);
+        drop(load(&mut cache, 1, 64));
+        let original = cache.candidate(1).unwrap().unwrap();
+        assert_ne!(original.incarnation, 0);
+        cache.begin_publication_candidates().unwrap();
+        cache.mark_publication_candidate(1).unwrap();
+        admission.failed.store(true, Ordering::Release);
+        assert!(matches!(
+            cache.candidate(1),
+            Err(AdmissionError::OwnerFailed)
+        ));
+        assert!(matches!(
+            cache.candidate(999),
+            Err(AdmissionError::OwnerFailed)
+        ));
+        assert!(matches!(
+            cache.pop_publication_candidate(),
+            Err(AdmissionError::OwnerFailed)
+        ));
+        assert_eq!(
+            cache.remove_if_unchanged(&original),
+            Err(AdmissionError::OwnerFailed)
+        );
+        assert_eq!(
+            cache.clear_publication_candidates(),
+            Err(AdmissionError::OwnerFailed)
+        );
+        assert!(cache.contains(1));
+        assert_eq!(original.bytes.as_bytes(), &[1; 64]);
+        drop((original, cache));
+        assert_eq!(admission.used(), 0);
     }
 
     #[test]

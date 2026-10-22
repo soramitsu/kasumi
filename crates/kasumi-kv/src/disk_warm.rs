@@ -32,6 +32,18 @@ impl CachedIdentityProofWorkspace {
             directory,
         })
     }
+
+    pub(super) fn check_owner(
+        &self,
+        admission: &Arc<dyn StorageAdmission>,
+    ) -> Result<(), CoreError> {
+        if !Arc::ptr_eq(&self.admission, admission) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "cache proof workspace belongs to another admission owner",
+            )));
+        }
+        Ok(())
+    }
 }
 
 #[derive(Default)]
@@ -54,16 +66,16 @@ pub(super) struct Warmup {
 pub(super) enum CachedReach {
     Selected,
     /// Only an older pinned root reaches it: dead once that pin is released.
-    Pinned,
+    Pinned(DirectoryRoot),
     Unreachable,
 }
 
 impl CachedReach {
-    fn from_root(selected: bool) -> Self {
-        if selected {
+    fn from_root(root: DirectoryRoot, selected: DirectoryRoot) -> Self {
+        if root == selected {
             Self::Selected
         } else {
-            Self::Pinned
+            Self::Pinned(root)
         }
     }
 }
@@ -335,11 +347,7 @@ impl DiskState {
         capture: &SnapshotRoots,
         workspace: &mut CachedIdentityProofWorkspace,
     ) -> Result<CachedReach, CoreError> {
-        if !Arc::ptr_eq(&workspace.admission, &self.owner.admission) {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "cache proof workspace belongs to another admission owner",
-            )));
-        }
+        workspace.check_owner(&self.owner.admission)?;
         self.owner.check()?;
         let roots = std::iter::once(self.selected).chain(
             capture
@@ -376,7 +384,7 @@ impl DiskState {
                         PageCheck::Digest,
                         &mut workspace.directory,
                     )? {
-                        return Ok(CachedReach::from_root(root == self.selected));
+                        return Ok(CachedReach::from_root(root, self.selected));
                     }
                 }
             }
@@ -424,7 +432,7 @@ impl DiskState {
                                 "cached value logical version differs",
                             )));
                         }
-                        return Ok(CachedReach::from_root(root == self.selected));
+                        return Ok(CachedReach::from_root(root, self.selected));
                     }
                 }
             }

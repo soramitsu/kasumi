@@ -27,16 +27,26 @@ pub(super) struct AutoWarm {
 /// reached them, so they stayed cached. The engine releases that pin after the
 /// publication, and nothing else proves them again before a complete warm pass,
 /// which every publication restarts: kept unchecked, they would accumulate per
-/// commit until the cache filled the shared admission budget. Each later
-/// publication proves them again. Fixed capacity: an identity deferred while
+/// commit until the cache filled the shared admission budget. Later publications
+/// re-prove them when their exact witnessed root or cache incarnation changes.
+/// A witness only postpones optional cleanup; it never serves bytes or permits
+/// removal. Fixed capacity: an identity deferred while
 /// this is full stays cached until a warm pass or reclamation removes it.
-pub(super) struct DeferredIdentities(Vec<NativeIdentity>);
+pub(super) struct DeferredIdentities(Vec<DeferredIdentity>);
+
+#[derive(Clone, Copy)]
+pub(super) struct DeferredIdentity {
+    pub(super) key: NativeIdentity,
+    pub(super) incarnation: u64,
+    // None after a capacity refusal: no positive proof was established.
+    pub(super) root: Option<DirectoryRoot>,
+}
 
 impl DeferredIdentities {
     pub(super) const CAPACITY: usize = 1024;
 
     /// Whether the identity is now deferred; never grows the fixed backing.
-    pub(super) fn push(&mut self, identity: NativeIdentity) -> bool {
+    pub(super) fn push(&mut self, identity: DeferredIdentity) -> bool {
         if self.0.len() == Self::CAPACITY {
             return false;
         }
@@ -48,11 +58,11 @@ impl DeferredIdentities {
         self.0.len()
     }
 
-    pub(super) fn get(&self, index: usize) -> NativeIdentity {
+    pub(super) fn get(&self, index: usize) -> DeferredIdentity {
         self.0[index]
     }
 
-    pub(super) fn set(&mut self, index: usize, identity: NativeIdentity) {
+    pub(super) fn set(&mut self, index: usize, identity: DeferredIdentity) {
         self.0[index] = identity;
     }
 
@@ -67,8 +77,8 @@ impl AutoWarm {
         std::mem::size_of::<[Option<DirectoryRoot>; MAX_PINNED_ROOTS]>()
             + (std::mem::align_of::<Option<DirectoryRoot>>() - 1)
             + ALLOCATION_ALLOWANCE
-            + std::mem::size_of::<[NativeIdentity; DeferredIdentities::CAPACITY]>()
-            + (std::mem::align_of::<NativeIdentity>() - 1)
+            + std::mem::size_of::<[DeferredIdentity; DeferredIdentities::CAPACITY]>()
+            + (std::mem::align_of::<DeferredIdentity>() - 1)
             + ALLOCATION_ALLOWANCE
     }
 

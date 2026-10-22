@@ -5,6 +5,7 @@
 //! reclamation until this scope is drained. Concurrent pin drops are safe:
 //! captures conservatively retain their old reachable identities for this pass.
 
+use super::auto_warming::DeferredIdentity;
 use super::warming::{CachedIdentityProofWorkspace, CachedReach};
 use super::*;
 use crate::snapshot_pins::SnapshotRoots;
@@ -14,6 +15,13 @@ pub(super) struct PublicationCache {
     capture: SnapshotRoots,
     pub(super) proof: CachedIdentityProofWorkspace,
     active: bool,
+}
+
+#[cfg(test)]
+impl PublicationCache {
+    pub(super) fn replace_capture_for_test(&mut self, capture: SnapshotRoots) {
+        self.capture = capture;
+    }
 }
 
 impl Drop for PublicationCache {
@@ -79,8 +87,12 @@ impl DiskState {
                 CachedReach::Selected => {}
                 // The engine still pins the root this publication replaced
                 // until it installs the new one. Prove it again later.
-                CachedReach::Pinned => {
-                    self.auto_warm.deferred.push(candidate.key);
+                CachedReach::Pinned(root) => {
+                    self.auto_warm.deferred.push(DeferredIdentity {
+                        key: candidate.key,
+                        incarnation: candidate.incarnation,
+                        root: Some(root),
+                    });
                 }
                 CachedReach::Unreachable => {
                     self.pins
@@ -114,7 +126,7 @@ impl DiskState {
         self.owner.check()
     }
 
-    /// Prove the first `count` deferred identities again under this
+    /// Reconcile the first `count` deferred identities under this
     /// publication's capture: remove those no root reaches any more, keep
     /// those an older pin still reaches, and forget the rest. Identities this
     /// publication deferred follow them unchanged.
@@ -123,6 +135,13 @@ impl DiskState {
         count: usize,
         publication: &mut PublicationCache,
     ) -> Result<(), CoreError> {
+        self.owner.check()?;
+        publication.proof.check_owner(&self.owner.admission)?;
+        // Establish the capture's physical owner even on the all-witness-hit
+        // path. The enclosing Core lock excludes publication, new pins and GC;
+        // a concurrent pin drop can only defer optional cleanup one more time.
+        self.pins
+            .validate_coverage(&publication.capture, self.selected)?;
         let mut kept = 0;
         for index in 0..count {
             let identity = self.auto_warm.deferred.get(index);
@@ -130,9 +149,22 @@ impl DiskState {
                 .cache
                 .lock()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
-                .candidate(identity)?;
+                .candidate(identity.key)?;
             // An evicted, pruned or reclaimed identity needs nothing more.
             let Some(candidate) = candidate else { continue };
+            if identity.incarnation != 0
+                && identity.incarnation == candidate.incarnation
+                && identity.root.is_some_and(|root| {
+                    root != self.selected && publication.capture.roots().contains(&root)
+                })
+            {
+                // This exact immutable payload was proved under this exact
+                // root. Keep only; read verification and removal authority
+                // remain unchanged. No payload or pin is retained by the hint.
+                self.auto_warm.deferred.set(kept, identity);
+                kept += 1;
+                continue;
+            }
             let reach = match self.cached_identity_reach(
                 &candidate,
                 &publication.capture,
@@ -141,13 +173,31 @@ impl DiskState {
                 Ok(reach) => reach,
                 // Optional cleanup never fails a durable publication: keep
                 // the identity for a later proof.
-                Err(error) if error.is_capacity_denied() => CachedReach::Pinned,
+                Err(error) if error.is_capacity_denied() => {
+                    self.auto_warm.deferred.set(
+                        kept,
+                        DeferredIdentity {
+                            key: candidate.key,
+                            incarnation: candidate.incarnation,
+                            root: None,
+                        },
+                    );
+                    kept += 1;
+                    continue;
+                }
                 Err(error) => return Err(error),
             };
             match reach {
                 CachedReach::Selected => {}
-                CachedReach::Pinned => {
-                    self.auto_warm.deferred.set(kept, identity);
+                CachedReach::Pinned(root) => {
+                    self.auto_warm.deferred.set(
+                        kept,
+                        DeferredIdentity {
+                            key: candidate.key,
+                            incarnation: candidate.incarnation,
+                            root: Some(root),
+                        },
+                    );
                     kept += 1;
                 }
                 CachedReach::Unreachable => {
@@ -164,6 +214,6 @@ impl DiskState {
             drop(candidate);
         }
         self.auto_warm.deferred.remove(kept..count);
-        Ok(())
+        self.owner.check()
     }
 }
