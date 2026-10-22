@@ -85,7 +85,8 @@ pub(crate) struct CacheCandidate<K> {
     pub(crate) key: K,
     pub(crate) bytes: CachedBytes,
     // Owner-local, never reused after this identity leaves or changes key.
-    // This is only a positive retention hint, never read/removal authority.
+    // Binds deferred reachability proofs to this payload; by itself it never
+    // authorizes reads or removal.
     pub(crate) incarnation: u64,
     version: u64,
     slot: usize,

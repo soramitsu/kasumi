@@ -5,10 +5,16 @@
 //! reclamation until this scope is drained. Concurrent pin drops are safe:
 //! captures conservatively retain their old reachable identities for this pass.
 
-use super::auto_warming::DeferredIdentity;
+use super::auto_warming::{DeferredIdentity, DeferredWitness};
 use super::warming::{CachedIdentityProofWorkspace, CachedReach};
 use super::*;
 use crate::snapshot_pins::SnapshotRoots;
+
+#[cfg(test)]
+thread_local! {
+    /// Deferred identities this thread's publications proved again.
+    pub(super) static DEFERRED_PROOFS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 pub(super) struct PublicationCache {
     cache: NativeSharedCache,
@@ -86,12 +92,15 @@ impl DiskState {
             )? {
                 CachedReach::Selected => {}
                 // The engine still pins the root this publication replaced
-                // until it installs the new one. Prove it again later.
+                // until it installs the new one. Reconsider it once released.
                 CachedReach::Pinned(root) => {
                     self.auto_warm.deferred.push(DeferredIdentity {
                         key: candidate.key,
                         incarnation: candidate.incarnation,
-                        root: Some(root),
+                        witness: Some(DeferredWitness {
+                            root,
+                            superseded: self.selected.generation,
+                        }),
                     });
                 }
                 CachedReach::Unreachable => {
@@ -126,10 +135,12 @@ impl DiskState {
         self.owner.check()
     }
 
-    /// Reconcile the first `count` deferred identities under this
-    /// publication's capture: remove those no root reaches any more, keep
-    /// those an older pin still reaches, and forget the rest. Identities this
-    /// publication deferred follow them unchanged.
+    /// Reconcile the first `count` deferred identities. An unchanged payload
+    /// stays while its witnessed root is captured. Once that root is released,
+    /// only pins older than the generation that superseded it can reach it;
+    /// with no such pins, removal needs no reads. A missing witness or changed
+    /// incarnation requires a full proof before either shortcut can be reused.
+    /// Identities this publication deferred follow them unchanged.
     fn prune_deferred(
         &mut self,
         count: usize,
@@ -152,24 +163,48 @@ impl DiskState {
                 .candidate(identity.key)?;
             // An evicted, pruned or reclaimed identity needs nothing more.
             let Some(candidate) = candidate else { continue };
-            if identity.incarnation != 0
-                && identity.incarnation == candidate.incarnation
-                && identity.root.is_some_and(|root| {
-                    root != self.selected && publication.capture.roots().contains(&root)
-                })
-            {
-                // This exact immutable payload was proved under this exact
-                // root. Keep only; read verification and removal authority
-                // remain unchanged. No payload or pin is retained by the hint.
-                self.auto_warm.deferred.set(kept, identity);
-                kept += 1;
-                continue;
-            }
-            let reach = match self.cached_identity_reach(
-                &candidate,
-                &publication.capture,
-                &mut publication.proof,
-            ) {
+            let witness = identity.witness.filter(|witness| {
+                identity.incarnation != 0
+                    && identity.incarnation == candidate.incarnation
+                    && witness.root != self.selected
+            });
+            let (reach, superseded) = if let Some(witness) = witness {
+                if publication.capture.roots().contains(&witness.root) {
+                    self.auto_warm.deferred.set(kept, identity);
+                    kept += 1;
+                    continue;
+                }
+                let reach = if publication
+                    .capture
+                    .roots()
+                    .iter()
+                    .any(|root| root.generation < witness.superseded)
+                {
+                    #[cfg(test)]
+                    DEFERRED_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
+                    self.cached_identity_reach_before(
+                        &candidate,
+                        witness.superseded,
+                        &publication.capture,
+                        &mut publication.proof,
+                    )
+                } else {
+                    Ok(CachedReach::Unreachable)
+                };
+                (reach, witness.superseded)
+            } else {
+                #[cfg(test)]
+                DEFERRED_PROOFS.with(|proofs| proofs.set(proofs.get() + 1));
+                (
+                    self.cached_identity_reach(
+                        &candidate,
+                        &publication.capture,
+                        &mut publication.proof,
+                    ),
+                    self.selected.generation,
+                )
+            };
+            let reach = match reach {
                 Ok(reach) => reach,
                 // Optional cleanup never fails a durable publication: keep
                 // the identity for a later proof.
@@ -179,7 +214,7 @@ impl DiskState {
                         DeferredIdentity {
                             key: candidate.key,
                             incarnation: candidate.incarnation,
-                            root: None,
+                            witness: None,
                         },
                     );
                     kept += 1;
@@ -195,7 +230,7 @@ impl DiskState {
                         DeferredIdentity {
                             key: candidate.key,
                             incarnation: candidate.incarnation,
-                            root: Some(root),
+                            witness: Some(DeferredWitness { root, superseded }),
                         },
                     );
                     kept += 1;

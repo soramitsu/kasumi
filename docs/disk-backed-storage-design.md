@@ -777,15 +777,29 @@ fitting current/pinned union. Focused regressions pass, while broader validation
 and the remaining C03 completion criteria are open.
 
 An identity that only a captured older pin still reaches stays cached for that
-reader, and the publication records it in a fixed list (1,024 identities) in
-the automatic-warm metadata. The engine pins its installed root while the next
-entry applies, so every foreground publication supersedes such identities.
-Each later publication proves the recorded ones again under its own capture:
-it removes those no root reaches, keeps those an older pin still reaches and
-forgets the rest. Before this, they waited for a complete warm pass, which
-every publication restarts, and the cache grew by each commit's replaced path
-until it filled the shared admission budget. Identities beyond a full list are
-left to the warm pass and reclamation, as before.
+reader, and the publication records it in a fixed list (1,024 identities) in the
+automatic-warm metadata. The engine pins its installed root while the next entry
+applies, so every foreground publication supersedes such identities. Each
+recorded identity binds a reachability witness to the cache payload's unique
+incarnation. The witness contains the exact pinned root that reached it and the
+generation of the selected root that no longer did. A later publication that
+still captures that root keeps the unchanged payload without a proof, because
+the root and payload are immutable. Once the root is released, only captured
+roots older than the recorded generation need checking: later roots descend
+from the selected one and reach only its identities or newly appended ones.
+With no older root captured, the identity is removed without a read. If another
+older pin reaches it, the witness moves to that pin and keeps its original
+generation bound.
+
+A missing witness or replaced cache incarnation requires a full proof under the
+selected root and captured pins. Capacity refusal retains the identity without
+a witness for a later retry; it cannot turn an incomplete proof into authority.
+Every cleanup validates the admission owner and capture coverage, including
+paths that skip reads, and removal requires the candidate's key and payload
+owner to remain unchanged. This keeps engine-style publications from growing
+the cache by each commit's replaced path while preserving snapshot readers and
+corruption checks. The fixed list's full backing is charged to the disk owner;
+identities beyond its capacity are left to the warm pass and reclamation.
 
 A publication-scoped intrusive candidate chain lives inside the cache entries,
 with its link/mark fields included in each slot's charge. A dedicated private

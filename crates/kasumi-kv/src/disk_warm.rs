@@ -60,12 +60,13 @@ pub(super) struct Warmup {
     pub(super) last_work: usize,
 }
 
-/// Which captured root, if any, still reaches a cached identity. The selected
-/// root is always examined first.
+/// Which examined root, if any, still reaches a cached identity. A full proof
+/// examines the selected root first; a deferred proof can exclude newer roots.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum CachedReach {
     Selected,
-    /// Only an older pinned root reaches it: dead once that pin is released.
+    /// The selected root does not reach it, but this immutable pinned root does.
+    /// Other older pins may still reach it after this one is released.
     Pinned(DirectoryRoot),
     Unreachable,
 }
@@ -347,8 +348,6 @@ impl DiskState {
         capture: &SnapshotRoots,
         workspace: &mut CachedIdentityProofWorkspace,
     ) -> Result<CachedReach, CoreError> {
-        workspace.check_owner(&self.owner.admission)?;
-        self.owner.check()?;
         let roots = std::iter::once(self.selected).chain(
             capture
                 .roots()
@@ -356,6 +355,37 @@ impl DiskState {
                 .copied()
                 .filter(|&root| root != self.selected),
         );
+        self.cached_identity_reach_from(candidate, roots, workspace)
+    }
+
+    /// Like `cached_identity_reach` for an identity the selected root of
+    /// generation `superseded` no longer reached. Every later root descends
+    /// from that one and reaches only its identities or newly appended ones,
+    /// the same reasoning that lets reclamation consult only pins before an
+    /// evacuated generation, so only a captured older root can reach it.
+    pub(super) fn cached_identity_reach_before(
+        &self,
+        candidate: &CacheCandidate<NativeIdentity>,
+        superseded: u64,
+        capture: &SnapshotRoots,
+        workspace: &mut CachedIdentityProofWorkspace,
+    ) -> Result<CachedReach, CoreError> {
+        let roots = capture
+            .roots()
+            .iter()
+            .copied()
+            .filter(|root| root.generation < superseded);
+        self.cached_identity_reach_from(candidate, roots, workspace)
+    }
+
+    fn cached_identity_reach_from(
+        &self,
+        candidate: &CacheCandidate<NativeIdentity>,
+        roots: impl Iterator<Item = DirectoryRoot>,
+        workspace: &mut CachedIdentityProofWorkspace,
+    ) -> Result<CachedReach, CoreError> {
+        workspace.check_owner(&self.owner.admission)?;
+        self.owner.check()?;
         let private = self.pages.maintenance_private_view();
         let reader = DirectoryReader::new(&private, self.owner.admission.clone());
         match candidate.key {

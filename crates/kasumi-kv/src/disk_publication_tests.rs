@@ -36,7 +36,7 @@ fn unchanged_pinned_root_avoids_repeated_deferred_identity_reads() {
     // check still runs. The next pass has the same roots and payloads.
     for index in 0..count {
         let mut identity = state.auto_warm.deferred.get(index);
-        identity.root = None;
+        identity.witness = None;
         state.auto_warm.deferred.set(index, identity);
     }
     let before = reads.count();
@@ -58,21 +58,30 @@ fn unchanged_pinned_root_avoids_repeated_deferred_identity_reads() {
     assert_eq!(state.auto_warm.deferred.len(), count);
     assert_eq!(state.cache_stats().unwrap(), accounting);
     assert_eq!(value(&mut state, &old, b"a").unwrap(), vec![1; 8192]);
-    // Once the exact old root leaves, the full proof must retire its obsolete
-    // identities even if another snapshot occupies the freed registry slot.
+    // Once the exact old root leaves, its superseded identities need no read,
+    // even if a current snapshot occupies the freed registry slot.
     drop(old);
     let current = state.snapshot().unwrap();
     let before = reads.count();
     reconcile_retained_identities(&mut state).unwrap();
-    assert!(reads.count() > before);
+    assert_eq!(reads.count(), before);
     assert_eq!(state.auto_warm.deferred.len(), 0);
     assert_eq!(value(&mut state, &current, b"a").unwrap(), vec![7; 8192]);
 }
 
 #[test]
 fn replaced_cached_payload_cannot_reuse_a_pinned_root_witness() {
+    assert_replaced_payload_is_reproved(false);
+}
+
+#[test]
+fn replaced_cached_payload_cannot_reuse_a_released_root_witness() {
+    assert_replaced_payload_is_reproved(true);
+}
+
+fn assert_replaced_payload_is_reproved(release_root: bool) {
     let (mut state, _, _) = resident_fixture();
-    let _old = state.snapshot().unwrap();
+    let old = state.snapshot().unwrap();
     state
         .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
         .unwrap();
@@ -98,12 +107,47 @@ fn replaced_cached_payload_cannot_reuse_a_pinned_root_witness() {
             identity.incarnation,
         );
     }
+    let _old = if release_root {
+        drop(old);
+        assert!(state.pins.capture().unwrap().roots().is_empty());
+        None
+    } else {
+        Some(old)
+    };
     assert!(matches!(
         reconcile_retained_identities(&mut state)
             .unwrap_err()
             .rejected_cause(),
         Some(crate::CoreErrorCause::Corrupt(_))
     ));
+    assert!(state.cache.lock().unwrap().contains(identity.key));
+}
+
+#[test]
+fn deferred_identity_without_a_witness_requires_a_full_proof_after_pin_release() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, reads, _) = resident_fixture();
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let count = state.auto_warm.deferred.len();
+    assert!(count >= 2, "fixture must defer a page and a value");
+    for index in 0..count {
+        // A refused proof keeps the candidate but clears its entire witness,
+        // including the generation bound that could bypass subsequent reads.
+        let mut identity = state.auto_warm.deferred.get(index);
+        identity.witness = None;
+        state.auto_warm.deferred.set(index, identity);
+    }
+    drop(old);
+    assert!(state.pins.capture().unwrap().roots().is_empty());
+    let before_reads = reads.count();
+    let before_proofs = proofs();
+    reconcile_retained_identities(&mut state).unwrap();
+    assert!(reads.count() > before_reads);
+    assert_eq!(proofs(), before_proofs + count);
+    assert_eq!(state.auto_warm.deferred.len(), 0);
 }
 
 #[test]
@@ -169,10 +213,11 @@ fn deferred_witness_root_compares_the_complete_root_not_just_generation() {
     let count = state.auto_warm.deferred.len();
     for index in 0..count {
         let mut identity = state.auto_warm.deferred.get(index);
-        let mut different_root = identity.root.unwrap();
+        let witness = identity.witness.as_mut().unwrap();
+        let mut different_root = witness.root;
         different_root.page.as_mut().unwrap().sha256[0] ^= 1;
         assert_eq!(different_root.generation, old.root().generation);
-        identity.root = Some(different_root);
+        witness.root = different_root;
         state.auto_warm.deferred.set(index, identity);
     }
     let before = reads.count();
@@ -182,7 +227,10 @@ fn deferred_witness_root_compares_the_complete_root_not_just_generation() {
         "different root digest reused an old witness"
     );
     for index in 0..count {
-        assert_eq!(state.auto_warm.deferred.get(index).root, Some(old.root()));
+        assert_eq!(
+            state.auto_warm.deferred.get(index).witness.unwrap().root,
+            old.root()
+        );
     }
 }
 
@@ -201,7 +249,7 @@ fn retired_witness_rechecks_other_pins_before_removing_a_shared_identity() {
         .map(|index| state.auto_warm.deferred.get(index))
         .find(|identity| {
             matches!(identity.key, NativeIdentity::Value { .. })
-                && identity.root == Some(first.root())
+                && identity.witness.unwrap().root == first.root()
                 && state
                     .cache
                     .lock()
@@ -220,7 +268,12 @@ fn retired_witness_rechecks_other_pins_before_removing_a_shared_identity() {
         .map(|index| state.auto_warm.deferred.get(index))
         .find(|identity| identity.key == shared.key)
         .unwrap();
-    assert_eq!(witness.root, Some(second.root()));
+    assert_eq!(witness.witness.unwrap().root, second.root());
+    assert_eq!(
+        witness.witness.unwrap().superseded,
+        shared.witness.unwrap().superseded,
+        "handoff must preserve the original negative reachability proof"
+    );
     assert_eq!(value(&mut state, &second, b"a").unwrap(), vec![1; 8192]);
     drop(second);
     reconcile_retained_identities(&mut state).unwrap();
@@ -384,6 +437,139 @@ fn rewrites_under_the_installed_pin_keep_cache_entries_bounded() {
         entries[1..].iter().all(|&count| count == entries[1]),
         "superseded identities accumulated: {entries:?}"
     );
+}
+
+#[test]
+fn identities_a_still_captured_pin_reaches_need_no_repeated_proof() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, _, _) = resident_fixture();
+    // A reader keeps the first root pinned across many publications.
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
+        .unwrap();
+    let before = proofs();
+    for round in 0..8u8 {
+        state
+            .commit(&[Operation::put("accounts", b"hot", vec![round; 8192])])
+            .unwrap();
+    }
+    // That root still reaches every identity kept for it, so no publication
+    // walks the directory to prove them again while it stays captured.
+    let held = state.auto_warm.deferred.len();
+    assert!(held > 0);
+    assert!(
+        (0..held).all(|index| {
+            state.auto_warm.deferred.get(index).witness.unwrap().root == old.root()
+        })
+    );
+    assert_eq!(proofs(), before);
+    drop(old);
+    // No captured root is older than the roots that superseded them, so the
+    // next publication removes them all without walking them again.
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![9; 8192])])
+        .unwrap();
+    assert_eq!(proofs(), before);
+    assert_eq!(state.auto_warm.deferred.len(), 0);
+}
+
+#[test]
+fn identities_the_installed_pin_kept_leave_without_a_second_walk() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, _, _) = resident_fixture();
+    // The engine pins its installed root while the next entry applies, then
+    // installs the published root and releases the replaced one.
+    let mut installed = state.snapshot().unwrap();
+    let before = proofs();
+    let mut held = Vec::new();
+    for round in 0..16u8 {
+        state
+            .commit(&[Operation::put("accounts", b"a", vec![round; 8192])])
+            .unwrap();
+        // Only what this publication replaced stays, kept for the installed
+        // root; what the previous one kept left once its root was released.
+        let deferred = state.auto_warm.deferred.len();
+        assert!(deferred > 0);
+        assert!((0..deferred).all(|index| {
+            state.auto_warm.deferred.get(index).witness.unwrap().root == installed.root()
+        }));
+        held.push(deferred);
+        installed = state.snapshot().unwrap();
+    }
+    assert!(
+        held[1..].iter().all(|&count| count == held[1]),
+        "deferred identities accumulated: {held:?}"
+    );
+    // None of them was walked a second time.
+    assert_eq!(proofs(), before);
+    drop(installed);
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![9; 8192])])
+        .unwrap();
+    assert_eq!(state.auto_warm.deferred.len(), 0);
+    assert_eq!(proofs(), before);
+}
+
+#[test]
+fn a_released_root_hands_its_identities_to_an_older_pin_that_still_reaches_them() {
+    let proofs = || super::super::publication::DEFERRED_PROOFS.with(std::cell::Cell::get);
+    let (mut state, reads, _) = resident_fixture();
+    // Two readers pin consecutive roots; both reach the original "a" row.
+    let older = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![8; 8192])])
+        .unwrap();
+    let newer = state.snapshot().unwrap();
+    state
+        .commit(&[Operation::put("accounts", b"a", vec![9; 8192])])
+        .unwrap();
+    let deferred = |state: &DiskState| {
+        (0..state.auto_warm.deferred.len())
+            .map(|index| state.auto_warm.deferred.get(index))
+            .collect::<Vec<_>>()
+    };
+    let kept = deferred(&state);
+    assert!(kept.iter().all(|identity| {
+        let root = identity.witness.unwrap().root;
+        root == older.root() || root == newer.root()
+    }));
+    // Releasing the first root leaves the newer pin as the only older root
+    // that can still reach what the "a" rewrite superseded: those are walked
+    // once under it and stay. What the "b" rewrite superseded before the newer
+    // root existed needs no walk; nothing captured is older than it.
+    let walked = kept
+        .iter()
+        .filter(|identity| {
+            let witness = identity.witness.unwrap();
+            witness.root == older.root() && witness.superseded > newer.root().generation
+        })
+        .count();
+    assert!(walked > 0);
+    let before = proofs();
+    drop(older);
+    state
+        .commit(&[Operation::put("accounts", b"hot", vec![7; 8192])])
+        .unwrap();
+    assert_eq!(proofs(), before + walked);
+    let kept = deferred(&state);
+    assert!(!kept.is_empty());
+    assert!(
+        kept.iter()
+            .all(|identity| identity.witness.unwrap().root == newer.root())
+    );
+    assert_resident_rows(
+        &mut state,
+        &reads,
+        &newer,
+        &[(b"a", 1), (b"b", 8), (b"hot", 3)],
+    );
+    drop(newer);
+    state
+        .commit(&[Operation::put("accounts", b"hot", vec![6; 8192])])
+        .unwrap();
+    assert_eq!(proofs(), before + walked);
+    assert_eq!(state.auto_warm.deferred.len(), 0);
 }
 
 #[test]

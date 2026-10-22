@@ -24,13 +24,13 @@ pub(super) struct AutoWarm {
 }
 
 /// Identities a publication superseded while an older snapshot pin still
-/// reached them, so they stayed cached. The engine releases that pin after the
-/// publication, and nothing else proves them again before a complete warm pass,
-/// which every publication restarts: kept unchecked, they would accumulate per
-/// commit until the cache filled the shared admission budget. Later publications
-/// re-prove them when their exact witnessed root or cache incarnation changes.
-/// A witness only postpones optional cleanup; it never serves bytes or permits
-/// removal. Fixed capacity: an identity deferred while
+/// reached them, so they stayed cached. Each witness binds a proof to the exact
+/// cache incarnation: the pinned root reaches it, but the selected root at
+/// `superseded` does not. Later roots cannot reintroduce an old physical identity,
+/// so only pins older than that generation need checking after the witnessed
+/// root is released. A replaced payload or absent witness requires a full proof.
+/// Witnesses never serve bytes; removal still requires capture validation and
+/// an unchanged cache candidate. Fixed capacity: an identity deferred while
 /// this is full stays cached until a warm pass or reclamation removes it.
 pub(super) struct DeferredIdentities(Vec<DeferredIdentity>);
 
@@ -38,8 +38,14 @@ pub(super) struct DeferredIdentities(Vec<DeferredIdentity>);
 pub(super) struct DeferredIdentity {
     pub(super) key: NativeIdentity,
     pub(super) incarnation: u64,
-    // None after a capacity refusal: no positive proof was established.
-    pub(super) root: Option<DirectoryRoot>,
+    // None after a capacity refusal: no complete proof was established.
+    pub(super) witness: Option<DeferredWitness>,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct DeferredWitness {
+    pub(super) root: DirectoryRoot,
+    pub(super) superseded: u64,
 }
 
 impl DeferredIdentities {
