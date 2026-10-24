@@ -37,6 +37,8 @@ mod snapshot_failure_tests;
 pub(crate) use security_audit::AuditReleaseGate;
 #[path = "rpc_credentials.rs"]
 mod credentials;
+#[cfg(test)]
+pub(crate) use credentials::cancel_next_renewal_reply;
 #[path = "rpc_retirement.rs"]
 mod retirement;
 pub use authority::NativeAuthority;

@@ -347,9 +347,71 @@ fn retryable(error: &anyhow::Error) -> bool {
         Some(kasumi_client::ClientError::Connection(_)) => true,
         Some(kasumi_client::ClientError::Transport(status)) => matches!(
             status.code(),
-            tonic::Code::Unavailable | tonic::Code::DeadlineExceeded | tonic::Code::Unknown
+            tonic::Code::Cancelled
+                | tonic::Code::Unavailable
+                | tonic::Code::DeadlineExceeded
+                | tonic::Code::Unknown
         ),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod credential_renewal_tests {
+    use super::*;
+    use kasumi_client::ClientError;
+
+    #[test]
+    fn credential_watch_retries_only_uncertain_transport_failures() {
+        for code in [
+            tonic::Code::Cancelled,
+            tonic::Code::Unavailable,
+            tonic::Code::DeadlineExceeded,
+            tonic::Code::Unknown,
+        ] {
+            assert!(
+                retryable(&ClientError::Transport(tonic::Status::new(code, "fixture")).into()),
+                "uncertain transport {code:?} must retain the renewal identity"
+            );
+        }
+        for code in [
+            tonic::Code::Ok,
+            tonic::Code::InvalidArgument,
+            tonic::Code::NotFound,
+            tonic::Code::AlreadyExists,
+            tonic::Code::PermissionDenied,
+            tonic::Code::ResourceExhausted,
+            tonic::Code::FailedPrecondition,
+            tonic::Code::Aborted,
+            tonic::Code::OutOfRange,
+            tonic::Code::Unimplemented,
+            tonic::Code::Internal,
+            tonic::Code::DataLoss,
+            tonic::Code::Unauthenticated,
+        ] {
+            assert!(!retryable(
+                &ClientError::Transport(tonic::Status::new(code, "fixture")).into()
+            ));
+        }
+        for error in [
+            ClientError::DecodeRejected {
+                code: tonic::Code::Cancelled,
+                reason: "fixture invalid proof",
+                database: None,
+            },
+            ClientError::Authorization,
+            ClientError::InvalidResponse("fixture invalid family"),
+            ClientError::RequestTooLarge,
+        ] {
+            assert!(!retryable(&error.into()));
+        }
+        for message in [
+            "renewal journal belongs to another credential",
+            "renewal journal issuance has expired",
+            "fixture corrupt journal",
+        ] {
+            assert!(!retryable(&anyhow::anyhow!(message)));
+        }
     }
 }
 

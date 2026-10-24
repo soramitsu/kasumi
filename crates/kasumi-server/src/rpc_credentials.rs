@@ -157,6 +157,56 @@ impl NativeAdmin {
         )
         .await
         .map_err(status)?;
+        #[cfg(test)]
+        if matches!(operation, CredentialOperation::Renew) {
+            cancelled_reply::after_commit(own_family, &response)?;
+        }
         Ok(Response::new(response))
+    }
+}
+
+#[cfg(test)]
+pub(crate) use cancelled_reply::install as cancel_next_renewal_reply;
+
+/// Lose only a selected fixture family's reply, after the durable issuance and
+/// the ordinary authenticated response fence have both completed.
+#[cfg(test)]
+mod cancelled_reply {
+    use super::*;
+    use std::{collections::BTreeMap, sync::Mutex};
+    use tokio::sync::oneshot;
+    use uuid::Uuid;
+
+    static PENDING: Mutex<BTreeMap<Uuid, oneshot::Sender<kasumi_types::IssuedCredential>>> =
+        Mutex::new(BTreeMap::new());
+
+    pub(crate) struct Guard(Uuid);
+    impl Drop for Guard {
+        fn drop(&mut self) {
+            PENDING.lock().unwrap().remove(&self.0);
+        }
+    }
+
+    pub(crate) fn install(
+        family: Uuid,
+    ) -> (Guard, oneshot::Receiver<kasumi_types::IssuedCredential>) {
+        let (send, receive) = oneshot::channel();
+        assert!(PENDING.lock().unwrap().insert(family, send).is_none());
+        (Guard(family), receive)
+    }
+
+    pub(super) fn after_commit(
+        family: Option<Uuid>,
+        response: &CredentialJsonResponse,
+    ) -> Result<(), Status> {
+        let pending = family.and_then(|family| PENDING.lock().unwrap().remove(&family));
+        if let Some(send) = pending {
+            let issued = serde_json::from_slice(&response.response_json)
+                .map_err(|_| Status::internal("fixture renewal response could not be decoded"))?;
+            send.send(issued)
+                .map_err(|_| Status::internal("fixture renewal observer stopped"))?;
+            return Err(Status::cancelled("fixture lost committed renewal reply"));
+        }
+        Ok(())
     }
 }

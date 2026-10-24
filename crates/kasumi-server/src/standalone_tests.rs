@@ -173,6 +173,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         .is_err()
     );
     let manager = runtime.administration_for_enrollment_test();
+    let credential_store = runtime.security_audit().store().clone();
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
@@ -383,16 +384,55 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         .unwrap();
     assert_eq!(tenant.bearer().unwrap().as_str(), original_issuance.token);
     assert!(!renewal_journal.exists());
-    // A running watcher publishes one atomic renewal, then its cancelled task
-    // drops exclusive ownership so a restarted invocation can proceed.
+    // A committed native renewal reply can be lost as Cancelled. The watcher
+    // must retain its exact journal and old bearer, then recover the same row.
+    let credential_rows = || {
+        ["local-credential-issuances", "local-credential-events"].map(|namespace| {
+            let mut rows = Vec::new();
+            credential_store
+                .visit(namespace, 128 << 10, |key, value| {
+                    rows.push((key.to_vec(), value.to_vec()));
+                    Ok(())
+                })
+                .unwrap();
+            rows
+        })
+    };
     let prior_token = tenant.bearer().unwrap();
+    let cancelled_request = kasumi_types::RenewCredential {
+        family_id: tenant.family_id,
+        renewal_id: Uuid::new_v4(),
+    };
+    let pending = serde_json::to_vec(&cancelled_request).unwrap();
+    private_files::create(&renewal_journal, &pending).unwrap();
+    let rows_before = credential_rows();
+    let (_fault, cancelled_reply) = crate::rpc::cancel_next_renewal_reply(tenant.family_id);
     let watcher_arguments = vec![
         "credential".into(),
         "watch".into(),
         installation.tenant_profile.to_string_lossy().into_owned(),
     ];
-    let watcher =
+    let mut watcher =
         tokio::spawn(async move { crate::standalone_cli::command(&watcher_arguments).await });
+    let committed = tokio::time::timeout(std::time::Duration::from_secs(10), cancelled_reply)
+        .await
+        .unwrap()
+        .unwrap();
+    tokio::select! {
+        _ = &mut watcher => panic!("credential watch stopped after a committed Cancelled renewal reply"),
+        _ = tokio::time::sleep(std::time::Duration::from_millis(100)) => {}
+    }
+    assert!(
+        private_files::read(&renewal_journal, 4096)
+            .unwrap()
+            .as_slice()
+            == pending.as_slice()
+    );
+    assert!(tenant.bearer().unwrap().as_str() == prior_token.as_str());
+    let rows_committed = credential_rows();
+    for index in 0..2 {
+        assert_eq!(rows_committed[index].len(), rows_before[index].len() + 1);
+    }
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
         while tenant.bearer().unwrap().as_str() == prior_token.as_str() || renewal_journal.exists()
         {
@@ -403,10 +443,51 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     .unwrap();
     watcher.abort();
     assert!(watcher.await.unwrap_err().is_cancelled());
+    assert!(tenant.bearer().unwrap().as_str() == committed.token);
+    let replayed = admin
+        .renew_credential(&bearer, &cancelled_request)
+        .await
+        .unwrap();
+    assert!(replayed.token == committed.token);
+    assert_eq!(replayed.expires_at_ms, committed.expires_at_ms);
+    assert!(credential_rows() == rows_committed);
+    println!(
+        "Cancelled renewal recovered exact issuance and expiry; issuance/event rows unchanged by replay"
+    );
     let watcher_lock =
         private_files::ExclusiveLock::acquire(&tenant.bearer_file.with_extension("watch.lock"))
             .unwrap();
     drop(watcher_lock);
+    // One-shot renewal still returns Cancelled; it neither retries nor changes
+    // the pending identity or bearer before an explicit later invocation.
+    let one_shot = kasumi_types::RenewCredential {
+        family_id: tenant.family_id,
+        renewal_id: Uuid::new_v4(),
+    };
+    let pending = serde_json::to_vec(&one_shot).unwrap();
+    private_files::create(&renewal_journal, &pending).unwrap();
+    let prior_token = tenant.bearer().unwrap();
+    let (_one_shot_fault, reply) = crate::rpc::cancel_next_renewal_reply(tenant.family_id);
+    let error = crate::standalone_cli::command(&renewal_command)
+        .await
+        .unwrap_err();
+    assert!(matches!(error.downcast_ref::<kasumi_client::ClientError>(),
+        Some(kasumi_client::ClientError::Transport(status)) if status.code() == tonic::Code::Cancelled));
+    let committed = reply.await.unwrap();
+    assert!(
+        private_files::read(&renewal_journal, 4096)
+            .unwrap()
+            .as_slice()
+            == pending.as_slice()
+    );
+    assert!(tenant.bearer().unwrap().as_str() == prior_token.as_str());
+    let rows_committed = credential_rows();
+    crate::standalone_cli::command(&renewal_command)
+        .await
+        .unwrap();
+    assert!(tenant.bearer().unwrap().as_str() == committed.token);
+    assert!(!renewal_journal.exists());
+    assert!(credential_rows() == rows_committed);
     // Repeated connection failures preserve the same exact pending identity.
     let unavailable = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let mut offline_profile = tenant.clone();
@@ -471,6 +552,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         .await
         .unwrap();
     assert!(data.mutate(&renewed.token, &mutation).await.is_err());
+    drop(credential_store);
     stop.send_replace(true);
     serving.await.unwrap().unwrap();
     drop(data);
