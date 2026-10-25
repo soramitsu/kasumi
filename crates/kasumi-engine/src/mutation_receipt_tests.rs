@@ -2,6 +2,376 @@ use super::*;
 use kasumi_store::{NodeStore, test_utils::LocalKeyProvider};
 use std::collections::BTreeSet;
 
+fn staging_rows(count: usize) -> (TenantState, Vec<Row>) {
+    let mut state = state();
+    let empty = View::empty(&state.tenant, &state.incarnation).unwrap();
+    let (_, pending) = commit(&state, &empty, "template", &applied(1));
+    let template = &pending.rows[0];
+    let mut head = empty.head().clone();
+    let rows = (1..=count)
+        .map(|ordinal| {
+            let mut row = template.clone();
+            row.ordinal = ordinal as u64;
+            row.receipt.idempotency_key = format!("staging-{ordinal}");
+            row.receipt.recorded_revision = row.ordinal;
+            row.key = identity("owner", &row.receipt.idempotency_key).unwrap();
+            row.applied = applied(row.ordinal);
+            row.previous_sha256 = head.sha256.clone();
+            advance(&mut head, &row).unwrap();
+            row
+        })
+        .collect();
+    state.revision = count as u64;
+    state.mutation_receipt_head = head;
+    (state, rows)
+}
+
+fn production_allocation_scratch() -> (
+    tempfile::TempDir,
+    Arc<ScratchDisk>,
+    Arc<kasumi_store::test_utils::TestDiskMemory>,
+) {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
+    let config = kasumi_store::ScratchDiskConfig {
+        directory: directory.path().join("scratch"),
+        max_bytes: 2 << 30,
+        min_free_bytes: 0,
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(1 << 20).unwrap(),
+        native_cache_bytes: 8 << 20,
+    };
+    let disk = kasumi_store::test_utils::retry_disk_registry(|| {
+        ScratchDisk::open_fixture(&config, memory.clone())
+    })
+    .unwrap();
+    (directory, disk, memory)
+}
+
+#[test]
+fn receipt_staging_production_allocation_preserves_large_receipts() {
+    let (_directory, disk, memory) = production_allocation_scratch();
+    let (mut state, mut rows) = staging_rows(32);
+    let mut head = MutationReceiptHead::empty(&state.tenant, &state.incarnation).unwrap();
+    for row in &mut rows {
+        let collections: Vec<_> = (0..256)
+            .map(|index| format!("{index:03}{}", "c".repeat(253)))
+            .collect();
+        let versions = collections
+            .iter()
+            .map(|collection| {
+                (
+                    format!("/{collection}/{}", "d".repeat(256)),
+                    row.applied.revision,
+                )
+            })
+            .collect();
+        row.receipt.collections = collections;
+        row.receipt.outcome = Ok(WriteReceipt {
+            revision: row.applied.revision,
+            versions,
+        });
+        row.previous_sha256 = head.sha256.clone();
+        row.validate(&state).unwrap();
+        assert!(row.framed_bytes().unwrap() > 192 << 10);
+        advance(&mut head, row).unwrap();
+    }
+    state.mutation_receipt_head = head;
+    let mut builder = Builder::new(
+        &disk,
+        scratch_limit(state.limits.max_mutation_receipt_bytes).unwrap(),
+        &state.tenant,
+        &state.incarnation,
+    )
+    .unwrap();
+    for row in &rows {
+        builder.push(row, &state).unwrap_or_else(|error| {
+            panic!(
+                "large receipt {}: {error:#}; disk={:?}; memory={:?}",
+                row.ordinal,
+                disk.snapshot(),
+                memory.snapshot()
+            )
+        });
+    }
+    let view = builder.finish(&state.mutation_receipt_head).unwrap();
+    view.validate_state(&state).unwrap();
+    for row in rows {
+        assert_eq!(
+            view.row(row.ordinal).unwrap().sha256().unwrap(),
+            row.sha256().unwrap()
+        );
+        assert_eq!(
+            view.get(&row.key).unwrap().unwrap().sha256().unwrap(),
+            row.sha256().unwrap()
+        );
+    }
+    eprintln!(
+        "large receipt staging: disk={:?}; memory={:?}",
+        disk.snapshot(),
+        memory.snapshot()
+    );
+}
+
+#[test]
+fn receipt_staging_production_allocation_preserves_long_history() {
+    let (state, rows) = staging_rows(1024);
+    for batched in [true, false] {
+        let (_directory, disk, memory) = production_allocation_scratch();
+        let limit = scratch_limit(state.limits.max_mutation_receipt_bytes).unwrap();
+        let view = if batched {
+            let mut builder =
+                Builder::new(&disk, limit, &state.tenant, &state.incarnation).unwrap();
+            for row in &rows {
+                builder.push(row, &state).unwrap_or_else(|error| {
+                    panic!(
+                        "batched receipt {}: {error:#}; disk={:?}; memory={:?}",
+                        row.ordinal,
+                        disk.snapshot(),
+                        memory.snapshot()
+                    )
+                });
+            }
+            builder.finish(&state.mutation_receipt_head).unwrap()
+        } else {
+            // Exercise the pre-batching writer against the identical history,
+            // native cache, disk allowance and logical scratch-table ceiling.
+            let table =
+                Arc::new(EncryptedTable::new(&disk, limit, disk.native_cache_config()).unwrap());
+            for row in &rows {
+                row.validate(&state).unwrap();
+                table
+                    .insert(&id_key(&row.key), &serde_json::to_vec(row).unwrap())
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "single receipt {}: {error:#}; disk={:?}; memory={:?}",
+                            row.ordinal,
+                            disk.snapshot(),
+                            memory.snapshot()
+                        )
+                    });
+                table
+                    .insert(
+                        &ordinal_key(row.ordinal),
+                        &serde_json::to_vec(&Ordinal {
+                            key: row.key.clone(),
+                            sha256: row.sha256().unwrap(),
+                        })
+                        .unwrap(),
+                    )
+                    .unwrap();
+            }
+            View {
+                source: Some(Arc::new(Source::Staged(table))),
+                head: state.mutation_receipt_head.clone(),
+            }
+        };
+        view.validate_state(&state).unwrap();
+        for row in &rows {
+            assert_eq!(
+                view.row(row.ordinal).unwrap().sha256().unwrap(),
+                row.sha256().unwrap()
+            );
+        }
+        eprintln!(
+            "receipt history batched={batched}: disk={:?}; memory={:?}",
+            disk.snapshot(),
+            memory.snapshot()
+        );
+    }
+}
+
+#[test]
+fn receipt_staging_production_allocation_preserves_escaped_names_and_bounded_error() {
+    let (_directory, disk, memory) = production_allocation_scratch();
+    let (mut state, mut rows) = staging_rows(Builder::BATCH_ROWS + 1);
+    let mut head = MutationReceiptHead::empty(&state.tenant, &state.incarnation).unwrap();
+    for (index, row) in rows.iter_mut().enumerate() {
+        row.receipt.collections = (0..256)
+            .map(|index| format!("{index:03}{}", "\\".repeat(253)))
+            .collect();
+        row.receipt.outcome = if index < Builder::BATCH_ROWS {
+            Ok(WriteReceipt {
+                revision: row.applied.revision,
+                versions: row
+                    .receipt
+                    .collections
+                    .iter()
+                    .map(|collection| {
+                        (
+                            format!("/{collection}/{}", "\\".repeat(256)),
+                            row.applied.revision,
+                        )
+                    })
+                    .collect(),
+            })
+        } else {
+            let error = Error::new(
+                ErrorCode::QuotaExceeded,
+                "e".repeat(Error::MAX_MESSAGE_BYTES + 32),
+            );
+            assert_eq!(error.message.len(), Error::MAX_MESSAGE_BYTES);
+            Err(error)
+        };
+        row.previous_sha256 = head.sha256.clone();
+        row.validate(&state).unwrap();
+        if index < Builder::BATCH_ROWS {
+            assert!(row.framed_bytes().unwrap() > 384 << 10);
+        }
+        advance(&mut head, row).unwrap();
+    }
+    state.mutation_receipt_head = head;
+    let mut builder = Builder::new(
+        &disk,
+        scratch_limit(state.limits.max_mutation_receipt_bytes).unwrap(),
+        &state.tenant,
+        &state.incarnation,
+    )
+    .unwrap();
+    let table = builder.table.clone();
+    for (index, row) in rows.iter().enumerate() {
+        builder.push(row, &state).unwrap_or_else(|error| {
+            panic!(
+                "escaped-name receipt {}: {error:#}; disk={:?}; memory={:?}",
+                row.ordinal,
+                disk.snapshot(),
+                memory.snapshot()
+            )
+        });
+        // This maximum-width name shape needs JSON escaping but still reaches
+        // the row-count bound first. This is a measured fixture bound, not a
+        // proof of the maximum encoded size of every legal receipt.
+        assert_eq!(builder.batch_rows, index % Builder::BATCH_ROWS + 1);
+        assert!(builder.batch_bytes < Builder::BATCH_BYTES);
+        if index + 1 == Builder::BATCH_ROWS {
+            assert!(builder.batch_bytes > 3 << 20);
+            eprintln!(
+                "eight escaped-name receipt pairs: {} bytes",
+                builder.batch_bytes
+            );
+        }
+        if index >= Builder::BATCH_ROWS {
+            assert!(
+                table
+                    .get(&id_key(&rows[Builder::BATCH_ROWS - 1].key))
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+    let view = builder.finish(&state.mutation_receipt_head).unwrap();
+    view.validate_state(&state).unwrap();
+    for row in rows {
+        assert_eq!(
+            view.row(row.ordinal).unwrap().sha256().unwrap(),
+            row.sha256().unwrap()
+        );
+    }
+    eprintln!(
+        "escaped-name receipt staging: disk={:?}; memory={:?}",
+        disk.snapshot(),
+        memory.snapshot()
+    );
+}
+
+#[test]
+fn receipt_staging_commits_bounded_batches_and_preserves_exact_rows() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )
+    .unwrap();
+    let (state, rows) = staging_rows(Builder::BATCH_ROWS * 2 + 3);
+    let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+    let table = builder.table.clone();
+    for (index, row) in rows.iter().enumerate() {
+        builder.push(row, &state).unwrap();
+        // Each row/index pair remains private until a bounded group is full;
+        // this catches a regression to one native commit per insert.
+        assert!(table.get(&id_key(&row.key)).unwrap().is_none());
+        assert!(table.get(&ordinal_key(row.ordinal)).unwrap().is_none());
+        if index >= Builder::BATCH_ROWS {
+            let committed = &rows[index - index % Builder::BATCH_ROWS - 1];
+            assert!(table.get(&id_key(&committed.key)).unwrap().is_some());
+            assert!(
+                table
+                    .get(&ordinal_key(committed.ordinal))
+                    .unwrap()
+                    .is_some()
+            );
+        }
+    }
+    let restored = builder.finish(&state.mutation_receipt_head).unwrap();
+    restored.validate_state(&state).unwrap();
+    for expected in rows {
+        let by_id = restored.get(&expected.key).unwrap().unwrap();
+        let by_ordinal = restored.row(expected.ordinal).unwrap();
+        assert_eq!(by_id.sha256().unwrap(), expected.sha256().unwrap());
+        assert_eq!(by_ordinal.sha256().unwrap(), expected.sha256().unwrap());
+    }
+}
+
+#[test]
+fn receipt_staging_rejects_duplicate_identity_in_pending_and_committed_batches() {
+    for count in [1, Builder::BATCH_ROWS + 1] {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        let (state, mut rows) = staging_rows(count + 1);
+        rows[count].receipt.idempotency_key = rows[0].receipt.idempotency_key.clone();
+        rows[count].key = rows[0].key.clone();
+        let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+        for row in &rows[..count] {
+            builder.push(row, &state).unwrap();
+        }
+        let valid_prefix = builder.head.clone();
+        let error = builder.push(&rows[count], &state).unwrap_err();
+        assert!(error.to_string().contains("duplicate staged key"));
+        assert!(builder.finish(&valid_prefix).is_err());
+    }
+}
+
+#[test]
+fn failed_receipt_ordinal_insert_aborts_uncommitted_pair_and_head() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )
+    .unwrap();
+    let (state, rows) = staging_rows(1);
+    let row = &rows[0];
+    let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+    let table = builder.table.clone();
+    builder
+        .batch
+        .as_mut()
+        .unwrap()
+        .insert(&ordinal_key(row.ordinal), b"occupied ordinal")
+        .unwrap();
+    let error = builder.push(row, &state).unwrap_err();
+    assert!(error.to_string().contains("duplicate staged key"));
+    assert!(table.get(&id_key(&row.key)).unwrap().is_none());
+    assert_eq!(builder.head, state.mutation_receipt_head);
+    assert!(builder.push(row, &state).is_err());
+    assert!(builder.finish(&state.mutation_receipt_head).is_err());
+    assert!(table.get(&id_key(&row.key)).unwrap().is_none());
+    assert!(table.get(&ordinal_key(row.ordinal)).unwrap().is_none());
+}
+
+#[test]
+fn rejected_receipt_row_disqualifies_the_previous_valid_prefix() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )
+    .unwrap();
+    let (state, rows) = staging_rows(1);
+    let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+    builder.push(&rows[0], &state).unwrap();
+    let mut invalid = rows[0].clone();
+    invalid.ordinal = 0;
+    assert!(builder.push(&invalid, &state).is_err());
+    assert_eq!(builder.head, state.mutation_receipt_head);
+    assert!(builder.finish(&state.mutation_receipt_head).is_err());
+}
+
 #[test]
 fn fixture_staging_reuses_only_complete_exact_pairs()
 -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
@@ -133,6 +503,16 @@ fn commit(
     (next, pending)
 }
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
+    let (directory, _node, store, state, view) = durable_with_node().await;
+    (directory, store, state, view)
+}
+async fn durable_with_node() -> (
+    tempfile::TempDir,
+    NodeStore,
+    Arc<TenantStore>,
+    TenantState,
+    View,
+) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     // The 32-slot fixture exhausted slots at 54,004,507 used bytes. Allow
     // bounded overlap of installed owners, replacement tables, transactions
@@ -149,7 +529,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     )
     .unwrap();
     let store = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([89; 32])),
     )
@@ -163,7 +543,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     store
         .replace_namespaces(&install.replacements(), install.writes())
         .unwrap();
-    (directory, store, state, install.view)
+    (directory, node, store, state, install.view)
 }
 
 #[tokio::test]
@@ -356,7 +736,7 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
 
 #[tokio::test]
 async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay() {
-    let (directory, store, initial, old) = durable().await;
+    let (directory, node, store, initial, old) = durable_with_node().await;
     let disk = store.scratch_disk().clone();
     let identity = applied(1);
     let key = self::identity("owner", "unapplied").unwrap();
@@ -367,7 +747,14 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     drop(durable_future);
     drop(old);
     store.shutdown().await.unwrap();
+    // Tenant shutdown only stops its workers; the physical root is owned by
+    // the node and remains exclusive until native shutdown and retirement.
+    node.shutdown().await.unwrap();
     drop(store);
+    assert_eq!(
+        node.retire().disposition(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
 
     let reopened_node = NodeStore::open_existing_fixture(
         directory.path().join("persistent/node.kv"),
@@ -375,9 +762,17 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
         disk.memory().clone(),
         disk,
     )
-    .unwrap();
+    .unwrap_or_else(|error| {
+        if let kasumi_store::NodeStoreStartFailure::Opening(failure) = &error {
+            let report = failure.custody().opening().report();
+            if let kasumi_kv::TerminalObservation::Returned(Err(original)) = report.acquisition() {
+                panic!("node reopen acquisition failed: {original:#}");
+            }
+        }
+        panic!("node reopen failed: {error:?}");
+    });
     let reopened_store = TenantStore::open_existing_fixture(
-        reopened_node,
+        reopened_node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([89; 32])),
     )
@@ -405,6 +800,12 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     drop(selected);
     drop(reopened);
     reopened_store.shutdown().await.unwrap();
+    reopened_node.shutdown().await.unwrap();
+    drop(reopened_store);
+    assert_eq!(
+        reopened_node.retire().disposition(),
+        kasumi_store::StorageCensusDisposition::Retired
+    );
 }
 
 #[tokio::test]

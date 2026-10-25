@@ -2821,17 +2821,76 @@ impl Database {
         let revision = read.revision;
         let strict = read.strict;
         if let Some(receipt) = receipt {
+            // These events all belong to this exact receipt observation and
+            // caller. Preserve one event per strict collection while sharing
+            // the existing bounded durable audit command.
+            let mut next_collection = 0;
+            loop {
+                // A retained receipt can outlive a reduction in batch limits.
+                // Match submit's current command envelope as well as its event
+                // bound; several individually valid events may not fit together.
+                let max_bytes = self
+                    .engine
+                    .generation()?
+                    .state
+                    .limits
+                    .max_batch_bytes
+                    .saturating_add(64 << 10);
+                let mut events = Vec::new();
+                while events.len() < MAX_SCHEMA_CHANGESET_COLLECTIONS {
+                    let Some(collection) = receipt.collections.get(next_collection) else {
+                        break;
+                    };
+                    if !strict && !read.strict_collections.contains(collection) {
+                        next_collection += 1;
+                        continue;
+                    }
+                    events.push(AuditEvent {
+                        event_id: uuid::Uuid::new_v4().to_string(),
+                        principal: context.principal.clone(),
+                        action: "receipt".into(),
+                        request_id: context.request_id.clone(),
+                        timestamp_ms: now_ms()?,
+                        data_revision: Some(revision),
+                        outcome: "authorized_release".into(),
+                        collection: Some(collection.clone()),
+                    });
+                    let operation = Operation::AuditBatch(events);
+                    let fits = preflight_command_len(context, &operation).map_err(|_| {
+                        Error::new(ErrorCode::InvalidArgument, "command encoding failed")
+                    })? <= max_bytes;
+                    let Operation::AuditBatch(originals) = operation else {
+                        unreachable!();
+                    };
+                    events = originals;
+                    if !fits {
+                        events.pop();
+                        if events.is_empty() {
+                            return Err(Error::new(
+                                ErrorCode::ResourceExhausted,
+                                "receipt audit event exceeds command budget",
+                            ));
+                        }
+                        break;
+                    }
+                    next_collection += 1;
+                }
+                if events.is_empty() {
+                    break;
+                }
+                admitted_release_future(self.admission(), || {
+                    self.submit(context.clone(), Operation::AuditBatch(events))
+                })
+                .await
+                .map_err(read_audit_failure)?;
+            }
+            // Recheck every collection, including non-strict ones, after the
+            // last asynchronous audit. Earlier checks cannot authorize release
+            // across a later policy change or credential revocation.
+            self.access()?;
             for collection in &receipt.collections {
-                let strict = strict || read.strict_collections.contains(collection);
-                self.release_event(
-                    context,
-                    Some(collection),
-                    revision,
-                    strict,
-                    epoch,
-                    "receipt",
-                )
-                .await?;
+                self.engine
+                    .authorize_release(context, Some(collection), Action::Write, epoch)?;
             }
         } else {
             self.release_event(context, None, revision, strict, epoch, "receipt")

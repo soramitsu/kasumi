@@ -1,5 +1,5 @@
 //! Fixed-role local Control observations. Selection pins one immutable generation;
-//! returned source handles own only their selected document and real admission.
+//! returned handles own a compact copy of their selected document and real admission.
 use super::{CONTROL_TENANT, ControlPlane};
 use crate::admission::Reservation;
 use crate::{Database, Generation, LifecycleInstallationMetadata};
@@ -117,44 +117,9 @@ impl LocalControlSelection<'_> {
             self.check_access()?;
             return Ok(None);
         };
-        // Until every runtime producer owns compact admitted backing, retain
-        // the same provisional source floor as point reads. Do not interpret
-        // this as a measured capacity bound or remove it during this boundary.
-        let floor = u64::try_from(self.generation.limits().max_document_bytes)?
-            .checked_mul(3)
-            .ok_or_else(overflow)?;
-        let retained = floor
-            .checked_add(arc_bytes::<LocalDocumentOwner>()?)
-            .ok_or_else(overflow)?;
-        let bytes = retained
-            .checked_add(cancellation_bytes()?)
-            .ok_or_else(overflow)?;
-        let reservation = self.database.admission().reserve(bytes, None)?;
-        let mut pending = PendingDocument {
-            document: None,
-            cancellation: QueryCancellation::default(),
-            reservation,
-        };
-        self.database
-            .admission()
-            .check_release(&pending.cancellation)?;
-        pending.document = Some(document.clone());
+        let pending = PendingDocument::copy(self.database.admission(), document)?;
         self.check_access()?;
-        self.database
-            .admission()
-            .check_release(&pending.cancellation)?;
-        let PendingDocument {
-            document,
-            cancellation,
-            mut reservation,
-        } = pending;
-        drop(cancellation);
-        reservation.retain(retained);
-        let owner = Arc::new(LocalDocumentOwner {
-            document: document.expect("selected Control row"),
-            _reservation: reservation,
-        });
-        Ok(Some(SharedDocument::from_admitted_owner(owner)))
+        Ok(Some(pending.finish(self.database.admission())?))
     }
 }
 fn overflow() -> Error {
@@ -185,12 +150,62 @@ fn cancellation_bytes() -> kasumi_types::Result<u64> {
     )
 }
 struct PendingDocument {
-    document: Option<Arc<Document>>,
+    document: Option<Document>,
     cancellation: QueryCancellation,
+    retained: u64,
     reservation: Reservation,
 }
+impl PendingDocument {
+    fn retained_bytes(document: &Document) -> kasumi_types::Result<u64> {
+        kasumi_query::document_clone_bytes(document)?
+            .checked_add(arc_bytes::<LocalDocumentOwner>()?)
+            .ok_or_else(overflow)
+    }
+    fn copy(
+        admission: &Arc<crate::admission::NodeAdmission>,
+        document: &Document,
+    ) -> kasumi_types::Result<Self> {
+        // The generation keeps its source during this synchronous copy. The
+        // returned owner does not retain that source or its arbitrary spare
+        // capacities: admit the compact clone's actual shape before allocating
+        // its strings/containers, cancellation state, or final Arc owner.
+        let retained = Self::retained_bytes(document)?;
+        let bytes = retained
+            .checked_add(cancellation_bytes()?)
+            .ok_or_else(overflow)?;
+        let reservation = admission.reserve(bytes, None)?;
+        let mut pending = Self {
+            document: None,
+            cancellation: QueryCancellation::default(),
+            retained,
+            reservation,
+        };
+        admission.check_release(&pending.cancellation)?;
+        pending.document = Some(document.clone());
+        Ok(pending)
+    }
+    fn finish(
+        self,
+        admission: &crate::admission::NodeAdmission,
+    ) -> kasumi_types::Result<SharedDocument> {
+        admission.check_release(&self.cancellation)?;
+        let Self {
+            document,
+            cancellation,
+            retained,
+            mut reservation,
+        } = self;
+        drop(cancellation);
+        reservation.retain(retained);
+        let owner = Arc::new(LocalDocumentOwner {
+            document: document.expect("selected Control row"),
+            _reservation: reservation,
+        });
+        Ok(SharedDocument::from_admitted_owner(owner))
+    }
+}
 struct LocalDocumentOwner {
-    document: Arc<Document>,
+    document: Document,
     _reservation: Reservation,
 }
 impl AdmittedDocumentOwner for LocalDocumentOwner {
@@ -198,3 +213,7 @@ impl AdmittedDocumentOwner for LocalDocumentOwner {
         &self.document
     }
 }
+
+#[cfg(test)]
+#[path = "control_selection_tests.rs"]
+mod tests;

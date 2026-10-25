@@ -1,7 +1,7 @@
 //! One bounded claim in the existing scratch group; no independent census.
 use super::*;
 use crate::{
-    scratch_disk::transaction::{ReserveFailure, TransactionSpace},
+    scratch_disk::transaction::{ReserveDiagnostic, ReserveFailure, TransactionSpace},
     spool::claim::PreparedSpool,
 };
 use kasumi_kv::{FileSpaceRange, TransactionReserveError, TransactionSpacePlan};
@@ -107,11 +107,17 @@ fn range_bytes(disk: &ScratchDisk, range: FileSpaceRange) -> Result<u64, Reserve
     Ok(maxima.map_or(aggregate, |maxima| maxima.min(aggregate)))
 }
 impl State {
-    fn reserve_plan(&mut self, plan: &TransactionSpacePlan) -> Result<(), ReserveFailure> {
+    fn reserve_plan(
+        &mut self,
+        plan: &TransactionSpacePlan,
+        diagnostic: &mut ReserveDiagnostic,
+    ) -> Result<(), ReserveFailure> {
+        diagnostic.at("plan_validation");
         plan.validate()?;
         if self.transaction.is_some() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
+        diagnostic.at("file_count");
         let count = plan
             .new_segments
             .count
@@ -121,18 +127,33 @@ impl State {
             .checked_add(count)
             .ok_or(io::ErrorKind::InvalidData)?;
         let count = usize::try_from(count).map_err(|_| ReserveFailure::Capacity)?;
-        if count > self.files.iter().filter(|slot| slot.is_none()).count() {
+        let free = self.files.iter().filter(|slot| slot.is_none()).count();
+        diagnostic.capacity(
+            "file_slots",
+            count as u64,
+            (self.files.len() - free) as u64,
+            self.files.len() as u64,
+        );
+        if count > free {
             return Err(ReserveFailure::Capacity);
         }
-        let root_length = self.validate_plan_root(plan)?;
+        let root_length = self.validate_plan_root(plan, diagnostic)?;
         let root_end = (2 * ROOT_SLOT_BYTES) as u64;
         if root_length > root_end {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let mut logical = self
-            .total()?
+        diagnostic.at("logical_total");
+        let total = self.total()?;
+        diagnostic.capacity(
+            "root_logical_bytes",
+            root_end - root_length,
+            total,
+            self.limit,
+        );
+        let mut logical = total
             .checked_add(root_end - root_length)
             .ok_or(ReserveFailure::Capacity)?;
+        diagnostic.at("root_physical_bytes");
         let mut bytes = {
             let root = self.root.as_mut().unwrap().spool.spool().unwrap();
             self.disk
@@ -141,15 +162,24 @@ impl State {
                 .saturating_sub(root.transaction_charged_bytes())
         };
         for existing in plan.segment.into_iter().chain(plan.directory) {
+            diagnostic.at("existing_file_observation");
             let disk = self.disk.clone();
+            let limit = self.limit;
             let spool = self.spool(existing.file)?;
             spool.transaction_clean()?;
             if spool.len() != existing.initial_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
+            diagnostic.capacity(
+                "existing_logical_bytes",
+                existing.maximum_len - existing.initial_len,
+                logical,
+                limit,
+            );
             logical = logical
                 .checked_add(existing.maximum_len - existing.initial_len)
                 .ok_or(ReserveFailure::Capacity)?;
+            diagnostic.at("existing_physical_bytes");
             bytes = bytes
                 .checked_add(
                     disk.transaction_file_ceiling(EncryptedSpool::transaction_ciphertext_len(
@@ -164,14 +194,17 @@ impl State {
             (plan.new_segments, FileKind::Segment),
             (plan.new_directories, FileKind::Directory),
         ] {
+            diagnostic.capacity("new_logical_bytes", range.total_len, logical, self.limit);
             logical = logical
                 .checked_add(range.total_len)
                 .ok_or(ReserveFailure::Capacity)?;
+            diagnostic.at("new_physical_bytes");
             bytes = bytes
                 .checked_add(range_bytes(&self.disk, range)?)
                 .ok_or(ReserveFailure::Capacity)?;
             // The native selected root authenticates never-reused identifiers;
             // independently reject every actual occupied key in the range.
+            diagnostic.at("new_file_identity");
             for entry in self.files.iter().flatten() {
                 let file = entry.file.expect("non-root group file");
                 if file.kind == kind && range.maximum_len(file.id).is_some() {
@@ -179,9 +212,11 @@ impl State {
                 }
             }
         }
+        diagnostic.capacity("group_logical_bytes", logical, total, self.limit);
         if logical > self.limit {
             return Err(ReserveFailure::Capacity);
         }
+        diagnostic.at("prepared_slots");
         let mut transaction = GroupTransaction {
             plan: *plan,
             // The original owner's census grant already covers this complete
@@ -205,12 +240,15 @@ impl State {
                         .checked_add(offset)
                         .ok_or(io::ErrorKind::InvalidInput)?,
                 };
+                diagnostic.at("file_memory");
+                diagnostic.requested = Some(FILE_MEMORY_BYTES);
                 let memory = self
                     .disk
                     .memory()
                     .clone()
                     .reserve_installed(FILE_MEMORY_BYTES)
                     .map_err(ReserveFailure::memory)?;
+                diagnostic.at("file_buffers");
                 let spool = PreparedSpool::new(&self.disk, self.limit)?;
                 transaction.prepared[at] = Some(PreparedFile {
                     file,
@@ -222,24 +260,35 @@ impl State {
         }
         // Final fallible admission after all buffers/slots and root observations.
         // Installation after this transition is one infallible ownership move.
-        transaction.space = Some(self.disk.reserve_transaction_space(bytes, count as u64)?);
+        transaction.space = Some(self.disk.reserve_transaction_space_staged(
+            bytes,
+            count as u64,
+            diagnostic,
+        )?);
         self.transaction = Some(transaction);
         Ok(())
     }
     /// The selected-root observation is complete before preparing any new file.
     /// Only its scalar length escapes; decoded roots, both slot buffers and the
     /// exact validation lease retire together before the file-buffer grants.
-    fn validate_plan_root(&mut self, plan: &TransactionSpacePlan) -> Result<u64, ReserveFailure> {
+    fn validate_plan_root(
+        &mut self,
+        plan: &TransactionSpacePlan,
+        diagnostic: &mut ReserveDiagnostic,
+    ) -> Result<u64, ReserveFailure> {
+        diagnostic.at("root_validation_memory");
         let validation_bytes = crate::disk_memory::add(
             kasumi_kv::TRANSACTION_SPACE_ROOTS_HEAP_BYTES,
             (2 * ROOT_SLOT_BYTES) as u64,
         )?;
+        diagnostic.requested = Some(validation_bytes);
         let _validation = self
             .disk
             .memory()
             .clone()
             .reserve_installed(validation_bytes)
             .map_err(ReserveFailure::memory)?;
+        diagnostic.at("root_validation_observation");
         let mut a = [0; ROOT_SLOT_BYTES];
         let mut b = [0; ROOT_SLOT_BYTES];
         let root = self
@@ -447,10 +496,30 @@ impl Backend {
         &self,
         plan: &TransactionSpacePlan,
     ) -> Result<(), TransactionReserveError> {
+        let mut diagnostic = ReserveDiagnostic::default();
+        self.reserve_plan_staged(plan, &mut diagnostic).inspect_err(|error| {
+            use std::io::Write;
+            let (disposition, kind) = match error {
+                TransactionReserveError::CapacityDenied => ("capacity", None),
+                TransactionReserveError::Failed(error) => ("failed", Some(error.kind())),
+            };
+            let _ = writeln!(
+                std::io::stderr().lock(),
+                "Kasumi scratch transaction reserve failed: stage={} disposition={disposition} requested={:?} current={:?} limit={:?} io={kind:?}",
+                diagnostic.stage, diagnostic.requested, diagnostic.current, diagnostic.limit,
+            );
+        })
+    }
+    fn reserve_plan_staged(
+        &self,
+        plan: &TransactionSpacePlan,
+        diagnostic: &mut ReserveDiagnostic,
+    ) -> Result<(), TransactionReserveError> {
         // Reservation is a read-only preflight until its final infallible owner
         // installation. Malformed caller plans do not fence healthy storage.
         // Each actual root/stat/decrypt operation still owns its normal failure
         // handling; only explicit capacity paths carry ReserveFailure::Capacity.
+        diagnostic.at("owner_ready");
         let mut guard = self.0.state.lock().map_err(|poisoned| {
             if let Some(state) = poisoned.into_inner().as_mut() {
                 state.fail();
@@ -461,7 +530,7 @@ impl Backend {
             .as_mut()
             .ok_or_else(|| TransactionReserveError::Failed(io::ErrorKind::BrokenPipe.into()))?;
         state.check().map_err(TransactionReserveError::Failed)?;
-        let result = state.reserve_plan(plan);
+        let result = state.reserve_plan(plan, diagnostic);
         if !state.disk.transaction_ready() {
             state.fail();
             return match result {

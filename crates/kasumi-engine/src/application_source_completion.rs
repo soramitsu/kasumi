@@ -396,7 +396,10 @@ impl SelectionPreparer for Preparer<'_> {
             self.state.attempted = true;
             plan.require_stores(&self.roots.stores)?;
             self.state.preparation =
-                Some(self.roots.prepare_kind_unqueued(true, Some(plan), points)?);
+                Some(
+                    self.roots
+                        .prepare_kind_unqueued(true, Some(plan), points, true)?,
+                );
             #[cfg(test)]
             self.state.checkpoint(CompletionCheckpoint::BeforeQueue)?;
             self.state

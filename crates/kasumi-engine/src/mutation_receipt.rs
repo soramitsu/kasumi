@@ -6,7 +6,7 @@ use crate::staged_terminal::AppliedIdentity;
 #[cfg(any(test, feature = "test-utils"))]
 use crate::staged_terminal::AppliedOrigin;
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
+use kasumi_store::{EncryptedTable, EncryptedTableBatch, ScratchDisk, TenantStore, WriteOp};
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -334,7 +334,11 @@ impl View {
 /// authenticated final head must match before this can become a restore input.
 pub(crate) struct Builder {
     table: Arc<EncryptedTable>,
+    batch: Option<EncryptedTableBatch>,
+    batch_bytes: usize,
+    batch_rows: usize,
     head: MutationReceiptHead,
+    failed: bool,
 }
 // Fixed phase labels correlate real receipt work with the fixture lease log.
 #[cfg(any(test, feature = "test-utils"))]
@@ -351,6 +355,10 @@ fn observe_staging(phase: &'static str, ordinal: Option<u64>, succeeded: Option<
     );
 }
 impl Builder {
+    // Bound unpublished work independently of the stream's permanent history.
+    const BATCH_BYTES: usize = EncryptedTableBatch::MAX_BYTES;
+    const BATCH_ROWS: usize = EncryptedTableBatch::MAX_ENTRIES / 2;
+
     pub(crate) fn new(
         disk: &Arc<ScratchDisk>,
         limit: u64,
@@ -362,43 +370,100 @@ impl Builder {
         let table = EncryptedTable::new(disk, limit, disk.native_cache_config());
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("setup_returned", None, Some(table.is_ok()));
+        let table = Arc::new(table?);
+        let batch = table
+            .begin_batch()
+            .map_err(kasumi_store::ScratchOperationFailure::Operation)?;
         Ok(Self {
-            table: Arc::new(table?),
+            table,
+            batch: Some(batch),
+            batch_bytes: 0,
+            batch_rows: 0,
             head: MutationReceiptHead::empty(tenant, origin).map_err(|original| {
                 kasumi_store::ScratchOperationFailure::Operation(original.into())
             })?,
+            failed: false,
         })
     }
     pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
+        ensure!(!self.failed, "receipt staging builder previously failed");
+        // Neither a partial row/index pair nor an advanced private head can
+        // become a verified view after any failed or unwinding push.
+        self.failed = true;
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("row_entered", Some(row.ordinal), None);
         row.validate(state)?;
-        ensure!(
-            self.table.get(&id_key(&row.key))?.is_none(),
-            "duplicate immutable receipt identity"
-        );
         advance(&mut self.head, row)?;
         let index = Ordinal {
             key: row.key.clone(),
             sha256: row.sha256()?,
         };
+        let id = id_key(&row.key);
+        let ordinal = ordinal_key(row.ordinal);
+        let encoded_row = serde_json::to_vec(row)?;
+        let encoded_index = serde_json::to_vec(&index)?;
+        let bytes = id
+            .len()
+            .checked_add(ordinal.len())
+            .and_then(|n| n.checked_add(encoded_row.len()))
+            .and_then(|n| n.checked_add(encoded_index.len()))
+            .context("receipt staging batch byte overflow")?;
+        ensure!(
+            bytes <= Self::BATCH_BYTES,
+            "receipt row exceeds staging batch"
+        );
+        if self.batch_rows == Self::BATCH_ROWS
+            || self
+                .batch_bytes
+                .checked_add(bytes)
+                .is_none_or(|total| total > Self::BATCH_BYTES)
+        {
+            self.batch
+                .take()
+                .context("receipt staging batch missing")?
+                .commit()
+                .with_context(|| {
+                    format!(
+                        "receipt staging batch commit failed before ordinal {} (rows={}, bytes={})",
+                        row.ordinal, self.batch_rows, self.batch_bytes
+                    )
+                })?;
+            self.batch = Some(self.table.begin_batch()?);
+            self.batch_bytes = 0;
+            self.batch_rows = 0;
+        }
+        let batch = self
+            .batch
+            .as_mut()
+            .context("receipt staging batch missing")?;
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("point_write_entered", Some(row.ordinal), None);
-        self.table
-            .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
+        batch.insert(&id, &encoded_row)?;
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("ordinal_write_entered", Some(row.ordinal), None);
-        self.table
-            .insert(&ordinal_key(row.ordinal), &serde_json::to_vec(&index)?)?;
+        batch.insert(&ordinal, &encoded_index)?;
+        self.batch_bytes += bytes;
+        self.batch_rows += 1;
+        self.failed = false;
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("row_returned", Some(row.ordinal), Some(true));
         Ok(())
     }
     pub(crate) fn finish(self, expected: &MutationReceiptHead) -> Result<View> {
+        ensure!(!self.failed, "receipt staging builder previously failed");
         ensure!(
             &self.head == expected,
             "receipt stream final root/count/bytes differ"
         );
+        self.batch
+            .context("receipt staging batch missing")?
+            .commit()
+            .with_context(|| {
+                format!(
+                    "receipt staging final batch commit failed at ordinal {} (rows={}, bytes={})",
+                    self.head.count, self.batch_rows, self.batch_bytes
+                )
+            })?;
         Ok(View {
             source: Some(Arc::new(Source::Staged(self.table))),
             head: self.head,

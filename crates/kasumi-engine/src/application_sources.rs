@@ -902,14 +902,16 @@ impl SourceRootsRef {
     pub(crate) fn prepare(&self) -> Result<RootPreparation> {
         self.prepare_kind(true)
     }
-    /// Initial selection has an already durable root. Capture still verifies
+    /// Startup and rebase select an already durable root. Capture still verifies
     /// every planned record against the root begun by this actual preparation.
-    /// Prospective snapshot publication continues through its separate path.
+    /// Independent selection cannot spend a pending proposal's publication grant.
     pub(crate) fn prepare_initial(&self) -> Result<RootPreparation> {
         let (plan, points) = PreparedSelectionPlan::for_current_root(&self.stores)?;
         let mut preparation = None;
         with_incoming_points(points, |points| {
-            preparation = Some(self.prepare_kind_planned(true, Some(&plan), points)?);
+            let mut prepared = self.prepare_kind_unqueued(true, Some(&plan), points, false)?;
+            prepared.queue_planned_in_place()?;
+            preparation = Some(prepared);
             Ok(())
         })?;
         preparation.context("initial source preparation absent")
@@ -944,7 +946,7 @@ impl SourceRootsRef {
         plan: Option<&PreparedSelectionPlan>,
         points: &mut Option<PreparedTenantPointWorkspace>,
     ) -> Result<RootPreparation> {
-        let mut preparation = self.prepare_kind_unqueued(canonical, plan, points)?;
+        let mut preparation = self.prepare_kind_unqueued(canonical, plan, points, true)?;
         if plan.is_some() {
             preparation.queue_planned_in_place()?;
         }
@@ -957,6 +959,7 @@ impl SourceRootsRef {
         canonical: bool,
         plan: Option<&PreparedSelectionPlan>,
         points: &mut Option<PreparedTenantPointWorkspace>,
+        spend_publication: bool,
     ) -> Result<RootPreparation> {
         ensure!(
             plan.is_some() == points.is_some(),
@@ -1006,7 +1009,7 @@ impl SourceRootsRef {
             cohort_loan = Some(loan);
             (credit, Some(workspace), true)
         } else if let Some((plan, grant)) = plan
-            .filter(|_| canonical)
+            .filter(|_| canonical && spend_publication)
             .and_then(|plan| self.take_publication(plan).map(|grant| (plan, grant)))
         {
             // This committed publication spends the capacity its proposer
@@ -1908,7 +1911,7 @@ impl SourceRootsRef {
         // capture is now the latest selected position that later proposals
         // are admitted against, so nothing fallible may follow: the caller
         // publishes it at once.
-        self.prepare()?.capture(boundary, false).map(Some)
+        self.prepare_initial()?.capture(boundary, false).map(Some)
     }
 }
 

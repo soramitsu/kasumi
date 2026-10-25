@@ -137,18 +137,29 @@ fn scratch_claim_capacity_denial_is_before_namespace_or_root_mutation() {
     let mut impossible = plan();
     impossible.new_segments.count = MAX_FILES as u64 + 1;
     impossible.new_segments.total_len = impossible.new_segments.count * 100_000;
+    let mut diagnostic = ReserveDiagnostic::default();
     assert!(matches!(
-        backend.reserve_transaction(&impossible),
+        backend.reserve_plan_staged(&impossible, &mut diagnostic),
         Err(TransactionReserveError::CapacityDenied)
     ));
+    assert_eq!(diagnostic.stage, "file_slots");
+    assert_eq!(diagnostic.requested, Some(MAX_FILES as u64 + 1));
+    assert_eq!(diagnostic.limit, Some(MAX_FILES as u64));
     let mut occupied = Vec::new();
     while let Ok(lease) = memory.clone().reserve_installed(0) {
         occupied.push(lease);
     }
     assert!(matches!(
-        backend.reserve_transaction(&plan()),
+        backend.reserve_plan_staged(&plan(), &mut diagnostic),
         Err(TransactionReserveError::CapacityDenied)
     ));
+    assert_eq!(diagnostic.stage, "root_validation_memory");
+    assert_eq!(
+        diagnostic.requested,
+        Some(kasumi_kv::TRANSACTION_SPACE_ROOTS_HEAP_BYTES + (2 * ROOT_SLOT_BYTES) as u64)
+    );
+    assert_eq!(diagnostic.current, None);
+    assert_eq!(diagnostic.limit, None);
     drop(occupied);
     assert!(
         owner
@@ -163,6 +174,50 @@ fn scratch_claim_capacity_denial_is_before_namespace_or_root_mutation() {
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert_eq!(disk.snapshot().live_files, before.live_files);
     owner.check_owner().unwrap();
+    close(database, &disk);
+}
+#[test]
+fn scratch_claim_diagnostic_distinguishes_logical_limit_from_disk_quota() {
+    let (_directory, disk, memory, owner, backend, database) = fixture();
+    let before = disk.snapshot();
+    let before_memory = memory.snapshot();
+    let mut diagnostic = ReserveDiagnostic::default();
+    let mut large = plan();
+    large.new_segments.full_len = 9 << 20;
+    large.new_segments.last_len = 9 << 20;
+    large.new_segments.total_len = 9 << 20;
+    assert!(matches!(
+        backend.reserve_plan_staged(&large, &mut diagnostic),
+        Err(TransactionReserveError::CapacityDenied)
+    ));
+    assert_eq!(diagnostic.stage, "group_logical_bytes");
+    assert!(diagnostic.requested.unwrap() > diagnostic.limit.unwrap());
+    assert_eq!(diagnostic.limit, Some(8 << 20));
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(memory.snapshot().used_bytes, before_memory.used_bytes);
+
+    let mut competitor = disk
+        .reserve_transaction_space((16 << 20) - before.charged_bytes, 0)
+        .unwrap();
+    let occupied = disk.snapshot();
+    assert!(matches!(
+        backend.reserve_plan_staged(&plan(), &mut diagnostic),
+        Err(TransactionReserveError::CapacityDenied)
+    ));
+    assert_eq!(diagnostic.stage, "disk_bytes");
+    assert!(diagnostic.requested.unwrap() > 0);
+    assert_eq!(diagnostic.current, Some(16 << 20));
+    assert_eq!(diagnostic.limit, Some(16 << 20));
+    assert_eq!(disk.snapshot().charged_bytes, occupied.charged_bytes);
+    assert_eq!(
+        disk.snapshot().filesystem_pending_bytes,
+        occupied.filesystem_pending_bytes
+    );
+    assert_eq!(memory.snapshot().used_bytes, before_memory.used_bytes);
+    competitor.finish().unwrap();
+    owner.check_owner().unwrap();
+    backend.reserve_transaction(&plan()).unwrap();
+    backend.cancel_transaction(GROUP, 1).unwrap();
     close(database, &disk);
 }
 #[test]
@@ -346,10 +401,13 @@ fn scratch_claim_reuses_completed_root_validation_slot_before_preparing_files() 
     // return its first file grant without publishing a claim or native file.
     let one_slot = memory.clone().reserve_installed(0).unwrap();
     let one_free = memory.snapshot();
+    let mut diagnostic = ReserveDiagnostic::default();
     assert!(matches!(
-        backend.reserve_transaction(&plan()),
+        backend.reserve_plan_staged(&plan(), &mut diagnostic),
         Err(TransactionReserveError::CapacityDenied)
     ));
+    assert_eq!(diagnostic.stage, "file_memory");
+    assert_eq!(diagnostic.requested, Some(FILE_MEMORY_BYTES));
     assert_eq!(memory.snapshot().used_bytes, one_free.used_bytes);
     assert_eq!(
         memory.snapshot().live_reservations,

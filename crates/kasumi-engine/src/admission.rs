@@ -284,6 +284,19 @@ fn physical_capacity() -> anyhow::Result<u64> {
     }
 }
 
+/// Resident admission grants grouped by their original allocation path.
+/// These counters partition reserved capacity, not measured RSS or cache usage.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct ResidentReservationBytes {
+    /// Operations whose grants were retained after their operation slot ended.
+    pub ordinary_operation: u64,
+    pub other_ordinary: u64,
+    pub audit_maintenance: u64,
+    pub scoped_application_source: u64,
+    pub native_cache: u64,
+    pub document_source: u64,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct AdmissionSnapshot {
     pub resident_bytes: u64,
@@ -294,6 +307,8 @@ pub struct AdmissionSnapshot {
     pub bookkeeping_bytes: u64,
     /// Non-operation reservations, excluding separately reported bookkeeping.
     pub resident_reserved_bytes: u64,
+    /// The six counters sum to `resident_reserved_bytes` in this same sample.
+    pub resident_reserved_bytes_by_origin: ResidentReservationBytes,
     pub live_reservations: usize,
     pub inflight_operations: usize,
     pub pressured: bool,
@@ -766,10 +781,34 @@ impl MemoryState {
         let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         let mut bookkeeping_bytes = self.base_bytes;
         let mut resident_reserved_bytes = 0;
+        let mut resident_reserved_bytes_by_origin = ResidentReservationBytes::default();
         for charge in state.slots.iter().filter_map(|slot| slot.charge.as_ref()) {
             match charge.kind {
                 ChargeKind::Bookkeeping => bookkeeping_bytes += charge.bytes,
-                ChargeKind::Resident => resident_reserved_bytes += charge.bytes,
+                ChargeKind::Resident => {
+                    resident_reserved_bytes += charge.bytes;
+                    let bytes = match charge.origin {
+                        ChargeOrigin::OrdinaryOperation => {
+                            &mut resident_reserved_bytes_by_origin.ordinary_operation
+                        }
+                        ChargeOrigin::OtherOrdinary => {
+                            &mut resident_reserved_bytes_by_origin.other_ordinary
+                        }
+                        ChargeOrigin::AuditMaintenance => {
+                            &mut resident_reserved_bytes_by_origin.audit_maintenance
+                        }
+                        ChargeOrigin::ScopedApplicationSource => {
+                            &mut resident_reserved_bytes_by_origin.scoped_application_source
+                        }
+                        ChargeOrigin::NativeCache => {
+                            &mut resident_reserved_bytes_by_origin.native_cache
+                        }
+                        ChargeOrigin::DocumentSource => {
+                            &mut resident_reserved_bytes_by_origin.document_source
+                        }
+                    };
+                    *bytes += charge.bytes;
+                }
                 ChargeKind::Operation => {}
             }
         }
@@ -780,6 +819,7 @@ impl MemoryState {
             reserved_bytes: state.bytes,
             bookkeeping_bytes,
             resident_reserved_bytes,
+            resident_reserved_bytes_by_origin,
             live_reservations: state.live,
             inflight_operations: state.operations,
             pressured: state.pressured,
@@ -2026,6 +2066,146 @@ mod tests {
         drop(owner);
         node.drain_snapshot_startups().await.unwrap();
         assert_eq!(payload_bytes(&node), 0);
+    }
+
+    #[test]
+    fn resident_snapshot_origins_partition_live_grants_and_release() {
+        let node = NodeAdmission::with_fixed_memory(
+            AdmissionConfig {
+                high_water_bytes: Some(64 << 20),
+                low_water_bytes: Some(32 << 20),
+                max_inflight_bytes: Some(16 << 20),
+                // Leave room for the cache's three mandatory-work reserves;
+                // this fixture needs only a few owners, not default inventories.
+                max_inflight_operations: 4,
+                max_reservations: 64,
+                max_snapshot_startups: 2,
+                max_startup_scopes: 2,
+                ..Default::default()
+            },
+            128 << 20,
+            0,
+        )
+        .unwrap();
+        let baseline = node.snapshot();
+        assert_eq!(baseline.resident_reserved_bytes, 0);
+        let mut residents: Vec<_> = [
+            (ChargeOrigin::OrdinaryOperation, 11),
+            (ChargeOrigin::OtherOrdinary, 13),
+            (ChargeOrigin::AuditMaintenance, 17),
+            (ChargeOrigin::ScopedApplicationSource, 19),
+            (ChargeOrigin::NativeCache, 23),
+            (ChargeOrigin::DocumentSource, 29),
+        ]
+        .into_iter()
+        .map(|(origin, bytes)| {
+            node.core
+                .reserve_kind_raw(bytes, None, ChargeKind::Resident, origin)
+                .ok()
+                .unwrap_or_else(|| {
+                    panic!(
+                        "resident origin grant of {bytes} bytes denied; baseline={baseline:?}; current={:?}",
+                        node.snapshot()
+                    )
+                })
+        })
+        .collect();
+        let bookkeeping = node
+            .core
+            .reserve_kind(31, None, ChargeKind::Bookkeeping)
+            .unwrap();
+        let operation = node.reserve(37, None).unwrap();
+        let held = node.snapshot();
+        assert_eq!(
+            held.resident_reserved_bytes_by_origin,
+            ResidentReservationBytes {
+                ordinary_operation: 11,
+                other_ordinary: 13,
+                audit_maintenance: 17,
+                scoped_application_source: 19,
+                native_cache: 23,
+                document_source: 29,
+            }
+        );
+        let encoded = serde_json::to_value(&held).unwrap();
+        let origins = encoded["resident_reserved_bytes_by_origin"]
+            .as_object()
+            .unwrap();
+        assert_eq!(origins.len(), 6);
+        assert_eq!(
+            origins
+                .values()
+                .map(|value| value.as_u64().unwrap())
+                .sum::<u64>(),
+            held.resident_reserved_bytes
+        );
+        assert_eq!(held.resident_reserved_bytes, 112);
+        assert_eq!(held.bookkeeping_bytes, baseline.bookkeeping_bytes + 31);
+        assert_eq!(held.reserved_bytes, baseline.reserved_bytes + 180);
+        drop(residents.pop());
+        let released = node.snapshot();
+        assert_eq!(released.resident_reserved_bytes, 83);
+        assert_eq!(
+            released.resident_reserved_bytes_by_origin.document_source,
+            0
+        );
+        assert_eq!(released.resident_reserved_bytes_by_origin.native_cache, 23);
+        drop((residents, bookkeeping, operation));
+        let released = node.snapshot();
+        assert_eq!(
+            released.resident_reserved_bytes_by_origin,
+            ResidentReservationBytes::default()
+        );
+        assert_eq!(
+            released.resident_reserved_bytes,
+            baseline.resident_reserved_bytes
+        );
+        assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(released.live_reservations, baseline.live_reservations);
+    }
+
+    #[test]
+    fn resident_snapshot_origins_exclude_operations_until_retained() {
+        let (node, _, _) = fixture();
+        let baseline = node.snapshot();
+        let mut first = node.reserve(170, None).unwrap();
+        let second = node.reserve(80, None).unwrap();
+        let active = node.snapshot();
+        assert_eq!(
+            active.resident_reserved_bytes_by_origin,
+            ResidentReservationBytes::default()
+        );
+        assert_eq!(active.resident_reserved_bytes, 0);
+        assert_eq!(active.inflight_operations, 2);
+        first.retain(90);
+        let retained = node.snapshot();
+        assert_eq!(
+            retained.resident_reserved_bytes_by_origin,
+            ResidentReservationBytes {
+                ordinary_operation: 90,
+                ..Default::default()
+            }
+        );
+        assert_eq!(retained.resident_reserved_bytes, 90);
+        assert_eq!(retained.inflight_operations, 1);
+        assert_eq!(retained.reserved_bytes, baseline.reserved_bytes + 170);
+        first.retain(60);
+        assert_eq!(
+            node.snapshot()
+                .resident_reserved_bytes_by_origin
+                .ordinary_operation,
+            60
+        );
+        drop(first);
+        let released = node.snapshot();
+        assert_eq!(
+            released.resident_reserved_bytes_by_origin,
+            ResidentReservationBytes::default()
+        );
+        assert_eq!(released.resident_reserved_bytes, 0);
+        assert_eq!(released.inflight_operations, 1);
+        drop(second);
+        assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
     }
 
     #[test]

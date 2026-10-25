@@ -2,6 +2,39 @@
 //! path returns rights; only explicit finish/cancel does so after caller proof.
 use super::*;
 
+/// Scalar observations from the admission path itself. The group owner emits
+/// these only after all reservation guards have been released; no resampling,
+/// paths, plan identities or error payloads enter the diagnostic.
+#[derive(Debug, Default)]
+pub(crate) struct ReserveDiagnostic {
+    pub(crate) stage: &'static str,
+    pub(crate) requested: Option<u64>,
+    pub(crate) current: Option<u64>,
+    pub(crate) limit: Option<u64>,
+}
+impl ReserveDiagnostic {
+    pub(crate) fn at(&mut self, stage: &'static str) {
+        *self = Self {
+            stage,
+            ..Self::default()
+        };
+    }
+    pub(crate) fn capacity(
+        &mut self,
+        stage: &'static str,
+        requested: u64,
+        current: u64,
+        limit: u64,
+    ) {
+        *self = Self {
+            stage,
+            requested: Some(requested),
+            current: Some(current),
+            limit: Some(limit),
+        };
+    }
+}
+
 /// Only explicit pre-effect arithmetic and admission paths mint a refusal.
 /// Native observation errors keep their original value, irrespective of kind.
 #[derive(Debug)]
@@ -44,34 +77,59 @@ pub(crate) struct TransactionSpace {
     active: bool,
 }
 impl ScratchDisk {
+    #[cfg(test)]
     pub(crate) fn reserve_transaction_space(
         self: &Arc<Self>,
         bytes: u64,
         files: u64,
     ) -> Result<TransactionSpace, ReserveFailure> {
+        self.reserve_transaction_space_staged(bytes, files, &mut ReserveDiagnostic::default())
+    }
+    pub(crate) fn reserve_transaction_space_staged(
+        self: &Arc<Self>,
+        bytes: u64,
+        files: u64,
+        diagnostic: &mut ReserveDiagnostic,
+    ) -> Result<TransactionSpace, ReserveFailure> {
+        diagnostic.at("device_ready");
         let mut state = self.lock_state();
         let mut pending = self.device.lock();
         if !pending.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
+        diagnostic.capacity("disk_bytes", bytes, state.bytes, self.config.max_bytes);
         let next = state
             .bytes
             .checked_add(bytes)
             .filter(|next| *next <= self.config.max_bytes)
             .ok_or(ReserveFailure::Capacity)?;
+        diagnostic.capacity("device_pending_bytes", bytes, *pending, u64::MAX);
         let promised = pending.checked_add(bytes).ok_or(ReserveFailure::Capacity)?;
+        let minimum_free = pending.minimum_free_bytes();
+        diagnostic.capacity("filesystem_floor_bytes", minimum_free, promised, u64::MAX);
         let required = promised
-            .checked_add(pending.minimum_free_bytes())
+            .checked_add(minimum_free)
             .ok_or(ReserveFailure::Capacity)?;
+        diagnostic.capacity(
+            "reserved_files",
+            files,
+            state.reserved_files,
+            u64::MAX - state.files,
+        );
         let reserved_files = state
             .reserved_files
             .checked_add(files)
             .filter(|reserved| state.files.checked_add(*reserved).is_some())
             .ok_or(ReserveFailure::Capacity)?;
+        diagnostic.at("filesystem_observation");
         let available = self.available().inspect_err(|_| pending.fail_owner())?;
+        diagnostic.at("filesystem_available_bytes");
+        diagnostic.requested = Some(required);
+        diagnostic.limit = Some(available);
         if available < required {
             return Err(ReserveFailure::Capacity);
         }
+        diagnostic.at("device_pending_install");
         pending.set_pending(promised)?;
         state.bytes = next;
         state.reserved_files = reserved_files;
@@ -177,6 +235,58 @@ impl Drop for TransactionSpace {
         if self.active {
             self.disk.device.lock().fail_owner();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scratch_claim_diagnostic_filesystem_floor_preserves_promises_on_denial() {
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let memory = crate::test_utils::TestDiskMemory::new(32 << 20, 64);
+        let config = ScratchDiskConfig {
+            directory: directory.path().to_owned(),
+            max_bytes: 1 << 20,
+            min_free_bytes: 8192,
+            file_allocation_policy: crate::FileAllocationPolicy::new(4096).unwrap(),
+            native_cache_bytes: 0,
+        };
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&config, memory.clone())
+        })
+        .unwrap();
+        let before = disk.snapshot();
+        let required = before.filesystem_pending_bytes + 4096 + config.min_free_bytes;
+        *disk.available_override.lock().unwrap() = Some(required - 1);
+        let mut diagnostic = ReserveDiagnostic::default();
+        assert!(matches!(
+            disk.reserve_transaction_space_staged(4096, 1, &mut diagnostic),
+            Err(ReserveFailure::Capacity)
+        ));
+        assert_eq!(diagnostic.stage, "filesystem_available_bytes");
+        assert_eq!(diagnostic.requested, Some(required));
+        assert_eq!(diagnostic.current, None);
+        assert_eq!(diagnostic.limit, Some(required - 1));
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(
+            disk.snapshot().filesystem_pending_bytes,
+            before.filesystem_pending_bytes
+        );
+        assert_eq!(disk.lock_state().reserved_files, 0);
+        assert!(disk.transaction_ready());
+
+        *disk.available_override.lock().unwrap() = Some(required);
+        let mut space = disk.reserve_transaction_space(4096, 1).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 4096);
+        space.finish().unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(
+            disk.snapshot().filesystem_pending_bytes,
+            before.filesystem_pending_bytes
+        );
+        assert_eq!(disk.lock_state().reserved_files, 0);
     }
 }
 impl Charge {

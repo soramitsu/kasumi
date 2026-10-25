@@ -474,7 +474,10 @@ async fn selected_sources_apply_that_races_a_rebase_wins()
                 log_id: rebased, ..
             }),
         ) => assert_eq!(applied, rebased),
-        other => panic!("the apply's entry boundary changed: {:?}", other.0.is_some()),
+        other => panic!(
+            "the apply's entry boundary changed: {:?}",
+            other.0.is_some()
+        ),
     }
     drop(rebased);
     drop(applied_cell);
@@ -497,6 +500,75 @@ async fn selected_sources_apply_that_races_a_rebase_wins()
     drop(database);
     drop(engine);
     audit.shutdown().await?;
+    fixture.close().await
+}
+
+#[tokio::test]
+async fn selected_sources_rebase_uses_bounded_plan_and_preserves_pending_publication()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
+    let engine = TenantEngine::from_bootstrap("selected-sources", &fixture.image)?;
+    engine.install_storage_access(fixture.stores.application())?;
+    engine.install_application_sources(fixture.roots.clone(), &fixture.image)?;
+    fixture.roots.finish_reconstruction()?;
+    let initial = engine.generation()?;
+    let old = initial.application_selection.get().unwrap().cell.clone();
+    let stale = engine
+        .stale_application_selection(u64::MAX)?
+        .context("bootstrap selection predates a later evacuation")?;
+
+    // A proposal may already be admitted while the idle monitor rebases.
+    engine.admit_publication()?;
+    assert!(fixture.roots.publication.lock().unwrap().is_some());
+    let escrow = Arc::as_ptr(fixture.roots.escrow.lock().unwrap().as_ref().unwrap());
+    let admission = &fixture.storage.admission;
+    let (cache_headroom, _) = admission.policy().cache_work_headroom(fixture.budget);
+    let pressure = admission.reserve_resident(
+        fixture.budget - admission.snapshot().reserved_bytes - cache_headroom - (8 << 20),
+    )?;
+    let before = admission.snapshot();
+    // The tiny durable bootstrap fits, although the unplanned snapshot ceiling
+    // cannot be funded. A refused preparation must return its temporary credit.
+    let error = fixture
+        .roots
+        .prepare()
+        .err()
+        .context("unplanned selection unexpectedly fit limited headroom")?;
+    assert!(error.chain().any(|cause| {
+        cause
+            .downcast_ref::<kasumi_types::Error>()
+            .is_some_and(|error| error.code == kasumi_types::ErrorCode::ResourceExhausted)
+    }));
+    drop(error);
+    assert_eq!(admission.snapshot().reserved_bytes, before.reserved_bytes);
+    assert_eq!(
+        admission.snapshot().live_reservations,
+        before.live_reservations
+    );
+
+    assert!(engine.rebase_application_selection(stale)?);
+    let current = engine.generation()?;
+    let selected = current.application_selection.get().unwrap();
+    assert!(!CellRef::ptr_eq(&old, &selected.cell));
+    let position = selected.cell.position.get().unwrap();
+    assert!(position.applied().is_none());
+    assert!(!position.is_covered_reconstruction());
+    assert_eq!(position.bootstrap().digest, fixture.image.sha256());
+    assert_eq!(current.state.revision, initial.state.revision);
+    assert!(fixture.roots.publication.lock().unwrap().is_some());
+    assert_eq!(
+        Arc::as_ptr(fixture.roots.escrow.lock().unwrap().as_ref().unwrap()),
+        escrow
+    );
+    // Existing readers retain the old root until their last Generation ends.
+    assert!(!old.state.lock().unwrap().closed);
+    drop(initial);
+    assert!(old.state.lock().unwrap().closed);
+    drop(pressure);
+    drop(old);
+    drop(current);
+    drop(engine);
     fixture.close().await
 }
 
