@@ -165,7 +165,9 @@ class ReleaseGateTests(unittest.TestCase):
         name = "validate_linux" + ".sh"
         self.assertFalse(os.path.lexists(repository / "scripts" / name))
         # Retained historical evidence records the commands that actually ran.
-        historical = {"docs/evidence", "benchmarks/results"}
+        # The ignored root output archive also contains historical source copies;
+        # nested source directories named output remain subject to this check.
+        historical = {"docs/evidence", "benchmarks/results", "output"}
         skipped = {".git", "target", "tmp", "vendor", "__pycache__"}
         referencing = []
         for directory, children, files in os.walk(repository):

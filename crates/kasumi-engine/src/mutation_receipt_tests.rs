@@ -181,6 +181,103 @@ fn receipt_staging_production_allocation_preserves_long_history() {
 }
 
 #[test]
+fn receipt_staging_streamed_history_preserves_rows_across_native_reclamation() {
+    // Small rows stress the directory's copy-on-write amplification. Keep the
+    // production geometry, maintenance policy and canonical receipt quota;
+    // increasing row payloads would mostly exercise the inexpensive value log.
+    const ROWS: u64 = 16_384;
+    let (mut state, template) = staging_rows(1);
+    assert_eq!(state.limits.max_mutation_receipt_bytes, 128 << 20);
+    let template = &template[0];
+    let row_at = |ordinal: u64, previous: &MutationReceiptHead| {
+        let mut row = template.clone();
+        row.ordinal = ordinal;
+        row.receipt.idempotency_key = format!("streamed-{ordinal}");
+        row.receipt.recorded_revision = ordinal;
+        row.key = identity("owner", &row.receipt.idempotency_key).unwrap();
+        row.applied = applied(ordinal);
+        row.previous_sha256 = previous.sha256.clone();
+        row
+    };
+    let empty = MutationReceiptHead::empty(&state.tenant, &state.incarnation).unwrap();
+    let mut expected = empty.clone();
+    for ordinal in 1..=ROWS {
+        let row = row_at(ordinal, &expected);
+        advance(&mut expected, &row).unwrap();
+    }
+    assert!(expected.encoded_bytes < state.limits.max_mutation_receipt_bytes);
+    state.revision = ROWS;
+    state.mutation_receipt_head = expected.clone();
+
+    let (_directory, disk, memory) = production_allocation_scratch();
+    let limit = scratch_limit(state.limits.max_mutation_receipt_bytes).unwrap();
+    let mut builder = Builder::new(&disk, limit, &state.tenant, &state.incarnation).unwrap();
+    let began = std::time::Instant::now();
+    let mut previous = disk.snapshot();
+    let mut peak_bytes = previous.charged_bytes;
+    let mut removed_files = 0;
+    let mut head = empty.clone();
+    for ordinal in 1..=ROWS {
+        let row = row_at(ordinal, &head);
+        builder.push(&row, &state).unwrap_or_else(|error| {
+            panic!(
+                "streamed receipt {ordinal}: {error:#}; disk={:?}; memory={:?}",
+                disk.snapshot(),
+                memory.snapshot()
+            );
+        });
+        advance(&mut head, &row).unwrap();
+        // A push following a full batch commits it and performs the next
+        // ordinary begin_write, including native inline maintenance.
+        if ordinal % Builder::BATCH_ROWS as u64 == 1 {
+            let snapshot = disk.snapshot();
+            peak_bytes = peak_bytes.max(snapshot.charged_bytes);
+            removed_files += previous.live_files.saturating_sub(snapshot.live_files);
+            previous = snapshot;
+        }
+        if ordinal % 1024 == 0 {
+            eprintln!(
+                "streamed receipts rows={ordinal} canonical_bytes={} elapsed_ms={} peak_bytes={peak_bytes} removed_files={removed_files} disk={:?}",
+                head.encoded_bytes,
+                began.elapsed().as_millis(),
+                disk.snapshot()
+            );
+        }
+    }
+    let view = builder.finish(&expected).unwrap();
+    view.validate_state(&state).unwrap();
+    assert_eq!(view.head(), &expected);
+    assert!(
+        removed_files > 0,
+        "the fixture did not reach native file reclamation; peak_bytes={peak_bytes}"
+    );
+    let mut verified = empty;
+    for ordinal in 1..=ROWS {
+        let row = row_at(ordinal, &verified);
+        let expected_digest = row.sha256().unwrap();
+        assert_eq!(
+            view.row(ordinal).unwrap().sha256().unwrap(),
+            expected_digest
+        );
+        assert_eq!(
+            view.get(&row.key).unwrap().unwrap().sha256().unwrap(),
+            expected_digest
+        );
+        advance(&mut verified, &row).unwrap();
+    }
+    assert_eq!(verified, expected);
+    eprintln!(
+        "streamed receipts verified rows={ROWS} canonical_bytes={} elapsed_ms={} peak_bytes={peak_bytes} removed_files={removed_files} disk={:?}",
+        expected.encoded_bytes,
+        began.elapsed().as_millis(),
+        disk.snapshot()
+    );
+    drop(view);
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
 fn receipt_staging_production_allocation_preserves_escaped_names_and_bounded_error() {
     let (_directory, disk, memory) = production_allocation_scratch();
     let (mut state, mut rows) = staging_rows(Builder::BATCH_ROWS + 1);

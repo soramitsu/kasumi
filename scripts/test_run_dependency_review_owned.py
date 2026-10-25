@@ -253,8 +253,8 @@ class DependencyRunnerTests(unittest.TestCase):
     def test_packed_git_attestation_and_fabricated_head_fail_closed(self):
         git = shutil.which("git")
         self.assertIsNotNone(git)
-        with tempfile.TemporaryDirectory(dir=Path.cwd() / "target/g11-dependency-runner-corrected") as directory:
-            database = Path(directory) / "db"
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory).resolve() / "db"
             database.mkdir()
             environment = dependency_git.environment({"PATH": "/usr/bin:/bin"})
 
@@ -301,7 +301,7 @@ class DependencyRunnerTests(unittest.TestCase):
 
     def test_new_patched_package_advisory_is_observed_and_undisposed(self):
         source = Path.cwd().resolve()
-        with tempfile.TemporaryDirectory(dir=source / "target/g11-dependency-runner-corrected") as directory:
+        with tempfile.TemporaryDirectory() as directory:
             projected, _ = path_patch_projection.project(source)
             lock = Path(directory) / "Cargo.lock"
             lock.write_text(projected)
@@ -359,8 +359,8 @@ class DependencyRunnerTests(unittest.TestCase):
         return selected, receipt_path, alternate, step, receipt
 
     def test_scanner_original_stdout_reference_cannot_be_substituted(self):
-        with tempfile.TemporaryDirectory(dir=Path.cwd() / "target/g11-dependency-runner-corrected") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
             selected, _, alternate, step, receipt = self.scanner_receipt_fixture(root)
             self.assertEqual(launcher.check_child_receipt(
                 root, step, selected, "/frozen/source", {0, 1})[0], receipt)
@@ -376,8 +376,8 @@ class DependencyRunnerTests(unittest.TestCase):
                 launcher.check_child_receipt(root, step, selected, "/frozen/source", {0, 1})
 
     def test_scanner_status_group_and_displayed_drain_contradictions_fail(self):
-        with tempfile.TemporaryDirectory(dir=Path.cwd() / "target/g11-dependency-runner-corrected") as directory:
-            root = Path(directory)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
             selected, receipt_path, _, step, receipt = self.scanner_receipt_fixture(root)
             changed = copy.deepcopy(receipt)
             changed["status"] = "passed"
