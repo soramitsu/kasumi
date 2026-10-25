@@ -18,6 +18,16 @@ Install the same Gitleaks version from its release page, verify the archive
 against its published checksum, then run from the repository root:
 
 ```sh
+# The explicit ignore-path flag is additive in Gitleaks 8.30.1: it still reads
+# a source-root .gitleaksignore. Refuse that file, including dangling symlinks.
+if [ -e .gitleaksignore ] || [ -L .gitleaksignore ]; then
+  echo '.gitleaksignore is forbidden; use scoped .gitleaks.toml exceptions.' >&2
+  exit 1
+fi
+
+# Check that reviewed exceptions still detect other paths and credential values.
+GITLEAKS_BIN=gitleaks python3 scripts/test_secret_scan.py
+
 # Current files, including uncommitted changes and untracked files.
 gitleaks dir --config .gitleaks.toml --redact=100 \
   --ignore-gitleaks-allow --gitleaks-ignore-path /dev/null .
@@ -31,13 +41,16 @@ gitleaks git --config .gitleaks.toml --redact=100 \
 The configuration inherits every upstream detector. Do not add broad path,
 commit or rule exclusions to make a scan pass. Any exception must identify
 verified public test data and constrain the detector, path and matched value.
-Inline suppression comments and fingerprint ignore files are disabled in the
-commands above and in CI.
+Inline suppression comments are disabled. CI and the commands above reject a
+source-root fingerprint ignore file; `--gitleaks-ignore-path /dev/null` alone
+does not disable that file in this Gitleaks version.
 
 The existing exceptions cover reviewed source checksum entries in specific
-evidence files and the exact expired, self-signed TLS key used by a historical
-unit-test fixture. Other credential fields and different private keys at those
-paths remain subject to scanning.
+evidence files, exact backup key-catalog lineage digests in historical recovery
+logs, and the exact expired, self-signed TLS key used by a historical unit-test
+fixture. Keep the reviewed historical paths when files are deleted: full-history
+scans still visit their earlier versions. Other credential fields and different
+private keys at those paths remain subject to scanning.
 Never suppress a live credential finding.
 
 ## Before publishing
