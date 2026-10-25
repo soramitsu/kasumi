@@ -605,6 +605,7 @@ fn strict_create_rejects_a_non_empty_spool_instead_of_adopting_its_frames() {
 struct CountCloses {
     backend: Backend,
     closes: Arc<AtomicUsize>,
+    reserve_denials: Arc<AtomicUsize>,
 }
 
 impl SegmentGroupBackend for CountCloses {
@@ -612,7 +613,14 @@ impl SegmentGroupBackend for CountCloses {
         &self,
         plan: &kasumi_kv::TransactionSpacePlan,
     ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
-        self.backend.reserve_transaction(plan)
+        let result = self.backend.reserve_transaction(plan);
+        if matches!(
+            result,
+            Err(kasumi_kv::TransactionReserveError::CapacityDenied)
+        ) {
+            self.reserve_denials.fetch_add(1, Ordering::SeqCst);
+        }
+        result
     }
     fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> std::io::Result<()> {
         self.backend.finish_transaction(group_id, batch_seq)
@@ -676,11 +684,118 @@ fn counted_table(disk: &Arc<ScratchDisk>) -> (EncryptedTable, Arc<Owner>, Arc<At
         .create_with_backend(CountCloses {
             backend,
             closes: closes.clone(),
+            reserve_denials: Arc::new(AtomicUsize::new(0)),
         })
         .unwrap();
     let table = EncryptedTable::initialize(database, owner.clone()).unwrap();
     table.insert(b"identity", b"value").unwrap();
     (table, owner, closes)
+}
+
+#[test]
+fn grouped_reservation_can_exceed_unchanged_limit_that_admits_all_single_writes() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let config = crate::ScratchDiskConfig {
+        directory: directory.path().to_owned(),
+        max_bytes: 64 << 20,
+        min_free_bytes: 0,
+        file_allocation_policy: crate::FileAllocationPolicy::new(1 << 20).unwrap(),
+        native_cache_bytes: 0,
+    };
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        ScratchDisk::open_fixture(&config, memory.clone())
+    })
+    .unwrap();
+    // The group limit never changes. The larger unrelated budgets prevent a
+    // disk/RAM refusal from standing in for the directory growth preflight.
+    // This small artificial ceiling demonstrates admission shape, not a
+    // receipt-history reproduction or the cause of a production failure.
+    let (owner, backend) = owner(&disk, 1 << 20);
+    let denied = Arc::new(AtomicUsize::new(0));
+    let closes = Arc::new(AtomicUsize::new(0));
+    let database =
+        kasumi_kv::Database::builder(owner.clone(), GROUP, CacheConfig { byte_limit: 0 })
+            .create_with_backend(CountCloses {
+                backend: backend.clone(),
+                closes: closes.clone(),
+                reserve_denials: denied.clone(),
+            })
+            .unwrap();
+    let table = EncryptedTable::initialize(database, owner.clone()).unwrap();
+    table.insert(b"existing", b"unchanged original").unwrap();
+    let roots = || {
+        let mut roots = [[0; ROOT_SLOT_BYTES]; 2];
+        backend.read_root(RootSlot::A, &mut roots[0]).unwrap();
+        backend.read_root(RootSlot::B, &mut roots[1]).unwrap();
+        roots
+    };
+    let before_roots = roots();
+    let before = disk.snapshot();
+    let entries: Vec<_> = (0..EncryptedTableBatch::MAX_ENTRIES)
+        .map(|ordinal| (ordinal.to_be_bytes(), format!("value-{ordinal}")))
+        .collect();
+    let mut batch = table.begin_batch().unwrap();
+    for (key, value) in &entries {
+        batch.insert(key, value.as_bytes()).unwrap();
+    }
+    let error = batch.commit().unwrap_err();
+    let commit = error.downcast_ref::<kasumi_kv::CommitError>().unwrap();
+    let kasumi_kv::StorageError::Core(native) = &commit.0 else {
+        panic!("expected native pre-effect rejection: {commit:?}");
+    };
+    assert_eq!(
+        native.disposition(),
+        kasumi_kv::CoreErrorDisposition::Rejected
+    );
+    assert!(matches!(
+        native.cause(),
+        kasumi_kv::CoreErrorCause::CapacityDenied
+    ));
+    assert_eq!(
+        denied.load(Ordering::SeqCst),
+        1,
+        "actual backend reservation refused"
+    );
+    assert_eq!(roots(), before_roots, "neither selected root changed");
+    let after = disk.snapshot();
+    assert_eq!(after.live_files, before.live_files);
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert_eq!(
+        after.filesystem_pending_bytes,
+        before.filesystem_pending_bytes
+    );
+    assert_eq!(
+        table.get(b"existing").unwrap().as_deref(),
+        Some(b"unchanged original".as_slice())
+    );
+    for (key, _) in &entries {
+        assert_eq!(
+            table.get(key).unwrap(),
+            None,
+            "no rejected batch entry published"
+        );
+    }
+    for (key, value) in &entries {
+        table.insert(key, value.as_bytes()).unwrap();
+    }
+    assert_eq!(
+        denied.load(Ordering::SeqCst),
+        1,
+        "all same-budget single writes fit"
+    );
+    assert_eq!(
+        table.get(b"existing").unwrap().as_deref(),
+        Some(b"unchanged original".as_slice())
+    );
+    for (key, value) in &entries {
+        assert_eq!(table.get(key).unwrap().as_deref(), Some(value.as_bytes()));
+    }
+    table.close().unwrap();
+    assert_eq!(closes.load(Ordering::SeqCst), 1);
+    assert!(owner.drained());
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
 }
 
 fn spool_address(owner: &Owner) -> *const RetainedSpool {
