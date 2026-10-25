@@ -119,6 +119,428 @@ paths = [
     '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/source/kasumi\-stock\-sdk\-consumer\-3f88b44\-source\-evidence\.json$''',
     '''(?:^|/)docs/evidence/stock\-json\-sdk\-3f88b44\-20260909/source/kasumi\-stock\-sdk\-consumer\-e36f596\-source\-evidence\.json$''',
     '''(?:^|/)vendor/patch\-manifest\.json$''',
+    # Reviewed historical manifests added by later merges; retain these exact
+    # paths even after the evidence files disappear from the current tree.
+    '''^(?:\./)?docs/evidence/dependency\-gate\-main\-20260920/original\-format1\-manifest\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-207ae69\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-5233e96\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-6d969f3\-interrupted\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-b5001b1\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-be2667d\-check\-20260919/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-c681ba3\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-e9f39b2\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-f2921f5\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-f2921f5\-retired\-source\-diagnostic\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/g09\-atomic\-initial\-entry\-development\-20260927/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/g09\-atomic\-initial\-entry\-development\-20260927/source\-final\-observation\.json$''',
+    '''^(?:\./)?docs/evidence/g09\-atomic\-initial\-entry\-development\-20260927/source\-native\-candidate\.json$''',
+    '''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/source\-current\-candidate\.json$''',
+    '''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/source\-metadata\-candidate\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/01\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/01\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/02\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/02\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/03\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/03\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/04\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/04\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/05\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/05\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/06\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/06\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/07\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/07\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/08\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/08\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/09\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/09\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/10\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/10\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/100\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/100\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/101\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/101\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/102\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/102\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/103\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/103\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/104\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/104\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/105\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/105\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/106\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/106\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/107\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/107\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/108\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/108\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/109\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/109\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/11\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/11\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/110\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/110\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/111\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/111\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/112\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/112\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/113\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/113\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/114\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/114\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/115\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/115\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/116\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/116\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/117\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/117\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/118\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/118\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/119\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/119\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/12\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/12\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/120\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/120\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/121\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/121\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/122\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/122\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/123\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/123\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/124\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/124\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/125\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/125\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/126\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/126\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/127\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/127\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/128\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/128\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/129\-initial\-dispatch\-current\-leader/evidence/129\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/129\-initial\-dispatch\-current\-leader/evidence/129\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/129\-intent\-commit\-independent\-review/receipt\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/129\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/129\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/13\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/13\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/130\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/130\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/131\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/131\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/132\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/132\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/133\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/133\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/134\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/134\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/135\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/135\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/136\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/136\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/137\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/137\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/138\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/138\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/139\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/139\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/14\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/14\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/140\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/140\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/141\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/141\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/142\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/142\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/143\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/143\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/144\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/144\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/145\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/145\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/146\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/146\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/147\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/147\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/148\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/148\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/149\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/149\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/15\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/15\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/150\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/150\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/151\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/151\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/152\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/152\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/153\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/153\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/154\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/154\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/155\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/155\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/156\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/156\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/157\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/157\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/158\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/158\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/159\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/159\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/160\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/160\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/161\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/161\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/162\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/162\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/163\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/163\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/164\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/164\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/17\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/17\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/18\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/18\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/19\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/19\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/20\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/20\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/21\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/21\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/22\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/22\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/23\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/23\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/24\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/24\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/25\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/25\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/26\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/26\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/27\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/27\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/28\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/28\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/29\-source\-after\-recovery\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/29\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/30\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/30\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/32\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/32\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/33\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/33\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/34\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/34\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/35\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/35\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/37\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/37\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/38\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/38\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/39\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/39\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/40\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/40\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/41\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/41\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/42\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/42\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/43\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/43\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/44\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/44\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/45\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/45\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/46\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/46\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/47\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/47\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/49\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/49\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/50\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/50\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/51\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/51\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/52\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/52\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/53\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/53\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/55\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/55\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/56\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/56\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/57\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/57\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/58\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/58\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/59\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/59\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/60\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/60\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/61\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/61\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/62\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/62\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/63\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/63\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/64\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/64\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/65\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/65\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/66\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/66\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/67\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/67\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/68\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/68\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/69\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/69\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/70\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/70\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/71\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/71\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/72\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/72\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/73\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/73\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/74\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/74\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/75\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/75\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/76\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/76\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/77\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/77\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/78\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/78\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/79\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/79\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/80\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/80\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/81\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/81\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/82\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/82\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/83\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/83\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/84\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/84\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/85\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/85\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/86\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/86\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/87\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/87\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/88\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/88\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/89\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/89\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/90\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/90\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/91\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/91\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/92\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/92\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/93\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/93\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/94\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/94\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/95\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/95\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/96\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/96\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/97\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/97\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/98\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/98\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/99\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/99\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/allocator\-payload\-append\-receipts/e40dc9a9ba32d0a9c2fe\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/canonical\-census\-append\-receipts/bb5b773863cb2569f62f\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-cursor/final\-checks\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-fixed\-maps/final\-checks\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/final\-checks\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-01/after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-01/before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-02/after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-02/before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-policy\-callers/actual\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-policy\-callers/actual\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/fixed\-bank\-append\-receipts/5baa4d2b97b1a4023675\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/installed\-memory\-callers/complete\-600c0ca/baseline\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/lifecycle\-reclaim\-append\-receipts/61ca4d5b7a2e62376b2b\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/opening\-namespace\-append\-receipts/109f4b1f57d2779c5664\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/page\-list\-cursor\-append\-receipts/e904ad842b308586b24a\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/production\-directory\-callers/all\-rust\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/production\-directory\-callers/all\-rust\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/provenance\-append\-receipts/8a674c7427687db64f94\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/raw\-sha256\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-bounded\-data\-reclaim\-root\-review/overlay\-old\-api\-scan\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-bounded\-data\-reclaim\-root\-review/receipt\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/redb\-bounded\-data\-reclaim\-root\-review/receipt\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-157/157\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-157/157\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-158/158\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-158/158\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-159/159\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-159/159\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-160/160\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-160/160\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-161/161\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-161/161\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-162/162\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-162/162\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-163/163\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-163/163\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-164/164\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/run\-164/164\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-workspace\-estimator/native\-receipt\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/storage\-census\-sessions\-append\-receipts/566c45aee7bec710011f\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/storage\-composition\-append\-receipts/772829aaa6b43c0697cd\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-storage\-namespace\-custody\-20260923\-rev6/candidate/apply\-readback\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-admission\-20260920/admission\-checkpoint\-inputs\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-admission\-20260920/checkpoint\-runtime\-inputs\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-admission\-20260920/final\-runtime\-inputs\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-20260920/owned\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-20260920/owned\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-20260920/runtime\-inputs\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/redb\-bounded\-data\-reclaim\-root\-review/receipt\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-157/157\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-157/157\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-158/158\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-158/158\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-159/159\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-159/159\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-160/160\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-160/160\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-161/161\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-161/161\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-162/162\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-162/162\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-163/163\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-163/163\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-164/164\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/run\-164/164\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/redb\-bounded\-data\-reclaim\-root\-review/receipt\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-157/157\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-157/157\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-158/158\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-158/158\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-159/159\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-159/159\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-160/160\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-160/160\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-161/161\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-161/161\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-162/162\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-162/162\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-163/163\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-163/163\-source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-164/164\-source\-after\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/run\-164/164\-source\-before\.json$''',
 ]
 
 [[rules.allowlists]]
@@ -171,7 +593,248 @@ paths = [
     '''(?:^|/)docs/evidence/first-release-055a9b6-check-20260919/source-before\.json$''',
     '''(?:^|/)docs/evidence/first-release-15e64dd-check-20260919/source-before\.json$''',
     '''(?:^|/)docs/evidence/first-release-32825cf-check-20260919/source-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-207ae69\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-5233e96\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-6d969f3\-interrupted\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-b5001b1\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-be2667d\-check\-20260919/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-c681ba3\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-e9f39b2\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-f2921f5\-check\-20260920/source\-before\.json$''',
+    '''^(?:\./)?docs/evidence/first\-release\-f2921f5\-retired\-source\-diagnostic\-20260920/source\-before\.json$''',
 ]
+
+# Reviewed Python source checksums and named SHA-256 commitments in historical
+# manifests. Constrain both the complete checksum entry and its exact paths.
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"/Users/mtakemiya/\.cache/codex\-runtimes/codex\-primary\-runtime/dependencies/python/lib/python3\.12/token\.py":\s*"1a4d994ce9744f4bfe2d964fc24d112a1e76796a08c2e45a2d73c82a8587f922"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-01/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-01/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-02/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-02/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-01/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-01/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-02/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-02/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-03/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-03/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v3/python\-tests\-01/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v3/python\-tests\-01/imports\-before\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"/Users/mtakemiya/\.cache/codex\-runtimes/codex\-primary\-runtime/dependencies/python/lib/python3\.12/tokenize\.py":\s*"026f566ac63e60d69c8185a3880831b657accc5eac984fadf271fc99a5e5825d"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-01/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-01/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-02/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/directory\-parent\-transitions/python\-02/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-01/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-01/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-02/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-02/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-03/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v2/python\-tests\-03/imports\-before\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v3/python\-tests\-01/imports\-after\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/repeatable\-assembly\-v3/python\-tests\-01/imports\-before\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"canonical_key_scope_sha256":\s*"653bb659cf235c9311611b2df4301104851038ab2908da9bb67db13dd3f4f242"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-canonical\-allocator\-keys\-opening\-composed/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/redb\-canonical\-allocator\-keys\-opening\-composed/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/redb\-canonical\-allocator\-keys\-opening\-composed/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/redb\-canonical\-allocator\-keys\-opening\-composed/manifest\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"installed\-memory\-callers/complete\-600c0ca/api\-fixtures\.py":\s*"1be5fbb13f663ca4cd47939740f028753b10f6446b5f1892b4f69b2446a56c30"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/raw\-sha256\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"normalized_original_tokens_sha256":\s*"7bc456d8051ff563d94441433e10da73bf1eedf25ab744c619edf6b45011799d"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"normalized_original_tokens_sha256":\s*"b6fadba9b5f1dd1d67db9f3fc65c4ba77bc34b1172bf55f2828c990e64b723d5"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"normalized_original_tokens_sha256":\s*"bfb749bbd14cc4fbc744592117f8aa3c0a782b1d44bf34ce06ee1fa03e9c75a3"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+]
+
+[[rules.allowlists]]
+description = "Exact reviewed historical source checksum or SHA-256 commitment"
+condition = "AND"
+regexTarget = "line"
+regexes = ['''^\s*"normalized_original_tokens_sha256":\s*"f1b653c17b0c5e5483cd0995576ace3bc5cea9424433f4d4b8ac50b42f836cf9"[,]?\s*$''']
+paths = [
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/installed\-disk\-main\-20260920/redb\-current\-provenance\-checkpoint/proposed/docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-canonical\-page\-number\-20260923/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+    '''^(?:\./)?docs/evidence/redb\-current\-source\-20260922/bindings/redb\-allocator\-in\-place\-encoding/manifest\.json$''',
+]
+
+# Historical backup recovery logs: exact SHA-256 key-catalog lineage commitments.
+# Verified against the FullBackupCheckpoint field and KeyLineage hash implementation.
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "1ea28fa9e52c6843fb0d77d0e80615b234eda9465717ac5e1c73f47e694a223f"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-atomic\-initial\-entry\-development\-20260927/native\-node1\-down\-first\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "f0528f7488ce36ff83d2fb5532bfb860fce0f920b4df5a402a929d0450862138"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-development\-20260927/native\-finished\-drain\-timeout\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "afcd26e25efc2da14bb159a45a991695591c22f0fefaaf1430c1467325ecd62f"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-development\-20260927/native\-original\-expiry\-rejected\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "a9c57c80b648829179e2f523102c05defdd579e158da6423ba246ddeff99da5f"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-development\-20260927/native\-restart\-to\-complete\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "49dc74f6de66095e20ee3525bbe005fdfa29971382c8dd669cfa6426cb06fce4"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-development\-20260927/native\-restart\-to\-finished\-final\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "1d50b630259a2fc72d915f7af054be6612a5c148a13c92129726675bd6959026"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-development\-20260927/native\-source\-generation\-sealed\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "3676dbb2a9b84dca8596def7c17da28e74aba2b41b477fa1674f3a9bde83ce7a"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-leader\-development\-20260927/lost\-start\-initialize\-final\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "2e572f57f8c5b0c8284b4cdea82578eae15f49d35e5a75c21bc2f31d2d00cb9c"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-inspection\-leader\-development\-20260927/native\-other\-leader\-final\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "45acf0bb0cc287a4f15e5ca17a1f7bb99634ba477384dec4205ac9a204b01ba7"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-initial\-membership\-development\-20260927/full\-recovery\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "d23ef31773a0606f5e616c426ea5f3365ef703f2fd0757d3fc4c6a32117b6548"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/native\-lost\-replies\-current\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "80bd248143a35df4b3f4feda5d21a442aa45d8819bad1214d9065a6e0f5f6fe5"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/native\-lost\-replies\-first\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "54050e11c508502557c7a8464ba3a58fbca8068a38eebf4de3b4bfb39f683b5e"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/native\-node1\-down\-first\.log$''']
+
+[[rules.allowlists]]
+description = "Reviewed backup key-catalog lineage digest in historical recovery evidence"
+condition = "AND"
+regexTarget = "match"
+regexes = [
+    '''^key_lineage_digest: "d52d1b7581abf07b40824c0e374793ba2733d4c87f6a70687b263d52d6cbe2a8"$''',
+]
+paths = ['''^(?:\./)?docs/evidence/g09\-replicated\-initial\-association\-development\-20260927/native\-storage\-snapshot\-first\.log$''']
 
 # This exact key belongs to a self-signed TLS unit-test identity, loaded only
 # by the historical installed_pool.rs #[cfg(test)] module. The certificate CN is
