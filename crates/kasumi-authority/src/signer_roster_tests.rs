@@ -360,30 +360,62 @@ async fn signer_roster_covers_control_and_prepared_targets_and_freezes_exact_adm
             .request_sha256,
         original.receipt.request_sha256
     );
-    let mut snapshot = Vec::new();
-    current.backend.snapshot(&mut snapshot).unwrap();
-    current
-        .backend
-        .validate_snapshot(&mut snapshot.as_slice())
-        .unwrap();
-    let changed = crate::state::snapshot::rewrite_for_test(&snapshot, |frame| {
-        if frame["type"] == "Meta" {
-            frame["value"]["signing"]["staged"]["roster"]["sha256"] =
-                serde_json::json!("00".repeat(32));
-        }
-    });
-    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&changed), &mut changed.as_slice()).is_err());
-    let changed = crate::state::snapshot::rewrite_for_test(&snapshot, |frame| {
-        if frame["type"] == "Entry" && frame["value"][1]["kind"] == "Verifier" {
-            frame["value"][1]["record"]["enrollment"]["endpoint"] =
-                serde_json::json!("https://alias.test/");
-        }
-    });
-    assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&changed), &mut changed.as_slice()).is_err());
+    // Real encrypted snapshot validation performs synchronous disk work. Keep
+    // the runtime available for the installed stores' original lease renewals.
+    let validating = current.clone();
+    tokio::task::spawn_blocking(move || {
+        let mut snapshot = Vec::new();
+        validating.backend.snapshot(&mut snapshot).unwrap();
+        validating
+            .backend
+            .validate_snapshot(&mut snapshot.as_slice())
+            .unwrap();
+        let changed = crate::state::snapshot::rewrite_for_test(&snapshot, |frame| {
+            if frame["type"] == "Meta" {
+                frame["value"]["signing"]["staged"]["roster"]["sha256"] =
+                    serde_json::json!("00".repeat(32));
+            }
+        });
+        assert!(validating.backend.prepare_restore(&crate::state::restore_test_context(&changed), &mut changed.as_slice()).is_err());
+        let changed = crate::state::snapshot::rewrite_for_test(&snapshot, |frame| {
+            if frame["type"] == "Entry" && frame["value"][1]["kind"] == "Verifier" {
+                frame["value"][1]["record"]["enrollment"]["endpoint"] =
+                    serde_json::json!("https://alias.test/");
+            }
+        });
+        assert!(validating.backend.prepare_restore(&crate::state::restore_test_context(&changed), &mut changed.as_slice()).is_err());
+    })
+    .await
+    .unwrap();
     drop(queued_lease);
     drop(current);
     drop(service);
-    f.reopen().await;
+    // The original preparation and lifecycle receipts were resolved above.
+    // A timed-out waiter can still leave its exact acknowledgement error in
+    // request custody: receipt replay does not claim that original waiter.
+    // Require complete ownership drain and only that documented terminal error.
+    for service in &f.services {
+        if let Err(failure) = service.shutdown().await {
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete,
+                "{failure:?}"
+            );
+            assert!(!failure.issues().is_empty());
+            for issue in failure.issues() {
+                assert_eq!(issue.component(), "authority request outcome");
+                let error = issue.error().downcast_ref::<Error>().unwrap();
+                assert_eq!(error.code, ErrorCode::UnknownOutcome);
+                assert_eq!(
+                    error.message,
+                    "authority acknowledgement unavailable; resolve the exact permanent command identity"
+                );
+            }
+        }
+        assert_eq!(service.request_jobs.registered(), 0);
+        assert_eq!(service.requests.available_permits(), AUTHORITY_REQUEST_SLOTS);
+    }
+    f.reopen_after_service_drain().await;
     let restarted = f.leader().await;
     assert_eq!(restarted.backend.signing_head().unwrap(), frozen.current);
     assert!(
