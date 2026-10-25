@@ -17,8 +17,10 @@ const MAX_ROW_BYTES: usize = 2 << 20;
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES;
 const CATALOG: &str = "mutation-receipt-catalog";
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
+    // Bound temporary working copies, indexes and commit overhead separately
+    // from the canonical receipt quota; some histories can still exhaust it.
     canonical_bytes
-        .checked_mul(8)
+        .checked_mul(16)
         .and_then(|n| n.checked_add(64 << 20))
         .context("receipt scratch table budget overflow")
 }
