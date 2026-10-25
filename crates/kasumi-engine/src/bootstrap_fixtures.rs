@@ -248,7 +248,7 @@ mod tests {
         audit.shutdown().await.unwrap();
         node.shutdown().await.unwrap();
         drop(audit);
-        drop(node);
+        assert!(node.retire().is_retired());
         let drained = admission.snapshot();
         // Shared installed disk metadata remains charged after all three
         // databases and their shared audit/maintenance workers have drained.

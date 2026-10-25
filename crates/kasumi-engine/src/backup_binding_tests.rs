@@ -106,9 +106,10 @@ pub(crate) fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> 
         },
     }
 }
-async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
+async fn durable() -> (tempfile::TempDir, NodeStore, Arc<TenantStore>, TenantState, View) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    // Snapshot decoding holds all four staging tables and their native workspaces.
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64);
     kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
     let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(
@@ -119,7 +120,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     )
     .unwrap();
     let store = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         crate::control::CONTROL_TENANT.into(),
         Arc::new(LocalKeyProvider::new([89; 32])),
     )
@@ -133,12 +134,12 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     store
         .replace_namespaces(&install.replacements(), install.writes())
         .unwrap();
-    (directory, store, state, install.view)
+    (directory, node, store, state, install.view)
 }
 
 #[tokio::test]
 async fn selected_physical_rows_require_current_writer_bytes_without_repair() -> Result<()> {
-    let (_directory, store, initial, old) = durable().await;
+    let (_directory, _node, store, initial, old) = durable().await;
     let session_id = uuid::Uuid::from_u128(50);
     let mut state = initial.clone();
     state.revision = 1;
@@ -254,7 +255,7 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
 
 #[tokio::test]
 async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Result<()> {
-    let (_directory, store, state, selected) = durable().await;
+    let (_directory, _node, store, state, selected) = durable().await;
     let checkpoint = "10".repeat(32);
     let canonical = store
         .get_bounded(CATALOG, checkpoint.as_bytes(), 64 << 10)?
@@ -307,7 +308,7 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
 
 #[tokio::test]
 async fn committed_point_before_applied_cursor_is_invisible_and_exact_replay_survives() {
-    let (_directory, store, initial, old) = durable().await;
+    let (_directory, _node, store, initial, old) = durable().await;
     let session_id = uuid::Uuid::from_u128(5);
     let mut next = initial.clone();
     next.revision = 1;
@@ -366,7 +367,7 @@ async fn committed_point_before_applied_cursor_is_invisible_and_exact_replay_sur
 
 #[tokio::test]
 async fn selected_checkpoint_reopens_exact_row_and_rejects_changed_head() {
-    let (_directory, store, initial, old) = durable().await;
+    let (_directory, _node, store, initial, old) = durable().await;
     let session_id = uuid::Uuid::from_u128(6);
     let mut selected_state = initial.clone();
     selected_state.revision = 1;
@@ -493,7 +494,7 @@ fn application_snapshot_has_no_control_binding_catalog() {
 
 #[tokio::test]
 async fn encrypted_restart_keeps_future_binding_invisible_until_exact_replay() {
-    let (directory, store, initial, old) = durable().await;
+    let (directory, node, store, initial, old) = durable().await;
     let disk = store.scratch_disk().clone();
     let session_id = uuid::Uuid::from_u128(8);
     let mut replay_state = initial.clone();
@@ -511,7 +512,9 @@ async fn encrypted_restart_keeps_future_binding_invisible_until_exact_replay() {
     drop(future);
     drop(old);
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(store);
+    assert!(node.retire().is_retired());
 
     let node = NodeStore::open_existing_fixture(
         directory.path().join("persistent/node.kv"),
@@ -572,7 +575,7 @@ async fn encrypted_restart_keeps_future_binding_invisible_until_exact_replay() {
 #[tokio::test]
 async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_after_restart() {
     for fault in ["catalog", "point", "index", "alternate-index"] {
-        let (directory, store, initial, old) = durable().await;
+        let (directory, node, store, initial, old) = durable().await;
         let disk = store.scratch_disk().clone();
         let session_id = uuid::Uuid::from_u128(9);
         let mut selected_state = initial.clone();
@@ -630,7 +633,9 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
         drop(selected);
         drop(old);
         store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         drop(store);
+        assert!(node.retire().is_retired());
         let node = NodeStore::open_existing_fixture(
             directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
@@ -639,7 +644,7 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
         )
         .unwrap();
         let store = TenantStore::open_existing_fixture(
-            node,
+            node.clone(),
             crate::control::CONTROL_TENANT.into(),
             Arc::new(LocalKeyProvider::new([89; 32])),
         )
@@ -747,7 +752,9 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
             _ => unreachable!(),
         }
         store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
         drop(store);
+        assert!(node.retire().is_retired());
         let node = NodeStore::open_existing_fixture(
             directory.path().join("persistent/node.kv"),
             kasumi_store::test_utils::NODE_STORE_ID,
@@ -807,7 +814,7 @@ async fn snapshot_bootstrap_rejects_missing_catalog_point_and_corrupt_index_afte
 #[test]
 fn application_snapshot_validator_rejects_nonempty_control_binding_head_and_row() {
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let control = state();

@@ -33,6 +33,7 @@ async fn registry_is_bounded_and_uses_the_original_node_charge() {
     assert_eq!(
         crate::test_utils::reserved_payload_bytes(&admission),
         BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1).unwrap()
+            + kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().unwrap()
     );
     assert_eq!(admission.snapshot().inflight_operations, 0);
     let mut releases = Vec::new();

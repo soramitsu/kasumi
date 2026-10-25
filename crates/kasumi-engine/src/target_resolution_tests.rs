@@ -136,7 +136,7 @@ pub(crate) fn linked_sealed_successor_rows() -> (TenantState, [Row; 2]) {
 
 async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+    let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64);
     kasumi_store::private_files::create_directory(&directory.path().join("persistent")).unwrap();
     let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
     let node = NodeStore::create_new_fixture(

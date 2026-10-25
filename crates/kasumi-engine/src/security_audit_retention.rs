@@ -1284,6 +1284,7 @@ mod tests {
         node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
+        assert!(node.retire().is_retired());
 
         let reopened_node = storage
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
@@ -1373,6 +1374,7 @@ mod tests {
         reopened_node.shutdown().await.unwrap();
         drop(audit);
         drop(store);
+        assert!(reopened_node.retire().is_retired());
         // Strong installed disk owners and their eight metadata leases survive
         // audit shutdown; every operation, native index and maintenance charge
         // has drained after the final store handle is released.

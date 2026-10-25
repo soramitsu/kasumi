@@ -1087,7 +1087,16 @@ async fn validation_baseline_failed_publish_retires_candidate_before_apply_owner
         }]
     );
     assert!(fixture.engine.apply_lock.try_lock().is_ok());
-    assert!(Arc::ptr_eq(&original, &fixture.engine.generation()?));
+    // Sealing fences the public generation read as well as publication. Inspect
+    // only the private installed pointer to prove the failed publish kept it.
+    assert!(matches!(
+        fixture.engine.generation(),
+        Err(error) if error.code == ErrorCode::Sealed
+    ));
+    assert!(Arc::ptr_eq(
+        &original,
+        fixture.engine.current.load().as_ref().unwrap()
+    ));
     drop(probe);
     drop(original);
     drop(image);

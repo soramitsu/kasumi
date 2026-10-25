@@ -1214,18 +1214,12 @@ mod tests {
     async fn public_capture_and_restore_preparation_are_complete_admitted_and_never_publish() {
         let incarnation = uuid::Uuid::new_v4().to_string();
         let config = crate::admission::AdmissionConfig::default();
-        let operation_capacity = config
-            .resolved_fixture_total_bytes()
-            .unwrap()
-            .checked_sub(
-                crate::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap(),
-            )
-            .unwrap();
+        let original_total = config.resolved_fixture_total_bytes().unwrap();
         let (
             (_source_dir, source, source_store),
             (_target_dir, target, target_store),
             admission,
-            _metadata_bytes,
+            metadata_bytes,
         ) = admitted_pair(&incarnation, config).await;
         install_chain(&source, &source_store);
         let installed_payload = crate::test_utils::reserved_payload_bytes(&admission);
@@ -1267,8 +1261,15 @@ mod tests {
             crate::test_utils::reserved_payload_bytes(&admission),
             installed_payload
         );
+        // The live native stores retain index charges as well as disk metadata.
+        // Leave the same operation headroom after accounting for all owners.
+        let available = original_total
+            .checked_add(metadata_bytes)
+            .unwrap()
+            .checked_sub(admission.snapshot().reserved_bytes)
+            .unwrap();
         let held = admission
-            .reserve(operation_capacity.checked_sub(1 << 20).unwrap(), None)
+            .reserve(available.checked_sub(1 << 20).unwrap(), None)
             .unwrap();
         assert_eq!(
             source

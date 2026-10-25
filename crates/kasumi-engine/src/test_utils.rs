@@ -738,14 +738,14 @@ mod physical_fixture_tests {
         assert!(Arc::ptr_eq(first.persistent_disk(), &storage.persistent));
         assert!(Arc::ptr_eq(first.scratch_disk(), &storage.scratch));
         first.shutdown().await?;
-        drop(first);
+        assert!(first.retire().is_retired());
         let reopened = storage
             .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             .unwrap_or_else(|original| std::panic::panic_any(original));
         assert!(Arc::ptr_eq(reopened.persistent_disk(), &storage.persistent));
         assert!(admission.snapshot().reserved_bytes > after.reserved_bytes);
         reopened.shutdown().await?;
-        drop(reopened);
+        assert!(reopened.retire().is_retired());
         assert_eq!(admission.snapshot().reserved_bytes, after.reserved_bytes);
         admission.drain_snapshot_startups().await?;
         drop(storage);

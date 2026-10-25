@@ -3679,7 +3679,7 @@ mod restore_budget_tests {
     #[test]
     fn restored_identity_metadata_is_validated_before_bootstrap_persistence() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;

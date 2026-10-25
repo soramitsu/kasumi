@@ -16,11 +16,31 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
     let source = proposal_topology();
     let key = "cancelled-topology-input";
     let exact = proposal_input::retained_for_test(&source, key);
-    let command_workspace = ((8 << 20) + (64 << 10)) * 3u64;
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
+    let context = fixture.credential(clock.clone());
+    let quoted = proposal_input::OperationInput::topology(
+        fixture.db.admission(),
+        proposal_topology(),
+        Precondition::Absent,
+        key,
+    )
+    .unwrap()
+    .into_command(context.clone());
+    let max_bytes = proposal_input_len(&quoted.command).unwrap() + (64 << 10);
+    let Operation::Mutate(batch) = &quoted.command.operation else {
+        panic!("topology input must be a mutation");
+    };
+    let input_bytes = kasumi_raft::ApplicationInputRequirements::for_capacity(max_bytes)
+        .with_mutation_change_tree(batch)
+        .unwrap()
+        .with_token::<ProposalBudget>()
+        .unwrap();
+    let command_workspace =
+        max_bytes as u64 * 3 + input_bytes + ProposalBudget::required_bytes().unwrap();
+    drop(quoted);
     let gate = fixture.db.proposal_gate.lock().await;
     let mut request = Box::pin(plane.replace_topology(
-        fixture.credential(clock.clone()),
+        context,
         source,
         Precondition::Absent,
         key.into(),

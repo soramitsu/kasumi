@@ -99,7 +99,11 @@ impl Installation {
     async fn close(&self, audit: Arc<SecurityAudit>, store: Arc<TenantStore>) {
         audit.shutdown().await.unwrap();
         store.shutdown().await.unwrap();
-        self.shutdown_node().await;
+        let node = self.node.lock().unwrap().take().unwrap();
+        node.shutdown().await.unwrap();
+        drop(audit);
+        drop(store);
+        assert!(node.retire().is_retired());
     }
 }
 fn event() -> SecurityEvent {
