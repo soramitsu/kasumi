@@ -686,6 +686,7 @@ fn staged_crash_worker() {
 
 #[tokio::test]
 async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once() {
+    use std::io::Read;
     use std::os::unix::fs::DirBuilderExt;
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     // The harness marker belongs outside the private installed storage root.
@@ -713,23 +714,40 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     }
     child.kill().unwrap();
     child.wait().unwrap();
-    let raw = std::fs::read(directory.path().join("persistent/node.kv")).unwrap();
+    let path = directory.path().join("persistent/node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let memory = physical.storage.persistent.memory().clone();
+    let image = kasumi_store::test_utils::capture_native_group_image(&path, memory.clone())
+        .unwrap();
     let amount = b"90071992547409931234567890.123456789";
-    assert!(
-        !raw.windows(amount.len()).any(|bytes| bytes == amount),
-        "invisible staging payload must still be encrypted on disk"
+    for entry in std::fs::read_dir(&path).unwrap() {
+        let entry = entry.unwrap();
+        assert!(entry.file_type().unwrap().is_file());
+        let mut file = std::fs::File::open(entry.path()).unwrap();
+        let mut buffer = [0; 64 << 10];
+        let mut overlap = 0;
+        loop {
+            let read = file.read(&mut buffer[overlap..]).unwrap();
+            if read == 0 {
+                break;
+            }
+            let total = overlap + read;
+            assert!(
+                !buffer[..total]
+                    .windows(amount.len())
+                    .any(|bytes| bytes == amount),
+                "invisible staging payload must still be encrypted on disk"
+            );
+            overlap = (amount.len() - 1).min(total);
+            buffer.copy_within(total - overlap..total, 0);
+        }
+    }
+    assert_eq!(
+        kasumi_store::test_utils::capture_native_group_image(&path, memory).unwrap(),
+        image
     );
-    drop(raw);
-    let physical = common::PhysicalFixture::new(
-        &directory.path().join("persistent/node.kv"),
-        Default::default(),
-    );
-    let (db, audit, node) = open(
-        &physical,
-        &directory.path().join("persistent/node.kv"),
-        false,
-    )
-    .await;
+    drop(image);
+    let (db, audit, node) = open(&physical, &path, false).await;
     let chunks = chunks();
     let (_, reference) = begin(
         &db.engine().generation().unwrap().state.incarnation,

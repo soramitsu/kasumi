@@ -16,7 +16,7 @@ fn context() -> RequestContext {
 }
 fn engine(limit: u64) -> FixtureEngine {
     FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         "tenant".into(),
         "incarnation".into(),
         Policy {
