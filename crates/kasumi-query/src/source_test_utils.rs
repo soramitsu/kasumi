@@ -3,6 +3,24 @@
 use crate::*;
 use std::convert::Infallible;
 
+pub(crate) fn pending(document: Document) -> Arc<DocumentSlot> {
+    Arc::new(DocumentSlot::Pending(Arc::new(document)))
+}
+
+pub(crate) fn pending_document(slot: &DocumentSlot) -> &Document {
+    match slot {
+        DocumentSlot::Pending(document) => document,
+        DocumentSlot::Stored(_) => panic!("resident fixture contains a stored document"),
+    }
+}
+
+pub(crate) fn pending_document_mut(slot: &mut Arc<DocumentSlot>) -> &mut Document {
+    match Arc::make_mut(slot) {
+        DocumentSlot::Pending(document) => Arc::make_mut(document),
+        DocumentSlot::Stored(_) => panic!("resident fixture contains a stored document"),
+    }
+}
+
 pub(crate) struct FixtureWorkspace;
 impl QueryWorkspace for FixtureWorkspace {
     fn ensure_peak(&mut self, bytes: u64) -> Result<()> {
@@ -59,7 +77,7 @@ impl DocumentSource for ResidentSource<'_> {
             .collection
             .documents
             .get(id)
-            .map(|document| Record::Live(document))
+            .map(|document| Record::Live(pending_document(document)))
             .or_else(|| {
                 self.collection
                     .archived_documents
@@ -92,7 +110,7 @@ impl DocumentSource for ResidentSource<'_> {
             .next()
             .map(|(id, document)| Header {
                 id,
-                version: document.version,
+                version: document.version(),
                 kind: RecordKind::Live,
             });
         let archived = self
@@ -152,7 +170,7 @@ fn visit_collection(
     loop {
         let next_live = match (live.peek(), archived.peek()) {
             (Some((id, document)), Some((archived_id, reference))) if id == archived_id => {
-                if document.version != reference.version {
+                if document.version() != reference.version {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "fixture hydration version differs",
@@ -168,7 +186,7 @@ fn visit_collection(
         };
         if next_live {
             let (id, record) = live.next().unwrap();
-            lend(id, Record::Live(record))?;
+            lend(id, Record::Live(pending_document(record)))?;
         } else {
             let (id, record) = archived.next().unwrap();
             lend(id, Record::Archived(record))?;
@@ -180,7 +198,7 @@ fn record<'a>(collection: &'a CollectionState, id: &str) -> Option<Record<'a>> {
     collection
         .documents
         .get(id)
-        .map(|document| Record::Live(document))
+        .map(|document| Record::Live(pending_document(document)))
         .or_else(|| {
             collection
                 .archived_documents
@@ -237,7 +255,7 @@ impl DocumentChanges for FixtureChanges<'_> {
 }
 pub(crate) fn validate_collection_fixture(
     definition: &CollectionDefinition,
-    documents: &imbl::OrdMap<String, Arc<Document>>,
+    documents: &imbl::OrdMap<String, Arc<DocumentSlot>>,
 ) -> Result<()> {
     let collection = CollectionState {
         definition: definition.clone(),

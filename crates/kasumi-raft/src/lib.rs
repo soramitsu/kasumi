@@ -1254,7 +1254,6 @@ impl RaftGroup {
     }
 
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
-        self.snapshot_buffers.seal_application_source_consumers();
         let mut report = self.shutdown_report.lock().await;
         let mut buffer_unresolved = None;
         if let Some(local) = &self.local {
@@ -1264,6 +1263,10 @@ impl RaftGroup {
         } else if let Err(error) = self.raft().shutdown_gracefully().await {
             report.record("OpenRaft runtime", 0, error.into());
         }
+        // Local snapshot builders and accepted apply work read their exact
+        // immutable document sources. Join the actual runtime before sealing
+        // those sources; subsequent buffer/source drains retain all failures.
+        self.snapshot_buffers.seal_application_source_consumers();
         if let Err(failure) = self.snapshot_buffers.drain_buffers().await {
             report.merge(&failure);
             if failure.completion() == kasumi_types::drain::DrainCompletion::Retained {

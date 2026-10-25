@@ -259,7 +259,7 @@ fn patch_expansion_fixture() -> (CodecFixture, usize) {
     let bytes = engine.generation().unwrap().state.collections["docs"]
         .documents
         .values()
-        .map(|document| encoded_len(&document.body).unwrap())
+        .map(|document| document.body_bytes().unwrap() as usize)
         .sum();
     (engine, bytes)
 }
@@ -317,10 +317,13 @@ fn merge_patch_expansion_rejects_atomically_and_accepts_the_exact_source_byte_bo
     let after = engine.generation().unwrap();
     for id in ["a", "b"] {
         assert_eq!(
-            after.state.collections["docs"].documents[id].body["patched"],
+            after
+                .load_document(&after.state.collections["docs"].documents[id])
+                .unwrap()
+                .body["patched"],
             true
         );
-        assert_eq!(after.state.collections["docs"].documents[id].version, 8);
+        assert_eq!(after.state.collections["docs"].documents[id].version(), 8);
     }
 }
 
@@ -343,9 +346,11 @@ fn merge_patch_expansion_checks_decoded_clone_cost_before_mutating_object_heavy_
     limits.max_batch_bytes = 4096;
     apply(&engine, 3, Operation::SetLimits(limits)).unwrap();
     let before = engine.generation().unwrap();
-    let source = &before.state.collections["docs"].documents["a"];
+    let source = before
+        .load_document(&before.state.collections["docs"].documents["a"])
+        .unwrap();
     assert!(encoded_len(&source.body).unwrap() < 4096);
-    assert!(kasumi_query::document_clone_bytes(source).unwrap() > 3 * 4096);
+    assert!(kasumi_query::document_clone_bytes(&source).unwrap() > 3 * 4096);
     let error = apply(
         &engine,
         4,
@@ -359,7 +364,7 @@ fn merge_patch_expansion_checks_decoded_clone_cost_before_mutating_object_heavy_
             .contains("source documents exceed workspace limit")
     );
     assert!(Arc::ptr_eq(
-        source,
+        &before.state.collections["docs"].documents["a"],
         &engine.generation().unwrap().state.collections["docs"].documents["a"]
     ));
 }
@@ -405,10 +410,13 @@ fn staged_merge_patch_expansion_uses_transaction_limit_and_keeps_rejection_perma
     let after = engine.generation().unwrap();
     for id in ["a", "b"] {
         assert_eq!(
-            after.state.collections["docs"].documents[id].body,
+            after
+                .load_document(&after.state.collections["docs"].documents[id])
+                .unwrap()
+                .body,
             json!({})
         );
-        assert_eq!(after.state.collections["docs"].documents[id].version, 12);
+        assert_eq!(after.state.collections["docs"].documents[id].version(), 12);
     }
 }
 
@@ -624,7 +632,7 @@ fn failed_publication_keeps_staged_receipt_hidden_until_exact_retry() {
     let key = staged_digest(&("owner", "later")).unwrap().0;
     assert!(selected.receipts.get(&key).unwrap().is_none());
     assert_eq!(
-        selected.state.collections["docs"].documents["row"].version,
+        selected.state.collections["docs"].documents["row"].version(),
         2
     );
     let encoded = failed.response.as_ref().unwrap().data.clone();
@@ -639,7 +647,7 @@ fn failed_publication_keeps_staged_receipt_hidden_until_exact_retry() {
     assert_eq!(current.state.mutation_receipt_head.count, 2);
     assert_eq!(current.receipts.get(&key).unwrap().unwrap().ordinal, 2);
     assert_eq!(
-        current.state.collections["docs"].documents["row"].version,
+        current.state.collections["docs"].documents["row"].version(),
         3
     );
     assert!(selected.receipts.get(&key).unwrap().is_none());
@@ -685,6 +693,8 @@ fn revision_only_audit_exhaustion_waits_for_publication() {
         indexes: previous.indexes.clone(),
         snapshot_accounting: previous.snapshot_accounting.clone(),
         application_selection: std::sync::OnceLock::new(),
+        staged_documents: None,
+        document_sources: std::sync::OnceLock::new(),
         _read_reservations: vec![],
     })));
     let input = command(Operation::SetPolicy(previous.state.policy.clone()), 2);
@@ -758,7 +768,10 @@ fn snapshot_quota_rejection_preserves_text_writer_and_original_receipts() {
     let after_rejection = engine.generation().unwrap();
     assert_eq!(after_rejection.state.revision, 4);
     assert_eq!(
-        after_rejection.state.collections["docs"].documents["row"].body,
+        after_rejection
+            .load_document(&after_rejection.state.collections["docs"].documents["row"])
+            .unwrap()
+            .body,
         original_body
     );
     assert_eq!(
@@ -804,7 +817,10 @@ fn snapshot_quota_rejection_preserves_text_writer_and_original_receipts() {
     let replayed = engine.generation().unwrap();
     assert_eq!(replayed.state.mutation_receipt_head, head);
     assert_eq!(
-        replayed.state.collections["docs"].documents["row"].body,
+        replayed
+            .load_document(&replayed.state.collections["docs"].documents["row"])
+            .unwrap()
+            .body,
         accepted_body
     );
     assert_eq!(text_matches(&replayed, "accepted"), vec![("row".into(), 5)]);
@@ -851,7 +867,10 @@ fn invalid_index_inputs_remain_deterministic_rejections_before_text_materializat
             2 + offset as u64
         );
         assert_eq!(
-            generation.state.collections["docs"].documents["row"].body,
+            generation
+                .load_document(&generation.state.collections["docs"].documents["row"])
+                .unwrap()
+                .body,
             original_body
         );
         assert!(
@@ -902,11 +921,11 @@ fn text_materialization_failure_is_outer_and_does_not_select_a_receipt() {
         .documents
         .insert(
             "row".into(),
-            Arc::new(Document {
+            Arc::new(DocumentSlot::Pending(Arc::new(Document {
                 id: "row".into(),
                 version: 4,
                 body: json!({"value": "unselected", "tag": "occupied"}),
-            }),
+            }))),
         );
     // Advance the shared writer without selecting the result to inject its
     // actual stale-generation failure, without changing document validation.
@@ -941,7 +960,10 @@ fn text_materialization_failure_is_outer_and_does_not_select_a_receipt() {
     let current = engine.generation().unwrap();
     assert!(Arc::ptr_eq(&current, &previous));
     assert_eq!(
-        current.state.collections["docs"].documents["row"].body,
+        current
+            .load_document(&current.state.collections["docs"].documents["row"])
+            .unwrap()
+            .body,
         original_body
     );
     assert_eq!(current.state.mutation_receipt_head.count, 1);
@@ -961,7 +983,13 @@ fn text_materialization_failure_is_outer_and_does_not_select_a_receipt() {
 
 #[test]
 fn recovery_seal_two_writes_three_reads_are_atomic_and_replay_original_receipts() {
-    let engine = engine(fixture_memory(), 2 << 20);
+    // Restore must retain the current receipt table until all six replacement
+    // catalog/content tables validate. Fund those bounded table leases without
+    // increasing the byte limit or releasing the state being validated.
+    let engine = engine(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 96),
+        2 << 20,
+    );
     apply(
         &engine,
         2,
@@ -1030,11 +1058,17 @@ fn recovery_seal_two_writes_three_reads_are_atomic_and_replay_original_receipts(
     );
     let generation = engine.generation().unwrap();
     assert_eq!(
-        generation.state.collections["docs"].documents["recovery"].body,
+        generation
+            .load_document(&generation.state.collections["docs"].documents["recovery"])
+            .unwrap()
+            .body,
         json!({"state":"writing"})
     );
     assert_eq!(
-        generation.state.collections["intent"].documents["recovery"].body,
+        generation
+            .load_document(&generation.state.collections["intent"].documents["recovery"])
+            .unwrap()
+            .body,
         json!({"state":"sealed"})
     );
     let receipt_key = staged_digest(&("owner", "seal")).unwrap().0;
@@ -1079,7 +1113,10 @@ fn recovery_seal_two_writes_three_reads_are_atomic_and_replay_original_receipts(
     assert_eq!(rejected_error.code, ErrorCode::SchemaViolation);
     let generation = engine.generation().unwrap();
     assert_eq!(
-        generation.state.collections["docs"].documents["recovery"].body,
+        generation
+            .load_document(&generation.state.collections["docs"].documents["recovery"])
+            .unwrap()
+            .body,
         json!({"state":"writing"})
     );
     assert!(
@@ -1452,6 +1489,7 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
             previous.backup_bindings.clone(),
             previous.terminals.clone(),
             previous.target_resolutions.clone(),
+            previous.staged_documents.clone(),
         )
         .unwrap();
     source.publish_generation(Some(Arc::new(generation)));
@@ -1518,15 +1556,17 @@ fn inconsistent_generation(previous: &Arc<Generation>, fault: usize) -> Arc<Gene
         .documents
         .get_mut("row")
         .unwrap();
-    let document = Arc::make_mut(document);
+    let mut decoded = previous.load_document(document).unwrap().as_ref().clone();
+    let document_body = &mut decoded;
     match fault {
-        0 => document.body["tag"] = json!("mismatch"),
+        0 => document_body.body["tag"] = json!("mismatch"),
         // Version zero is a valid restored value. A live record whose ID
         // differs from its map key is independently corrupt at any version.
-        1 => document.id = "different-row".into(),
-        2 => document.version = previous.state.revision + 1,
+        1 => document_body.id = "different-row".into(),
+        2 => document_body.version = previous.state.revision + 1,
         _ => unreachable!(),
     }
+    *document = Arc::new(DocumentSlot::Pending(Arc::new(decoded)));
     Arc::new(previous.read_view(collections, vec![]))
 }
 
@@ -1545,16 +1585,16 @@ fn zero_version_source_mutation_preserves_receipt_and_captured_text_reader() {
     .unwrap();
     let previous = engine.generation().unwrap();
     let mut state = previous.state.clone();
-    Arc::make_mut(
-        state
-            .collections
-            .get_mut("docs")
-            .unwrap()
-            .documents
-            .get_mut("row")
-            .unwrap(),
-    )
-    .version = 0;
+    let mut decoded = previous
+        .load_document(&state.collections["docs"].documents["row"])
+        .unwrap()
+        .as_ref()
+        .clone();
+    decoded.version = 0;
+    state.collections.get_mut("docs").unwrap().documents.insert(
+        "row".into(),
+        Arc::new(DocumentSlot::Pending(Arc::new(decoded))),
+    );
     // Use the real restored-state validator/index constructor. This is a valid
     // bound source/index pair, rather than a mismatched captured-generation fault.
     let restored = Arc::new(
@@ -1566,6 +1606,7 @@ fn zero_version_source_mutation_preserves_receipt_and_captured_text_reader() {
                 previous.backup_bindings.clone(),
                 previous.terminals.clone(),
                 previous.target_resolutions.clone(),
+                previous.staged_documents.clone(),
             )
             .unwrap(),
     );
@@ -1736,8 +1777,17 @@ fn captured_index_corruption_leaves_staged_terminal_unselected_but_conflict_is_d
     let mut direct = inconsistent.state.clone();
     direct.revision = 6;
     let before = serde_json::to_vec(&direct).unwrap();
-    let failure =
-        crate::state::staging::apply(&mut direct, &input, 6, &inconsistent.indexes).unwrap_err();
+    let failure = crate::state::staging::apply(
+        &mut direct,
+        &input,
+        6,
+        &inconsistent.indexes,
+        inconsistent.document_resolver(),
+    )
+    .unwrap_err();
+    let ReadFailure::Query(failure) = failure else {
+        panic!("expected deterministic source/index corruption")
+    };
     assert_eq!(failure.code, ErrorCode::Corruption);
     assert_eq!(serde_json::to_vec(&direct).unwrap(), before);
     assert!(

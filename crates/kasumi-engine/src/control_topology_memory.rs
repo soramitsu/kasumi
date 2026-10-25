@@ -231,8 +231,10 @@ pub(super) fn local_topology(
         .get("topology")
         .and_then(|collection| collection.documents.get("current"))
         .context("control topology unavailable")?;
+    let document = generation.load_document(document)?;
     let mut decode = Decode::new(database.admission(), &document.body)?;
     if let Err(error) = decode.decode(database.admission(), document.version, &document.body) {
+        drop(document);
         drop(generation);
         return Err(decode.fail(error));
     }
@@ -243,6 +245,7 @@ pub(super) fn local_topology(
         // It does not borrow DTO data; retire that data before its unrelated
         // workspace, then return the original error without reboxing it.
         drop(decode);
+        drop(document);
         drop(generation);
         return Err(error);
     }
@@ -251,9 +254,11 @@ pub(super) fn local_topology(
     // in the selected topology, version or accounting.
     if let Err(error) = database.engine().generation() {
         drop(decode);
+        drop(document);
         drop(generation);
         return Err(error.into());
     }
+    drop(document);
     drop(generation);
     Ok(decode.finish()?)
 }
@@ -292,7 +297,12 @@ pub(super) fn selected_topology(
         drop(database.engine().generation()?);
         return Ok(None);
     }
-    let body = document.map_or(&Value::Null, |document| &document.body);
+    let document = document
+        .map(|document| generation.load_document(document))
+        .transpose()?;
+    let body = document
+        .as_ref()
+        .map_or(&Value::Null, |document| &document.body);
     let mut decode = Decode::with_extra(
         database.admission(),
         body,
@@ -331,7 +341,7 @@ pub(super) fn selected_topology(
                 ));
             }
         }
-        let document = document.ok_or_else(|| {
+        let document = document.as_ref().ok_or_else(|| {
             Failure::Validation(Error::new(
                 ErrorCode::Corruption,
                 "installed Control topology is missing",

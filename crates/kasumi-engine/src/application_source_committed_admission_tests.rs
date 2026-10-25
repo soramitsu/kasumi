@@ -39,6 +39,14 @@ fn applied(response: &AppliedResponse) -> kasumi_types::Result<WriteReceipt> {
     serde_json::from_slice(&response.data).unwrap()
 }
 
+fn admit_documents(fixture: &OrdinaryFixture, input: &Input) -> Result<u64> {
+    let command: Command = serde_json::from_slice(&input.bytes)?;
+    let before = fixture.fixture.storage.admission.snapshot().reserved_bytes;
+    fixture.engine.admit_document_publication(&command)?;
+    let after = fixture.fixture.storage.admission.snapshot().reserved_bytes;
+    Ok(after - before)
+}
+
 /// The tenant keeps serving: a later proposal admits and applies normally.
 fn serves_next(fixture: &OrdinaryFixture) -> Result<()> {
     let next = fixture.input(Operation::SetPolicy(policy()))?;
@@ -100,7 +108,7 @@ async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_
     spent_escrow();
     let input = fixture.input(put("native-window", json!({"n": 1}), Precondition::Any))?;
     let before = revision(&fixture);
-    fixture.engine.admit_publication()?;
+    admit_documents(&fixture, &input)?;
     // Between admission and apply, native traffic holds every byte and slot:
     // the Entry sink planner, queued reader, publication write and capture
     // must all run on capacity admitted before the proposal.
@@ -110,15 +118,130 @@ async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_
     spent_escrow();
     applied(&response)?;
     assert_eq!(revision(&fixture), before + 1);
+    // Publication completed under exhausted capacity. A new decoded read is
+    // separately admitted after the interfering traffic releases its grants.
+    drop(held);
+    let current = fixture.engine.generation()?;
     assert_eq!(
-        fixture.engine.generation()?.state.collections["docs"].documents["row"].body,
+        current.state.collections["docs"].documents["row"]
+            .load_owned(current.document_resolver())?
+            .body,
         json!({"n": 1})
     );
-    drop(held);
+    drop(current);
     serves_next(&fixture)?;
     drop(response);
     drop(input);
     drop(create);
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn committed_document_replace_and_patch_decode_dense_old_body_with_only_preadmitted_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = OrdinaryFixture::new().await?;
+    let admission = fixture.fixture.storage.admission.clone();
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    admit_documents(&fixture, &create)?;
+    applied(&fixture.apply(&create, || {})?)?;
+    let raw = (0..4097)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let old = json!({"dense":vec![0; 8192], "proof":hex::encode(&raw), "tag":"old"});
+    let initial = fixture.input(put("dense-initial", old.clone(), Precondition::Absent))?;
+    admit_documents(&fixture, &initial)?;
+    applied(&fixture.apply(&initial, || {})?)?;
+    {
+        let generation = fixture.engine.generation()?;
+        let descriptor = generation.state.collections["docs"].documents["row"].stored()?;
+        assert!(
+            descriptor.body_decode_work > descriptor.body_bytes * 128,
+            "dense fixture must exceed the discarded canonical-byte multiplier"
+        );
+    }
+    for (index, operation) in [
+        put(
+            "dense-replace",
+            json!({"dense":vec![1;8192], "proof":hex::encode(&raw), "tag":"replace"}),
+            Precondition::Any,
+        ),
+        Operation::Mutate(MutationBatch {
+            idempotency_key: "dense-patch".into(),
+            read_set: vec![],
+            operations: vec![Mutation::Patch {
+                collection: "docs".into(),
+                id: "row".into(),
+                patch: json!({"tag":"patch"}),
+                expected: Precondition::Any,
+            }],
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = fixture.input(operation)?;
+        let admitted = admit_documents(&fixture, &input)?;
+        let held = exhaust_native(&admission);
+        let before = revision(&fixture);
+        let response = fixture.apply(&input, || {})?;
+        applied(&response)?;
+        let peak = crate::admission::ApplyEscrow::take_last_peak_for_test().unwrap();
+        assert!(
+            peak > 0 && peak <= admitted,
+            "apply peak {peak}, admitted {admitted}"
+        );
+        eprintln!(
+            "committed document admission: case={index} admitted_bytes={admitted} spent_peak_bytes={peak}; enforced grants, not process RSS"
+        );
+        assert_eq!(revision(&fixture), before + 1);
+        drop(held);
+        let generation = fixture.engine.generation()?;
+        let slot = &generation.state.collections["docs"].documents["row"];
+        assert!(matches!(
+            slot.as_ref(),
+            kasumi_types::DocumentSlot::Stored(_)
+        ));
+        let document = generation.load_document(slot)?;
+        assert_eq!(document.body["dense"], json!(vec![1; 8192]));
+        assert_eq!(document.body["proof"], json!(hex::encode(&raw)));
+        assert_eq!(
+            document.body["tag"],
+            if index == 0 { "replace" } else { "patch" }
+        );
+    }
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn document_preproposal_refusal_preserves_original_generation_and_recovers()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = OrdinaryFixture::new().await?;
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    admit_documents(&fixture, &create)?;
+    applied(&fixture.apply(&create, || {})?)?;
+    let input = fixture.input(put(
+        "refused-proof",
+        json!({"proof":"ab".repeat(32768)}),
+        Precondition::Absent,
+    ))?;
+    let original = fixture.engine.generation()?;
+    let held = exhaust_native(&fixture.fixture.storage.admission);
+    let command: Command = serde_json::from_slice(&input.bytes)?;
+    assert_eq!(
+        fixture
+            .engine
+            .admit_document_publication(&command)
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    assert!(Arc::ptr_eq(&original, &fixture.engine.generation()?));
+    assert!(original.state.collections["docs"].documents.is_empty());
+    drop(held);
+    admit_documents(&fixture, &input)?;
+    applied(&fixture.apply(&input, || {})?)?;
+    assert_eq!(revision(&fixture), original.state.revision + 1);
+    drop(original);
     fixture.close().await
 }
 

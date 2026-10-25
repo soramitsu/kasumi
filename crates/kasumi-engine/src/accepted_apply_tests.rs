@@ -206,7 +206,7 @@ fn accepted_apply_retains_actual_delta_allocation_and_guard_through_publication(
             .is_empty()
     );
     assert_eq!(
-        accepted.candidate().state.collections["docs"].documents["row"].version,
+        accepted.candidate().state.collections["docs"].documents["row"].version(),
         2
     );
     locked(&fixture.engine);
@@ -258,7 +258,7 @@ fn accepted_apply_rejection_and_replay_discard_unaccepted_record_delta() {
     }
     assert_eq!(fixture.engine.generation().unwrap().state.revision, 4);
     assert_eq!(
-        fixture.engine.generation().unwrap().state.collections["docs"].documents["row"].version,
+        fixture.engine.generation().unwrap().state.collections["docs"].documents["row"].version(),
         2
     );
 }
@@ -320,7 +320,14 @@ fn accepted_apply_archive_placement_keeps_delta_without_advancing_data_epoch() {
         source_incarnation: state.incarnation.clone(),
         collection: "docs".into(),
         index: 0,
-        documents: vec![state.collections["docs"].documents["row"].clone()],
+        documents: vec![Arc::new(
+            owner
+                .current()
+                .load_document(&state.collections["docs"].documents["row"])
+                .unwrap()
+                .as_ref()
+                .clone(),
+        )],
     };
     let (digest, bytes) = staged_digest(&chunk).unwrap();
     let request = PublishHistoryArchive {

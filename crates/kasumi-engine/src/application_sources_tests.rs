@@ -90,7 +90,14 @@ impl Fixture {
             Limits::default(),
         )?;
         let image = match bootstrap {
-            Some(image) => image.clone(),
+            Some(image) => SnapshotImage::capture(
+                stores.application().scratch_disk(),
+                image.len(),
+                |writer| {
+                    std::io::copy(&mut image.reader(), writer)?;
+                    Ok(())
+                },
+            )?,
             None => engine.logical_snapshot(stores.application().scratch_disk())?,
         };
         crate::bootstrap::persist_fixture_bootstrap(
@@ -1837,3 +1844,6 @@ async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling(
 
 #[path = "application_source_cohort_tests.rs"]
 mod cohort_tests;
+
+#[path = "document_store_native_tests.rs"]
+mod document_store_native_tests;

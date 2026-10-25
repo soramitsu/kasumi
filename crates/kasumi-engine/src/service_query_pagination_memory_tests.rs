@@ -1,20 +1,35 @@
 fn pagination_memory_rows() -> PinnedRows {
+    let mut generation = query_memory_generation();
     let rows: Vec<_> = (0..3)
         .map(|id| PinnedRow {
-            document: Arc::new(Document {
+            document: Arc::new(DocumentSlot::Pending(Arc::new(Document {
                 id: format!("row-{id}"),
                 version: 7,
                 body: json!({"nested": vec![json!({}); 128], "label": "value"}),
-            }),
+            }))),
             score: None,
         })
         .collect();
     let bytes = kasumi_query::vec_bytes::<PinnedRow>(rows.len()).unwrap() as usize
         + rows
             .iter()
-            .map(|row| crate::retained_document_bytes(&row.document).unwrap())
+            .map(|row| pinned_slot_bytes(&row.document).unwrap() as usize)
             .sum::<usize>();
-    PinnedRows { rows, bytes }
+    Arc::get_mut(&mut generation)
+        .unwrap()
+        .state
+        .collections
+        .get_mut("docs")
+        .unwrap()
+        .documents = rows
+        .iter()
+        .map(|row| (row.document.id().to_owned(), row.document.clone()))
+        .collect();
+    PinnedRows {
+        rows,
+        generation: Some(generation),
+        bytes,
+    }
 }
 
 fn pagination_page(rows: &PinnedRows, range: std::ops::Range<usize>) -> QueryResponse {
@@ -22,11 +37,16 @@ fn pagination_page(rows: &PinnedRows, range: std::ops::Range<usize>) -> QueryRes
         revision: 7,
         rows: rows.rows[range]
             .iter()
-            .map(|row| QueryRow {
-                id: row.document.id.clone(),
-                version: row.document.version,
-                body: row.document.body.clone(),
-                score: row.score,
+            .map(|row| {
+                let DocumentSlot::Pending(document) = row.document.as_ref() else {
+                    panic!("fixture pending document");
+                };
+                QueryRow {
+                    id: document.id.clone(),
+                    version: document.version,
+                    body: document.body.clone(),
+                    score: row.score,
+                }
             })
             .collect(),
         aggregates: vec![],
@@ -131,7 +151,10 @@ fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
     let (mut fresh, first_page, _, initial) = pagination_fresh_owner(&node, &cancellation);
     let cursor = pagination_cursor(&mut fresh, 1);
     assert!(fresh.memory.is_none());
-    assert!(Arc::ptr_eq(fresh.reservation.as_ref().unwrap(), &cursor.reservation));
+    assert!(Arc::ptr_eq(
+        fresh.reservation.as_ref().unwrap(),
+        &cursor.reservation
+    ));
     drop((fresh, first_page));
     let full = initial + OUTPUT_CHARGE_BYTES;
     assert_eq!(crate::test_utils::reserved_payload_bytes(&node), full);
@@ -149,7 +172,10 @@ fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
         crate::test_utils::reserved_payload_bytes(&node),
         full + input + page_bytes
     );
-    assert_eq!(node.snapshot().live_reservations, admitted.live_reservations);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        admitted.live_reservations
+    );
     assert_eq!(
         node.snapshot().inflight_operations,
         admitted.inflight_operations

@@ -74,7 +74,7 @@ fn unchanged(engine: &CodecFixture, original: &Arc<Generation>) {
         original.state.mutation_receipt_head
     );
     assert_eq!(
-        current.state.collections["docs"].documents["row"].version,
+        current.state.collections["docs"].documents["row"].version(),
         3
     );
     assert_eq!(text_matches(original, "original"), vec![("row".into(), 3)]);

@@ -14,7 +14,7 @@ use kasumi_store::{
 };
 use kasumi_types::{
     Action, CollectionDefinition, CollectionRetentionClass, CollectionState, CollectionWriteMode,
-    Document, Error, ErrorCode, Grant, Policy, QueryRequest,
+    Document, DocumentSlot, Error, ErrorCode, Grant, Policy, QueryRequest,
 };
 use serde_json::json;
 use std::{
@@ -125,7 +125,12 @@ impl Fixture {
                 strict_read_audit: false,
             },
             data_epoch: 7,
-            documents: [("a".to_owned(), Arc::new(document))].into_iter().collect(),
+            documents: [(
+                "a".to_owned(),
+                Arc::new(DocumentSlot::Pending(Arc::new(document))),
+            )]
+            .into_iter()
+            .collect(),
             archived_documents: Default::default(),
             archived_document_bytes: 0,
         };
@@ -311,7 +316,10 @@ impl DocumentSource for DiskSource {
     ) -> ReadResult<T, Self::Failure> {
         self.selected
             .header_after(after, token, lend)
-            .map_err(|error| ReadFailure::Query(error.into_query_error()))
+            .map_err(|error| match error {
+                ReadFailure::Query(error) => ReadFailure::Query(error),
+                ReadFailure::Source(error) => ReadFailure::Source(SourceFailure(error.0)),
+            })
     }
 }
 struct DiskOwner {

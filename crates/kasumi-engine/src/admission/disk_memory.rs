@@ -217,6 +217,39 @@ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
     fn storage_census(&self) -> &kasumi_store::StorageCensus {
         &self.storage_census
     }
+    fn reserve_document_decode(
+        self: Arc<Self>,
+        workspace: u64,
+    ) -> io::Result<kasumi_store::DiskMemoryLease> {
+        let bytes =
+            Self::installed_reservation_bytes(workspace).ok_or(io::ErrorKind::OutOfMemory)?;
+        // Committed decoding spends the exact pre-proposal grant. Ordinary
+        // reads preserve document/cache headroom and never use audit escrow.
+        if let Some(escrow) = super::ApplyEscrow::current_for(&self) {
+            return escrow
+                .reserve(bytes)
+                .ok_or_else(|| io::ErrorKind::OutOfMemory.into());
+        }
+        if let Some(budget) = super::DocumentReadBudget::current_for(&self) {
+            return budget
+                .reserve(bytes)
+                .map_err(|_| io::ErrorKind::OutOfMemory.into());
+        }
+        let charge = self
+            .reserve_kind_raw(
+                bytes,
+                None,
+                ChargeKind::Resident,
+                super::ChargeOrigin::DocumentSource,
+            )
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => io::ErrorKind::OutOfMemory,
+                ReserveKindError::IdentifierExhausted | ReserveKindError::Missing => {
+                    io::ErrorKind::Other
+                }
+            })?;
+        Ok(kasumi_store::DiskMemoryLease::new(charge))
+    }
     fn reserve_installed(
         self: Arc<Self>,
         workspace: u64,
@@ -226,12 +259,12 @@ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
         if let Some(pool) = crate::audit_maintenance::NodeAuditMaintenance::current_for(&self) {
             return pool.reserve_native(bytes);
         }
-        // A committed apply spends native capacity its proposer admitted
-        // before consensus; only an excess beyond it is admitted here.
-        if let Some(lease) =
-            super::ApplyEscrow::current_for(&self).and_then(|escrow| escrow.reserve(bytes))
-        {
-            return Ok(lease);
+        // An accepted local entry spends only the grant admitted by its
+        // proposer. A quote defect must not silently acquire new capacity.
+        if let Some(escrow) = super::ApplyEscrow::current_for(&self) {
+            return escrow
+                .reserve(bytes)
+                .ok_or_else(|| io::ErrorKind::OutOfMemory.into());
         }
         // Admission covers the opaque box before allocating it. The actual
         // Reservation keeps the shared core alive until its actual box is destroyed

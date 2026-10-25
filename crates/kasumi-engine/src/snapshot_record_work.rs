@@ -25,6 +25,17 @@ fn site_bytes() -> u64 {
         + std::mem::size_of::<Vec<()>>()) as u64
 }
 
+/// An explicit schema-derived site limit plus its maximum wire length bounds
+/// the same structural meter before an encoded manifest exists.
+pub(super) fn bounded_work(wire_bytes: u64, sites: u64) -> Result<u64> {
+    sites
+        .checked_mul(site_bytes())
+        .and_then(|bytes| bytes.checked_add(wire_bytes))
+        .and_then(|bytes| bytes.checked_mul(REPRESENTATIONS * CAPACITY_FACTOR))
+        .and_then(|bytes| bytes.checked_add(wire_bytes))
+        .ok_or_else(overflow)
+}
+
 pub(super) struct Meter {
     wire_bytes: u64,
     scalar_bytes: u64,

@@ -30,7 +30,7 @@ struct State {
     #[cfg(test)]
     peak: u64,
 }
-struct Credit {
+pub(crate) struct Credit {
     escrow: Arc<ApplyEscrow>,
     bytes: u64,
 }
@@ -63,7 +63,7 @@ impl ApplyEscrow {
     /// dominated by the 2 MiB control-record point workspace (the writer and
     /// decoder format limit), plus the planner, queued source and capture
     /// readers and the publication write. The rest leaves room for inline
-    /// compaction; a larger apply admits its excess as before.
+    /// compaction. Document capacity is added explicitly before proposal.
     pub(crate) const BYTES: u64 = 8 << 20;
 
     /// Admitted under the ordinary native Resident rule that applies to the
@@ -83,6 +83,41 @@ impl ApplyEscrow {
         }))
     }
 
+    /// Grow only while owned by the proposer, before an applying scope can
+    /// spend it. A refusal therefore accepts no write.
+    pub(crate) fn admit_document_capacity(&self, document_bytes: u64) -> kasumi_types::Result<()> {
+        let required = Self::BYTES.checked_add(document_bytes).ok_or_else(|| {
+            kasumi_types::Error::new(
+                kasumi_types::ErrorCode::ResourceExhausted,
+                "document proposal workspace overflow",
+            )
+        })?;
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if !state.open || state.used != 0 {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Unavailable,
+                "document admission after apply began",
+            ));
+        }
+        if required > state.capacity {
+            let extra = required - state.capacity;
+            state
+                .reservation
+                .as_mut()
+                .expect("unspent original escrow")
+                .reserve_additional(extra)?;
+            state.capacity = required;
+        } else if required < state.capacity {
+            state
+                .reservation
+                .as_mut()
+                .expect("unspent original escrow")
+                .retain(required);
+            state.capacity = required;
+        }
+        Ok(())
+    }
+
     pub(crate) fn enter(self: Arc<Self>) -> ApplyScope {
         let previous = ACTIVE.with(|active| active.replace(Some(self.clone())));
         ApplyScope {
@@ -91,7 +126,7 @@ impl ApplyEscrow {
         }
     }
 
-    pub(super) fn current_for(memory: &Arc<MemoryCore>) -> Option<Arc<Self>> {
+    pub(crate) fn current_for(memory: &Arc<MemoryCore>) -> Option<Arc<Self>> {
         ACTIVE.with(|active| {
             active
                 .borrow()
@@ -159,5 +194,147 @@ impl Drop for Credit {
             }
         };
         drop(retired);
+    }
+}
+
+/// A real document workspace. During committed apply it spends only the exact
+/// pre-proposal escrow; ordinary readers retain the normal document-origin grant.
+pub(crate) enum DocumentWorkspace {
+    Ordinary(Reservation),
+    Committed(Credit),
+    Read(super::document_read_scope::ReadCredit),
+}
+pub(crate) trait RetainedWorkspace: kasumi_query::QueryWorkspace {
+    fn retain(&mut self, bytes: u64);
+}
+impl RetainedWorkspace for Reservation {
+    fn retain(&mut self, bytes: u64) {
+        Reservation::retain(self, bytes);
+    }
+}
+impl DocumentWorkspace {
+    pub(crate) fn new(node: &Arc<super::NodeAdmission>, bytes: u64) -> kasumi_types::Result<Self> {
+        if let Some(escrow) = ApplyEscrow::current_for(node.memory()) {
+            let mut credit = Credit { escrow, bytes: 0 };
+            credit.resize(bytes)?;
+            return Ok(Self::Committed(credit));
+        }
+        if let Some(budget) = super::DocumentReadBudget::current_for(node.memory()) {
+            return budget.credit(bytes).map(Self::Read);
+        }
+        node.reserve_document_source(bytes).map(Self::Ordinary)
+    }
+}
+impl kasumi_query::QueryWorkspace for DocumentWorkspace {
+    fn ensure_peak(&mut self, bytes: u64) -> kasumi_types::Result<()> {
+        match self {
+            Self::Ordinary(grant) => kasumi_query::QueryWorkspace::ensure_peak(grant, bytes),
+            Self::Committed(credit) if bytes > credit.bytes => credit.resize(bytes),
+            Self::Committed(_) => Ok(()),
+            Self::Read(credit) if bytes > credit.bytes() => credit.resize(bytes),
+            Self::Read(_) => Ok(()),
+        }
+    }
+}
+impl RetainedWorkspace for DocumentWorkspace {
+    fn retain(&mut self, bytes: u64) {
+        match self {
+            Self::Ordinary(grant) => grant.retain(bytes),
+            Self::Committed(credit) => credit
+                .resize(bytes.min(credit.bytes))
+                .expect("shrinking admitted document credit"),
+            Self::Read(credit) => credit
+                .resize(bytes.min(credit.bytes()))
+                .expect("shrinking admitted read document credit"),
+        }
+    }
+}
+impl Credit {
+    fn resize(&mut self, bytes: u64) -> kasumi_types::Result<()> {
+        let mut state = self.escrow.state.lock().unwrap_or_else(|p| p.into_inner());
+        let used = state
+            .used
+            .checked_sub(self.bytes)
+            .and_then(|used| used.checked_add(bytes))
+            .ok_or_else(|| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::ResourceExhausted,
+                    "committed document workspace overflow",
+                )
+            })?;
+        if bytes > self.bytes && (!state.open || used > state.capacity) {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::ResourceExhausted,
+                "committed document workspace exceeds pre-admitted capacity",
+            ));
+        }
+        self.bytes = bytes;
+        state.used = used;
+        #[cfg(test)]
+        {
+            state.peak = state.peak.max(used);
+        }
+        let retired = if state.open {
+            None
+        } else {
+            ApplyEscrow::shrink(&mut state)
+        };
+        drop(state);
+        drop(retired);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod document_tests {
+    use super::*;
+    use kasumi_query::QueryWorkspace;
+    use kasumi_store::NodeDiskMemoryAdmission;
+
+    #[test]
+    fn committed_document_credit_and_native_exhaustion_never_fall_back_to_fresh_admission() {
+        let node = super::super::NodeAdmission::with_fixed_memory(
+            super::super::AdmissionConfig::default(),
+            2 << 30,
+            0,
+        )
+        .unwrap();
+        let baseline = node.snapshot().reserved_bytes;
+        let escrow = ApplyEscrow::admit(node.memory()).unwrap();
+        let mut document;
+        {
+            let _scope = escrow.clone().enter();
+            document = DocumentWorkspace::new(&node, ApplyEscrow::BYTES).unwrap();
+            // The governor still has ordinary capacity; only this accepted
+            // entry's exact prepaid balance is exhausted.
+            assert!(node.reserve_resident(1).is_ok());
+            assert!(node.memory().clone().reserve_installed(1).is_err());
+            assert!(node.memory().clone().reserve_document_decode(1).is_err());
+            assert!(document.ensure_peak(ApplyEscrow::BYTES + 1).is_err());
+            document.retain(4096);
+        }
+        // Its real retained owner can outlive apply; no spent bytes disappear
+        // while the decoded owner remains alive.
+        assert!(node.snapshot().reserved_bytes >= 4096);
+        document.retain(2048);
+        drop(document);
+        drop(escrow);
+        assert_eq!(node.snapshot().reserved_bytes, baseline);
+    }
+
+    #[test]
+    fn unspent_document_proposal_capacity_tracks_the_next_request_without_retaining_its_peak() {
+        let node = super::super::NodeAdmission::with_fixed_memory(
+            super::super::AdmissionConfig::default(),
+            2 << 30,
+            0,
+        )
+        .unwrap();
+        let escrow = ApplyEscrow::admit(node.memory()).unwrap();
+        let base = node.snapshot().reserved_bytes;
+        escrow.admit_document_capacity(12 << 20).unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, base + (12 << 20));
+        escrow.admit_document_capacity(0).unwrap();
+        assert_eq!(node.snapshot().reserved_bytes, base);
     }
 }

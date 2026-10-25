@@ -529,7 +529,7 @@ mod initial_membership_inspection_tests {
                 expected_input_sha256: input.initialize.input_sha256.clone(),
             },
         };
-        let marked = recovery::apply(&mut state, &command).unwrap();
+        let marked = recovery::apply(&mut state, &command, None).unwrap();
         assert_eq!(
             marked.initialization_attempt,
             Some(input.initialize.phase_id)
@@ -540,7 +540,7 @@ mod initial_membership_inspection_tests {
         let frozen = inspection::status_input(&state, &marked).unwrap();
         assert_eq!(frozen.identity().unwrap().attempt_id, attempt_id);
         let previous = state.recovery_control.clone();
-        assert!(recovery::apply(&mut state, &command).is_err());
+        assert!(recovery::apply(&mut state, &command, None).is_err());
         assert_eq!(state.recovery_control, previous);
     }
 
@@ -578,7 +578,7 @@ mod initial_membership_inspection_tests {
                     input: Box::new(RecoveryDispatch::ControlIntent(Box::new(intent))),
                 },
             };
-            let result = recovery::apply(&mut candidate, &command);
+            let result = recovery::apply(&mut candidate, &command, None);
             assert_eq!(result.is_ok(), pass, "{result:?}");
             assert_eq!(
                 phase(&candidate, &operation, input.initialize.phase_id).unwrap(),
@@ -685,7 +685,7 @@ mod initial_membership_inspection_tests {
                         input: Box::new(RecoveryDispatch::ControlIntent(Box::new(intent))),
                     },
                 };
-                let result = recovery::apply(&mut candidate, &command);
+                let result = recovery::apply(&mut candidate, &command, None);
                 assert_eq!(
                     result.is_ok(),
                     kind == LifecyclePhase::InspectInitialMembership,
@@ -1046,7 +1046,7 @@ mod initial_membership_inspection_tests {
                 },
             };
             let mut candidate = state.clone();
-            let result = recovery::apply(&mut candidate, &command);
+            let result = recovery::apply(&mut candidate, &command, None);
             assert_eq!(result.is_ok(), change == 0, "{change}: {result:?}");
             assert_eq!(
                 phase(&candidate, &operation, pending.phase_id).unwrap(),
@@ -1923,7 +1923,7 @@ fn complete_reducer_rejects_both_original_cap_substitutions_before_inserting_pha
                 }),
             },
         };
-        let applied = super::super::apply(&mut candidate, &command);
+        let applied = super::super::apply(&mut candidate, &command, None);
         if cap == attempt.dispatch_not_after_ms {
             assert!(applied.is_ok(), "{applied:?}");
             assert!(
@@ -1933,7 +1933,9 @@ fn complete_reducer_rejects_both_original_cap_substitutions_before_inserting_pha
                     .contains_key(&id.to_string())
             );
         } else {
-            let error = applied.unwrap_err();
+            let kasumi_query::ReadFailure::Query(error) = applied.unwrap_err() else {
+                panic!("expected deterministic original-deadline rejection");
+            };
             assert_eq!(error.code, ErrorCode::Conflict);
             assert!(error.message.contains("original deadline"), "{error}");
             assert_eq!(candidate.recovery_control, state.recovery_control);
@@ -2421,7 +2423,7 @@ fn pending_linked_birth_retains_exact_input_when_stop_clears_pending_without_com
 #[test]
 fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_accounting() {
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = &scratch.disk;

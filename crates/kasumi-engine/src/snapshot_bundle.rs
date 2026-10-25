@@ -523,6 +523,7 @@ pub(super) fn read(
 
 #[cfg(test)]
 mod tests {
+    include!("snapshot_restore_document_tests.rs");
     use super::*;
     use kasumi_raft::StateMachineBackend;
     use kasumi_store::{AuditSegmentBuilder, NodeStore, test_utils::LocalKeyProvider};
@@ -539,7 +540,9 @@ mod tests {
         tenant: &str,
     ) -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+        // Bundle validation overlaps the current six immutable tables with
+        // its replacement; keep the same byte bound and fund their slots.
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
         kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
             .unwrap();
         let disk =
@@ -704,6 +707,7 @@ mod tests {
                     engine.generation().unwrap().backup_bindings.clone(),
                     engine.generation().unwrap().terminals.clone(),
                     engine.generation().unwrap().target_resolutions.clone(),
+                    engine.generation().unwrap().staged_documents.clone(),
                 )
                 .unwrap(),
         )));
@@ -875,6 +879,7 @@ mod tests {
                     source.generation().unwrap().backup_bindings.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
+                    source.generation().unwrap().staged_documents.clone(),
                 )
                 .unwrap(),
         )));
@@ -890,6 +895,7 @@ mod tests {
                     source.generation().unwrap().backup_bindings.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
+                    source.generation().unwrap().staged_documents.clone(),
                 )
                 .unwrap(),
         )));
@@ -1155,12 +1161,17 @@ mod tests {
                 state,
                 previous.receipts.clone(),
                 previous.backup_bindings.clone(),
-                install.view,
+                install.view.clone(),
                 previous.target_resolutions.clone(),
+                previous.staged_documents.clone(),
             )
             .unwrap();
         source.publish_generation(Some(Arc::new(generation)));
         drop(previous);
+        // The durable source now owns the committed terminal namespace. End
+        // the completed import's private table before measuring restore work.
+        drop(install);
+        drop(staged);
         let installed_payload = crate::test_utils::reserved_payload_bytes(&admission);
 
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();

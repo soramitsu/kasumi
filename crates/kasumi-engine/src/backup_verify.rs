@@ -343,7 +343,12 @@ impl VerifiedState {
                         }),
                 ))
             }
-            _ => crate::snapshot_codec::records(self.metadata(), kind, primary),
+            Self::Captured(generation) => crate::snapshot_codec::records_with_resolver(
+                &generation.state,
+                kind,
+                primary,
+                generation.document_resolver(),
+            ),
         }
     }
 }

@@ -3,6 +3,8 @@
 //! topology. Ordinary topology writes cannot produce this closed journal fact.
 use super::*;
 use crate::control::{ControlTopology, DeploymentMode, TenantRoute};
+use crate::index_source::{DocumentSourceFailure, SourceResult};
+use kasumi_query::ReadFailure;
 
 pub(crate) const COLLECTION: &str = "topology";
 pub(crate) const DOCUMENT: &str = "current";
@@ -13,12 +15,16 @@ pub(crate) fn workspace(state: &TenantState) -> Result<u64> {
         .collections
         .get(COLLECTION)
         .and_then(|c| c.documents.get(DOCUMENT))
-        .map(|document| encoded_len(&document.body))
+        .map(|document| match document.as_ref() {
+            DocumentSlot::Pending(document) => {
+                encoded_len(&document.body).map(|bytes| bytes as u64)
+            }
+            DocumentSlot::Stored(document) => Ok(document.body_bytes),
+        })
         .transpose()?
         .unwrap_or(0);
-    u64::try_from(bytes)
-        .ok()
-        .and_then(|bytes| bytes.checked_mul(16))
+    bytes
+        .checked_mul(16)
         .and_then(|bytes| bytes.checked_add(256 << 10))
         .ok_or_else(|| {
             error(
@@ -27,12 +33,18 @@ pub(crate) fn workspace(state: &TenantState) -> Result<u64> {
             )
         })
 }
-fn current(state: &TenantState) -> Result<(&Document, ControlTopology)> {
+fn current(
+    state: &TenantState,
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<(OwnedDocument, ControlTopology)> {
     let document = state
         .collections
         .get(COLLECTION)
         .and_then(|c| c.documents.get(DOCUMENT))
         .ok_or_else(|| error(ErrorCode::NotFound, "installed Control topology absent"))?;
+    let document = document
+        .load_owned(resolver)
+        .map_err(|error| ReadFailure::Source(DocumentSourceFailure(error)))?;
     let topology: ControlTopology = serde_json::from_value(document.body.clone())
         .map_err(|_| error(ErrorCode::Corruption, "invalid installed Control topology"))?;
     topology.validate()?;
@@ -41,14 +53,15 @@ fn current(state: &TenantState) -> Result<(&Document, ControlTopology)> {
 pub(crate) fn next_input(
     state: &TenantState,
     operation: &RecoveryRecord,
-) -> Result<RecoveryRouteChange> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<RecoveryRouteChange> {
     activation::winner(state, operation)?;
     if !operation.voters.values().all(|v| v.confirmation.is_some()) {
-        return Err(conflict(
-            "route publication requires every local activation confirmation",
-        ));
+        return Err(
+            conflict("route publication requires every local activation confirmation").into(),
+        );
     }
-    let (document, topology) = current(state)?;
+    let (document, topology) = current(state, resolver)?;
     let source = topology
         .tenants
         .get(&operation.request.tenant)
@@ -56,9 +69,7 @@ pub(crate) fn next_input(
     if source.incarnation != operation.request.source_incarnation.to_string()
         || source.mode != DeploymentMode::Replicated
     {
-        return Err(conflict(
-            "source route differs from frozen recovery incarnation",
-        ));
+        return Err(conflict("source route differs from frozen recovery incarnation").into());
     }
     for (node_id, identity) in &operation.request.target_nodes {
         let installed = topology
@@ -76,7 +87,8 @@ pub(crate) fn next_input(
         {
             return Err(conflict(
                 "target route differs from approved endpoint, trust or failure domain",
-            ));
+            )
+            .into());
         }
     }
     Ok(RecoveryRouteChange {
@@ -106,22 +118,23 @@ pub(crate) fn apply(
     operation: &RecoveryRecord,
     input: &RecoveryRouteChange,
     now: u64,
-) -> Result<RecoveryDispatchOutcome> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<RecoveryDispatchOutcome> {
     validate_input(operation, input)?;
     let observed = state
         .collections
         .get(COLLECTION)
         .and_then(|c| c.documents.get(DOCUMENT))
-        .map(|d| d.version);
+        .map(|d| d.version());
     if observed != Some(input.expected_topology_version) {
         return Ok(RecoveryDispatchOutcome::RouteRejected {
             observed_topology_version: observed,
         });
     }
-    if *input != next_input(state, operation)? {
-        return Err(conflict("route publication compare-and-set differs"));
+    if *input != next_input(state, operation, resolver)? {
+        return Err(conflict("route publication compare-and-set differs").into());
     }
-    let (_, mut topology) = current(state)?;
+    let (_, mut topology) = current(state, resolver)?;
     topology.tenants.insert(
         operation.request.tenant.clone(),
         TenantRoute {
@@ -148,6 +161,7 @@ pub(crate) fn apply(
         revision,
         now,
         &QueryIndexes::default(),
+        resolver,
     )?;
     Ok(RecoveryDispatchOutcome::RoutePublished { revision })
 }

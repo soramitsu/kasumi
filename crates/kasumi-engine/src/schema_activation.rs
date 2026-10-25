@@ -2,6 +2,8 @@
 //! identity is operational metadata; both success and deterministic rejection
 //! survive receipt expiry, encrypted restart, and full restore.
 use super::*;
+use crate::index_source::SourceResult;
+use kasumi_query::ReadFailure;
 
 pub(crate) fn authorize(
     state: &TenantState,
@@ -101,7 +103,8 @@ pub(super) fn apply(
     request: &SchemaChangeSet,
     revision: u64,
     evaluated_at_ms: u64,
-) -> Result<(Result<WriteReceipt>, bool)> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<(Result<WriteReceipt>, bool)> {
     authorize(state, context, request)?;
     let key = identity(&context.principal, &request.activation_id)?;
     let reference = request.reference()?;
@@ -115,7 +118,8 @@ pub(super) fn apply(
         return Err(Error::new(
             ErrorCode::ResourceExhausted,
             "schema change set outside bounds",
-        ));
+        )
+        .into());
     }
     validate_name(&request.expected_incarnation)?;
     let mut collections = BTreeSet::new();
@@ -123,19 +127,22 @@ pub(super) fn apply(
         let name = &change.definition().name;
         validate_name(name)?;
         if !collections.insert(name.clone()) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "duplicate schema target",
-            ));
+            return Err(Error::new(ErrorCode::InvalidArgument, "duplicate schema target").into());
         }
     }
     let mut next = state.clone();
     let outcome = validate_admission(&next, context, &request.read_set, evaluated_at_ms)
-        .and_then(|()| activate(&mut next, request))
+        .map_err(ReadFailure::Query)
+        .and_then(|()| activate(&mut next, request, resolver))
         .map(|()| WriteReceipt {
             revision,
             versions: BTreeMap::new(),
         });
+    let outcome = match outcome {
+        Ok(receipt) => Ok(receipt),
+        Err(ReadFailure::Query(error)) => Err(error),
+        Err(ReadFailure::Source(error)) => return Err(ReadFailure::Source(error)),
+    };
     let changed = outcome.is_ok();
     if !changed {
         next = state.clone();
@@ -165,21 +172,23 @@ pub(super) fn apply(
         return Err(Error::new(
             ErrorCode::QuotaExceeded,
             "permanent schema activation byte budget exhausted",
-        ));
+        )
+        .into());
     }
     store(&mut next, key, record)?;
     *state = next;
     Ok((outcome, changed))
 }
 
-fn activate(state: &mut TenantState, request: &SchemaChangeSet) -> Result<()> {
+fn activate(
+    state: &mut TenantState,
+    request: &SchemaChangeSet,
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<()> {
     if state.incarnation != request.expected_incarnation
         || state.schema_epoch != request.expected_schema_epoch
     {
-        return Err(Error::new(
-            ErrorCode::Conflict,
-            "schema activation source changed",
-        ));
+        return Err(Error::new(ErrorCode::Conflict, "schema activation source changed").into());
     }
     for change in &request.changes {
         let definition = change.definition();
@@ -193,13 +202,15 @@ fn activate(state: &mut TenantState, request: &SchemaChangeSet) -> Result<()> {
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "schema activation document epoch changed",
-            ));
+            )
+            .into());
         }
         let collection = prepare_collection(
             state,
             current,
             definition,
             matches!(change, SchemaChange::Create { .. }),
+            resolver,
         )?;
         state
             .collections
@@ -218,7 +229,8 @@ pub(crate) fn prepare_collection(
     current: Option<&CollectionState>,
     definition: &CollectionDefinition,
     create: bool,
-) -> Result<CollectionState> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<CollectionState> {
     validate_name(&definition.name)?;
     if definition.retention_class == CollectionRetentionClass::ArchivableHistory
         && definition.write_mode != CollectionWriteMode::AppendOnly
@@ -226,7 +238,8 @@ pub(crate) fn prepare_collection(
         return Err(Error::new(
             ErrorCode::InvalidArgument,
             "archivable history must be append-only",
-        ));
+        )
+        .into());
     }
     if current.is_some_and(|collection| {
         collection.definition.retention_class != definition.retention_class
@@ -234,19 +247,21 @@ pub(crate) fn prepare_collection(
         return Err(Error::new(
             ErrorCode::Forbidden,
             "collection retention class is immutable",
-        ));
+        )
+        .into());
     }
     if current.is_some_and(|collection| !collection.archived_documents.is_empty()) {
         return Err(Error::new(
             ErrorCode::Conflict,
             "archived collection schema/index definitions are sealed",
-        ));
+        )
+        .into());
     }
     if create && current.is_some() {
-        return Err(Error::new(ErrorCode::AlreadyExists, "collection exists"));
+        return Err(Error::new(ErrorCode::AlreadyExists, "collection exists").into());
     }
     if !create && current.is_none() {
-        return Err(Error::new(ErrorCode::NotFound, "collection not found"));
+        return Err(Error::new(ErrorCode::NotFound, "collection not found").into());
     }
     if current.is_some_and(|collection| {
         collection.definition.write_mode == CollectionWriteMode::AppendOnly
@@ -255,7 +270,8 @@ pub(crate) fn prepare_collection(
         return Err(Error::new(
             ErrorCode::Forbidden,
             "append-only protection cannot be weakened",
-        ));
+        )
+        .into());
     }
     let documents = current
         .map(|collection| collection.documents.clone())
@@ -267,9 +283,14 @@ pub(crate) fn prepare_collection(
         archived_documents: Default::default(),
         archived_document_bytes: 0,
     };
-    let source = crate::index_source::StateCollection::new(state, &definition.name, &collection);
-    validate_collection(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
-    check_unique(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
+    let source = crate::index_source::StateCollection::with_resolver(
+        state,
+        &definition.name,
+        &collection,
+        resolver,
+    );
+    validate_collection(&source)?;
+    check_unique(&source)?;
     Ok(collection)
 }
 

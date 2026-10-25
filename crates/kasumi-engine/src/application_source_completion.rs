@@ -419,13 +419,14 @@ impl CompletionLoan<'_> {
         position: &kasumi_raft::AppliedEntryContext,
         response: kasumi_raft::AppliedResponse,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
+        writes: &[kasumi_store::WriteOp],
         frozen: bool,
     ) -> Result<Option<SelectedApplication>> {
         let roots = self.roots.clone();
-        let expectation = roots.publication_expectation(position, &[], &response)?;
+        let expectation = roots.publication_expectation(position, writes, &response)?;
         let receipt = match publisher.commit_with_selection(
             response,
-            &[],
+            writes,
             &mut Preparer {
                 roots: &roots,
                 state: &mut self.state,

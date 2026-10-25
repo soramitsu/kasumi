@@ -151,6 +151,22 @@ pub(super) fn publish(
                 publication.retire_graph(&authority, &input)?;
             }
             publication.install_selected()?;
+            // This physical-primary prototype intentionally retains its exact
+            // accepted Arc, including the one bounded Pending replacement. It
+            // never calls production document publication or relaxes that
+            // corridor's unique-candidate requirement. Unchanged compact rows
+            // still need their own exact newly captured document source.
+            let candidate = accepted.as_ref().expect("owned accepted").candidate();
+            let selected = candidate
+                .application_selection
+                .get()
+                .context("fixture captured source absent")?
+                .clone();
+            let resolver = candidate.resolver_for_selection(fixture.roots.clone(), selected)?;
+            candidate
+                .document_sources
+                .set(resolver)
+                .map_err(|_| anyhow::anyhow!("fixture document source already set"))?;
             publication.enter_visibility()?;
             accepted.take().expect("owned accepted").publish();
             Ok(())

@@ -9,6 +9,12 @@ pub trait NodeDiskMemoryAdmission: kasumi_kv::SourceMemoryProvider + Send + Sync
     /// Fixed custody admitted in this exact provider's initial bookkeeping.
     fn storage_census(&self) -> &crate::StorageCensus;
     fn reserve_installed(self: Arc<Self>, bytes: u64) -> io::Result<DiskMemoryLease>;
+    /// Bounded logical-document preparation or decode owned by this exact
+    /// provider. This is ordinary document-source capacity, never audit escrow
+    /// or an alias for native installed metadata. Unknown providers refuse.
+    fn reserve_document_decode(self: Arc<Self>, _bytes: u64) -> io::Result<DiskMemoryLease> {
+        Err(io::ErrorKind::Unsupported.into())
+    }
     /// Required closed database constructor admission. It reserves ordinary
     /// resident capacity and installs its concrete token before continuation.
     fn install_native_constructor(

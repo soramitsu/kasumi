@@ -169,6 +169,114 @@ async fn admitted_native_output_survives_unpolled_body_and_last_frame_clone() {
 }
 
 #[tokio::test]
+async fn admitted_native_mutation_receipt_survives_body_and_last_frame_clone() {
+    use http_body_util::BodyExt;
+    let fixture = Fixture::new().await;
+    let mut context = admitted_query_context();
+    context.scopes.insert(Action::Write);
+    let batch: MutationBatch = serde_json::from_value(batch()).unwrap();
+    let expected = fixture.db.mutate(context, batch.clone()).await.unwrap();
+    let token = fixture.token("person", "tenant-a", "kasumi:read kasumi:write");
+    let request = proto::MutateRequest {
+        batch_json: serde_json::to_vec(&batch).unwrap(),
+    }
+    .encode_to_vec();
+    let mut framed = vec![0];
+    framed.extend_from_slice(&(request.len() as u32).to_be_bytes());
+    framed.extend_from_slice(&request);
+    let router = tonic::service::Routes::new(crate::rpc::native_data_service(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+    ))
+    .into_axum_router();
+    for retain_parts in [false, true] {
+        let response = router
+            .clone()
+            .oneshot(
+                HttpRequest::builder()
+                    .method("POST")
+                    .uri("/kasumi.v1.KasumiData/Mutate")
+                    .version(axum::http::Version::HTTP_2)
+                    .header("content-type", "application/grpc")
+                    .header("te", "trailers")
+                    .header("authorization", &token)
+                    .body(Body::from(framed.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let _quiescent = fixture.audit.quiescent_jobs_for_test().await;
+        let held = fixture.physical.admission.snapshot();
+        assert_eq!(held.inflight_operations, 0);
+        let (parts, mut body) = response.into_parts();
+        let mut parts = Some(parts);
+        if !retain_parts {
+            drop(parts.take());
+        }
+        let bytes = body.frame().await.unwrap().unwrap().into_data().unwrap();
+        let receipt = proto::WriteReceipt::decode(&bytes[5..]).unwrap();
+        assert_eq!(receipt.revision, expected.revision);
+        assert_eq!(
+            receipt.contract,
+            kasumi_client::NATIVE_WRITE_RECEIPT_CONTRACT
+        );
+        assert_eq!(receipt.versions.len(), expected.versions.len());
+        for row in receipt.versions {
+            assert_eq!(expected.versions.get(&row.target_path), Some(&row.revision));
+        }
+        let last = bytes.clone();
+        drop(body);
+        drop(bytes);
+        assert_eq!(
+            fixture.physical.admission.snapshot().reserved_bytes,
+            held.reserved_bytes
+        );
+        drop(last);
+        if retain_parts {
+            assert_eq!(
+                fixture.physical.admission.snapshot().reserved_bytes,
+                held.reserved_bytes
+            );
+            drop(parts.take());
+        }
+        let released = fixture.physical.admission.snapshot();
+        assert_eq!(released.live_reservations + 1, held.live_reservations);
+        let retired = held.reserved_bytes - released.reserved_bytes;
+        assert!(
+            retired > 0 && retired < 64 << 10,
+            "small receipt retained {retired} bytes"
+        );
+    }
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn admitted_native_mutation_receipt_seal_after_commit_is_unknown_outcome() {
+    let fixture = Fixture::new().await;
+    let mut context = admitted_query_context();
+    context.scopes.insert(Action::Write);
+    let batch: MutationBatch = serde_json::from_value(batch()).unwrap();
+    let fence = fixture.db.admitted_response_fence(&context).unwrap();
+    let reply = response_owner::PreparedMutationReply::prepare(fence, &batch).unwrap();
+    let receipt = fixture.db.mutate(context.clone(), batch).await.unwrap();
+    fixture.db.engine().seal();
+    let status = reply
+        .release(receipt, &fixture.auth, &context)
+        .await
+        .unwrap_err();
+    assert_eq!(status.code(), Code::Unavailable);
+    let error: kasumi_types::Error = serde_json::from_slice(status.details()).unwrap();
+    assert_eq!(error.code, ErrorCode::UnknownOutcome);
+    let records = fixture.audit_store.scan("security.audit").unwrap();
+    assert_eq!(records.len(), 1);
+    let event: Value = serde_json::from_slice(records[0].value()).unwrap();
+    assert_eq!(event["event"]["kind"], "tenant_sealed");
+    drop(records);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn admitted_mcp_output_survives_http_handoff_and_last_frame_clone() {
     use http_body_util::BodyExt;
     let fixture = Fixture::new().await;
@@ -308,7 +416,7 @@ async fn admitted_native_feed_survives_unpolled_body_and_last_frame_clone() {
     let expected = seed_admitted_output(&fixture).await;
     let expected_version = fixture.db.engine().generation().unwrap().state.collections["docs"]
         .documents["one"]
-        .version;
+        .version();
     let token = fixture.token("person", "tenant-a", "kasumi:read");
     let feed = kasumi_types::ReadChangeFeed {
         collections: BTreeSet::from(["docs".into()]),
@@ -459,7 +567,7 @@ async fn admitted_native_point_survives_unpolled_body_and_last_frame_clone() {
         .get(&admitted_query_context(), "docs", "one")
         .await
         .unwrap()
-            .expect("document exists");
+        .expect("document exists");
     let expected_version = warm.version;
     drop(warm);
     let node = &fixture.physical.admission;
@@ -580,7 +688,7 @@ async fn admitted_mcp_point_survives_http_handoff_and_last_frame_clone() {
         .get(&admitted_query_context(), "docs", "one")
         .await
         .unwrap()
-            .expect("document exists");
+        .expect("document exists");
     let expected_version = warm.version;
     drop(warm);
     let node = &fixture.physical.admission;

@@ -58,7 +58,8 @@ fn mutation_quote_is_its_exact_command_within_the_request_envelope() {
     );
     let quoted = command_payload_quote(&context, &operation, &state.limits).unwrap();
     assert_eq!(quoted, preflight_command_len(&context, &operation).unwrap());
-    let input = proposal_input::OperationInput::ordinary(operation.clone()).into_command(context.clone());
+    let input =
+        proposal_input::OperationInput::ordinary(operation.clone()).into_command(context.clone());
     assert_eq!(proposal_input_len(&input.command).unwrap(), quoted);
     // Neither the envelope maximum nor the tenant's current budget: a lowered
     // budget still admits the replay of an already committed identity.
@@ -230,6 +231,82 @@ async fn cancelled_submit_keeps_actual_proposal_until_original_identity_is_resol
         json!({"value":7})
     );
     fixture.close().await;
+}
+
+#[tokio::test]
+async fn shutdown_finishes_an_accepted_compact_body_patch_before_sealing_sources() {
+    let fixture = CredentialFixture::new().await;
+    let original = MutationBatch::new().insert(
+        "docs",
+        "shutdown-body",
+        json!({"proof": "ab".repeat(32768), "version": 1}),
+    );
+    fixture
+        .db
+        .mutate(fixture.context.clone(), original)
+        .await
+        .unwrap();
+    let before = fixture.db.raft_group().metrics().last_applied.unwrap();
+    let gate = fixture.db.proposal_gate.lock().await;
+    let mut request = Box::pin(fixture.db.mutate(
+        fixture.context.clone(),
+        MutationBatch::new().patch("docs", "shutdown-body", json!({"version": 2})),
+    ));
+    fixture
+        .db
+        .proposals
+        .wait_for_admission(request.as_mut())
+        .await;
+    let mut shutdown = Box::pin(fixture.db.shutdown());
+    tokio::time::timeout(
+        Duration::from_secs(5),
+        std::future::poll_fn(|cx| {
+            assert!(shutdown.as_mut().poll(cx).is_pending());
+            if fixture.db.proposals.check().is_err() {
+                Poll::Ready(())
+            } else {
+                cx.waker().wake_by_ref();
+                Poll::Pending
+            }
+        }),
+    )
+    .await
+    .unwrap();
+    assert!(fixture.db.closing.load(Ordering::Acquire));
+    // Closing request admission must not revoke an accepted writer's source.
+    let generation = fixture.db.engine().generation().unwrap();
+    let document = generation.state.collections["docs"].documents["shutdown-body"]
+        .load(
+            generation
+                .document_resolver()
+                .expect("installed compact source"),
+        )
+        .unwrap();
+    assert_eq!(document.body["version"], 1);
+    drop(document);
+    drop(generation);
+    drop(gate);
+    let (result, drained) = tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::join!(request, shutdown)
+    })
+    .await
+    .unwrap();
+    // The acknowledgement is fenced, but the original accepted command must
+    // finish durably before the source/store closes.
+    assert_eq!(result.unwrap_err().code, ErrorCode::UnknownOutcome);
+    drained.unwrap();
+    assert_eq!(
+        fixture
+            .db
+            .raft_group()
+            .metrics()
+            .last_applied
+            .unwrap()
+            .index,
+        before.index + 1
+    );
+    fixture.audit.shutdown().await.unwrap();
+    fixture.node.shutdown().await.unwrap();
 }
 
 #[tokio::test]

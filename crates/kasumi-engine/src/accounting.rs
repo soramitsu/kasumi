@@ -51,6 +51,55 @@ fn record(record: &Record) -> Result<usize> {
     size.checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES)
         .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot record overflow"))
 }
+
+fn framing_with_document(base: usize, replacement: u64) -> Result<usize> {
+    base.checked_sub(4)
+        .and_then(|n| n.checked_add(usize::try_from(replacement).ok()?))
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "document framing size overflow"))
+}
+
+/// Count logical full-after-image wire bytes from an authenticated descriptor.
+/// The placeholder is JSON null, so counting never faults a cold body into RAM.
+pub(crate) fn change_record_bytes(record: &ChangeRecord) -> Result<usize> {
+    let header = ChangeRecord {
+        collection: record.collection.clone(),
+        id: record.id.clone(),
+        document: None,
+    };
+    let bytes = encoded_len(&header)?;
+    match &record.document {
+        None => Ok(bytes),
+        Some(document) => framing_with_document(
+            bytes,
+            document
+                .document_bytes()
+                .map_err(|_| Error::new(ErrorCode::Corruption, "document length invalid"))?,
+        ),
+    }
+}
+
+fn document_record(name: &str, document: &DocumentSlot) -> Result<usize> {
+    #[derive(Serialize)]
+    #[serde(tag = "type", content = "value")]
+    enum Framing<'a> {
+        Document(&'a str, Option<()>),
+    }
+    let bytes = framing_with_document(
+        encoded_len(&Framing::Document(name, None))?,
+        document
+            .document_bytes()
+            .map_err(|_| Error::new(ErrorCode::Corruption, "document length invalid"))?,
+    )?;
+    if bytes > (32 << 20) {
+        return Err(Error::new(
+            ErrorCode::QuotaExceeded,
+            "snapshot record exceeds byte limit",
+        ));
+    }
+    bytes
+        .checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES)
+        .ok_or_else(|| Error::new(ErrorCode::Corruption, "snapshot record overflow"))
+}
 fn change(total: &mut usize, old: usize, new: usize) -> Result<()> {
     *total = total
         .checked_sub(old)
@@ -159,11 +208,21 @@ fn feed(key: u64, value: &std::sync::Arc<ChangeCommit>) -> Result<usize> {
     header.records.clear();
     let mut size = record(&Record::Change(key, std::sync::Arc::new(header)))?;
     for (i, value) in value.records.iter().enumerate() {
-        change(
-            &mut size,
-            0,
-            record(&Record::ChangeItem(key, i as u64, value.clone()))?,
-        )?;
+        let header = crate::snapshot_codec::WireChangeRecord {
+            collection: value.collection.clone(),
+            id: value.id.clone(),
+            document: None,
+        };
+        let mut bytes = record(&Record::ChangeItem(key, i as u64, header))?;
+        if let Some(document) = &value.document {
+            bytes = framing_with_document(
+                bytes,
+                document
+                    .document_bytes()
+                    .map_err(|_| Error::new(ErrorCode::Corruption, "document length invalid"))?,
+            )?;
+        }
+        change(&mut size, 0, bytes)?;
     }
     Ok(size)
 }
@@ -215,11 +274,7 @@ impl SnapshotAccounting {
         let mut result = Self::default();
         for (name, collection) in &state.collections {
             for document in collection.documents.values() {
-                change(
-                    &mut result.documents,
-                    0,
-                    record(&Record::Document(name.clone(), document.clone()))?,
-                )?;
+                change(&mut result.documents, 0, document_record(name, document)?)?;
             }
             for (id, reference) in &collection.archived_documents {
                 change(
@@ -329,12 +384,8 @@ impl SnapshotAccounting {
             for id in ids {
                 change(
                     &mut result.documents,
-                    optional(old.documents.get(id), |d| {
-                        record(&Record::Document(name.clone(), d.clone()))
-                    })?,
-                    optional(new.documents.get(id), |d| {
-                        record(&Record::Document(name.clone(), d.clone()))
-                    })?,
+                    optional(old.documents.get(id), |d| document_record(name, d))?,
+                    optional(new.documents.get(id), |d| document_record(name, d))?,
                 )?;
                 change(
                     &mut result.archived,
@@ -535,5 +586,65 @@ impl SnapshotAccounting {
             .checked_add(20 - state.revision.to_string().len() as u64)
             .and_then(|n| n.checked_add(headroom))
             .is_some_and(|n| n <= state.limits.max_snapshot_bytes))
+    }
+}
+
+#[cfg(test)]
+mod cold_document_accounting_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn compact_document_and_feed_charges_match_canonical_wire_without_loading() {
+        for body in [
+            serde_json::json!(null),
+            serde_json::json!({"proof": "ab".repeat(8192), "literal": "\"\\\n日本語"}),
+            serde_json::json!({"$serde_json::private::Number": "7", "number": 1.25, "array": [true, false, null]}),
+        ] {
+            for version in [0, 1, u64::MAX] {
+                let document = Arc::new(Document {
+                    id: "row".into(),
+                    version,
+                    body: body.clone(),
+                });
+                let stored = Arc::new(DocumentSlot::Stored(
+                    StoredDocument::from_document(&document, [42; 32], 100, 1 << 20, 4096).unwrap(),
+                ));
+                let original =
+                    Record::Document("docs".into(), OwnedDocument::Pending(document.clone()));
+                assert_eq!(
+                    document_record("docs", &stored).unwrap(),
+                    record(&original).unwrap()
+                );
+                let event = ChangeRecord {
+                    collection: "docs".into(),
+                    id: "row".into(),
+                    document: Some(stored.clone()),
+                };
+                let wire = crate::snapshot_codec::WireChangeRecord {
+                    collection: "docs".into(),
+                    id: "row".into(),
+                    document: Some(OwnedDocument::Pending(document)),
+                };
+                assert_eq!(
+                    change_record_bytes(&event).unwrap(),
+                    encoded_len(&wire).unwrap()
+                );
+                let logical = Record::ChangeItem(10, 0, wire);
+                let commit = Arc::new(ChangeCommit {
+                    revision: 12,
+                    first_sequence: 10,
+                    records: vec![event],
+                    record_bytes: 0,
+                });
+                let mut header = commit.as_ref().clone();
+                header.records.clear();
+                assert_eq!(
+                    feed(10, &commit).unwrap(),
+                    record(&Record::Change(10, Arc::new(header))).unwrap()
+                        + record(&logical).unwrap()
+                );
+            }
+        }
     }
 }

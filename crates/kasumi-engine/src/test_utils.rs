@@ -87,12 +87,12 @@ pub fn fixture_query<W: kasumi_query::QueryWorkspace>(
     generation: &Arc<crate::Generation>,
     request: &kasumi_types::QueryRequest,
     memory: &mut kasumi_query::QueryMemory<W>,
-) -> Result<kasumi_types::QueryResponse> {
+) -> anyhow::Result<kasumi_types::QueryResponse> {
     let source = generation.document_source(&request.collection)?;
     generation
         .indexes
         .execute(&source, request, generation.limits(), memory)
-        .map_err(kasumi_query::ReadFailure::into_query_error)
+        .map_err(anyhow::Error::from)
 }
 
 /// Local fixture sink. Production publication always uses Raft's custody sink.
@@ -583,17 +583,18 @@ pub trait SnapshotFixtureState {
 }
 impl SnapshotFixtureState for TenantState {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        write_candidate(self, None, None, None, None, writer)
+        write_candidate(self, None, None, None, None, None, writer)
     }
 }
 impl SnapshotFixtureState for crate::Generation {
     fn write_fixture(&self, writer: &mut dyn std::io::Write) -> anyhow::Result<()> {
-        crate::snapshot_codec::write(
+        crate::snapshot_codec::write_with_resolver(
             &self.state,
             &self.receipts,
             &self.backup_bindings,
             &self.terminals,
             &self.target_resolutions,
+            self.document_resolver(),
             writer,
         )
     }
@@ -619,6 +620,7 @@ impl SnapshotFixtureState for SnapshotCandidate {
             Some(&self.0.backup_bindings),
             Some(&self.0.terminals),
             Some(&self.0.target_resolutions),
+            Some(&self.0.documents),
             writer,
         )
     }
@@ -661,6 +663,7 @@ fn write_candidate(
     backup_bindings: Option<&crate::backup_binding::View>,
     terminals: Option<&crate::staged_terminal::View>,
     target_resolutions: Option<&crate::target_resolution::View>,
+    resolver: Option<&dyn kasumi_types::DocumentResolver>,
     writer: &mut dyn std::io::Write,
 ) -> anyhow::Result<()> {
     let mut encoder = crate::snapshot_codec::Encoder::new(writer)?;
@@ -672,7 +675,7 @@ fn write_candidate(
                 encoder.record(crate::snapshot_codec::Record::Receipt(Box::new(row?)))?;
             }
         }
-        for record in crate::snapshot_codec::records(state, kind, None)? {
+        for record in crate::snapshot_codec::records_with_resolver(state, kind, None, resolver)? {
             encoder.record(record?)?;
         }
     }
@@ -688,7 +691,7 @@ fn write_candidate(
             )))?;
         }
     }
-    for record in crate::snapshot_codec::records(state, 23, None)? {
+    for record in crate::snapshot_codec::records_with_resolver(state, 23, None, resolver)? {
         encoder.record(record?)?;
     }
     if let Some(bindings) = backup_bindings {
@@ -775,4 +778,20 @@ mod physical_fixture_tests {
         assert_eq!(unchanged, config);
         Ok(())
     }
+}
+
+/// Lend one document from the exact captured fixture generation. A fixture must
+/// carry its source owner just like production; no latest-view fallback exists.
+pub fn fixture_document(
+    generation: &crate::Generation,
+    collection: &str,
+    id: &str,
+) -> anyhow::Result<kasumi_types::OwnedDocument> {
+    let slot = generation
+        .state
+        .collections
+        .get(collection)
+        .and_then(|collection| collection.documents.get(id))
+        .ok_or_else(|| anyhow::anyhow!("fixture document absent"))?;
+    slot.load_owned(generation.document_resolver())
 }

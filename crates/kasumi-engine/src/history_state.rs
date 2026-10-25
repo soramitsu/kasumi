@@ -3,6 +3,46 @@
 //! any hot bodies; external history remains explicitly required on later reads.
 use super::*;
 
+fn source_failure(
+    error: anyhow::Error,
+) -> kasumi_query::ReadFailure<crate::index_source::DocumentSourceFailure> {
+    kasumi_query::ReadFailure::Source(crate::index_source::DocumentSourceFailure(error))
+}
+
+/// The original archive wire fields, with one admitted body loan per element.
+/// No decoded source collection or complete chunk remains resident here.
+#[derive(serde::Serialize)]
+struct SourceChunk<'a> {
+    kind: HistoryArchiveKind,
+    archive_id: &'a str,
+    source_incarnation: &'a str,
+    collection: &'a str,
+    index: usize,
+    documents: SourceDocuments<'a>,
+}
+struct SourceDocuments<'a> {
+    documents: &'a [Arc<DocumentSlot>],
+    resolver: Option<&'a dyn DocumentResolver>,
+    failure: &'a std::cell::RefCell<Option<anyhow::Error>>,
+}
+impl serde::Serialize for SourceDocuments<'_> {
+    fn serialize<S: serde::Serializer>(
+        &self,
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        use serde::ser::{Error as _, SerializeSeq};
+        let mut sequence = serializer.serialize_seq(Some(self.documents.len()))?;
+        for slot in self.documents {
+            let document = slot.load_owned(self.resolver).map_err(|error| {
+                *self.failure.borrow_mut() = Some(error);
+                S::Error::custom("archive source document unavailable")
+            })?;
+            sequence.serialize_element(document.as_ref())?;
+        }
+        sequence.end()
+    }
+}
+
 pub(crate) fn metadata_entry(id: &str, value: &impl serde::Serialize) -> Result<usize> {
     encoded_len(&id)?
         .checked_add(1)
@@ -97,7 +137,8 @@ pub(crate) fn publish(
     command: &Command,
     request: &PublishHistoryArchive,
     revision: u64,
-) -> Result<(Result<WriteReceipt>, bool)> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> crate::index_source::SourceResult<(Result<WriteReceipt>, bool)> {
     authorize_state(state, &command.context, None, Action::Admin)?;
     let manifest = &request.manifest;
     authorize_state(
@@ -128,7 +169,8 @@ pub(crate) fn publish(
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "archive identity reused for different history",
-            ));
+            )
+            .into());
         }
         return Ok((
             Ok(WriteReceipt {
@@ -147,13 +189,13 @@ pub(crate) fn publish(
         return Err(Error::new(
             ErrorCode::Conflict,
             "archive source or authority fence changed",
-        ));
+        )
+        .into());
     }
     if state.history_archives.len() >= state.limits.history.max_archive_segments {
-        return Err(Error::new(
-            ErrorCode::QuotaExceeded,
-            "archive manifest quota exhausted",
-        ));
+        return Err(
+            Error::new(ErrorCode::QuotaExceeded, "archive manifest quota exhausted").into(),
+        );
     }
     let collection = state
         .collections
@@ -165,7 +207,8 @@ pub(crate) fn publish(
         return Err(Error::new(
             ErrorCode::Forbidden,
             "collection is not eligible for history archival",
-        ));
+        )
+        .into());
     }
     if collection
         .definition
@@ -176,29 +219,33 @@ pub(crate) fn publish(
         return Err(Error::new(
             ErrorCode::Conflict,
             "text-indexed history requires a supported cold text index",
-        ));
+        )
+        .into());
     }
     let eligible: BTreeMap<_, _> = collection
         .documents
         .iter()
-        .filter(|(_, document)| document.version <= manifest.cutoff_revision)
+        .filter(|(_, document)| document.version() <= manifest.cutoff_revision)
         .map(|(id, document)| (id.clone(), document.clone()))
         .collect();
     if eligible.len() != manifest.document_count {
-        return Err(Error::new(
-            ErrorCode::Conflict,
-            "archive source count changed",
-        ));
+        return Err(Error::new(ErrorCode::Conflict, "archive source count changed").into());
     }
-    let source_bytes = eligible.values().try_fold(0usize, |sum, document| {
-        sum.checked_add(encoded_len(&document.body)?)
-            .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "archive source size overflow"))
-    })?;
+    let mut source_bytes = 0usize;
+    for document in eligible.values() {
+        let bytes = document.body_bytes().map_err(source_failure)?;
+        source_bytes = source_bytes
+            .checked_add(usize::try_from(bytes).map_err(|_| {
+                Error::new(ErrorCode::QuotaExceeded, "archive source size overflow")
+            })?)
+            .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "archive source size overflow"))?;
+    }
     if source_bytes > MAX_ARCHIVE_SOURCE_BYTES {
         return Err(Error::new(
             ErrorCode::ResourceExhausted,
             "archive prefix exceeds source byte bound",
-        ));
+        )
+        .into());
     }
     let mut moved = Vec::with_capacity(eligible.len());
     for (index, descriptor) in manifest.chunks.iter().enumerate() {
@@ -209,39 +256,51 @@ pub(crate) fn publish(
         if documents.len() != descriptor.document_count
             || documents
                 .first()
-                .is_none_or(|doc| doc.id != descriptor.first_id)
+                .is_none_or(|doc| doc.id() != descriptor.first_id)
             || documents
                 .last()
-                .is_none_or(|doc| doc.id != descriptor.last_id)
+                .is_none_or(|doc| doc.id() != descriptor.last_id)
         {
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "archive chunk does not cover its source interval",
-            ));
+            )
+            .into());
         }
-        let chunk = HistoryArchiveChunk {
+        let failure = std::cell::RefCell::new(None);
+        let chunk = SourceChunk {
             kind: HistoryArchiveKind::HistorySubset,
-            archive_id: manifest.archive_id.clone(),
-            source_incarnation: manifest.source_incarnation.clone(),
-            collection: manifest.collection.clone(),
+            archive_id: &manifest.archive_id,
+            source_incarnation: &manifest.source_incarnation,
+            collection: &manifest.collection,
             index,
-            documents,
+            documents: SourceDocuments {
+                documents: &documents,
+                resolver,
+                failure: &failure,
+            },
         };
-        let (digest, bytes) = staged_digest(&chunk)?;
+        let measured = staged_digest(&chunk);
+        if let Some(error) = failure.into_inner() {
+            return Err(source_failure(error));
+        }
+        let (digest, bytes) = measured?;
         if digest != descriptor.plaintext_sha256 || bytes != descriptor.plaintext_bytes {
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "archive source bytes differ from verified chunk",
-            ));
+            )
+            .into());
         }
-        for document in chunk.documents {
+        for slot in documents {
+            let document = slot.load_owned(resolver).map_err(source_failure)?;
             let reference = ArchivedDocument {
                 version: document.version,
                 archive_id: manifest.archive_id.clone(),
                 chunk_index: index,
                 document_sha256: staged_digest(&document)?.0,
                 document_bytes: encoded_len(&document)?,
-                indexed_fields: index_fields(&collection.definition, &document),
+                indexed_fields: index_fields(&collection.definition, document.as_ref()),
             };
             moved.push((
                 document.id.clone(),
@@ -251,10 +310,7 @@ pub(crate) fn publish(
         }
     }
     if moved.len() != eligible.len() {
-        return Err(Error::new(
-            ErrorCode::Conflict,
-            "archive intervals omit source rows",
-        ));
+        return Err(Error::new(ErrorCode::Conflict, "archive intervals omit source rows").into());
     }
     let mut staged = state.clone();
     let collection = staged
@@ -263,10 +319,9 @@ pub(crate) fn publish(
         .expect("validated collection");
     for (id, reference, body_bytes) in moved {
         if collection.archived_documents.contains_key(&id) {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "history identity already archived",
-            ));
+            return Err(
+                Error::new(ErrorCode::Corruption, "history identity already archived").into(),
+            );
         }
         collection.archived_document_bytes = collection
             .archived_document_bytes
@@ -321,7 +376,7 @@ pub(crate) fn changes(
             collection
                 .documents
                 .iter()
-                .filter(|(_, document)| document.version <= manifest.cutoff_revision)
+                .filter(|(_, document)| document.version() <= manifest.cutoff_revision)
                 .map(|(id, _)| id.clone())
                 .collect()
         })
@@ -458,4 +513,134 @@ pub(crate) fn validate_restored(state: &TenantState) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod source_chunk_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Owner {
+        document: Document,
+        active: Arc<AtomicUsize>,
+    }
+    impl AdmittedDocumentOwner for Owner {
+        fn document(&self) -> &Document {
+            &self.document
+        }
+    }
+    impl Drop for Owner {
+        fn drop(&mut self) {
+            assert_eq!(self.active.fetch_sub(1, Ordering::SeqCst), 1);
+        }
+    }
+    struct Resolver {
+        documents: Vec<Arc<Document>>,
+        active: Arc<AtomicUsize>,
+        fail: bool,
+    }
+    impl DocumentResolver for Resolver {
+        fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            anyhow::ensure!(
+                !self.fail || descriptor.id != "b",
+                "original history source failure"
+            );
+            assert_eq!(
+                self.active.fetch_add(1, Ordering::SeqCst),
+                0,
+                "archive verification retained another decoded source"
+            );
+            let document = self
+                .documents
+                .iter()
+                .find(|document| document.id == descriptor.id)
+                .unwrap();
+            Ok(SharedDocument::from_admitted_owner(Arc::new(Owner {
+                document: document.as_ref().clone(),
+                active: self.active.clone(),
+            })))
+        }
+    }
+    fn fixture(fail: bool) -> (Resolver, Vec<Arc<DocumentSlot>>) {
+        let documents: Vec<_> = ["a", "b"]
+            .into_iter()
+            .map(|id| {
+                Arc::new(Document {
+                    id: id.into(),
+                    version: 7,
+                    body: serde_json::json!({"proof": "ab".repeat(4096), "id": id}),
+                })
+            })
+            .collect();
+        let slots = documents
+            .iter()
+            .map(|document| {
+                Arc::new(DocumentSlot::Stored(
+                    StoredDocument::from_document(document, [17; 32], 4096, 1 << 20, 4096).unwrap(),
+                ))
+            })
+            .collect();
+        (
+            Resolver {
+                documents,
+                active: Arc::new(AtomicUsize::new(0)),
+                fail,
+            },
+            slots,
+        )
+    }
+    #[test]
+    fn source_chunk_preserves_archive_wire_and_releases_each_decoded_loan() {
+        let (resolver, slots) = fixture(false);
+        let expected = HistoryArchiveChunk {
+            kind: HistoryArchiveKind::HistorySubset,
+            archive_id: "archive".into(),
+            source_incarnation: "incarnation".into(),
+            collection: "docs".into(),
+            index: 3,
+            documents: resolver.documents.clone(),
+        };
+        let failure = std::cell::RefCell::new(None);
+        let source = SourceChunk {
+            kind: expected.kind,
+            archive_id: &expected.archive_id,
+            source_incarnation: &expected.source_incarnation,
+            collection: &expected.collection,
+            index: expected.index,
+            documents: SourceDocuments {
+                documents: &slots,
+                resolver: Some(&resolver),
+                failure: &failure,
+            },
+        };
+        assert_eq!(
+            staged_digest(&source).unwrap(),
+            staged_digest(&expected).unwrap()
+        );
+        assert!(failure.borrow().is_none());
+        assert_eq!(resolver.active.load(Ordering::SeqCst), 0);
+    }
+    #[test]
+    fn source_chunk_retains_original_load_failure_outside_serialization_error() {
+        let (resolver, slots) = fixture(true);
+        let failure = std::cell::RefCell::new(None);
+        let source = SourceChunk {
+            kind: HistoryArchiveKind::HistorySubset,
+            archive_id: "archive",
+            source_incarnation: "incarnation",
+            collection: "docs",
+            index: 0,
+            documents: SourceDocuments {
+                documents: &slots,
+                resolver: Some(&resolver),
+                failure: &failure,
+            },
+        };
+        assert!(staged_digest(&source).is_err());
+        assert_eq!(
+            failure.borrow().as_ref().unwrap().to_string(),
+            "original history source failure"
+        );
+        assert_eq!(resolver.active.load(Ordering::SeqCst), 0);
+    }
 }

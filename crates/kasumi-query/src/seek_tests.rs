@@ -1,8 +1,8 @@
 use super::*;
 use crate::ReadFailure;
+use crate::source_test_utils::pending;
 use crate::source_test_utils::{FixtureQueries, ResidentSource, query_memory};
 use serde_json::json;
-use std::sync::Arc;
 
 /// 20,010 rows in two scopes under a unique (scope, at, literalId) index.
 fn setup() -> (BTreeMap<String, CollectionState>, QueryIndexes) {
@@ -36,7 +36,7 @@ fn setup() -> (BTreeMap<String, CollectionState>, QueryIndexes) {
             });
             (
                 id.clone(),
-                Arc::new(Document {
+                pending(Document {
                     id,
                     version: 10,
                     body,
@@ -315,7 +315,7 @@ fn small_fixture(
                 let id = format!("row-{n}");
                 (
                     id.clone(),
-                    Arc::new(Document {
+                    pending(Document {
                         id,
                         version: 1,
                         body,

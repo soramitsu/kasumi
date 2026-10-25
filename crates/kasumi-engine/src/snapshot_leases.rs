@@ -541,7 +541,7 @@ impl ScanWork {
                         response.documents.push(document.clone());
                         Ok(false)
                     })
-                    .map_err(ReadFailure::into_query_error)?;
+                    .map_err(source_read_error)?;
                 if page_full {
                     break;
                 }

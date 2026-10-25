@@ -169,7 +169,9 @@ impl std::fmt::Display for TotalExceedsHighWater {
 impl std::error::Error for TotalExceedsHighWater {}
 
 mod apply_escrow;
-pub(crate) use apply_escrow::{ApplyEscrow, ApplyScope};
+pub(crate) use apply_escrow::{ApplyEscrow, ApplyScope, DocumentWorkspace, RetainedWorkspace};
+mod document_read_scope;
+pub(crate) use document_read_scope::DocumentReadBudget;
 mod disk_memory;
 pub(crate) use disk_memory::ProposalBudget;
 mod installed;
@@ -320,7 +322,7 @@ enum ChargeKind {
     Resident,
     Bookkeeping,
 }
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ChargeOrigin {
     OrdinaryOperation,
     OtherOrdinary,
@@ -353,6 +355,9 @@ enum ReserveKindError {
 }
 struct Charge {
     bytes: u64,
+    // An exclusive bounded document slice borrows this exact reservation.
+    // Shared workflow aliases may retain it, but cannot repartition or resize it.
+    document_partition: bool,
     kind: ChargeKind,
     // This never changes when an operation is retained as resident state.
     origin: ChargeOrigin,
@@ -971,8 +976,9 @@ impl MemoryCore {
             })
         {
             #[cfg(any(test, feature = "test-utils"))]
-            if origin == ChargeOrigin::DocumentSource
-                && std::env::var_os("KASUMI_TEST_SOURCE_GRANT_TRACE").is_some()
+            if (origin == ChargeOrigin::DocumentSource
+                && std::env::var_os("KASUMI_TEST_SOURCE_GRANT_TRACE").is_some())
+                || std::env::var_os("KASUMI_TEST_GRANT_TRACE").is_some()
             {
                 let (source_bytes, source_slots) = state
                     .slots
@@ -985,11 +991,14 @@ impl MemoryCore {
                 let (cache_bytes, cache_slots) =
                     self.data.config.cache_work_headroom(self.data.max_bytes);
                 eprintln!(
-                    "kasumi source grant refused caller={} requested={} charged={} limit={} source_bytes={} source_slots={} live_slots={} total_slots={} free_slot={} cache_reserve_bytes={} cache_reserve_slots={} ordinary_protected_bytes={} ordinary_protected_slots={} resident={} high={} usable={} pressured={}",
+                    "kasumi grant refused caller={} origin={:?} requested={} charged={} limit={} operations={} max_operations={} source_bytes={} source_slots={} live_slots={} total_slots={} free_slot={} cache_reserve_bytes={} cache_reserve_slots={} ordinary_protected_bytes={} ordinary_protected_slots={} resident={} high={} usable={} pressured={}",
                     std::panic::Location::caller(),
+                    origin,
                     bytes,
                     state.bytes,
                     self.data.max_bytes,
+                    state.operations,
+                    self.data.config.max_inflight_operations,
                     source_bytes,
                     source_slots,
                     state.live,
@@ -1017,6 +1026,7 @@ impl MemoryCore {
         state.slots[slot] = ChargeSlot {
             id,
             charge: Some(Charge {
+                document_partition: false,
                 bytes,
                 kind,
                 origin,
@@ -1462,6 +1472,15 @@ impl Reservation {
             .charge(self.slot, self.id)
             .ok_or_else(|| Error::new(ErrorCode::Unavailable, "admission reservation absent"))?
             .bytes;
+        if state
+            .charge(self.slot, self.id)
+            .is_some_and(|charge| charge.document_partition)
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "workspace has an active document partition",
+            ));
+        }
         let ordinary_operation = state
             .charge(self.slot, self.id)
             .is_some_and(|charge| charge.origin == ChargeOrigin::OrdinaryOperation);

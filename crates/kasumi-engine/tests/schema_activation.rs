@@ -537,7 +537,7 @@ fn pinned_kyc_collection_files_activate_as_one_native_schema_bundle() {
     );
     let before = db.generation().unwrap();
     let outbox = &before.state.collections["kyc_audit_outbox"];
-    let cursor_version = outbox.documents["scan-cursor"].version;
+    let cursor_version = outbox.documents["scan-cursor"].version();
     let advance = |id: &str, epoch: u64, version: u64, after_id: Option<String>| {
         let state = db.generation().unwrap();
         MutationBatch {
@@ -578,7 +578,7 @@ fn pinned_kyc_collection_files_activate_as_one_native_schema_bundle() {
     .unwrap();
     let committed = db.generation().unwrap();
     let committed_outbox = &committed.state.collections["kyc_audit_outbox"];
-    let committed_version = committed_outbox.documents["scan-cursor"].version;
+    let committed_version = committed_outbox.documents["scan-cursor"].version();
     let stale_epoch = committed_outbox.data_epoch;
     drop(committed);
     mutate(
@@ -593,7 +593,9 @@ fn pinned_kyc_collection_files_activate_as_one_native_schema_bundle() {
     );
     let restarted = db.generation().unwrap();
     assert_eq!(
-        restarted.state.collections["kyc_audit_outbox"].documents["scan-cursor"].body["after_id"],
+        kasumi_engine::test_utils::fixture_document(&restarted, "kyc_audit_outbox", "scan-cursor")
+            .unwrap()
+            .body["after_id"],
         json!(high)
     );
     assert!(
@@ -622,7 +624,9 @@ fn pinned_kyc_collection_files_activate_as_one_native_schema_bundle() {
     .unwrap();
     let after_wrap = db.generation().unwrap();
     assert_eq!(
-        after_wrap.state.collections["kyc_audit_outbox"].documents["scan-cursor"].body["after_id"],
+        kasumi_engine::test_utils::fixture_document(&after_wrap, "kyc_audit_outbox", "scan-cursor")
+            .unwrap()
+            .body["after_id"],
         json!(null)
     );
     let ids = after_wrap.state.collections["kyc_audit_outbox"]
@@ -794,6 +798,9 @@ fn atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations() {
     assert_eq!(
         kasumi_engine::test_utils::fixture_query(&old, &query, &mut common::query_memory())
             .unwrap_err()
+            .chain()
+            .find_map(|error| error.downcast_ref::<kasumi_types::Error>())
+            .expect("expected deterministic query rejection")
             .code,
         ErrorCode::IndexRequired
     );
@@ -1775,7 +1782,7 @@ fn guard_assertions(db: &TenantEngine) -> Vec<ReadAssertion> {
             collection: "guards".into(),
             id: "held".into(),
             expected: ReadPrecondition::Version(
-                current.state.collections["guards"].documents["held"].version,
+                current.state.collections["guards"].documents["held"].version(),
             ),
         },
         ReadAssertion::Collection {

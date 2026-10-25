@@ -5,6 +5,9 @@ use kasumi_types::{
     Operation, Precondition, RequestAuthorization, RequestContext,
 };
 
+#[path = "standalone_document_residency_tests.rs"]
+mod document_residency;
+
 fn context(tenant: &str) -> RequestContext {
     RequestContext {
         authorization: RequestAuthorization::service_identity(),

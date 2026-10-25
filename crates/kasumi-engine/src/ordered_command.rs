@@ -162,19 +162,34 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
             owner,
         } = self;
         match owner {
-            OutcomeOwner::Candidate(accepted) => {
+            OutcomeOwner::Candidate(mut accepted) => {
                 accepted.require_publication(engine, Some(position))?;
                 if let Some(completion) = completion.as_mut() {
+                    let sources = engine
+                        .application_sources
+                        .get()
+                        .context("ordinary application sources absent")?;
+                    // Immutable body writes share the exact completion/custody
+                    // publication, and their grant lives through selection.
+                    let documents = accepted.prepare_documents(sources)?;
                     let candidate = accepted.candidate();
                     let Some(selection) = completion.publish_source(
                         position,
                         response,
                         publisher,
+                        documents
+                            .as_ref()
+                            .map_or(&[][..], |documents| documents.writes()),
                         candidate.state.retired,
                     )?
                     else {
                         return Ok(());
                     };
+                    let resolver =
+                        candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+                    candidate.document_sources.set(resolver).map_err(|_| {
+                        anyhow::anyhow!("candidate document source already installed")
+                    })?;
                     candidate
                         .application_selection
                         .set(selection)

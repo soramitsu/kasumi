@@ -801,11 +801,12 @@ impl OldPhysical {
             },
         )?;
         let (page_bytes, leaf) = Self::page(fixture, manifest, None)?;
-        let document = &generation.state.collections["docs"].documents[&id(0, false)];
+        let document = generation.state.collections["docs"].documents[&id(0, false)]
+            .load_owned(generation.document_resolver())?;
         assert_eq!(document.id, id(0, false));
         assert_eq!(document.version, 2);
         assert_eq!(document.body, json!({"value":0}));
-        let canonical = serde_json::to_vec(document)?;
+        let canonical = serde_json::to_vec(&document)?;
         assert_eq!(canonical.len() as u64, leaf.object.encoded_bytes);
         assert_eq!(
             <[u8; 32]>::from(Sha256::digest(&canonical)),
@@ -1214,7 +1215,7 @@ async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches(
                 };
                 assert_eq!(document.id, id(0, false));
                 assert_eq!(document.body, json!({"value":0}));
-                assert_eq!(serde_json::to_vec(document)?, old_physical.canonical);
+                assert_eq!(serde_json::to_vec(&document)?, old_physical.canonical);
                 Ok(document.version)
             })
             .unwrap();

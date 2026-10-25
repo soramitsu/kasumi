@@ -34,15 +34,18 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
         CollectionState {
             definition: definition.clone(),
             data_epoch: 1,
-            documents: [(document.id.clone(), document.clone())]
-                .into_iter()
-                .collect(),
+            documents: [(
+                document.id.clone(),
+                Arc::new(kasumi_types::DocumentSlot::Pending(document.clone())),
+            )]
+            .into_iter()
+            .collect(),
             archived_documents: Default::default(),
             archived_document_bytes: 0,
         },
     );
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = &scratch.disk;
@@ -63,14 +66,17 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
     let restored = read(image.disk(), &mut image.reader()).unwrap();
     assert_eq!(restored.state.collections["docs"].definition, definition);
     assert_eq!(
-        restored.state.collections["docs"].documents["first"],
-        document
+        restored.state.collections["docs"].documents["first"]
+            .load(&restored.documents)
+            .unwrap()
+            .as_ref(),
+        document.as_ref()
     );
     let index = crate::snapshot_index::StagedSnapshot::new(image, 16 << 20, || Ok(())).unwrap();
     let Some(Record::Document(_, observed)) = index.get(3, "docs", "first").unwrap() else {
         panic!("document record missing")
     };
-    assert_eq!(observed, document);
+    assert_eq!(observed.as_ref(), document.as_ref());
     let stage = Record::StageChunk(
         "transaction".into(),
         0,

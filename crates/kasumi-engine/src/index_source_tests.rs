@@ -2,17 +2,24 @@ use super::*;
 use crate::TenantEngine;
 use kasumi_types::{
     Action, ArchivedDocument, CollectionRetentionClass, CollectionWriteMode, Document, Grant,
-    IndexDefinition, IndexField, Limits, Policy, ScalarType,
+    IndexDefinition, IndexField, Limits, Policy, ScalarType, StoredDocument,
 };
 use serde_json::json;
 use std::sync::Arc;
 
-fn document(id: &str, version: u64, value: &str) -> Arc<Document> {
-    Arc::new(Document {
+fn document(id: &str, version: u64, value: &str) -> Arc<DocumentSlot> {
+    Arc::new(DocumentSlot::Pending(Arc::new(Document {
         id: id.into(),
         version,
         body: json!({"value": value}),
-    })
+    })))
+}
+
+fn query_error(failure: ReadFailure<DocumentSourceFailure>) -> Error {
+    match failure {
+        ReadFailure::Query(error) => error,
+        ReadFailure::Source(error) => panic!("unexpected local source failure: {error}"),
+    }
 }
 
 fn archived(version: u64, value: &str) -> Arc<ArchivedDocument> {
@@ -92,7 +99,10 @@ fn collection_records_merge_hydration_once_without_cloning_bodies() {
                 let Record::Live(document) = record else {
                     panic!("hydration must win")
                 };
-                assert!(std::ptr::eq(document, collection.documents["c"].as_ref()));
+                let DocumentSlot::Pending(expected) = collection.documents["c"].as_ref() else {
+                    panic!("expected pending fixture")
+                };
+                assert!(std::ptr::eq(document, expected.as_ref()));
                 assert_eq!(Arc::strong_count(&collection.documents["c"]), count);
             }
             rows.push((id.to_owned(), record.version()));
@@ -123,7 +133,7 @@ fn delta_replays_one_sorted_old_final_pair_for_repeated_mutations() {
     docs.remove("b");
     docs.remove("c");
     let ids = BTreeSet::from(["c".into(), "a".into(), "b".into()]);
-    let source = changes_for(&indexes, &old, &new, "docs", &ids).unwrap();
+    let source = changes_for(&indexes, &old, &new, "docs", &ids, None, None).unwrap();
     assert!(std::ptr::eq(source.indexes(), &indexes));
     assert_ne!(source.old_identity(), source.new_identity());
     for _ in 0..3 {
@@ -221,7 +231,10 @@ fn zero_version_live_and_archive_inputs_build_and_apply_exact_deltas() {
                     .insert("b".into(), archived(4, "bravo"));
             }
         }
-        assert_eq!(build(&bad).unwrap_err().code, ErrorCode::Corruption);
+        assert_eq!(
+            query_error(build(&bad).unwrap_err()).code,
+            ErrorCode::Corruption
+        );
     }
 }
 
@@ -243,9 +256,7 @@ fn unique_swap_uses_final_pairs_and_conflict_is_prevalidated() {
         .documents
         .insert("c".into(), document("c", 4, "charlie"));
     assert_eq!(
-        validate_changes(&indexes, &old, &new, &journal)
-            .unwrap_err()
-            .code,
+        query_error(validate_changes(&indexes, &old, &new, &journal).unwrap_err()).code,
         ErrorCode::Conflict
     );
     assert_eq!(
@@ -275,7 +286,7 @@ fn unexplained_live_and_archive_roots_fail_without_rebuild_fallback() {
         }
         for journal in [BTreeMap::new(), changed(&[])] {
             assert_eq!(
-                update(&indexes, &old, &new, &journal).unwrap_err().code,
+                query_error(update(&indexes, &old, &new, &journal).unwrap_err()).code,
                 ErrorCode::Corruption
             );
         }
@@ -283,9 +294,7 @@ fn unexplained_live_and_archive_roots_fail_without_rebuild_fallback() {
     let mut foreign = old.clone();
     foreign.incarnation = "replacement".into();
     assert_eq!(
-        update(&indexes, &old, &foreign, &BTreeMap::new())
-            .unwrap_err()
-            .code,
+        query_error(update(&indexes, &old, &foreign, &BTreeMap::new()).unwrap_err()).code,
         ErrorCode::Corruption
     );
 }
@@ -337,6 +346,7 @@ fn schema_candidates_and_empty_snapshot_metadata_have_exact_borrowed_owners() {
         Some(collection),
         &collection.definition,
         false,
+        None,
     )
     .unwrap();
     candidate.documents.insert(
@@ -345,10 +355,7 @@ fn schema_candidates_and_empty_snapshot_metadata_have_exact_borrowed_owners() {
     );
     let invalid = StateCollection::new(&state, "docs", &candidate);
     assert_eq!(
-        kasumi_query::validate_collection(&invalid)
-            .unwrap_err()
-            .into_query_error()
-            .code,
+        query_error(kasumi_query::validate_collection(&invalid).unwrap_err()).code,
         ErrorCode::Corruption
     );
     let mut header = state.clone();
@@ -364,4 +371,31 @@ fn schema_candidates_and_empty_snapshot_metadata_have_exact_borrowed_owners() {
     let metadata = StateCollection::new(&header, "docs", &empty);
     kasumi_query::validate_collection(&metadata).unwrap();
     QueryIndexes::build([metadata]).unwrap();
+}
+
+#[test]
+fn stored_headers_do_not_decode_and_missing_selected_source_is_local_failure() {
+    let mut state = state();
+    let collection = state.collections.get_mut("docs").unwrap();
+    let DocumentSlot::Pending(document) = collection.documents["a"].as_ref() else {
+        panic!("expected pending fixture")
+    };
+    let descriptor = StoredDocument::from_document(document, [7; 32], 128, 1 << 20, 4096).unwrap();
+    collection
+        .documents
+        .insert("a".into(), Arc::new(DocumentSlot::Stored(descriptor)));
+    let selected = &state.collections["docs"];
+    let header = header(selected, "a", state.revision).unwrap().unwrap();
+    assert_eq!((header.id, header.version), ("a", 1));
+    assert!(matches!(build(&state), Err(ReadFailure::Source(_))));
+    assert!(matches!(
+        crate::state::schema::prepare_collection(
+            &state,
+            Some(selected),
+            &selected.definition,
+            false,
+            None,
+        ),
+        Err(ReadFailure::Source(_))
+    ));
 }

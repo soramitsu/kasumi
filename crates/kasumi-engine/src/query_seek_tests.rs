@@ -18,8 +18,10 @@ fn restored_source_with_key_suffix(
     max_result_bytes: usize,
     key_suffix: &str,
 ) -> (TenantEngine, crate::codec_fixture::ScratchScope) {
+    // The existing receipt table remains authoritative while the editable
+    // snapshot opens its six catalog/content tables. Keep the byte ceiling.
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 96),
     )
     .unwrap();
     let context = RequestContext {
@@ -99,20 +101,31 @@ fn restored_source_with_key_suffix(
     }
     let image = engine.fixture_snapshot(&scratch.disk).unwrap();
     let mut candidate = decode_snapshot_candidate(&image).unwrap();
+    let generation = engine.generation().unwrap();
     for id in ["a", "b"] {
-        Arc::make_mut(
-            candidate
-                .collections
-                .get_mut("rows")
-                .unwrap()
-                .documents
-                .get_mut(id)
-                .unwrap(),
-        )
-        .version = 0;
+        let mut document = generation
+            .load_document(&generation.state.collections["rows"].documents[id])
+            .unwrap()
+            .as_ref()
+            .clone();
+        document.version = 0;
+        candidate
+            .collections
+            .get_mut("rows")
+            .unwrap()
+            .documents
+            .insert(
+                id.to_owned(),
+                Arc::new(DocumentSlot::Pending(Arc::new(document))),
+            );
     }
-    let image = encode_snapshot_candidate(&scratch.disk, &candidate, 2 << 20).unwrap();
-    engine.fixture_restore(&image).unwrap();
+    let replacement = encode_snapshot_candidate(&scratch.disk, &candidate, 2 << 20).unwrap();
+    // The encoded candidate owns every original needed for restore. Release
+    // the editing decode and old read loan before opening the target tables.
+    drop(candidate);
+    drop(generation);
+    drop(image);
+    engine.fixture_restore(&replacement).unwrap();
     (engine, scratch)
 }
 

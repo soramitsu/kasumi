@@ -255,3 +255,209 @@ async fn generic_administration_cannot_inject_a_claimed_retirement_preparation()
     );
     fixture.close().await;
 }
+
+#[tokio::test]
+async fn authenticated_retirement_keeps_exact_document_and_snapshot_reads() {
+    let fixture = CredentialFixture::new().await;
+    let body = json!({"proof": "ab".repeat(8192), "value": 7});
+    let mut batch = credential_batch("retained-proof");
+    let Mutation::Put {
+        body: stored_body, ..
+    } = &mut batch.operations[0]
+    else {
+        unreachable!();
+    };
+    *stored_body = body.clone();
+    fixture
+        .db
+        .mutate(fixture.context.clone(), batch)
+        .await
+        .unwrap();
+    let before = fixture.db.engine.generation().unwrap();
+    assert!(matches!(
+        before.state.collections["docs"].documents["retained-proof"].as_ref(),
+        kasumi_types::DocumentSlot::Stored(_)
+    ));
+    let prepared = retirement_input(&fixture, "retained-documents", u64::MAX).await;
+    fixture
+        .db
+        .submit(fixture.context.clone(), Operation::RetireSource(prepared))
+        .await
+        .unwrap();
+    let retired = fixture.db.engine.generation().unwrap();
+    assert!(retired.state.retired);
+    let selected = retired
+        .application_selection
+        .get()
+        .expect("actual frozen selection");
+    {
+        let authority = fixture.db.engine.lock_primary_apply().unwrap();
+        assert!(
+            selected.open_primary_reader(authority.roots()).is_err(),
+            "retirement must not permit primary publication readers"
+        );
+        let documents = selected.open_document_reader(authority.roots()).unwrap();
+        documents.check_access().unwrap();
+        documents.close().unwrap();
+    }
+    let retained = retired.state.collections["docs"].documents["retained-proof"]
+        .load_owned(retired.document_resolver())
+        .unwrap();
+    assert_eq!(retained.body, body);
+    assert_eq!(
+        retained.version,
+        before.state.collections["docs"].documents["retained-proof"].version()
+    );
+    drop(retained);
+    let mut documents = 0;
+    for record in crate::snapshot_codec::records_with_resolver(
+        &retired.state,
+        3,
+        None,
+        retired.document_resolver(),
+    )
+    .unwrap()
+    {
+        if let crate::snapshot_codec::Record::Document(collection, document) = record.unwrap() {
+            assert_eq!(collection, "docs");
+            assert_eq!(document.id, "retained-proof");
+            assert_eq!(document.body, body);
+            documents += 1;
+        }
+    }
+    assert_eq!(documents, 1);
+    let image = fixture
+        .db
+        .engine
+        .logical_snapshot(&fixture.storage.scratch)
+        .unwrap();
+    drop(image);
+    drop(before);
+    drop(retired);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn verified_restore_rekeys_compact_bodies_before_target_source_installation() {
+    let fixture = CredentialFixture::new().await;
+    let body = json!({"proof": "cd".repeat(8192), "value": 11});
+    let mut batch = credential_batch("restored-proof");
+    let Mutation::Put { body: value, .. } = &mut batch.operations[0] else {
+        unreachable!();
+    };
+    *value = body.clone();
+    fixture
+        .db
+        .mutate(fixture.context.clone(), batch)
+        .await
+        .unwrap();
+    let source = fixture.db.engine.generation().unwrap();
+    let source_image = fixture
+        .db
+        .engine
+        .logical_snapshot(&fixture.storage.scratch)
+        .unwrap();
+    let checkpoint = FullBackupCheckpoint {
+        tenant: source.state.tenant.clone(),
+        source_incarnation: source.state.incarnation.clone(),
+        revision: source.state.revision,
+        resident_sha256: source_image.sha256().into(),
+        backup_id: uuid::Uuid::new_v4(),
+        manifest_ciphertext_sha256: "12".repeat(32),
+        key_lineage_digest: "34".repeat(32),
+    };
+    let validated = crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+        source_image,
+        128 << 20,
+        || Ok(()),
+    )
+    .unwrap();
+    let target_incarnation = uuid::Uuid::new_v4().to_string();
+    let (target_image, target_engine) = TenantEngine::materialize_verified_restore(
+        validated,
+        &fixture.context.tenant,
+        target_incarnation.clone(),
+        checkpoint,
+        None,
+        || Ok(()),
+    )
+    .unwrap();
+    let target_engine = Arc::new(target_engine);
+    let before_install = target_engine.generation().unwrap();
+    assert_eq!(before_install.state.incarnation, target_incarnation);
+    assert!(matches!(
+        before_install.state.collections["docs"].documents["restored-proof"].as_ref(),
+        DocumentSlot::Stored(_)
+    ));
+    assert_eq!(
+        before_install.state.collections["docs"].documents["restored-proof"]
+            .load_owned(before_install.document_resolver())
+            .unwrap()
+            .body,
+        body
+    );
+    drop(before_install);
+
+    let node = fixture
+        .storage
+        .create_new(
+            fixture
+                ._directory
+                .path()
+                .join("persistent/restored-documents.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )
+        .unwrap();
+    let stores = kasumi_store::TenantStorageSet::initialize_catalogs_fixture(
+        node.clone(),
+        fixture.context.tenant.clone(),
+        Arc::new(LocalKeyProvider::new([121; 32])),
+        Arc::new(LocalKeyProvider::new([122; 32])),
+    )
+    .await
+    .unwrap();
+    let group = format!("{}/{}", fixture.context.tenant, target_incarnation);
+    crate::bootstrap::persist_fixture_bootstrap(&stores, &target_image, 1, &group).unwrap();
+    crate::test_utils::install_fixture_audit_placement(stores.application()).unwrap();
+    target_engine
+        .install_storage_access(stores.application())
+        .unwrap();
+    let restored =
+        super::construction::DatabaseConstruction::new(stores.clone(), fixture.audit.clone())
+            .unwrap()
+            .start_local(target_engine.clone(), &target_image, 1, group)
+            .await
+            .unwrap();
+    let installed = target_engine.generation().unwrap();
+    let document = installed.state.collections["docs"].documents["restored-proof"]
+        .load_owned(installed.document_resolver())
+        .unwrap();
+    assert_eq!(document.body, body);
+    assert_eq!(
+        document.version,
+        source.state.collections["docs"].documents["restored-proof"].version()
+    );
+    assert!(
+        installed
+            .state
+            .change_feed
+            .commits
+            .values()
+            .flat_map(|commit| &commit.records)
+            .filter_map(|record| record.document.as_ref())
+            .all(|slot| matches!(slot.as_ref(), DocumentSlot::Stored(_)))
+    );
+    drop(document);
+    drop(installed);
+    drop(source);
+    drop(target_image);
+    restored.shutdown().await.unwrap();
+    drop(restored);
+    drop(target_engine);
+    stores.custody().store().shutdown().await.unwrap();
+    stores.application().shutdown().await.unwrap();
+    drop(stores);
+    node.shutdown().await.unwrap();
+    drop(node);
+    fixture.close().await;
+}

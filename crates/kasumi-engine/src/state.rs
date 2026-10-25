@@ -9,6 +9,8 @@ mod ordered_command;
 #[cfg(test)]
 #[path = "validation_baseline_tests.rs"]
 mod validation_baseline_tests;
+use crate::index_source::{DocumentSourceFailure, SourceResult};
+use kasumi_query::ReadFailure;
 use ordered_command::ByteBoundCommand;
 #[cfg(test)]
 use ordered_command::PreparedOrderedCommand;
@@ -66,9 +68,54 @@ pub struct Generation {
     snapshot_accounting: SnapshotAccounting,
     pub(crate) application_selection:
         std::sync::OnceLock<crate::application_sources::SelectedApplication>,
+    pub(crate) staged_documents: Option<crate::document_restore::StagedDocuments>,
+    pub(crate) document_sources: std::sync::OnceLock<Arc<dyn DocumentResolver>>,
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
+    pub(crate) fn load_document<'a>(
+        &self,
+        slot: &'a DocumentSlot,
+    ) -> anyhow::Result<DocumentLoan<'a>> {
+        loan_document(slot, self.document_resolver())
+    }
+    pub(crate) fn document_resolver(&self) -> Option<&dyn DocumentResolver> {
+        self.document_sources
+            .get()
+            .map(|resolver| resolver.as_ref())
+            .or_else(|| {
+                self.staged_documents
+                    .as_ref()
+                    .map(|documents| documents as &dyn DocumentResolver)
+            })
+    }
+    pub(crate) fn clone_document_sources(&self) -> std::sync::OnceLock<Arc<dyn DocumentResolver>> {
+        self.document_sources
+            .get()
+            .cloned()
+            .map_or_else(std::sync::OnceLock::new, std::sync::OnceLock::from)
+    }
+    fn resolver_for_selection(
+        &self,
+        roots: crate::application_sources::SourceRootsRef,
+        selected: crate::application_sources::SelectedApplication,
+    ) -> anyhow::Result<Arc<dyn DocumentResolver>> {
+        Ok(match &self.staged_documents {
+            Some(staged) => Arc::new(crate::document_restore::BootstrapDocuments::new(
+                staged.clone(),
+                roots,
+                selected,
+                &self.state.tenant,
+                &self.state.incarnation,
+            )?),
+            None => Arc::new(crate::document_store::SelectedDocuments::new(
+                roots,
+                selected,
+                &self.state.tenant,
+                &self.state.incarnation,
+            )?),
+        })
+    }
     pub(crate) fn clone_application_selection(
         &self,
     ) -> std::sync::OnceLock<crate::application_sources::SelectedApplication> {
@@ -93,6 +140,8 @@ impl Generation {
             indexes: Arc::new(QueryIndexes::default()),
             snapshot_accounting: SnapshotAccounting::default(),
             application_selection: self.clone_application_selection(),
+            staged_documents: self.staged_documents.clone(),
+            document_sources: self.clone_document_sources(),
             _read_reservations: Vec::new(),
         }
     }
@@ -113,6 +162,8 @@ impl Generation {
             indexes: self.indexes.clone(),
             snapshot_accounting: self.snapshot_accounting.clone(),
             application_selection: self.clone_application_selection(),
+            staged_documents: self.staged_documents.clone(),
+            document_sources: self.clone_document_sources(),
             _read_reservations: reservations,
         }
     }
@@ -514,6 +565,9 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         replacements.extend(self.binding_installation.replacements());
         replacements.extend(self.installation.replacements());
         replacements.extend(self.target_installation.replacements());
+        if let Some(documents) = &self.generation.staged_documents {
+            replacements.extend(documents.complete_snapshot_replacements());
+        }
         replacements
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -522,7 +576,7 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
     fn publish(self: Box<Self>) -> anyhow::Result<()> {
         let Self {
             engine,
-            generation,
+            mut generation,
             selection,
             // Keep the owner in the partially moved box. On an error, moved
             // locals retire first, then installations/writes, then the owner.
@@ -535,6 +589,21 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             .check_access()?;
         if let Some(selection) = selection {
             let selected = selection.capture(generation.state.retired)?;
+            let roots = engine
+                .application_sources
+                .get()
+                .ok_or_else(|| anyhow::anyhow!("restored document roots absent"))?;
+            let resolver = crate::document_store::SelectedDocuments::new(
+                roots.clone(),
+                selected.clone(),
+                &generation.state.tenant,
+                &generation.state.incarnation,
+            )?;
+            generation.staged_documents = None;
+            generation
+                .document_sources
+                .set(Arc::new(resolver))
+                .map_err(|_| anyhow::anyhow!("restored document resolver already installed"))?;
             generation
                 .application_selection
                 .set(selected)
@@ -572,6 +641,11 @@ impl TenantEngine {
             kasumi_raft::ApplicationBoundaryRef::Bootstrap(image),
             generation.state.retired,
         )?;
+        let resolver = generation.resolver_for_selection(sources.clone(), selection.clone())?;
+        generation
+            .document_sources
+            .set(resolver)
+            .map_err(|_| anyhow::anyhow!("bootstrap document resolver already installed"))?;
         generation
             .application_selection
             .set(selection)
@@ -662,6 +736,7 @@ impl TenantEngine {
         let Some(selected) = sources.rebase(selection, stale.bootstrap.as_ref())? else {
             return Ok(false);
         };
+        let resolver = previous.resolver_for_selection(sources.clone(), selected.clone())?;
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
             receipts: previous.receipts.clone(),
@@ -671,6 +746,8 @@ impl TenantEngine {
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             application_selection: std::sync::OnceLock::from(selected),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::from(resolver),
             _read_reservations: vec![],
         })));
         Ok(true)
@@ -695,32 +772,163 @@ impl TenantEngine {
                 })
         })
     }
+    /// A conservative structural bound admitted before consensus. Existing
+    /// bodies contribute their compact exact structural quotes; no whole-collection decode
+    /// or persistent body cache is created to calculate the allowance.
+    pub(crate) fn admit_document_publication(&self, command: &Command) -> Result<()> {
+        use anyhow::Context as _;
+        let Some(sources) = self.application_sources.get() else {
+            return Ok(());
+        };
+        let quote = (|| -> anyhow::Result<u64> {
+            if matches!(
+                command.operation,
+                Operation::CreateCollection(_)
+                    | Operation::SetPolicy(_)
+                    | Operation::SetLimits(_)
+                    | Operation::Suspend(_)
+                    | Operation::Audit(_)
+                    | Operation::AuditBatch(_)
+                    | Operation::MaintenanceAudit(_)
+                    | Operation::BeginStaged(_)
+                    | Operation::AppendStaged(_)
+                    | Operation::StopStaged(_)
+            ) {
+                return Ok(0);
+            }
+            let generation = self.generation()?;
+            let state = &generation.state;
+            let mut bytes = crate::accounting::encoded_len(command)? as u64;
+            let mut typed = crate::snapshot_codec::inspect_typed_json_work(command)?;
+            let staged = if let Operation::FinalizeStaged(reference) = &command.operation {
+                let key = staging::identity(&command.context.principal, &reference.transaction_id)?;
+                state.staged_transactions.get(&key)
+            } else {
+                None
+            };
+            if let Some(stage) = staged {
+                bytes = bytes
+                    .checked_add(crate::accounting::encoded_len(&stage.chunks)? as u64)
+                    .context("staged document quote overflow")?;
+                typed = typed
+                    .checked_add(crate::snapshot_codec::inspect_typed_json_work(
+                        &stage.chunks,
+                    )?)
+                    .context("staged document quote overflow")?;
+            }
+            let mutations: Box<dyn Iterator<Item = &Mutation>> = match (&command.operation, staged)
+            {
+                (Operation::Mutate(batch), _) => Box::new(batch.operations.iter()),
+                (_, Some(stage)) => Box::new(
+                    stage
+                        .chunks
+                        .values()
+                        .flat_map(|chunk| chunk.operations.iter()),
+                ),
+                _ => Box::new(std::iter::empty()),
+            };
+            let mut patched = 0_u64;
+            let mut maximum = 0_u64;
+            for mutation in mutations {
+                let (collection, id) = mutation.target();
+                if let Some(slot) = state
+                    .collections
+                    .get(collection)
+                    .and_then(|c| c.documents.get(id))
+                {
+                    maximum = maximum.max(crate::document_store::source_workspace(slot)?);
+                    if matches!(mutation, Mutation::Patch { .. }) {
+                        patched = patched
+                            .checked_add(slot.body_bytes()?)
+                            .context("patch document quote overflow")?;
+                    }
+                }
+            }
+            // Ordinary mutations inspect only their bounded target set. Schema,
+            // history and lifecycle commands can scan sources, one loan at a time.
+            if !matches!(
+                command.operation,
+                Operation::Mutate(_) | Operation::FinalizeStaged(_)
+            ) {
+                maximum = state
+                    .collections
+                    .values()
+                    .flat_map(|c| c.documents.values())
+                    .chain(
+                        state
+                            .change_feed
+                            .commits
+                            .values()
+                            .flat_map(|c| c.records.iter().filter_map(|r| r.document.as_ref())),
+                    )
+                    .try_fold(0_u64, |maximum, slot| -> anyhow::Result<u64> {
+                        Ok(maximum.max(crate::document_store::source_workspace(slot)?))
+                    })?;
+            }
+            // Two exact structural source quotes cover the simultaneously lent
+            // old/new records during index validation. Canonical length alone
+            // cannot bound dense JSON's node allocations. New input has an exact
+            // typed quote; encoded after-images remain through joint publication.
+            maximum
+                .checked_mul(2)
+                .and_then(|n| n.checked_add(bytes.checked_mul(24)?))
+                .and_then(|n| n.checked_add(typed.checked_mul(2)?))
+                .and_then(|n| n.checked_add(patched.checked_mul(16)?))
+                .and_then(|n| n.checked_add(2 << 20))
+                .context("document proposal workspace overflow")
+        })();
+        let quote = quote.map_err(|error| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                format!("document proposal admission refused: {error}"),
+            )
+        })?;
+        sources.admit_document_publication(quote).map_err(|error| {
+            error
+                .chain()
+                .find_map(|cause| cause.downcast_ref::<Error>().cloned())
+                .unwrap_or_else(|| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "document publication admission unavailable",
+                    )
+                })
+        })
+    }
+
     /// Preparation, response encoding, and immutable row staging precede the
     /// durable callback. The current Generation changes only after it succeeds.
     fn publish_prepared_generation(
         &self,
-        accepted: AcceptedGeneration<'_>,
+        mut accepted: AcceptedGeneration<'_>,
         response: kasumi_raft::AppliedResponse,
         position: Option<&kasumi_raft::AppliedEntryContext>,
         publisher: &mut dyn kasumi_raft::ApplyPublisher,
     ) -> anyhow::Result<()> {
         accepted.require_publication(self, position)?;
-        let candidate = accepted.candidate();
         let sources = self.application_sources.get();
         anyhow::ensure!(
             sources.is_none() || position.is_some(),
             "runtime publication lacks actual applied position"
         );
+        let documents = sources
+            .map(|sources| accepted.prepare_documents(sources))
+            .transpose()?
+            .flatten();
+        let writes = documents
+            .as_ref()
+            .map_or(&[][..], |documents| documents.writes());
+        let candidate = accepted.candidate();
         if let Some(sources) = sources {
             let expectation = sources.publication_expectation(
                 position.expect("checked applied position"),
-                &[],
+                writes,
                 &response,
             )?;
             let mut prepared = sources.publication_preparation();
             let receipt = publisher.commit_with_selection(
                 response,
-                &[],
+                writes,
                 &mut prepared,
                 expectation.challenge()?,
             )?;
@@ -732,6 +940,11 @@ impl TenantEngine {
                     ),
                     candidate.state.retired,
                 )?;
+            let resolver = candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+            candidate
+                .document_sources
+                .set(resolver)
+                .map_err(|_| anyhow::anyhow!("candidate document source already installed"))?;
             candidate
                 .application_selection
                 .set(selection)
@@ -784,6 +997,8 @@ impl TenantEngine {
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         });
         self.publish_prepared_generation(
@@ -988,6 +1203,8 @@ impl TenantEngine {
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         })));
         Ok(())
@@ -1080,7 +1297,15 @@ impl TenantEngine {
             lifecycle::validate(&state)?;
         }
         let revision_base = state.revision_base;
-        let indexes = Arc::new(crate::index_source::build(&state)?);
+        let indexes = Arc::new(crate::index_source::build(&state).map_err(
+            |error| match error {
+                ReadFailure::Query(error) => error,
+                ReadFailure::Source(_) => Error::new(
+                    ErrorCode::Corruption,
+                    "genesis unexpectedly requires a stored document source",
+                ),
+            },
+        )?);
         let snapshot_accounting = genesis_snapshot_accounting(&state)?;
         let restoration_identity =
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
@@ -1108,6 +1333,8 @@ impl TenantEngine {
                 indexes,
                 snapshot_accounting,
                 application_selection: std::sync::OnceLock::new(),
+                staged_documents: None,
+                document_sources: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
             }),
             apply_lock: Mutex::new(()),
@@ -1132,6 +1359,7 @@ impl TenantEngine {
             decoded.backup_bindings,
             decoded.terminals,
             decoded.target_resolutions,
+            Some(decoded.documents),
         )?;
         engine
             .bootstrap_sha256
@@ -1147,12 +1375,14 @@ impl TenantEngine {
         backup_bindings: crate::backup_binding::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
-    ) -> Result<Self> {
+        documents: Option<crate::document_restore::StagedDocuments>,
+    ) -> anyhow::Result<Self> {
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "tenant bootstrap identity or revision invalid",
-            ));
+            )
+            .into());
         }
         let uninitialized = UninitializedEngine::new(&state)?;
         let engine = uninitialized.engine();
@@ -1163,6 +1393,7 @@ impl TenantEngine {
             backup_bindings,
             terminals,
             target_resolutions,
+            documents,
         )?;
         Ok(uninitialized.finish(generation))
     }
@@ -1181,6 +1412,7 @@ impl TenantEngine {
             backup_bindings,
             terminals,
             target_resolutions,
+            documents,
             ..
         } = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(SnapshotFailure::from)?;
@@ -1194,6 +1426,7 @@ impl TenantEngine {
             &backup_bindings,
             &terminals,
             &target_resolutions,
+            &documents,
         )?;
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
         kasumi_store::SnapshotImage::capture(
@@ -1201,12 +1434,13 @@ impl TenantEngine {
             crate::target_resolution::snapshot_limit(&state)
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
             |writer| {
-                crate::snapshot_codec::write(
+                crate::snapshot_codec::write_with_resolver(
                     &state,
                     &receipts,
                     &backup_bindings,
                     &terminals,
                     &target_resolutions,
+                    Some(&documents),
                     writer,
                 )
             },
@@ -1291,13 +1525,13 @@ impl TenantEngine {
         Ok(())
     }
 
-    pub(crate) fn materialize_verified_restore(
+    pub(crate) fn materialize_verified_restore<Workspace>(
         source: snapshot_validation::ValidatedApplicationSnapshot,
         expected_tenant: &str,
         incarnation: String,
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
-        handoff_workspace: impl FnOnce() -> Result<()>,
+        handoff_workspace: impl FnOnce() -> Result<Workspace>,
     ) -> std::result::Result<(kasumi_store::SnapshotImage, Self), SnapshotFailure> {
         if source.header().tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch").into());
@@ -1309,7 +1543,7 @@ impl TenantEngine {
         let phase = VerificationPhase::start("restore.materialization_admission", None);
         // Both encrypted point-table caches are now destroyed. Reserve the
         // actual target allocation before decoding, under the same owned job.
-        handoff_workspace()?;
+        let _workspace = handoff_workspace()?;
         phase.complete();
         let phase = VerificationPhase::start("restore.snapshot_decode", None);
         let scratch_disk = image.disk().clone();
@@ -1319,6 +1553,7 @@ impl TenantEngine {
             backup_bindings,
             terminals,
             target_resolutions,
+            documents,
             ..
         } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
             .map_err(SnapshotFailure::from)?;
@@ -1326,6 +1561,10 @@ impl TenantEngine {
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
+        // Source objects were staged under the authenticated source header.
+        // Retarget their physical keys only after validating the restore lineage;
+        // the content digests and every collection/feed descriptor stay exact.
+        let documents = documents.rebind_scope(&state.tenant, &state.incarnation)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.prepare_generation", None);
         let engine = Self::from_bootstrap_state(
@@ -1335,6 +1574,7 @@ impl TenantEngine {
             backup_bindings,
             terminals,
             target_resolutions,
+            Some(documents),
         )?;
         phase.complete();
         let phase = VerificationPhase::start("restore.genesis_snapshot", None);
@@ -1430,6 +1670,7 @@ impl TenantEngine {
             &decoded.backup_bindings,
             &decoded.terminals,
             &decoded.target_resolutions,
+            &decoded.documents,
         )
         .map_err(Into::into)
     }
@@ -1442,7 +1683,8 @@ impl TenantEngine {
         backup_bindings: &crate::backup_binding::View,
         terminals: &crate::staged_terminal::View,
         target_resolutions: &crate::target_resolution::View,
-    ) -> Result<()> {
+        documents: &crate::document_restore::StagedDocuments,
+    ) -> anyhow::Result<()> {
         let verifier = uninitialized.engine();
         // These views retain the already authenticated decoded owners. Full
         // state validation needs no second decoding or duplicate scratch core.
@@ -1453,6 +1695,7 @@ impl TenantEngine {
             backup_bindings.clone(),
             terminals.clone(),
             target_resolutions.clone(),
+            Some(documents.clone()),
         )?;
         Ok(())
     }
@@ -1667,15 +1910,15 @@ impl TenantEngine {
         let mut next = previous.state.clone();
         next.revision = revision;
         let result = if command.context.tenant != next.tenant {
-            Err(Error::new(ErrorCode::Forbidden, "tenant access denied"))
+            Err(Error::new(ErrorCode::Forbidden, "tenant access denied").into())
         } else if let Err(error) = command
             .context
             .authorization
             .check_admitted_at(command.timestamp_ms)
         {
-            Err(error)
+            Err(error.into())
         } else if let Err(error) = authorize_resource(&next, &command.context) {
-            Err(error)
+            Err(error.into())
         } else {
             if let Some(key) = staged_command_key(command).map_err(anyhow::Error::from)?
                 && !next.staged_transactions.contains_key(&key)
@@ -1690,18 +1933,22 @@ impl TenantEngine {
                 revision,
                 previous.state.revision,
                 &previous.indexes,
+                previous.document_resolver(),
             )
         };
         let (outcome, changed_documents) = match result {
             // Invariant failures must leave the entire publication private,
             // including staged/schema outcomes and their audit/revision metadata.
-            Ok((Err(error), _)) | Err(error) if error.code == ErrorCode::Corruption => {
+            Ok((Err(error), _)) | Err(ReadFailure::Query(error))
+                if error.code == ErrorCode::Corruption =>
+            {
                 return Err(kasumi_store::ScratchOperationFailure::Operation(
                     error.into(),
                 ));
             }
             Ok(value) => value,
-            Err(error) => (Err(error), false),
+            Err(ReadFailure::Source(error)) => return Err(error.0.into()),
+            Err(ReadFailure::Query(error)) => (Err(error), false),
         };
         // Audit events are part of the replicated result, never emitted as document-bearing logs.
         let action = match &command.operation {
@@ -1761,6 +2008,8 @@ impl TenantEngine {
                 indexes: previous.indexes.clone(),
                 snapshot_accounting: previous.snapshot_accounting.clone(),
                 application_selection: std::sync::OnceLock::new(),
+                staged_documents: previous.staged_documents.clone(),
+                document_sources: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
             });
             return Ok(PreparedCommand {
@@ -1831,8 +2080,15 @@ impl TenantEngine {
             && !matches!(command.operation, Operation::PublishHistoryArchive(_))
         {
             Arc::new(
-                crate::index_source::update(&previous.indexes, &previous.state, &next, &changed)
-                    .map_err(anyhow::Error::from)?,
+                crate::index_source::update_with_resolvers(
+                    &previous.indexes,
+                    &previous.state,
+                    &next,
+                    &changed,
+                    previous.document_resolver(),
+                    previous.document_resolver(),
+                )
+                .map_err(crate::index_source::into_anyhow)?,
             )
         } else {
             previous.indexes.clone()
@@ -1847,6 +2103,8 @@ impl TenantEngine {
             indexes,
             snapshot_accounting,
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         });
         Ok(PreparedCommand {
@@ -1941,6 +2199,8 @@ impl TenantEngine {
                     indexes: previous.indexes.clone(),
                     snapshot_accounting: accounting,
                     application_selection: std::sync::OnceLock::new(),
+                    staged_documents: previous.staged_documents.clone(),
+                    document_sources: std::sync::OnceLock::new(),
                     _read_reservations: vec![],
                 });
                 return Ok(PreparedCommand {
@@ -1963,6 +2223,8 @@ impl TenantEngine {
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         });
         Ok(PreparedCommand {
@@ -1985,12 +2247,13 @@ impl TenantEngine {
                 "snapshot byte accounting mismatch",
             ));
         }
-        crate::snapshot_codec::write(
+        crate::snapshot_codec::write_with_resolver(
             &generation.state,
             &generation.receipts,
             &generation.backup_bindings,
             &generation.terminals,
             &generation.target_resolutions,
+            generation.document_resolver(),
             writer,
         )
         .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
@@ -2063,6 +2326,7 @@ impl TenantEngine {
             terminals,
             target_resolutions,
             summary,
+            documents,
         } = crate::snapshot_codec::read(disk, reader).map_err(SnapshotFailure::from)?;
         if expected.is_some_and(|expected| expected != summary) {
             return Err(Error::new(
@@ -2078,6 +2342,7 @@ impl TenantEngine {
             backup_bindings,
             terminals,
             target_resolutions,
+            Some(documents),
         )
         .map_err(Into::into)
     }
@@ -2090,8 +2355,13 @@ impl TenantEngine {
         backup_bindings: crate::backup_binding::View,
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
-    ) -> Result<Generation> {
+        documents: Option<crate::document_restore::StagedDocuments>,
+    ) -> anyhow::Result<Generation> {
         let prior = baseline.current_for(self)?;
+        let resolver = documents
+            .as_ref()
+            .map(|documents| documents as &dyn DocumentResolver)
+            .or_else(|| prior.and_then(Generation::document_resolver));
         if state.tenant != self.tenant
             || state.incarnation != self.incarnation
             || state.revision_base != self.revision_base
@@ -2102,7 +2372,8 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot tenant or incarnation mismatch",
-            ));
+            )
+            .into());
         }
         validate_limits(&state.limits)?;
         validate_policy(&state.policy, &state.limits)?;
@@ -2128,7 +2399,8 @@ impl TenantEngine {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot target bootstrap differs",
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -2150,7 +2422,8 @@ impl TenantEngine {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot substituted immutable target history",
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -2168,7 +2441,8 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot substituted the immutable control installation",
-            ));
+            )
+            .into());
         }
         if let Some(current) = prior
             && let (Some(old), Some(incoming)) =
@@ -2179,7 +2453,8 @@ impl TenantEngine {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot substituted a permanent lifecycle intent",
-                    ));
+                    )
+                    .into());
                 }
             }
             for (id, change) in &old.changes {
@@ -2187,7 +2462,8 @@ impl TenantEngine {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot removed a permanent control change",
-                    ));
+                    )
+                    .into());
                 };
                 let mut expected = change.clone();
                 if expected.completed_revision.is_none() {
@@ -2198,7 +2474,8 @@ impl TenantEngine {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot substituted permanent control history",
-                    ));
+                    )
+                    .into());
                 }
             }
         }
@@ -2206,26 +2483,21 @@ impl TenantEngine {
         if state.schema_epoch > state.policy_epoch
             || (!state.collections.is_empty() && state.schema_epoch == 0)
         {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "invalid snapshot schema epoch",
-            ));
+            return Err(Error::new(ErrorCode::Corruption, "invalid snapshot schema epoch").into());
         }
         if state.retired && !state.suspended {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "retired incarnation must be suspended",
-            ));
+            )
+            .into());
         }
         if state.pending_restore.as_ref().is_some_and(|pending| {
             !state.suspended
                 || pending.source_revision >= state.revision_base
                 || uuid::Uuid::parse_str(&pending.backup_id).is_err()
         }) {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "invalid pending restore marker",
-            ));
+            return Err(Error::new(ErrorCode::Corruption, "invalid pending restore marker").into());
         }
         let mut count = 0u64;
         let mut logical_bytes = 0u64;
@@ -2239,34 +2511,40 @@ impl TenantEngine {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "invalid snapshot data/schema epoch",
-                ));
+                )
+                .into());
             }
             if name != &collection.definition.name {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "snapshot collection identity mismatch",
-                ));
+                )
+                .into());
             }
-            let source = crate::index_source::StateCollection::new(&state, name, collection);
-            validate_collection(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
-            check_unique(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
+            let source = crate::index_source::StateCollection::with_resolver(
+                &state, name, collection, resolver,
+            );
+            validate_collection(&source).map_err(crate::index_source::into_anyhow)?;
+            check_unique(&source).map_err(crate::index_source::into_anyhow)?;
             for (id, document) in &collection.documents {
                 validate_name(id)?;
-                if id != &document.id || document.version > collection.data_epoch {
+                if id != document.id() || document.version() > collection.data_epoch {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "invalid document identity/version",
-                    ));
+                    )
+                    .into());
                 }
                 count = count
                     .checked_add(1)
                     .ok_or_else(|| Error::new(ErrorCode::Corruption, "document count overflow"))?;
-                let document_bytes = encoded_len(&document.body)?;
-                if document_bytes > state.limits.max_document_bytes {
+                let document_bytes = document.body_bytes()?;
+                if document_bytes > state.limits.max_document_bytes as u64 {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot document exceeds byte quota",
-                    ));
+                    )
+                    .into());
                 }
                 logical_bytes = logical_bytes
                     .checked_add(document_bytes as u64)
@@ -2285,7 +2563,8 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot logical accounting mismatch",
-            ));
+            )
+            .into());
         }
         if !state.recovery_control.is_empty()
             && (state.tenant != crate::control::CONTROL_TENANT || state.lifecycle_control.is_none())
@@ -2293,16 +2572,16 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "recovery coordinator requires installed Control state",
-            ));
+            )
+            .into());
         }
         validate_audits(&state)?;
         let snapshot_accounting = SnapshotAccounting::rebuild(&state)?;
         terminals.validate_state(&state).map_err(terminal_error)?;
         if terminals.head() != &state.staged_terminal_head {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "terminal snapshot owner differs",
-            ));
+            return Err(
+                Error::new(ErrorCode::Corruption, "terminal snapshot owner differs").into(),
+            );
         }
         if let Some(current) = prior {
             let old = current.terminals.head();
@@ -2319,7 +2598,8 @@ impl TenantEngine {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "snapshot removed or substituted terminal staged history",
-                ));
+                )
+                .into());
             }
         }
         target_resolutions
@@ -2329,7 +2609,8 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "target history lost reserved completion capacity",
-            ));
+            )
+            .into());
         }
         if let Some(current) = prior {
             if let Some(old_head) = &current.state.target_completion_head {
@@ -2343,7 +2624,8 @@ impl TenantEngine {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot substituted initial target budget",
-                    ));
+                    )
+                    .into());
                 }
                 if let Some(active) = &old_head.active
                     && incoming.active.as_ref() != Some(active)
@@ -2366,7 +2648,8 @@ impl TenantEngine {
                         return Err(Error::new(
                             ErrorCode::Corruption,
                             "snapshot terminal changed original active attempt",
-                        ));
+                        )
+                        .into());
                     }
                 }
             }
@@ -2384,7 +2667,8 @@ impl TenantEngine {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "snapshot removed or substituted permanent target terminal history",
-                ));
+                )
+                .into());
             }
         }
         staging::validate_restored(&state)?;
@@ -2421,7 +2705,8 @@ impl TenantEngine {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "snapshot removed or substituted permanent backup bindings",
-                ));
+                )
+                .into());
             }
         }
         receipts.validate_state(&state).map_err(terminal_error)?;
@@ -2445,7 +2730,8 @@ impl TenantEngine {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "snapshot removed or substituted permanent mutation receipts",
-                ));
+                )
+                .into());
             }
         }
         if let Some(origin) = &state.restored_from {
@@ -2458,16 +2744,16 @@ impl TenantEngine {
                         || pending.source_revision != origin.revision
                 })
             {
-                return Err(Error::new(
-                    ErrorCode::Corruption,
-                    "restored origin binding differs",
-                ));
+                return Err(
+                    Error::new(ErrorCode::Corruption, "restored origin binding differs").into(),
+                );
             }
         } else if state.pending_restore.is_some() {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "pending restore lacks authenticated origin",
-            ));
+            )
+            .into());
         }
 
         history::validate_restored(&state)?;
@@ -2476,9 +2762,13 @@ impl TenantEngine {
             return Err(Error::new(
                 ErrorCode::Corruption,
                 "snapshot exceeds serialized byte quota",
-            ));
+            )
+            .into());
         }
-        let indexes = Arc::new(crate::index_source::build(&state)?);
+        let indexes = Arc::new(
+            crate::index_source::build_with_resolver(&state, resolver)
+                .map_err(crate::index_source::into_anyhow)?,
+        );
         Ok(Generation {
             receipts,
             backup_bindings,
@@ -2488,8 +2778,22 @@ impl TenantEngine {
             indexes,
             snapshot_accounting,
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: documents,
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         })
+    }
+}
+
+pub(crate) fn loan_document<'a>(
+    slot: &'a DocumentSlot,
+    resolver: Option<&dyn DocumentResolver>,
+) -> anyhow::Result<DocumentLoan<'a>> {
+    match slot {
+        DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
+        DocumentSlot::Stored(document) => Ok(DocumentLoan::Stored(document.load(
+            resolver.ok_or_else(|| anyhow::anyhow!("selected document resolver missing"))?,
+        )?)),
     }
 }
 
@@ -2562,7 +2866,8 @@ fn apply_operation(
     revision: u64,
     previous_revision: u64,
     indexes: &QueryIndexes,
-) -> Result<(Result<WriteReceipt>, bool)> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<(Result<WriteReceipt>, bool)> {
     let receipt = || WriteReceipt {
         revision,
         versions: BTreeMap::new(),
@@ -2580,28 +2885,33 @@ fn apply_operation(
         return Err(Error::new(
             ErrorCode::Sealed,
             "database incarnation is permanently retired",
-        ));
+        )
+        .into());
     }
     lifecycle::guard(state, &command.operation)?;
     match &command.operation {
-        Operation::LifecycleControl(request) => lifecycle::apply(state, command, request, revision),
+        Operation::LifecycleControl(request) => {
+            lifecycle::apply(state, command, request, revision).map_err(Into::into)
+        }
         Operation::PublishHistoryArchive(request) => {
-            history::publish(state, command, request, revision)
+            history::publish(state, command, request, revision, resolver)
         }
         Operation::BeginStaged(_)
         | Operation::AppendStaged(_)
         | Operation::FinalizeStaged(_)
-        | Operation::StopStaged(_) => staging::apply(state, command, revision, indexes),
+        | Operation::StopStaged(_) => staging::apply(state, command, revision, indexes, resolver),
         Operation::Mutate(_) => Err(Error::new(
             ErrorCode::Corruption,
             "ordinary mutation bypassed permanent receipt admission",
-        )),
+        )
+        .into()),
         Operation::ActivateSchema(request) => schema::apply(
             state,
             &command.context,
             request,
             revision,
             command.timestamp_ms,
+            resolver,
         ),
         Operation::CreateCollection(definition) | Operation::ReplaceCollection(definition) => {
             authorize_state(
@@ -2615,6 +2925,7 @@ fn apply_operation(
                 state.collections.get(&definition.name),
                 definition,
                 matches!(command.operation, Operation::CreateCollection(_)),
+                resolver,
             )?;
             let mut collections = state.collections.clone();
             collections.insert(definition.name.clone(), collection);
@@ -2640,7 +2951,8 @@ fn apply_operation(
                 return Err(Error::new(
                     ErrorCode::Forbidden,
                     "target resolution budget requires exact current-Control maintenance",
-                ));
+                )
+                .into());
             }
             validate_limits(limits)?;
             staging::validate_new_limits(state, limits)?;
@@ -2650,18 +2962,24 @@ fn apply_operation(
                 return Err(Error::new(
                     ErrorCode::QuotaExceeded,
                     "new byte budget excludes retained permanent outcomes",
-                ));
+                )
+                .into());
             }
             validate_policy(&state.policy, limits)?;
             validate_metadata_budget(&state.collections, limits)?;
             if limits.max_document_bytes < state.limits.max_document_bytes {
                 for collection in state.collections.values() {
                     for document in collection.documents.values() {
-                        if encoded_len(&document.body)? > limits.max_document_bytes {
+                        if document
+                            .body_bytes()
+                            .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?
+                            > limits.max_document_bytes as u64
+                        {
                             return Err(Error::new(
                                 ErrorCode::QuotaExceeded,
                                 "new document limit is below retained state",
-                            ));
+                            )
+                            .into());
                         }
                     }
                 }
@@ -2677,7 +2995,8 @@ fn apply_operation(
                 return Err(Error::new(
                     ErrorCode::QuotaExceeded,
                     "new limits are below retained state",
-                ));
+                )
+                .into());
             }
             let epoch = next_policy_epoch(state.policy_epoch)?;
             state.limits = limits.clone();
@@ -2691,7 +3010,8 @@ fn apply_operation(
                 return Err(Error::new(
                     ErrorCode::AuditUnavailable,
                     "restore must be durably finalized before activation",
-                ));
+                )
+                .into());
             }
             let epoch = next_policy_epoch(state.policy_epoch)?;
             state.suspended = *suspended;
@@ -2700,9 +3020,10 @@ fn apply_operation(
         }
         Operation::RetireSource(request) => {
             retirement::apply(state, command, request, previous_revision, revision)
+                .map_err(Into::into)
         }
         Operation::AbortRetirement(request) => {
-            retirement::abort(state, &command.context, request, revision)
+            retirement::abort(state, &command.context, request, revision).map_err(Into::into)
         }
         Operation::Audit(event) => {
             validate_read_audit(state, command, event, revision)?;
@@ -2751,7 +3072,8 @@ fn apply_operation(
                 return Err(Error::new(
                     ErrorCode::InvalidArgument,
                     "invalid maintenance audit event",
-                ));
+                )
+                .into());
             }
             if event.action == "restore" && event.outcome == "completed" {
                 let pending = state
@@ -2762,7 +3084,8 @@ fn apply_operation(
                     return Err(Error::new(
                         ErrorCode::InvalidArgument,
                         "restore audit revision mismatch",
-                    ));
+                    )
+                    .into());
                 }
                 state.pending_restore = None;
             }
@@ -2778,14 +3101,16 @@ fn apply_batch(
     revision: u64,
     evaluated_at_ms: u64,
     indexes: &QueryIndexes,
-) -> Result<WriteReceipt> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<WriteReceipt> {
     if batch.operations.len() > state.limits.max_batch_operations
         || encoded_len(batch)? > state.limits.max_batch_bytes
     {
         return Err(Error::new(
             ErrorCode::ResourceExhausted,
             "mutation batch exceeds limits",
-        ));
+        )
+        .into());
     }
     validate_read_assertions(
         state,
@@ -2801,6 +3126,7 @@ fn apply_batch(
         true,
         indexes,
         patch_expansion_limit,
+        resolver,
     )
 }
 
@@ -2819,7 +3145,8 @@ fn validate_merge_patch_expansion(
     state: &TenantState,
     operations: &[&Mutation],
     expansion_limit: usize,
-) -> Result<()> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<()> {
     let patch_count = operations
         .iter()
         .filter(|mutation| matches!(mutation, Mutation::Patch { .. }))
@@ -2839,6 +3166,8 @@ fn validate_merge_patch_expansion(
             // Preserve ordinary missing-document/precondition validation below.
             continue;
         };
+        let document = loan_document(document, resolver)
+            .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?;
         encoded = encoded
             .checked_add(encoded_len(&document.body)?)
             .filter(|bytes| *bytes <= expansion_limit)
@@ -2851,7 +3180,7 @@ fn validate_merge_patch_expansion(
         // Encoded size alone cannot bound allocations for object-heavy JSON.
         // Quote all source clones before copying even the first document.
         cloned = cloned
-            .checked_add(kasumi_query::document_clone_bytes(document)?)
+            .checked_add(kasumi_query::document_clone_bytes(&document)?)
             .filter(|bytes| *bytes <= workspace)
             .ok_or_else(|| {
                 Error::new(
@@ -2870,18 +3199,16 @@ fn apply_mutations(
     include_versions: bool,
     indexes: &QueryIndexes,
     patch_expansion_limit: usize,
-) -> Result<WriteReceipt> {
-    validate_merge_patch_expansion(state, operations, patch_expansion_limit)?;
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<WriteReceipt> {
+    validate_merge_patch_expansion(state, operations, patch_expansion_limit, resolver)?;
     let mut targets = BTreeSet::new();
     let mut versions = BTreeMap::new();
     for &mutation in operations {
         let (name, id) = mutation.target();
         validate_name(id)?;
         if !targets.insert((name, id)) {
-            return Err(Error::new(
-                ErrorCode::InvalidArgument,
-                "duplicate batch target",
-            ));
+            return Err(Error::new(ErrorCode::InvalidArgument, "duplicate batch target").into());
         }
         let collection = state
             .collections
@@ -2891,7 +3218,8 @@ fn apply_mutations(
             return Err(Error::new(
                 ErrorCode::Conflict,
                 "archived immutable identity cannot be overwritten or deleted",
-            ));
+            )
+            .into());
         }
         let old = collection.documents.get(id);
         // An absent create over an existing ID is a failed precondition below,
@@ -2908,20 +3236,22 @@ fn apply_mutations(
             return Err(Error::new(
                 ErrorCode::Forbidden,
                 "append-only collections accept absent creates only",
-            ));
+            )
+            .into());
         }
         match mutation.expected() {
             Precondition::Any => {}
             Precondition::Absent if old.is_none() => {}
-            Precondition::Version(v) if old.is_some_and(|d| d.version == *v) => {}
+            Precondition::Version(v) if old.is_some_and(|d| d.version() == *v) => {}
             _ => {
-                return Err(Error::new(
-                    ErrorCode::Conflict,
-                    "document precondition failed",
-                ));
+                return Err(Error::new(ErrorCode::Conflict, "document precondition failed").into());
             }
         }
-        let old_bytes = old.map(|d| encoded_len(&d.body)).transpose()?.unwrap_or(0) as u64;
+        let old_bytes = old
+            .map(|d| d.body_bytes())
+            .transpose()
+            .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?
+            .unwrap_or(0);
         let replacement = match mutation {
             Mutation::Put { body, .. } => Some(std::borrow::Cow::Borrowed(body)),
             Mutation::Patch { patch, .. } => {
@@ -2929,8 +3259,11 @@ fn apply_mutations(
                     return Err(Error::new(
                         ErrorCode::NotFound,
                         "patch requires an existing document; use put to create it",
-                    ));
+                    )
+                    .into());
                 };
+                let old = loan_document(old, resolver)
+                    .map_err(|e| ReadFailure::Source(DocumentSourceFailure(e)))?;
                 let mut body = old.body.clone();
                 kasumi_types::apply_merge_patch(&mut body, patch)?;
                 Some(std::borrow::Cow::Owned(body))
@@ -2944,7 +3277,8 @@ fn apply_mutations(
                     return Err(Error::new(
                         ErrorCode::ResourceExhausted,
                         "document exceeds byte limit",
-                    ));
+                    )
+                    .into());
                 }
                 indexes.validate_document(&collection.definition, &body)?;
                 if old.is_none() {
@@ -2957,11 +3291,11 @@ fn apply_mutations(
                     .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "logical size overflow"))?;
                 collection.documents.insert(
                     id.to_owned(),
-                    Arc::new(Document {
+                    Arc::new(DocumentSlot::Pending(Arc::new(Document {
                         id: id.to_owned(),
                         version: revision,
                         body: body.into_owned(),
-                    }),
+                    }))),
                 );
                 collection.data_epoch = revision;
                 if include_versions {
@@ -2983,10 +3317,7 @@ fn apply_mutations(
     if state.document_count > state.limits.max_documents
         || state.logical_bytes > state.limits.max_logical_bytes
     {
-        return Err(Error::new(
-            ErrorCode::QuotaExceeded,
-            "tenant logical quota exceeded",
-        ));
+        return Err(Error::new(ErrorCode::QuotaExceeded, "tenant logical quota exceeded").into());
     }
     Ok(WriteReceipt { revision, versions })
 }
@@ -3055,7 +3386,7 @@ pub(crate) fn validate_read_assertions(
                     let version = collection_state
                         .documents
                         .get(id)
-                        .map(|document| document.version)
+                        .map(|document| document.version())
                         .or_else(|| {
                             collection_state
                                 .archived_documents
@@ -3678,8 +4009,11 @@ mod restore_budget_tests {
     use super::*;
     #[test]
     fn restored_identity_metadata_is_validated_before_bootstrap_persistence() {
+        // Keep the restored engine's six immutable tables alive while a
+        // second restore is validated, so the final unchanged-state check
+        // still uses its real source. Only fund the simultaneous table slots.
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -3770,6 +4104,7 @@ mod restore_budget_tests {
                 current.backup_bindings.clone(),
                 current.terminals.clone(),
                 current.target_resolutions.clone(),
+                current.staged_documents.clone(),
             )
             .unwrap();
         let bytes = crate::test_utils::encode_snapshot_candidate(disk, &source, 64 << 20).unwrap();
@@ -3903,6 +4238,8 @@ impl TenantEngine {
             indexes: old.indexes.clone(),
             snapshot_accounting: old.snapshot_accounting.clone(),
             application_selection: selected,
+            staged_documents: old.staged_documents.clone(),
+            document_sources: old.clone_document_sources(),
             _read_reservations: vec![],
         });
         self.publish_generation(Some(frozen.clone()));

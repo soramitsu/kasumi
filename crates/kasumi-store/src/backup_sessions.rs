@@ -110,6 +110,80 @@ pub struct VerifiedBackupSession {
     key_catalog_sha256: String,
 }
 impl VerifiedBackupSession {
+    /// Retained allocations after a pending intent has been authenticated.
+    /// Shared storage and gate owners keep their own existing charges. Both
+    /// independently cloned purposes and the original ciphertext remain here.
+    pub fn pending_retained_bytes(&self) -> Result<u64> {
+        ensure!(
+            self.outcome.is_none() && self.outcome_ciphertext_sha256.is_none(),
+            "backup session is no longer pending"
+        );
+        fn allocation(total: &mut u64, capacity: usize) -> Result<()> {
+            if capacity != 0 {
+                *total = total
+                    .checked_add(crate::disk_memory::allocation::<u8>(u64::try_from(
+                        capacity,
+                    )?)?)
+                    .context("backup session retained allocation overflow")?;
+            }
+            Ok(())
+        }
+        fn purpose(total: &mut u64, purpose: &crate::StoragePurpose) -> Result<()> {
+            match purpose {
+                crate::StoragePurpose::Standalone { tenant, .. } => {
+                    allocation(total, tenant.capacity())?;
+                }
+                crate::StoragePurpose::Serving {
+                    manifest_digest,
+                    identity,
+                    recovery_checkpoint,
+                } => {
+                    for value in [
+                        manifest_digest,
+                        &identity.tenant,
+                        &identity.node.principal,
+                        &identity.node.certificate_sha256,
+                    ] {
+                        allocation(total, value.capacity())?;
+                    }
+                    if let Some(checkpoint) = recovery_checkpoint {
+                        *total = total
+                            .checked_add(crate::disk_memory::allocation::<FullBackupCheckpoint>(1)?)
+                            .context("backup session retained allocation overflow")?;
+                        for value in [
+                            &checkpoint.tenant,
+                            &checkpoint.source_incarnation,
+                            &checkpoint.resident_sha256,
+                            &checkpoint.manifest_ciphertext_sha256,
+                            &checkpoint.key_lineage_digest,
+                        ] {
+                            allocation(total, value.capacity())?;
+                        }
+                    }
+                }
+                #[cfg(any(test, feature = "test-utils"))]
+                crate::StoragePurpose::LocalFixture => {}
+                _ => anyhow::bail!("backup session has no application purpose"),
+            }
+            Ok(())
+        }
+        let mut total = u64::try_from(std::mem::size_of::<Self>())?;
+        allocation(&mut total, self.intent_bytes.capacity())?;
+        for value in [
+            &self.intent.tenant,
+            &self.intent.source_incarnation,
+            &self.intent.principal,
+            &self.intent.request_id,
+            &self.intent_ciphertext_sha256,
+            &self.key_catalog_sha256,
+        ] {
+            allocation(&mut total, value.capacity())?;
+        }
+        purpose(&mut total, &self.source_purpose)?;
+        purpose(&mut total, self.access.purpose())?;
+        Ok(total)
+    }
+
     pub async fn encrypt_outcome(
         &self,
         value: &BackupSessionOutcome,

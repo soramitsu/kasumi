@@ -80,8 +80,10 @@ fn control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let original = installed();
     original.validate()?;
+    // The decoded bootstrap now retains two encrypted content tables in
+    // addition to its catalogs. Keep the byte bound and fund their real slots.
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = scratch.disk.clone();
@@ -98,7 +100,10 @@ fn control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity()
     let generation = decoded.generation()?;
     let state = &generation.state;
     assert_eq!((state.revision, state.revision_base), (1, 1));
-    assert_eq!(ControlPlane::applied_topology(state)?.version, 1);
+    assert_eq!(
+        ControlPlane::applied_topology(state, generation.document_resolver())?.version,
+        1
+    );
     assert!(state.mutation_receipt_head.count == 0);
     let mut changed = original.clone();
     let ReplicatedGenesis::Control(control) = &mut changed.genesis else {
@@ -127,7 +132,7 @@ fn applied_control_requires_exact_schema_and_document_without_resetting_current_
     let original_state = engine.generation()?.state.clone();
     let mut state = original_state.clone();
     state.collections.remove("topology");
-    assert!(ControlPlane::applied_topology(&state).is_err());
+    assert!(ControlPlane::applied_topology(&state, None).is_err());
     let mut state = original_state.clone();
     state
         .collections
@@ -135,7 +140,7 @@ fn applied_control_requires_exact_schema_and_document_without_resetting_current_
         .unwrap()
         .documents
         .clear();
-    assert!(ControlPlane::applied_topology(&state).is_err());
+    assert!(ControlPlane::applied_topology(&state, None).is_err());
     let mut state = original_state.clone();
     state
         .collections
@@ -143,9 +148,9 @@ fn applied_control_requires_exact_schema_and_document_without_resetting_current_
         .unwrap()
         .definition
         .strict_read_audit = false;
-    assert!(ControlPlane::applied_topology(&state).is_err());
+    assert!(ControlPlane::applied_topology(&state, None).is_err());
     let mut state = original_state;
-    let mut current = ControlPlane::applied_topology(&state)?.topology;
+    let mut current = ControlPlane::applied_topology(&state, None)?.topology;
     current.nodes.get_mut(&1).unwrap().certificate_pins = BTreeSet::from(["cd".repeat(32)]);
     state
         .collections
@@ -154,14 +159,17 @@ fn applied_control_requires_exact_schema_and_document_without_resetting_current_
         .documents
         .insert(
             "current".into(),
-            Arc::new(Document {
+            Arc::new(DocumentSlot::Pending(Arc::new(Document {
                 id: "current".into(),
                 version: 8,
                 body: serde_json::to_value(&current)?,
-            }),
+            }))),
         );
-    assert_eq!(ControlPlane::applied_topology(&state)?.topology, current);
-    assert_eq!(ControlPlane::applied_topology(&state)?.version, 8);
+    assert_eq!(
+        ControlPlane::applied_topology(&state, None)?.topology,
+        current
+    );
+    assert_eq!(ControlPlane::applied_topology(&state, None)?.version, 8);
     Ok(())
 }
 

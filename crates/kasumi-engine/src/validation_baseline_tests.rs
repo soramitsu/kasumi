@@ -122,6 +122,8 @@ struct Candidate {
     bindings: crate::backup_binding::View,
     terminals: crate::staged_terminal::View,
     targets: crate::target_resolution::View,
+    documents: Option<crate::document_restore::StagedDocuments>,
+    resolver: Option<Arc<dyn kasumi_types::DocumentResolver>>,
 }
 impl Candidate {
     fn empty(state: TenantState) -> anyhow::Result<Self> {
@@ -131,6 +133,8 @@ impl Candidate {
             terminals: crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
             targets: crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
             state,
+            documents: None,
+            resolver: None,
         })
     }
     fn selected(generation: &Generation) -> Self {
@@ -140,9 +144,15 @@ impl Candidate {
             bindings: generation.backup_bindings.clone(),
             terminals: generation.terminals.clone(),
             targets: generation.target_resolutions.clone(),
+            documents: generation.staged_documents.clone(),
+            resolver: generation.document_sources.get().cloned(),
         }
     }
-    fn prepare(&self, engine: &TenantEngine, prior: &ValidationBaseline<'_>) -> Result<Generation> {
+    fn prepare(
+        &self,
+        engine: &TenantEngine,
+        prior: &ValidationBaseline<'_>,
+    ) -> anyhow::Result<Generation> {
         engine.prepare_state(
             prior,
             self.state.clone(),
@@ -150,6 +160,7 @@ impl Candidate {
             self.bindings.clone(),
             self.terminals.clone(),
             self.targets.clone(),
+            self.documents.clone(),
         )
     }
     fn engine(&self) -> anyhow::Result<TenantEngine> {
@@ -164,12 +175,17 @@ impl Candidate {
         disk: &Arc<kasumi_store::ScratchDisk>,
     ) -> crate::test_fixture_failure::FixtureResult<kasumi_store::SnapshotImage> {
         kasumi_store::SnapshotImage::capture(disk, self.state.limits.max_snapshot_bytes, |writer| {
-            crate::snapshot_codec::write(
+            crate::snapshot_codec::write_with_resolver(
                 &self.state,
                 &self.receipts,
                 &self.bindings,
                 &self.terminals,
                 &self.targets,
+                self.resolver.as_deref().or_else(|| {
+                    self.documents
+                        .as_ref()
+                        .map(|x| x as &dyn kasumi_types::DocumentResolver)
+                }),
                 writer,
             )
         })
@@ -195,7 +211,9 @@ fn fresh() -> TenantEngine {
 fn scratch() -> anyhow::Result<crate::codec_fixture::ScratchScope> {
     crate::codec_fixture::ScratchScope::new(kasumi_store::test_utils::TestDiskMemory::new(
         64 << 20,
-        64,
+        // The prior, concurrently advanced generation and unpublished restore
+        // each retain their own encrypted table owners. Keep the byte ceiling.
+        96,
     ))
 }
 fn context(tenant: &str) -> RequestContext {
@@ -461,6 +479,7 @@ fn validation_baseline_standalone_decode_uses_one_prior_during_real_advance()
             .documents
             .contains_key("later")
     );
+    drop(validated);
     // Standalone validation does not publish. A later actual restore acquires
     // the then-current prior and rejects that same now-outdated receipt prefix.
     let error = engine.restore_candidate(&image).unwrap_err();
@@ -506,7 +525,7 @@ fn recovery_candidate() -> anyhow::Result<Candidate> {
         },
         mutation: recovery::RecoveryMutation::Start(Box::new(request)),
     };
-    recovery::apply(&mut state, &command)?;
+    recovery::apply(&mut state, &command, None)?;
     Candidate::empty(state)
 }
 fn target_candidate(
@@ -648,6 +667,9 @@ fn assert_continuity(
         Ok(_) => panic!("standalone continuity skipped: {expected}"),
         Err(error) => error,
     };
+    let error = error
+        .downcast_ref::<Error>()
+        .expect("typed continuity rejection");
     assert_eq!((error.code, error.message.as_str()), (code, expected));
     assert_eq!(calls, 0, "standalone validation reloaded public current");
     let apply = ApplyOwner::lock_validation(&engine)?;
@@ -658,6 +680,9 @@ fn assert_continuity(
         Ok(_) => panic!("serialized continuity skipped: {expected}"),
         Err(error) => error,
     };
+    let error = error
+        .downcast_ref::<Error>()
+        .expect("typed continuity rejection");
     assert_eq!((error.code, error.message.as_str()), (code, expected));
     assert_eq!(
         calls, 0,
@@ -1109,7 +1134,8 @@ async fn validation_baseline_real_ordered_retirement_uses_apply_prior_without_pu
     use kasumi_raft::{AppliedEntryContext, AppliedInput, StateMachineBackend as _};
     let fixture = SourceFixture::new().await?;
     let before = fixture.engine.generation()?;
-    let digest = crate::retirement_closure::digest(&before.state, || Ok(()))?;
+    let digest =
+        crate::retirement_closure::digest(&before.state, before.document_resolver(), || Ok(()))?;
     let command = Command {
         context: context(&before.state.tenant),
         timestamp_ms: 11,

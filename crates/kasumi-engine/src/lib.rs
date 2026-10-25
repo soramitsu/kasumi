@@ -22,7 +22,10 @@ pub use output::AdmittedOutput;
 mod application_sources;
 mod audit_source;
 mod current_json;
+mod document_encoding;
+mod document_restore;
 mod document_source;
+mod document_store;
 mod generation_metadata;
 pub use generation_metadata::{CollectionMetadata, LifecycleInstallationMetadata};
 // Unwired component prototype; runtime producers remain unchanged.
@@ -90,9 +93,9 @@ pub use state::{Generation, PreparedSnapshotRestore, TenantEngine, validate_gene
 mod snapshot_failure;
 pub use snapshot_failure::SnapshotFailure;
 #[cfg(test)]
-mod test_fixture_failure;
-#[cfg(test)]
 mod local_writer_capacity_tests;
+#[cfg(test)]
+mod test_fixture_failure;
 
 /// Conservative resident charge for retaining one immutable document across
 /// asynchronous work. Uses the same allocation accounting as coherent leases;

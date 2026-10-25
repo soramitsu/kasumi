@@ -139,11 +139,14 @@ impl Database {
         let mut source_bytes = 0usize;
         for document in collection.documents.values() {
             cancellation.check()?;
-            if document.version > request.cutoff_revision {
+            if document.version() > request.cutoff_revision {
                 continue;
             }
             source_bytes = source_bytes
-                .checked_add(crate::accounting::encoded_len(&document.body)?)
+                .checked_add(
+                    usize::try_from(document.body_bytes().map_err(document_load_error)?)
+                        .map_err(|_| query_workspace_overflow())?,
+                )
                 .ok_or_else(|| {
                     Error::new(ErrorCode::ResourceExhausted, "archive source size overflow")
                 })?;
@@ -164,14 +167,14 @@ impl Database {
         let destination = self.archive_destination(&request.destination)?;
         self.maintenance_audit_inner(context.clone(), "archive", "started", state.revision)
             .await?;
-        let reservation = self.admission().reserve(
-            (MAX_ARCHIVE_SOURCE_BYTES * 3) as u64,
-            Some(cancellation.clone()),
-        )?;
+        let export_floor = (MAX_ARCHIVE_SOURCE_BYTES * 3) as u64;
+        let mut reservation = self
+            .admission()
+            .reserve(export_floor, Some(cancellation.clone()))?;
         let mut selected = BTreeMap::new();
         for (id, document) in &collection.documents {
             cancellation.check()?;
-            if document.version <= request.cutoff_revision {
+            if document.version() <= request.cutoff_revision {
                 selected.insert(id.clone(), document.clone());
             }
         }
@@ -196,9 +199,12 @@ impl Database {
             documents: vec![],
         };
         let mut chunk_bytes = crate::accounting::encoded_len(&chunk)?.saturating_add(16);
+        let mut chunk_clone_bytes = 0u64;
         for document in selected.into_values() {
             cancellation.check()?;
-            let bytes = crate::accounting::encoded_len(&document)?.saturating_add(1);
+            let bytes = usize::try_from(document.document_bytes().map_err(document_load_error)?)
+                .map_err(|_| query_workspace_overflow())?
+                .saturating_add(1);
             if chunk_bytes.saturating_add(bytes) > MAX_ARCHIVE_CHUNK_BYTES
                 && !chunk.documents.is_empty()
             {
@@ -213,6 +219,9 @@ impl Database {
                     .await?,
                 );
                 chunk.documents.clear();
+                // Keep the operation's admitted peak and slot until export
+                // completes; a smaller following chunk reuses that workspace.
+                chunk_clone_bytes = 0;
                 chunk.index += 1;
                 chunk_bytes = crate::accounting::encoded_len(&chunk)?.saturating_add(16);
             }
@@ -223,7 +232,29 @@ impl Database {
                 ));
             }
             chunk_bytes += bytes;
-            chunk.documents.push(document);
+            match document.as_ref() {
+                DocumentSlot::Pending(document) => chunk.documents.push(document.clone()),
+                DocumentSlot::Stored(_) => {
+                    let document = generation
+                        .load_document(&document)
+                        .map_err(document_load_error)?;
+                    cancellation.check()?;
+                    chunk_clone_bytes = chunk_clone_bytes
+                        .checked_add(
+                            kasumi_query::document_clone_bytes(&document)?
+                                .checked_add(point_read::point_arc_bytes::<Document>()?)
+                                .ok_or_else(query_workspace_overflow)?,
+                        )
+                        .ok_or_else(query_workspace_overflow)?;
+                    kasumi_query::QueryWorkspace::ensure_peak(
+                        &mut reservation,
+                        export_floor
+                            .checked_add(chunk_clone_bytes)
+                            .ok_or_else(query_workspace_overflow)?,
+                    )?;
+                    chunk.documents.push(Arc::new(document.as_ref().clone()));
+                }
+            }
         }
         if !chunk.documents.is_empty() {
             manifest.chunks.push(

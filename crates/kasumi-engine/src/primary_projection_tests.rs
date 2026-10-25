@@ -190,10 +190,11 @@ impl Fixture {
             let stage = PrimaryStage::begin_fresh(&mut authority)?.begin_catalog()?;
             let mut stage = stage;
             for (name, collection) in &input.accepted().state.collections {
-                let source = crate::index_source::StateCollection::new(
+                let source = crate::index_source::StateCollection::with_resolver(
                     &input.accepted().state,
                     name,
                     collection,
+                    input.previous().document_resolver(),
                 );
                 let (next, built) = build_fresh_collection(
                     stage,
@@ -269,6 +270,14 @@ impl Fixture {
                             .unwrap(),
                     );
                 }
+                let resolver = accepted
+                    .candidate()
+                    .resolver_for_selection(self.roots.clone(), captured.clone())?;
+                accepted
+                    .candidate()
+                    .document_sources
+                    .set(resolver)
+                    .map_err(|_| anyhow::anyhow!("fixture document source already set"))?;
                 accepted
                     .candidate()
                     .application_selection
@@ -473,7 +482,9 @@ async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_
     assert_eq!(fixture.selector()?, selected);
     // Old accepted source remains live after every pending resource was erased.
     assert_eq!(
-        old_generation.state.collections["docs"].documents[&id(27, true)].body,
+        old_generation.state.collections["docs"].documents[&id(27, true)]
+            .load_owned(old_generation.document_resolver())?
+            .body,
         json!({"value":27})
     );
     let reader = crate::primary_tree::read::SelectedPrimary::open(
@@ -850,14 +861,15 @@ fn archive(fixture: &Fixture, name: &str) -> Result<()> {
     let generation = fixture.engine.generation()?;
     let state = &generation.state;
     let archive_id = format!("archive-{name}");
-    let document = state.collections[name].documents["same"].clone();
+    let document =
+        state.collections[name].documents["same"].load_owned(generation.document_resolver())?;
     let chunk = HistoryArchiveChunk {
         kind: HistoryArchiveKind::HistorySubset,
         archive_id: archive_id.clone(),
         source_incarnation: state.incarnation.clone(),
         collection: name.into(),
         index: 0,
-        documents: vec![document],
+        documents: vec![Arc::new(document.as_ref().clone())],
     };
     let (digest, bytes) = staged_digest(&chunk)?;
     let operation = Operation::PublishHistoryArchive(PublishHistoryArchive {
@@ -931,9 +943,14 @@ async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_
                 CanonicalDto::Definition(&collection.definition),
             )?;
             stage = next;
-            let record =
-                crate::index_source::record(collection, "same", collection.data_epoch)?.unwrap();
-            let (dto, kind, version, semantic) = match record {
+            let record = crate::index_source::record(
+                collection,
+                "same",
+                collection.data_epoch,
+                input.previous().document_resolver(),
+            )?
+            .unwrap();
+            let (dto, kind, version, semantic) = match record.as_record() {
                 kasumi_query::Record::Live(document) => (
                     CanonicalDto::Live(document),
                     tree::RecordKind::Live,
@@ -1033,8 +1050,12 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
         let (mut authority, input) = prepared.accepted()?.primary_input()?.split();
         let mut stage = PrimaryStage::begin_fresh(&mut authority)?.begin_catalog()?;
         let collection = &input.accepted().state.collections["docs"];
-        let source =
-            crate::index_source::StateCollection::new(&input.accepted().state, "docs", collection);
+        let source = crate::index_source::StateCollection::with_resolver(
+            &input.accepted().state,
+            "docs",
+            collection,
+            input.previous().document_resolver(),
+        );
         let (next, built) = build_fresh_collection(
             stage,
             &source,
@@ -1052,7 +1073,11 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
             stage
                 .stage_dto(
                     built.manifest().tree_id,
-                    CanonicalDto::Live(collection.documents[&id(0, false)].as_ref()),
+                    CanonicalDto::Live(
+                        collection.documents[&id(0, false)]
+                            .load_owned(input.previous().document_resolver())?
+                            .as_ref(),
+                    ),
                 )?
                 .0
         } else {

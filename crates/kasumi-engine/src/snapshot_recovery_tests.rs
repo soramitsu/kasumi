@@ -2,6 +2,17 @@ use super::*;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 
+fn expected_query_failure(
+    failure: kasumi_query::ReadFailure<crate::index_source::DocumentSourceFailure>,
+) -> Error {
+    match failure {
+        kasumi_query::ReadFailure::Query(error) => error,
+        kasumi_query::ReadFailure::Source(error) => {
+            panic!("unexpected document source failure: {error}")
+        }
+    }
+}
+
 pub(crate) fn coordinator() -> TenantState {
     let template = super::tests::state();
     // Build every generation-bound native head for the actual Control identity.
@@ -273,7 +284,7 @@ fn begin_effect_is_one_way_and_keeps_exact_frozen_identity() {
         attempt_id,
         1200,
     );
-    let committed = crate::state::recovery::apply(&mut state, &begin).unwrap();
+    let committed = crate::state::recovery::apply(&mut state, &begin, None).unwrap();
     assert_eq!(committed.updated_revision, 4);
     let marker = state.recovery_control.phases[&phase_id.to_string()].effect_attempts
         [&RecoveryEffect::AuthorityCommand]
@@ -288,7 +299,9 @@ fn begin_effect_is_one_way_and_keeps_exact_frozen_identity() {
         begin.clone(),
         begin_command(&state, operation_id, phase_id, digest, Uuid::new_v4(), 1300),
     ] {
-        let error = crate::state::recovery::apply(&mut state, &replay).unwrap_err();
+        let error = crate::state::recovery::apply(&mut state, &replay, None)
+            .map_err(expected_query_failure)
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::Conflict);
         assert_eq!(
             state.recovery_control.phases[&phase_id.to_string()].effect_attempts
@@ -304,7 +317,8 @@ fn begin_effect_is_one_way_and_keeps_exact_frozen_identity() {
         },
     };
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &stop)
+        crate::state::recovery::apply(&mut state, &stop, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict,
@@ -387,7 +401,8 @@ fn source_retirement_marker_blocks_second_begin_and_phase_supersession() {
     let before = state.recovery_control.clone();
     state.revision = 4;
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &resolve)
+        crate::state::recovery::apply(&mut state, &resolve, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict,
@@ -395,14 +410,15 @@ fn source_retirement_marker_blocks_second_begin_and_phase_supersession() {
     );
     assert_eq!(state.recovery_control, before);
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &begin)
+        crate::state::recovery::apply(&mut state, &begin, None)
             .unwrap()
             .pending_phase,
         Some(phase_id)
     );
     state.revision = 5;
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &begin)
+        crate::state::recovery::apply(&mut state, &begin, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -415,7 +431,8 @@ fn source_retirement_marker_blocks_second_begin_and_phase_supersession() {
         },
     };
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &stop)
+        crate::state::recovery::apply(&mut state, &stop, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -431,7 +448,8 @@ fn source_retirement_marker_blocks_second_begin_and_phase_supersession() {
         },
     };
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &replacement)
+        crate::state::recovery::apply(&mut state, &replacement, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -479,7 +497,9 @@ fn begin_effect_rejects_wrong_phase_input_kind_principal_and_original_deadline()
     for command in cases {
         let mut state = base.clone();
         state.revision = 4;
-        let error = crate::state::recovery::apply(&mut state, &command).unwrap_err();
+        let error = crate::state::recovery::apply(&mut state, &command, None)
+            .map_err(expected_query_failure)
+            .unwrap_err();
         assert_eq!(error.code, ErrorCode::Conflict, "{error}");
         assert_eq!(state.recovery_control, base.recovery_control);
     }
@@ -492,7 +512,8 @@ fn begin_effect_rejects_wrong_phase_input_kind_principal_and_original_deadline()
         .operations
         .insert(operation_id.to_string(), operation);
     assert_eq!(
-        crate::state::recovery::apply(&mut superseded, &begin)
+        crate::state::recovery::apply(&mut superseded, &begin, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -509,7 +530,8 @@ fn begin_effect_rejects_wrong_phase_input_kind_principal_and_original_deadline()
         .phases
         .insert(phase_id.to_string(), phase);
     assert_eq!(
-        crate::state::recovery::apply(&mut resolved, &begin)
+        crate::state::recovery::apply(&mut resolved, &begin, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict
@@ -540,7 +562,7 @@ fn begin_effect_marker_is_required_and_snapshot_monotone() {
         Uuid::new_v4(),
         1200,
     );
-    crate::state::recovery::apply(&mut incoming, &begin).unwrap();
+    crate::state::recovery::apply(&mut incoming, &begin, None).unwrap();
     crate::state::recovery::validate_successor(&previous, &incoming).unwrap();
     previous = incoming.clone();
     let mut erased = incoming.clone();
@@ -663,7 +685,7 @@ fn image(
 #[test]
 fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = &scratch.disk;
@@ -717,7 +739,7 @@ fn canonical_recovery_records_roundtrip_and_point_accounting_match_stream() {
 #[test]
 fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() {
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = &scratch.disk;
@@ -759,7 +781,7 @@ fn application_backup_rejects_control_recovery_and_embedded_or_orphan_records() 
 #[test]
 fn completion_history_stream_is_resident_and_counts_in_snapshot_admission_and_quota() {
     let scratch = crate::codec_fixture::ScratchScope::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
     )
     .unwrap();
     let disk = &scratch.disk;
@@ -1138,7 +1160,7 @@ fn activation_requires_committed_positive_signed_acceptance_before_issuer_begin(
         acceptance_id,
     );
     state.revision = 4;
-    crate::state::recovery::apply(&mut state, &acceptance).unwrap();
+    crate::state::recovery::apply(&mut state, &acceptance, None).unwrap();
     state.revision = 5;
     let authority = activation_effect_command(
         &state,
@@ -1148,28 +1170,30 @@ fn activation_requires_committed_positive_signed_acceptance_before_issuer_begin(
         Uuid::new_v4(),
     );
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &authority)
+        crate::state::recovery::apply(&mut state, &authority, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict,
         "marker-only acceptance cannot authorize issuer activation"
     );
     let commit = acceptance_commit_command(&state, operation_id, phase_id, acceptance_id, signed);
-    crate::state::recovery::apply(&mut state, &commit).unwrap();
+    crate::state::recovery::apply(&mut state, &commit, None).unwrap();
     let retained = &state.recovery_control.phases[&phase_id.to_string()];
     let evidence = retained.activation_acceptance.as_ref().unwrap();
     assert_eq!(evidence.attempt_id, acceptance_id);
     assert_eq!(evidence.committed_revision, 5);
     assert_eq!(retained.effect_attempts.len(), 1);
     assert_eq!(
-        crate::state::recovery::apply(&mut state, &commit)
+        crate::state::recovery::apply(&mut state, &commit, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Conflict,
         "acceptance commitment is one-way"
     );
     state.revision = 6;
-    crate::state::recovery::apply(&mut state, &authority).unwrap();
+    crate::state::recovery::apply(&mut state, &authority, None).unwrap();
     assert_eq!(
         state.recovery_control.phases[&phase_id.to_string()]
             .effect_attempts
@@ -1191,7 +1215,7 @@ fn activation_acceptance_rejects_wrong_attempt_binding_and_forged_signed_evidenc
         RecoveryEffect::ActivationIntentAcceptance,
         acceptance_id,
     );
-    crate::state::recovery::apply(&mut state, &begin).unwrap();
+    crate::state::recovery::apply(&mut state, &begin, None).unwrap();
     state.revision = 5;
     let mut wrong_reference = signed.clone();
     wrong_reference.receipt.reference.identity = LifecycleAuthorityIdentity::Intent(Uuid::new_v4());
@@ -1225,7 +1249,7 @@ fn activation_acceptance_rejects_wrong_attempt_binding_and_forged_signed_evidenc
         signed.clone(),
     );
     let mut positive = state.clone();
-    crate::state::recovery::apply(&mut positive, &valid).unwrap();
+    crate::state::recovery::apply(&mut positive, &valid, None).unwrap();
     assert!(
         positive.recovery_control.phases[&phase_id.to_string()]
             .activation_acceptance
@@ -1266,7 +1290,9 @@ fn activation_acceptance_rejects_wrong_attempt_binding_and_forged_signed_evidenc
         let mut trial = state.clone();
         let command =
             acceptance_commit_command(&trial, operation_id, phase_id, attempt_id, evidence);
-        let error = crate::state::recovery::apply(&mut trial, &command).unwrap_err();
+        let error = crate::state::recovery::apply(&mut trial, &command, None)
+            .map_err(expected_query_failure)
+            .unwrap_err();
         assert_eq!(error.code, expected_code, "{label}: {error}");
         assert_eq!(trial.recovery_control, state.recovery_control, "{label}");
     }
@@ -1279,7 +1305,8 @@ fn activation_acceptance_rejects_wrong_attempt_binding_and_forged_signed_evidenc
         .phases
         .remove(&control_id.to_string());
     assert_eq!(
-        crate::state::recovery::apply(&mut missing_intent_phase, &valid)
+        crate::state::recovery::apply(&mut missing_intent_phase, &valid, None)
+            .map_err(expected_query_failure)
             .unwrap_err()
             .code,
         ErrorCode::Corruption,
@@ -1306,11 +1333,11 @@ fn signed_activation_acceptance_is_snapshot_monotone_and_requires_explicit_field
         RecoveryEffect::ActivationIntentAcceptance,
         acceptance_id,
     );
-    crate::state::recovery::apply(&mut state, &begin).unwrap();
+    crate::state::recovery::apply(&mut state, &begin, None).unwrap();
     let before = state.clone();
     state.revision = 5;
     let commit = acceptance_commit_command(&state, operation_id, phase_id, acceptance_id, signed);
-    crate::state::recovery::apply(&mut state, &commit).unwrap();
+    crate::state::recovery::apply(&mut state, &commit, None).unwrap();
     crate::state::recovery::validate_successor(&before, &state).unwrap();
     let accepted = state.clone();
     let mut erased = accepted.clone();

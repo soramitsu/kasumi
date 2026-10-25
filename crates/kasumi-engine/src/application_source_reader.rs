@@ -8,6 +8,8 @@ pub(crate) struct SourceReader {
     cell: CellRef,
     released: bool,
     covered: bool,
+    content_only: bool,
+    frozen_content: bool,
 }
 impl SourceRoots {
     pub(crate) fn primary_installation(&self) -> (&Arc<TenantStorageSet>, &Arc<NodeAdmission>) {
@@ -17,11 +19,70 @@ impl SourceRoots {
 impl SourceRootsRef {
     pub(crate) fn open_primary_current(&self) -> Result<SourceReader> {
         let preparation = self.prepare_kind(false)?;
-        SourceReader::acquire(preparation, false, || self.stores.read_view())
+        SourceReader::acquire(preparation, false, false, false, || self.stores.read_view())
     }
 }
 impl SelectedApplication {
     pub(crate) fn open_primary_reader(&self, roots: &SourceRootsRef) -> Result<SourceReader> {
+        self.open_selected_reader(roots, false)
+    }
+
+    /// Validate the immutable owner pairing without opening a reader or
+    /// reserving another source cell during generation publication.
+    pub(crate) fn require_document_roots(&self, roots: &SourceRootsRef) -> Result<()> {
+        let installed = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected document source absent")?;
+        ensure!(
+            SourceRootsRef::ptr_eq(&installed, roots),
+            "selected document source installation differs"
+        );
+        Ok(())
+    }
+
+    /// Immutable body objects have independent content identities. A frozen
+    /// selection can lend those exact objects for closure/snapshot work without
+    /// claiming that covered primary pages are a current serving generation.
+    /// This capability cannot read arbitrary application or custody namespaces.
+    pub(crate) fn open_document_reader(&self, roots: &SourceRootsRef) -> Result<DocumentReader> {
+        self.require_document_roots(roots)?;
+        // Ordinary reads can still be refused by native admission after their
+        // outer workspace was granted. Keep that failure on an exact child
+        // reader; it must never poison the generation's own registered view.
+        // Committed apply already owns its exact native and document capacity.
+        if crate::admission::ApplyEscrow::current_for(roots.admission.memory()).is_none() {
+            return self
+                .open_selected_reader(roots, true)
+                .map(DocumentReader::Fork);
+        }
+        let frozen = *self
+            .cell
+            .frozen
+            .get()
+            .context("selected document frozen state absent")?;
+        let covered = self
+            .cell
+            .position
+            .get()
+            .context("selected document source proof absent")?
+            .is_covered_reconstruction();
+        let reader = DocumentReader::Borrowed {
+            selected: self.clone(),
+            roots: roots.clone(),
+            covered,
+            frozen,
+        };
+        reader.check_access()?;
+        Ok(reader)
+    }
+
+    fn open_selected_reader(
+        &self,
+        roots: &SourceRootsRef,
+        content_only: bool,
+    ) -> Result<SourceReader> {
         let installed = self
             .cell
             .roots
@@ -31,8 +92,13 @@ impl SelectedApplication {
             SourceRootsRef::ptr_eq(&installed, roots),
             "selected source installation differs"
         );
+        let frozen = *self
+            .cell
+            .frozen
+            .get()
+            .context("selected source frozen state absent")?;
         ensure!(
-            self.cell.frozen.get() == Some(&false),
+            content_only || !frozen,
             "frozen source cannot lend primary objects"
         );
         let covered = self
@@ -42,10 +108,12 @@ impl SelectedApplication {
             .context("selected source proof absent")?
             .is_covered_reconstruction();
         let preparation = roots.prepare_kind(false)?;
-        let permit = SourceReader::loan(roots, &self.cell, covered)?;
-        let reader = SourceReader::acquire(preparation, covered, || {
-            permit.view.as_ref().expect("inflight native view").fork()
-        });
+        let frozen_content = content_only && frozen;
+        let permit = SourceReader::loan(roots, &self.cell, covered, frozen_content)?;
+        let reader =
+            SourceReader::acquire(preparation, covered, content_only, frozen_content, || {
+                permit.view.as_ref().expect("inflight native view").fork()
+            });
         drop(permit);
         reader
     }
@@ -54,6 +122,8 @@ impl SourceReader {
     fn acquire(
         preparation: RootPreparation,
         covered: bool,
+        content_only: bool,
+        frozen_content: bool,
         acquire: impl FnOnce() -> Result<TenantStorageReadView>,
     ) -> Result<Self> {
         let mut preparation = preparation;
@@ -68,7 +138,7 @@ impl SourceReader {
                 "primary reader acquisition sealed"
             );
             ensure!(
-                !covered || !gate.serving,
+                !covered || !gate.serving || frozen_content,
                 "covered source cannot lend primary objects after serving"
             );
         }
@@ -95,7 +165,10 @@ impl SourceReader {
             .gate
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        if gate.consumers_closed || gate.preparations_closed || (covered && gate.serving) {
+        if gate.consumers_closed
+            || gate.preparations_closed
+            || (covered && gate.serving && !frozen_content)
+        {
             preparation
                 .cell
                 .record_failure(anyhow::anyhow!("primary reader acquisition sealed"), false);
@@ -123,16 +196,23 @@ impl SourceReader {
             cell: preparation.cell.clone(),
             released: false,
             covered,
+            content_only,
+            frozen_content,
         })
     }
-    fn loan(roots: &SourceRootsRef, cell: &CellRef, covered: bool) -> Result<ForkPermit> {
+    fn loan(
+        roots: &SourceRootsRef,
+        cell: &CellRef,
+        covered: bool,
+        frozen_content: bool,
+    ) -> Result<ForkPermit> {
         let gate = roots.gate.lock().unwrap_or_else(|p| p.into_inner());
         ensure!(
             !gate.consumers_closed && !gate.preparations_closed,
             "primary reader sealed"
         );
         ensure!(
-            !covered || !gate.serving,
+            !covered || !gate.serving || frozen_content,
             "covered source cannot lend primary objects after serving"
         );
         let mut state = cell.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -170,8 +250,12 @@ impl SourceReader {
         baseline: u64,
     ) -> Result<(usize, [u8; 32])> {
         use sha2::{Digest, Sha256};
+        ensure!(
+            !self.content_only,
+            "document reader cannot read custody rows"
+        );
         let (namespace, key, maximum) = kasumi_raft::primary_applied_cursor_read_spec_for_test();
-        let permit = Self::loan(&self.roots, &self.cell, self.covered)?;
+        let permit = Self::loan(&self.roots, &self.cell, self.covered, self.frozen_content)?;
         let view = permit.view.as_ref().expect("inflight native view");
         let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
             self.roots.admission.memory().clone();
@@ -222,14 +306,22 @@ impl SourceReader {
     /// returns. Returning an owned decoded payload needs its own explicit quote.
     pub(crate) fn with_record<T>(
         &mut self,
-        workspace: &mut Reservation,
+        workspace: &mut impl crate::admission::RetainedWorkspace,
         baseline: u64,
         namespace: &str,
         key: &[u8],
         max: usize,
         lend: impl FnOnce(Option<&[u8]>) -> Result<T>,
     ) -> Result<T> {
-        let permit = Self::loan(&self.roots, &self.cell, self.covered)?;
+        ensure!(
+            !self.content_only
+                || matches!(
+                    namespace,
+                    crate::document_store::BODIES | crate::document_store::BLOBS
+                ),
+            "document reader namespace is outside immutable bodies"
+        );
+        let permit = Self::loan(&self.roots, &self.cell, self.covered, self.frozen_content)?;
         let view = permit.view.as_ref().expect("inflight native view");
         let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
             self.roots.admission.memory().clone();
@@ -364,13 +456,12 @@ impl SelectedApplication {
     }
 }
 
-#[cfg(test)]
 impl SourceReader {
     /// Recheck access through the exact loaned storage pair even when a lookup
     /// needs no I/O (empty tree), or has finished decoding before lending.
     /// Tenant policy/authorization remains the calling service's responsibility.
-    pub(crate) fn check_access(&mut self) -> Result<()> {
-        let permit = Self::loan(&self.roots, &self.cell, self.covered)?;
+    pub(crate) fn check_access(&self) -> Result<()> {
+        let permit = Self::loan(&self.roots, &self.cell, self.covered, self.frozen_content)?;
         let view = permit.view.as_ref().expect("inflight native view");
         let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
             self.roots.admission.memory().clone();
@@ -397,5 +488,121 @@ impl SourceReader {
         };
         drop(permit);
         result
+    }
+}
+
+/// Ordinary reads own a disposable exact child, so transient refusals cannot
+/// poison the selected generation. Committed apply borrows its pre-admitted
+/// parent without allocating a new source cell or registered reader.
+pub(crate) enum DocumentReader {
+    Fork(SourceReader),
+    Borrowed {
+        selected: SelectedApplication,
+        roots: SourceRootsRef,
+        covered: bool,
+        frozen: bool,
+    },
+}
+impl DocumentReader {
+    pub(crate) fn check_access(&self) -> Result<()> {
+        let Self::Borrowed {
+            selected,
+            roots,
+            covered,
+            frozen,
+        } = self
+        else {
+            let Self::Fork(reader) = self else {
+                unreachable!()
+            };
+            return reader.check_access();
+        };
+        let permit = SourceReader::loan(roots, &selected.cell, *covered, *frozen)?;
+        let view = permit.view.as_ref().expect("inflight document source");
+        let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
+            roots.admission.memory().clone();
+        view.require_memory(&memory)?;
+        view.require_domains(roots.stores.application(), roots.stores.custody().store())?;
+        std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| roots.stores.check_access()))
+            .unwrap_or_else(|payload| {
+                Err(SourcePanic {
+                    _payload: Mutex::new(payload),
+                }
+                .into())
+            })
+    }
+    pub(crate) fn with_record<T>(
+        &mut self,
+        workspace: &mut impl crate::admission::RetainedWorkspace,
+        baseline: u64,
+        namespace: &str,
+        key: &[u8],
+        max: usize,
+        lend: impl FnOnce(Option<&[u8]>) -> Result<T>,
+    ) -> Result<T> {
+        ensure!(
+            matches!(
+                namespace,
+                crate::document_store::BODIES | crate::document_store::BLOBS
+            ),
+            "document reader namespace is outside immutable bodies"
+        );
+        let Self::Borrowed {
+            selected,
+            roots,
+            covered,
+            frozen,
+        } = self
+        else {
+            let Self::Fork(reader) = self else {
+                unreachable!()
+            };
+            return reader.with_record(workspace, baseline, namespace, key, max, lend);
+        };
+        let permit = SourceReader::loan(roots, &selected.cell, *covered, *frozen)?;
+        let view = permit.view.as_ref().expect("inflight document source");
+        let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
+            roots.admission.memory().clone();
+        view.require_memory(&memory)?;
+        workspace.ensure_peak(
+            baseline
+                .checked_add(view.application_get_workspace_bytes(
+                    namespace.len(),
+                    key.len(),
+                    max,
+                )?)
+                .context("document read quote overflow")?,
+        )?;
+        let bytes = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            view.application_get(namespace, key, max)
+        }))
+        .unwrap_or_else(|payload| {
+            Err(SourcePanic {
+                _payload: Mutex::new(payload),
+            }
+            .into())
+        })?;
+        let outcome = lend(bytes.as_deref());
+        drop(bytes);
+        drop(permit);
+        if outcome.is_ok() {
+            workspace.retain(baseline);
+        }
+        outcome
+    }
+    pub(crate) fn close(self) -> Result<()> {
+        match self {
+            Self::Fork(reader) => {
+                // Decryption and JSON reconstruction may outlive a key lease.
+                // Recheck before lending the decoded owner, then always settle
+                // the child and preserve both original failures if needed.
+                let access = reader.check_access();
+                match (access, reader.close()) {
+                    (Ok(()), result) | (result, Ok(())) => result,
+                    (Err(original), Err(retirement)) => Err(original.context(retirement)),
+                }
+            }
+            borrowed => borrowed.check_access(),
+        }
     }
 }

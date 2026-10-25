@@ -36,7 +36,7 @@ impl Generation {
                     .collections
                     .get("topology")
                     .and_then(|collection| collection.documents.get("current"))
-                    .map(|document| document.version)
+                    .map(|document| document.version())
             })
             .flatten()
     }

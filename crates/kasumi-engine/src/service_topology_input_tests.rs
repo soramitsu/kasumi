@@ -39,12 +39,8 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
         max_bytes as u64 * 3 + input_bytes + ProposalBudget::required_bytes().unwrap();
     drop(quoted);
     let gate = fixture.db.proposal_gate.lock().await;
-    let mut request = Box::pin(plane.replace_topology(
-        context,
-        source,
-        Precondition::Absent,
-        key.into(),
-    ));
+    let mut request =
+        Box::pin(plane.replace_topology(context, source, Precondition::Absent, key.into()));
     tokio::time::timeout(
         Duration::from_secs(5),
         fixture.db.proposals.wait_for_admission(request.as_mut()),
@@ -125,7 +121,7 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
     check_topology_input_drop(
         address,
         move || {
-            let error = jobs.start(work, command, 8 << 20).err().unwrap();
+            let error = jobs.start(work, command, 8 << 20, None).err().unwrap();
             assert_eq!(error.code, ErrorCode::Unavailable);
         },
         || {

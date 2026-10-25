@@ -189,7 +189,7 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
             .collections
             .values()
             .flat_map(|collection| collection.documents.values())
-            .all(|doc| doc.version == receipt.revision)
+            .all(|doc| doc.version() == receipt.revision)
     );
     assert!(committed.state.staged_transactions.is_empty());
     assert!(committed.state.active_staged_transactions.is_empty());
@@ -717,8 +717,8 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     let path = directory.path().join("persistent/node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let memory = physical.storage.persistent.memory().clone();
-    let image = kasumi_store::test_utils::capture_native_group_image(&path, memory.clone())
-        .unwrap();
+    let image =
+        kasumi_store::test_utils::capture_native_group_image(&path, memory.clone()).unwrap();
     let amount = b"90071992547409931234567890.123456789";
     for entry in std::fs::read_dir(&path).unwrap() {
         let entry = entry.unwrap();
@@ -1165,13 +1165,11 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
             .code,
         ErrorCode::CursorExpired
     );
-    assert_eq!(
-        db.engine().generation().unwrap().state.collections["docs"].documents["large"].body["body"]
-            .as_str()
-            .unwrap()
-            .as_bytes()[0],
-        b'b'
-    );
+    let current = db.engine().generation().unwrap();
+    let document = kasumi_engine::test_utils::fixture_document(&current, "docs", "large").unwrap();
+    assert_eq!(document.body["body"].as_str().unwrap().as_bytes()[0], b'b');
+    drop(document);
+    drop(current);
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
     node.shutdown().await.unwrap();

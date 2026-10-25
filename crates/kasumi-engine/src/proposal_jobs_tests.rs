@@ -63,6 +63,121 @@ async fn registry_is_bounded_and_uses_the_original_node_charge() {
 }
 
 #[tokio::test]
+async fn queued_entry_cancel_refusal_and_shutdown_preserve_fixed_registry_and_children() {
+    let admission = admission();
+    let jobs = Jobs::default();
+    jobs.prepare(&admission).unwrap();
+    let first = jobs.entry(&admission).await.unwrap();
+    assert_eq!(
+        jobs.state
+            .lock()
+            .unwrap()
+            .reserved
+            .iter()
+            .filter(|slot| **slot)
+            .count(),
+        1
+    );
+    // This is also the preflight-refusal path: no child has been dispatched.
+    drop(first);
+    assert!(jobs.state.lock().unwrap().reserved.iter().all(|slot| !slot));
+    let mut releases = Vec::new();
+    for _ in 0..MAX_PROPOSALS {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        drop(
+            jobs.start_task(async move {
+                receive.await?;
+                Ok(())
+            })
+            .unwrap(),
+        );
+        releases.push(send);
+    }
+    let mut waiting = Box::pin(jobs.entry(&admission));
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(waiting);
+    assert_eq!(jobs.running(), MAX_PROPOSALS);
+    assert!(jobs.state.lock().unwrap().reserved.iter().all(|slot| !slot));
+    let mut waiting = Box::pin(jobs.entry(&admission));
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    let mut draining = Box::pin(jobs.drain());
+    std::future::poll_fn(|cx| {
+        assert!(draining.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert_eq!(waiting.await.err().unwrap().code, ErrorCode::Unavailable);
+    assert_eq!(
+        jobs.running(),
+        MAX_PROPOSALS,
+        "shutdown wait must not cancel accepted children"
+    );
+    for release in releases {
+        release.send(()).unwrap();
+    }
+    draining.await.unwrap();
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+}
+
+#[tokio::test]
+async fn queued_entry_wakes_when_a_later_child_finishes_before_the_first() {
+    let admission = admission();
+    let jobs = Jobs::default();
+    jobs.prepare(&admission).unwrap();
+    let mut releases = Vec::new();
+    for _ in 0..MAX_PROPOSALS {
+        let (send, receive) = tokio::sync::oneshot::channel();
+        drop(
+            jobs.start_task(async move {
+                receive.await?;
+                Ok(())
+            })
+            .unwrap(),
+        );
+        releases.push(Some(send));
+    }
+    let before = admission.snapshot();
+    let mut waiting = Box::pin(jobs.entry(&admission));
+    std::future::poll_fn(|cx| {
+        assert!(waiting.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    assert!(admission.snapshot().reserved_bytes > before.reserved_bytes);
+    assert_eq!(
+        admission.snapshot().inflight_operations,
+        before.inflight_operations
+    );
+    releases[7].take().unwrap().send(()).unwrap();
+    let entry = tokio::time::timeout(Duration::from_secs(5), waiting)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(entry.slot, 7);
+    assert!(
+        jobs.state.lock().unwrap().slots[0]
+            .as_ref()
+            .unwrap()
+            .observed()
+            .is_none()
+    );
+    assert_eq!(admission.snapshot().reserved_bytes, before.reserved_bytes);
+    drop(entry);
+    for release in releases.into_iter().flatten() {
+        release.send(()).unwrap();
+    }
+    jobs.drain().await.unwrap();
+}
+
+#[tokio::test]
 async fn completed_response_retains_command_workspace_and_registration_until_consumed() {
     let admission = admission();
     let jobs = Jobs::default();

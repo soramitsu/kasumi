@@ -30,8 +30,8 @@ pub(crate) struct PrimaryCandidate<'a> {
 pub(crate) struct Replacement<'a> {
     collection: &'a str,
     id: &'a str,
-    old: &'a Document,
-    new: &'a Document,
+    old: OwnedDocument,
+    new: OwnedDocument,
     data_epoch: u64,
     revision: u64,
 }
@@ -43,10 +43,10 @@ impl Replacement<'_> {
         self.id
     }
     pub(crate) fn old(&self) -> &Document {
-        self.old
+        &self.old
     }
     pub(crate) fn new_document(&self) -> &Document {
-        self.new
+        &self.new
     }
     pub(crate) fn data_epoch(&self) -> u64 {
         self.data_epoch
@@ -152,10 +152,10 @@ impl PrimaryCandidate<'_> {
             .get(id)
             .context("primary replacement is a deletion")?;
         ensure!(
-            old_document.id == *id
-                && new_document.id == *id
-                && old_document.version <= before.data_epoch
-                && new_document.version <= after.data_epoch
+            old_document.id() == id
+                && new_document.id() == id
+                && old_document.version() <= before.data_epoch
+                && new_document.version() <= after.data_epoch
                 && after.data_epoch <= new.revision,
             "primary replacement identity/version differs"
         );
@@ -191,8 +191,8 @@ impl PrimaryCandidate<'_> {
         Ok(Replacement {
             collection: name,
             id,
-            old: old_document,
-            new: new_document,
+            old: old_document.load_owned(self.previous.document_resolver())?,
+            new: new_document.load_owned(self.previous.document_resolver())?,
             data_epoch: after.data_epoch,
             revision: new.revision,
         })

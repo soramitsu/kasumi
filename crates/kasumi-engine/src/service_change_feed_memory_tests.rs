@@ -10,7 +10,7 @@ fn feed_memory_fixture() -> (Arc<crate::Generation>, RequestContext, ReadChangeF
     let records = vec![ChangeRecord {
         collection: "docs".into(),
         id: "a".into(),
-        document: Some(document),
+        document: Some(Arc::new(DocumentSlot::Pending(document))),
     }];
     let record_bytes = records
         .iter()
@@ -59,7 +59,10 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
         1,
     )
     .unwrap();
-    let event_bytes = kasumi_query::change_event_clone_bytes(record).unwrap();
+    let DocumentSlot::Pending(document) = record.document.as_deref().unwrap() else {
+        panic!("fixture pending document");
+    };
+    let event_bytes = kasumi_query::change_event_clone_bytes(record, Some(document)).unwrap();
     assert!(event_bytes > crate::accounting::encoded_len(record).unwrap() as u64 * 3);
     let node = query_memory_node(page_bytes + event_bytes - 1);
     let before = node.snapshot();
@@ -68,6 +71,7 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
     assert_eq!(
         change_feed::build_change_feed_page(
             &generation.state,
+            generation.document_resolver(),
             &context,
             &request,
             &cancellation,
@@ -80,7 +84,7 @@ fn feed_memory_after_image_denial_preserves_admitted_prefix_and_drains() {
     assert_eq!(memory.live_bytes(), 0);
     assert_eq!(memory.peak_bytes(), page_bytes);
     assert_eq!(crate::test_utils::reserved_payload_bytes(&node), page_bytes);
-    assert_eq!(record.document.as_ref().unwrap().body["field-255"], 255);
+    assert_eq!(document.body["field-255"], 255);
     drop(memory);
     assert_eq!(node.snapshot().reserved_bytes, before.reserved_bytes);
     assert_eq!(node.snapshot().live_reservations, before.live_reservations);
@@ -101,6 +105,7 @@ fn feed_memory_owned_after_image_outlives_source_and_final_owner_drains() {
     let mut memory = QueryMemory::empty(node.reserve(512, Some(cancellation.clone())).unwrap());
     let page = change_feed::build_change_feed_page(
         &generation.state,
+        generation.document_resolver(),
         &context,
         &request,
         &cancellation,

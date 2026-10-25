@@ -88,7 +88,7 @@ async fn dormant_resident() -> (
             .collections
             .get("tenant_enrollments")
             .and_then(|collection| collection.documents.get("tenant-a"))
-            .map(|document| document.version)
+            .map(|document| document.version())
     };
     let before_approval = approval_version();
     let proposal = manager.enrollment_proposal("tenant-a").unwrap();

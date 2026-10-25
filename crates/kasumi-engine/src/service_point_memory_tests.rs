@@ -18,7 +18,7 @@ fn point_memory_clone_denial_and_cancellation_keep_source_and_charge_together() 
     let cancellation = QueryCancellation::default();
     let mut read =
         point_read::PointRead::new(node.reserve(64, Some(cancellation.clone())).unwrap());
-    read.document = Some(document.clone());
+    read.document = Some(OwnedDocument::Pending(document.clone()));
     let held = node.snapshot();
     let references = Arc::strong_count(&document);
     assert_eq!(read.owned().unwrap_err().code, ErrorCode::ResourceExhausted);
@@ -46,7 +46,7 @@ fn point_memory_shared_clones_keep_one_charge_until_cross_thread_last_drop() {
     let document = point_memory_document();
     let weak = Arc::downgrade(&document);
     let mut read = point_read::PointRead::new(node.reserve(64, None).unwrap());
-    read.document = Some(document.clone());
+    read.document = Some(OwnedDocument::Pending(document.clone()));
     let shared = read.shared().unwrap();
     assert!(std::ptr::eq(shared.as_ref(), document.as_ref()));
     let held = node.snapshot();
@@ -73,6 +73,69 @@ fn point_memory_shared_clones_keep_one_charge_until_cross_thread_last_drop() {
 }
 
 #[tokio::test]
+async fn point_memory_small_rows_do_not_retain_the_tenant_document_limit_per_reader() {
+    const READERS: usize = 32;
+    let fixture = CredentialFixture::new().await;
+    fixture
+        .db
+        .mutate(fixture.context.clone(), credential_batch("small"))
+        .await
+        .unwrap();
+    let limit = fixture
+        .db
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .limits
+        .max_document_bytes;
+    assert_eq!(limit, 1 << 20);
+    // Warm the selected native pages before comparing concurrent output grants.
+    drop(
+        fixture
+            .db
+            .get(&fixture.context, "docs", "small")
+            .await
+            .unwrap(),
+    );
+    let node = fixture.db.admission().clone();
+    let before = node.snapshot();
+    let start = Arc::new(tokio::sync::Barrier::new(READERS + 1));
+    let mut tasks = tokio::task::JoinSet::new();
+    for _ in 0..READERS {
+        let db = fixture.db.clone();
+        let context = fixture.context.clone();
+        let start = start.clone();
+        tasks.spawn(async move {
+            start.wait().await;
+            db.get(&context, "docs", "small").await.unwrap().unwrap()
+        });
+    }
+    start.wait().await;
+    let mut outputs = Vec::with_capacity(READERS);
+    while let Some(joined) = tasks.join_next().await {
+        outputs.push(joined.unwrap());
+    }
+    assert_eq!(outputs.len(), READERS);
+    assert!(
+        outputs
+            .iter()
+            .all(|document| document.body == json!({"value": 7}))
+    );
+    let held = node.snapshot();
+    assert_eq!(held.inflight_operations, before.inflight_operations);
+    assert!(
+        held.reserved_bytes.saturating_sub(before.reserved_bytes) < READERS as u64 * (64 << 10),
+        "small outputs retained the 1 MiB tenant maximum instead of actual cloned data: before={before:?}, held={held:?}"
+    );
+    drop(outputs);
+    let released = node.snapshot();
+    assert!(released.reserved_bytes < held.reserved_bytes);
+    assert_eq!(released.live_reservations + READERS, held.live_reservations);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdown() {
     let fixture = CredentialFixture::new().await;
     fixture
@@ -87,11 +150,13 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         .get_shared(&fixture.context, "docs", "a")
         .await
         .unwrap()
-            .expect("document exists");
-    assert!(std::ptr::eq(
-        earlier.as_ref(),
-        generation.state.collections["docs"].documents["a"].as_ref()
-    ));
+        .expect("document exists");
+    let stored = generation.state.collections["docs"].documents["a"]
+        .stored()
+        .unwrap();
+    assert_eq!(earlier.id, stored.id);
+    assert_eq!(earlier.version, stored.version);
+    assert_eq!(earlier.body, json!({"value": 7}));
     let mut definition = generation.state.collections["docs"].definition.clone();
     definition.strict_read_audit = true;
     drop(generation);
@@ -115,8 +180,12 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         let generation = fixture.db.engine().generation().unwrap();
         (generation.state.revision, generation.state.audits.len())
     };
-    let owned = fixture.db.get(&fixture.context, "docs", "a").await.unwrap()
-            .expect("document exists");
+    let owned = fixture
+        .db
+        .get(&fixture.context, "docs", "a")
+        .await
+        .unwrap()
+        .expect("document exists");
     {
         let generation = fixture.db.engine().generation().unwrap();
         let event = generation.state.audits.back().unwrap();
@@ -129,7 +198,7 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
         .get_shared(&fixture.context, "docs", "a")
         .await
         .unwrap()
-            .expect("document exists");
+        .expect("document exists");
     assert_eq!(
         fixture.db.engine().generation().unwrap().state.audits.len(),
         audit_count + 2
@@ -224,7 +293,7 @@ async fn point_memory_cold_shared_clone_keeps_archive_charge_after_shutdown() {
         .get_shared(&fixture.context, "history", "cold")
         .await
         .unwrap()
-            .expect("document exists");
+        .expect("document exists");
     let last = shared.clone();
     assert!(std::ptr::eq(shared.as_ref(), last.as_ref()));
     assert_eq!(shared.version, version);
@@ -253,7 +322,7 @@ fn point_memory_shared_owner_backing_denial_leaves_selected_source_owned() {
     let document = point_memory_document();
     let pilot = query_memory_node(2 << 20);
     let mut read = point_read::PointRead::new(pilot.reserve(64, None).unwrap());
-    read.document = Some(document.clone());
+    read.document = Some(OwnedDocument::Pending(document.clone()));
     let output = read.shared().unwrap();
     let required = crate::test_utils::reserved_payload_bytes(&pilot);
     assert!(required > 64);
@@ -261,13 +330,16 @@ fn point_memory_shared_owner_backing_denial_leaves_selected_source_owned() {
     let node = query_memory_node(required - 1);
     let baseline = node.snapshot();
     let mut read = point_read::PointRead::new(node.reserve(64, None).unwrap());
-    read.document = Some(document.clone());
+    read.document = Some(OwnedDocument::Pending(document.clone()));
     let held = node.snapshot();
     assert_eq!(
         read.shared().unwrap_err().code,
         ErrorCode::ResourceExhausted
     );
-    assert!(Arc::ptr_eq(read.document.as_ref().unwrap(), &document));
+    assert!(std::ptr::eq(
+        read.document.as_ref().unwrap().as_ref(),
+        document.as_ref()
+    ));
     assert_eq!(node.snapshot().reserved_bytes, held.reserved_bytes);
     assert_eq!(node.snapshot().live_reservations, held.live_reservations);
     drop(read);
@@ -331,11 +403,17 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
                     .get_shared(&fixture.context, "docs", "a")
                     .await
                     .unwrap()
-            .expect("document exists"),
+                    .expect("document exists"),
             );
         } else {
-            drop(fixture.db.get(&fixture.context, "docs", "a").await.unwrap()
-            .expect("document exists"));
+            drop(
+                fixture
+                    .db
+                    .get(&fixture.context, "docs", "a")
+                    .await
+                    .unwrap()
+                    .expect("document exists"),
+            );
         }
         let node = fixture.db.admission().clone();
         fixture.db.proposals.prepare(&node).unwrap();
@@ -382,9 +460,12 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
         assert_eq!(cancelled.inflight_operations, 1);
         assert_eq!(operation_bytes(&cancelled), audit_bytes);
         assert_eq!(
-            cancelled.live_reservations.checked_add(3).unwrap(),
+            cancelled
+                .live_reservations
+                .checked_add(if shared { 4 } else { 3 })
+                .unwrap(),
             held.live_reservations,
-            "the point source and two nested boxed release futures retire, while the audit child remains"
+            "point workspace, any shared native body and two boxed release futures retire, while the audit child remains"
         );
         assert_eq!(without_cache(&fixture).1, baseline_bytes.1);
         assert_eq!(

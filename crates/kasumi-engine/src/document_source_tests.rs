@@ -1,19 +1,19 @@
 use super::*;
 use crate::TenantEngine;
-use kasumi_query::ReadFailure;
+use kasumi_query::{ReadFailure, RecordKind};
 use kasumi_types::{
-    Action, ArchivedDocument, CollectionRetentionClass, CollectionWriteMode, Document, Grant,
-    Limits, Policy,
+    Action, ArchivedDocument, CollectionRetentionClass, CollectionWriteMode, Document,
+    DocumentSlot, Grant, Limits, Policy,
 };
 use serde_json::json;
 use std::{cell::Cell, collections::BTreeMap};
 
-fn live(id: &str, version: u64) -> Arc<Document> {
-    Arc::new(Document {
+fn live(id: &str, version: u64) -> Arc<DocumentSlot> {
+    Arc::new(DocumentSlot::Pending(Arc::new(Document {
         id: id.into(),
         version,
         body: json!({"value": id}),
-    })
+    })))
 }
 
 fn archive(version: u64) -> Arc<ArchivedDocument> {
@@ -75,8 +75,11 @@ fn token() -> QueryCancellation {
     QueryCancellation::default()
 }
 
-fn code<T>(result: ReadResult<T, Infallible>) -> ErrorCode {
-    result.err().unwrap().into_query_error().code
+fn code<T>(result: ReadResult<T, DocumentSourceFailure>) -> ErrorCode {
+    match result.err().unwrap() {
+        ReadFailure::Query(error) => error.code,
+        ReadFailure::Source(error) => panic!("unexpected local source failure: {error}"),
+    }
 }
 
 #[test]
@@ -368,9 +371,10 @@ fn cancellation_is_checked_before_lending_and_after_the_callback() {
     );
     // A typed callback error is returned intact, without a storage failure
     // wrapper or a fabricated successful loan.
-    let result: ReadResult<(), Infallible> = source.with_record("a", None, &token(), |_| {
-        Err(Error::new(ErrorCode::Forbidden, "callback rejected"))
-    });
+    let result: ReadResult<(), DocumentSourceFailure> =
+        source.with_record("a", None, &token(), |_| {
+            Err(Error::new(ErrorCode::Forbidden, "callback rejected"))
+        });
     assert!(
         matches!(result, Err(ReadFailure::Query(error)) if error.code == ErrorCode::Forbidden && error.message == "callback rejected")
     );

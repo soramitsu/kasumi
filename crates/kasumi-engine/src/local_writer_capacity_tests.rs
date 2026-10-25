@@ -194,12 +194,17 @@ impl Fixture {
     }
 
     fn document(&self, id: &str) -> FixtureResult<Option<serde_json::Value>> {
-        Ok(
-            self.database.engine().generation()?.state.collections["docs"]
-                .documents
-                .get(id)
-                .map(|document| document.body.clone()),
-        )
+        let generation = self.database.engine().generation()?;
+        generation.state.collections["docs"]
+            .documents
+            .get(id)
+            .map(|document| {
+                generation
+                    .load_document(document)
+                    .map(|loan| loan.body.clone())
+            })
+            .transpose()
+            .map_err(Into::into)
     }
 
     /// Write until one periodic snapshot task has run its build window and

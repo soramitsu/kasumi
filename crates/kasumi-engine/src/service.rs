@@ -22,6 +22,8 @@ mod database_workers;
 pub(crate) mod proposal_input;
 #[path = "proposal_jobs.rs"]
 mod proposal_jobs;
+#[path = "query_admission.rs"]
+mod query_admission;
 #[path = "query_seek.rs"]
 mod query_seek;
 #[cfg(test)]
@@ -136,26 +138,43 @@ struct Cursor {
     term: u64,
 }
 
-/// The rows after a query's first page: shared handles to documents in the
-/// generation the query read, never copies. Each is charged as if it alone
-/// kept its document alive, since later writes may replace it.
-#[derive(Debug, Default)]
+/// Remaining compact identities share one exact generation/resolver. Ordinary
+/// cursors retain no decoded body for rows which have not been requested.
+#[derive(Default)]
 struct PinnedRows {
     rows: Vec<PinnedRow>,
+    generation: Option<Arc<crate::Generation>>,
     /// Admitted resident bytes, including the row vector: the measure that
     /// `max_cursor_bytes` bounds across a tenant's open cursors.
     bytes: usize,
 }
+impl std::fmt::Debug for PinnedRows {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PinnedRows")
+            .field("rows", &self.rows)
+            .field("bytes", &self.bytes)
+            .field(
+                "revision",
+                &self
+                    .generation
+                    .as_ref()
+                    .map(|generation| generation.state.revision),
+            )
+            .finish()
+    }
+}
 #[derive(Debug)]
 struct PinnedRow {
-    document: Arc<Document>,
+    document: Arc<DocumentSlot>,
     score: Option<f32>,
 }
 
 /// Pin the rows after a query's first page for its cursor, in result order.
 fn pin_rows(
     remaining: kasumi_query::RemainingRows<'_>,
-    documents: &imbl::OrdMap<String, Arc<Document>>,
+    generation: &Arc<crate::Generation>,
+    collection: &str,
     max_cursor_bytes: usize,
     cancellation: &QueryCancellation,
     memory: &mut QueryMemory<Reservation>,
@@ -168,13 +187,16 @@ fn pin_rows(
     let mut rows = Vec::with_capacity(remaining.len());
     for (id, score) in remaining {
         cancellation.check()?;
-        let document = documents.get(id).ok_or_else(|| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "selected archived content requires bounded hydration",
-            )
-        })?;
-        let bytes = crate::retained_document_bytes(document)? as u64;
+        let document = generation.state.collections[collection]
+            .documents
+            .get(id)
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "selected archived content requires bounded hydration",
+                )
+            })?;
+        let bytes = pinned_slot_bytes(document)?;
         charged = charged
             .checked_add(bytes)
             .filter(|charged| *charged <= max_cursor_bytes as u64)
@@ -191,7 +213,51 @@ fn pin_rows(
         });
     }
     let bytes = usize::try_from(charged).map_err(|_| query_workspace_overflow())?;
-    Ok((PinnedRows { rows, bytes }, charged))
+    Ok((
+        PinnedRows {
+            rows,
+            generation: Some(generation.clone()),
+            bytes,
+        },
+        charged,
+    ))
+}
+
+fn pinned_slot_bytes(document: &DocumentSlot) -> Result<u64> {
+    match document {
+        DocumentSlot::Pending(document) => Ok(crate::retained_document_bytes(document)? as u64),
+        DocumentSlot::Stored(document) => (std::mem::size_of::<DocumentSlot>() as u64)
+            .checked_add(document.id.len() as u64)
+            .and_then(|bytes| bytes.checked_add(128))
+            .ok_or_else(query_workspace_overflow),
+    }
+}
+
+// This conversion belongs only to request/read paths. Ordered application keeps
+// Source failures outside deterministic command rejection and custody receipts.
+fn source_read_error(error: ReadFailure<crate::index_source::DocumentSourceFailure>) -> Error {
+    match error {
+        ReadFailure::Query(error) => error,
+        ReadFailure::Source(error) => document_load_error(error.0),
+    }
+}
+
+fn document_load_error(error: anyhow::Error) -> Error {
+    if error
+        .chain()
+        .filter_map(|error| error.downcast_ref::<Error>())
+        .any(|error| error.code == ErrorCode::ResourceExhausted)
+    {
+        Error::new(
+            ErrorCode::ResourceExhausted,
+            "document read workspace is exhausted",
+        )
+    } else {
+        Error::new(
+            ErrorCode::Unavailable,
+            "selected document storage is unavailable",
+        )
+    }
 }
 
 struct ProposalWork {
@@ -332,6 +398,23 @@ impl ProposalWork {
         max_bytes: usize,
         stage: &mut &'static str,
     ) -> anyhow::Result<Vec<u8>> {
+        #[cfg(any(test, feature = "test-utils"))]
+        let mut timing =
+            std::env::var_os("KASUMI_TEST_PROPOSAL_TIMING").map(|_| std::time::Instant::now());
+        macro_rules! phase {
+            ($next:literal) => {{
+                #[cfg(any(test, feature = "test-utils"))]
+                if let Some(previous) = timing.as_mut() {
+                    eprintln!(
+                        "kasumi proposal phase={} elapsed_us={}",
+                        *stage,
+                        previous.elapsed().as_micros()
+                    );
+                    *previous = std::time::Instant::now();
+                }
+                *stage = $next;
+            }};
+        }
         // This owner keeps the original payload before its optional topology
         // grant through every await, return and unwind. Raft receives a new Vec.
         let command = &mut input.command;
@@ -348,14 +431,14 @@ impl ProposalWork {
         {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
-        *stage = "source_generation";
+        phase!("source_generation");
         if self.source_engine.generation()?.state.retired {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
                 ErrorCode::Sealed,
                 "application commands are frozen after retirement",
             )))?);
         }
-        *stage = "schema_admission";
+        phase!("schema_admission");
         if let Operation::ActivateSchema(request) = &command.operation {
             let engine = &self.source_engine;
             let admitted = (|| -> Result<()> {
@@ -369,7 +452,7 @@ impl ProposalWork {
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
             }
         }
-        *stage = "retirement_preflight";
+        phase!("retirement_preflight");
         if let Operation::RetireSource(prepared) = &mut command.operation {
             let engine = &self.source_engine;
             let generation = engine.generation()?;
@@ -398,14 +481,16 @@ impl ProposalWork {
                     let registration = self._registration.clone();
                     let credential = command.context.authorization.clone();
                     struct Output {
-                        result: Result<RetirementObservation>,
+                        result: crate::index_source::SourceResult<RetirementObservation>,
                         _workspace: Reservation,
                         _registration: Arc<WorkRegistration>,
                     }
                     let output = tokio::task::spawn_blocking(move || {
-                        let result = crate::retirement_closure::digest(&generation.state, || {
-                            credential.check_live()
-                        })
+                        let result = crate::retirement_closure::digest(
+                            &generation.state,
+                            generation.document_resolver(),
+                            || credential.check_live(),
+                        )
                         .map(|closure_digest| RetirementObservation {
                             revision: generation.state.revision,
                             closure_digest,
@@ -419,14 +504,15 @@ impl ProposalWork {
                     .await?;
                     match output.result {
                         Ok(observed) => prepared.observation = Some(observed),
-                        Err(error) => {
+                        Err(ReadFailure::Query(error)) => {
                             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
                         }
+                        Err(ReadFailure::Source(error)) => return Err(error.0),
                     }
                 }
             }
         }
-        *stage = "command_clock";
+        phase!("command_clock");
         command.timestamp_ms = self.clock.now_ms()?;
         if let Err(error) = command.context.authorization.check_live().and_then(|()| {
             command
@@ -436,14 +522,14 @@ impl ProposalWork {
         }) {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
-        *stage = "command_encoding";
+        phase!("command_encoding");
         let bytes = encode_proposal_input(command, max_bytes)?;
         anyhow::ensure!(
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
         );
-        *stage = "publication_admission";
-        if let Err(error) = self.source_engine.admit_publication() {
+        phase!("publication_admission");
+        if let Err(error) = self.source_engine.admit_document_publication(command) {
             // Nothing was proposed. The committed entry's own source capacity is
             // admitted here, so local pressure can only reject this request.
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
@@ -451,7 +537,7 @@ impl ProposalWork {
         let response = if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {
             let engine = &self.source_engine;
-            *stage = "retirement_seed";
+            phase!("retirement_seed");
             let seed = kasumi_raft::RetirementLogSeed::prepare(
                 command,
                 engine.retirement_replay_state(command)?,
@@ -459,19 +545,19 @@ impl ProposalWork {
             if let Err(error) = seed.reserve_success_capacity() {
                 return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
             }
-            *stage = "consensus_write";
+            phase!("consensus_write");
             self.group.write_retirement(bytes, seed).await
         } else {
             let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
                 self.admission.memory().clone();
-            *stage = "input_recipe";
+            phase!("input_recipe");
             let mut input = kasumi_raft::ApplicationInputInstall::new(bytes, provider);
             if let Operation::Mutate(batch) = &command.operation {
                 input.prepare_mutation_change_tree(batch).map_err(|error| {
                     anyhow::anyhow!("mutation change-tree recipe refused: {error:?}")
                 })?;
             }
-            *stage = "input_binding";
+            phase!("input_binding");
             self.admission
                 .memory()
                 .bind_application_input(&self._reservation, &mut input)
@@ -481,11 +567,12 @@ impl ProposalWork {
             let input = input
                 .finish()
                 .unwrap_or_else(|_| unreachable!("original input installed once"));
-            *stage = "consensus_write";
+            phase!("consensus_write");
             self.group
                 .write(kasumi_raft::ApplicationProposal::admitted_input(input))
                 .await
         };
+        phase!("consensus_returned");
         match response {
             Err(error) if kasumi_raft::is_application_write_capacity_denied(&error) => {
                 // This typed API rejection precedes log publication. It is a
@@ -611,7 +698,6 @@ impl QueryWork {
         let response = generation
             .document_source(&self.request.collection)
             .and_then(|source| {
-                let documents = &generation.state.collections[&self.request.collection].documents;
                 generation
                     .indexes
                     .execute_page(
@@ -624,14 +710,15 @@ impl QueryWork {
                         |remaining, memory| {
                             pin_rows(
                                 remaining,
-                                documents,
+                                generation,
+                                &self.request.collection,
                                 limits.max_cursor_bytes,
                                 cancellation,
                                 memory,
                             )
                         },
                     )
-                    .map_err(ReadFailure::into_query_error)
+                    .map_err(source_read_error)
             });
         QueryOutput {
             response,
@@ -686,17 +773,26 @@ impl QueryResultOwner {
             rows: self.request.page_size(),
             bytes: max_result_bytes,
         };
-        let rows = kasumi_query::copy_page(
+        let generation = self.rows.generation.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "cursor selected generation is missing",
+            )
+        })?;
+        let source = generation.document_source(&self.request.collection)?;
+        let rows = kasumi_query::copy_page_from_source(
+            &source,
             self.rows.rows[offset.min(self.rows.rows.len())..]
                 .iter()
-                .map(|row| (row.document.as_ref(), row.score)),
+                .map(|row| (row.document.id(), row.document.version(), row.score)),
             &self.request.select,
             bound,
             cancellation,
             self.memory
                 .as_mut()
                 .expect("query page keeps its operation ledger"),
-        )?;
+        )
+        .map_err(source_read_error)?;
         Ok(QueryResponse {
             revision,
             rows,
@@ -867,7 +963,7 @@ impl SnapshotWork {
                         });
                         Ok(())
                     })
-                    .map_err(ReadFailure::into_query_error)?;
+                    .map_err(source_read_error)?;
             }
             for query in &request.queries {
                 cancellation.check()?;
@@ -896,7 +992,7 @@ impl SnapshotWork {
                             Ok(((), 0))
                         },
                     )
-                    .map_err(ReadFailure::into_query_error)?;
+                    .map_err(source_read_error)?;
                 response.revision = state.revision;
                 result.collection_epochs.insert(
                     query.collection.clone(),
@@ -1102,6 +1198,14 @@ fn staged_stop_acknowledgement(_error: Error) -> Error {
 
 impl<'a> ResponseFence<'a> {
     fn capture(database: ResponseDatabase<'a>, context: &RequestContext) -> Result<Self> {
+        Self::capture_workspace(database, context, false)
+    }
+
+    fn capture_workspace(
+        database: ResponseDatabase<'a>,
+        context: &RequestContext,
+        explicit_output_admission: bool,
+    ) -> Result<Self> {
         context.authorization.check_live()?;
         database.access()?;
         let generation = database.engine.generation()?;
@@ -1109,17 +1213,33 @@ impl<'a> ResponseFence<'a> {
         if generation.state.tenant != context.tenant {
             return Err(Error::new(ErrorCode::Forbidden, "tenant access denied"));
         }
-        // Retain a bounded response workspace through adapter serialization.
-        // The engine operation owns its separate execution slot, so release
-        // this reservation's temporary slot while keeping its byte charge.
-        let bytes = generation
-            .state
-            .limits
-            .max_result_bytes
-            .max(generation.state.limits.max_document_bytes)
-            .max(320 << 10)
-            .saturating_add(64 << 10)
-            .saturating_mul(3) as u64;
+        // Explicitly admitted adapters own their DTO separately and charge
+        // each destination before allocation. Their idle fence only clones
+        // these three strings, the four possible Action values in one BTree
+        // node, and the cancellation/control backing covered by 4096 bytes.
+        // Other adapters still require their existing bounded workspace.
+        let bytes = if explicit_output_admission {
+            [
+                context.principal.as_str(),
+                context.tenant.as_str(),
+                context.request_id.as_str(),
+            ]
+            .into_iter()
+            .try_fold(4096 + std::mem::size_of::<Self>() as u64, |total, value| {
+                total
+                    .checked_add(kasumi_query::vec_bytes::<u8>(value.len())?)
+                    .ok_or_else(query_workspace_overflow)
+            })?
+        } else {
+            generation
+                .state
+                .limits
+                .max_result_bytes
+                .max(generation.state.limits.max_document_bytes)
+                .max(320 << 10)
+                .saturating_add(64 << 10)
+                .saturating_mul(3) as u64
+        };
         let cancellation = QueryCancellation::default();
         let mut workspace = database
             .admission()
@@ -1252,6 +1372,17 @@ impl Database {
         context: &RequestContext,
     ) -> Result<ResponseFence<'static>> {
         ResponseFence::capture(ResponseDatabase::Owned(self.clone()), context)
+    }
+
+    /// Capture an owned release fence for an adapter that separately admits
+    /// every DTO, encoded buffer and transport owner before allocation. Only
+    /// context/control backing is reserved here; each output must extend this
+    /// exact fence with `retain_response_bytes` and retain it through transport.
+    pub fn admitted_response_fence(
+        self: &Arc<Self>,
+        context: &RequestContext,
+    ) -> Result<ResponseFence<'static>> {
+        ResponseFence::capture_workspace(ResponseDatabase::Owned(self.clone()), context, true)
     }
 
     /// Retains exactly this stop attempt's authority dependencies through final
@@ -1416,7 +1547,6 @@ impl Database {
             self.custody_detached.store(true, Ordering::Release);
         }
         self.seal_admission();
-        self.engine.seal_application_source_consumers();
         self.background_stop.send_replace(true);
         self.audit_worker_wake.notify_one();
         {
@@ -1458,6 +1588,11 @@ impl Database {
                 retained = Some(failure);
             }
         }
+        // Accepted proposals, backup producers and the actual Raft/local
+        // runtime may still decode immutable bodies from their exact source.
+        // Request admission is already closed; retire those sources only once
+        // their internal writers/producers have joined.
+        self.engine.seal_application_source_consumers();
         {
             let mut worker = self.audit_worker.lock().await;
             if let Some(task) = worker.as_mut() {
@@ -2131,8 +2266,9 @@ impl Database {
     async fn submit_input(
         &self,
         context: RequestContext,
-        input: proposal_input::OperationInput,
+        mut input: proposal_input::OperationInput,
     ) -> Result<WriteReceipt> {
+        let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_WRITE_TIMEOUT;
         input.check_admission(self.admission())?;
         let operation = &input.operation;
         context.authorization.check_live()?;
@@ -2317,6 +2453,35 @@ impl Database {
                     "proposal input quote overflow",
                 )
             })?;
+        // A burst may exceed the fixed background registry while still fitting
+        // the node's input memory budget. Wait before taking active work credit;
+        // cancellation here drops only this undispatched, charged input.
+        #[cfg(any(test, feature = "test-utils"))]
+        let queue_began =
+            std::env::var_os("KASUMI_TEST_PROPOSAL_TIMING").map(|_| std::time::Instant::now());
+        let entry = if input.admit_waiting_mutation(self.admission(), &context)? {
+            Some(
+                tokio::time::timeout_at(deadline, self.proposals.entry(self.admission()))
+                    .await
+                    .map_err(|_| {
+                        Error::new(
+                            ErrorCode::ResourceExhausted,
+                            "proposal admission deadline exceeded",
+                        )
+                    })??,
+            )
+        } else {
+            None
+        };
+        #[cfg(any(test, feature = "test-utils"))]
+        if let Some(began) = queue_began {
+            eprintln!(
+                "kasumi proposal phase=registry_wait elapsed_us={}",
+                began.elapsed().as_micros()
+            );
+        }
+        context.authorization.check_live()?;
+        self.access()?;
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
         // Transfer the actual input and its exact optional grant together;
@@ -2348,8 +2513,11 @@ impl Database {
             },
             command,
             max_bytes,
+            entry,
         )?;
-        let response = proposal.wait(kasumi_store::NATIVE_WRITE_TIMEOUT).await?;
+        let response = proposal
+            .wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
+            .await?;
         let result = &response.bytes;
         if restore_completion {
             let outcome = serde_json::from_slice::<Result<WriteReceipt>>(result).map_err(|_| {
@@ -2917,6 +3085,15 @@ impl Database {
         request: QueryRequest,
     ) -> Result<AdmittedOutput<QueryResponse>> {
         let result = self.query_inner(context, request).await;
+        #[cfg(any(test, feature = "test-utils"))]
+        if std::env::var_os("KASUMI_TEST_QUERY_TRACE").is_some()
+            && let Err(error) = &result
+        {
+            eprintln!(
+                "query request refused: code={:?}, message={}",
+                error.code, error.message
+            );
+        }
         self.audit_result(context, result)
             .await
             .map(|output| output.response)
@@ -2927,40 +3104,47 @@ impl Database {
         context: &RequestContext,
         request: QueryRequest,
     ) -> Result<RegisteredOutput<QueryResponse>> {
+        let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
         self.access()?;
         self.engine
             .authorize(context, Some(&request.collection), Action::Read)?;
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        let registration = Arc::new(self.work.begin(cancellation.clone())?);
-        let workspace = query_workspace(&self.engine.generation()?.state.limits, &request)?;
-        let mut input = QueryInput {
+        let waiting = query_admission::WaitingQuery::admit(
+            self.admission(),
+            &self.work,
             request,
-            memory: QueryMemory::empty(
-                self.admission()
-                    .reserve(workspace, Some(cancellation.clone()))?,
-            ),
+            &cancellation,
+        )?;
+        // Only a dispatched worker owns candidate/output workspace. Waiting
+        // requests retain their actual input backing, with no execution slot.
+        let needs_worker =
+            waiting.request.paging == Paging::Seek || waiting.request.cursor.is_none();
+        let permit = if needs_worker {
+            Some(query_admission::permit(&self.query_slots, &cancellation, deadline).await?)
+        } else {
+            None
         };
+        // Establish authority and select fresh state after waiting. This also
+        // bounds concurrent worker queries' quorum barriers to the four slots.
+        tokio::select! {
+            result = tokio::time::timeout_at(deadline, self.barrier()) =>
+                result.map_err(|_| query_admission::deadline_error())??,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        }
+        self.access()?;
+        self.engine
+            .authorize(context, Some(&waiting.request.collection), Action::Read)?;
+        let generation = self.engine.generation()?;
+        let state = &generation.state;
+        let workspace = query_workspace(&state.limits, &waiting.request)?;
+        let (mut input, registration) =
+            waiting.into_input(self.admission(), workspace, &cancellation)?;
         input
             .memory
             .reserve(query_input_workspace(&input.request, 3)?)?;
         let request = &input.request;
         let digest = query_digest(request)?;
-        // Continuations retain old data but must establish current authority on a serving leader.
-        tokio::select! {
-            result = self.barrier() => result?,
-            _ = cancelled(&cancellation) => return Err(cancelled_error()),
-        }
-        self.engine
-            .authorize(context, Some(&request.collection), Action::Read)?;
-        let generation = self.engine.generation()?;
-        let state = &generation.state;
-        if query_workspace(&state.limits, request)? > workspace {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "query limits changed during admission; retry",
-            ));
-        }
         let term = self.group.current_term();
         if request.page_size() == 0 || request.page_size() > state.limits.max_page_size {
             return Err(Error::new(
@@ -3019,12 +3203,7 @@ impl Database {
             let next = offset + page.rows.len();
             (full, page, next, created)
         } else {
-            let permit = self.query_slots.clone().try_acquire_owned().map_err(|_| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "query concurrency limit reached",
-                )
-            })?;
+            let permit = permit.expect("fresh and seek query admitted one existing worker slot");
             let mut work = QueryWork {
                 generation: generation.clone(),
                 request: input.request,
@@ -3035,20 +3214,21 @@ impl Database {
             };
             // Seek pages read resident rows straight from their index.
             if !seek {
-                work.generation = self
-                    .hydrate_history(
+                work.generation = tokio::select! {
+                    result = tokio::time::timeout_at(deadline, self.hydrate_history(
                         work.generation.clone(),
                         &[],
                         std::slice::from_ref(&work.request),
                         &cancellation,
                         &mut work.memory,
-                    )
-                    .await?;
+                    )) => result.map_err(|_| query_admission::deadline_error())??,
+                    _ = cancelled(&cancellation) => return Err(cancelled_error()),
+                };
             }
             let worker = tokio::task::spawn_blocking(move || work.run());
             let output = tokio::select! {
-                result = tokio::time::timeout(kasumi_store::NATIVE_READ_TIMEOUT, worker) => result
-                    .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "query deadline exceeded"))?
+                result = tokio::time::timeout_at(deadline, worker) => result
+                    .map_err(|_| query_admission::deadline_error())?
                     .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
@@ -3085,10 +3265,14 @@ impl Database {
         let request = &full.request;
         drop(generation);
         tokio::select! {
-            result = self.release(context, &request.collection, page.revision, strict, policy_epoch) => result?,
+            result = tokio::time::timeout_at(deadline, self.release(context, &request.collection, page.revision, strict, policy_epoch)) =>
+                result.map_err(|_| query_admission::deadline_error())??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         }
         cancellation.check()?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(query_admission::deadline_error());
+        }
         if self.engine.generation()?.state.policy_epoch != policy_epoch {
             return Err(Error::new(
                 ErrorCode::CursorExpired,
@@ -3694,9 +3878,26 @@ mod tests {
     async fn response_fence_retains_adapter_charges_in_its_entry_until_drop() {
         let fixture = CredentialFixture::new().await;
         let before = fixture.db.admission().snapshot();
-        let mut fence = fixture.db.owned_response_fence(&fixture.context).unwrap();
+        let mut fence = fixture
+            .db
+            .admitted_response_fence(&fixture.context)
+            .unwrap();
         let fixed = fixture.db.admission().snapshot();
         assert!(fixed.reserved_bytes > before.reserved_bytes);
+        assert!(fixed.reserved_bytes - before.reserved_bytes < 16 << 10);
+        let idle: Vec<_> = (0..99)
+            .map(|_| {
+                fixture
+                    .db
+                    .admitted_response_fence(&fixture.context)
+                    .unwrap()
+            })
+            .collect();
+        assert_eq!(
+            fixture.db.admission().snapshot().inflight_operations,
+            before.inflight_operations
+        );
+        drop(idle);
         fence.retain_response_bytes(4096).unwrap();
         fence.retain_response_bytes(1 << 20).unwrap();
         let charged = fixture.db.admission().snapshot();

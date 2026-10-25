@@ -3,6 +3,7 @@
 use super::backup_producer_jobs::Failure as ProducerFailure;
 use super::*;
 use crate::backup_format::*;
+use anyhow::Context as _;
 use std::io::Write;
 
 /// Publication identity and private captured-resident evidence have no complete
@@ -94,23 +95,73 @@ impl Write for StateStream {
 struct StreamWork {
     generation: Arc<crate::Generation>,
     writer: StateStream,
+    document_budget: Arc<crate::admission::DocumentReadBudget>,
     _reservation: Arc<Reservation>,
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     _registration: WorkRegistration,
 }
 
+fn document_source_peak(tenant_bytes: usize, slot: &DocumentSlot) -> anyhow::Result<u64> {
+    let decoded_peak = crate::document_store::source_workspace(slot)?;
+    let DocumentSlot::Stored(document) = slot else {
+        return Ok(decoded_peak);
+    };
+    let manifest = usize::try_from(document.body_object_bytes)?;
+    let manifest_point = kasumi_store::plaintext_get_workspace_bytes(
+        tenant_bytes,
+        crate::document_store::BODIES.len(),
+        64,
+        manifest,
+    )?;
+    let blob_point = if document.body_bytes >= crate::document_encoding::STRING_THRESHOLD as u64 {
+        kasumi_store::plaintext_get_workspace_bytes(
+            tenant_bytes,
+            crate::document_store::BLOBS.len(),
+            64,
+            usize::try_from(document.body_bytes)?.min(crate::document_encoding::BLOB_CHUNK_BYTES),
+        )?
+    } else {
+        0
+    };
+    // SelectedDocuments lends native plaintext under the same workspace while
+    // retaining canonical reconstruction and manifest parsing buffers. That
+    // temporary native point peak may exceed the final decoded-body peak.
+    let native_peak = (64u64 << 10)
+        .checked_add(
+            document
+                .body_bytes
+                .checked_mul(2)
+                .context("backup source wire overflow")?,
+        )
+        .and_then(|bytes| bytes.checked_add(document.body_object_bytes.checked_mul(2)?))
+        .and_then(|bytes| bytes.checked_add(document.body_manifest_work))
+        .and_then(|bytes| bytes.checked_add(manifest_point.max(blob_point)))
+        .context("backup native document workspace overflow")?;
+    Ok(decoded_peak.max(native_peak))
+}
+
 impl StreamWork {
     fn run(mut self) -> std::result::Result<(u64, String), ProducerFailure> {
-        if crate::snapshot_codec::write(
+        // A synchronous scope borrows only the separately funded source slice;
+        // stream buffers still retain their full independent 96 MiB allowance.
+        let _documents = self
+            .document_budget
+            .clone()
+            .enter()
+            .map_err(ProducerFailure::Failed)?;
+        if let Err(original) = crate::snapshot_codec::write_with_resolver(
             &self.generation.state,
             &self.generation.receipts,
             &self.generation.backup_bindings,
             &self.generation.terminals,
             &self.generation.target_resolutions,
+            self.generation.document_resolver(),
             &mut self.writer,
-        )
-        .is_err()
-        {
+        ) {
+            #[cfg(test)]
+            eprintln!("backup snapshot source failure: {original:#}");
+            #[cfg(not(test))]
+            let _ = original;
             let error = Error::new(ErrorCode::Unavailable, "backup state stream failed");
             return Err(if self.writer.stopped {
                 ProducerFailure::Stopped(error)
@@ -181,7 +232,7 @@ impl Database {
         // Retain their own workspace while their small metadata remains live;
         // stream buffers do not exist yet and must not occupy their later grant
         // while the ordered "started" audit publishes its selected source.
-        let _intent_reservation = self
+        let mut intent_reservation = self
             .admission()
             .reserve(16 << 20, Some(cancellation.clone()))?;
         let intent = BackupSessionIntent {
@@ -225,15 +276,73 @@ impl Database {
                 "backup session was concurrently resolved or names another capture",
             ));
         }
+        drop(intent);
+        let retained_session = session
+            .pending_retained_bytes()
+            .map_err(document_load_error)?;
+        if retained_session > 16 << 20 {
+            return Err(query_workspace_overflow());
+        }
+        // Encryption and readback buffers are gone. Keep the exact pending
+        // session capacities, including both purposes and its ciphertext, while
+        // releasing transient intent work before the stream's separate grant.
+        intent_reservation.retain(retained_session);
         let objects = kasumi_store::BackupSessionObjects::new(destination, session_id)
             .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid backup session"))?;
         let destination: &dyn BackupDestination = &objects;
         self.maintenance_audit_inner(context.clone(), "backup", "started", state.revision)
             .await?;
-        let reservation = Arc::new(
+        // At most one full after-image is lent by the snapshot encoder. Include
+        // retained feed versions as well as current documents; an old version
+        // may be larger than every live row. This inspects descriptors only.
+        let source_bytes = state
+            .collections
+            .values()
+            .flat_map(|collection| collection.documents.values())
+            .chain(
+                state
+                    .change_feed
+                    .commits
+                    .values()
+                    .flat_map(|commit| commit.records.iter())
+                    .filter_map(|record| record.document.as_ref()),
+            )
+            .try_fold(0u64, |maximum, slot| {
+                document_source_peak(state.tenant.len(), slot).map(|bytes| maximum.max(bytes))
+            })
+            .map_err(document_load_error)?;
+        // Staged readers carry wire, manifest and decoded native lease tokens
+        // concurrently. The exact provider quote includes each opaque owner.
+        let token_bytes = crate::admission::MemoryCore::required_installed_reservation_bytes(0)
+            .map_err(document_load_error)?
+            .checked_mul(3)
+            .ok_or_else(query_workspace_overflow)?;
+        let reader_bytes = crate::application_sources::document_reader_credit_bytes()
+            .map_err(document_load_error)?
+            .checked_mul(2)
+            .ok_or_else(query_workspace_overflow)?;
+        let source_bytes = source_bytes
+            .checked_add(token_bytes)
+            // A bootstrap resolver checks its selected source around the
+            // staged/native decode. Its outer exact child and native load's
+            // inner child can coexist; both spend this real metadata slice.
+            .and_then(|bytes| bytes.checked_add(reader_bytes))
+            .ok_or_else(query_workspace_overflow)?;
+        let stream_bytes = 96u64 << 20;
+        let total = stream_bytes
+            .checked_add(source_bytes)
+            .and_then(|bytes| {
+                bytes.checked_add(crate::admission::DocumentReadBudget::CONTROL_BYTES)
+            })
+            .ok_or_else(query_workspace_overflow)?;
+        let document_budget = crate::admission::DocumentReadBudget::bind(
+            self.admission(),
             self.admission()
-                .reserve(96 << 20, Some(cancellation.clone()))?,
-        );
+                .reserve(total, Some(cancellation.clone()))?,
+            stream_bytes,
+            source_bytes,
+        )?;
+        let reservation = document_budget.reservation();
         let (sender, mut receiver) = tokio::sync::mpsc::channel(1);
         let work = StreamWork {
             generation: generation.clone(),
@@ -249,6 +358,7 @@ impl Database {
                 #[cfg(test)]
                 pause_before_check: self.worker_test_hooks.backup_stream.lock().unwrap().take(),
             },
+            document_budget,
             _reservation: reservation.clone(),
             _permit: permit.clone(),
             _registration: self.work.begin(cancellation.clone())?,

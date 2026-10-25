@@ -9,9 +9,55 @@ Current execution order and completion gates are maintained in the
 [M01–M07 milestones](disk-backed-cache-goals.md#current-implementation-sequence),
 refined on 2026-10-02. The staged design and dated checkpoints below retain their
 original scope; use the goal document and evidence ledger for current status.
-The required end state is full residency of all eligible data and indexes while
+The cache design targets residency of eligible storage pages and indexes while
 their complete accounted footprint fits, followed by pressure-driven eviction
-and bounded disk reads when it does not.
+and bounded disk reads when it does not. The document-body change below supersedes
+any earlier requirement to retain every decoded JSON body: decoded documents now
+belong only to admitted active operations, regardless of available cache space.
+
+## Document-body candidate, 2026-10-25
+
+The current source replaces published decoded document and change-feed bodies
+with `StoredDocument` descriptors. Each generation supplies one exact selected
+resolver; descriptors do not retain independent native pins or decoded caches.
+This follows the owner's request to stop keeping every document decoded in RAM.
+Bounded pending mutations still own their input and after-images until joint
+application/custody publication succeeds. Both ordinary completion and the
+general publication path stage the same immutable writes they authenticate.
+
+`engine.document.bodies` stores authenticated manifests and
+`engine.document.blobs` stores shared raw chunks. Keys include the tenant and
+incarnation scope. Canonical hexadecimal and base64 strings of at least 4 KiB
+share 48 KiB raw chunks while retaining their original spelling; other strings
+remain exact canonical JSON. Reconstruction checks every digest and length,
+including the complete original body. This does not change public document DTOs
+or the logical `KASUMIT8` snapshot stream.
+
+Reads admit one active decoded body or old/new validation pair. Ordinary reads
+use disposable children of the exact selected native view so a capacity refusal
+cannot poison the generation. Committed local writes spend document and native
+capacity admitted before proposal. Backup streams have a separate, explicitly
+funded source slice; input, stream, source and returned owners keep their actual
+reservations through cancellation and shutdown.
+
+Snapshot ingestion constructs encrypted body/blob tables in bounded batches.
+Bootstrap table membership selects its explicit backing; missing or corrupt
+referenced objects never refresh against a newer root. Authenticated restore
+publishes both namespaces with custody, and incarnation rebinding copies encoded
+objects only after validating their original scope and content.
+
+This is a document-body change, not completion of C04. Collection descriptors,
+structured/text indexes and other metadata still have resident components.
+No blob garbage collection is added: current documents, old generations, feeds,
+leases, staged operations and recovery paths must remain readable. Existing
+archives are preserved, so reduced native value duplication does not imply an
+immediate reduction in total filesystem usage. Accounting and synthetic value
+sizes are not production RSS measurements.
+
+Activation remains separate from source validation. A standalone process cannot
+be replaced through the existing restart procedure without an availability gap.
+Retaining an old executable is not proof that it can reopen new physical state;
+verify the complete rollback and service-continuity path before activation.
 
 ## Durable application state
 

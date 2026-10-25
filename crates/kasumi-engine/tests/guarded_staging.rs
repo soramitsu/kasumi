@@ -142,7 +142,7 @@ fn admission(db: &Database, name: &str) -> Vec<ReadAssertion> {
             collection: "authority".into(),
             id: "session".into(),
             expected: ReadPrecondition::Version(
-                current.state.collections["authority"].documents["session"].version,
+                current.state.collections["authority"].documents["session"].version(),
             ),
         },
         ReadAssertion::Document {
@@ -762,7 +762,7 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
         ReadAssertion::Document {
             collection: "authority".into(),
             expected: ReadPrecondition::Version(
-                generation.state.collections["authority"].documents[&id].version,
+                generation.state.collections["authority"].documents[&id].version(),
             ),
             id,
         }
@@ -801,7 +801,7 @@ async fn guarded_stop_orders_more_than_one_small_batch_of_authority_dependencies
     );
     *request.admission.last_mut().unwrap() = ReadAssertion::Document {
         collection: "authority".into(), id: "dependency-599".into(),
-        expected: ReadPrecondition::Version(db.engine().generation().unwrap().state.collections["authority"].documents["dependency-599"].version),
+        expected: ReadPrecondition::Version(db.engine().generation().unwrap().state.collections["authority"].documents["dependency-599"].version()),
     };
     assert!(matches!(
         db.stop_staged_transaction(context(), request)

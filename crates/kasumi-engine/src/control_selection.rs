@@ -5,7 +5,8 @@ use crate::admission::Reservation;
 use crate::{Database, Generation, LifecycleInstallationMetadata};
 use kasumi_query::QueryCancellation;
 use kasumi_types::{
-    AdmittedDocumentOwner, CollectionDefinition, Document, Error, ErrorCode, SharedDocument,
+    AdmittedDocumentOwner, CollectionDefinition, Document, DocumentSlot, Error, ErrorCode,
+    SharedDocument,
 };
 use std::{mem::size_of, sync::Arc};
 
@@ -116,6 +117,18 @@ impl LocalControlSelection<'_> {
         else {
             self.check_access()?;
             return Ok(None);
+        };
+        if let DocumentSlot::Stored(document) = document.as_ref() {
+            let resolver = self
+                .generation
+                .document_resolver()
+                .ok_or_else(|| anyhow::anyhow!("selected Control document resolver is absent"))?;
+            let document = document.load(resolver)?;
+            self.check_access()?;
+            return Ok(Some(document));
+        }
+        let DocumentSlot::Pending(document) = document.as_ref() else {
+            unreachable!()
         };
         let pending = PendingDocument::copy(self.database.admission(), document)?;
         self.check_access()?;

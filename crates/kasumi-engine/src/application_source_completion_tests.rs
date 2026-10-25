@@ -139,9 +139,10 @@ async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish()
     let mut witness = None;
     let response = fixture.apply(&input, || {
         // The backend's actual apply guard ended on this same thread. Its new
-        // Generation and the completion each own one selected handle here.
+        // Generation owns its selection and body resolver; completion owns
+        // the third handle. No individual document pins another native root.
         assert!(fixture.engine.application_guard_available_for_test());
-        let cell = selected(&fixture, &input, 2);
+        let cell = selected(&fixture, &input, 3);
         // Remove the actual visible Generation before outer finish. The CellRef
         // witness below is metadata only and cannot keep a selected/native pin.
         fixture.engine.seal();
@@ -183,13 +184,13 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
     let fixture = OrdinaryFixture::new().await?;
     let create = fixture.input(Operation::CreateCollection(definition()))?;
     fixture.apply(&create, || {
-        selected(&fixture, &create, 2);
+        selected(&fixture, &create, 3);
     })?;
     assert_eq!(
-        selected(&fixture, &create, 1)
+        selected(&fixture, &create, 2)
             .handles
             .load(Ordering::Acquire),
-        1
+        2
     );
     let accepted = fixture.input(put(
         "completion-put",
@@ -197,7 +198,7 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
         Precondition::Any,
     ))?;
     let response = fixture.apply(&accepted, || {
-        selected(&fixture, &accepted, 2);
+        selected(&fixture, &accepted, 3);
     })?;
     let receipt: kasumi_types::Result<WriteReceipt> = serde_json::from_slice(&response.data)?;
     let receipt = receipt?;
@@ -208,13 +209,13 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
         Precondition::Version(0),
     ))?;
     let response = fixture.apply(&rejected, || {
-        selected(&fixture, &rejected, 2);
+        selected(&fixture, &rejected, 3);
     })?;
     let outcome: kasumi_types::Result<WriteReceipt> = serde_json::from_slice(&response.data)?;
     assert_eq!(outcome.unwrap_err().code, ErrorCode::Conflict);
     let after_rejection = fixture.engine.generation()?;
     assert_eq!(
-        after_rejection.state.collections["docs"].documents["row"].version,
+        after_rejection.state.collections["docs"].documents["row"].version(),
         receipt.revision
     );
     assert!(Arc::ptr_eq(&old.indexes, &after_rejection.indexes));
@@ -224,20 +225,22 @@ async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent
         Precondition::Any,
     ))?;
     let response = fixture.apply(&replay, || {
-        selected(&fixture, &replay, 2);
+        selected(&fixture, &replay, 3);
     })?;
     let outcome: kasumi_types::Result<WriteReceipt> = serde_json::from_slice(&response.data)?;
     assert_eq!(outcome?.revision, receipt.revision);
     let current = fixture.engine.generation()?;
     assert_eq!(
-        current.state.collections["docs"].documents["row"].body,
+        current.state.collections["docs"].documents["row"]
+            .load_owned(current.document_resolver())?
+            .body,
         json!({"accepted":true})
     );
     assert_eq!(
-        selected(&fixture, &replay, 1)
+        selected(&fixture, &replay, 2)
             .handles
             .load(Ordering::Acquire),
-        1
+        2
     );
     drop(current);
     drop(after_rejection);
@@ -646,11 +649,27 @@ struct FinishPanic;
 async fn ordinary_completion_outer_finish_panic_retains_original_response_after_facade_seal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
-    let input = fixture.input(Operation::SetPolicy(policy()))?;
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    fixture.apply(&create, || {})?;
+    let body = json!({"proof": "ab".repeat(8192), "committed": true});
+    let input = fixture.input(put("unknown-proof", body.clone(), Precondition::Absent))?;
     let original = Arc::new(FinishPanic);
     let mut witness = None;
     let failure = match fixture.apply(&input, || {
-        let cell = selected(&fixture, &input, 2);
+        // Verify the actual ordinary commit installed compact storage and its
+        // complete proof before the subsequent finish loses acknowledgment.
+        let generation = fixture.engine.generation().unwrap();
+        let row = &generation.state.collections["docs"].documents["row"];
+        assert!(matches!(
+            row.as_ref(),
+            kasumi_types::DocumentSlot::Stored(_)
+        ));
+        let loaded = row.load_owned(generation.document_resolver()).unwrap();
+        assert_eq!(loaded.body, body);
+        assert_eq!(loaded.version, generation.state.revision);
+        drop(loaded);
+        drop(generation);
+        let cell = selected(&fixture, &input, 3);
         fixture.engine.seal();
         assert_eq!(cell.handles.load(Ordering::Acquire), 1);
         assert!(!cell.state.lock().unwrap().closed);
@@ -709,6 +728,7 @@ async fn ordinary_completion_outer_finish_panic_retains_original_response_after_
     assert_eq!(inspect(), first);
     drop(witness);
     drop(input);
+    drop(create);
     drop(original);
     // Terminal originals have no acknowledgment/disposal protocol in this cut.
     // Keep the real TempDir with its enrolled native/census custody; this does
@@ -973,7 +993,9 @@ async fn ordinary_completion_bound_frozen_branch_keeps_source_without_new_prepar
             assert!(completion.queued_reader.is_none());
             assert!(completion.selected_cell.is_none());
             assert_eq!(fixture.fixture.roots.gate.lock().unwrap().next, next_source);
-            assert_eq!(cell.handles.load(Ordering::Acquire), 2);
+            // The two generations share one resolver and each retain their
+            // own application selection. The frozen path adds no handle.
+            assert_eq!(cell.handles.load(Ordering::Acquire), 3);
             assert!(!cell.state.lock().unwrap().closed);
         },
     )?;
@@ -1150,7 +1172,7 @@ async fn ordinary_completion_fault_checkpoints_preserve_exact_original_and_sourc
                 assert_eq!(
                     cell.handles.load(Ordering::Acquire),
                     if captured {
-                        if point == C::Visible { 2 } else { 1 }
+                        if point == C::Visible { 3 } else { 1 }
                     } else {
                         0
                     }

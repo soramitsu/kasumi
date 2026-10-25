@@ -1,6 +1,8 @@
 //! Closed replicated recovery journal. Ordinary document commands cannot write
 //! these records. Every remote effect has an exact durable phase before dispatch.
 use super::*;
+use crate::index_source::SourceResult;
+use kasumi_query::ReadFailure;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 #[path = "recovery_initial_inspection.rs"]
@@ -313,8 +315,14 @@ impl TenantEngine {
         );
         let mut next = previous.state.clone();
         next.revision = revision;
-        let mut outcome =
-            authorize(&next, &command.authorization).and_then(|()| apply(&mut next, &command));
+        let mut outcome = match authorize(&next, &command.authorization)
+            .map_err(ReadFailure::Query)
+            .and_then(|()| apply(&mut next, &command, previous.document_resolver()))
+        {
+            Ok(record) => Ok(record),
+            Err(ReadFailure::Query(error)) => Err(error),
+            Err(ReadFailure::Source(error)) => return Err(error.0),
+        };
         if outcome.is_err() {
             next = previous.state.clone();
             next.revision = revision;
@@ -351,12 +359,12 @@ impl TenantEngine {
             .collections
             .get(route::COLLECTION)
             .and_then(|c| c.documents.get(route::DOCUMENT))
-            .map(|d| d.version)
+            .map(|d| d.version())
             != next
                 .collections
                 .get(route::COLLECTION)
                 .and_then(|c| c.documents.get(route::DOCUMENT))
-                .map(|d| d.version)
+                .map(|d| d.version())
         {
             BTreeMap::from([(
                 route::COLLECTION.to_string(),
@@ -402,12 +410,17 @@ impl TenantEngine {
             ChangedIds::new()
         };
         let indexes = if !changed.is_empty() {
-            Arc::new(crate::index_source::update(
-                &previous.indexes,
-                &previous.state,
-                &next,
-                &changed,
-            )?)
+            Arc::new(
+                crate::index_source::update_with_resolvers(
+                    &previous.indexes,
+                    &previous.state,
+                    &next,
+                    &changed,
+                    previous.document_resolver(),
+                    previous.document_resolver(),
+                )
+                .map_err(crate::index_source::into_anyhow)?,
+            )
         } else {
             previous.indexes.clone()
         };
@@ -420,6 +433,8 @@ impl TenantEngine {
             backup_bindings: previous.backup_bindings.clone(),
             snapshot_accounting: accounting,
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         });
         let response = kasumi_raft::AppliedResponse::application(serde_json::to_vec(&outcome)?);
@@ -431,7 +446,11 @@ impl TenantEngine {
         )
     }
 }
-pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Result<RecoveryRecord> {
+pub(crate) fn apply(
+    state: &mut TenantState,
+    command: &RecoveryCommand,
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<RecoveryRecord> {
     if let RecoveryMutation::Start(request) = &command.mutation {
         request.validate()?;
         if let Some(existing) = state
@@ -440,7 +459,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
             .get(&request.operation_id.to_string())
         {
             if existing.request != **request {
-                return Err(conflict("permanent recovery operation identity differs"));
+                return Err(conflict("permanent recovery operation identity differs").into());
             }
             return Ok(existing.clone());
         }
@@ -455,18 +474,18 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 .partitions
                 .contains_key(&request.authority_partition)
         {
-            return Err(conflict(
-                "recovery Control installation or admission epoch differs",
-            ));
+            return Err(
+                conflict("recovery Control installation or admission epoch differs").into(),
+            );
         }
         if state
             .recovery_control
             .targets
             .contains_key(&request.target_incarnation.to_string())
         {
-            return Err(conflict(
-                "target incarnation is permanently bound to another recovery",
-            ));
+            return Err(
+                conflict("target incarnation is permanently bound to another recovery").into(),
+            );
         }
         let record = RecoveryRecord {
             request: request.as_ref().clone(),
@@ -534,20 +553,20 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
     match &command.mutation {
         RecoveryMutation::Stop { command_id, .. } => {
             if command_id.is_nil() {
-                return Err(conflict("nil recovery stop identity"));
+                return Err(conflict("nil recovery stop identity").into());
             }
             if let Some(existing) = operation.stop_request {
                 if existing != *command_id {
-                    return Err(conflict("permanent recovery stop identity differs"));
+                    return Err(conflict("permanent recovery stop identity differs").into());
                 }
                 return Ok(operation);
             }
             if let Some(id) = operation.pending_phase
                 && !phase(state, &operation, id)?.effect_attempts.is_empty()
             {
-                return Err(conflict(
-                    "resolve the begun remote recovery effect before stopping",
-                ));
+                return Err(
+                    conflict("resolve the begun remote recovery effect before stopping").into(),
+                );
             }
             operation.stop_request = Some(*command_id);
             if operation.activation.is_none() {
@@ -574,7 +593,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                     || existing.sequence != *expected_sequence
                     || !same(&existing.input, input.as_ref())?
                 {
-                    return Err(conflict("permanent recovery phase input differs"));
+                    return Err(conflict("permanent recovery phase input differs").into());
                 }
                 return Ok(operation);
             }
@@ -583,7 +602,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 || operation.next_phase_sequence != *expected_sequence
                 || operation.pending_phase != *expected_pending
             {
-                return Err(conflict("recovery phase compare-and-set differs"));
+                return Err(conflict("recovery phase compare-and-set differs").into());
             }
             if let Some(pending) = operation.pending_phase {
                 let pending = phase(state, &operation, pending)?;
@@ -657,7 +676,8 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 {
                     return Err(conflict(
                         "resolve the begun remote recovery effect before another phase",
-                    ));
+                    )
+                    .into());
                 }
                 let expired_route = matches!(
                     (&pending.input, input.as_ref()),
@@ -679,13 +699,21 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 {
                     return Err(conflict(
                         "resolve the exact pending recovery phase before another dispatch",
-                    ));
+                    )
+                    .into());
                 }
                 if stop_expired {
                     operation.phase = RecoveryPhase::StopActivation;
                 }
             }
-            validate_input(state, &operation, *phase_id, input, &command.authorization)?;
+            validate_input(
+                state,
+                &operation,
+                *phase_id,
+                input,
+                &command.authorization,
+                resolver,
+            )?;
             if matches!(input.as_ref(), RecoveryDispatch::PublishRoute(_))
                 && let Some(old) = operation.pending_phase
             {
@@ -695,7 +723,8 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 {
                     return Err(conflict(
                         "local publication supersession requires its expired original phase",
-                    ));
+                    )
+                    .into());
                 }
                 prior.outcome = Some(RecoveryDispatchOutcome::RouteSuperseded {
                     replacement_phase: *phase_id,
@@ -769,14 +798,14 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
             ..
         } => {
             if operation.pending_phase != Some(*phase_id) {
-                return Err(conflict("recovery effect is not the pending phase"));
+                return Err(conflict("recovery effect is not the pending phase").into());
             }
             let key = phase_key(operation_id, *phase_id);
             let mut prepared = phase(state, &operation, *phase_id)?.clone();
             // Even a bit-for-bit Begin replay is a conflict: only the first
             // definite commit may eventually yield a one-shot dispatch ticket.
             if prepared.effect_attempts.contains_key(effect) {
-                return Err(conflict("recovery effect may already have been dispatched"));
+                return Err(conflict("recovery effect may already have been dispatched").into());
             }
             if attempt_id.is_nil()
                 || operation.phase != prepared.phase
@@ -785,14 +814,14 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 || expected_input_sha256 != &prepared.input_sha256
                 || prepared.input_sha256 != staged_digest(&prepared.input)?.0
             {
-                return Err(conflict("recovery effect phase or frozen input differs"));
+                return Err(conflict("recovery effect phase or frozen input differs").into());
             }
             let limit = effect_dispatch_limit(&operation, &prepared)?;
             if command.authorization.admitted_at_ms < prepared.admitted_at_ms
                 || command.authorization.admitted_at_ms >= limit
                 || command.authorization.admitted_at_ms >= command.authorization.expires_at_ms
             {
-                return Err(conflict("original recovery effect deadline expired"));
+                return Err(conflict("original recovery effect deadline expired").into());
             }
             let allowed = match (&prepared.input, effect) {
                 (RecoveryDispatch::Authority(input), RecoveryEffect::AuthorityCommand) => {
@@ -812,7 +841,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 _ => false,
             };
             if !allowed {
-                return Err(conflict("recovery effect kind or activation order differs"));
+                return Err(conflict("recovery effect kind or activation order differs").into());
             }
             prepared.effect_attempts.insert(
                 *effect,
@@ -830,7 +859,8 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 if operation.initialization_attempt.is_some() {
                     return Err(conflict(
                         "original Initialize already has its one dispatch marker",
-                    ));
+                    )
+                    .into());
                 }
                 operation.initialization_attempt = Some(*phase_id);
                 operation.initialization_starts = operation
@@ -855,7 +885,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
             ..
         } => {
             if operation.pending_phase != Some(*phase_id) {
-                return Err(conflict("activation acceptance is not the pending phase"));
+                return Err(conflict("activation acceptance is not the pending phase").into());
             }
             let key = phase_key(operation_id, *phase_id);
             let mut prepared = phase(state, &operation, *phase_id)?.clone();
@@ -872,7 +902,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 || command.authorization.context.principal != prepared.principal
                 || state.revision <= marker.begun_revision
             {
-                return Err(conflict("activation acceptance commitment differs"));
+                return Err(conflict("activation acceptance commitment differs").into());
             }
             verify_activation_acceptance(state, &operation, &prepared, signed_receipt)?;
             let signed_receipt_json = serde_json::to_string(signed_receipt)
@@ -890,7 +920,7 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
             let key = phase_key(operation_id, *phase_id);
             let mut prepared = phase(state, &operation, *phase_id)?.clone();
             let RecoveryDispatch::PublishRoute(input) = &prepared.input else {
-                return Err(conflict("route publication phase input differs"));
+                return Err(conflict("route publication phase input differs").into());
             };
             if prepared.outcome.is_some() {
                 return Ok(operation);
@@ -899,13 +929,14 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                 || operation.pending_phase != Some(*phase_id)
                 || command.authorization.admitted_at_ms >= dispatch_limit(&operation, &prepared)?
             {
-                return Err(conflict("original route publication is no longer eligible"));
+                return Err(conflict("original route publication is no longer eligible").into());
             }
             let outcome = route::apply(
                 state,
                 &operation,
                 input,
                 command.authorization.admitted_at_ms,
+                resolver,
             )?;
             prepared.outcome = Some(outcome.clone());
             prepared.resolved_revision = Some(state.revision);
@@ -922,19 +953,20 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
             let mut prepared = phase(state, &operation, *phase_id)?.clone();
             if let Some(existing) = &prepared.outcome {
                 if !same(existing, outcome.as_ref())? {
-                    return Err(conflict("permanent recovery phase outcome differs"));
+                    return Err(conflict("permanent recovery phase outcome differs").into());
                 }
                 return Ok(operation);
             }
             if matches!(prepared.input, RecoveryDispatch::PublishRoute(_)) {
                 return Err(conflict(
                     "route outcome must be committed atomically with its topology update",
-                ));
+                )
+                .into());
             }
             if operation.pending_phase != Some(*phase_id) {
-                return Err(conflict(
-                    "recovery phase was superseded; retain its original history",
-                ));
+                return Err(
+                    conflict("recovery phase was superseded; retain its original history").into(),
+                );
             }
             require_effect_marker(&prepared, outcome, state.revision)?;
             validate_outcome(state, &operation, &prepared, outcome)?;
@@ -955,9 +987,9 @@ pub(crate) fn apply(state: &mut TenantState, command: &RecoveryCommand) -> Resul
                     if activation::original_receipt(existing)?
                         != activation::original_receipt(&resolved)?
                     {
-                        return Err(conflict(
-                            "activation stop changed permanent original outcome",
-                        ));
+                        return Err(
+                            conflict("activation stop changed permanent original outcome").into(),
+                        );
                     }
                 } else {
                     validate_outcome(state, &operation, &original_phase, &resolved)?;
@@ -1147,12 +1179,14 @@ fn validate_input(
     phase_id: Uuid,
     input: &RecoveryDispatch,
     authorization: &RecoveryAuthorization,
-) -> Result<()> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<()> {
     if staged_digest(input)?.1 > MAX_RECOVERY_RECORD_BYTES / 2 {
         return Err(error(
             ErrorCode::ResourceExhausted,
             "recovery phase input work limit",
-        ));
+        )
+        .into());
     }
     match (operation.phase, input) {
         (
@@ -1201,7 +1235,8 @@ fn validate_input(
             {
                 return Err(conflict(
                     "recovery issuer command differs from frozen input or original deadline",
-                ));
+                )
+                .into());
             }
         }
         (
@@ -1265,7 +1300,8 @@ fn validate_input(
                 {
                     return Err(conflict(
                         "resolve the live original completion phase before fresh inspection",
-                    ));
+                    )
+                    .into());
                 }
             }
             if phase == LifecyclePhase::InspectInitialMembership {
@@ -1276,7 +1312,8 @@ fn validate_input(
                 if authorization.admitted_at_ms < request.not_after_ms {
                     return Err(conflict(
                         "resolve live original Initialize before fresh inspection",
-                    ));
+                    )
+                    .into());
                 }
             }
             if phase == LifecyclePhase::ResumeMaterialize {
@@ -1293,7 +1330,8 @@ fn validate_input(
                 {
                     return Err(conflict(
                         "resolve the original live materialization before a fresh phase",
-                    ));
+                    )
+                    .into());
                 }
             }
             if **request
@@ -1307,7 +1345,8 @@ fn validate_input(
             {
                 return Err(conflict(
                     "recovery Control phase differs from its exact frozen origin",
-                ));
+                )
+                .into());
             }
         }
         (
@@ -1344,9 +1383,9 @@ fn validate_input(
                 || request.command_id != current.request.command_id
                 || request.tenant != operation.request.tenant
             {
-                return Err(conflict(
-                    "native target dispatch differs from current original phase",
-                ));
+                return Err(
+                    conflict("native target dispatch differs from current original phase").into(),
+                );
             }
             if matches!(request.step, TargetRuntimeStep::Complete(_)) {
                 receiver::validate_complete_dispatch(state, operation, request)?;
@@ -1394,7 +1433,7 @@ fn validate_input(
                 {
                     input.validate(current)?;
                     if input != &operation.request.materialization {
-                        return Err(conflict("target materialization input changed"));
+                        return Err(conflict("target materialization input changed").into());
                     }
                 }
                 (
@@ -1405,7 +1444,7 @@ fn validate_input(
                         || current.request.resume_origin.as_deref() != Some(retained.as_ref())
                         || **retained != origin(state, operation)?
                     {
-                        return Err(conflict("target readmission origin changed"));
+                        return Err(conflict("target readmission origin changed").into());
                     }
                 }
                 (TargetRuntimeStep::Stop(reference), RecoveryPhase::Cleanup)
@@ -1414,20 +1453,21 @@ fn validate_input(
                     if current.request.phase != LifecyclePhase::StopLocal
                         || *reference != stop_reference(state, operation)?
                     {
-                        return Err(conflict("target cleanup stop changed"));
+                        return Err(conflict("target cleanup stop changed").into());
                     }
                 }
                 _ => {
                     return Err(conflict(
                         "native target step is outside the current recovery phase",
-                    ));
+                    )
+                    .into());
                 }
             }
         }
         (RecoveryPhase::Publish, RecoveryDispatch::PublishRoute(input)) => {
             route::validate_input(operation, input)?;
-            if *input != route::next_input(state, operation)? {
-                return Err(conflict("route publication compare-and-set input changed"));
+            if *input != route::next_input(state, operation, resolver)? {
+                return Err(conflict("route publication compare-and-set input changed").into());
             }
         }
         (RecoveryPhase::RetireSource, RecoveryDispatch::RetireSource(request)) => {
@@ -1442,10 +1482,11 @@ fn validate_input(
             {
                 return Err(conflict(
                     "planned retirement input or original phase deadline differs",
-                ));
+                )
+                .into());
             }
         }
-        _ => return Err(conflict("coordinator phase dispatch is not installed")),
+        _ => return Err(conflict("coordinator phase dispatch is not installed").into()),
     }
     Ok(())
 }

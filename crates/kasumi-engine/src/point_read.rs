@@ -1,6 +1,6 @@
-//! Point-result custody. This does not change resident cache membership or
-//! claim complete per-document source capacity accounting: the existing point
-//! floor and archived decoder allowances remain provisional.
+//! Point-result custody. The lookup owns only its registration workspace;
+//! native/archive sources admit their decoding separately, and owned outputs
+//! admit their exact cloned representation before allocation.
 use super::*;
 use std::mem::size_of;
 
@@ -16,7 +16,7 @@ pub(super) fn point_arc_bytes<T>() -> Result<u64> {
 // Every selected source and history chunk dies before the ledger. Registration
 // backing is also admitted by that ledger, so it precedes the charge fields.
 pub(super) struct PointRead {
-    pub(super) document: Option<Arc<Document>>,
+    pub(super) document: Option<history_reads::ReadDocument>,
     generation: Option<Arc<crate::Generation>>,
     history: history_reads::HistoryReadCache,
     registration: Option<Arc<WorkRegistration>>,
@@ -67,6 +67,19 @@ impl PointRead {
         Ok(AdmittedOutput::new(document, self.retain_charge()))
     }
     pub(super) fn shared(&mut self) -> Result<SharedDocument> {
+        if matches!(self.document.as_ref(), Some(OwnedDocument::Stored(_))) {
+            self.claim(OUTPUT_CHARGE_BYTES)?;
+            let OwnedDocument::Stored(document) =
+                self.document.take().expect("selected point document")
+            else {
+                unreachable!()
+            };
+            // Native decoding already supplied an independently admitted owner.
+            // The point workspace stays with registration through final release,
+            // then retires instead of becoming a second output memory charge.
+            self.retain_charge();
+            return Ok(document);
+        }
         self.claim(
             point_arc_bytes::<SharedPointOwner>()?
                 .checked_add(OUTPUT_CHARGE_BYTES)
@@ -85,7 +98,7 @@ impl PointRead {
 }
 
 struct SharedPointOwner {
-    document: Arc<Document>,
+    document: history_reads::ReadDocument,
     _history: history_reads::HistoryReadCache,
     _charge: Arc<Reservation>,
 }
@@ -153,14 +166,12 @@ impl Database {
             .authorize(context, Some(collection), Action::Read)?;
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        let floor = (self.engine.generation()?.state.limits.max_document_bytes as u64)
-            .checked_mul(3)
-            .ok_or_else(query_workspace_overflow)?;
+        let floor = point_arc_bytes::<WorkRegistration>()?;
         let mut read = PointRead::new(
             self.admission()
                 .reserve(floor, Some(cancellation.clone()))?,
         );
-        read.claim(point_arc_bytes::<WorkRegistration>()?)?;
+        read.claim(floor)?;
         read.registration = Some(Arc::new(self.work.begin(cancellation.clone())?));
         tokio::select! {
             result = self.barrier() => result?,
@@ -178,7 +189,7 @@ impl Database {
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
         // Reuse the captured source's identity/version checks for hot and cold
         // records before the history resolver may clone an internal Arc.
-        let _record = crate::index_source::record(selected, id, generation.state.revision)?;
+        let _header = crate::index_source::header(selected, id, generation.state.revision)?;
         let revision = generation.state.revision;
         let policy_epoch = generation.state.policy_epoch;
         let strict =
@@ -199,6 +210,10 @@ impl Database {
         read.document = Some(document);
         cancellation.check()?;
         let response = Some(select(&mut read)?);
+        // A copied output is independent; a shared output already took its
+        // admitted source owner. Neither needs an unused loan during the audit.
+        drop(read.document.take());
+        read.history = history_reads::HistoryReadCache::new();
         let mut pending = PendingPoint { response, read };
         // A hot returned handle retains only its exact Document, never the
         // complete Generation and unrelated indexes/history/state roots.

@@ -129,7 +129,7 @@ pub(super) fn seek_page(
             cancellation,
             memory,
         )
-        .map_err(ReadFailure::into_query_error)?;
+        .map_err(source_read_error)?;
     // Restored documents may have version zero. The first page's revision
     // remains the upper bound for every row a continuation returns.
     if page.rows.iter().any(|row| row.version > revision) {

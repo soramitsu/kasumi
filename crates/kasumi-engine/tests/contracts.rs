@@ -1,4 +1,4 @@
-use kasumi_engine::test_utils::SnapshotFixture;
+use kasumi_engine::test_utils::{SnapshotFixture, fixture_document};
 mod common;
 
 use common::FixtureEngine;
@@ -227,7 +227,9 @@ fn not_before_uses_the_inclusive_leader_stamp_on_every_replica_and_retains_repla
         let denied = db.apply_command(&db.disk, 3, early).unwrap().unwrap_err();
         assert_eq!(denied.code, ErrorCode::Conflict);
         assert_eq!(
-            db.generation().unwrap().state.collections["people"].documents["lease"].body["email"],
+            fixture_document(&db.generation().unwrap(), "people", "lease")
+                .unwrap()
+                .body["email"],
             "first-owner"
         );
 
@@ -245,7 +247,9 @@ fn not_before_uses_the_inclusive_leader_stamp_on_every_replica_and_retains_repla
         admitted.timestamp_ms = 2_000;
         let receipt = db.apply_command(&db.disk, 5, admitted).unwrap().unwrap();
         assert_eq!(
-            db.generation().unwrap().state.collections["people"].documents["lease"].body["email"],
+            fixture_document(&db.generation().unwrap(), "people", "lease")
+                .unwrap()
+                .body["email"],
             "second-owner"
         );
 
@@ -318,7 +322,9 @@ fn read_assertions_block_write_skew_and_require_read_authority() {
         ErrorCode::Forbidden
     );
     assert_eq!(
-        db.generation().unwrap().state.collections["people"].documents["b"].body["email"],
+        fixture_document(&db.generation().unwrap(), "people", "b")
+            .unwrap()
+            .body["email"],
         "b"
     );
 }
@@ -343,11 +349,7 @@ fn merge_patches_validate_the_merged_document_and_apply_atomically() {
     db.apply_command(&db.disk, 2, command(Operation::Mutate(seed)))
         .unwrap()
         .unwrap();
-    let document = |id: &str| {
-        db.generation().unwrap().state.collections["people"].documents[id]
-            .as_ref()
-            .clone()
-    };
+    let document = |id: &str| fixture_document(&db.generation().unwrap(), "people", id).unwrap();
     let receipt = db
         .apply_command(
             &db.disk,
@@ -736,11 +738,11 @@ fn boi_first_owner_and_policy_claim_spans_fourteen_collections_and_survives_snap
         .unwrap();
     let generation = db.generation().unwrap();
     assert_eq!(
-        generation.state.collections["boi_core_owner"].documents["owner"].version,
+        generation.state.collections["boi_core_owner"].documents["owner"].version(),
         3
     );
     assert_eq!(
-        generation.state.collections["boi_core_policy"].documents["policy"].version,
+        generation.state.collections["boi_core_policy"].documents["policy"].version(),
         3
     );
     drop(generation);
@@ -806,15 +808,17 @@ fn boi_first_owner_and_policy_claim_spans_fourteen_collections_and_survives_snap
     db.fixture_restore(&snapshot).unwrap();
     let recovered = db.generation().unwrap();
     assert_eq!(
-        recovered.state.collections["boi_core_owner"].documents["owner"].version,
+        recovered.state.collections["boi_core_owner"].documents["owner"].version(),
         3
     );
     assert_eq!(
-        recovered.state.collections["boi_core_policy"].documents["policy"].version,
+        recovered.state.collections["boi_core_policy"].documents["policy"].version(),
         3
     );
     assert_eq!(
-        recovered.state.collections["boi_core_wallets"].documents["wallet-1"].body["value"]["balance"],
+        fixture_document(&recovered, "boi_core_wallets", "wallet-1")
+            .unwrap()
+            .body["value"]["balance"],
         json!(2)
     );
     drop(recovered);
@@ -1177,7 +1181,7 @@ fn receipts_survive_snapshot_and_precede_changed_schema_and_cas() {
         expected
     );
     assert_eq!(
-        restored.generation().unwrap().state.collections["people"].documents["a"].version,
+        restored.generation().unwrap().state.collections["people"].documents["a"].version(),
         2
     );
     let conflict = restored
@@ -1295,7 +1299,9 @@ fn concurrent_cas_has_exactly_one_winner() {
     assert!(first.is_ok());
     assert_eq!(second.unwrap_err().code, ErrorCode::Conflict);
     assert_eq!(
-        db.generation().unwrap().state.collections["people"].documents["a"].body["email"],
+        fixture_document(&db.generation().unwrap(), "people", "a")
+            .unwrap()
+            .body["email"],
         "b"
     );
 }
@@ -1716,10 +1722,21 @@ async fn shared_get_uses_the_same_audit_and_authorization_and_keeps_historical_v
         .unwrap()
         .expect("document exists");
     let generation = db.engine().generation().unwrap();
-    assert!(std::ptr::eq(
-        shared.as_ref(),
-        generation.state.collections["people"].documents["a"].as_ref()
-    ));
+    let descriptor = generation.state.collections["people"].documents["a"]
+        .stored()
+        .expect("published generations retain compact descriptors");
+    assert_eq!(descriptor.id, shared.id);
+    assert_eq!(descriptor.version, shared.version);
+    assert_eq!(
+        fixture_document(&generation, "people", "a")
+            .unwrap()
+            .as_ref(),
+        shared.as_ref()
+    );
+    let cloned = shared.clone();
+    assert!(std::ptr::eq(shared.as_ref(), cloned.as_ref()));
+    drop(shared);
+    let shared = cloned;
     let read_audit = generation.state.audits.back().unwrap();
     assert_eq!(read_audit.action, "read");
     assert_eq!(read_audit.outcome, "authorized_release");

@@ -520,6 +520,8 @@ impl TenantEngine {
                 backup_bindings: previous.backup_bindings.clone(),
                 snapshot_accounting: accounting,
                 application_selection: std::sync::OnceLock::new(),
+                staged_documents: previous.staged_documents.clone(),
+                document_sources: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
             });
             self.publish_prepared_generation(

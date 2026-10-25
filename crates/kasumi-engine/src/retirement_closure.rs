@@ -1,5 +1,7 @@
 //! Canonical closure of all application state for planned retirement.
 //! No application collection or command-identity exclusion is configurable.
+use crate::index_source::{DocumentSourceFailure, SourceResult};
+use kasumi_query::ReadFailure;
 use kasumi_types::*;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -77,9 +79,13 @@ trait ClosureRecords {
         Box<dyn Iterator<Item = anyhow::Result<crate::snapshot_codec::Record>> + Send + '_>,
     >;
 }
-impl ClosureRecords for TenantState {
+struct SelectedState<'a> {
+    state: &'a TenantState,
+    resolver: Option<&'a dyn DocumentResolver>,
+}
+impl ClosureRecords for SelectedState<'_> {
     fn metadata(&self) -> &TenantState {
-        self
+        self.state
     }
     fn records(
         &self,
@@ -88,7 +94,7 @@ impl ClosureRecords for TenantState {
     ) -> anyhow::Result<
         Box<dyn Iterator<Item = anyhow::Result<crate::snapshot_codec::Record>> + Send + '_>,
     > {
-        crate::snapshot_codec::records(self, kind, primary)
+        crate::snapshot_codec::records_with_resolver(self.state, kind, primary, self.resolver)
     }
 }
 impl ClosureRecords for crate::backup_verify::VerifiedState {
@@ -108,20 +114,27 @@ impl ClosureRecords for crate::backup_verify::VerifiedState {
 fn corrupt(error: impl std::fmt::Display) -> Error {
     Error::new(ErrorCode::Corruption, error.to_string())
 }
+fn source_failure(error: anyhow::Error) -> ReadFailure<DocumentSourceFailure> {
+    ReadFailure::Source(DocumentSourceFailure(error))
+}
 
-pub(crate) fn digest(state: &TenantState, check: impl FnMut() -> Result<()>) -> Result<String> {
-    digest_records(state, check)
+pub(crate) fn digest(
+    state: &TenantState,
+    resolver: Option<&dyn DocumentResolver>,
+    check: impl FnMut() -> Result<()>,
+) -> SourceResult<String> {
+    digest_records(&SelectedState { state, resolver }, check)
 }
 pub(crate) fn digest_verified(
     state: &crate::backup_verify::VerifiedState,
     check: impl FnMut() -> Result<()>,
-) -> Result<String> {
+) -> SourceResult<String> {
     digest_records(state, check)
 }
 fn digest_records(
     view: &impl ClosureRecords,
     mut check: impl FnMut() -> Result<()>,
-) -> Result<String> {
+) -> SourceResult<String> {
     use crate::snapshot_codec::Record;
     let state = view.metadata();
     let mut digest = Sha256::new();
@@ -150,9 +163,9 @@ fn digest_records(
     // Strictly ordered typed records include an authenticated terminal count for
     // every category. Staging and change-feed payloads never become one value.
     let mut collections = 0u64;
-    for collection in view.records(2, None).map_err(corrupt)? {
+    for collection in view.records(2, None).map_err(source_failure)? {
         check()?;
-        let Record::Collection(name, collection) = collection.map_err(corrupt)? else {
+        let Record::Collection(name, collection) = collection.map_err(source_failure)? else {
             unreachable!()
         };
         record(
@@ -165,27 +178,43 @@ fn digest_records(
             ),
             &mut check,
         )?;
-        let mut hot = view.records(3, Some(&name)).map_err(corrupt)?.peekable();
-        let mut cold = view.records(4, Some(&name)).map_err(corrupt)?.peekable();
+        let mut hot = view
+            .records(3, Some(&name))
+            .map_err(source_failure)?
+            .peekable();
+        let mut cold = view
+            .records(4, Some(&name))
+            .map_err(source_failure)?
+            .peekable();
         let mut count = 0u64;
         loop {
             check()?;
             let a = match hot.peek() {
                 Some(Ok(Record::Document(_, doc))) => Some(doc.id.as_str()),
-                Some(Err(error)) => return Err(corrupt(error)),
+                Some(Err(_)) => {
+                    let Some(Err(error)) = hot.next() else {
+                        unreachable!()
+                    };
+                    return Err(source_failure(error));
+                }
                 None => None,
-                _ => return Err(corrupt("unexpected closure document record")),
+                _ => return Err(corrupt("unexpected closure document record").into()),
             };
             let b = match cold.peek() {
                 Some(Ok(Record::Archived(_, id, _))) => Some(id.as_str()),
-                Some(Err(error)) => return Err(corrupt(error)),
+                Some(Err(_)) => {
+                    let Some(Err(error)) = cold.next() else {
+                        unreachable!()
+                    };
+                    return Err(source_failure(error));
+                }
                 None => None,
-                _ => return Err(corrupt("unexpected closure archived record")),
+                _ => return Err(corrupt("unexpected closure archived record").into()),
             };
             let hot_next = match (a, b) {
                 (None, None) => break,
                 (Some(a), Some(b)) if a == b => {
-                    return Err(corrupt("retirement document has two representations"));
+                    return Err(corrupt("retirement document has two representations").into());
                 }
                 (Some(a), Some(b)) => a < b,
                 (Some(_), None) => true,
@@ -219,9 +248,9 @@ fn digest_records(
     for kind in [1u8, 6, 7, 8, 9, 10, 11, 12, 17] {
         record(&mut digest, &("category", kind), &mut check)?;
         let mut count = 0u64;
-        for value in view.records(kind, None).map_err(corrupt)? {
+        for value in view.records(kind, None).map_err(source_failure)? {
             check()?;
-            record(&mut digest, &value.map_err(corrupt)?, &mut check)?;
+            record(&mut digest, &value.map_err(source_failure)?, &mut check)?;
             count = count
                 .checked_add(1)
                 .ok_or_else(|| corrupt("retirement record count overflow"))?;

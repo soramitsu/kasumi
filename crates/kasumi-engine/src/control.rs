@@ -136,7 +136,10 @@ impl ControlPlane {
     }
     /// Inspect a replica's actual local state without implying a quorum read.
     /// Missing or substituted reserved state is corruption, never provisioning.
-    pub fn applied_topology(state: &TenantState) -> Result<VersionedTopology> {
+    pub fn applied_topology(
+        state: &TenantState,
+        resolver: Option<&dyn DocumentResolver>,
+    ) -> Result<VersionedTopology> {
         let corrupt = |message| Error::new(ErrorCode::Corruption, message);
         if state.tenant != CONTROL_TENANT {
             return Err(corrupt("Control state has the wrong namespace"));
@@ -162,8 +165,27 @@ impl ControlPlane {
             .documents
             .get(DOCUMENT)
             .ok_or_else(|| corrupt("installed Control topology is missing"))?;
-        let topology: ControlTopology = serde_json::from_value(document.body.clone())
-            .map_err(|_| corrupt("installed Control topology is invalid"))?;
+        let document = match document.as_ref() {
+            DocumentSlot::Pending(document) => DocumentLoan::Pending(document),
+            DocumentSlot::Stored(document) => DocumentLoan::Stored(
+                document
+                    .load(resolver.ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::Unavailable,
+                            "Control document resolver is unavailable",
+                        )
+                    })?)
+                    .map_err(|_| {
+                        Error::new(
+                            ErrorCode::Unavailable,
+                            "Control document storage is unavailable",
+                        )
+                    })?,
+            ),
+        };
+        let topology: ControlTopology =
+            <ControlTopology as serde::Deserialize>::deserialize(&document.body)
+                .map_err(|_| corrupt("installed Control topology is invalid"))?;
         topology.validate()?;
         Ok(VersionedTopology {
             version: document.version,
