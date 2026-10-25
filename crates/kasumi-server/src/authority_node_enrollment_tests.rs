@@ -221,9 +221,20 @@ impl Fixture {
         })
     }
     fn node(&self) -> std::result::Result<NodeStore, kasumi_store::NodeStoreStartFailure> {
+        self.node_at(&self.config.database_path, self.config.database_id)
+    }
+    fn verifier_node(&self) -> std::result::Result<NodeStore, kasumi_store::NodeStoreStartFailure> {
+        let id =
+            kasumi_store::node_store_ids::signer_verifier(&self.config.signer_verifier.identity)
+                .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
+        self.node_at(&self.config.signer_verifier.database_path, id)
+    }
+    fn node_at(
+        &self,
+        native_path: &std::path::Path,
+        native_id: Uuid,
+    ) -> std::result::Result<NodeStore, kasumi_store::NodeStoreStartFailure> {
         {
-            let native_path = &self.config.database_path;
-            let native_id = self.config.database_id;
             let native_disk = self
                 .storage
                 .open_persistent(&self.config.persistent_disk)
@@ -498,7 +509,9 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
         .expect("same actual admitted terminal survives caller cancellation");
     let terminal_id = terminal.id();
     assert!(fixture.node().is_err());
-    assert!(fixture.verifier().await.is_err());
+    // Probe the exact native owner directly: a full verifier startup retains
+    // its rejected opening and waits for cleanup while genesis is still paused.
+    assert!(fixture.verifier_node().is_err());
     let mut drain = Box::pin(terminal.join());
     std::future::poll_fn(|cx| {
         assert!(drain.as_mut().poll(cx).is_pending());
@@ -517,7 +530,7 @@ async fn cancelled_authority_enrollment_joins_dispatched_genesis_and_preserves_b
     })
     .await;
     assert!(fixture.node().is_err());
-    assert!(fixture.verifier().await.is_err());
+    assert!(fixture.verifier_node().is_err());
     drop(drain);
     blocking.release();
     tokio::time::timeout(Duration::from_secs(10), terminal.join()).await?;

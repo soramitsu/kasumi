@@ -576,7 +576,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .await
             .is_err()
     );
-    let entries = (0..4).map(|index| serde_json::json!({"log_id":{"leader_id":{"term":1,"node_id":1},"index":index},"payload":{"Normal":kasumi_raft::RaftCommand::application(vec![171; 100])}})).collect::<Vec<_>>();
+    let entries = (0..4).map(|index| serde_json::json!({"log_id":{"leader_id":{"term":1,"node_id":1},"index":index},"payload":{"Normal":kasumi_raft::RaftCommand::application(vec![171; 100])},"initialization":null})).collect::<Vec<_>>();
     let oversized: RpcRequest = serde_json::from_value(
         serde_json::json!({"rpc":"append","payload":{"vote":{"leader_id":{"term":1,"node_id":1},"committed":true},"prev_log_id":null,"leader_commit":null,"entries":entries}}),
     )?;

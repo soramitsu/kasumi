@@ -375,14 +375,21 @@ async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstra
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
     let before = retained(&fixture.stores)?;
-    assert!(
-        open_existing_local(
-            fixture.stores.clone(),
-            fixture.audit.clone(),
-            fixture.incarnation
-        )
-        .await
-        .is_err()
+    let missing = open_existing_local(
+        fixture.stores.clone(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await
+    .err()
+    .expect("missing deployment binding must reject");
+    let original = missing
+        .operation_error()
+        .expect("native-free corruption error");
+    assert_eq!(original.code, ErrorCode::Corruption);
+    assert_eq!(
+        original.message,
+        "required deployment binding is absent or differs"
     );
     // A live facade can no longer manufacture one-sided or divergent first
     // installation. These attempts must leave the pristine pair untouched.

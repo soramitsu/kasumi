@@ -1183,6 +1183,22 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
             }
         }
     }
+    /// Forward only the closed, native-free application error as a typed inner
+    /// outcome. Callers must still drain their actual resources before returning
+    /// it. All opaque or native-owning failures remain in the original seat.
+    pub(crate) async fn run_snapshot_operation<T>(
+        &mut self,
+        work: impl std::future::Future<Output = std::result::Result<T, kasumi_engine::SnapshotFailure>>,
+    ) -> std::result::Result<kasumi_types::Result<T>, OriginalRecoveryObservation> {
+        self.run_snapshot(async {
+            match work.await {
+                Ok(value) => Ok(Ok(value)),
+                Err(kasumi_engine::SnapshotFailure::Operation(original)) => Ok(Err(original)),
+                Err(original) => Err(original),
+            }
+        })
+        .await
+    }
     pub(crate) fn with_failure<R>(
         &self,
         inspect: impl FnOnce(&OriginalRecoveryFailure) -> R,

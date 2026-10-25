@@ -79,7 +79,7 @@ async fn real_initial_quote_error_remains_owned_after_foreign_status_and_alias_d
             let original = EncryptedTable::new(&disk, 8 << 20, disk.native_cache_config())
                 .err()
                 .unwrap();
-            assert!(original.owner_id().is_none());
+            assert!(original.owner_id().is_some());
             Err::<(), _>(SnapshotFailure::Creation(original))
         })
         .await
@@ -90,24 +90,49 @@ async fn real_initial_quote_error_remains_owned_after_foreign_status_and_alias_d
     assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
     assert_eq!(disk.snapshot().live_files, native_before.live_files);
     let identity = |original: &SnapshotFailure| {
-        original.creation().unwrap().with_diagnostic(|report| {
+        let creation = original.creation().unwrap();
+        let owner_id = creation
+            .owner_id()
+            .expect("prepaid receiver retains the refusal");
+        creation.with_diagnostic(|report| {
             let report = report.unwrap();
+            let constructor = report.constructor_report().unwrap();
+            assert!(constructor.capacity_refused());
+            assert!(!constructor.has_lease());
+            assert!(!constructor.has_payload());
+            assert!(matches!(
+                constructor.construction(),
+                kasumi_store::TerminalObservation::NotEntered
+            ));
             assert!(report.opening_error().is_none());
             let original = report.admission_error().unwrap();
             assert_eq!(original.kind(), std::io::ErrorKind::OutOfMemory);
-            original as *const std::io::Error as usize
+            (owner_id, original as *const std::io::Error as usize)
         })
     };
-    let address = inventory.with_rpc_original(0, identity).unwrap();
+    let original_identity = inventory.with_rpc_original(0, identity).unwrap();
     drop(status);
     drop(admin);
     for _ in 0..3 {
-        assert_eq!(inventory.with_rpc_original(0, identity), Some(address));
+        assert_eq!(
+            inventory.with_rpc_original(0, identity),
+            Some(original_identity)
+        );
     }
     drop(inventory);
     // No opaque IO destruction or native disposal witness was minted by the
     // foreign marker or final alias Drop. The same original grant stays held.
     assert_eq!(admission.snapshot().reserved_bytes, charged);
+    let retained =
+        kasumi_store::ScratchCreationFailure::retained(memory.clone(), original_identity.0)
+            .expect("foreign status and alias drops cannot retire the native receiver");
+    retained.with_diagnostic(|report| {
+        assert_eq!(
+            report.unwrap().admission_error().unwrap() as *const std::io::Error as usize,
+            original_identity.1
+        );
+    });
+    drop(retained);
     drop(fillers);
 }
 
