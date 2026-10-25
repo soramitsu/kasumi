@@ -670,6 +670,7 @@ mod tests {
             .unwrap();
         assert_eq!(reopened.tenant_count, 1);
         assert!(reopened.close().await.unwrap().is_none());
+        assert_eq!(receipt(&resources), (node_id, disposition, address));
     }
 
     #[tokio::test]

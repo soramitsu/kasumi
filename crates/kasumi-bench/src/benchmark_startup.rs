@@ -336,12 +336,21 @@ impl BenchmarkTerminal {
         }
         for replica in 0..opened.nodes.len() {
             let node = opened.nodes[replica].get().clone();
-            let store = TenantStore::initialize_catalog_fixture(
-                node,
-                SECURITY_TENANT.into(),
-                opened.security_providers[replica].clone(),
-            )
-            .await?;
+            let store = if arguments.create {
+                TenantStore::initialize_catalog_fixture(
+                    node,
+                    SECURITY_TENANT.into(),
+                    opened.security_providers[replica].clone(),
+                )
+                .await
+            } else {
+                TenantStore::open_existing_fixture(
+                    node,
+                    SECURITY_TENANT.into(),
+                    opened.security_providers[replica].clone(),
+                )
+                .await
+            }?;
             opened.stores.push(Alias::new(store));
             let store = opened
                 .stores
@@ -394,23 +403,41 @@ impl BenchmarkTerminal {
             }
             for replica in 0..opened.nodes.len() {
                 let node = opened.nodes[replica].get().clone();
-                let store = TenantStore::initialize_catalog_fixture(
-                    node,
-                    context(tenant).tenant,
-                    opened.provider.clone(),
-                )
-                .await?;
+                let store = if arguments.create {
+                    TenantStore::initialize_catalog_fixture(
+                        node,
+                        context(tenant).tenant,
+                        opened.provider.clone(),
+                    )
+                    .await
+                } else {
+                    TenantStore::open_existing_fixture(
+                        node,
+                        context(tenant).tenant,
+                        opened.provider.clone(),
+                    )
+                    .await
+                }?;
                 opened.stores.push(Alias::new(store));
-                let domains = kasumi_store::test_utils::initialize_custody_fixture(
-                    opened
-                        .stores
-                        .last()
-                        .expect("same staged application store")
-                        .get()
-                        .clone(),
-                    opened.custody_provider.clone(),
-                )
-                .await?;
+                let store = opened
+                    .stores
+                    .last()
+                    .expect("same staged application store")
+                    .get()
+                    .clone();
+                let domains = if arguments.create {
+                    kasumi_store::test_utils::initialize_custody_fixture(
+                        store,
+                        opened.custody_provider.clone(),
+                    )
+                    .await
+                } else {
+                    kasumi_store::test_utils::open_existing_custody_fixture(
+                        store,
+                        opened.custody_provider.clone(),
+                    )
+                    .await
+                }?;
                 opened.domains.push(Alias::new(domains));
                 let domains = opened
                     .domains
