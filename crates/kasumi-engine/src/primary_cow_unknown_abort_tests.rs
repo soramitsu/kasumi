@@ -254,6 +254,10 @@ fn require_delete(write: &WriteOp, namespace: &str, expected_key: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settlement_batches()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for boundary in [

@@ -39,6 +39,10 @@ fn selected(fixture: &Fixture, input: &CommandInput) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent_outcome()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -118,6 +122,10 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordered_command_real_sink_rejects_full_context_substitution_after_preparation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -194,6 +202,10 @@ async fn ordered_command_real_sink_rejects_full_context_substitution_after_prepa
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_outcome()
 -> crate::test_fixture_failure::FixtureResult<()> {
     struct Refuse<'a> {

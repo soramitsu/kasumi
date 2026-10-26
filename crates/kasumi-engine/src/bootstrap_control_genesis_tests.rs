@@ -76,6 +76,10 @@ fn replicated_genesis_requires_explicit_tag_payload_and_lifecycle_kind() -> anyh
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn control_genesis_is_deterministic_bounded_and_part_of_bootstrap_identity()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let original = installed();
@@ -214,6 +218,10 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publication()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -305,6 +313,10 @@ async fn control_genesis_rejects_wrong_storage_purpose_before_deployment_publica
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn strict_control_reopen_rejects_partial_genesis_without_catalog_or_raft_mutation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;

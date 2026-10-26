@@ -220,15 +220,27 @@ impl Fixture {
             storage,
         })
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the original native custody error inline without an extra allocation"
+    )]
     fn node(&self) -> std::result::Result<NodeStore, kasumi_store::NodeStoreStartFailure> {
         self.node_at(&self.config.database_path, self.config.database_id)
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the original native custody error inline without an extra allocation"
+    )]
     fn verifier_node(&self) -> std::result::Result<NodeStore, kasumi_store::NodeStoreStartFailure> {
         let id =
             kasumi_store::node_store_ids::signer_verifier(&self.config.signer_verifier.identity)
                 .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
         self.node_at(&self.config.signer_verifier.database_path, id)
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the original native custody error inline without an extra allocation"
+    )]
     fn node_at(
         &self,
         native_path: &std::path::Path,

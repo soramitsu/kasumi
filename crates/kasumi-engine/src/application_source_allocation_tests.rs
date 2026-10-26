@@ -201,6 +201,10 @@ fn assert_retired(fixture: &Fixture, grant: u64, slots: usize) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_root_and_credit_arcs_remain_funded_through_actual_deallocation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -229,6 +233,10 @@ async fn source_root_and_credit_arcs_remain_funded_through_actual_deallocation()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_root_weak_retains_shell_credit_after_payload_is_gone()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -259,6 +267,10 @@ async fn source_root_weak_retains_shell_credit_after_payload_is_gone()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cell_concurrent_strong_and_weak_drops_hold_the_actual_credit_tail()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -289,6 +301,10 @@ async fn source_cell_concurrent_strong_and_weak_drops_hold_the_actual_credit_tai
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_binding_box_retires_before_its_real_root_credit()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -325,6 +341,10 @@ async fn source_binding_box_retires_before_its_real_root_credit()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_view_unique_close_holds_cell_credit_while_arc_backing_retires()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -357,6 +377,10 @@ async fn source_view_unique_close_holds_cell_credit_while_arc_backing_retires()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_view_weak_retains_credit_after_unique_native_close()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -394,6 +418,10 @@ impl std::fmt::Display for TailOriginal {
 impl std::error::Error for TailOriginal {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_failure_actual_error_aliases_hold_credit_through_owner_deallocation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;

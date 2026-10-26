@@ -61,6 +61,10 @@ impl kasumi_raft::StateMachineBackend for Backend {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_local_startup_and_node_census_keep_actual_group_and_charges_until_join()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let directory = kasumi_store::test_utils::private_tempdir()?;

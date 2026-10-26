@@ -52,6 +52,10 @@ fn serves_next(fixture: &OrdinaryFixture) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_queue_spends_native_capacity_admitted_before_proposal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -90,6 +94,10 @@ async fn committed_queue_spends_native_capacity_admitted_before_proposal()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_proposal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -139,6 +147,10 @@ async fn observe_pressure(admission: &Arc<NodeAdmission>, pressured: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_entry_applies_when_rss_pressure_begins_after_its_admission()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let rss = Arc::new(Rss(AtomicU64::new(0)));

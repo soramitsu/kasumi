@@ -1,6 +1,10 @@
 //! Test joins keep every owning failure inline; no blanket Anyhow erasure.
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "This fixture carrier keeps each original native failure inline; allocating an error Box or erasing its type would change the ownership under test."
+)]
 pub(crate) enum FixtureFailure {
     Snapshot(crate::SnapshotFailure),
     SnapshotContext {

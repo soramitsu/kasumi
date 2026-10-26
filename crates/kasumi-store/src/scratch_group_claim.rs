@@ -94,7 +94,9 @@ fn range_bytes(disk: &ScratchDisk, range: FileSpaceRange) -> Result<u64, Reserve
         .transaction_file_ceiling(0)?
         .checked_mul(range.count)
         .ok_or(ReserveFailure::Capacity)?;
-    let aggregate = aggregate.checked_add(standing).ok_or(ReserveFailure::Capacity)?;
+    let aggregate = aggregate
+        .checked_add(standing)
+        .ok_or(ReserveFailure::Capacity)?;
     let full = disk
         .transaction_file_ceiling(EncryptedSpool::transaction_ciphertext_len(range.full_len)?)
         .map_err(|_| ReserveFailure::Capacity)?;

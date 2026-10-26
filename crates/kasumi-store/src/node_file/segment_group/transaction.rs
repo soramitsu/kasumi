@@ -96,14 +96,15 @@ impl NodeSegmentGroup {
     }
     fn reserve_transaction_inner(&self, plan: &TransactionSpacePlan) -> io::Result<()> {
         let mut stage = "entry";
-        self.reserve_transaction_staged(plan, &mut stage).inspect_err(|error| {
-            use std::io::Write;
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Kasumi transaction reserve failed: stage={stage} io={:?}",
-                error.kind(),
-            );
-        })
+        self.reserve_transaction_staged(plan, &mut stage)
+            .inspect_err(|error| {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Kasumi transaction reserve failed: stage={stage} io={:?}",
+                    error.kind(),
+                );
+            })
     }
     fn reserve_transaction_staged(
         &self,

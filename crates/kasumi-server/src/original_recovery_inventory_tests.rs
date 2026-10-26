@@ -265,28 +265,29 @@ async fn original_recovery_opaque_source_keeps_actual_original_and_charge_after_
     let address = inventory.state().seats.as_ref().unwrap().as_ptr() as usize;
     let mut seat = inventory.claim(0).await;
     let capture_watch = watching.snapshot().count;
-    let marker = seat
-        .run_snapshot_operation(async { Err::<(), _>(original.into()) })
-        .await
-        .unwrap_err();
-    let calls = Cell::new(0);
-    let refused = seat
-        .run_snapshot_operation(async {
-            calls.set(calls.get() + 1);
-            Ok(())
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(calls.get(), 0, "occupied seat polled a new constructor");
-    assert_eq!(refused.index, marker.index);
-    assert_eq!(refused.stage, marker.stage);
-    assert_eq!(
-        watching.snapshot().count,
-        capture_watch,
-        "paid handoff allocated"
-    );
-    assert_eq!(marker.index, 0);
-    drop(marker);
+    {
+        let marker = seat
+            .run_snapshot_operation(async { Err::<(), _>(original.into()) })
+            .await
+            .unwrap_err();
+        let calls = Cell::new(0);
+        let refused = seat
+            .run_snapshot_operation(async {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(calls.get(), 0, "occupied seat polled a new constructor");
+        assert_eq!(refused.index, marker.index);
+        assert_eq!(refused.stage, marker.stage);
+        assert_eq!(
+            watching.snapshot().count,
+            capture_watch,
+            "paid handoff allocated"
+        );
+        assert_eq!(marker.index, 0);
+    }
     assert_eq!(
         seat.with_failure(|failure| failure
             .original()
@@ -883,8 +884,7 @@ async fn original_recovery_rpc_ready_output_keeps_actual_backing_and_original_di
             panic: Some(original_panic),
         })
         .await
-        .err()
-        .expect("retained original output and panic");
+        .expect_err("retained original output and panic");
     guard.with_report(|report| {
         assert!(report.original().is_none(), "no invented body error");
         match report.output().unwrap() {

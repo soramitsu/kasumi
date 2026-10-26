@@ -73,6 +73,10 @@ fn combined<'a>(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn incoming_actual_points_preserve_each_pre_cell_rejection_with_drop_panic()
 -> crate::test_fixture_failure::FixtureResult<()> {
     // Both identities are rejected before any Cell, and the two local failures
@@ -175,6 +179,10 @@ async fn incoming_actual_points_preserve_each_pre_cell_rejection_with_drop_panic
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn incoming_actual_duplicate_preserves_panic_and_cancels_original_queue()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -258,6 +266,10 @@ impl std::fmt::Display for IncomingOriginal {
 impl std::error::Error for IncomingOriginal {}
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn incoming_actual_points_retain_exact_error_or_panic_and_remain_unknown_in_cell()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for panics in [false, true] {
@@ -319,6 +331,10 @@ async fn incoming_actual_points_retain_exact_error_or_panic_and_remain_unknown_i
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn incoming_actual_points_clean_retirement_resumes_the_exact_original_unwind()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

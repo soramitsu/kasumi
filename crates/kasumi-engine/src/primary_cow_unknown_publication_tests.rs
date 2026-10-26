@@ -15,6 +15,10 @@ fn final_operation() -> Operation {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_unknown_final_publication_reopens_complete_commit_and_refuses_abort()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scope = Scope::new().await?;

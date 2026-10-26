@@ -34,6 +34,10 @@ impl crate::PreparedStateMachineRestore for PreparedFixtureRestore<'_> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_log_future_retains_drain_lease_until_blocking_persistence_finishes()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -267,6 +271,10 @@ async fn existing_fault_store_on_disk(
 }
 
 #[tokio::test(flavor = "current_thread")]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_state_lock()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -400,6 +408,10 @@ fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> 
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -466,6 +478,10 @@ async fn invalid_backend_snapshot_never_replaces_durable_recoverable_state() -> 
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -> FixtureResult<()>
 {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -601,6 +617,10 @@ async fn first_membership_snapshot_install_reopen_and_substitution_are_bound() -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -644,6 +664,10 @@ async fn snapshots_larger_than_store_record_limit_are_chunked_and_recovered() ->
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_or_new_snapshot()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -719,6 +743,10 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> FixtureResult<()> {
     let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
@@ -754,6 +782,10 @@ async fn raft_open_rejects_missing_initial_identity_without_publishing_it() -> F
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -861,6 +893,10 @@ async fn eight_mib_command_uses_compact_log_record_and_replays_after_reopen() ->
 mod snapshot_custody_tests;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -974,6 +1010,10 @@ async fn snapshot_materialization_releases_applied_lock_and_keeps_captured_root(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
@@ -1097,6 +1137,10 @@ async fn snapshot_storage_metadata_requires_current_writer_bytes_and_v4_id() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
@@ -1193,6 +1237,10 @@ async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> 
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() -> FixtureResult<()> {
     use openraft::storage::RaftLogStorageExt;
     let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1200,7 +1248,7 @@ async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() ->
     let scratch = kasumi_store::ScratchDisk::fixture(directory.path(), memory);
     let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
     let persistent = kasumi_store::NodeDisk::fixture_for_path(
-        &persistent_directory.path().join("local-wal.kv"),
+        persistent_directory.path().join("local-wal.kv"),
         scratch.memory().clone(),
     )?;
     async fn reopen(

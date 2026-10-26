@@ -1419,6 +1419,13 @@ impl RootPreparation {
                         Err(error) => {
                             #[cfg(test)]
                             let error = capture_access_test_hook::selection_failure(error);
+                            #[cfg_attr(
+                                test,
+                                allow(
+                                    clippy::useless_conversion,
+                                    reason = "The test hook already returns Anyhow; production still converts the original SelectionFailure custody."
+                                )
+                            )]
                             self.cell.record_failure(error.into(), false);
                         }
                     }

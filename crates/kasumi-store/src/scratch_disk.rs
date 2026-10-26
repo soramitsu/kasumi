@@ -364,7 +364,13 @@ impl ScratchDisk {
     }
     fn file_ceiling(&self, ciphertext_len: u64) -> io::Result<u64> {
         self.rounded(ciphertext_len)?
-            .checked_add(self.rounded(self.config.file_allocation_policy.maximum_extra_extent_bytes)?)
+            .checked_add(
+                self.rounded(
+                    self.config
+                        .file_allocation_policy
+                        .maximum_extra_extent_bytes,
+                )?,
+            )
             .ok_or_else(|| exhausted("scratch allocation ceiling overflow"))
     }
     pub(crate) fn file(self: &Arc<Self>) -> io::Result<(File, Charge)> {
@@ -375,14 +381,20 @@ impl ScratchDisk {
             if !pending.admission_ready() {
                 return Err(io::ErrorKind::Other.into());
             }
-            let next = state.bytes.checked_add(bytes)
+            let next = state
+                .bytes
+                .checked_add(bytes)
                 .filter(|next| *next <= self.config.max_bytes)
                 .ok_or_else(|| exhausted("scratch file allowance exhausted"))?;
-            let promised = pending.checked_add(bytes)
+            let promised = pending
+                .checked_add(bytes)
                 .ok_or_else(|| exhausted("scratch promises overflow"))?;
-            let required = promised.checked_add(pending.minimum_free_bytes())
+            let required = promised
+                .checked_add(pending.minimum_free_bytes())
                 .ok_or_else(|| exhausted("scratch reserve overflow"))?;
-            let files = state.files.checked_add(1)
+            let files = state
+                .files
+                .checked_add(1)
                 .filter(|files| files.checked_add(state.reserved_files).is_some())
                 .ok_or_else(|| exhausted("scratch file count overflow"))?;
             let available = self.available().inspect_err(|_| pending.fail_owner())?;
@@ -393,8 +405,12 @@ impl ScratchDisk {
             state.bytes = next;
             state.files = files;
             Charge {
-                disk: self.clone(), identity: (0, 0), bytes,
-                allocated: 0, reserved_len: 0, release_on_drop: true,
+                disk: self.clone(),
+                identity: (0, 0),
+                bytes,
+                allocated: 0,
+                reserved_len: 0,
+                release_on_drop: true,
             }
         };
         check_directory(&self.directory.metadata()?).map_err(io::Error::other)?;
@@ -694,7 +710,10 @@ mod tests {
         disk_with_allowance(directory, max_bytes, min_free_bytes, 0)
     }
     fn disk_with_allowance(
-        directory: &std::path::Path, max_bytes: u64, min_free_bytes: u64, allowance: u64,
+        directory: &std::path::Path,
+        max_bytes: u64,
+        min_free_bytes: u64,
+        allowance: u64,
     ) -> Arc<ScratchDisk> {
         let memory = crate::test_utils::TestDiskMemory::new(16 << 20, 256);
         let config = ScratchDiskConfig {
@@ -725,7 +744,10 @@ mod tests {
     fn scratch_allocation_allowance_is_admitted_before_empty_file_creation() {
         let directory = crate::test_utils::private_tempdir().unwrap();
         let disk = disk_with_allowance(directory.path(), 1, 0, 4096);
-        assert_eq!(disk.file().err().unwrap().kind(), io::ErrorKind::StorageFull);
+        assert_eq!(
+            disk.file().err().unwrap().kind(),
+            io::ErrorKind::StorageFull
+        );
         let snapshot = disk.snapshot();
         assert_eq!(snapshot.live_files, 0);
         assert_eq!(snapshot.charged_bytes, 0);
@@ -737,7 +759,10 @@ mod tests {
         let disk = disk_with_allowance(directory.path(), 1 << 20, 8192, 4096);
         let allowance = disk.file_ceiling(0).unwrap();
         *disk.available_override.lock().unwrap() = Some(8192 + allowance - 1);
-        assert_eq!(disk.file().err().unwrap().kind(), io::ErrorKind::StorageFull);
+        assert_eq!(
+            disk.file().err().unwrap().kind(),
+            io::ErrorKind::StorageFull
+        );
         assert_eq!(disk.snapshot().live_files, 0);
         *disk.available_override.lock().unwrap() = Some(8192 + allowance);
         let (file, charge) = disk.file().unwrap();
@@ -755,7 +780,10 @@ mod tests {
         let disk = disk_with_allowance(directory.path(), 1 << 20, 0, 4096);
         let allowance = disk.file_ceiling(0).unwrap();
         *disk.after_file_open_error.lock().unwrap() = Some(io::ErrorKind::PermissionDenied.into());
-        assert_eq!(disk.file().err().unwrap().kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(
+            disk.file().err().unwrap().kind(),
+            io::ErrorKind::PermissionDenied
+        );
         let snapshot = disk.snapshot();
         assert_eq!(snapshot.live_files, 1);
         assert_eq!(snapshot.charged_bytes, allowance);
@@ -797,7 +825,13 @@ mod tests {
         let (file, mut charge) = disk.file().unwrap();
         charge.grow(28_952).unwrap();
         let admitted = disk.snapshot().charged_bytes;
-        assert_eq!(charge.observe_extent(28_952, admitted + 512).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            charge
+                .observe_extent(28_952, admitted + 512)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::InvalidData
+        );
         assert!(!disk.snapshot().filesystem_admission_ready);
         assert_eq!(disk.snapshot().charged_bytes, admitted);
         drop(file);
@@ -812,7 +846,11 @@ mod tests {
             let (file, mut charge) = disk.file().unwrap();
             charge.grow(1).unwrap();
             file.set_len(2).unwrap();
-            let result = if settle { charge.shrink(&file, 2) } else { charge.observe(&file) };
+            let result = if settle {
+                charge.shrink(&file, 2)
+            } else {
+                charge.observe(&file)
+            };
             assert_eq!(result.unwrap_err().kind(), io::ErrorKind::InvalidData);
             assert!(!disk.snapshot().filesystem_admission_ready);
             drop(file);

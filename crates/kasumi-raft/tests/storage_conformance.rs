@@ -30,6 +30,10 @@ impl std::fmt::Display for RetainedConstructor {
 impl std::error::Error for RetainedConstructor {}
 
 impl Builder {
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn prepare() -> FixtureResult<Self> {
         use kasumi_store::NodeDiskMemoryAdmission;
         let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
@@ -469,6 +473,10 @@ struct EntryFees {
     cloned: kasumi_store::DiskMemoryLease,
     control: kasumi_store::DiskMemoryLease,
 }
+#[allow(
+    clippy::boxed_local,
+    reason = "The Box control must be deallocated before the returned fee payload releases its original admission lease."
+)]
 fn free_entry_control(original: Box<EntryFees>) -> EntryFees {
     // The original Box is gone when this whole fee payload reaches its caller.
     *original
@@ -670,6 +678,10 @@ impl AdmittedEntries {
     }
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn admit_entry_backing(
     entries: &[Entry<TypeConfig>],
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
@@ -936,9 +948,14 @@ impl StoreBuilder<TypeConfig, ConformanceLog, ConformanceMachine, StoreScope> fo
             pending.installed_baseline = Some(baseline);
             let admissions = EntryAdmissions::prepare(&memory)?;
             pending.entry_admissions = Some(admissions.clone());
-            let (node, store) =
-                common::store_with_node(&queried_path, true, fixture_scratch.clone(), 1, "tenant-a")
-                    .await?;
+            let (node, store) = common::store_with_node(
+                &queried_path,
+                true,
+                fixture_scratch.clone(),
+                1,
+                "tenant-a",
+            )
+            .await?;
             pending.node_retirements[0] = Some(node.retire());
             pending.queried = Some(store.clone());
             let log = LogStore::open(store.clone(), 1).await?;
@@ -1058,6 +1075,10 @@ async fn run_conformance_suite(builder: &Builder) -> Result<(), StorageError<u64
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn openraft_storage_conformance_suite() -> FixtureResult<()> {
     let builder = Builder::prepare()?;
     let runtime = tokio::runtime::Runtime::new()?;
@@ -1073,13 +1094,17 @@ fn openraft_storage_conformance_suite() -> FixtureResult<()> {
         (result, cleanup)
     });
     if let Some(original) = builder.take_failure() {
-        return Err(original.into());
+        return Err(original);
     }
     result.map_err(kasumi_raft::test_utils::FixtureFailure::from)?;
     cleanup.map_err(Into::into)
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn conformance_cleanup_retains_paths_until_native_owner_retirement() -> FixtureResult<()> {
     let builder = Builder::prepare()?;
     let (scope, log, machine) = builder.build().await?;
@@ -1097,7 +1122,10 @@ async fn conformance_cleanup_retains_paths_until_native_owner_retirement() -> Fi
     drop(log);
     drop(scope);
     assert!(builder.cleanup.drain_final().await.is_err());
-    assert!(directory.is_dir(), "an unretired owner lost its private path");
+    assert!(
+        directory.is_dir(),
+        "an unretired owner lost its private path"
+    );
     drop(held_node);
     builder.cleanup.drain_final().await?;
     assert!(!directory.exists());
@@ -1122,6 +1150,10 @@ fn entry_digest(entry: &Entry<TypeConfig>) -> [u8; 32] {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn conformance_adapter_appends_whole_entries_to_only_its_actual_source_and_drains_both()
 -> FixtureResult<()> {
     let builder = Builder::prepare()?;
@@ -1263,6 +1295,10 @@ async fn conformance_adapter_appends_whole_entries_to_only_its_actual_source_and
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn conformance_gap_without_actual_publication_keeps_original_log_and_no_purge()
 -> FixtureResult<()> {
     let builder = Builder::prepare()?;
@@ -1325,6 +1361,10 @@ async fn conformance_gap_without_actual_publication_keeps_original_log_and_no_pu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn conformance_entry_container_refuses_before_clone_or_either_log_changes()
 -> FixtureResult<()> {
     use kasumi_store::NodeDiskMemoryAdmission;
@@ -1379,6 +1419,10 @@ async fn conformance_entry_container_refuses_before_clone_or_either_log_changes(
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn conformance_protocol_marker_retains_the_actual_registered_creation_original() -> FixtureResult<()>
 {
     use std::os::unix::fs::PermissionsExt;
@@ -1417,7 +1461,7 @@ fn conformance_protocol_marker_retains_the_actual_registered_creation_original()
         memory.snapshot().live_reservations,
         retained.live_reservations
     );
-    let public = kasumi_raft::test_utils::FixtureFailure::from(builder.take_failure().unwrap());
+    let public = builder.take_failure().unwrap();
     assert!(public.operation_error().is_none());
     assert_eq!(public.creation().unwrap().owner_id(), Some(id));
     let kasumi_raft::test_utils::FixtureFailure::Scratch(
@@ -1447,6 +1491,10 @@ fn entry(index: u64, data: &[u8]) -> Entry<TypeConfig> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn log_vote_and_committed_cursor_survive_full_reopen() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -1477,6 +1525,10 @@ async fn log_vote_and_committed_cursor_survive_full_reopen() -> FixtureResult<()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -> FixtureResult<()>
 {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1520,6 +1572,10 @@ async fn snapshot_survives_reopen_and_failed_apply_makes_replica_unavailable() -
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -1548,6 +1604,10 @@ async fn snapshot_buffer_caps_total_size_and_sparse_seeks() -> FixtureResult<()>
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -1616,7 +1676,7 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> F
     }
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let persistent = kasumi_store::NodeDisk::fixture_for_path(
-        &directory.path().join("replay.kv"),
+        directory.path().join("replay.kv"),
         fixture_scratch.memory().clone(),
     )?;
     let seed = FaultBackend::new();

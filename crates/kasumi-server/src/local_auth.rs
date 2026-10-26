@@ -223,7 +223,7 @@ impl StatusCache {
     /// The epoch a store read is tagged with, and the current cached status.
     fn get(&self, family: Uuid) -> (u64, Option<CredentialStatus>) {
         let epoch = self.families.current();
-        if epoch % 2 != 0 {
+        if !epoch.is_multiple_of(2) {
             return (epoch, None);
         }
         let rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);
@@ -235,7 +235,7 @@ impl StatusCache {
     }
     /// Retain a status read since `epoch` was sampled, unless a write began.
     fn insert(&self, epoch: u64, family: Uuid, status: &CredentialStatus) {
-        if epoch % 2 != 0 || self.families.current() != epoch {
+        if !epoch.is_multiple_of(2) || self.families.current() != epoch {
             return;
         }
         let mut rows = self.rows.lock().unwrap_or_else(PoisonError::into_inner);

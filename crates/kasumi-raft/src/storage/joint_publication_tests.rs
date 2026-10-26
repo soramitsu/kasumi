@@ -281,6 +281,10 @@ async fn selected(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_prefix()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -327,6 +331,10 @@ async fn joint_immutable_table_snapshot_power_loss_selects_complete_old_or_new_p
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_joint_table_publication_seals_and_reopens_exact_committed_prefix()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);

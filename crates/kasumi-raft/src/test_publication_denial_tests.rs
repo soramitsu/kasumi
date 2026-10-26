@@ -24,6 +24,10 @@ impl Drop for OriginalSinkError {
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The allocation-free denial check returns the original inline preparation and publication custody without allocating an error Box."
+)]
 fn inline_denial_keeps_actual_sink_or_response_and_violation_without_allocation() {
     for original in [
         ScratchAdmissionRefusal::Busy,

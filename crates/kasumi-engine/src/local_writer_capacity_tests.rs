@@ -193,6 +193,10 @@ impl Fixture {
         self.database.raft_group()
     }
 
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn document(&self, id: &str) -> FixtureResult<Option<serde_json::Value>> {
         Ok(
             self.database.engine().generation()?.state.collections["docs"]
@@ -301,6 +305,10 @@ async fn refused_append_rejects_only_its_write(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn journal_append_refused_for_native_capacity_rejects_only_its_write() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
     let held = Arc::new(Mutex::new(Vec::new()));
@@ -319,6 +327,10 @@ async fn journal_append_refused_for_native_capacity_rejects_only_its_write() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn journal_append_refused_under_rss_pressure_rejects_only_its_write() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
     let ran = Arc::new(AtomicBool::new(false));
@@ -338,6 +350,10 @@ async fn journal_append_refused_under_rss_pressure_rejects_only_its_write() -> F
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn periodic_snapshot_refused_for_native_capacity_is_deferred() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
     fixture
@@ -365,6 +381,10 @@ async fn periodic_snapshot_refused_for_native_capacity_is_deferred() -> FixtureR
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn periodic_snapshot_refused_under_rss_pressure_is_deferred() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
     fixture
@@ -390,6 +410,10 @@ async fn periodic_snapshot_refused_under_rss_pressure_is_deferred() -> FixtureRe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_triggered_with_native_capacity_exhausted_is_deferred() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
     let before = fixture.group().metrics();

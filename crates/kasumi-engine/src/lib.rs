@@ -90,9 +90,9 @@ pub use state::{Generation, PreparedSnapshotRestore, TenantEngine, validate_gene
 mod snapshot_failure;
 pub use snapshot_failure::SnapshotFailure;
 #[cfg(test)]
-mod test_fixture_failure;
-#[cfg(test)]
 mod local_writer_capacity_tests;
+#[cfg(test)]
+mod test_fixture_failure;
 
 /// Conservative resident charge for retaining one immutable document across
 /// asynchronous work. Uses the same allocation accounting as coherent leases;

@@ -717,8 +717,8 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     let path = directory.path().join("persistent/node.kv");
     let physical = common::PhysicalFixture::new(&path, Default::default());
     let memory = physical.storage.persistent.memory().clone();
-    let image = kasumi_store::test_utils::capture_native_group_image(&path, memory.clone())
-        .unwrap();
+    let image =
+        kasumi_store::test_utils::capture_native_group_image(&path, memory.clone()).unwrap();
     let amount = b"90071992547409931234567890.123456789";
     for entry in std::fs::read_dir(&path).unwrap() {
         let entry = entry.unwrap();

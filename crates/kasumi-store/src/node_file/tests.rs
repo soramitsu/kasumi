@@ -847,7 +847,10 @@ fn retained_database_retries_node_close_only_after_proved_pre_entry_contention()
         close.native_disposition(),
         kasumi_kv::BackendNativeDisposition::Retained
     );
-    assert_eq!(NodeFile::native_close_attempts(), attempts + shutdown_closes);
+    assert_eq!(
+        NodeFile::native_close_attempts(),
+        attempts + shutdown_closes
+    );
     let busy = owner.disk().snapshot();
     assert_eq!(busy.open_files, files);
     assert_eq!(busy.open_directories, before.open_directories);

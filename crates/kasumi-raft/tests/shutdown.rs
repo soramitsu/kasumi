@@ -77,6 +77,10 @@ impl StateMachineBackend for PausedSnapshot {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownership()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);

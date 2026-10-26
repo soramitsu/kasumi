@@ -319,6 +319,10 @@ struct Scope {
     owners: Owners,
 }
 impl Scope {
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         let mut owners = None;
         let fixture = Fixture::new_with_node(|storage, _| {
@@ -999,6 +1003,10 @@ fn assert_unknown_report(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for finish in [1, 3] {
