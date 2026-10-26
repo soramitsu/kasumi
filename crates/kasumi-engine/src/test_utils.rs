@@ -636,14 +636,21 @@ pub fn encode_snapshot_candidate(
 /// Authenticate the complete snapshot framing, digest and EOF before selecting
 /// bytes charged by SnapshotAccounting. Staged terminal rows count toward that
 /// quota even though their permanent table bodies do not occupy resident state.
-/// Ordinary receipt and target-resolution rows retain separate byte budgets.
+/// Ordinary receipt, target-resolution and backup-binding rows retain separate
+/// byte budgets. Count canonical frames, not the compact resident estimate.
 pub fn snapshot_accounted_bytes(candidate: &SnapshotImage) -> Result<u64> {
     crate::snapshot_codec::inspect(&mut candidate.reader())
         .and_then(|summary| {
             summary
-                .resident_bytes()?
-                .checked_add(summary.kinds[21].framed_bytes)
-                .ok_or_else(|| anyhow::anyhow!("accounted snapshot byte overflow"))
+                .kinds
+                .iter()
+                .enumerate()
+                .filter(|(kind, _)| !matches!(*kind, 5 | 22 | 24))
+                .try_fold(64_u64, |total, (_, kind)| {
+                    total
+                        .checked_add(kind.framed_bytes)
+                        .ok_or_else(|| anyhow::anyhow!("accounted snapshot byte overflow"))
+                })
         })
         .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
 }
@@ -700,6 +707,22 @@ fn write_candidate(
         }
     }
     encoder.finish()
+}
+
+/// Lend one document from the exact captured fixture generation. A fixture must
+/// carry its source owner just like production; no latest-view fallback exists.
+pub fn fixture_document(
+    generation: &crate::Generation,
+    collection: &str,
+    id: &str,
+) -> anyhow::Result<kasumi_types::OwnedDocument> {
+    let slot = generation
+        .state
+        .collections
+        .get(collection)
+        .and_then(|collection| collection.documents.get(id))
+        .ok_or_else(|| anyhow::anyhow!("fixture document absent"))?;
+    slot.load_owned(generation.document_resolver())
 }
 
 #[cfg(test)]
@@ -778,20 +801,4 @@ mod physical_fixture_tests {
         assert_eq!(unchanged, config);
         Ok(())
     }
-}
-
-/// Lend one document from the exact captured fixture generation. A fixture must
-/// carry its source owner just like production; no latest-view fallback exists.
-pub fn fixture_document(
-    generation: &crate::Generation,
-    collection: &str,
-    id: &str,
-) -> anyhow::Result<kasumi_types::OwnedDocument> {
-    let slot = generation
-        .state
-        .collections
-        .get(collection)
-        .and_then(|collection| collection.documents.get(id))
-        .ok_or_else(|| anyhow::anyhow!("fixture document absent"))?;
-    slot.load_owned(generation.document_resolver())
 }

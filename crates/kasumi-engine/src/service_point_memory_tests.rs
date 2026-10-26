@@ -99,7 +99,10 @@ async fn point_memory_small_rows_do_not_retain_the_tenant_document_limit_per_rea
             .unwrap(),
     );
     let node = fixture.db.admission().clone();
-    let before = node.snapshot();
+    let before = {
+        let _quiescent = fixture.audit.quiescent_jobs_for_test().await;
+        node.snapshot()
+    };
     let start = Arc::new(tokio::sync::Barrier::new(READERS + 1));
     let mut tasks = tokio::task::JoinSet::new();
     for _ in 0..READERS {
@@ -122,6 +125,9 @@ async fn point_memory_small_rows_do_not_retain_the_tenant_document_limit_per_rea
             .iter()
             .all(|document| document.body == json!({"value": 7}))
     );
+    // Reap completed audit jobs and pause maintenance so only these outputs
+    // change the ledger between the held and released census.
+    let quiescent = fixture.audit.quiescent_jobs_for_test().await;
     let held = node.snapshot();
     assert_eq!(held.inflight_operations, before.inflight_operations);
     assert!(
@@ -132,6 +138,7 @@ async fn point_memory_small_rows_do_not_retain_the_tenant_document_limit_per_rea
     let released = node.snapshot();
     assert!(released.reserved_bytes < held.reserved_bytes);
     assert_eq!(released.live_reservations + READERS, held.live_reservations);
+    drop(quiescent);
     fixture.close().await;
 }
 
@@ -507,4 +514,211 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
         drop(quiescent);
         fixture.close().await;
     }
+}
+
+#[tokio::test]
+async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation() {
+    struct PausedNativeDocument {
+        original: Arc<dyn DocumentResolver>,
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        released: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl DocumentResolver for PausedNativeDocument {
+        fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            let document = self.original.load(descriptor)?;
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+                // Bounds the old inline implementation independently of this
+                // current-thread Tokio runtime, which it would otherwise block.
+                self.released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| anyhow::anyhow!("native point pause expired"))?;
+            }
+            Ok(document)
+        }
+    }
+    let fixture = CredentialFixture::new().await;
+    fixture
+        .db
+        .mutate(fixture.context.clone(), credential_batch("point"))
+        .await
+        .unwrap();
+    let (entered, entry) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let mut selected = fixture.db.engine().generation().unwrap().lease_view();
+    let slot = selected.state.collections["docs"].documents["point"].clone();
+    assert!(matches!(slot.as_ref(), DocumentSlot::Stored(_)));
+    let original = selected.document_sources.take().unwrap();
+    assert!(
+        selected
+            .document_sources
+            .set(Arc::new(PausedNativeDocument {
+                original,
+                entered: Mutex::new(Some(entered)),
+                released: Mutex::new(released),
+            }))
+            .is_ok()
+    );
+    let selected = Arc::new(selected);
+    let selected_owner = Arc::downgrade(&selected);
+    let node = fixture.db.admission().clone();
+    let baseline_decode = node
+        .snapshot()
+        .resident_reserved_bytes_by_origin
+        .document_source;
+    let fence = Arc::new(WorkFence::default());
+    let cancellation = QueryCancellation::default();
+    let mut read =
+        point_read::PointRead::new(node.reserve(4096, Some(cancellation.clone())).unwrap());
+    read.generation = Some(selected);
+    read.registration = Some(Arc::new(fence.begin(cancellation.clone()).unwrap()));
+    let registration = Arc::downgrade(read.registration.as_ref().unwrap());
+    let held = fixture
+        .db
+        .query_slots
+        .clone()
+        .acquire_many_owned(3)
+        .await
+        .unwrap();
+    let permit = fixture
+        .db
+        .query_slots
+        .clone()
+        .acquire_owned()
+        .await
+        .unwrap();
+    let waiter = tokio::spawn(async move {
+        let _cancel_on_drop = CancelOnDrop(cancellation.clone());
+        read.read_native(slot, permit, &cancellation, point_read::PointRead::owned)
+            .await
+            .map(|_| ())
+    });
+    tokio::time::timeout(Duration::from_secs(2), entry)
+        .await
+        .expect("native point worker must yield the async runtime")
+        .unwrap();
+    assert!(!waiter.is_finished());
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    let charged = node
+        .snapshot()
+        .resident_reserved_bytes_by_origin
+        .document_source;
+    assert!(charged > baseline_decode);
+    waiter.abort();
+    assert!(waiter.await.unwrap_err().is_cancelled());
+    assert_eq!(fixture.db.query_slots.available_permits(), 0);
+    assert!(selected_owner.upgrade().is_some());
+    assert!(registration.upgrade().is_some());
+    assert_eq!(
+        node.snapshot()
+            .resident_reserved_bytes_by_origin
+            .document_source,
+        charged
+    );
+    let mut draining = Box::pin(fence.drain());
+    assert!(
+        std::future::poll_fn(|cx| Poll::Ready(draining.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), async {
+        draining.await;
+        while selected_owner.upgrade().is_some()
+            || registration.upgrade().is_some()
+            || fixture.db.query_slots.available_permits() != 1
+            || node
+                .snapshot()
+                .resident_reserved_bytes_by_origin
+                .document_source
+                != baseline_decode
+        {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    drop(held);
+    assert_eq!(fixture.db.query_slots.available_permits(), 4);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn point_memory_queued_request_takes_no_active_slot_before_worker_admission() {
+    let fixture = CredentialFixture::new().await;
+    let node = fixture.db.admission().clone();
+    let held = fixture
+        .db
+        .query_slots
+        .clone()
+        .acquire_many_owned(4)
+        .await
+        .unwrap();
+    let blockers: Vec<_> = (0..node.policy().max_inflight_operations)
+        .map(|_| node.reserve(1, None).unwrap())
+        .collect();
+    let baseline = node.snapshot();
+    let mut waiting = Box::pin(fixture.db.get(&fixture.context, "docs", "absent"));
+    assert!(
+        std::future::poll_fn(|cx| Poll::Ready(waiting.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    let queued = node.snapshot();
+    assert_eq!(queued.inflight_operations, baseline.inflight_operations);
+    assert_eq!(queued.live_reservations, baseline.live_reservations + 1);
+    assert!(queued.reserved_bytes > baseline.reserved_bytes);
+    drop(waiting);
+    assert_eq!(
+        node.snapshot().inflight_operations,
+        baseline.inflight_operations
+    );
+    assert_eq!(
+        node.snapshot().live_reservations,
+        baseline.live_reservations
+    );
+    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+    drop(blockers);
+    drop(held);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn point_memory_queued_wait_does_not_consume_native_read_timeout() {
+    let fixture = CredentialFixture::new().await;
+    fixture
+        .db
+        .mutate(fixture.context.clone(), credential_batch("queued"))
+        .await
+        .unwrap();
+    let held = fixture
+        .db
+        .query_slots
+        .clone()
+        .acquire_many_owned(4)
+        .await
+        .unwrap();
+    let mut waiting = Box::pin(fixture.db.get(&fixture.context, "docs", "queued"));
+    assert!(
+        tokio::time::timeout(
+            kasumi_store::NATIVE_READ_TIMEOUT + Duration::from_millis(50),
+            waiting.as_mut(),
+        )
+        .await
+        .is_err(),
+        "queued point read inherited the native operation deadline"
+    );
+    assert_eq!(fixture.db.query_slots.available_permits(), 0);
+    drop(held);
+    let document = tokio::time::timeout(kasumi_store::NATIVE_READ_TIMEOUT, waiting)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    assert_eq!(document.body, json!({"value": 7}));
+    drop(document);
+    assert_eq!(fixture.db.query_slots.available_permits(), 4);
+    fixture.close().await;
 }

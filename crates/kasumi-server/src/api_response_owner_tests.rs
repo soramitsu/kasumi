@@ -47,6 +47,61 @@ fn admitted_non_cache_bytes(fixture: &Fixture) -> u64 {
 }
 
 #[tokio::test]
+async fn admitted_response_fences_keep_control_credit_when_execution_slots_are_full() {
+    let fixture = Fixture::new().await;
+    let context = admitted_query_context();
+    let node = &fixture.physical.admission;
+    let quiescent = fixture.audit.quiescent_jobs_for_test().await;
+    let baseline = node.snapshot();
+    let active = (baseline.inflight_operations..node.policy().max_inflight_operations)
+        .map(|_| node.reserve(0, None).unwrap())
+        .collect::<Vec<_>>();
+    let saturated = node.snapshot();
+    assert_eq!(
+        saturated.inflight_operations,
+        node.policy().max_inflight_operations
+    );
+    assert!(node.reserve(0, None).is_err());
+    for explicit_output in [false, true] {
+        let mut fence = if explicit_output {
+            fixture.db.admitted_response_fence(&context)
+        } else {
+            fixture.db.owned_response_fence(&context)
+        }
+        .unwrap();
+        fence.check().unwrap();
+        fence.retain_response_bytes(1024).unwrap();
+        let held = node.snapshot();
+        assert!(held.reserved_bytes > saturated.reserved_bytes);
+        assert_eq!(held.live_reservations, saturated.live_reservations + 1);
+        assert_eq!(held.inflight_operations, saturated.inflight_operations);
+        assert_eq!(
+            fence.retain_response_bytes(u64::MAX).unwrap_err().code,
+            ErrorCode::ResourceExhausted
+        );
+        assert_eq!(node.snapshot().reserved_bytes, held.reserved_bytes);
+        assert!(node.reserve(0, None).is_err());
+        drop(fence);
+        assert_eq!(node.snapshot().reserved_bytes, saturated.reserved_bytes);
+        assert_eq!(
+            node.snapshot().live_reservations,
+            saturated.live_reservations
+        );
+        assert_eq!(
+            node.snapshot().inflight_operations,
+            saturated.inflight_operations
+        );
+    }
+    drop(active);
+    assert_eq!(
+        node.snapshot().inflight_operations,
+        baseline.inflight_operations
+    );
+    drop(quiescent);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn admitted_native_output_survives_unpolled_body_and_last_frame_clone() {
     use http_body_util::BodyExt;
     let fixture = Fixture::new().await;

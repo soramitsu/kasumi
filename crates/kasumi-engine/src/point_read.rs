@@ -17,9 +17,9 @@ pub(super) fn point_arc_bytes<T>() -> Result<u64> {
 // backing is also admitted by that ledger, so it precedes the charge fields.
 pub(super) struct PointRead {
     pub(super) document: Option<history_reads::ReadDocument>,
-    generation: Option<Arc<crate::Generation>>,
+    pub(super) generation: Option<Arc<crate::Generation>>,
     history: history_reads::HistoryReadCache,
-    registration: Option<Arc<WorkRegistration>>,
+    pub(super) registration: Option<Arc<WorkRegistration>>,
     memory: Option<QueryMemory<Reservation>>,
     charge: Option<Arc<Reservation>>,
 }
@@ -115,9 +115,53 @@ struct RegisteredPoint<T> {
     _registration: Arc<WorkRegistration>,
     _charge: Arc<Reservation>,
 }
-struct PendingPoint<T> {
+pub(super) struct PendingPoint<T> {
     response: T,
     read: PointRead,
+}
+
+fn point_deadline_error() -> Error {
+    Error::new(ErrorCode::ResourceExhausted, "point read deadline exceeded")
+}
+
+impl PointRead {
+    /// The original registered owner moves into the blocking child. A cancelled
+    /// waiter cannot release its source, input credit or worker permit early.
+    pub(super) async fn read_native<T: Send + 'static>(
+        mut self,
+        slot: Arc<DocumentSlot>,
+        permit: tokio::sync::OwnedSemaphorePermit,
+        cancellation: &QueryCancellation,
+        select: impl FnOnce(&mut Self) -> Result<T> + Send + 'static,
+    ) -> Result<PendingPoint<Option<T>>> {
+        // This bounds native work only. Queueing and the existing read barrier
+        // do not consume the selected source's native operation allowance.
+        let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
+        let worker_cancellation = cancellation.clone();
+        let worker = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            worker_cancellation.check()?;
+            let generation = self.generation.as_ref().expect("selected point generation");
+            self.document = Some(
+                slot.load_owned(generation.document_resolver())
+                    .map_err(document_load_error)?,
+            );
+            worker_cancellation.check()?;
+            let response = Some(select(&mut self)?);
+            drop(self.document.take());
+            self.history = history_reads::HistoryReadCache::new();
+            Ok(PendingPoint {
+                response,
+                read: self,
+            })
+        });
+        tokio::select! {
+            result = tokio::time::timeout_at(deadline, worker) => result
+                .map_err(|_| point_deadline_error())?
+                .map_err(|_| Error::new(ErrorCode::Unavailable, "point read worker failed"))?,
+            _ = cancelled(cancellation) => Err(cancelled_error()),
+        }
+    }
 }
 
 impl Database {
@@ -154,12 +198,12 @@ impl Database {
             .map(|output| output.response)
     }
 
-    async fn read_document<T>(
+    async fn read_document<T: Send + 'static>(
         &self,
         context: &RequestContext,
         collection: &str,
         id: &str,
-        select: impl FnOnce(&mut PointRead) -> Result<T>,
+        select: impl FnOnce(&mut PointRead) -> Result<T> + Send + 'static,
     ) -> Result<RegisteredPoint<Option<T>>> {
         self.access()?;
         self.engine
@@ -167,12 +211,26 @@ impl Database {
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
         let floor = point_arc_bytes::<WorkRegistration>()?;
+        let waiting = self
+            .admission()
+            .reserve_waiting(floor, Some(cancellation.clone()))?;
+        let registration = Arc::new(self.work.begin(cancellation.clone())?);
+        // Point reads share the existing four read workers. Waiting requests
+        // keep their registration charged without occupying active work slots.
+        // The caller deadline/cancellation bounds this wait; a native timeout
+        // starts only when the selected source is dispatched below.
+        let permit = tokio::select! {
+            result = self.query_slots.clone().acquire_owned() =>
+                result.map_err(|_| Error::new(ErrorCode::Sealed, "query workers sealed"))?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        };
         let mut read = PointRead::new(
             self.admission()
                 .reserve(floor, Some(cancellation.clone()))?,
         );
         read.claim(floor)?;
-        read.registration = Some(Arc::new(self.work.begin(cancellation.clone())?));
+        read.registration = Some(registration);
+        drop(waiting);
         tokio::select! {
             result = self.barrier() => result?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -194,32 +252,43 @@ impl Database {
         let policy_epoch = generation.state.policy_epoch;
         let strict =
             generation.state.policy.strict_read_audit || selected.definition.strict_read_audit;
-        let Some(document) = self
-            .history_document(generation, collection, id, &cancellation, &mut read.history)
-            .await?
-        else {
-            // Absence releases no document body. It returns where the former
-            // NOT_FOUND outcome did: before the read-release audit and fences.
-            read.retain_charge();
-            return Ok(RegisteredPoint {
-                response: None,
-                _registration: read.registration.clone().expect("point registration"),
-                _charge: read.charge.clone().expect("retained point charge"),
-            });
+        let mut pending = if let Some(slot) = selected.documents.get(id).cloned() {
+            read.read_native(slot, permit, &cancellation, select)
+                .await?
+        } else {
+            let document = tokio::select! {
+                result = self.history_document(
+                    generation, collection, id, &cancellation, &mut read.history,
+                ) => result?,
+                _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            };
+            let Some(document) = document else {
+                // Absence releases no body and preserves the existing audit
+                // boundary, before the read-release audit and output fences.
+                read.retain_charge();
+                return Ok(RegisteredPoint {
+                    response: None,
+                    _registration: read.registration.clone().expect("point registration"),
+                    _charge: read.charge.clone().expect("retained point charge"),
+                });
+            };
+            read.document = Some(document);
+            cancellation.check()?;
+            let response = Some(select(&mut read)?);
+            drop(read.document.take());
+            read.history = history_reads::HistoryReadCache::new();
+            drop(permit);
+            PendingPoint { response, read }
         };
-        read.document = Some(document);
-        cancellation.check()?;
-        let response = Some(select(&mut read)?);
-        // A copied output is independent; a shared output already took its
-        // admitted source owner. Neither needs an unused loan during the audit.
-        drop(read.document.take());
-        read.history = history_reads::HistoryReadCache::new();
-        let mut pending = PendingPoint { response, read };
         // A hot returned handle retains only its exact Document, never the
         // complete Generation and unrelated indexes/history/state roots.
         drop(pending.read.generation.take());
-        self.release(context, collection, revision, strict, policy_epoch)
-            .await?;
+        tokio::select! {
+            result = self.release(
+                context, collection, revision, strict, policy_epoch,
+            ) => result?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        }
         cancellation.check()?;
         self.admission().check_release(&cancellation)?;
         self.access()?;

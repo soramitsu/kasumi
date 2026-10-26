@@ -4,9 +4,21 @@ mod proof_documents {
     use crate::snapshot_codec::{Record, WireChangeRecord};
     use kasumi_types::*;
     use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
 
     const ROWS: u64 = 256;
     const NODE_BYTES: u64 = 128 << 20;
+    // This capacity regression authenticates and decodes a 256 MiB stream in
+    // unoptimized tests. Use the existing API maximum so framing cannot mask
+    // the one-byte admission boundary; this is not a latency benchmark.
+    const RESTORE_TIMEOUT_MS: u64 = 600_000;
+
+    fn report_stage(phase: &'static str, elapsed: Duration) {
+        eprintln!(
+            "proof restore: phase={phase} elapsed_ms={}",
+            elapsed.as_millis()
+        );
+    }
 
     fn document(ordinal: u64, proof: &str) -> Document {
         Document {
@@ -100,6 +112,7 @@ mod proof_documents {
         ) = admitted_pair(&incarnation, config).await;
         // This producer owns only one proof, one document/receipt and bounded
         // encoder buffers at a time; it never creates a Vec of decoded rows.
+        let started = Instant::now();
         let producer = admission.reserve(16 << 20, None).unwrap();
         let proof = "ab".repeat(256 << 10);
         let mut state = source.generation().unwrap().state.clone();
@@ -195,7 +208,10 @@ mod proof_documents {
         .unwrap();
         drop(proof);
         drop(producer);
+        report_stage("capture", started.elapsed());
+        let started = Instant::now();
         let layout = inspect(&mut image.reader()).unwrap();
+        report_stage("unbounded_inspect", started.elapsed());
         let quote = layout.materialization_workspace().unwrap();
         assert!(
             state.logical_bytes > quote,
@@ -210,14 +226,21 @@ mod proof_documents {
             image.disk().snapshot().live_files,
             target_store.scratch_disk().snapshot().live_files,
         );
+        let started = Instant::now();
         let error = target
-            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
+            .prepare_snapshot_restore(image.clone(), admission.clone(), RESTORE_TIMEOUT_MS)
             .await
             .err()
             .expect("restore must admit complete workspace before staging");
+        let denied_elapsed = started.elapsed();
+        report_stage("denied_prepare", denied_elapsed);
+        let operation = error.operation_error().unwrap();
         assert_eq!(
-            error.operation_error().unwrap().code,
-            ErrorCode::ResourceExhausted
+            operation.code,
+            ErrorCode::ResourceExhausted,
+            "deadline_expired={} elapsed_ms={}",
+            operation.message == "backup verification deadline expired",
+            denied_elapsed.as_millis()
         );
         assert_eq!(
             (
@@ -227,16 +250,19 @@ mod proof_documents {
             files
         );
         drop(held);
+        let started = Instant::now();
         let prepared = target
-            .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
+            .prepare_snapshot_restore(image.clone(), admission.clone(), RESTORE_TIMEOUT_MS)
             .await
             .unwrap();
+        report_stage("admitted_prepare", started.elapsed());
         assert_eq!(prepared.image(), &image);
         assert_eq!(prepared.revision(), ROWS);
         assert_eq!(target.generation().unwrap().state.revision, 0);
 
         // Exercise the same reader with its actual materialization reservation
         // still live, then inspect every result before releasing that owner.
+        let started = Instant::now();
         let reservation = Arc::new(admission.reserve(quote, None).unwrap());
         let budget = DocumentReadBudget::bind_shared(
             &admission,
@@ -304,6 +330,7 @@ mod proof_documents {
                 .code,
             ErrorCode::Conflict
         );
+        report_stage("explicit_read_and_checks", started.elapsed());
         eprintln!(
             "proof restore: logical_current_bytes={} resident_workspace={quote} documents={ROWS}",
             state.logical_bytes

@@ -1347,6 +1347,39 @@ pub struct NodeReadReport<'a> {
     state: MutexGuard<'a, ReaderState>,
 }
 impl NodeReadReport<'_> {
+    pub(crate) fn is_settled_capacity_denied(&self) -> bool {
+        if !self.state.routine_diagnostic_detachable() {
+            return false;
+        }
+        match self.state.routine_failure() {
+            Some(RoutineReadFailure::Acquisition | RoutineReadFailure::Tables) => true,
+            Some(RoutineReadFailure::Body) => {
+                // Bounded-read refusal is routine for retirement, but is not
+                // proof of capacity pressure, even beside an output refusal.
+                if matches!(
+                    self.state.read_failure.borrow(),
+                    TerminalObservation::Returned(Err(BoundedReadError::BoundExceeded))
+                ) {
+                    return false;
+                }
+                let native_capacity = matches!(
+                    self.state.read_failure.borrow(),
+                    TerminalObservation::Returned(Err(BoundedReadError::Storage(
+                        kasumi_kv::StorageError::Core(original)
+                    ))) if original.is_capacity_denied()
+                );
+                // This is the registered provider-admission observation, not
+                // an arbitrary I/O error found elsewhere in a source chain.
+                let output_capacity = matches!(
+                    self.state.output_admission.borrow(),
+                    TerminalObservation::Returned(Err(error))
+                        if error.kind() == io::ErrorKind::OutOfMemory
+                );
+                native_capacity || output_capacity
+            }
+            None => false,
+        }
+    }
     pub fn has_failures(&self) -> bool {
         self.state.has_failures()
     }

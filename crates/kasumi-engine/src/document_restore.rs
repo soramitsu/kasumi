@@ -18,6 +18,28 @@ use std::sync::Arc;
 
 const FLOOR: u64 = 64 << 10;
 
+/// Only read-side decode admission constructs this error. Keep its original
+/// provider observation separate from native I/O and retirement failures.
+#[derive(Debug)]
+pub(crate) struct ReadAdmissionFailure {
+    original: std::io::Error,
+}
+impl ReadAdmissionFailure {
+    pub(crate) fn is_capacity_denied(&self) -> bool {
+        self.original.kind() == std::io::ErrorKind::OutOfMemory
+    }
+}
+impl std::fmt::Display for ReadAdmissionFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("staged document read admission failed")
+    }
+}
+impl std::error::Error for ReadAdmissionFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.original)
+    }
+}
+
 /// Peak document-only slice of a logical materialization. The input record is
 /// already admitted separately. Pending object copies are bounded by two native
 /// batches; their total does not depend on document count or aggregate bodies.
@@ -305,6 +327,15 @@ impl Builder {
 }
 
 impl StagedDocuments {
+    fn read_grant(&self, bytes: u64) -> Result<DiskMemoryLease> {
+        self.tables
+            .disk
+            .memory()
+            .clone()
+            .reserve_document_decode(bytes)
+            .map_err(|original| anyhow::Error::new(ReadAdmissionFailure { original }))
+    }
+
     /// Rebind a verified logical restore to its explicitly selected new
     /// incarnation. Copy authenticated immutable objects without decoding JSON,
     /// preserving the original per-table cap and exact disk/memory governor.
@@ -364,12 +395,7 @@ impl StagedDocuments {
             expected > 0 && expected <= limits.manifest_bytes,
             "staged document manifest exceeds bound"
         );
-        let _lookup = self
-            .tables
-            .disk
-            .memory()
-            .clone()
-            .reserve_document_decode(FLOOR)?;
+        let _lookup = self.read_grant(FLOOR)?;
         let Some(wire) = self
             .tables
             .bodies
@@ -388,12 +414,7 @@ impl StagedDocuments {
             work == descriptor.body_manifest_work,
             "staged document manifest workspace differs"
         );
-        let _decode = self
-            .tables
-            .disk
-            .memory()
-            .clone()
-            .reserve_document_decode(work)?;
+        let _decode = self.read_grant(work)?;
         let manifest = BodyManifest::from_bytes(wire.as_bytes(), limits)?;
         ensure!(
             manifest.canonical_bytes == descriptor.body_bytes
@@ -537,12 +558,7 @@ impl DocumentResolver for StagedDocuments {
             .and_then(|bytes| bytes.checked_add(descriptor.body_object_bytes.checked_mul(2)?))
             .and_then(|bytes| bytes.checked_add(FLOOR))
             .context("staged document wire workspace overflow")?;
-        let wire_grant = self
-            .tables
-            .disk
-            .memory()
-            .clone()
-            .reserve_document_decode(wire_bytes)?;
+        let wire_grant = self.read_grant(wire_bytes)?;
         let manifest_wire = self
             .tables
             .bodies
@@ -562,12 +578,7 @@ impl DocumentResolver for StagedDocuments {
             manifest_work == descriptor.body_manifest_work,
             "staged document manifest workspace differs"
         );
-        let manifest_grant = self
-            .tables
-            .disk
-            .memory()
-            .clone()
-            .reserve_document_decode(manifest_work)?;
+        let manifest_grant = self.read_grant(manifest_work)?;
         let manifest = BodyManifest::from_bytes(manifest_wire.as_bytes(), limits)?;
         ensure!(
             manifest.canonical_bytes == descriptor.body_bytes
@@ -594,12 +605,7 @@ impl DocumentResolver for StagedDocuments {
             )
             .and_then(|bytes| bytes.checked_add(4096))
             .context("staged document decode workspace overflow")?;
-        let decode = self
-            .tables
-            .disk
-            .memory()
-            .clone()
-            .reserve_document_decode(decoded_work)?;
+        let decode = self.read_grant(decoded_work)?;
         let document = Document {
             id: descriptor.id.clone(),
             version: descriptor.version,
@@ -622,6 +628,53 @@ impl DocumentResolver for StagedDocuments {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn read_admission_failure_keeps_original_io_owner_and_exact_capacity_kind() {
+        #[derive(Debug)]
+        struct Original;
+        impl std::fmt::Display for Original {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("original admission observation")
+            }
+        }
+        impl std::error::Error for Original {}
+
+        for kind in [
+            std::io::ErrorKind::OutOfMemory,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::Other,
+        ] {
+            let original = std::io::Error::new(kind, Original);
+            let address = std::ptr::from_ref(
+                original
+                    .get_ref()
+                    .unwrap()
+                    .downcast_ref::<Original>()
+                    .unwrap(),
+            );
+            let failure = ReadAdmissionFailure { original };
+            assert_eq!(
+                failure.is_capacity_denied(),
+                kind == std::io::ErrorKind::OutOfMemory
+            );
+            let source = std::error::Error::source(&failure)
+                .unwrap()
+                .downcast_ref::<std::io::Error>()
+                .unwrap();
+            assert_eq!(source.kind(), kind);
+            assert_eq!(
+                std::ptr::from_ref(
+                    source
+                        .get_ref()
+                        .unwrap()
+                        .downcast_ref::<Original>()
+                        .unwrap()
+                ),
+                address
+            );
+        }
+    }
 
     #[test]
     fn restore_slice_bounds_actual_manifest_and_dense_body_decode_work() {

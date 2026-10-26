@@ -19,8 +19,7 @@ impl WaitingQuery {
         cancellation: &QueryCancellation,
     ) -> Result<Self> {
         let bytes = request_bytes(&request)?;
-        let mut reservation = node.reserve(bytes, Some(cancellation.clone()))?;
-        reservation.retain(bytes);
+        let reservation = node.reserve_waiting(bytes, Some(cancellation.clone()))?;
         let registration = match fence.begin(cancellation.clone()) {
             Ok(registration) => Arc::new(registration),
             Err(error) => {

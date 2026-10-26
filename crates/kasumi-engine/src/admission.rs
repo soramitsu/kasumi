@@ -1143,6 +1143,37 @@ impl NodeAdmission {
         self.core
             .reserve_kind(bytes, cancellation, ChargeKind::Operation)
     }
+    /// Retain undispatched input or response control without taking an active
+    /// execution slot. Ordinary-work byte and ledger protections still apply,
+    /// including later growth; dispatch must obtain its own operation grant.
+    pub fn reserve_waiting(
+        self: &Arc<Self>,
+        bytes: u64,
+        cancellation: Option<QueryCancellation>,
+    ) -> Result<Reservation> {
+        if let Some(cancellation) = &cancellation {
+            cancellation.check()?;
+        }
+        self.core
+            .reserve_kind_raw(
+                bytes,
+                cancellation,
+                ChargeKind::Resident,
+                ChargeOrigin::OrdinaryOperation,
+            )
+            .map_err(|error| match error {
+                ReserveKindError::Exhausted => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "node memory or work admission budget exhausted",
+                ),
+                ReserveKindError::IdentifierExhausted => {
+                    Error::new(ErrorCode::Unavailable, "admission identifier exhausted")
+                }
+                ReserveKindError::Missing => {
+                    Error::new(ErrorCode::Unavailable, "admission reservation absent")
+                }
+            })
+    }
     pub fn reserve_resident(self: &Arc<Self>, bytes: u64) -> Result<Reservation> {
         self.core.reserve_resident(bytes)
     }
@@ -2244,6 +2275,106 @@ mod tests {
         assert!(node.reserve_resident(1).is_err());
         assert_eq!(payload_bytes(&node), 200);
         drop((first, second));
+    }
+
+    #[test]
+    fn waiting_admission_keeps_execution_cap_pressure_cancellation_and_exact_refunds() {
+        use kasumi_query::QueryWorkspace as _;
+        let (node, memory, _) = fixture();
+        let baseline = node.snapshot();
+        let first = node.reserve(100, None).unwrap();
+        let second = node.reserve(100, None).unwrap();
+        assert!(node.reserve(0, None).is_err());
+        let cancellation = QueryCancellation::default();
+        let mut waiting = node
+            .reserve_waiting(200, Some(cancellation.clone()))
+            .unwrap();
+        let held = node.snapshot();
+        assert_eq!(held.inflight_operations, 2);
+        assert_eq!(
+            held.resident_reserved_bytes_by_origin.ordinary_operation,
+            200
+        );
+        assert_eq!(held.reserved_bytes, baseline.reserved_bytes + 400);
+        assert!(node.reserve_waiting(101, None).is_err());
+        assert!(node.reserve(0, None).is_err());
+        memory.rss.store(node.core.data.high, Ordering::SeqCst);
+        node.refresh();
+        assert!(cancellation.is_cancelled());
+        assert!(waiting.ensure_peak(200).is_err());
+        assert!(node.reserve_waiting(0, None).is_err());
+        assert_eq!(node.snapshot().reserved_bytes, held.reserved_bytes);
+        drop(waiting);
+        assert_eq!(
+            node.snapshot().reserved_bytes,
+            baseline.reserved_bytes + 200
+        );
+        memory.rss.store(node.core.data.low, Ordering::SeqCst);
+        node.refresh();
+        assert!(node.reserve_waiting(0, Some(cancellation)).is_err());
+        assert_eq!(
+            node.snapshot().live_reservations,
+            baseline.live_reservations + 2
+        );
+        drop((first, second));
+        assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(
+            node.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+    }
+
+    #[test]
+    fn waiting_admission_preserves_protected_bytes_growth_and_ledger_slots() {
+        let node = NodeAdmission::with_fixed_memory(
+            AdmissionConfig {
+                max_inflight_bytes: Some(8 << 20),
+                max_inflight_operations: 1,
+                max_reservations: 8,
+                max_snapshot_startups: 2,
+                max_startup_scopes: 2,
+                cache_work_reserve_bytes: Some(4096),
+                cache_work_reserve_slots: Some(1),
+                ..Default::default()
+            },
+            1 << 30,
+            0,
+        )
+        .unwrap();
+        let baseline = node.snapshot();
+        let protection = node.memory().protect_ordinary(4096, 2).unwrap();
+        let active = node.reserve(0, None).unwrap();
+        let available =
+            node.policy().max_inflight_bytes.unwrap() - node.snapshot().reserved_bytes - 4096;
+        let mut waiting = node.reserve_waiting(available, None).unwrap();
+        assert!(node.reserve_waiting(1, None).is_err());
+        assert!(waiting.reserve_additional(1).is_err());
+        assert_eq!(node.snapshot().inflight_operations, 1);
+        drop(waiting);
+        let available_slots =
+            node.policy().max_reservations - node.snapshot().live_reservations - 2;
+        let queued = (0..available_slots)
+            .map(|_| node.reserve_waiting(0, None).unwrap())
+            .collect::<Vec<_>>();
+        assert!(node.reserve_waiting(0, None).is_err());
+        assert!(node.reserve(0, None).is_err());
+        // Native maintenance may still spend its two preserved ledger slots.
+        let native = [
+            node.reserve_resident(0).unwrap(),
+            node.reserve_resident(0).unwrap(),
+        ];
+        assert_eq!(
+            node.snapshot().live_reservations,
+            node.policy().max_reservations
+        );
+        assert!(node.reserve_resident(0).is_err());
+        drop((native, queued, active, protection));
+        assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(
+            node.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+        assert_eq!(node.snapshot().inflight_operations, 0);
     }
 
     #[test]

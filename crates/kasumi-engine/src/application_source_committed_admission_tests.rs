@@ -145,6 +145,10 @@ async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_document_replace_and_patch_decode_dense_old_body_with_only_preadmitted_credit()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -221,6 +225,101 @@ async fn committed_document_replace_and_patch_decode_dense_old_body_with_only_pr
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn committed_staged_dense_documents_share_transient_publication_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use kasumi_types::{
+        AppendStagedChunk, BeginStagedTransaction, StagedChunk, StagedManifest,
+        StagedTransactionScope,
+    };
+
+    const DOCUMENTS: usize = 16;
+    let dense_len = |row| if row == DOCUMENTS - 1 { 12_288 } else { 8192 };
+    let fixture = OrdinaryFixture::new().await?;
+    let admission = fixture.fixture.storage.admission.clone();
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    admit_documents(&fixture, &create)?;
+    applied(&fixture.apply(&create, || {})?)?;
+    let chunks: Vec<_> = (0..2)
+        .map(|chunk| StagedChunk {
+            read_set: vec![],
+            operations: (chunk * 8..chunk * 8 + 8)
+                .map(|row| Mutation::Put {
+                    collection: "docs".into(),
+                    id: format!("row-{row:02}"),
+                    body: json!({"n": row, "dense": vec![row; dense_len(row)]}),
+                    expected: Precondition::Absent,
+                })
+                .collect(),
+        })
+        .collect();
+    let begin = BeginStagedTransaction {
+        scope: StagedTransactionScope {
+            tenant: "selected-sources".into(),
+            principal: "owner".into(),
+            incarnation: fixture.engine.generation()?.state.incarnation.clone(),
+        },
+        transaction_id: "dense-publication".into(),
+        manifest: StagedManifest::from_chunks(&chunks)?,
+        ttl_ms: 60_000,
+    };
+    let reference = begin.reference()?;
+    let input = fixture.input(Operation::BeginStaged(begin))?;
+    admit_documents(&fixture, &input)?;
+    applied(&fixture.apply(&input, || {})?)?;
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let input = fixture.input(Operation::AppendStaged(AppendStagedChunk {
+            transaction: reference.clone(),
+            index,
+            chunk,
+        }))?;
+        admit_documents(&fixture, &input)?;
+        applied(&fixture.apply(&input, || {})?)?;
+    }
+    let input = fixture.input(Operation::FinalizeStaged(reference))?;
+    // Summing all dense trees' transient work exceeds this unchanged fixture
+    // budget. The actual publication stages them sequentially, retaining writes.
+    let admitted = admit_documents(&fixture, &input)?;
+    let held = exhaust_native(&admission);
+    assert!(admission.memory().clone().reserve_installed(0).is_err());
+    let before = revision(&fixture);
+    let receipt = applied(&fixture.apply(&input, || {})?)?;
+    let peak = crate::admission::ApplyEscrow::take_last_peak_for_test().unwrap();
+    assert!(
+        peak > crate::admission::ApplyEscrow::BYTES && peak <= admitted,
+        "dense staged apply peak {peak}, admitted {admitted}"
+    );
+    assert_eq!(revision(&fixture), before + 1);
+    drop(held);
+    let generation = fixture.engine.generation()?;
+    assert_eq!(
+        generation.state.collections["docs"].documents.len(),
+        DOCUMENTS
+    );
+    for row in 0..DOCUMENTS {
+        let slot = &generation.state.collections["docs"].documents[&format!("row-{row:02}")];
+        let descriptor = slot.stored()?;
+        assert!(descriptor.body_decode_work > descriptor.body_bytes * 128);
+        let document = generation.load_document(slot)?;
+        assert_eq!(document.version, receipt.revision);
+        assert_eq!(
+            document.body,
+            json!({"n": row, "dense": vec![row; dense_len(row)]})
+        );
+    }
+    drop(generation);
+    serves_next(&fixture)?;
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_preproposal_refusal_preserves_original_generation_and_recovers()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;

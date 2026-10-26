@@ -114,6 +114,13 @@ impl VerifiedBackup {
                     )
                     .map_err(crate::SnapshotFailure::into_scratch_failure)?;
                     kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        // Materialization has finished its document encode/decode
+                        // work. Keep the same owner and full base allowance through
+                        // publication; a live document loan rejects this handoff.
+                        retained_materialization.handoff_workspace(
+                            &admission,
+                            layout.materialization_base_workspace()?,
+                        )?;
                         // This is still the original reservation identity and work slot.
                         // The prepared result owns it through target publication.
                         drop(self._reservation);

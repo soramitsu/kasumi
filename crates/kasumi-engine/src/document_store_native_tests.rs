@@ -91,6 +91,10 @@ fn publish_to(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_control_catalog_uses_bound_document_sources()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -170,6 +174,10 @@ fn blob_count(writes: &[WriteOp]) -> usize {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_capacity_refusal_does_not_poison_selected_source()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -219,6 +227,10 @@ async fn document_store_native_capacity_refusal_does_not_poison_selected_source(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_access_panic_retains_original_without_poisoning_selected_source()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -292,6 +304,10 @@ async fn document_store_native_access_panic_retains_original_without_poisoning_s
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_bootstrap_materialization_obeys_selected_source_seal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -334,6 +350,10 @@ async fn document_store_native_bootstrap_materialization_obeys_selected_source_s
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_joint_publication_deduplicates_hex_and_base64()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -371,6 +391,10 @@ async fn document_store_native_joint_publication_deduplicates_hex_and_base64()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_corrupt_or_missing_blob_never_refreshes_old_view()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for missing in [false, true] {
@@ -417,6 +441,10 @@ async fn document_store_native_corrupt_or_missing_blob_never_refreshes_old_view(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_decode_owner_retains_admission_until_last_clone()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -444,6 +472,10 @@ async fn document_store_native_decode_owner_retains_admission_until_last_clone()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_restore_stages_shared_objects_without_live_publication()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -521,6 +553,10 @@ async fn document_store_native_restore_stages_shared_objects_without_live_public
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_restore_preserves_valid_named_incarnations()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -540,6 +576,57 @@ async fn document_store_native_restore_preserves_valid_named_incarnations()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_staged_read_admission_refuses_and_recovers()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    let input = document("admitted-staged-read", 1, "small".into());
+    let descriptor = builder.push(&input)?;
+    let staged = builder.finish()?;
+    let admission = &fixture.storage.admission;
+    let before = admission.snapshot();
+    let held = admission
+        .reserve_resident(admission.policy().max_inflight_bytes.unwrap() - before.reserved_bytes)?;
+    let full = admission.snapshot();
+    // Both the bootstrap membership probe and direct staged decode refuse at
+    // their own provider-admission boundary before touching encrypted tables.
+    for result in [
+        staged.contains(&descriptor).map(|_| ()),
+        descriptor.load(&staged).map(|_| ()),
+    ] {
+        let error = result.expect_err("staged read must refuse exhausted capacity");
+        let failure = error
+            .downcast_ref::<crate::document_restore::ReadAdmissionFailure>()
+            .expect("read admission origin was erased");
+        assert!(failure.is_capacity_denied());
+    }
+    assert_eq!(admission.snapshot().reserved_bytes, full.reserved_bytes);
+    assert_eq!(
+        admission.snapshot().live_reservations,
+        full.live_reservations
+    );
+    drop(held);
+    assert_eq!(admission.snapshot().reserved_bytes, before.reserved_bytes);
+    assert!(staged.contains(&descriptor)?);
+    assert_eq!(descriptor.load(&staged)?.as_ref(), &input);
+    drop(staged);
+    fixture.close().await
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_restore_batch_boundaries_keep_one_proof_copy()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -593,6 +680,10 @@ async fn document_store_native_restore_batch_boundaries_keep_one_proof_copy()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_failed_restore_push_cannot_finish_partial_tables()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -612,6 +703,10 @@ async fn document_store_native_failed_restore_push_cannot_finish_partial_tables(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corruption_retry()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

@@ -37,12 +37,11 @@ fn definition(name: &str) -> CollectionDefinition {
     }
 }
 fn engine(limits: Limits) -> FixtureEngine {
-    // Schema application retains its encrypted terminal group while the first
-    // document mutation initializes receipts. As in mutation_apply_tests, that
-    // native setup needs a 33rd reservation. Fund the same bounded overlap and
-    // leave the 64 MiB byte cap and schema/snapshot quota assertions unchanged.
+    // Snapshot candidates add encrypted body/blob tables beside the original
+    // receipt and terminal groups. Admit their metadata within 128 ledger
+    // slots while keeping the 64 MiB byte cap and schema/snapshot quotas.
     FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128),
         "schema".into(),
         "incarnation".into(),
         policy(),

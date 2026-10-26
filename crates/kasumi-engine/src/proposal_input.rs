@@ -76,9 +76,7 @@ impl OperationInput {
             return Ok(false);
         };
         let bytes = waiting_mutation_bytes(context, batch)?;
-        let mut reservation = node.reserve(bytes, None)?;
-        reservation.retain(bytes);
-        self.waiting = Some(reservation);
+        self.waiting = Some(node.reserve_waiting(bytes, None)?);
         Ok(true)
     }
     /// Synchronous concrete producer. The caller's source DTO dies before this

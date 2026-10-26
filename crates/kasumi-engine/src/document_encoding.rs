@@ -6,7 +6,9 @@
 //! No object is deleted here: generation/snapshot reachability owns reclamation.
 //! Readers must retain the exact selected native view and reserve the bounded
 //! output, decoded Value and callback workspace before calling this module.
-use anyhow::{Context, Result, bail, ensure};
+#[cfg(test)]
+use anyhow::bail;
+use anyhow::{Context, Result, ensure};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -443,6 +445,7 @@ impl BodyManifest {
         Ok(manifest)
     }
 
+    #[cfg(test)]
     pub(crate) fn blob_references(&self) -> impl Iterator<Item = &BlobReference> {
         self.fragments
             .iter()
@@ -567,6 +570,7 @@ fn append_hex(output: &mut Vec<u8>, bytes: &[u8], alphabet: &[u8; 16]) {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn decode_body<B: AsRef<[u8]>>(
     manifest: &BodyManifest,
     limits: BodyLimits,
@@ -582,13 +586,14 @@ pub(crate) fn decode_body<B: AsRef<[u8]>>(
     if digest.bytes as u64 != manifest.canonical_bytes
         || <[u8; 32]>::from(digest.hash.finalize()) != manifest.canonical_sha256
     {
-        bail!("decoded document is not the exact canonical body");
+        anyhow::bail!("decoded document is not the exact canonical body");
     }
     Ok(body)
 }
 
 // Check structural depth before serde allocates any decoded containers. Syntax
 // and UTF-8 are still checked by serde; strings and escaped braces do not count.
+#[cfg(test)]
 fn check_json_depth(bytes: &[u8], limit: usize) -> Result<()> {
     let mut depth = 0usize;
     let mut string = false;

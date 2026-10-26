@@ -15,8 +15,10 @@ fn context() -> RequestContext {
     }
 }
 fn engine(limit: u64) -> FixtureEngine {
+    // Retained snapshot candidates add encrypted body/blob tables alongside
+    // original groups; fund their ledger slots without raising the byte cap.
     FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128),
         "tenant".into(),
         "incarnation".into(),
         Policy {
@@ -235,6 +237,9 @@ fn replay_with_only_rejection_audit_headroom_keeps_the_original_receipt() {
         after.limits.max_snapshot_bytes = limit;
     }
     before.limits.max_snapshot_bytes = after.limits.max_snapshot_bytes;
+    // The replay candidate is only needed to derive the quota. Retire its
+    // staged native owners before restoring the before-image.
+    drop(after);
     let db = engine(16 << 10);
     db.fixture_restore(
         &kasumi_engine::test_utils::encode_snapshot_candidate(&source.disk, &before, 64 << 20)

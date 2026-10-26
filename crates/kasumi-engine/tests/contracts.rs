@@ -46,12 +46,11 @@ fn definition() -> CollectionDefinition {
     }
 }
 fn engine(strict: bool, limits: Limits) -> FixtureEngine {
-    // CreateCollection retains an encrypted terminal group; the first mutation
-    // initializes a separate receipt group. The native setup overlap needs a
-    // 33rd reservation (also covered by mutation_apply_tests). Match that
-    // fixture's bounded slot allowance while retaining the 64 MiB byte cap.
+    // Snapshot restore overlaps the original receipt/terminal groups with
+    // encrypted body/blob staging tables. Their metadata exhausts 64 ledger
+    // slots, so admit 128 while retaining the same 64 MiB byte cap.
     FixtureEngine::new(
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128),
         "tenant-a".into(),
         "incarnation-a".into(),
         policy(strict),

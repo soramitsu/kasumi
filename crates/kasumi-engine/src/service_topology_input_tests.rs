@@ -18,14 +18,34 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
     let exact = proposal_input::retained_for_test(&source, key);
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
     let context = fixture.credential(clock.clone());
-    let quoted = proposal_input::OperationInput::topology(
+    let mut quoted = proposal_input::OperationInput::topology(
         fixture.db.admission(),
         proposal_topology(),
         Precondition::Absent,
         key,
     )
-    .unwrap()
-    .into_command(context.clone());
+    .unwrap();
+    // The actual queue retains input/control backing in addition to the
+    // topology producer's exact grant. Measure that same synchronous admission
+    // before dispatch; it contributes one retained charge, no active slot.
+    let before_waiting = fixture.db.admission().snapshot();
+    assert!(
+        quoted
+            .admit_waiting_mutation(fixture.db.admission(), &context)
+            .unwrap()
+    );
+    let after_waiting = fixture.db.admission().snapshot();
+    let waiting_bytes = after_waiting.reserved_bytes - before_waiting.reserved_bytes;
+    assert!(waiting_bytes > 0);
+    assert_eq!(
+        after_waiting.live_reservations,
+        before_waiting.live_reservations + 1
+    );
+    assert_eq!(
+        after_waiting.inflight_operations,
+        before_waiting.inflight_operations
+    );
+    let quoted = quoted.into_command(context.clone());
     let max_bytes = proposal_input_len(&quoted.command).unwrap() + (64 << 10);
     let Operation::Mutate(batch) = &quoted.command.operation else {
         panic!("topology input must be a mutation");
@@ -50,9 +70,9 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
     let admitted = fixture.db.admission().snapshot();
     assert_eq!(
         admitted.reserved_bytes,
-        before.reserved_bytes + command_workspace + exact
+        before.reserved_bytes + command_workspace + exact + waiting_bytes
     );
-    assert_eq!(admitted.live_reservations, before.live_reservations + 2);
+    assert_eq!(admitted.live_reservations, before.live_reservations + 3);
     drop(request);
     assert_eq!(
         fixture.db.admission().snapshot().reserved_bytes,

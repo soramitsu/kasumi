@@ -243,11 +243,37 @@ fn source_read_error(error: ReadFailure<crate::index_source::DocumentSourceFailu
 }
 
 fn document_load_error(error: anyhow::Error) -> Error {
-    if error
-        .chain()
-        .filter_map(|error| error.downcast_ref::<Error>())
-        .any(|error| error.code == ErrorCode::ResourceExhausted)
-    {
+    let mut capacity_denied = false;
+    for cause in error.chain() {
+        if cause.is::<kasumi_store::PointRetirementFailure>()
+            || cause.is::<kasumi_store::NodeScopedReadRetirement>()
+        {
+            capacity_denied = false;
+            break;
+        }
+        if let Some(failure) = cause.downcast_ref::<kasumi_store::NodeScopedReadFailure>() {
+            // Inspect the exact registered observations, including native
+            // retirement. Generic I/O kinds cannot prove capacity refusal.
+            if !failure.is_settled_capacity_denied() {
+                capacity_denied = false;
+                break;
+            }
+            capacity_denied = true;
+        } else if let Some(failure) =
+            cause.downcast_ref::<crate::document_restore::ReadAdmissionFailure>()
+        {
+            // Only the staged reader's explicit decode-admission call can mint
+            // this wrapper; arbitrary I/O errors retain Unavailable behavior.
+            if !failure.is_capacity_denied() {
+                capacity_denied = false;
+                break;
+            }
+            capacity_denied = true;
+        } else if let Some(error) = cause.downcast_ref::<Error>() {
+            capacity_denied |= error.code == ErrorCode::ResourceExhausted;
+        }
+    }
+    if capacity_denied {
         Error::new(
             ErrorCode::ResourceExhausted,
             "document read workspace is exhausted",
@@ -1241,10 +1267,9 @@ impl<'a> ResponseFence<'a> {
                 .saturating_mul(3) as u64
         };
         let cancellation = QueryCancellation::default();
-        let mut workspace = database
+        let workspace = database
             .admission()
-            .reserve(bytes, Some(cancellation.clone()))?;
-        workspace.retain(bytes);
+            .reserve_waiting(bytes, Some(cancellation.clone()))?;
         Ok(Self {
             database,
             context: context.clone(),
@@ -2481,7 +2506,10 @@ impl Database {
             );
         }
         context.authorization.check_live()?;
-        self.access()?;
+        // Queued work must recheck the same operation-specific gate used at
+        // entry: restore completion is admitted before ordinary serving opens.
+        self.materialization_access()?;
+        self.engine.check_operation_access(&input.operation)?;
         let reservation = self.admission().reserve(command_budget, None)?;
         let release_context = context.clone();
         // Transfer the actual input and its exact optional grant together;
@@ -3116,15 +3144,10 @@ impl Database {
             request,
             &cancellation,
         )?;
-        // Only a dispatched worker owns candidate/output workspace. Waiting
-        // requests retain their actual input backing, with no execution slot.
-        let needs_worker =
-            waiting.request.paging == Paging::Seek || waiting.request.cursor.is_none();
-        let permit = if needs_worker {
-            Some(query_admission::permit(&self.query_slots, &cancellation, deadline).await?)
-        } else {
-            None
-        };
+        // Every page may resolve stored documents, including continuations.
+        // Wait with only input backing before taking one of the same four
+        // worker slots or admitting candidate/output workspace.
+        let permit = query_admission::permit(&self.query_slots, &cancellation, deadline).await?;
         // Establish authority and select fresh state after waiting. This also
         // bounds concurrent worker queries' quorum barriers to the four slots.
         tokio::select! {
@@ -3165,45 +3188,56 @@ impl Database {
         let seek = request.paging == Paging::Seek;
         let continuation = request.cursor.as_ref().filter(|_| !seek);
         let (mut full, mut page, offset, created) = if let Some(token) = continuation {
-            let cursors = self
-                .cursors
-                .lock()
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "cursor storage unavailable"))?;
-            let cursor = cursors
-                .get(token)
-                .ok_or_else(|| Error::new(ErrorCode::CursorExpired, "cursor unavailable"))?;
-            if self.clock.now().saturating_sub(cursor.created) >= cursor.ttl
-                || cursor.principal != context.principal
-                || cursor.query_digest != digest
-                || cursor.incarnation != incarnation
-                || cursor.policy_epoch != policy_epoch
-                || cursor.term != term
-            {
-                return Err(Error::new(
-                    ErrorCode::CursorExpired,
-                    "cursor expired or its access policy changed",
-                ));
-            }
-            let (offset, revision, created) = (cursor.offset, cursor.revision, cursor.created);
-            let mut full = QueryResultOwner {
-                request: input.request,
-                rows: cursor.rows.clone(),
-                memory: Some(input.memory),
-                reservation: Some(cursor.reservation.clone()),
-                page_charge: None,
-                _registration: registration.clone(),
+            let (mut full, offset, revision, created) = {
+                let cursors = self.cursors.lock().map_err(|_| {
+                    Error::new(ErrorCode::Unavailable, "cursor storage unavailable")
+                })?;
+                let cursor = cursors
+                    .get(token)
+                    .ok_or_else(|| Error::new(ErrorCode::CursorExpired, "cursor unavailable"))?;
+                if self.clock.now().saturating_sub(cursor.created) >= cursor.ttl
+                    || cursor.principal != context.principal
+                    || cursor.query_digest != digest
+                    || cursor.incarnation != incarnation
+                    || cursor.policy_epoch != policy_epoch
+                    || cursor.term != term
+                {
+                    return Err(Error::new(
+                        ErrorCode::CursorExpired,
+                        "cursor expired or its access policy changed",
+                    ));
+                }
+                let (offset, revision, created) = (cursor.offset, cursor.revision, cursor.created);
+                let full = QueryResultOwner {
+                    request: input.request,
+                    rows: cursor.rows.clone(),
+                    memory: Some(input.memory),
+                    reservation: Some(cursor.reservation.clone()),
+                    page_charge: None,
+                    _registration: registration.clone(),
+                };
+                (full, offset, revision, created)
             };
-            drop(cursors);
-            let page = full.copy_page(
-                offset,
-                revision,
-                state.limits.max_result_bytes,
-                &cancellation,
-            )?;
+            let max_result_bytes = state.limits.max_result_bytes;
+            let worker_cancellation = cancellation.clone();
+            // Stored cursor rows require synchronous native reads and decode.
+            // The actual worker keeps the selected generation, page charge,
+            // registration and permit if the caller times out or disconnects.
+            let worker = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let page = full.copy_page(offset, revision, max_result_bytes, &worker_cancellation);
+                (page, full)
+            });
+            let (page, full) = tokio::select! {
+                result = tokio::time::timeout_at(deadline, worker) => result
+                    .map_err(|_| query_admission::deadline_error())?
+                    .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
+                _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            };
+            let page = page?;
             let next = offset + page.rows.len();
             (full, page, next, created)
         } else {
-            let permit = permit.expect("fresh and seek query admitted one existing worker slot");
             let mut work = QueryWork {
                 generation: generation.clone(),
                 request: input.request,
@@ -3498,6 +3532,30 @@ mod tests {
     use kasumi_store::test_utils::LocalKeyProvider;
     use serde_json::json;
     use std::{future::Future, task::Poll};
+
+    #[test]
+    fn document_read_capacity_does_not_hide_io_or_retirement_failure() {
+        let capacity = || Error::new(ErrorCode::ResourceExhausted, "fixture capacity refusal");
+        assert_eq!(
+            document_load_error(capacity().into()).code,
+            ErrorCode::ResourceExhausted
+        );
+        for kind in [
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::OutOfMemory,
+            std::io::ErrorKind::Other,
+        ] {
+            assert_eq!(
+                document_load_error(std::io::Error::from(kind).into()).code,
+                ErrorCode::Unavailable
+            );
+        }
+        let retirement = kasumi_store::PointRetirementFailure::new(capacity().into(), Box::new(()));
+        assert_eq!(
+            document_load_error(retirement.into()).code,
+            ErrorCode::Unavailable
+        );
+    }
 
     struct ControlledCommandClock(std::sync::atomic::AtomicU64);
     impl CommandClock for ControlledCommandClock {

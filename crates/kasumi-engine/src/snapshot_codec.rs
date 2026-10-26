@@ -511,6 +511,7 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 }
+#[cfg(test)]
 pub(crate) fn write(
     state: &TenantState,
     receipts: &crate::mutation_receipt::View,
@@ -1024,7 +1025,9 @@ pub(crate) fn read(
             }
             documents = Some(crate::document_restore::Builder::new(
                 disk,
-                (header.limits.max_snapshot_bytes as u64)
+                header
+                    .limits
+                    .max_snapshot_bytes
                     .checked_mul(8)
                     .and_then(|v| v.checked_add(64 << 20))
                     .ok_or_else(|| anyhow::anyhow!("document staging budget overflow"))?,

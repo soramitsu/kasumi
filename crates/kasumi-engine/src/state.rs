@@ -810,10 +810,19 @@ impl TenantEngine {
                 bytes = bytes
                     .checked_add(crate::accounting::encoded_len(&stage.chunks)? as u64)
                     .context("staged document quote overflow")?;
+                // PreparedDocuments retains encoded writes across documents,
+                // but releases each document's transient work before staging
+                // the next. Candidate Pending bodies remain in the separate
+                // proposal/apply model; this escrow funds native publication.
+                let document_work = stage
+                    .chunks
+                    .values()
+                    .flat_map(|chunk| &chunk.operations)
+                    .try_fold(0_u64, |maximum, mutation| -> anyhow::Result<u64> {
+                        Ok(maximum.max(crate::snapshot_codec::inspect_typed_json_work(mutation)?))
+                    })?;
                 typed = typed
-                    .checked_add(crate::snapshot_codec::inspect_typed_json_work(
-                        &stage.chunks,
-                    )?)
+                    .checked_add(document_work)
                     .context("staged document quote overflow")?;
             }
             let mutations: Box<dyn Iterator<Item = &Mutation>> = match (&command.operation, staged)
@@ -2347,6 +2356,10 @@ impl TenantEngine {
         .map_err(Into::into)
     }
 
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep each authenticated snapshot owner explicit through validation and generation handoff"
+    )]
     fn prepare_state(
         &self,
         baseline: &ValidationBaseline<'_>,
@@ -2546,11 +2559,9 @@ impl TenantEngine {
                     )
                     .into());
                 }
-                logical_bytes = logical_bytes
-                    .checked_add(document_bytes as u64)
-                    .ok_or_else(|| {
-                        Error::new(ErrorCode::Corruption, "document byte count overflow")
-                    })?;
+                logical_bytes = logical_bytes.checked_add(document_bytes).ok_or_else(|| {
+                    Error::new(ErrorCode::Corruption, "document byte count overflow")
+                })?;
             }
         }
         if count != state.document_count

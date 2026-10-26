@@ -77,6 +77,8 @@ async fn routine_read_two_original_aliases_outlive_native_and_database_retiremen
         .unwrap();
     assert_eq!(close.reader_id(), id);
     assert_eq!(bounded_address(&close), original_address);
+    assert!(!failure.is_settled_capacity_denied());
+    assert!(!close.is_settled_capacity_denied());
 
     // Holding the public immutable report must never self-deadlock retirement.
     let report = failure.report();
@@ -119,6 +121,8 @@ async fn routine_read_two_original_aliases_outlive_native_and_database_retiremen
         before_retirement.attempts
     );
     assert_eq!(fixture.memory.storage_census().snapshot().readers, 0);
+    assert!(!failure.is_settled_capacity_denied());
+    assert!(!close.is_settled_capacity_denied());
     fixture.node.shutdown().await.unwrap();
     assert!(fixture.node.retire().is_retired());
     assert_eq!(fixture.memory.storage_census().snapshot().databases, 0);
@@ -182,6 +186,21 @@ async fn routine_read_native_and_outer_capacity_keep_exact_errors_without_cleanu
             .unwrap_err()
             .downcast::<crate::NodeScopedReadFailure>()
             .unwrap();
+        assert!(failure.is_settled_capacity_denied());
+        let held_report = failure.report();
+        assert!(!failure.is_settled_capacity_denied());
+        drop(held_report);
+        let recovered =
+            RegisteredNodeRead::retained(fixture.memory.clone(), failure.reader_id()).unwrap();
+        // A Reported context must not hide an unrelated body failure.
+        let independent = crate::NodeScopedReadFailure::from_view(
+            &recovered,
+            anyhow::Error::new(io::Error::from(io::ErrorKind::WouldBlock))
+                .context(NodeReadAccessError::Reported),
+        );
+        assert!(!independent.is_settled_capacity_denied());
+        drop(independent);
+        drop(recovered);
         let address = {
             let report = failure.report();
             if native {
@@ -212,6 +231,7 @@ async fn routine_read_native_and_outer_capacity_keep_exact_errors_without_cleanu
         );
         assert!(fixture.memory.fail_next.swap(false, Ordering::AcqRel));
         assert_eq!(fixture.memory.backing.snapshot().attempts, before.attempts);
+        assert!(failure.is_settled_capacity_denied());
         fixture.node.shutdown().await.unwrap();
         if native {
             assert_eq!(bounded_address(&failure), address);
@@ -243,6 +263,7 @@ async fn routine_read_unknown_io_and_original_body_panic_keep_native_custody() {
             })
             .unwrap_err();
         let failure = error.downcast::<crate::NodeScopedReadFailure>().unwrap();
+        assert!(!failure.is_settled_capacity_denied());
         let id = failure.reader_id();
         assert_eq!(
             failure.try_retire_routine(),
@@ -361,6 +382,7 @@ async fn routine_early_capacity_keeps_original_after_real_native_and_database_re
             crate::NodeScopedReadFailure::from_view(&reader, NodeReadAccessError::Reported.into());
         let id = failure.reader_id();
         let address = early_error_address(&failure, stage != 0);
+        assert!(!failure.is_settled_capacity_denied());
         {
             let report = failure.report();
             if stage == 0 {
@@ -428,6 +450,7 @@ async fn routine_early_capacity_keeps_original_after_real_native_and_database_re
         assert_eq!(fixture.memory.backing.snapshot().attempts, before.attempts);
         assert!(RegisteredNodeRead::retained(fixture.memory.clone(), id).is_none());
         assert_eq!(early_error_address(&failure, stage != 0), address);
+        assert!(failure.is_settled_capacity_denied());
         {
             let report = failure.report();
             assert!(matches!(
@@ -532,6 +555,7 @@ async fn routine_early_capacity_recovered_unknown_revokes_both_retirement_paths(
     let recovered = RegisteredNodeRead::retained(fixture.memory.clone(), id).unwrap();
     drop(reader);
     recovered.preserve_body_panic(Box::new(0xecaf_u64));
+    assert!(!failure.is_settled_capacity_denied());
     assert_eq!(
         failure.try_retire_routine(),
         StorageCensusDisposition::Retained
@@ -598,6 +622,7 @@ async fn routine_early_unknown_and_native_panic_never_gain_clean_acquisition_per
             StorageCensusDisposition::Retained
         );
         assert_eq!(failure.phase(), NodeReadPhase::Finished);
+        assert!(!failure.is_settled_capacity_denied());
         drop(failure);
         assert_eq!(
             fixture.memory.storage_census().drain_owner(id),

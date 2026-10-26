@@ -121,9 +121,9 @@ fn apply(db: &FixtureEngine, timestamp_ms: u64, operation: Operation) -> Result<
 }
 fn engine(limits: Limits) -> FixtureEngine {
     let db = FixtureEngine::new(
-        // Receipt and terminal scratch tables overlap during publication and
-        // restore. Match the mutation/schema fixtures' slot allowance; keep bytes fixed.
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        // Restore body/blob tables overlap retained receipt and terminal groups.
+        // Fund their metadata slots while preserving the 64 MiB byte cap.
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128),
         "tenant".into(),
         "incarnation".into(),
         policy(),
@@ -1079,17 +1079,27 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     )
     .await
     .unwrap();
+    let mut documents = vec![Mutation::Put {
+        collection: "docs".into(),
+        id: "large".into(),
+        expected: Precondition::Absent,
+        body: json!({"n":1,"body":"a".repeat(256 << 10)}),
+    }];
+    // Stored bodies retain compact descriptors. Eight shared entries make one
+    // replaced tree path exceed 32 KiB once its metadata is retained, without
+    // treating the large document's disk-backed body as resident lease memory.
+    documents.extend((0..7).map(|ordinal| Mutation::Put {
+        collection: "docs".into(),
+        id: format!("companion-{ordinal}"),
+        expected: Precondition::Absent,
+        body: json!({"n":ordinal + 2}),
+    }));
     db.mutate(
         context(),
         MutationBatch {
             idempotency_key: "large-root".into(),
             read_set: vec![],
-            operations: vec![Mutation::Put {
-                collection: "docs".into(),
-                id: "large".into(),
-                expected: Precondition::Absent,
-                body: json!({"n":1,"body":"a".repeat(256 << 10)}),
-            }],
+            operations: documents,
         },
     )
     .await

@@ -451,12 +451,11 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
             .await
             .unwrap();
         // Mutation audit work may populate the native cache. Quiesce it before
-        // taking the exact ownership census; local_topology and both error
-        // adapters below perform no audit, I/O or maintenance admission.
+        // taking the exact ownership census. The local topology load performs
+        // no audit or maintenance admission, but may update native cache stats.
         let quiescent = audit.quiescent_jobs_for_test().await;
         let baseline = physical.admission.snapshot();
         assert_eq!(baseline.inflight_operations, 0);
-        let cache = node.cache_stats().unwrap();
         let revision = database.engine().generation().unwrap().revision();
         let error = ControlPlane::local_topology(&database).unwrap_err();
         let owner = error.downcast_ref::<LocalTopologyFailure>().unwrap();
@@ -466,7 +465,9 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
         assert_eq!(held.live_reservations, baseline.live_reservations + 1);
         assert!(held.reserved_bytes > baseline.reserved_bytes);
         assert_eq!(database.engine().generation().unwrap().revision(), revision);
-        assert_eq!(node.cache_stats().unwrap(), cache);
+        // The stored topology document has been loaded. Neither pure error
+        // adapter below may perform additional I/O.
+        let cache = node.cache_stats().unwrap();
 
         if validation {
             let typed = administrative_error(&error).unwrap();
@@ -486,6 +487,7 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
         // The borrowed administrative classification cannot release its owner.
         assert_eq!(physical.admission.snapshot().reserved_bytes, held.reserved_bytes);
         assert_eq!(physical.admission.snapshot().live_reservations, held.live_reservations);
+        assert_eq!(node.cache_stats().unwrap(), cache);
         let mapped = api_error(error);
         if validation {
             assert_eq!(mapped.code, ErrorCode::InvalidArgument);

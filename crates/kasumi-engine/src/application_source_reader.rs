@@ -17,12 +17,14 @@ impl SourceRoots {
     }
 }
 impl SourceRootsRef {
+    #[cfg(test)]
     pub(crate) fn open_primary_current(&self) -> Result<SourceReader> {
         let preparation = self.prepare_kind(false)?;
         SourceReader::acquire(preparation, false, false, false, || self.stores.read_view())
     }
 }
 impl SelectedApplication {
+    #[cfg(test)]
     pub(crate) fn open_primary_reader(&self, roots: &SourceRootsRef) -> Result<SourceReader> {
         self.open_selected_reader(roots, false)
     }

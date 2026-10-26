@@ -2096,7 +2096,9 @@ pub(crate) mod tests;
 // Shared by primary-tree fixtures and production immutable document reads.
 #[path = "application_source_reader.rs"]
 mod primary_reader;
-pub(crate) use primary_reader::{DocumentReader, SourceReader};
+pub(crate) use primary_reader::DocumentReader;
+#[cfg(test)]
+pub(crate) use primary_reader::SourceReader;
 
 // This permit keeps native close out of the short history exchange. It borrows
 // no apply mutex and drops its exact view alias before retirement is retried.

@@ -59,6 +59,10 @@ fn context() -> RequestContext {
 #[test]
 fn waiting_mutation_charges_actual_spare_capacity_without_an_execution_slot() {
     let node = node(2 << 20);
+    let active = (0..node.policy().max_inflight_operations)
+        .map(|_| node.reserve(0, None).unwrap())
+        .collect::<Vec<_>>();
+    assert!(node.reserve(0, None).is_err());
     let baseline = node.snapshot();
     let mut proof = String::with_capacity(128 << 10);
     proof.push('x');
@@ -91,6 +95,13 @@ fn waiting_mutation_charges_actual_spare_capacity_without_an_execution_slot() {
     assert_eq!(node.snapshot().reserved_bytes, queued.reserved_bytes);
     drop(command);
     assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        baseline.live_reservations
+    );
+    assert!(node.reserve(0, None).is_err());
+    drop(active);
+    assert_eq!(node.snapshot().inflight_operations, 0);
 }
 
 #[test]

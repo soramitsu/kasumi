@@ -265,13 +265,6 @@ impl DocumentChanges for StateChanges<'_> {
     }
 }
 
-pub(crate) fn collections(state: &TenantState) -> impl Iterator<Item = StateCollection<'_>> {
-    state
-        .collections
-        .iter()
-        .map(|(name, collection)| StateCollection::new(state, name, collection))
-}
-
 pub(crate) fn build(state: &TenantState) -> SourceResult<QueryIndexes> {
     build_with_resolver(state, None)
 }
@@ -320,6 +313,7 @@ fn changes_for<'a>(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn validate_changes(
     indexes: &QueryIndexes,
     old: &TenantState,
@@ -349,6 +343,10 @@ pub(crate) fn validate_changes_with_resolvers(
     }))
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "Borrow both exact generation states and their resolvers without transferring source ownership"
+)]
 fn action<'a>(
     indexes: &'a QueryIndexes,
     old: &'a TenantState,
@@ -397,6 +395,7 @@ fn action<'a>(
     )?))
 }
 
+#[cfg(test)]
 pub(crate) fn update(
     indexes: &QueryIndexes,
     old: &TenantState,

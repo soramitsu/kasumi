@@ -114,8 +114,8 @@ impl Proofs {
     fn body(&self, user: usize) -> serde_json::Value {
         serde_json::json!({
             "owner": format!("user-{user:03}"),
-            "proof": if user % 2 == 0 { self.hex.as_str() } else { self.base64.as_str() },
-            "encoding": if user % 2 == 0 { "hex" } else { "base64" },
+            "proof": if user.is_multiple_of(2) { self.hex.as_str() } else { self.base64.as_str() },
+            "encoding": if user.is_multiple_of(2) { "hex" } else { "base64" },
         })
     }
     fn batch(&self, user: usize) -> MutationBatch {
@@ -638,5 +638,34 @@ async fn document_residency_work_panic_waits_for_drain_and_preserves_both_failur
     assert_eq!(std::ptr::from_ref(original.as_ref().as_ref()), address);
     assert!(
         matches!(drain, DrainFailure::Operation(ref error) if error.to_string() == "drain original")
+    );
+}
+
+#[test]
+fn document_residency_work_error_preserves_both_original_failures() {
+    let work = anyhow::Error::new(std::io::Error::other("work original"));
+    let drain = anyhow::Error::new(std::io::Error::other("drain original"));
+    let work_address = std::ptr::from_ref(work.downcast_ref::<std::io::Error>().unwrap());
+    let drain_address = std::ptr::from_ref(drain.downcast_ref::<std::io::Error>().unwrap());
+    let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        after_drain::<()>(Ok(Err(work)), Ok(Err(drain)))
+    }))
+    .unwrap_err()
+    .downcast::<WorkAndDrainFailure>()
+    .unwrap();
+    let WorkAndDrainFailure {
+        work: WorkFailure::Operation(work),
+        drain: DrainFailure::Operation(drain),
+    } = *failure
+    else {
+        panic!("original failure owners changed")
+    };
+    assert_eq!(
+        std::ptr::from_ref(work.downcast_ref::<std::io::Error>().unwrap()),
+        work_address
+    );
+    assert_eq!(
+        std::ptr::from_ref(drain.downcast_ref::<std::io::Error>().unwrap()),
+        drain_address
     );
 }

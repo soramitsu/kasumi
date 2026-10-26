@@ -158,3 +158,51 @@ fn queued_query_quotes_spare_vectors_nested_values_and_retained_empty_trees() {
     empty.fields.clear();
     assert!(filter_bytes(&empty, 0).unwrap() >= tree::<String, Condition>(1).unwrap());
 }
+
+#[tokio::test]
+async fn queued_query_admits_under_operation_saturation_but_dispatch_needs_its_own_slot() {
+    let node = node();
+    let baseline = node.snapshot();
+    let mut active = (0..node.policy().max_inflight_operations)
+        .map(|_| node.reserve(0, None).unwrap())
+        .collect::<Vec<_>>();
+    assert!(node.reserve(0, None).is_err());
+    let fence = Arc::new(WorkFence::default());
+    let cancellation = QueryCancellation::default();
+    let queued =
+        WaitingQuery::admit(&node, &fence, QueryRequest::new("docs"), &cancellation).unwrap();
+    assert_eq!(node.snapshot().inflight_operations, active.len());
+    assert_eq!(
+        queued
+            .into_input(&node, 1 << 20, &cancellation)
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    fence.drain().await;
+    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        baseline.live_reservations + active.len()
+    );
+
+    let queued =
+        WaitingQuery::admit(&node, &fence, QueryRequest::new("docs"), &cancellation).unwrap();
+    drop(active.pop());
+    let (input, registration) = queued.into_input(&node, 1 << 20, &cancellation).unwrap();
+    assert_eq!(
+        node.snapshot().inflight_operations,
+        node.policy().max_inflight_operations
+    );
+    drop(input);
+    drop(registration);
+    fence.drain().await;
+    drop(active);
+    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        baseline.live_reservations
+    );
+    assert_eq!(node.snapshot().inflight_operations, 0);
+}
