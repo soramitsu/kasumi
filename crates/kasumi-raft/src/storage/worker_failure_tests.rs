@@ -185,12 +185,20 @@ async fn cancelled_publication_failure(panic: bool) -> FixtureResult<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_snapshot_waiter_cannot_hide_failure_after_durable_publication()
 -> FixtureResult<()> {
     cancelled_publication_failure(false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_snapshot_waiter_cannot_hide_panic_after_durable_publication() -> FixtureResult<()>
 {
     cancelled_publication_failure(true).await

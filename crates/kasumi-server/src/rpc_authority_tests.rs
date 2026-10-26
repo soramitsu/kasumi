@@ -377,12 +377,9 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             id,
             settings.clone(),
             router.clone(),
-            kasumi_raft::Config {
-                heartbeat_interval: 30,
-                election_timeout_min: 100,
-                election_timeout_max: 180,
-                ..Default::default()
-            },
+            // These authorities persist to real managed storage alongside the
+            // TLS audit writer, so use the installed server scheduling profile.
+            kasumi_raft::server_config(),
             crate::authority_runtime::request_budget(&physical.admission).unwrap(),
             physical.admission.snapshot_buffer_owner().unwrap(),
         )

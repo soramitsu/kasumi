@@ -7,6 +7,10 @@ use crate::{
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_constructor_quote_covers_actual_three_allocations()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -43,6 +47,10 @@ async fn ordinary_completion_constructor_quote_covers_actual_three_allocations()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_cell_and_credit_remain_funded_through_actual_deallocation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;
@@ -68,6 +76,10 @@ async fn ordinary_completion_cell_and_credit_remain_funded_through_actual_deallo
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_erased_binding_retires_before_its_actual_credit()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let _serial = SERIAL.lock().await;

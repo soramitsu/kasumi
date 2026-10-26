@@ -39,6 +39,10 @@ struct CommandInput {
 }
 
 impl Fixture {
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::new_with_node(|storage, path| {
             storage
@@ -140,6 +144,10 @@ impl Fixture {
         };
         Ok(CommandInput { position, bytes })
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn prepare<'a>(
         &'a self,
         input: &'a CommandInput,
@@ -182,6 +190,10 @@ impl Fixture {
                 .collect(),
         ))
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn fresh(&self) -> crate::test_fixture_failure::FixtureResult<CommittedBaseline> {
         let command_input = self.command(Operation::SetPolicy(policy()))?;
         let prepared = self.prepare(&command_input)?;
@@ -287,9 +299,7 @@ impl Fixture {
                 Ok(())
             },
         )?;
-        prior
-            .context("actual baseline publication omitted result")
-            .map_err(Into::into)
+        prior.context("actual baseline publication omitted result")
     }
     fn read<T>(
         &self,
@@ -403,6 +413,10 @@ fn put(namespace: &str, key: &[u8], value: &[u8]) -> WriteOp {
 
 // Keep actual key renewal runnable during this long synchronous staging/abort loop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_bounded()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -515,6 +529,10 @@ async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shape()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for forged in [false, true] {
@@ -550,6 +568,10 @@ async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shap
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pending()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -593,6 +615,10 @@ async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pe
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_captured_mapping_refuses_valid_alternate_manifest_with_unchanged_selector()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -667,6 +693,10 @@ async fn primary_cow_captured_mapping_refuses_valid_alternate_manifest_with_unch
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_committed_phase()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for fault in 0..4 {
@@ -777,6 +807,10 @@ async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_com
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_cancel_during_new_chunks_retains_original_and_pending_is_abortable()
 -> crate::test_fixture_failure::FixtureResult<()> {
     #[derive(Debug)]
@@ -902,6 +936,10 @@ fn archive(fixture: &Fixture, name: &str) -> Result<()> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_tree_identity()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for archived in [false, true] {
@@ -1040,6 +1078,10 @@ async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancellation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for fault in 0..3 {
@@ -1142,6 +1184,10 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -1180,6 +1226,10 @@ async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_real_slot_refusal_precedes_pending_effects()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

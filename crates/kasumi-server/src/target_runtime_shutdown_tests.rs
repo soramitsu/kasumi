@@ -2,16 +2,98 @@ use super::*;
 use std::{collections::BTreeSet, future::Future, task::Poll};
 
 #[tokio::test]
+async fn serving_reopen_consumes_prior_node_retirement_before_management_drain() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let physical =
+        crate::runtime_storage_fixtures::physical(directory.path(), Default::default()).unwrap();
+    let path = directory.path().join("persistent/target-generation.kv");
+    let file_id = Uuid::new_v4();
+    let node = physical.create_new(&path, file_id).unwrap();
+    let first_id = node.registered_opening_id().unwrap();
+    let retained_alias = node.clone();
+    let mut generation = Generation {
+        node: Some(node),
+        ..Default::default()
+    };
+    let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+    let certificate = rcgen::CertificateParams::new(vec!["localhost".into()])
+        .unwrap()
+        .self_signed(&key)
+        .unwrap();
+    let pem = certificate.pem().into_bytes();
+    let tls =
+        kasumi_transport::TlsIdentity::from_pem(&pem, key.serialize_pem().as_bytes()).unwrap();
+    let cluster = ClusterNetwork::new(
+        1,
+        &tls,
+        &pem,
+        vec![crate::cluster::PeerConfig {
+            node_id: 1,
+            endpoint: "https://localhost:9".into(),
+            certificate_pins: BTreeSet::from([tls.certificate_pin()]),
+        }],
+        Default::default(),
+    )
+    .unwrap();
+    let registry = Default::default();
+
+    let retained = generation.close(&cluster, &registry).await.unwrap_err();
+    assert_eq!(retained.completion(), DrainCompletion::Retained);
+    assert!(generation.node.is_none());
+    assert_eq!(generation.node_retirement.as_ref().unwrap().id(), first_id);
+    assert!(!generation.node_retirement.as_ref().unwrap().is_retired());
+    assert!(generation.begin_serving_node_acquisition().is_err());
+    assert_eq!(generation.node_retirement.as_ref().unwrap().id(), first_id);
+    assert!(!generation.node_retirement.as_ref().unwrap().is_retired());
+
+    drop(retained_alias);
+    // The original diagnostic remains observable after its owner actually
+    // retires; it must not authorize a second opening while still retained.
+    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    assert_eq!(completed.completion(), DrainCompletion::Complete);
+    assert_eq!(completed.issues().len(), 1);
+    assert_eq!(completed.issues()[0].component(), "target physical owner");
+    assert!(generation.node_retirement.as_ref().unwrap().is_retired());
+    generation.begin_serving_node_acquisition().unwrap();
+    assert!(generation.node_retirement.is_none());
+    let reopened = physical.open_existing(&path, file_id).unwrap();
+    let second_id = reopened.registered_opening_id().unwrap();
+    assert_ne!(second_id, first_id);
+    reopened.prepare_cache_warming().await.unwrap();
+    reopened.activate_cache_warming().unwrap();
+    generation.node = Some(reopened);
+
+    // A later management phase closes this newly accepted physical opening,
+    // never borrowing the old positive receipt as proof of its retirement.
+    let completed = generation.close(&cluster, &registry).await.unwrap_err();
+    assert_eq!(completed.completion(), DrainCompletion::Complete);
+    assert_eq!(completed.issues().len(), 1);
+    assert!(generation.node.is_none());
+    let second = generation.node_retirement.as_ref().unwrap();
+    assert_eq!(second.id(), second_id);
+    assert!(second.is_retired());
+    let reopened = physical.open_existing(&path, file_id).unwrap();
+    reopened.prepare_cache_warming().await.unwrap();
+    reopened.shutdown().await.unwrap();
+    assert!(reopened.retire().is_retired());
+}
+
+#[tokio::test]
 async fn target_monitor_and_outer_owner_survive_cancelled_shutdown_until_journal_reopens() {
-    target_worker_shutdown_fixture(false).await;
+    target_worker_shutdown_fixture(false, false).await;
 }
 
 #[tokio::test]
 async fn target_cache_workers_wait_for_parent_handoff_and_drain_late_generation() {
-    target_worker_shutdown_fixture(true).await;
+    target_worker_shutdown_fixture(true, false).await;
 }
 
-async fn target_worker_shutdown_fixture(activate: bool) {
+#[tokio::test]
+async fn admitted_cache_activation_refuses_shutdown_without_retaining_native_failure() {
+    target_worker_shutdown_fixture(true, true).await;
+}
+
+async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation: bool) {
     tokio::time::timeout(std::time::Duration::from_secs(15), async {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let physical =
@@ -280,6 +362,8 @@ async fn target_worker_shutdown_fixture(activate: bool) {
             .unwrap();
         drop(response);
         assert_eq!(calls.available_permits(), MAX_CALLS as usize - 1);
+        let closing_activation =
+            check_closing_activation.then(|| runtime.call_jobs.acquire_failure().unwrap());
         let mut outer = Some(runtime);
         let mut first = Box::pin(shutdown_target(&mut outer));
         std::future::poll_fn(|cx| {
@@ -293,6 +377,35 @@ async fn target_worker_shutdown_fixture(activate: bool) {
             "cancelled outer shutdown lost its target owner"
         );
         assert!(outer.as_ref().unwrap().activate_cache_warming().is_err());
+        if let Some(seat) = closing_activation {
+            // Model a monitor admitted before shutdown, reaching its final
+            // cache activation after the runtime's admission fence closes.
+            let original = seat
+                .begin()
+                .unwrap()
+                .run(async {
+                    let generation = late_generation_receipt.lock().await;
+                    outer
+                        .as_ref()
+                        .unwrap()
+                        .activate_generation_cache(&generation)
+                })
+                .await
+                .unwrap_err();
+            assert_eq!(original.marker().code, ErrorCode::Unavailable);
+            assert!(!original.unresolved_custody());
+            original.with_report(|report| {
+                let report = report.unwrap();
+                assert!(report.body_returned());
+                assert!(report.future_disposal_returned());
+                assert!(!report.has_output());
+                let error = report.original().unwrap().operation_error().unwrap();
+                assert_eq!(error.code, ErrorCode::Unavailable);
+                assert_eq!(error.message, "target runtime closing");
+            });
+            drop(original);
+            drop(seat);
+        }
         let mut retry = Box::pin(shutdown_target(&mut outer));
         std::future::poll_fn(|cx| {
             assert!(retry.as_mut().poll(cx).is_pending());

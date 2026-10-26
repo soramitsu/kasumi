@@ -115,10 +115,18 @@ impl Installation {
             incarnation,
         })
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn seed_bootstrap(&self) -> crate::test_fixture_failure::FixtureResult<()> {
         bind_deployment(&self.stores, b"local-v1")?;
         Ok(persist_new(&self.stores, &self.image()?)?)
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn image(&self) -> crate::test_fixture_failure::FixtureResult<SnapshotImage> {
         let engine = TenantEngine::new(
             "tenant".into(),
@@ -283,6 +291,10 @@ fn assert_rejected<T, E: Into<crate::SnapshotFailure>>(result: std::result::Resu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
@@ -371,6 +383,10 @@ async fn bootstrap_manifest_rejects_alternate_and_oversized_rows_without_repair(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstrap()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
@@ -431,6 +447,10 @@ async fn existing_local_requires_both_local_bindings_and_an_initialized_bootstra
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_without_repair()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for invalid_format in [false, true] {
@@ -481,6 +501,10 @@ async fn existing_local_rejects_corrupt_manifest_body_and_custody_commitment_wit
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
@@ -511,6 +535,10 @@ async fn authenticated_bootstrap_cannot_change_the_standalone_catalog_incarnatio
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn installed_engine_generation_rejects_closed_original_store()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
@@ -554,6 +582,10 @@ async fn installed_engine_generation_rejects_closed_original_store()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn empty_local_reopens_without_an_election_noop_or_revision_change()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;
@@ -593,6 +625,10 @@ async fn empty_local_reopens_without_an_election_noop_or_revision_change()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_local_reopens_the_same_committed_standalone_after_complete_shutdown()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use anyhow::Context as _;
@@ -728,6 +764,10 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_control_requires_the_non_nil_configured_incarnation_before_startup()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Installation::new().await?;

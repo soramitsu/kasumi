@@ -19,11 +19,12 @@ const MAX_WATCHED_NAMESPACES: usize = 64;
 const MAX_RETAINED_IDENTITY_BYTES: usize = 4096;
 
 type Watched = Vec<(Box<str>, Arc<AtomicU64>)>;
+type RetainedIdentity = (String, Vec<u8>, Zeroizing<Vec<u8>>);
 
 #[derive(Default)]
 pub(crate) struct CachedRows {
     watched: RwLock<Watched>,
-    identities: Mutex<Vec<(String, Vec<u8>, Zeroizing<Vec<u8>>)>>,
+    identities: Mutex<Vec<RetainedIdentity>>,
 }
 
 /// The write epoch of one watched namespace of one store.

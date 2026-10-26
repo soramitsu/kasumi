@@ -36,6 +36,60 @@ fn recovery_step_error(error: &kasumi_client::ClientError) -> String {
         ClientError::RequestTooLarge => "request too large".into(),
     }
 }
+// Failure-only borrowed metadata; emit no original error text or credentials.
+fn trace_target_drain_custody(target: &TargetRecoveryRuntime) {
+    // TargetCallJobs installs exactly 64 failure seats per runtime.
+    for seat in 0..64 {
+        target.with_retained_call_report(seat, |report| {
+            let Some(report) = report else { return };
+            let mut code = None;
+            let mut io_kind = None;
+            let mut source_class = "None";
+            let original = match report.original() {
+                Some(kasumi_engine::SnapshotFailure::AdmissionRefused(_)) => "AdmissionRefused",
+                Some(kasumi_engine::SnapshotFailure::Creation(_)) => "Creation",
+                Some(kasumi_engine::SnapshotFailure::Operation(error)) => {
+                    code = Some(error.code);
+                    "Operation"
+                }
+                Some(kasumi_engine::SnapshotFailure::Source(error)) => {
+                    code = error.downcast_ref::<kasumi_types::Error>().map(|e| e.code);
+                    io_kind = error.downcast_ref::<std::io::Error>().map(|e| e.kind());
+                    source_class = match error.to_string().as_str() {
+                        "target runtime closing" => "TargetRuntimeClosing",
+                        "node is stopping" => "NodeStopping",
+                        "target node original retirement remains unproved" => {
+                            "PriorNodeRetirementUnproved"
+                        }
+                        "target serving node still owned" => "ServingNodeStillOwned",
+                        "cache worker terminated before activation" => "CacheWorkerTerminated",
+                        "cache worker is closed" => "CacheWorkerClosed",
+                        "cache worker is not prepared" => "CacheWorkerUnprepared",
+                        _ => "Other",
+                    };
+                    "Source"
+                }
+                None if report.node_startup().is_some() => "NodeStartup",
+                None => "None",
+            };
+            let cleanup = report.cleanup().map(|failure| failure.completion());
+            let cleanup_unsettled = report.cleanup_unsettled();
+            let body_panic = report.with_body_panic(|_| ()).is_some();
+            let future_panic = report.with_future_disposal_panic(|_| ()).is_some();
+            let output_panic = report.with_output_disposal_panic(|_| ()).is_some();
+            eprintln!(
+                "target drain custody node={} seat={seat} original={original} code={code:?} io_kind={io_kind:?} source_class={source_class} body_entered={} body_returned={} future_disposal_returned={} output_disposal_returned={} has_output={} dispatch_error={} cleanup={cleanup:?} cleanup_unsettled={cleanup_unsettled:?} body_panic={body_panic} future_panic={future_panic} output_panic={output_panic}",
+                target.node_id(),
+                report.body_entered(),
+                report.body_returned(),
+                report.future_disposal_returned(),
+                report.output_disposal_returned(),
+                report.has_output(),
+                report.dispatch_error().is_some(),
+            );
+        });
+    }
+}
 // Failure-only metadata from existing owners. Weak references cannot keep a
 // retired source or Control owner alive, and this performs no RPC or retry.
 fn recovery_database_progress(owner: &std::sync::Weak<kasumi_engine::Database>) -> String {
@@ -1179,7 +1233,21 @@ impl Fixture {
         for (index, socket) in sockets.into_iter().enumerate() {
             let target = self.open_target(handles, index, socket).await;
             self.targets.push(target);
+            // This fixture accepts the target owner directly instead of through
+            // NodeRuntime's publication ticket; perform the same handoff only
+            // after retaining the complete owner in the fixture inventory.
+            self.targets
+                .last()
+                .unwrap()
+                .activate_cache_warming()
+                .unwrap();
         }
+    }
+    pub fn target_recovery_stages(&self, tenant: &str) -> Vec<(u64, &'static str)> {
+        self.targets
+            .iter()
+            .map(|target| (target.node_id(), target.test_serving_recovery_stage(tenant)))
+            .collect()
     }
     async fn open_target(
         &mut self,
@@ -1320,8 +1388,9 @@ impl Fixture {
                         let history = TargetInitialMembershipHistoryRequest {
                             target_incarnation: self.target, request: (**original).clone(), identity: identity.clone(),
                         };
-                        assert!(target.read_initial_membership_history(&self.control_token, &history).await.is_err(),
-                            "owned Start is not committed/applied first membership");
+                        let missing = target.read_initial_membership_history(&self.control_token, &history)
+                            .await.expect_err("owned Start is not committed/applied first membership");
+                        assert_eq!(missing.code(), Some(kasumi_types::ErrorCode::Unavailable));
                         let authenticator = self.authenticator(self.issuer_audits[0].clone()).await;
                         let context = authenticator.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
                         let retry = fixture_operation(|| receiver.execute(context, zeroize::Zeroizing::new(self.control_token.clone()),
@@ -1329,6 +1398,13 @@ impl Fixture {
                         )).await;
                         let error = retry.err().expect("replayed Execute must not issue another child");
                         assert!(format!("{error:#}").contains("status-only"), "{error:#}");
+                        error.with_original(|original| {
+                            let operation = original.expect("original replay rejection")
+                                .operation_error().expect("typed status-only rejection");
+                            assert_eq!(operation.code, kasumi_types::ErrorCode::Conflict);
+                        });
+                        assert!(!error.unresolved_custody(), "status-only rejection owns no native failure");
+                        drop(error);
 
                         // The next coordinator attempt consumes the protected
                         // status. The committed attempt ID remains unchanged.
@@ -1599,11 +1675,13 @@ impl Fixture {
                     );
                     let mut substituted = query.clone();
                     substituted.identity.attempt_id = Uuid::new_v4();
-                    assert!(
-                        target
-                            .read_initial_membership_history(&self.control_token, &substituted)
-                            .await
-                            .is_err()
+                    let substituted_error = target
+                        .read_initial_membership_history(&self.control_token, &substituted)
+                        .await
+                        .expect_err("substituted membership attempt must be unavailable");
+                    assert_eq!(
+                        substituted_error.code(),
+                        Some(kasumi_types::ErrorCode::Unavailable)
                     );
                     let start_query = TargetInitialStartRequest {
                         target_incarnation: self.target,
@@ -1636,6 +1714,18 @@ impl Fixture {
                         .err()
                         .expect("accepted Initialize Execute must remain one use");
                     assert!(format!("{error:#}").contains("status-only"), "{error:#}");
+                    error.with_original(|original| {
+                        let operation = original
+                            .expect("original replay rejection")
+                            .operation_error()
+                            .expect("typed status-only rejection");
+                        assert_eq!(operation.code, kasumi_types::ErrorCode::Conflict);
+                    });
+                    assert!(
+                        !error.unresolved_custody(),
+                        "status-only rejection owns no native failure"
+                    );
+                    drop(error);
                     self.step(control).await.expect(
                         "coordinator must resolve Initialize from exact retained membership",
                     );
@@ -1668,12 +1758,13 @@ impl Fixture {
                             "Initialize and status continuation must keep all original children"
                         );
                     }
-                    assert!(
-                        target
-                            .read_initial_membership_history(&self.control_token, &query)
-                            .await
-                            .is_err(),
-                        "resolved Initialize phase is not new authority"
+                    let resolved_error = target
+                        .read_initial_membership_history(&self.control_token, &query)
+                        .await
+                        .expect_err("resolved Initialize phase is not new authority");
+                    assert_eq!(
+                        resolved_error.code(),
+                        Some(kasumi_types::ErrorCode::Unavailable)
                     );
                     return;
                 }
@@ -2001,15 +2092,27 @@ impl Fixture {
                     assert_eq!(prepared_count, 3);
                 }
                 if before.phase == RecoveryPhase::Complete && !isolated {
-                    let mut databases = Vec::new();
-                    for target in &self.targets {
+                    let expected_voters = request.target_nodes.keys().copied().collect::<BTreeSet<_>>();
+                    assert_eq!(expected_voters.len(), 3);
+                    assert_eq!(before.voters.keys().copied().collect::<BTreeSet<_>>(), expected_voters);
+                    let mut owned = Vec::new();
+                    for (index, target) in self.targets.iter().enumerate() {
                         if let Some(database) =
                             target.test_owned_database("acme", self.target).await
                         {
-                            databases.push(database);
+                            owned.push((index, database));
                         }
                     }
-                    if databases.len() == 3 {
+                    // Fresh inspection reopens only a majority of the original
+                    // voters. The remaining target may still be cold when the
+                    // coordinator advances to Complete.
+                    if owned.len() > expected_voters.len() / 2 {
+                        let (target_indices, databases): (Vec<_>, Vec<_>) = owned.into_iter().unzip();
+                        for (index, database) in target_indices.iter().zip(&databases) {
+                            let metrics = database.raft_group().raft().metrics().borrow().clone();
+                            assert_eq!(metrics.id, *index as u64 + 1);
+                            assert_eq!(metrics.membership_config.voter_ids().collect::<BTreeSet<_>>(), expected_voters);
+                        }
                         let leader = quorum_ready_leader(
                             &databases,
                             "canonical target before completion isolation",
@@ -2028,7 +2131,8 @@ impl Fixture {
                             .collect::<Vec<_>>();
                         assert!(pending.iter().all(Option::is_some));
                         let mut drained = Vec::new();
-                        for target in &self.targets {
+                        for index in &target_indices {
+                            let target = &self.targets[*index];
                             drained.push(target.test_restore_drain_observer("acme", self.target)
                                 .await.expect("existing target drain observer"));
                         }
@@ -2058,7 +2162,8 @@ impl Fixture {
                         // Phase transitions drain their actual owners. The test
                         // must release these borrowed Arcs before dispatching one.
                         drop(databases);
-                        for ((target, expected), drained) in self.targets.iter().zip(&pending).zip(&drained) {
+                        for ((index, expected), drained) in target_indices.iter().zip(&pending).zip(&drained) {
+                            let target = &self.targets[*index];
                             let observed = if let Some(database) = target.test_owned_database("acme", self.target).await {
                                 if let Err(error) = database.engine().generation() {
                                     assert_eq!(error.code, kasumi_types::ErrorCode::Sealed);
@@ -2176,6 +2281,7 @@ impl Fixture {
         let mut failures = Vec::new();
         for (index, target) in self.targets.iter().enumerate() {
             if let Err(failure) = target.shutdown().await {
+                trace_target_drain_custody(target);
                 failures.push((index, failure));
             }
         }
@@ -2391,6 +2497,23 @@ impl Fixture {
                 .unwrap()
                 .unwrap();
         }
+        {
+            let phase = self.targets[node_id as usize - 1]
+                .test_owned_phase("acme", self.target)
+                .await
+                .expect("original Initialize retains its actual phase");
+            let access = phase.access().unwrap();
+            assert!(phase.is_reusable());
+            // Begin the already requested shutdown without revoking the
+            // capabilities its original Raft owner still needs to drain.
+            phase.seal_admission();
+            phase.scope().invocation().check().unwrap();
+            access.serving_gate().unwrap().check().unwrap();
+            assert!(
+                !phase.is_reusable(),
+                "sealed admission cannot reuse a phase whose capabilities remain live"
+            );
+        }
         for target in &self.targets {
             target.shutdown().await.unwrap();
         }
@@ -2410,6 +2533,11 @@ impl Fixture {
                     .unwrap();
                 let target = self.open_target(handles, index, socket).await;
                 self.targets.push(target);
+                self.targets
+                    .last()
+                    .unwrap()
+                    .activate_cache_warming()
+                    .unwrap();
             }
         }
         if original_unavailable {
@@ -2525,8 +2653,7 @@ impl Fixture {
                             // authority. For other-leader acceptance node1 stays down.
                             let observer = self.targets[observer_node as usize - 1]
                                 .test_owned_database("acme", self.target)
-                                .await
-                                .unwrap();
+                                .await;
                             if original_unavailable {
                                 assert!(
                                     tokio::net::TcpStream::connect(self.native_addresses[0])
@@ -2537,9 +2664,20 @@ impl Fixture {
                                     !self.targets[0].test_has_replica("acme", self.target).await
                                 );
                             }
-                            tokio::time::timeout(Duration::from_secs(20), async {
+                            if let Some(observer) = observer {
+                            let mut last_barrier = "not attempted".to_owned();
+                            let ready = tokio::time::timeout(Duration::from_secs(20), async {
                                 let mut next_election = std::time::Instant::now();
                                 loop {
+                                    let metrics = observer.raft_group().raft().metrics().borrow().clone();
+                                    match metrics.running_state {
+                                        // An expired inspection can retire this exact owner.
+                                        // Release the borrowed Arc so the outer dispatcher can
+                                        // open a fresh one; this is no positive observation.
+                                        Err(kasumi_raft::RaftFatal::Stopped) => return,
+                                        Err(error) => panic!("inspection observer failed: {error:?}"),
+                                        Ok(()) => {}
+                                    }
                                     if observer
                                         .raft_group()
                                         .raft()
@@ -2549,17 +2687,23 @@ impl Fixture {
                                         != Some(observer_node)
                                         && std::time::Instant::now() >= next_election
                                     {
-                                        observer
+                                        match observer
                                             .raft_group()
                                             .raft()
                                             .trigger()
                                             .elect()
                                             .await
-                                            .unwrap();
+                                        {
+                                            Ok(()) => {}
+                                            Err(kasumi_raft::RaftFatal::Stopped) => return,
+                                            Err(error) => panic!("inspection observer election failed: {error:?}"),
+                                        }
                                         next_election =
                                             std::time::Instant::now() + Duration::from_secs(2);
                                     }
-                                    if observer.raft_group().linearizable_barrier().await.is_ok()
+                                    let barrier = observer.raft_group().linearizable_barrier().await;
+                                    last_barrier = format!("{barrier:?}");
+                                    if barrier.is_ok()
                                         && observer
                                             .raft_group()
                                             .raft()
@@ -2573,8 +2717,14 @@ impl Fixture {
                                     tokio::time::sleep(Duration::from_millis(100)).await;
                                 }
                             })
-                            .await
-                            .expect("installed inspection observer did not become current leader");
+                            .await;
+                            ready.unwrap_or_else(|_| {
+                                panic!(
+                                    "installed inspection observer did not become current leader; observer={observer_node}; last_barrier={last_barrier}; metrics={:?}",
+                                    observer.raft_group().raft().metrics().borrow().clone()
+                                );
+                            });
+                            }
                         }
                     }
                     if let Err(error) = self.step(&mut control).await {
@@ -2741,6 +2891,7 @@ impl Fixture {
             // only after the positive observation and all absence assertions.
             let socket = TcpListener::bind(self.native_addresses[0]).await.unwrap();
             self.targets[0] = self.open_target(handles, 0, socket).await;
+            self.targets[0].activate_cache_warming().unwrap();
         }
         assert_eq!(resolved.phase, RecoveryPhase::Complete);
     }

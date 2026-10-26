@@ -132,6 +132,8 @@ pub use network::{
     InProcessRouter, RaftTransport, ReadIndexError, ReadIndexResponse, RpcPayloadTooLarge,
     RpcRequest, RpcResponse, dispatch_rpc,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use openraft::error::Fatal as RaftFatal;
 pub use openraft::{
     BasicNode, Config, LogId, MembershipObserver, SnapshotMeta, SnapshotPolicy, StoredMembership,
 };
@@ -693,10 +695,10 @@ impl RaftGroup {
                 "replicated deployment cannot open in standalone mode"
             );
         }
-        if let Some(first) = control::first_applied_membership(store.custody().store())? {
-            if let control::HeaderPayload::Membership(membership) = &first.header.payload {
-                local::check_membership(membership, id)?;
-            }
+        if let Some(first) = control::first_applied_membership(store.custody().store())?
+            && let control::HeaderPayload::Membership(membership) = &first.header.payload
+        {
+            local::check_membership(membership, id)?;
         }
         let ownership = claim_store(&store)?;
         snapshot_buffers
@@ -909,10 +911,10 @@ impl RaftGroup {
             if self.check_access().is_err() || local_id != self.id {
                 return Ok(false);
             }
-            if let ReadinessRole::Voter(Some(expected)) = role {
-                if expected != BTreeSet::from([self.id]) {
-                    return Ok(false);
-                }
+            if let ReadinessRole::Voter(Some(expected)) = role
+                && expected != BTreeSet::from([self.id])
+            {
+                return Ok(false);
             }
             return Ok(local.readiness_observation() && self.check_access().is_ok());
         }

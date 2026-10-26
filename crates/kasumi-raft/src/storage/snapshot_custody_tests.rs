@@ -128,6 +128,10 @@ impl StateMachineBackend for ClosedBackend {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_image()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -192,6 +196,10 @@ async fn same_position_reencoding_preserves_custody_and_reuses_verified_current_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -> FixtureResult<()>
 {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -274,6 +282,10 @@ async fn same_position_cannot_substitute_matching_backend_and_custody_policy() -
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_custody_key()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -351,6 +363,10 @@ async fn retired_snapshot_installs_without_original_log_and_recovers_with_only_c
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_publication()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -431,6 +447,10 @@ async fn snapshot_rejects_missing_substituted_stale_and_payload_custody_before_p
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_truncation()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -483,6 +503,10 @@ async fn accepted_snapshot_supersedes_uncommitted_candidate_and_survives_late_tr
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retirement_projection()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -520,6 +544,10 @@ async fn nonretired_snapshot_discards_stale_candidate_coverage_without_retiremen
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_cursor()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -601,6 +629,10 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -634,6 +666,10 @@ async fn equal_index_different_term_log_and_snapshot_coverage_is_rejected() -> F
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -675,6 +711,10 @@ async fn old_snapshot_capture_cannot_regress_newer_accepted_cursor() -> FixtureR
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn published_retirement_projection_substitution_fails_closed_after_reopen()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -746,6 +786,10 @@ async fn published_retirement_projection_substitution_fails_closed_after_reopen(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);

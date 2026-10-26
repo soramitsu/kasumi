@@ -93,6 +93,13 @@ impl OriginalRecoveryFailure {
     pub(crate) fn original(&self) -> &kasumi_engine::SnapshotFailure {
         self.original.original()
     }
+    #[cfg(test)]
+    pub(crate) fn retired_source_failure(&self) -> Option<&crate::runtime::RetiredSourceFailure> {
+        match &self.original {
+            RecoveryOriginal::Retired(original) => Some(original),
+            RecoveryOriginal::Snapshot(_) => None,
+        }
+    }
 }
 impl From<kasumi_engine::SnapshotFailure> for OriginalRecoveryFailure {
     fn from(original: kasumi_engine::SnapshotFailure) -> Self {
@@ -139,6 +146,7 @@ struct RecoverySeat {
     // The original native startup carrier is never normalized to a scratch or
     // Anyhow error. This fixed lane is paid by the same initial inventory.
     node_start: Option<kasumi_store::NodeStoreStartFailure>,
+    node_start_retirement: Option<kasumi_store::NodeRetirement>,
     node_start_output: Option<kasumi_store::NodeStore>,
     node_start_observation: CleanupObservation,
     failure: Option<OriginalRecoveryFailure>,
@@ -252,6 +260,7 @@ pub(crate) async fn observe_cleanup(
 impl RecoverySeat {
     fn empty(&self) -> bool {
         self.node_start.is_none()
+            && self.node_start_retirement.is_none()
             && self.node_start_output.is_none()
             && !self.node_start_observation.unsettled()
             && self.failure.is_none()
@@ -266,6 +275,7 @@ impl RecoverySeat {
     }
     fn native_free_failure(&self) -> bool {
         self.node_start.is_none()
+            && self.node_start_retirement.is_none()
             && self.node_start_output.is_none()
             && !self.node_start_observation.unsettled()
             && self.database.is_none()
@@ -291,6 +301,7 @@ impl RecoverySeat {
     }
     fn stage(&self) -> &'static str {
         if self.node_start.is_some()
+            || self.node_start_retirement.is_some()
             || self.node_start_output.is_some()
             || self.node_start_observation.unsettled()
         {
@@ -762,6 +773,52 @@ impl OriginalRecoveries {
             .sealed
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    /// Cleanup scopes may acknowledge an acquisition refusal only after native
+    /// close and callback disposal both returned. An uncertain native owner or
+    /// either callback panic remains in its original paid seat without retry.
+    pub(crate) async fn retire_closed_node_refusals(&self) {
+        for seat in self
+            .state()
+            .seats
+            .as_ref()
+            .expect("live original recoveries")
+        {
+            let mut seat = seat.lock().await;
+            if let Some(retirement) = &mut seat.node_start_retirement {
+                retirement.retry();
+            } else if seat.node_start_output.is_none()
+                && seat.node_start_observation.entry == CleanupEntry::Returned
+                && seat.node_start_observation.future_disposal == CleanupEntry::Returned
+                && seat.node_start_observation.panic.is_none()
+                && seat.node_start_observation.disposal_panic.is_none()
+                && matches!(
+                    seat.node_start,
+                    Some(kasumi_store::NodeStoreStartFailure::Opening(_))
+                )
+            {
+                let Some(kasumi_store::NodeStoreStartFailure::Opening(original)) =
+                    seat.node_start.take()
+                else {
+                    unreachable!("same locked opening failure");
+                };
+                match original.retire_closed_acquisition_refusal() {
+                    Ok(retirement) => seat.node_start_retirement = Some(retirement),
+                    Err(original) => {
+                        seat.node_start =
+                            Some(kasumi_store::NodeStoreStartFailure::Opening(original));
+                    }
+                }
+            }
+            if seat
+                .node_start_retirement
+                .as_ref()
+                .is_some_and(|retirement| retirement.is_retired())
+            {
+                seat.node_start_retirement = None;
+                seat.node_start_observation = CleanupObservation::default();
+            }
+        }
+    }
     pub(crate) async fn retained(&self) -> bool {
         for seat in self
             .state()
@@ -1129,17 +1186,6 @@ impl<'inventory> OriginalRecoveryGuard<'inventory> {
         }
         self.seat.node_start_observation.entry = CleanupEntry::Entered;
         Ok(NodeConstructorLoan { guard: self })
-    }
-    #[cfg(test)]
-    pub(crate) fn capture_snapshot(
-        &mut self,
-        original: kasumi_engine::SnapshotFailure,
-    ) -> std::result::Result<OriginalRecoveryObservation, kasumi_engine::SnapshotFailure> {
-        if !self.seat.empty() {
-            return Err(original);
-        }
-        self.seat.failure = Some(original.into());
-        Ok(self.observation())
     }
     pub(crate) async fn close_pending(&mut self) {
         if let Some(failure) = self.seat.failure.as_mut()

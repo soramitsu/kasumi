@@ -135,6 +135,10 @@ fn physical(root: &std::path::Path) -> Result<kasumi_engine::test_utils::Fixture
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns whole native failure custody without allocating or erasing the original owner."
+)]
 async fn real_three_voter_raft_and_learner_replicate_and_read_over_pinned_mutual_tls_http()
 -> FixtureResult<()> {
     let ca = Authority::new()?;
@@ -356,6 +360,10 @@ async fn real_three_voter_raft_and_learner_replicate_and_read_over_pinned_mutual
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns whole native failure custody without allocating or erasing the original owner."
+)]
 async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body()
 -> FixtureResult<()> {
     let ca = Authority::new()?;

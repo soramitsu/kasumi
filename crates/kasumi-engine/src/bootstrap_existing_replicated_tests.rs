@@ -113,6 +113,10 @@ impl Replica {
         drop(node);
         (directory, storage)
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn seed(
         &self,
         installed: &ReplicatedBootstrap,
@@ -127,6 +131,10 @@ impl Replica {
             &self.image(installed, actual_incarnation)?,
         )?)
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn image(
         &self,
         installed: &ReplicatedBootstrap,
@@ -303,6 +311,10 @@ fn retained(stores: &TenantStorageSet) -> anyhow::Result<String> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn installed_raft_identity_uses_the_bootstrap_view_generation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -337,6 +349,10 @@ async fn installed_raft_identity_uses_the_bootstrap_view_generation()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::test_utils::inject_authenticated_rows_below_facade;
@@ -457,6 +473,10 @@ async fn physical_a_to_b_generation_keeps_pinned_bootstrap_and_reopens_only_b()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_store::test_utils::inject_authenticated_rows_below_facade;
@@ -538,6 +558,10 @@ async fn one_sided_physical_identity_fault_after_pin_rejects_existing_reopen()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_identity()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -602,6 +626,10 @@ async fn existing_replica_never_creates_missing_bootstrap_or_changes_consensus_i
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarnation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let installed = bootstrap();
@@ -658,6 +686,10 @@ async fn existing_replica_rejects_corrupt_manifest_body_and_authenticated_incarn
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn paired_bootstrap_guard_rejects_orphan_divergence_and_reader_rejects_alternate_bytes()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -732,6 +764,10 @@ async fn paired_bootstrap_guard_rejects_orphan_divergence_and_reader_rejects_alt
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descriptor()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -843,6 +879,10 @@ async fn existing_replica_validates_authenticated_genesis_tag_domains_and_descri
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn target_deployment_requires_paired_current_writer_bytes()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -917,6 +957,10 @@ async fn target_deployment_requires_paired_current_writer_bytes()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn target_deployment_accepts_valid_writer_bytes_above_legacy_cap()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -981,6 +1025,10 @@ async fn leader(nodes: &BTreeMap<u64, Arc<Database>>) -> anyhow::Result<u64> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn initialize_replicated_keeps_custody_binding_before_membership()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::new().await?;
@@ -1016,6 +1064,10 @@ async fn initialize_replicated_keeps_custody_binding_before_membership()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn existing_replicas_replay_committed_state_and_membership_after_full_close()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use anyhow::Context as _;
@@ -1359,6 +1411,10 @@ async fn existing_replicas_replay_committed_state_and_membership_after_full_clos
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn legacy_replica_total_refuses_maintenance_without_consuming_existing_owners()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Replica::with_config(replica_budget::legacy_invalid_config).await?;

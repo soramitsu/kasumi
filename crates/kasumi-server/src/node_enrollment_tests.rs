@@ -395,7 +395,10 @@ fn establish_historical_input(store: &TenantStore, input: Vec<u8>) -> Result<()>
         if key.starts_with(b"tenant/") {
             let mut record: tenants::TenantRecord = serde_json::from_slice(bytes)?;
             if let Origin::Genesis { input_sha256 } = &mut record.origin {
-                ensure!(*input_sha256 == head.input_sha256, "fixture origin mismatch");
+                ensure!(
+                    *input_sha256 == head.input_sha256,
+                    "fixture origin mismatch"
+                );
                 *input_sha256 = digest.clone();
                 changes.push(WriteOp::put(NS, key, serde_json::to_vec(&record)?));
             }
@@ -408,7 +411,8 @@ fn establish_historical_input(store: &TenantStore, input: Vec<u8>) -> Result<()>
 }
 
 #[tokio::test]
-async fn completed_enrollment_reopens_original_input_without_current_scratch_policy() -> Result<()> {
+async fn completed_enrollment_reopens_original_input_without_current_scratch_policy() -> Result<()>
+{
     let (_directory, node, store, input) = fixture().await?;
     let (_, id) = input.identity();
     let enrollment = Enrollment::begin(&store, &input)?;
@@ -418,16 +422,22 @@ async fn completed_enrollment_reopens_original_input_without_current_scratch_pol
     let current_text = std::str::from_utf8(&current)?;
     let scratch_start = current_text.find("\"scratch_disk\":").unwrap();
     let value: serde_json::Value = serde_json::from_slice(&current)?;
-    let field = format!("\"file_allocation_policy\":{},",
-        value["configuration"]["scratch_disk"]["file_allocation_policy"]);
+    let field = format!(
+        "\"file_allocation_policy\":{},",
+        value["configuration"]["scratch_disk"]["file_allocation_policy"]
+    );
     let mut historical = current_text[..scratch_start].to_owned();
     historical.push_str(&current_text[scratch_start..].replacen(&field, "", 1));
     assert_eq!(historical.len() + field.len(), current.len());
     // Historical admission never supplies a default for a live configuration.
     assert!(Input::decode(historical.as_bytes()).is_err());
     let historical_value: serde_json::Value = serde_json::from_str(&historical)?;
-    assert!(serde_json::from_value::<crate::runtime::RuntimeConfig>(
-        historical_value["configuration"].clone()).is_err());
+    assert!(
+        serde_json::from_value::<crate::runtime::RuntimeConfig>(
+            historical_value["configuration"].clone()
+        )
+        .is_err()
+    );
     establish_historical_input(&store, historical.into_bytes())?;
     let original = records(&store)?;
     require_complete(&store, id, Kind::Data)?;
@@ -454,13 +464,26 @@ fn retained_enrollment_requires_unambiguous_complete_immutable_identities() -> R
         }
     });
     let encoded = serde_json::to_vec(&original)?;
-    assert_eq!(retained::RetainedInput::decode(&encoded)?.identity(), (Kind::Data, database_id));
+    assert_eq!(
+        retained::RetainedInput::decode(&encoded)?.identity(),
+        (Kind::Data, database_id)
+    );
     for field in ["database_id", "mode", "control", "tenants"] {
         let mut malformed = original.clone();
-        malformed["configuration"].as_object_mut().unwrap().remove(field);
-        assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err(), "{field}");
+        malformed["configuration"]
+            .as_object_mut()
+            .unwrap()
+            .remove(field);
+        assert!(
+            retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err(),
+            "{field}"
+        );
     }
-    for value in [serde_json::Value::Null, serde_json::json!(Uuid::nil()), serde_json::json!("invalid")] {
+    for value in [
+        serde_json::Value::Null,
+        serde_json::json!(Uuid::nil()),
+        serde_json::json!("invalid"),
+    ] {
         let mut malformed = original.clone();
         malformed["configuration"]["tenants"][0]["incarnation"] = value.clone();
         assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err());
@@ -469,28 +492,46 @@ fn retained_enrollment_requires_unambiguous_complete_immutable_identities() -> R
         assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err());
     }
     let mut malformed = original.clone();
-    malformed["configuration"]["tenants"][0].as_object_mut().unwrap().remove("incarnation");
+    malformed["configuration"]["tenants"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("incarnation");
     assert!(retained::RetainedInput::decode(&serde_json::to_vec(&malformed)?).is_err());
     let mut duplicate = original.clone();
-    duplicate["configuration"]["tenants"].as_array_mut().unwrap()
+    duplicate["configuration"]["tenants"]
+        .as_array_mut()
+        .unwrap()
         .push(original["configuration"]["tenants"][0].clone());
     assert!(retained::RetainedInput::decode(&serde_json::to_vec(&duplicate)?).is_err());
     let text = std::str::from_utf8(&encoded)?;
     for duplicate in [
-        text.replacen("\"kind\":\"data\"", "\"kind\":\"data\",\"kind\":\"data\"", 1),
-        text.replacen("\"removed_operational_policy\":", "\"removed_operational_policy\":{},\"removed_operational_policy\":", 1),
+        text.replacen(
+            "\"kind\":\"data\"",
+            "\"kind\":\"data\",\"kind\":\"data\"",
+            1,
+        ),
+        text.replacen(
+            "\"removed_operational_policy\":",
+            "\"removed_operational_policy\":{},\"removed_operational_policy\":",
+            1,
+        ),
         text.replacen("\"arbitrary\":", "\"arbitrary\":0,\"arbitrary\":", 1),
     ] {
         assert_ne!(duplicate, text);
         assert!(retained::RetainedInput::decode(duplicate.as_bytes()).is_err());
     }
-    let authority = serde_json::json!({"kind": "authority", "configuration": {"database_id": database_id}});
-    assert_eq!(retained::RetainedInput::decode(&serde_json::to_vec(&authority)?)?.identity(), (Kind::Authority, database_id));
+    let authority =
+        serde_json::json!({"kind": "authority", "configuration": {"database_id": database_id}});
+    assert_eq!(
+        retained::RetainedInput::decode(&serde_json::to_vec(&authority)?)?.identity(),
+        (Kind::Authority, database_id)
+    );
     Ok(())
 }
 
 #[tokio::test]
-async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_rewriting() -> Result<()> {
+async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_rewriting()
+-> Result<()> {
     let (_directory, _node, store, input) = fixture().await?;
     let (_, id) = input.identity();
     let enrollment = Enrollment::begin(&store, &input)?;
@@ -503,10 +544,15 @@ async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_
         let mut substituted = original_input.clone();
         if change == 0 {
             substituted["configuration"]["scratch_disk"]["max_bytes"] = 1.into();
-            store.write_batch(&[WriteOp::put(NS, b"input", serde_json::to_vec(&substituted)?)])?;
+            store.write_batch(&[WriteOp::put(
+                NS,
+                b"input",
+                serde_json::to_vec(&substituted)?,
+            )])?;
         } else {
             if change == 1 {
-                substituted["configuration"]["tenants"][0]["incarnation"] = Uuid::new_v4().to_string().into();
+                substituted["configuration"]["tenants"][0]["incarnation"] =
+                    Uuid::new_v4().to_string().into();
             } else {
                 substituted["configuration"]["database_id"] = Uuid::new_v4().to_string().into();
             }
@@ -515,7 +561,10 @@ async fn retained_enrollment_rejects_tampering_and_substituted_identity_without_
         let before = records(&store)?;
         assert!(require_complete(&store, id, Kind::Data).is_err());
         assert_eq!(records(&store)?, before);
-        let restore: Vec<_> = original.iter().map(|(key, value)| WriteOp::put(NS, key.as_slice(), value.as_slice())).collect();
+        let restore: Vec<_> = original
+            .iter()
+            .map(|(key, value)| WriteOp::put(NS, key.as_slice(), value.as_slice()))
+            .collect();
         store.write_batch(&restore)?;
         require_complete(&store, id, Kind::Data)?;
     }

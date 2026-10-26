@@ -1,9 +1,8 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
-#[path = "standalone_tenant_staging.rs"]
-mod tenant_staging;
 #[path = "standalone_credential_recovery.rs"]
 mod credential_recovery;
-pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
+#[path = "standalone_tenant_staging.rs"]
+mod tenant_staging;
 use crate::{
     audit_destination::TenantAuditPlacementConfig,
     auth::{AuthConfig, AuthKeySource},
@@ -12,6 +11,7 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
+pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
 use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
 use kasumi_store::{
     DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,

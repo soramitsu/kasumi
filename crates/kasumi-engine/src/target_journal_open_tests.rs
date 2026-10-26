@@ -1120,6 +1120,10 @@ async fn first_prebind_rejects_partial_or_competing_raft_identity_without_repair
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn historical_initial_membership_requires_exact_control_journal_and_applied_custody()
 -> FixtureResult<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
@@ -1219,6 +1223,10 @@ async fn historical_initial_membership_requires_exact_control_journal_and_applie
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn first_membership_terminal_requires_history_and_uses_original_reserved_capacity()
 -> FixtureResult<()> {
     use super::dispatch::InitialDispatchReservation as Decision;
@@ -1304,6 +1312,10 @@ async fn first_membership_terminal_requires_history_and_uses_original_reserved_c
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn first_membership_terminal_rejects_substitution_missing_custody_and_torn_accounting()
 -> FixtureResult<()> {
     use super::dispatch::InitialDispatchReservation as Decision;

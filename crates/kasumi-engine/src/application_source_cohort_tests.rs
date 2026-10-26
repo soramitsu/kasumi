@@ -65,6 +65,10 @@ fn read_payload(fixture: &Fixture, selected: &SelectedApplication) -> Result<Opt
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cohort_real_capture_has_no_new_grant_under_complete_slot_refusal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -107,6 +111,10 @@ async fn source_cohort_real_capture_has_no_new_grant_under_complete_slot_refusal
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cohort_public_history_refusal_preserves_current_and_then_funds_real_reuse()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -204,6 +212,10 @@ async fn source_cohort_public_history_refusal_preserves_current_and_then_funds_r
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cohort_unused_preparation_returns_exact_native_right_and_backing()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -228,6 +240,10 @@ async fn source_cohort_unused_preparation_returns_exact_native_right_and_backing
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cohort_pre_cell_cancellation_returns_actual_backing_and_unused_ticket()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -259,6 +275,10 @@ async fn source_cohort_pre_cell_cancellation_returns_actual_backing_and_unused_t
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cohort_close_retires_actual_capacity_and_workspaces_before_drained()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -286,6 +306,10 @@ async fn source_cohort_close_retires_actual_capacity_and_workspaces_before_drain
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_cohort_partial_admission_keeps_original_until_actual_fields_retire()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -361,6 +385,10 @@ async fn source_cohort_partial_admission_keeps_original_until_actual_fields_reti
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_capacity_close_yields_to_actual_report_guard_then_retires_exact_owner()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

@@ -784,6 +784,10 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn failed_prune_publication_keeps_selected_prefix_and_replays_staged_archive()
     -> crate::test_fixture_failure::FixtureResult<()> {
         let (_directory, _node, engine, store, _archive) = fixture().await;

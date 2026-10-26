@@ -61,8 +61,16 @@ fn assert_target_close_outcomes(
         (Err(failure), Err(repeated)) => (failure, repeated),
         outcomes => panic!("target drain changed its original outcome: {outcomes:?}"),
     };
-    assert_eq!(failure.completion(), DrainCompletion::Complete, "{failure:?}");
-    assert_eq!(repeated.completion(), DrainCompletion::Complete, "{repeated:?}");
+    assert_eq!(
+        failure.completion(),
+        DrainCompletion::Complete,
+        "{failure:?}"
+    );
+    assert_eq!(
+        repeated.completion(),
+        DrainCompletion::Complete,
+        "{repeated:?}"
+    );
     assert_eq!(failure.issues().len(), 1, "{failure:?}");
     assert_eq!(repeated.issues().len(), 1, "{repeated:?}");
     let issue = &failure.issues()[0];
@@ -1348,7 +1356,10 @@ async fn exact_target_completion(
         {
             Ok(proof) => return proof,
             Err(error)
-                if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+                if matches!(
+                    error.code,
+                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                ) => {}
             Err(error) => panic!("original target completion rejected: {error:?}"),
         }
         target.operation.check().unwrap();
@@ -1376,7 +1387,10 @@ async fn exact_target_activation(
                 return proof;
             }
             Err(error)
-                if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+                if matches!(
+                    error.code,
+                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                ) => {}
             Err(error) => panic!("original target activation rejected: {error:?}"),
         }
         // An uncertain acknowledgement is resolved with the same issuer winner,

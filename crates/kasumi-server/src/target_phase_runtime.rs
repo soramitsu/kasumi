@@ -20,8 +20,14 @@ use kasumi_types::{
     TargetRuntimeRequest,
 };
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::{sync::Arc, time::Duration};
+use std::sync::atomic::AtomicU64;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::Mutex as AsyncMutex;
 use uuid::Uuid;
 use zeroize::Zeroizing;
@@ -119,6 +125,8 @@ pub(crate) async fn observe_initial_dispatch_from_control(
 }
 
 pub(crate) struct RuntimeTargetPhase {
+    // Admission is monotonic even while live capabilities remain for Raft drain.
+    admission_sealed: AtomicBool,
     scope: Arc<TargetOperationScope>,
     serving: Option<Arc<RuntimeLease>>,
     control: AsyncMutex<KasumiLifecyclePool>,
@@ -145,13 +153,26 @@ impl ObservationBudget<'_> {
 }
 impl Drop for RuntimeTargetPhase {
     fn drop(&mut self) {
+        self.admission_sealed.store(true, Ordering::Release);
         self.scope.close();
         self.renewal.close();
     }
 }
 impl RuntimeTargetPhase {
     pub(crate) fn seal_admission(&self) {
+        self.admission_sealed.store(true, Ordering::Release);
         self.scope.seal_admission();
+    }
+    /// A continuously live lifecycle grant alone does not permit another
+    /// operation once drain began or the independent storage lease expired.
+    pub(crate) fn is_reusable(&self) -> bool {
+        !self.admission_sealed.load(Ordering::Acquire)
+            && self.scope.invocation().check().is_ok()
+            && self
+                .serving
+                .as_ref()
+                .is_none_or(|serving| serving.gate().check().is_ok())
+            && !self.admission_sealed.load(Ordering::Acquire)
     }
     pub(crate) async fn drain_detached(&self) {
         self.scope.drain_detached().await;
@@ -187,6 +208,7 @@ impl RuntimeTargetPhase {
         report.outcome(retained)
     }
     pub(crate) fn close(&self) {
+        self.admission_sealed.store(true, Ordering::Release);
         self.scope.close();
         // Close both capabilities before waiting. Every original finite renewal
         // retains its owner until it completes; shutdown never grants more time.
@@ -317,9 +339,11 @@ impl RuntimeTargetPhase {
                 request,
             )?;
             let InitialDispatchReservation::NewlyAccepted(prebind) = decision else {
-                anyhow::bail!(
-                    "accepted first-membership dispatch is status-only; historical resolution required"
+                return Err(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Conflict,
+                    "accepted first-membership dispatch is status-only; historical resolution required",
                 )
+                .into());
             };
             admission.check()?;
             initial_start =
@@ -413,6 +437,7 @@ impl RuntimeTargetPhase {
             )
         };
         let runtime = Arc::new(Self {
+            admission_sealed: AtomicBool::new(false),
             scope,
             serving,
             control: AsyncMutex::new(control),

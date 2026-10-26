@@ -273,8 +273,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         if !checked {
             self.check_owner()?;
         }
-        if self.backend.page_check() == PageCheck::Unchecked
-            && page_digest(out) != reference.sha256
+        if self.backend.page_check() == PageCheck::Unchecked && page_digest(out) != reference.sha256
         {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory page digest differs",

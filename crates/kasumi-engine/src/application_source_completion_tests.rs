@@ -132,6 +132,10 @@ fn selected(fixture: &OrdinaryFixture, input: &Input, expected_handles: usize) -
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -179,6 +183,10 @@ async fn ordinary_completion_is_last_selected_owner_through_real_outer_finish()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_reuses_only_after_real_accept_reject_and_idempotent_finish()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -264,6 +272,10 @@ fn require_positive_drain(result: kasumi_types::drain::DrainResult) {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_unentered_access_refusal_keeps_original_and_drains_before_reopen()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::{ApplyObservationRef as O, RetainedApplyReport};
@@ -430,6 +442,10 @@ impl kasumi_raft::ApplyPublisher for SealAtPublication<'_> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_exact_capture_error_retires_reader_and_keeps_original_credit()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use super::super::capture_access_test_hook::{Arm, Mode};
@@ -646,6 +662,10 @@ async fn ordinary_completion_exact_capture_error_retires_reader_and_keeps_origin
 struct FinishPanic;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_outer_finish_panic_retains_original_response_after_facade_seal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -807,6 +827,10 @@ impl std::fmt::Display for CheckpointOriginal {
 impl std::error::Error for CheckpointOriginal {}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and_original()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use super::super::completion::{CompletionCheckpoint, CompletionFault};
@@ -951,6 +975,10 @@ async fn ordinary_completion_cancelled_real_group_waiter_keeps_queued_source_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_bound_frozen_branch_keeps_source_without_new_preparation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -1026,6 +1054,10 @@ async fn ordinary_completion_bound_frozen_branch_keeps_source_without_new_prepar
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_fault_checkpoints_preserve_exact_original_and_source_phase()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use super::super::completion::{CompletionCheckpoint as C, CompletionFault, Phase};
@@ -1218,6 +1250,10 @@ impl std::task::Wake for CompletionWake {
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_drain_registers_before_busy_and_wakes_after_real_guard_release()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::CompletionCustody;
@@ -1354,6 +1390,10 @@ impl std::task::Wake for CompletionUnwindWake {
     }
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_completion_capture_wake_unwind_retires_the_actual_counted_handle()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for unwind_completion_wake in [false, true] {

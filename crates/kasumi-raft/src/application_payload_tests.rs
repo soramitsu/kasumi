@@ -94,8 +94,7 @@ async fn stored_proposal_refuses_foreign_provider_and_control_pressure_without_l
     let value = first.store.get("commands", b"proposal")?.unwrap();
     let error = ApplicationProposal::stored(value)
         .admit(&second.store, &Arc::downgrade(&lease))
-        .err()
-        .expect("foreign provider must refuse");
+        .expect_err("foreign provider must refuse");
     assert!(format!("{error:#}").contains("plaintext installed memory owner differs"));
     drop(error);
     assert_baseline(&first.memory, baseline);
@@ -111,8 +110,7 @@ async fn stored_proposal_refuses_foreign_provider_and_control_pressure_without_l
     let full = first.memory.snapshot();
     let error = ApplicationProposal::stored(value)
         .admit(&first.store, &Arc::downgrade(&lease))
-        .err()
-        .expect("control allocation must be preadmitted");
+        .expect_err("control allocation must be preadmitted");
     assert!(format!("{error:#}").contains("application shared control admission denied"));
     assert_eq!(
         first.memory.snapshot().used_bytes,

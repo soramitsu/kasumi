@@ -2508,21 +2508,18 @@ impl NodeDiskFile {
     /// physical allowance. Valid with live readers: no physical byte is removed.
     pub fn settle_growth(&self, actual_len: u64) -> io::Result<()> {
         let mut stage = "entry";
-        self.settle_growth_staged(actual_len, &mut stage).inspect_err(|error| {
-            use std::io::Write;
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Kasumi file settlement failed: stage={stage} io={:?}",
-                error.kind(),
-            );
-        })
+        self.settle_growth_staged(actual_len, &mut stage)
+            .inspect_err(|error| {
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Kasumi file settlement failed: stage={stage} io={:?}",
+                    error.kind(),
+                );
+            })
     }
 
-    fn settle_growth_staged(
-        &self,
-        actual_len: u64,
-        stage: &mut &'static str,
-    ) -> io::Result<()> {
+    fn settle_growth_staged(&self, actual_len: u64, stage: &mut &'static str) -> io::Result<()> {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;

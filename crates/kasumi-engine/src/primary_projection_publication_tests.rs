@@ -238,6 +238,10 @@ fn selected_version(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_two_real_publications_preserve_old_pin_and_commit_five_effects()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -407,6 +411,10 @@ async fn primary_cow_two_real_publications_preserve_old_pin_and_commit_five_effe
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_actual_durable_ahead_refuses_before_new_attempt()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -445,6 +453,10 @@ async fn primary_cow_actual_durable_ahead_refuses_before_new_attempt()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_late_actual_replay_refuses_before_final_effects()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -481,6 +493,10 @@ async fn primary_cow_late_actual_replay_refuses_before_final_effects()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_authentic_receipt_rejects_captured_mapping_substitution()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -539,6 +555,10 @@ async fn primary_cow_authentic_receipt_rejects_captured_mapping_substitution()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_closed_factory_retains_cancellation_and_final_grant_refusal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for cancel in [true, false] {
@@ -604,6 +624,10 @@ async fn primary_cow_closed_factory_retains_cancellation_and_final_grant_refusal
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_real_publisher_admission_refusal_keeps_exact_final_effects()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -648,6 +672,10 @@ async fn primary_cow_real_publisher_admission_refusal_keeps_exact_final_effects(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_actual_final_effect_allocations_and_baseline_grants_retire_in_order()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for which in 0..2 {

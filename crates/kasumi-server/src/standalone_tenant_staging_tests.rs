@@ -1,5 +1,5 @@
 use super::*;
-use std::{future::Future, task::Poll};
+use std::{future::Future, pin::Pin, task::Poll};
 
 fn run_large_staging_fixture<F, Fut>(name: &'static str, make: F) -> Result<()>
 where
@@ -115,6 +115,14 @@ async fn entered(pause: &Pause) {
         .await
         .unwrap();
 }
+async fn entered_while_staging<F: Future>(pause: &Pause, staged: Pin<&mut F>) {
+    // Admission may yield before spawning the retained operator child. Keep
+    // driving the caller until that child reaches the real fixture checkpoint.
+    tokio::select! {
+        _ = entered(pause) => {},
+        _ = staged => panic!("staging operation completed before the fixture checkpoint"),
+    }
+}
 
 #[test]
 fn cancelled_staging_retains_exclusive_owner_until_configuration_and_workers_finish() -> Result<()>
@@ -145,12 +153,7 @@ async fn cancelled_staging_impl() -> Result<()> {
         request.clone(),
         storage.clone(),
     ));
-    std::future::poll_fn(|cx| {
-        assert!(staged.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    entered(&pause).await;
+    entered_while_staging(&pause, staged.as_mut()).await;
     drop(staged);
     assert!(
         claim(
@@ -540,12 +543,7 @@ async fn early_result_error_impl(installation: std::path::PathBuf) -> Result<()>
         request,
         storage,
     ));
-    std::future::poll_fn(|cx| {
-        assert!(staged.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    entered(&pause).await;
+    entered_while_staging(&pause, staged.as_mut()).await;
     drop(staged);
     anyhow::bail!("injected pre-release fixture failure")
 }
@@ -586,17 +584,13 @@ async fn early_panic_impl(installation: std::path::PathBuf) -> Result<()> {
         .unwrap()
         .insert((config.database_id, "files-ready"), pause.clone());
     let _release_pause = ReleasePauseOnDrop(pause.clone());
-    let mut staged = Box::pin(stage_tenant_with_storage(
-        &installed.configuration,
-        request,
-        storage,
-    ));
-    std::future::poll_fn(|cx| {
-        assert!(staged.as_mut().poll(cx).is_pending());
-        Poll::Ready(())
-    })
-    .await;
-    entered(&pause).await;
+    let mut staged = Box::pin(async {
+        // Model startup queued before child launch, as when another operation
+        // holds the process-wide LocalOperator registry mutex on the first poll.
+        tokio::task::yield_now().await;
+        stage_tenant_with_storage(&installed.configuration, request, storage).await
+    });
+    entered_while_staging(&pause, staged.as_mut()).await;
     drop(staged);
     std::panic::panic_any("injected pre-release fixture panic")
 }

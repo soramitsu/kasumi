@@ -1580,10 +1580,7 @@ async fn paired_identities_are_retained_once_present_and_still_require_access() 
         app.get_write_once_identity(DEPLOYMENT_NS, DEPLOYMENT_KEY, 4)
             .is_err()
     );
-    assert!(
-        app.get_write_once_identity("ordinary", b"key", 64)
-            .is_err()
-    );
+    assert!(app.get_write_once_identity("ordinary", b"key", 64).is_err());
     app.seal();
     assert!(
         app.get_write_once_identity(DEPLOYMENT_NS, DEPLOYMENT_KEY, 64)

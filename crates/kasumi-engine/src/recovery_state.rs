@@ -2875,6 +2875,10 @@ mod publication_tests {
     use super::*;
 
     #[test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn rejected_recovery_waits_for_publication_and_retries_exact_response()
     -> crate::test_fixture_failure::FixtureResult<()> {
         let engine = TenantEngine::new(

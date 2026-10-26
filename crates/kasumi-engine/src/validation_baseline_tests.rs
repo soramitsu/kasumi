@@ -170,6 +170,10 @@ impl Candidate {
         let generation = self.prepare(owner.engine(), &owner.baseline())?;
         Ok(owner.finish(generation))
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn image(
         &self,
         disk: &Arc<kasumi_store::ScratchDisk>,
@@ -244,6 +248,10 @@ fn put(id: &str) -> Operation {
         }],
     })
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn seeded(
     disk: &Arc<kasumi_store::ScratchDisk>,
 ) -> crate::test_fixture_failure::FixtureResult<TenantEngine> {
@@ -279,6 +287,10 @@ impl Read for CountedReader<'_> {
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_actual_bootstrap_absence_and_public_failure_are_distinct()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -315,6 +327,10 @@ fn validation_baseline_actual_bootstrap_absence_and_public_failure_are_distinct(
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_sealed_and_poisoned_owners_refuse_before_decode()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -443,6 +459,10 @@ impl Read for AdvancingReader<'_> {
     }
 }
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_standalone_decode_uses_one_prior_during_real_advance()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -528,6 +548,10 @@ fn recovery_candidate() -> anyhow::Result<Candidate> {
     recovery::apply(&mut state, &command, None)?;
     Candidate::empty(state)
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn target_candidate(
     disk: &Arc<kasumi_store::ScratchDisk>,
 ) -> crate::test_fixture_failure::FixtureResult<Candidate> {
@@ -556,6 +580,10 @@ fn target_candidate(
     candidate.targets = targets;
     Ok(candidate)
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn terminal_candidate(
     disk: &Arc<kasumi_store::ScratchDisk>,
 ) -> crate::test_fixture_failure::FixtureResult<Candidate> {
@@ -619,6 +647,10 @@ fn terminal_candidate(
     candidate.terminals = terminals;
     Ok(candidate)
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn binding_candidate(
     disk: &Arc<kasumi_store::ScratchDisk>,
 ) -> crate::test_fixture_failure::FixtureResult<Candidate> {
@@ -641,6 +673,10 @@ fn binding_candidate(
     candidate.bindings = bindings;
     Ok(candidate)
 }
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn assert_continuity(
     disk: &Arc<kasumi_store::ScratchDisk>,
     prior: Candidate,
@@ -702,6 +738,10 @@ fn assert_continuity(
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_recovery_binding_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -721,6 +761,10 @@ fn validation_baseline_recovery_binding_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_target_history_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -745,6 +789,10 @@ fn validation_baseline_target_history_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_control_installation_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -764,6 +812,10 @@ fn validation_baseline_control_installation_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -807,6 +859,10 @@ fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_staged_terminal_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -829,6 +885,10 @@ fn validation_baseline_staged_terminal_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_target_terminal_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -855,6 +915,10 @@ fn validation_baseline_target_terminal_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_backup_binding_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -875,6 +939,10 @@ fn validation_baseline_backup_binding_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_mutation_receipt_continuity_refuses_valid_rollback()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -897,6 +965,10 @@ fn validation_baseline_mutation_receipt_continuity_refuses_valid_rollback()
 }
 
 #[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn validation_baseline_foreign_same_identity_owner_refuses_before_read()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scratch = scratch()?;
@@ -1029,6 +1101,10 @@ impl SourceFixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn validation_baseline_real_prepared_restore_holds_one_checked_apply_owner()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend as _;
@@ -1068,6 +1144,10 @@ async fn validation_baseline_real_prepared_restore_holds_one_checked_apply_owner
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn validation_baseline_failed_publish_retires_candidate_before_apply_owner()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend as _;
@@ -1129,6 +1209,10 @@ async fn validation_baseline_failed_publish_retires_candidate_before_apply_owner
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn validation_baseline_real_ordered_retirement_uses_apply_prior_without_public_escape()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::{AppliedEntryContext, AppliedInput, StateMachineBackend as _};

@@ -516,17 +516,18 @@ impl DiskState {
 
     fn commit_inner(&mut self, operations: &[Operation]) -> Result<(), CoreError> {
         let mut stage = "admission";
-        self.commit_staged(operations, &mut stage).inspect_err(|error| {
-            // Fixed stages and error kinds only. Borrow the original; diagnostics
-            // cannot change its disposition, ownership or failure behavior.
-            use std::io::Write;
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Kasumi native commit failed: stage={stage} disposition={:?} io={:?}",
-                error.disposition(),
-                error.io_error().map(std::io::Error::kind),
-            );
-        })
+        self.commit_staged(operations, &mut stage)
+            .inspect_err(|error| {
+                // Fixed stages and error kinds only. Borrow the original; diagnostics
+                // cannot change its disposition, ownership or failure behavior.
+                use std::io::Write;
+                let _ = writeln!(
+                    std::io::stderr().lock(),
+                    "Kasumi native commit failed: stage={stage} disposition={:?} io={:?}",
+                    error.disposition(),
+                    error.io_error().map(std::io::Error::kind),
+                );
+            })
     }
 
     fn commit_staged(

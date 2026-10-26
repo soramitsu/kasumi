@@ -18,8 +18,11 @@ pub use source_pool::{
 };
 
 #[cfg(test)]
+type ReleasedReaderSweepObserver = Box<dyn FnMut(StorageOwnerId)>;
+
+#[cfg(test)]
 thread_local! {
-    static RELEASED_READER_SWEEP_OBSERVER: std::cell::RefCell<Option<Box<dyn FnMut(StorageOwnerId)>>> =
+    static RELEASED_READER_SWEEP_OBSERVER: std::cell::RefCell<Option<ReleasedReaderSweepObserver>> =
         const { std::cell::RefCell::new(None) };
 }
 

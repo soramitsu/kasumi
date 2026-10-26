@@ -596,6 +596,10 @@ fn assert_alternate_initial_identity_rejected(store: &TenantStore, key: &[u8]) -
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn raft_control_metadata_requires_current_writer_bytes_on_every_live_read()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -671,6 +675,10 @@ async fn raft_control_metadata_requires_current_writer_bytes_on_every_live_read(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn noncanonical_recovery_scan_header_cannot_publish_retirement() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -705,6 +713,10 @@ async fn noncanonical_recovery_scan_header_cannot_publish_retirement() -> Fixtur
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_seed_reopens_before_any_projection_without_application_key_access()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -757,6 +769,10 @@ async fn committed_seed_reopens_before_any_projection_without_application_key_ac
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_restart()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -806,6 +822,10 @@ async fn truncation_permanently_removes_uncommitted_seed_before_overwrite_and_re
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_header()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -864,6 +884,10 @@ async fn interrupted_raft_append_never_persists_seed_without_matching_body_and_h
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -898,6 +922,10 @@ async fn substituted_seed_bootstrap_or_command_and_uncovered_commit_fail_closed(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_a_seed()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -935,6 +963,10 @@ async fn ordinary_purge_deletes_bodies_and_nonretirement_overwrite_cannot_leave_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn accepted_boundary_and_exact_applied_position_publish_atomically_before_retained_purge()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1081,6 +1113,10 @@ fn membership_context(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn first_applied_membership_and_cursor_survive_every_atomic_write_boundary()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1161,6 +1197,10 @@ async fn first_applied_membership_and_cursor_survive_every_atomic_write_boundary
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn first_applied_membership_survives_later_membership_purge_and_reopen() -> FixtureResult<()>
 {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1435,6 +1475,10 @@ fn signed_initialization_cause(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn prebound_first_membership_association_survives_later_apply_purge_and_reopen()
 -> FixtureResult<()> {
     use std::collections::BTreeMap;
@@ -1550,6 +1594,18 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
         TARGET_PREBIND_KEY,
         serde_json::to_vec(&prebind)?,
     )])?;
+    let absent = read_target_first_membership_history(&stores, &prebind)
+        .err()
+        .expect("prebound Start has no applied first membership");
+    let original: &(dyn std::error::Error + Send + Sync + 'static) = absent
+        .operation_error()
+        .expect("successful absent read has no native creation failure")
+        .as_ref();
+    let original = original
+        .downcast_ref::<kasumi_types::Error>()
+        .expect("successful absence returns a root typed operation error");
+    assert_eq!(original.code, ErrorCode::Unavailable);
+    assert_eq!(original.message, "target first applied membership absent");
     persist_applied(&stores, &first_context, None)?;
     let original_fact = first_applied_membership(stores.custody().store())?
         .context("prebound first membership absent")?;
@@ -1689,6 +1745,10 @@ async fn prebound_first_membership_association_survives_later_apply_purge_and_re
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_without_app_key()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1751,6 +1811,10 @@ async fn reserved_committed_retirement_recovers_atomic_custody_after_crash_witho
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting_a_tail()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1793,6 +1857,10 @@ async fn retirement_recovery_crosses_former_seed_count_ceiling_without_promoting
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retirement_recovery_never_selects_between_multiple_committed_successes()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1824,6 +1892,10 @@ async fn retirement_recovery_never_selects_between_multiple_committed_successes(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate() -> FixtureResult<()>
 {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -1863,6 +1935,10 @@ async fn exhausted_seed_completion_budget_cannot_promote_a_committed_candidate()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn failed_or_already_applied_without_boundary_cannot_be_reinterpreted_as_retired()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);

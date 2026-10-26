@@ -152,7 +152,13 @@ fn stop(
     let pending = Pending::prepare(view, previous, &mut next, applied).unwrap();
     (next, pending)
 }
-async fn durable() -> (tempfile::TempDir, NodeStore, Arc<TenantStore>, TenantState, View) {
+async fn durable() -> (
+    tempfile::TempDir,
+    NodeStore,
+    Arc<TenantStore>,
+    TenantState,
+    View,
+) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     // The 32-slot fixture exhausted slots at 54,004,507 used bytes. Allow
     // bounded overlap of installed owners, replacement tables, transactions

@@ -106,7 +106,13 @@ pub(crate) fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> 
         },
     }
 }
-async fn durable() -> (tempfile::TempDir, NodeStore, Arc<TenantStore>, TenantState, View) {
+async fn durable() -> (
+    tempfile::TempDir,
+    NodeStore,
+    Arc<TenantStore>,
+    TenantState,
+    View,
+) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     // Snapshot decoding holds all four staging tables and their native workspaces.
     let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64);

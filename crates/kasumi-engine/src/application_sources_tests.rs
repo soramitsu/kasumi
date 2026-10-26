@@ -154,6 +154,10 @@ fn drain(roots: &SourceRoots) -> Poll<DrainResult> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_last_selected_handle_closes_during_ordinary_operation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -178,6 +182,10 @@ async fn selected_sources_last_selected_handle_closes_during_ordinary_operation(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_shutdown_closes_native_parent_with_metadata_alias_alive()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -194,6 +202,10 @@ async fn selected_sources_shutdown_closes_native_parent_with_metadata_alias_aliv
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_fork_seal_closes_registered_child_before_releasing_permit()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -219,6 +231,10 @@ async fn selected_sources_fork_seal_closes_registered_child_before_releasing_per
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_failed_consuming_close_never_becomes_success_from_none()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -253,6 +269,10 @@ async fn selected_sources_failed_consuming_close_never_becomes_success_from_none
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_canonical_failure_closes_parent_preserves_original_and_issue()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -287,6 +307,10 @@ async fn selected_sources_canonical_failure_closes_parent_preserves_original_and
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_local_command_publishes_entry_and_drains_surviving_generation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -364,6 +388,10 @@ async fn selected_sources_local_command_publishes_entry_and_drains_surviving_gen
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_rebase_moves_bootstrap_selection_to_the_current_root()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -402,6 +430,10 @@ async fn selected_sources_rebase_moves_bootstrap_selection_to_the_current_root()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_apply_that_races_a_rebase_wins()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -511,6 +543,10 @@ async fn selected_sources_apply_that_races_a_rebase_wins()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_rebase_uses_bounded_plan_and_preserves_pending_publication()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -580,6 +616,10 @@ async fn selected_sources_rebase_uses_bounded_plan_and_preserves_pending_publica
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_prospective_denial_preserves_cursor_generation_and_original_then_retries()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend;
@@ -662,6 +702,10 @@ async fn selected_sources_prospective_denial_preserves_cursor_generation_and_ori
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_missing_prospective_callback_never_publishes_generation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use kasumi_raft::StateMachineBackend;
@@ -764,6 +808,10 @@ async fn selected_sources_missing_prospective_callback_never_publishes_generatio
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_repeated_prospective_callback_is_sticky_and_cancels_queued_reader()
 -> crate::test_fixture_failure::FixtureResult<()> {
     struct CapturePlan(Option<(PreparedSelectionPlan, PreparedTenantPointWorkspace)>);
@@ -891,6 +939,10 @@ async fn selected_sources_repeated_prospective_callback_is_sticky_and_cancels_qu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_routine_bounded_read_error_retires_with_original_report_alive()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -934,6 +986,10 @@ async fn selected_sources_routine_bounded_read_error_retires_with_original_repor
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_fork_keeps_exact_old_native_generation_after_parent_retirement()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -989,6 +1045,10 @@ async fn selected_sources_fork_keeps_exact_old_native_generation_after_parent_re
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_unknown_capture_panic_without_view_never_drains_as_clean()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -1056,6 +1116,10 @@ async fn selected_sources_unknown_capture_panic_without_view_never_drains_as_cle
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_alias_refusal_preserves_later_actual_native_close_failure()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -1118,6 +1182,10 @@ async fn selected_sources_alias_refusal_preserves_later_actual_native_close_fail
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_capture_finalization_settles_handle_before_retirement()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -1253,6 +1321,10 @@ fn selected_sources_maintenance_publication_requires_actual_scope_for_owner_and_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_identity()
 -> crate::test_fixture_failure::FixtureResult<()> {
     async fn audit(
@@ -1528,6 +1600,10 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -1694,6 +1770,10 @@ mod quote_tests;
 pub(super) mod completion_tests;
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_cancellation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for capture in [false, true] {
@@ -1805,6 +1885,10 @@ async fn selected_sources_actual_entry_hands_point_backing_to_capture_and_queue_
 mod point_retirement_tests;
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

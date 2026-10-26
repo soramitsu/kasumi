@@ -177,6 +177,10 @@ fn read_manifest(fixture: &Fixture, built: &BuiltCollection) -> Result<Manifest>
 
 // Synchronous encrypted tree work must not starve the real key-renewal task.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_two_level_mixed_stream_zero_version_and_old_pin()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -348,6 +352,10 @@ async fn primary_bulk_two_level_mixed_stream_zero_version_and_old_pin()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_empty_stream_has_definition_manifest_and_no_empty_page()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -377,6 +385,10 @@ async fn primary_bulk_empty_stream_has_definition_manifest_and_no_empty_page()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_rejects_order_identity_and_epoch_without_final_manifest()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -415,6 +427,10 @@ async fn primary_bulk_rejects_order_identity_and_epoch_without_final_manifest()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_swallowed_callback_stays_closed_and_keeps_independent_source_error()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -460,6 +476,10 @@ async fn primary_bulk_swallowed_callback_stays_closed_and_keeps_independent_sour
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_cancel_inside_large_dto_preserves_original_and_resumes_abort()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -592,6 +612,10 @@ async fn primary_bulk_actual_frontier_allocation_stays_charged_through_dealloc()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_callback_error_survives_later_source_panic()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -683,6 +707,10 @@ async fn primary_bulk_frontier_denial_precedes_backing_allocation_or_source_visi
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_swallowed_callback_panic_permanently_stops_writes()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -754,6 +782,10 @@ fn framing_children(
 
 // The recursive encrypted frontier also needs renewal during synchronous work.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_bulk_real_frontier_three_levels_recursive_spill_and_final_collapse()
 -> crate::test_fixture_failure::FixtureResult<()> {
     use bulk::frontier_fixture as framing;

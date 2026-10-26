@@ -35,6 +35,10 @@ fn visit_spool(
     Ok(())
 }
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopens()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);

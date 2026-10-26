@@ -47,6 +47,10 @@ fn small_projection<'a, 'b>(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_stage_fixed_objects_are_journaled_and_old_pin_survives_bounded_abort()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -187,6 +191,10 @@ async fn primary_stage_fixed_objects_are_journaled_and_old_pin_survives_bounded_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_stage_fixed_shape_refusal_creates_no_inventory_or_counter_change()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for page in [true, false] {
@@ -256,6 +264,10 @@ async fn primary_stage_fixed_shape_refusal_creates_no_inventory_or_counter_chang
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_stage_fixed_missing_or_corrupt_objects_refuse_before_abort_progress()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for page in [true, false] {
@@ -335,6 +347,10 @@ async fn primary_stage_fixed_missing_or_corrupt_objects_refuse_before_abort_prog
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_stage_fixed_impossible_inventory_progress_refuses_without_erasing_custody()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for page in [true, false] {
@@ -454,6 +470,10 @@ async fn primary_stage_fixed_impossible_inventory_progress_refuses_without_erasi
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_stage_fixed_page_framing_refuses_even_with_matching_inventory_digest()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -549,6 +569,10 @@ async fn primary_stage_fixed_page_framing_refuses_even_with_matching_inventory_d
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_stage_fixed_page_buffer_returns_for_following_multichunk_dto()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
