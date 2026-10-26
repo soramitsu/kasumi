@@ -1714,6 +1714,7 @@ async fn local_audit_placement_custody_impl() {
             .phase,
         LocalRecoveryPhase::Stopped
     );
+    drain_operations().await.unwrap();
 }
 
 #[test]

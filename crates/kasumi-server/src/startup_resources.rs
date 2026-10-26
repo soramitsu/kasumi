@@ -34,18 +34,20 @@ impl Resources {
     pub(crate) async fn close(&self) -> DrainResult {
         let mut report = self.report.lock().await;
         let mut retained = None;
-        if let Some(inventory) = &self.original_recoveries
-            && inventory.retained().await
-        {
-            let issue = report.record(
-                "original recovery inventory",
-                0,
-                anyhow::anyhow!("original recovery custody remains retained"),
-            );
-            retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+        if let Some(inventory) = &self.original_recoveries {
+            inventory.retire_closed_node_refusals().await;
+            if inventory.retained().await {
+                let issue = report.record(
+                    "original recovery inventory",
+                    0,
+                    anyhow::anyhow!("original recovery custody remains retained"),
+                );
+                retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
+            }
         }
         if let Some(inventory) = &self.signer_original_recoveries {
             inventory.seal();
+            inventory.retire_closed_node_refusals().await;
             if inventory.retained().await {
                 let issue = report.record(
                     "signer original recovery inventory",

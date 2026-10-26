@@ -2834,6 +2834,10 @@ fn fixture_config() -> RuntimeConfig {
 #[cfg(test)]
 // A fixture must explicitly enroll its node file once. Runtime restarts only
 // open the retained configured identity and never create missing files.
+#[allow(
+    clippy::result_large_err,
+    reason = "native startup failures remain inline in the original prepaid custody"
+)]
 async fn create_fixture_node(
     config: &RuntimeConfig,
     storage: &crate::runtime_memory::RuntimeStorage,
@@ -2956,7 +2960,7 @@ async fn provision_local_fixture_domains(
             let index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(config, tenant)?;
             let mut constructor_seat = pending.original_recoveries.as_ref().expect("installed fixture inventory").claim(index).await;
             let opened = constructor_seat.run_snapshot(async {
-                let opened = match incarnation {
+                match incarnation {
                 Some(incarnation) => {
                     kasumi_engine::open_local_with_incarnation(
                         stores.clone(),
@@ -2976,8 +2980,7 @@ async fn provision_local_fixture_domains(
                     )
                     .await
                 }
-                };
-                opened
+                }
             }).await;
             let database = opened.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
             pending.databases.push(database.clone());
@@ -3054,6 +3057,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "native startup failures remain inline in the original prepaid custody"
+    )]
     async fn paired_replicated_fingerprint_preserves_installed_custody_binding() -> Result<()> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let physical =
@@ -3175,6 +3182,10 @@ mod tests {
     }
 
     #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "native startup failures remain inline in the original prepaid custody"
+    )]
     async fn persisted_bootstrap_fingerprint_requires_current_bounded_manifest() -> Result<()> {
         let digest = "a".repeat(64);
         let canonical =
@@ -4958,6 +4969,46 @@ mod lifecycle_tests {
         ListenerLimits::default().drain_timeout.saturating_mul(2) + Duration::from_secs(15)
     }
 
+    fn restored_routes_ready(
+        registries: &[DatabaseRegistry],
+        managers: &[Arc<crate::administration::Administration>],
+        context: &RequestContext,
+        incarnation: Uuid,
+    ) -> bool {
+        assert_eq!(registries.len(), 3);
+        assert_eq!(managers.len(), registries.len());
+        registries.iter().enumerate().all(|(index, registry)| {
+            if !registry
+                .database(context)
+                .ok()
+                .and_then(|database| database.engine().generation().ok())
+                .is_some_and(|generation| generation.incarnation() == incarnation.to_string())
+            {
+                return false;
+            }
+            // Target activation can publish its registry before this replica
+            // applies the corresponding Control route. Prepare only selects
+            // and authorizes; the actual Status assertion still executes once.
+            match managers[index].prepare(
+                context.clone(),
+                crate::administration::ManagementCommand::Status {},
+            ) {
+                Ok(_) => true,
+                Err(error)
+                    if error.code == kasumi_types::ErrorCode::Unavailable
+                        && error.message
+                            == "registered generation differs from committed control route" =>
+                {
+                    false
+                }
+                Err(error) => panic!(
+                    "restored administrative route readiness failed with code {:?}",
+                    error.code
+                ),
+            }
+        })
+    }
+
     async fn replicated_runtime_fixture_inner(
         with_spare: bool,
         bootstrap_fault: Option<BootstrapFault>,
@@ -6290,13 +6341,7 @@ mod lifecycle_tests {
         .unwrap();
         let context = fixture_operation(|| recovery.context(true)).await;
         tokio::time::timeout(Duration::from_secs(20), async {
-            while !registries.iter().all(|registry| {
-                registry
-                    .database(&context)
-                    .ok()
-                    .and_then(|database| database.engine().generation().ok())
-                    .is_some_and(|generation| generation.incarnation() == incarnation.to_string())
-            }) {
+            while !restored_routes_ready(&registries, &managers, &context, incarnation) {
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
         })
@@ -6523,29 +6568,67 @@ mod lifecycle_tests {
             second_tasks.push(tokio::spawn(runtime.serve(shutdown)));
         }
         fixture_operation(|| recovery.reopen_targets(&second_recovery_handles)).await;
-        tokio::time::timeout(Duration::from_secs(20), async {
+        // BOOTSTRAP_GATE serializes the three cold target loads and Raft
+        // replays. Use the fixture's existing aggregate native-startup budget;
+        // the individual RPC, lease and recovery-phase bounds stay unchanged.
+        let reopening_started = std::time::Instant::now();
+        fixture_stage!("waiting for restarted target registries");
+        let readiness = tokio::time::timeout(Duration::from_secs(180), async {
             loop {
                 for task in &mut second_tasks {
                     if task.is_finished() {
                         panic!("restarted runtime exited: {:?}", task.await);
                     }
                 }
-                let mut ready = true;
-                for registry in &second_registries {
-                    ready &= registry.database(&context).is_ok_and(|db| {
-                        db.engine()
-                            .generation()
-                            .is_ok_and(|g| g.incarnation() == incarnation.to_string())
-                    });
-                }
-                if ready {
+                if restored_routes_ready(
+                    &second_registries,
+                    &second_managers,
+                    &context,
+                    incarnation,
+                ) {
                     break;
                 }
                 tokio::time::sleep(Duration::from_millis(30)).await;
             }
         })
-        .await
-        .unwrap();
+        .await;
+        if let Err(elapsed) = readiness {
+            let registries = second_registries
+                .iter()
+                .map(|registry| {
+                    registry
+                        .database(&context)
+                        .and_then(|database| {
+                            database.engine().generation().map(|generation| {
+                                generation.incarnation() == incarnation.to_string()
+                            })
+                        })
+                        .map_err(|error| error.code)
+                })
+                .collect::<Vec<_>>();
+            let control_metrics = second_controls
+                .iter()
+                .map(|control| {
+                    let metrics = control.raft_group().metrics();
+                    (
+                        metrics.id,
+                        metrics.state,
+                        metrics.current_term,
+                        metrics.current_leader,
+                        metrics.last_log_index,
+                        metrics.last_applied.map(|log| log.index),
+                    )
+                })
+                .collect::<Vec<_>>();
+            let target_stages = recovery.target_recovery_stages(&context.tenant);
+            panic!(
+                "restarted tenant registry readiness timed out: {elapsed:?}; registry results: {registries:?}; target recovery stages: {target_stages:?}; control metrics (node, state, term, leader, last log, last applied): {control_metrics:?}"
+            );
+        }
+        fixture_stage!(
+            "restarted target registries ready elapsed_ms={}",
+            reopening_started.elapsed().as_millis()
+        );
         for (index, registry) in second_registries.iter().enumerate() {
             assert!(registry.database(&source_context).is_err());
             let database = registry.database(&context).unwrap();

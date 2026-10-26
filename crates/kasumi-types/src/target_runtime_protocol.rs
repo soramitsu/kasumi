@@ -94,34 +94,38 @@ impl TargetInitialDispatchIdentity {
             | TargetRuntimeStep::Initialize(input) => input,
             _ => anyhow::bail!("marked recovery phase is not first membership"),
         };
-        ensure!(
-            phase.operation_id == self.operation_id
-                && phase.phase_id == self.phase_id
-                && phase.phase == RecoveryPhase::Initialize
-                && phase.outcome.is_none()
-                && phase.resolved_revision.is_none()
-                && phase.input_sha256 == self.input_sha256
-                && *marked_node == node_id
-                && **marked_request == *request
-                && marker.attempt_id == self.attempt_id
-                && marker.input_sha256 == self.input_sha256
-                && marker.begun_revision > phase.prepared_revision
-                && phase.principal == lifecycle.original_principal
-                && lifecycle.request.phase == LifecyclePhase::Initialize
-                && lifecycle.request.command_id == request.command_id
-                && lifecycle.request.tenant == request.tenant
-                && lifecycle.request.target_nodes.contains_key(&node_id)
-                && lifecycle.request.phase_input_sha256 == quorum.digest()?
-                && lifecycle.request_sha256 == staged_digest(&lifecycle.request)?.0
-                && lifecycle.installation_generation > 0
-                && lifecycle.revision > 0
-                && lifecycle.accepted_at_ms < lifecycle.original_credential_expires_at_ms
-                && lifecycle.accepted_at_ms <= phase.admitted_at_ms
-                && request.not_after_ms <= phase.original_credential_expires_at_ms
-                && (!matches!(&request.step, TargetRuntimeStep::Initialize(_))
-                    || (phase.sequence > 1 && phase.previous_phase.is_some())),
-            "marked recovery phase differs from exact first-membership dispatch or lifecycle intent"
-        );
+        if !(phase.operation_id == self.operation_id
+            && phase.phase_id == self.phase_id
+            && phase.phase == RecoveryPhase::Initialize
+            && phase.outcome.is_none()
+            && phase.resolved_revision.is_none()
+            && phase.input_sha256 == self.input_sha256
+            && *marked_node == node_id
+            && **marked_request == *request
+            && marker.attempt_id == self.attempt_id
+            && marker.input_sha256 == self.input_sha256
+            && marker.begun_revision > phase.prepared_revision
+            && phase.principal == lifecycle.original_principal
+            && lifecycle.request.phase == LifecyclePhase::Initialize
+            && lifecycle.request.command_id == request.command_id
+            && lifecycle.request.tenant == request.tenant
+            && lifecycle.request.target_nodes.contains_key(&node_id)
+            && lifecycle.request.phase_input_sha256 == quorum.digest()?
+            && lifecycle.request_sha256 == staged_digest(&lifecycle.request)?.0
+            && lifecycle.installation_generation > 0
+            && lifecycle.revision > 0
+            && lifecycle.accepted_at_ms < lifecycle.original_credential_expires_at_ms
+            && lifecycle.accepted_at_ms <= phase.admitted_at_ms
+            && request.not_after_ms <= phase.original_credential_expires_at_ms
+            && (!matches!(&request.step, TargetRuntimeStep::Initialize(_))
+                || (phase.sequence > 1 && phase.previous_phase.is_some())))
+        {
+            return Err(crate::Error::new(
+                crate::ErrorCode::Unavailable,
+                "marked recovery phase differs from exact first-membership dispatch or lifecycle intent",
+            )
+            .into());
+        }
         Ok(())
     }
 }

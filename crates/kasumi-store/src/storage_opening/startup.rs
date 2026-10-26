@@ -418,6 +418,59 @@ mod tests {
     const ID: Uuid = Uuid::from_u128(0x5825_1c84_5e3b_487b_b998_2ca6_3141_7331);
 
     #[test]
+    fn acquisition_refusal_retirement_preserves_unknown_native_close() {
+        let directory = private_tempdir().unwrap();
+        let path = directory.path().join("startup-unknown-close.kv");
+        let memory = TestDiskMemory::new(256 << 20, 4096);
+        let disk =
+            retry_disk_registry(|| NodeDisk::fixture_for_path(&path, memory.clone())).unwrap();
+        let mut startup = RegisteredNodeStartup::prepare(
+            &path,
+            ID,
+            disk.clone(),
+            NodeOpeningMode::Create,
+            crate::test_utils::node_storage_config(),
+        )
+        .unwrap();
+        assert_eq!(startup.opening.open(), super::super::NodeOpeningPhase::Open);
+        startup.phase = NodeStartupPhase::Failed;
+        disk.fail();
+        crate::NodeDiskFile::fail_next_native_close(libc::EIO);
+        let close_error = startup.close_failed().err();
+        let mut failure = crate::NodeStoreOpeningFailure {
+            custody: startup.into_failed_custody().ok().unwrap(),
+            close_error,
+        };
+        let id = failure.opening_id();
+        let attempts = crate::NodeDiskFile::native_close_attempts();
+        let charged = disk.snapshot().charged_bytes;
+        for _ in 0..2 {
+            failure = match failure.retire_closed_acquisition_refusal() {
+                Err(original) => original,
+                Ok(_) => panic!("uncertain native close must keep its original carrier"),
+            };
+            assert_eq!(failure.opening_id(), id);
+            assert_eq!(
+                failure
+                    .custody()
+                    .opening()
+                    .report()
+                    .engine()
+                    .native_disposition(),
+                kasumi_kv::BackendNativeDisposition::Retained
+            );
+            assert_eq!(crate::NodeDiskFile::native_close_attempts(), attempts);
+            assert_eq!(disk.snapshot().charged_bytes, charged);
+        }
+        drop(failure);
+        assert_eq!(
+            memory.storage_census().drain_owner(id),
+            StorageCensusDisposition::Retained
+        );
+        assert_eq!(crate::NodeDiskFile::native_close_attempts(), attempts);
+    }
+
+    #[test]
     fn startup_uses_one_registered_owner_for_create_and_reopen() {
         let directory = private_tempdir().unwrap();
         let path = directory.path().join("startup.kv");

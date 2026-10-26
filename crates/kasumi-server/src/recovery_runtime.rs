@@ -790,7 +790,8 @@ impl ControlRecoveryCoordinator {
                 // covers connection as well as dispatch, while the exact request
                 // and its target-owned operation keep their original cap.
                 let remaining = prepared.dispatch_remaining().await?;
-                let wait = target_route_wait(head, request, duration.min(remaining));
+                let wait =
+                    target_route_wait(head.phase, &request.step, duration, duration.min(remaining));
                 let acknowledgement = tokio::time::timeout(wait, async {
                     let mut client =
                         KasumiTargetClient::connect(&config, control, trust.clone(), *node_id)
@@ -1018,13 +1019,14 @@ impl ControlRecoveryCoordinator {
     }
 }
 fn target_route_wait(
-    head: &RecoveryRecord,
-    request: &TargetRuntimeRequest,
+    phase: RecoveryPhase,
+    step: &TargetRuntimeStep,
+    phase_timeout: Duration,
     remaining: Duration,
 ) -> Duration {
-    let established = head.phase == RecoveryPhase::Complete
+    let established = phase == RecoveryPhase::Complete
         && matches!(
-            request.step,
+            step,
             TargetRuntimeStep::Start(
                 TargetReplicaInput::Completion(_)
                     | TargetReplicaInput::CompletionAttemptStatus(_)
@@ -1038,16 +1040,22 @@ fn target_route_wait(
                 | TargetRuntimeStep::ResolveComplete(_)
                 | TargetRuntimeStep::Inspect(_)
         );
-    let initial_inspection = head.phase == RecoveryPhase::Initialize
-        && matches!(request.step, TargetRuntimeStep::InspectInitialMembership(_));
+    let initial_inspection = phase == RecoveryPhase::Initialize
+        && matches!(step, TargetRuntimeStep::InspectInitialMembership(_));
     if established || initial_inspection {
-        // RecoveryStart validates exactly three installed voters. Leave time for
-        // their routes and the final current-Control response/phase commit.
-        remaining / 5
+        // Keep one finite slice of the configured phase budget for each route,
+        // including connection and dispatch. Re-dividing the remaining time on
+        // every retry can starve a healthy reply after an earlier failed route.
+        // The unchanged absolute command/credential cap still limits each wait.
+        remaining.min(phase_timeout / 5)
     } else {
         remaining
     }
 }
+
+#[cfg(test)]
+#[path = "recovery_route_wait_tests.rs"]
+mod route_wait_tests;
 
 // Exact custody verification is independent of application admission. A failed
 // custody read is never proof of absence: only an authenticated application

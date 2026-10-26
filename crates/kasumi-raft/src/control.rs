@@ -266,8 +266,12 @@ pub fn read_target_first_membership_history(
             read_target_first_membership_prebind(stores, expected)?;
             let custody = stores.custody();
             let store = custody.store();
-            let first = first_applied_membership(store)?
-                .context("target first applied membership absent")?;
+            let first = first_applied_membership(store)?.ok_or_else(|| {
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "target first applied membership absent",
+                )
+            })?;
             local_first_association_write(custody, Some(&first), None)?;
             crate::initialization_association::load_state(custody, Some(&first))?;
             if let Some(active) =

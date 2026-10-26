@@ -386,7 +386,10 @@ impl StorageCensus {
             .enumerate()
             .flat_map(move |(word_index, word)| {
                 let bits = word.load(Ordering::Acquire);
-                #[cfg(debug_assertions)]
+                // Store unit tests exhaustively audit vacant slots. Downstream
+                // debug builds use the bitmap sweep so native reads do not
+                // lock metadata in proportion to the full census capacity.
+                #[cfg(test)]
                 for bit in 0..64 {
                     let index = word_index * 64 + bit;
                     if bits & (1 << bit) == 0 && index < self.slots.len() {

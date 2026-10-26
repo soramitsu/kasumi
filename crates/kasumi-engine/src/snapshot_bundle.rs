@@ -709,6 +709,10 @@ mod tests {
         )));
         references
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn capture(
         engine: Arc<TenantEngine>,
     ) -> crate::test_fixture_failure::FixtureResult<Vec<u8>> {
@@ -721,6 +725,10 @@ mod tests {
         })
         .await?
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn restore(
         engine: Arc<TenantEngine>,
         bytes: Vec<u8>,
@@ -1059,6 +1067,11 @@ mod tests {
             StagedTransaction, StagedTransactionScope, WriteReceipt, staged_digest,
         };
 
+        // Preserve the same 131,072 manifest digests in the permanent stream
+        // while halving durable row batches; this tests byte admission rather
+        // than per-row I/O throughput under the unchanged restore deadline.
+        const ROWS: u64 = 256;
+        const MANIFEST_CHUNKS: usize = 512;
         let incarnation = uuid::Uuid::new_v4().to_string();
         let maximum = 80 << 20;
         let config = crate::test_utils::admission_config_with_bookkeeping(
@@ -1076,7 +1089,7 @@ mod tests {
         ) = admitted_pair(&incarnation, config).await;
         let previous = source.generation().unwrap();
         let mut state = previous.state.clone();
-        state.revision = 512;
+        state.revision = ROWS;
         let manifest = StagedManifest::from_chunks(&vec![
             StagedChunk {
                 read_set: vec![],
@@ -1086,7 +1099,7 @@ mod tests {
                     expected: Precondition::Any,
                 }],
             };
-            256
+            MANIFEST_CHUNKS
         ])
         .unwrap();
         let mut builder = Builder::new(
@@ -1096,7 +1109,7 @@ mod tests {
             &incarnation,
         )
         .unwrap();
-        for ordinal in 1..=512 {
+        for ordinal in 1..=ROWS {
             let transaction_id = format!("terminal-{ordinal:04}");
             let row = Row {
                 ordinal,
@@ -1165,7 +1178,7 @@ mod tests {
 
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let layout = inspect(&mut image.reader()).unwrap();
-        assert_eq!(layout.kinds[21].records, 512);
+        assert_eq!(layout.kinds[21].records, ROWS);
         assert!(layout.bytes.checked_mul(3).unwrap() + (64 << 20) > maximum);
         assert!(layout.materialization_workspace().unwrap() < maximum);
         let available = layout.materialization_workspace().unwrap() - 1;
@@ -1197,7 +1210,7 @@ mod tests {
             .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
             .await
             .unwrap();
-        assert_eq!(prepared.revision(), 512);
+        assert_eq!(prepared.revision(), ROWS);
         assert_eq!(prepared.image(), &image);
         assert_eq!(target.generation().unwrap().state.revision, 0);
         assert_eq!(target.generation().unwrap().terminals.head().count, 0);

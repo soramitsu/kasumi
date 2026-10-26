@@ -63,10 +63,40 @@ pub(crate) struct NodeDatabase {
     component: &'static str,
     stopped: AtomicBool,
     state: Mutex<State>,
+    #[cfg(test)]
+    before_registered_admission: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 enum Accepted {
     Direct(DatabaseTransactionAdmission),
     Registered(RegisteredNodeOpening),
+}
+
+// Keep a locally observed stop distinct from an original census/provider error.
+// In particular, a provider's BrokenPipe is not evidence of a clean shutdown.
+enum OpeningAdmissionError {
+    Stopped,
+    Io(std::io::Error),
+}
+impl From<std::io::Error> for OpeningAdmissionError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+impl From<OpeningAdmissionError> for std::io::Error {
+    fn from(error: OpeningAdmissionError) -> Self {
+        match error {
+            OpeningAdmissionError::Stopped => std::io::ErrorKind::BrokenPipe.into(),
+            OpeningAdmissionError::Io(error) => error,
+        }
+    }
+}
+impl From<OpeningAdmissionError> for kasumi_kv::StorageError {
+    fn from(error: OpeningAdmissionError) -> Self {
+        match error {
+            OpeningAdmissionError::Stopped => Self::DatabaseClosed,
+            OpeningAdmissionError::Io(error) => Self::Io(error),
+        }
+    }
 }
 
 /// Borrows the original direct close and disposal observations from the same
@@ -98,6 +128,8 @@ impl NodeDatabase {
         Self {
             component,
             stopped: AtomicBool::new(false),
+            #[cfg(test)]
+            before_registered_admission: Mutex::new(None),
             state: Mutex::new(State {
                 database: Some(database),
                 registered: None,
@@ -116,6 +148,8 @@ impl NodeDatabase {
         Self {
             component,
             stopped: AtomicBool::new(false),
+            #[cfg(test)]
+            before_registered_admission: Mutex::new(None),
             state: Mutex::new(State {
                 database: None,
                 registered: Some(NodeDatabaseLocator { provider, id }),
@@ -129,22 +163,22 @@ impl NodeDatabase {
     fn admit_opening_until(
         &self,
         deadline: std::time::Instant,
-    ) -> std::io::Result<RegisteredNodeOpening> {
+    ) -> Result<RegisteredNodeOpening, OpeningAdmissionError> {
         let (provider, id) = {
             let state = self.state.lock();
             if self.stopped.load(Ordering::Acquire) {
-                return Err(std::io::ErrorKind::BrokenPipe.into());
+                return Err(OpeningAdmissionError::Stopped);
             }
             let locator = state
                 .registered
                 .as_ref()
-                .ok_or(std::io::ErrorKind::InvalidInput)?;
+                .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
             (locator.provider.clone(), locator.id)
         };
         // Do not hold NodeDatabase state while waiting for census metadata.
         let opening = RegisteredNodeOpening::admit_retained_until(provider, id, deadline)?;
         if self.stopped.load(Ordering::Acquire) {
-            return Err(std::io::ErrorKind::BrokenPipe.into());
+            return Err(OpeningAdmissionError::Stopped);
         }
         Ok(opening)
     }
@@ -156,6 +190,13 @@ impl NodeDatabase {
         }
         if state.registered.is_some() {
             drop(state);
+            #[cfg(test)]
+            {
+                let before = self.before_registered_admission.lock().take();
+                if let Some(before) = before {
+                    before();
+                }
+            }
             return Ok(Accepted::Registered(
                 self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)
                     .map_err(kasumi_kv::StorageError::from)?,
@@ -168,6 +209,16 @@ impl NodeDatabase {
             .map(Database::transaction_admission)
             .map(Accepted::Direct)
             .ok_or_else(|| kasumi_kv::StorageError::DatabaseClosed.into())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn before_registered_admission_for_test(&self, before: Box<dyn FnOnce() + Send>) {
+        assert!(
+            self.before_registered_admission
+                .lock()
+                .replace(before)
+                .is_none()
+        );
     }
 
     pub(crate) fn begin_read(&self) -> Result<ReadTransaction, TransactionError> {

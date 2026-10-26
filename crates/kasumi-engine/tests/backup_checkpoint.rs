@@ -75,7 +75,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
         .await
         .unwrap();
     assert_eq!(proof.checkpoint().tenant, "checkpoint");
-    let published_payload = fixture.reserved_payload();
+    let published_payload = fixture.settled_payload().await;
     assert!(
         published_payload >= production_payload
             && published_payload - production_payload <= 1 << 20,
@@ -87,7 +87,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
         .await
         .unwrap();
     assert_eq!(independently_verified.checkpoint(), proof.checkpoint());
-    assert_eq!(fixture.reserved_payload(), published_payload);
+    assert_eq!(fixture.settled_payload().await, published_payload);
     fixture.close().await;
 }
 
@@ -467,9 +467,13 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     assert!(weak.upgrade().is_some());
     assert!(fixture.reserved_payload() > production_payload);
+    assert!(admission.snapshot().inflight_operations > 0);
     release_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while weak.upgrade().is_some() {
+        // Publication destroys its stores before its final workspace charge.
+        // Wait for that same operation's ledger retirement as well as the last
+        // storage facade; target disposal alone is not worker completion.
+        while weak.upgrade().is_some() || admission.snapshot().inflight_operations != 0 {
             tokio::task::yield_now().await;
         }
     })
@@ -537,19 +541,19 @@ impl Fixture {
             .checked_sub(self.physical.initial_disk_metadata_bytes)
             .expect("actual installed disk metadata remains charged")
     }
-    /// Payload and ledger slots while no service-audit retention pass is in
-    /// flight. Each pass, every 250 ms, briefly adds its own native read
-    /// leases, so exact comparisons keep the lowest samples of two periods.
+    /// At a boundary with no concurrent fixture request, drain actual audit
+    /// jobs and pause retention only for one coherent accounting census. The
+    /// guard drops before the caller starts another API request or shutdown.
     async fn settled(&self) -> (u64, usize) {
-        let live = || self.audit.admission().snapshot().live_reservations;
-        let (mut payload, mut reservations) = (self.reserved_payload(), live());
-        let until = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
-        while tokio::time::Instant::now() < until {
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            payload = payload.min(self.reserved_payload());
-            reservations = reservations.min(live());
-        }
-        (payload, reservations)
+        let _quiescent = self.audit.quiescent_jobs_for_test().await;
+        let snapshot = self.audit.admission().snapshot();
+        let payload = snapshot
+            .reserved_bytes
+            .checked_sub(snapshot.bookkeeping_bytes)
+            .expect("admission bookkeeping exceeds its total charge")
+            .checked_sub(self.physical.initial_disk_metadata_bytes)
+            .expect("actual installed disk metadata remains charged");
+        (payload, snapshot.live_reservations)
     }
     async fn settled_payload(&self) -> u64 {
         self.settled().await.0
