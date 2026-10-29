@@ -13,6 +13,22 @@ fn phase_close_due(original_expires_at_ms: u64, now_ms: u64, idle: bool) -> bool
         && original_expires_at_ms - now_ms <= PHASE_DRAIN_RESERVE_MS
 }
 
+impl Generation {
+    pub(super) fn begin_serving_node_acquisition(&mut self) -> Result<()> {
+        ensure!(self.node.is_none(), "target serving node still owned");
+        ensure!(
+            self.node_retirement
+                .as_ref()
+                .is_none_or(kasumi_store::NodeRetirement::is_retired),
+            "target node original retirement remains unproved"
+        );
+        // The receipt belongs only to the prior physical opening. A newly
+        // accepted node must produce its own receipt on the next close.
+        self.node_retirement.take();
+        Ok(())
+    }
+}
+
 impl TargetRecoveryRuntime {
     pub(super) fn start_serving_reconciliation(
         self: &Arc<Self>,
@@ -110,7 +126,7 @@ impl TargetRecoveryRuntime {
             if generation
                 .phase
                 .as_ref()
-                .is_some_and(|phase| phase.scope().invocation().check().is_ok())
+                .is_some_and(|phase| phase.is_reusable())
                 && !closing_early
             {
                 continue;
@@ -226,6 +242,7 @@ impl TargetRecoveryRuntime {
             target_file_exists(&path)?,
             "activated target group is missing"
         );
+        g.begin_serving_node_acquisition()?;
         g.node = Some(NodeStore::open_existing(
             path,
             self.journal.materialization_file_id(&key.0, key.1)?,
@@ -447,6 +464,23 @@ impl RecoveryHealth {
     }
 }
 impl TargetRecoveryRuntime {
+    #[cfg(test)]
+    pub(crate) fn test_serving_recovery_stage(&self, tenant: &str) -> &'static str {
+        let Ok(health) = self.recovery_health.lock() else {
+            return "HealthUnavailable";
+        };
+        match health.failures.get(tenant).map(|failure| failure.stage) {
+            None => "NoRecordedFailure",
+            Some(RecoveryStage::Projection) => "Projection",
+            Some(RecoveryStage::Ownership) => "Ownership",
+            Some(RecoveryStage::Custody) => "Custody",
+            Some(RecoveryStage::Issuer) => "Issuer",
+            Some(RecoveryStage::ApplicationKeys) => "ApplicationKeys",
+            Some(RecoveryStage::LocalReplay) => "LocalReplay",
+            Some(RecoveryStage::PeerRegistration) => "PeerRegistration",
+            Some(RecoveryStage::DataRegistration) => "DataRegistration",
+        }
+    }
     fn record_recovery(&self, tenant: &str, stage: Option<RecoveryStage>) {
         let Ok(mut health) = self.recovery_health.lock() else {
             return;

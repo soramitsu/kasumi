@@ -388,13 +388,14 @@ impl PreparedReplacement {
         let document = collection
             .documents
             .get(self.id.text())
-            .context("COW captured document absent")?;
+            .context("COW captured document absent")?
+            .load_owned(self.candidate.document_resolver())?;
         // Completeness was already established before effects on this exact Arc.
         // No second collection scan/diff/allocation is performed after commit.
         verify_graph(
             r,
             self.work.as_mut().context("COW publication work absent")?,
-            document,
+            &document,
             self.id.text(),
             collection.data_epoch,
             self.candidate.state.revision,

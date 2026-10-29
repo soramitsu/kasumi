@@ -319,6 +319,10 @@ struct Scope {
     owners: Owners,
 }
 impl Scope {
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         let mut owners = None;
         let fixture = Fixture::new_with_node(|storage, _| {
@@ -366,6 +370,8 @@ impl Scope {
         final_operation: Option<Operation>,
     ) -> crate::test_fixture_failure::FixtureResult<Restarted<'a>> {
         // Take durable bytes before any original owner drain, close, or Drop.
+        // Recovery opens an independent crash image, never the original fenced
+        // owner whose uncertain writer and installed charges remain retained.
         let group = self.owners.backend.group.crash();
         // Probe only after preserving the crash image. The real backend rejects
         // an already-active claim before root validation, without another effect.
@@ -517,7 +523,7 @@ impl Restarted<'_> {
     async fn close(self) {
         // The original shares this admission and still owns live sources. Only
         // its final cleanup may drain the global startup inventory.
-        cleanup(self.fixture, self.owners, false).await;
+        cleanup(self.fixture, self.owners, None).await;
     }
 }
 
@@ -532,7 +538,8 @@ struct Cleanup {
     storage: crate::test_utils::FixtureStorage,
     _input: Reservation,
     _directory: Option<tempfile::TempDir>,
-    reports: [Option<kasumi_types::drain::DrainResult>; 4],
+    reports: [Option<kasumi_types::drain::DrainResult>; 5],
+    node_retirement: Option<kasumi_store::NodeRetirement>,
     owners: Owners,
 }
 #[allow(
@@ -553,6 +560,10 @@ enum HeldFailure {
     },
 }
 static RETAINED_FAILURES: Mutex<[Option<HeldFailure>; 4]> = Mutex::new([const { None }; 4]);
+// Two staging, three abort, and one final-publication crash image deliberately
+// leave their ORIGINAL unknown writers unresolved. Keep their actual owners,
+// reports and installed grants; a successful recovery is not rollback proof.
+static RETAINED_UNKNOWNS: Mutex<[Option<Cleanup>; 6]> = Mutex::new([const { None }; 6]);
 fn retain_failed(failure: HeldFailure) -> ! {
     match &failure {
         HeldFailure::Setup { original, owners } => eprintln!(
@@ -584,7 +595,7 @@ fn retain_failed(failure: HeldFailure) -> ! {
     std::mem::forget(failure);
     panic!("COW fixture failure custody exceeded its four fixed slots");
 }
-async fn cleanup(fixture: Fixture, owners: Owners, global: bool) {
+async fn cleanup(fixture: Fixture, owners: Owners, unknown: Option<UnknownCommitEvidence>) {
     let Fixture {
         engine,
         roots,
@@ -604,27 +615,145 @@ async fn cleanup(fixture: Fixture, owners: Owners, global: bool) {
         storage,
         _input,
         _directory,
-        reports: [const { None }; 4],
+        reports: [const { None }; 5],
+        node_retirement: None,
         owners,
     };
+    // Drain this fixture's binding without closing the shared admission's
+    // startup census while the original crash owner still has live sources.
+    scope.reports[4] = Some(scope.buffers.as_ref().unwrap().drain_startup().await);
     scope.reports[0] =
         Some(std::future::poll_fn(|cx| scope.roots.as_ref().unwrap().poll_drain(cx)).await);
-    if global {
+    if unknown.is_some() {
         scope.reports[1] = Some(scope.storage.admission.drain_snapshot_startups().await);
     }
     scope.reports[2] = Some(scope.stores.as_ref().unwrap().shutdown().await);
     scope.reports[3] = Some(scope.node.as_ref().unwrap().shutdown().await);
-    if scope.reports.iter().flatten().any(|result| result.is_err())
+    if scope
+        .reports
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| *index != 3)
+        .filter_map(|(_, result)| result.as_ref())
+        .any(|result| result.is_err())
         || !scope.roots.as_ref().unwrap().is_drained()
     {
         retain_failed(HeldFailure::Shutdown(scope));
     }
-    // Positive close is separate from the still-observable original uncertain
-    // claim. No finish/cancel is supplied by cleanup and no rollback is claimed.
+    // Worker drains do not settle the original uncertain claim. Cleanup never
+    // supplies a finish/cancel or claims rollback of that original writer.
     drop(scope.roots.take());
     drop(scope.stores.take());
-    drop(scope.node.take());
     drop(scope.buffers.take());
+    if let Some(unknown) = unknown {
+        assert_eq!(
+            scope.reports[3]
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap_err()
+                .completion(),
+            kasumi_types::drain::DrainCompletion::Retained,
+            "an unresolved original writer cannot certify native shutdown"
+        );
+        let memory = scope.storage.persistent.memory().clone();
+        let retained = kasumi_store::RegisteredNodeWrite::retained(memory.clone(), unknown.writer)
+            .expect("exact original unknown writer remains in the installed census");
+        assert_unknown_report(&retained.report(), unknown.address, unknown.ordinal);
+        let before = scope.storage.admission.snapshot();
+        let census = memory.storage_census().snapshot();
+        assert!(census.writers > 0 && census.databases > 0);
+        let original_node = scope
+            .node
+            .as_ref()
+            .unwrap()
+            .registered_opening_id()
+            .unwrap();
+        {
+            let opening =
+                kasumi_store::RegisteredNodeOpening::retained(memory.clone(), original_node)
+                    .expect("same original opening remains installed");
+            let report = opening.report();
+            // This explicit synthetic backend is supplied before registration;
+            // it never executes the physical NodeSegmentGroup acquisition.
+            assert!(matches!(
+                report.acquisition(),
+                kasumi_kv::TerminalObservation::NotEntered
+            ));
+            assert!(matches!(
+                report.opening_outer(),
+                kasumi_kv::TerminalObservation::Returned(Ok(()))
+            ));
+            assert!(matches!(
+                report.failed_recovery(),
+                kasumi_kv::TerminalObservation::NotEntered
+            ));
+            let engine = report.engine();
+            assert_eq!(
+                engine.settlement(),
+                kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions
+            );
+            let close = engine
+                .database_close()
+                .expect("same original native database");
+            assert_eq!(
+                close.settlement(),
+                kasumi_kv::DatabaseCloseSettlement::WaitingForTransactions
+            );
+            assert_eq!(
+                close.native_disposition(),
+                kasumi_kv::BackendNativeDisposition::Retained
+            );
+            let kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::StorageError::Core(
+                fenced,
+            ))) = close.shutdown()
+            else {
+                panic!("original unknown commit must retain its failed owner check");
+            };
+            assert!(matches!(
+                fenced.rejected_cause(),
+                Some(kasumi_kv::CoreErrorCause::OwnerFailed)
+            ));
+            assert!(matches!(
+                close.backend(),
+                kasumi_kv::TerminalObservation::NotEntered
+            ));
+            assert!(matches!(
+                close.failed_disposal(),
+                kasumi_kv::TerminalObservation::NotEntered
+            ));
+            assert!(!close.disposal().complete());
+        }
+        assert_eq!(census.retained_panics, 0);
+        scope.node_retirement = Some(scope.node.take().unwrap().retire());
+        assert_eq!(scope.node_retirement.as_ref().unwrap().id(), original_node);
+        assert_eq!(
+            scope.node_retirement.as_ref().unwrap().disposition(),
+            kasumi_store::StorageCensusDisposition::Retained
+        );
+        assert_unknown_report(&retained.report(), unknown.address, unknown.ordinal);
+        drop(retained);
+        assert_eq!(scope.owners.backend.state.lock().unwrap().closes, 0);
+        assert!(Arc::strong_count(&scope.owners.admission) > 1);
+        assert!(Arc::strong_count(&scope.owners.backend.state) > 1);
+        let mut held = RETAINED_UNKNOWNS.lock().unwrap();
+        let slot = held
+            .iter_mut()
+            .find(|slot| slot.is_none())
+            .expect("six crash boundaries");
+        *slot = Some(scope);
+        let scope = slot.as_ref().unwrap();
+        let after = scope.storage.admission.snapshot();
+        assert_eq!(after.reserved_bytes, before.reserved_bytes);
+        assert_eq!(after.live_reservations, before.live_reservations);
+        assert_eq!(memory.storage_census().snapshot(), census);
+        return;
+    }
+    if scope.reports[3].as_ref().unwrap().is_err() {
+        retain_failed(HeldFailure::Shutdown(scope));
+    }
+    scope.node_retirement = Some(scope.node.take().unwrap().retire());
+    assert!(scope.node_retirement.as_ref().unwrap().is_retired());
     if Arc::strong_count(&scope.owners.admission) != 1
         || Arc::strong_count(&scope.owners.backend.state) != 1
     {
@@ -676,11 +805,12 @@ impl OldPhysical {
             },
         )?;
         let (page_bytes, leaf) = Self::page(fixture, manifest, None)?;
-        let document = &generation.state.collections["docs"].documents[&id(0, false)];
+        let document = generation.state.collections["docs"].documents[&id(0, false)]
+            .load_owned(generation.document_resolver())?;
         assert_eq!(document.id, id(0, false));
         assert_eq!(document.version, 2);
         assert_eq!(document.body, json!({"value":0}));
-        let canonical = serde_json::to_vec(document)?;
+        let canonical = serde_json::to_vec(&document)?;
         assert_eq!(canonical.len() as u64, leaf.object.encoded_bytes);
         assert_eq!(
             <[u8; 32]>::from(Sha256::digest(&canonical)),
@@ -802,11 +932,63 @@ impl OldPhysical {
     }
 }
 
-fn original_unknown(error: &anyhow::Error, expected: usize, ordinal: usize) {
-    let commit = error
+#[derive(Clone, Copy)]
+struct UnknownCommitEvidence {
+    writer: kasumi_store::StorageOwnerId,
+    address: usize,
+    ordinal: usize,
+}
+fn original_unknown(
+    error: &anyhow::Error,
+    expected: usize,
+    ordinal: usize,
+) -> UnknownCommitEvidence {
+    let failure = error
         .chain()
-        .find_map(|cause| cause.downcast_ref::<kasumi_kv::CommitError>())
-        .expect("actual native CommitError retained in COW failure");
+        .find_map(|cause| cause.downcast_ref::<kasumi_store::NodeScopedWriteFailure>())
+        .expect("actual registered writer retained in COW failure");
+    assert_unknown_report(&failure.report(), expected, ordinal);
+    UnknownCommitEvidence {
+        writer: failure.writer_id(),
+        address: expected,
+        ordinal,
+    }
+}
+fn assert_unknown_report(
+    report: &kasumi_store::NodeWriteReport<'_>,
+    expected: usize,
+    ordinal: usize,
+) {
+    assert!(matches!(
+        report.begin(),
+        kasumi_kv::TerminalObservation::Returned(Ok(()))
+    ));
+    assert!(matches!(
+        report.body(),
+        kasumi_kv::TerminalObservation::Returned(Ok(()))
+    ));
+    assert!(matches!(
+        report.post_commit(),
+        kasumi_kv::TerminalObservation::NotEntered
+    ));
+    let terminal = report
+        .terminal()
+        .expect("actual native transaction remains retained");
+    assert_eq!(
+        terminal.operation(),
+        Some(kasumi_kv::WriteTerminalOperation::Commit)
+    );
+    assert_eq!(
+        terminal.settlement(),
+        kasumi_kv::WriteTerminalSettlement::Retained
+    );
+    assert!(!terminal.disposal_complete());
+    let kasumi_kv::TerminalObservation::Returned(Err(kasumi_kv::WriteTerminalError::Commit(
+        commit,
+    ))) = terminal.terminal()
+    else {
+        panic!("actual native CommitError retained in registered terminal");
+    };
     let kasumi_kv::StorageError::UnknownCommit(original) = &commit.0 else {
         panic!("actual native unknown outcome required: {commit:?}");
     };
@@ -822,6 +1004,10 @@ fn original_unknown(error: &anyhow::Error, expected: usize, ordinal: usize) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for finish in [1, 3] {
@@ -876,9 +1062,16 @@ async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches(
                 .stores
                 .write_batch(&[put("cow.fenced-probe", b"never", b"published")], &[])
                 .unwrap_err();
-            assert!(
-                retry.chain().any(|cause| matches!(&(cause.downcast_ref::<kasumi_kv::CoreError>()), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))),
-                "fenced retry lost its actual owner failure: {retry:#}"
+            assert_eq!(
+                retry
+                    .downcast_ref::<io::Error>()
+                    .expect("registered owner fence")
+                    .kind(),
+                io::ErrorKind::BrokenPipe
+            );
+            assert_eq!(
+                scope.owners.backend.state.lock().unwrap().finishes - before_finishes,
+                finish
             );
             drop(retry);
             assert!(Arc::ptr_eq(&old_generation, &fixture.engine.generation()?));
@@ -1030,7 +1223,7 @@ async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches(
                 };
                 assert_eq!(document.id, id(0, false));
                 assert_eq!(document.body, json!({"value":0}));
-                assert_eq!(serde_json::to_vec(document)?, old_physical.canonical);
+                assert_eq!(serde_json::to_vec(&document)?, old_physical.canonical);
                 Ok(document.version)
             })
             .unwrap();
@@ -1040,14 +1233,14 @@ async fn primary_cow_unknown_staging_reopens_complete_pending_and_chunk_batches(
         // the final replay now has the exact original producer binding.
         old_physical.verify(reopened)?;
         drop(generation);
-        original_unknown(failure.original(), address, finish);
+        let unknown = original_unknown(failure.original(), address, finish);
         restarted.close().await;
         drop(failure);
         drop(old_generation);
         drop(old_physical);
         drop(image);
         let Scope { fixture, owners } = scope;
-        cleanup(fixture, owners, true).await;
+        cleanup(fixture, owners, Some(unknown)).await;
     }
     Ok(())
 }

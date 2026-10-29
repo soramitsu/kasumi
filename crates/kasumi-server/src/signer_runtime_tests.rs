@@ -162,7 +162,11 @@ async fn complete_domain_worker_budget_is_reserved_before_verifier_storage_open(
     opened.shutdown().await.unwrap();
     let shut_down_reserved = admission.snapshot().reserved_bytes;
     assert!((baseline + expected..=opened_reserved).contains(&shut_down_reserved));
+    let node = opened.node.clone();
     drop(opened);
+    // Native close and facade disposal leave the independent census owner
+    // charged until its exact retirement proves disposal and refunds the fee.
+    assert!(node.retire().is_retired());
     assert_eq!(admission.snapshot().reserved_bytes, baseline);
 }
 
@@ -1007,6 +1011,10 @@ async fn panicked_verifier_initialization_drains_each_acquired_encrypted_owner()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the original native custody error inline without an extra allocation"
+)]
 async fn cancelled_verifier_initialization_retains_physical_owner_and_unclaimed_panic() -> Result<()>
 {
     use std::task::Poll;

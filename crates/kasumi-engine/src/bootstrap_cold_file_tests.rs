@@ -287,6 +287,10 @@ fn run_child(root: &Path, stage: &str) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn stopped_process_raw_file_rollback_selects_a_generation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     if let Ok(stage) = std::env::var(CHILD_STAGE) {

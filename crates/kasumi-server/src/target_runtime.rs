@@ -68,6 +68,13 @@ pub use target_call_failure::TargetCallReport;
 use target_call_failure::{TargetCallSeat, TargetTaskFailure};
 type SnapshotResult<T> = std::result::Result<T, SnapshotFailure>;
 type TargetTaskResult<T> = std::result::Result<T, TargetTaskFailure>;
+type TargetPerformFuture<'a> = std::pin::Pin<
+    Box<
+        dyn std::future::Future<Output = TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)>>
+            + Send
+            + 'a,
+    >,
+>;
 macro_rules! snapshot_ensure {
     ($condition:expr, $($message:tt)*) => {
         if !$condition { return Err(missing_target_owner(format!($($message)*)).into()); }
@@ -712,6 +719,21 @@ impl TargetRecoveryRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn test_owned_phase(
+        &self,
+        tenant: &str,
+        incarnation: Uuid,
+    ) -> Option<Arc<RuntimeTargetPhase>> {
+        let generation = self
+            .generations
+            .lock()
+            .await
+            .get(&(tenant.to_owned(), incarnation))
+            .cloned()?;
+        generation.lock().await.phase.clone()
+    }
+
     /// Observe the next actual drain without retaining its generation owner.
     #[cfg(test)]
     pub(crate) async fn test_restore_drain_observer(
@@ -915,10 +937,11 @@ impl TargetRecoveryRuntime {
 
     fn activate_generation_cache(&self, generation: &Generation) -> Result<()> {
         if self.cache_warming_ready.load(Ordering::Acquire) {
-            ensure!(
-                !self.closing.load(Ordering::Acquire),
-                "target runtime closing"
-            );
+            if self.closing.load(Ordering::Acquire) {
+                // This local admission refusal owns no native failure. Keep
+                // it typed when an already admitted monitor meets shutdown.
+                return Err(missing_target_owner("target runtime closing").into());
+            }
             generation
                 .node
                 .as_ref()
@@ -1187,10 +1210,7 @@ impl TargetRecoveryRuntime {
         let continuing = generation
             .phase
             .as_ref()
-            .filter(|old| {
-                old.original().observation().intent == intent
-                    && old.scope().invocation().check().is_ok()
-            })
+            .filter(|old| old.original().observation().intent == intent && old.is_reusable())
             .cloned();
         let phase = if let Some(old) = continuing {
             #[cfg(test)]
@@ -1251,19 +1271,24 @@ impl TargetRecoveryRuntime {
         // unresolved effect. No caller infers abort from absence or an RPC error.
         #[cfg(test)]
         let started = std::time::Instant::now();
-        let performed = self
-            .perform(
-                &mut generation,
-                &phase,
-                &operation,
-                &template,
-                &request.step,
-                initial_start,
-                initial_dispatch.as_ref(),
-                &request,
-                &bearer,
-            )
-            .await;
+        let performed =
+            match self.prepare_generation_node(&mut generation, &operation, &request.step, &key) {
+                Ok(()) => {
+                    self.perform(
+                        &mut generation,
+                        &phase,
+                        &operation,
+                        &template,
+                        &request.step,
+                        initial_start,
+                        initial_dispatch.as_ref(),
+                        &request,
+                        &bearer,
+                    )
+                    .await
+                }
+                Err(original) => Err(original),
+            };
         #[cfg(test)]
         trace_owned_stage(request.command_id, "perform", started, &performed);
         let (outcome, evidence) = performed?;
@@ -1327,7 +1352,7 @@ impl TargetRecoveryRuntime {
                 && generation
                     .phase
                     .as_ref()
-                    .is_none_or(|phase| phase.scope().invocation().check().is_err());
+                    .is_none_or(|phase| !phase.is_reusable());
             if !expired {
                 continue;
             }
@@ -1509,40 +1534,50 @@ impl TargetRecoveryRuntime {
         initial_dispatch: Option<&'a TargetInitialDispatchIdentity>,
         request: &'a TargetRuntimeRequest,
         bearer: &'a Zeroizing<String>,
-    ) -> impl std::future::Future<Output = TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)>> + 'a
-    {
-        // Construct the large dispatch future outside execute_owned's poll
-        // frame. It stays in the same admitted task and cancellation scope.
-        Box::pin(self.perform_owned(
-            g,
-            phase,
-            op,
-            template,
-            step,
-            initial_start,
-            initial_dispatch,
-            request,
-            bearer,
-        ))
+    ) -> TargetPerformFuture<'a> {
+        // Select one existing boxed dispatch allocation. Materialization must
+        // not carry the other recovery steps' poll temporaries while retiring
+        // native scratch owners. The admitted task and cancellation scope stay
+        // the same, including the original initial-membership capability.
+        match step {
+            TargetRuntimeStep::Materialize(_) | TargetRuntimeStep::ResumeMaterialization(_) => {
+                Box::pin(self.perform_materialization_owned(
+                    g,
+                    phase,
+                    op,
+                    template,
+                    step,
+                    initial_start,
+                ))
+            }
+            _ => Box::pin(self.perform_owned(
+                g,
+                phase,
+                op,
+                template,
+                step,
+                initial_start,
+                initial_dispatch,
+                request,
+                bearer,
+            )),
+        }
     }
-    #[allow(clippy::too_many_arguments)]
-    async fn perform_owned(
+    // Acquire native storage before entering the large async dispatch frame.
+    // This stays in the same admitted task and locked Generation, with no
+    // intervening yield or additional heap allocation.
+    #[inline(never)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the inline original failure owner without an unadmitted error allocation"
+    )]
+    fn prepare_generation_node(
         &self,
         g: &mut Generation,
-        phase: &RuntimeTargetPhase,
         op: &TargetOperation,
-        template: &TargetTenantTemplate,
         step: &TargetRuntimeStep,
-        initial_start: Option<kasumi_engine::VerifiedInitialMembership>,
-        initial_dispatch: Option<&TargetInitialDispatchIdentity>,
-        request: &TargetRuntimeRequest,
-        bearer: &Zeroizing<String>,
-    ) -> TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)> {
-        let intent = &phase.original().observation().intent;
-        let key = (
-            intent.request.tenant.clone(),
-            intent.request.target_incarnation,
-        );
+        key: &GenerationKey,
+    ) -> TargetTaskResult<()> {
         if !g
             .node_retirement
             .as_ref()
@@ -1555,7 +1590,7 @@ impl TargetRecoveryRuntime {
             // Missing alone never clears retained custody.
             g.node_retirement.take();
             op.check()?;
-            let path = self.path(&key)?;
+            let path = self.path(key)?;
             let scratch = self.audit.store().scratch_disk().clone();
             if matches!(step, TargetRuntimeStep::Materialize(_)) {
                 match self
@@ -1584,6 +1619,17 @@ impl TargetRecoveryRuntime {
             }
             op.check()?;
         }
+        Ok(())
+    }
+    async fn prepare_generation_stores(
+        &self,
+        g: &mut Generation,
+        phase: &RuntimeTargetPhase,
+        op: &TargetOperation,
+        template: &TargetTenantTemplate,
+        step: &TargetRuntimeStep,
+        key: &GenerationKey,
+    ) -> TargetTaskResult<Arc<TenantStorageSet>> {
         // The retained Generation owns the node before preparation can yield.
         // Retry a prior admission denial even if node acquisition already
         // succeeded. Only serving/custody publication activates this worker.
@@ -1627,85 +1673,122 @@ impl TargetRecoveryRuntime {
         template
             .audit_placement
             .install(stores.application(), None)?;
-        let materialization = match step {
-            TargetRuntimeStep::Materialize(input) => Some((input, None)),
-            TargetRuntimeStep::ResumeMaterialization(origin) => Some((&origin.input, Some(origin))),
-            _ => None,
+        Ok(stores)
+    }
+    async fn perform_materialization_owned(
+        &self,
+        g: &mut Generation,
+        phase: &RuntimeTargetPhase,
+        op: &TargetOperation,
+        template: &TargetTenantTemplate,
+        step: &TargetRuntimeStep,
+        _initial_start: Option<kasumi_engine::VerifiedInitialMembership>,
+    ) -> TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)> {
+        let intent = &phase.original().observation().intent;
+        let key = (
+            intent.request.tenant.clone(),
+            intent.request.target_incarnation,
+        );
+        let stores = self
+            .prepare_generation_stores(g, phase, op, template, step, &key)
+            .await?;
+        let (input, resume) = match step {
+            TargetRuntimeStep::Materialize(input) => (input, None),
+            TargetRuntimeStep::ResumeMaterialization(origin) => (&origin.input, Some(origin)),
+            _ => unreachable!(),
         };
-        if let Some((input, resume)) = materialization {
-            self.placement(input)?;
-            let source = template
-                .source_backups
-                .get(&intent.request.source_incarnation)
-                .ok_or_else(|| {
-                    missing_target_owner("source backup key lineage is not installed")
-                })?;
-            snapshot_ensure!(
-                source.destination_alias == input.destination_alias,
-                "backup destination differs from installed lineage"
-            );
-            op.check()?;
-            let source = kasumi_engine::RestoreSource {
-                destination_alias: source.destination_alias.clone(),
-                destination: self
-                    .destinations
-                    .get(&source.destination_alias)
-                    .ok_or_else(|| missing_target_owner("backup destination missing"))?
-                    .clone(),
-                keys: source.keys.provider(self.credential.clone())?,
-                timeout_ms: self.installed.limits.operation_timeout_ms,
-            };
-            let configuration = kasumi_engine::TargetMaterializationConfig {
-                node_id: self.installed.node.node_id,
-                incarnation: key.1,
-                voters: input
-                    .voters
-                    .iter()
-                    .map(|(id, p)| {
-                        (
-                            *id,
-                            kasumi_engine::ReplicaPlacement {
-                                address: p.endpoint.clone(),
-                                failure_domain: p.failure_domain.clone(),
-                            },
-                        )
-                    })
-                    .collect(),
-                admission: self.admission.clone(),
-            };
-            let materialized = match resume {
-                Some(origin) => {
-                    kasumi_engine::resume_target_materialization(
-                        op,
-                        &source,
-                        stores,
-                        origin.as_ref().clone(),
-                        configuration,
-                        self.audit.clone(),
+        self.placement(input)?;
+        let source = template
+            .source_backups
+            .get(&intent.request.source_incarnation)
+            .ok_or_else(|| missing_target_owner("source backup key lineage is not installed"))?;
+        snapshot_ensure!(
+            source.destination_alias == input.destination_alias,
+            "backup destination differs from installed lineage"
+        );
+        op.check()?;
+        let source = kasumi_engine::RestoreSource {
+            destination_alias: source.destination_alias.clone(),
+            destination: self
+                .destinations
+                .get(&source.destination_alias)
+                .ok_or_else(|| missing_target_owner("backup destination missing"))?
+                .clone(),
+            keys: source.keys.provider(self.credential.clone())?,
+            timeout_ms: self.installed.limits.operation_timeout_ms,
+        };
+        let configuration = kasumi_engine::TargetMaterializationConfig {
+            node_id: self.installed.node.node_id,
+            incarnation: key.1,
+            voters: input
+                .voters
+                .iter()
+                .map(|(id, p)| {
+                    (
+                        *id,
+                        kasumi_engine::ReplicaPlacement {
+                            address: p.endpoint.clone(),
+                            failure_domain: p.failure_domain.clone(),
+                        },
                     )
-                    .await?
-                }
-                None => {
-                    kasumi_engine::materialize_target_replica(
-                        op,
-                        &source,
-                        stores,
-                        input.clone(),
-                        configuration,
-                        self.audit.clone(),
-                    )
-                    .await?
-                }
-            };
-            let signed = self
-                .signer
-                .sign_materialized(&materialized.proof, op)
-                .await?;
-            return Ok((
-                TargetRuntimeOutcome::Materialized(Box::new(signed)),
-                ResponseEvidence::Materialized(Box::new(materialized.proof)),
-            ));
-        }
+                })
+                .collect(),
+            admission: self.admission.clone(),
+        };
+        let materialized = match resume {
+            Some(origin) => {
+                kasumi_engine::resume_target_materialization(
+                    op,
+                    &source,
+                    stores,
+                    origin.as_ref().clone(),
+                    configuration,
+                    self.audit.clone(),
+                )
+                .await?
+            }
+            None => {
+                kasumi_engine::materialize_target_replica(
+                    op,
+                    &source,
+                    stores,
+                    input.clone(),
+                    configuration,
+                    self.audit.clone(),
+                )
+                .await?
+            }
+        };
+        let signed = self
+            .signer
+            .sign_materialized(&materialized.proof, op)
+            .await?;
+        Ok((
+            TargetRuntimeOutcome::Materialized(Box::new(signed)),
+            ResponseEvidence::Materialized(Box::new(materialized.proof)),
+        ))
+    }
+    #[allow(clippy::too_many_arguments)]
+    async fn perform_owned(
+        &self,
+        g: &mut Generation,
+        phase: &RuntimeTargetPhase,
+        op: &TargetOperation,
+        template: &TargetTenantTemplate,
+        step: &TargetRuntimeStep,
+        initial_start: Option<kasumi_engine::VerifiedInitialMembership>,
+        initial_dispatch: Option<&TargetInitialDispatchIdentity>,
+        request: &TargetRuntimeRequest,
+        bearer: &Zeroizing<String>,
+    ) -> TargetTaskResult<(TargetRuntimeOutcome, ResponseEvidence)> {
+        let intent = &phase.original().observation().intent;
+        let key = (
+            intent.request.tenant.clone(),
+            intent.request.target_incarnation,
+        );
+        let stores = self
+            .prepare_generation_stores(g, phase, op, template, step, &key)
+            .await?;
         let input = match step {
             TargetRuntimeStep::Start(i) => i.clone(),
             TargetRuntimeStep::Complete(q) | TargetRuntimeStep::PrepareComplete(q) => {
@@ -1798,7 +1881,7 @@ impl TargetRecoveryRuntime {
                 input.clone(),
                 kasumi_engine::TargetReplicaConfig {
                     node_id: self.installed.node.node_id,
-                    raft: kasumi_raft::Config::default(),
+                    raft: kasumi_raft::server_config(),
                     admission: self.admission.clone(),
                 },
                 self.cluster.clone(),

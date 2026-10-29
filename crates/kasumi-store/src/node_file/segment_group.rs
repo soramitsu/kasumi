@@ -389,6 +389,15 @@ pub(crate) enum GroupFault {
     NamesBeforeEffect,
 }
 
+#[cfg(test)]
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum CensusTestStage {
+    Entry,
+    RetryClose,
+}
+#[cfg(test)]
+type CensusTestHook = Box<dyn FnMut(CensusTestStage) -> io::Result<()> + Send>;
+
 #[derive(Clone, Copy)]
 enum Acquisition<'a> {
     Opening(&'a NodeOpeningMode),
@@ -464,6 +473,8 @@ pub(crate) struct NodeSegmentGroup {
     witness_owner: GroupWitnessIdentity,
     #[cfg(test)]
     fault: parking_lot::Mutex<Option<GroupFault>>,
+    #[cfg(test)]
+    census_hook: parking_lot::Mutex<Option<CensusTestHook>>,
 }
 
 impl std::fmt::Debug for NodeSegmentGroup {
@@ -518,6 +529,8 @@ impl NodeSegmentGroup {
             witness_owner: GroupWitnessIdentity::new(),
             #[cfg(test)]
             fault: parking_lot::Mutex::new(None),
+            #[cfg(test)]
+            census_hook: parking_lot::Mutex::new(None),
         }
     }
 
@@ -770,58 +783,91 @@ impl NodeSegmentGroup {
     /// data file's name, inode and envelope. The cache stays bounded, so a
     /// group of any size reopens through at most `cache` descriptors.
     fn census(&self, resources: &mut Resources, slots: &mut [Slot]) -> Result<()> {
-        let mut root = false;
-        self.visit_listing(&mut |name, kind| {
-            if kind != NodeDiskEntryKind::File {
-                return Err(invalid("segment group directory holds a subdirectory"));
-            }
-            if name.to_bytes() == ROOT_FILE_NAME.as_bytes() {
-                if root {
-                    return Err(invalid("segment group root was listed twice"));
+        for attempt in 0..LIST_ATTEMPTS {
+            let mut root = false;
+            let stable = self.visit_listing_once(&mut |name, kind| {
+                if kind != NodeDiskEntryKind::File {
+                    return Err(invalid("segment group directory holds a subdirectory"));
                 }
-                root = true;
+                if name.to_bytes() == ROOT_FILE_NAME.as_bytes() {
+                    if root {
+                        return Err(invalid("segment group root was listed twice"));
+                    }
+                    root = true;
+                    return Ok(());
+                }
+                let file = name
+                    .to_str()
+                    .ok()
+                    .and_then(GroupFile::parse_name)
+                    .ok_or_else(|| {
+                        invalid("segment group directory holds an entry that is not a group file")
+                    })?;
+                let position = resources
+                    .entries
+                    .binary_search_by_key(&file, |entry| entry.file)
+                    .err()
+                    .ok_or_else(|| invalid("segment group file was listed twice"))?;
+                acquisition_stage!("census-entry-admission", self.reserve_entries(resources, 1))?;
+                let slot =
+                    acquisition_stage!("census-descriptor-slot", self.free_slot(resources, slots))?;
+                let identity = acquisition_stage!(
+                    "census-data-load",
+                    self.load(resources, slots, slot, file)
+                )?;
+                let envelope = acquisition_stage!(
+                    "census-data-envelope",
+                    inspect(
+                        slots[slot].handle.as_ref().expect("loaded descriptor"),
+                        self.id,
+                        file,
+                    )
+                )?;
+                resources.entries.insert(
+                    position,
+                    Entry {
+                        file,
+                        envelope,
+                        identity,
+                        slot: Some(slot),
+                    },
+                );
+                let high = &mut resources.high_water[file.kind.index()];
+                *high = (*high).max(file.id);
+                #[cfg(test)]
+                self.census_checkpoint(CensusTestStage::Entry)?;
+                Ok(())
+            })?;
+            if stable {
+                ensure!(root, "segment group root file is missing");
                 return Ok(());
             }
-            let file = name
-                .to_str()
-                .ok()
-                .and_then(GroupFile::parse_name)
-                .ok_or_else(|| {
-                    invalid("segment group directory holds an entry that is not a group file")
-                })?;
-            let position = resources
-                .entries
-                .binary_search_by_key(&file, |entry| entry.file)
-                .err()
-                .ok_or_else(|| invalid("segment group file was listed twice"))?;
-            acquisition_stage!("census-entry-admission", self.reserve_entries(resources, 1))?;
-            let slot =
-                acquisition_stage!("census-descriptor-slot", self.free_slot(resources, slots))?;
-            let identity =
-                acquisition_stage!("census-data-load", self.load(resources, slots, slot, file))?;
-            let envelope = acquisition_stage!(
-                "census-data-envelope",
-                inspect(
-                    slots[slot].handle.as_ref().expect("loaded descriptor"),
-                    self.id,
-                    file,
-                )
-            )?;
-            resources.entries.insert(
-                position,
-                Entry {
-                    file,
-                    envelope,
-                    identity,
-                    slot: Some(slot),
-                },
-            );
-            let high = &mut resources.high_water[file.kind.index()];
-            *high = (*high).max(file.id);
-            Ok(())
-        })?;
-        ensure!(root, "segment group root file is missing");
-        Ok(())
+            if attempt + 1 == LIST_ATTEMPTS {
+                return Err(io::Error::from(io::ErrorKind::WouldBlock).into());
+            }
+            // Only a raced cursor with a successful close reaches this path.
+            // Retire each partial pass's descriptor through its attested close
+            // before resetting metadata; any close failure retains its owner
+            // and original error in the same slot instead of starting a retry.
+            #[cfg(test)]
+            self.census_checkpoint(CensusTestStage::RetryClose)?;
+            for slot in slots.iter_mut().filter(|slot| slot.handle.is_some()) {
+                self.evict(resources, slot)?;
+            }
+            // Retain the paid entry allocation, root and directory across the
+            // bounded retry. No file was written during this opening census.
+            resources.entries.clear();
+            resources.high_water = [0; 3];
+        }
+        unreachable!("census attempts either complete or return their last race")
+    }
+
+    #[cfg(test)]
+    fn census_checkpoint(&self, stage: CensusTestStage) -> io::Result<()> {
+        match self.census_hook.lock().as_mut() {
+            Some(hook) => hook(stage),
+            None => Ok(()),
+        }
     }
 
     /// Durably mark the group Ready once the kv engine published its first
@@ -1347,6 +1393,20 @@ impl NodeSegmentGroup {
         &self,
         visitor: &mut dyn FnMut(&CStr, NodeDiskEntryKind) -> io::Result<()>,
     ) -> io::Result<()> {
+        if self.visit_listing_once(visitor)? {
+            Ok(())
+        } else {
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }
+
+    /// A false result identifies only the cursor's native-free namespace race,
+    /// after its independent close succeeded. Visitor and close failures remain
+    /// errors, so a caller cannot replay an external callback or forget custody.
+    fn visit_listing_once(
+        &self,
+        visitor: &mut dyn FnMut(&CStr, NodeDiskEntryKind) -> io::Result<()>,
+    ) -> io::Result<bool> {
         let (root, relative) = self.binding()?;
         let cancel = CensusCancellation::default();
         let mut cursor = acquisition_stage!(
@@ -1363,10 +1423,17 @@ impl NodeSegmentGroup {
                         break Err(error);
                     }
                 }
-                Ok(None) => break Ok(()),
+                Ok(None) => break Ok(true),
                 Err(error) => {
                     self.listing_error(&error);
-                    break Err(error);
+                    break if error.kind() == io::ErrorKind::WouldBlock
+                        && error.raw_os_error().is_none()
+                        && error.get_ref().is_none()
+                    {
+                        Ok(false)
+                    } else {
+                        Err(error)
+                    };
                 }
             }
         };

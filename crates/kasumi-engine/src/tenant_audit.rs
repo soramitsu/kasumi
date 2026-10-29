@@ -520,6 +520,8 @@ impl TenantEngine {
                 backup_bindings: previous.backup_bindings.clone(),
                 snapshot_accounting: accounting,
                 application_selection: std::sync::OnceLock::new(),
+                staged_documents: previous.staged_documents.clone(),
+                document_sources: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
             });
             self.publish_prepared_generation(
@@ -565,7 +567,7 @@ mod tests {
         }
     }
     /// A fresh fixture store with no tenant audit placement installed.
-    async fn fixture_store() -> (tempfile::TempDir, Arc<TenantStore>) {
+    async fn fixture_store() -> (tempfile::TempDir, NodeStore, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         // The 40-slot fixture exhausted slots at 54,875,251 used bytes. Allow
         // bounded overlap of installed node/archive owners, replacement tables,
@@ -584,21 +586,22 @@ mod tests {
         )
         .unwrap();
         let store = TenantStore::initialize_catalog_fixture(
-            node,
+            node.clone(),
             "tenant".into(),
             Arc::new(LocalKeyProvider::new([43; 32])),
         )
         .await
         .unwrap();
-        (directory, store)
+        (directory, node, store)
     }
     async fn fixture() -> (
         tempfile::TempDir,
+        NodeStore,
         Arc<TenantEngine>,
         Arc<TenantStore>,
         Arc<UncertainArchive>,
     ) {
-        let (directory, store) = fixture_store().await;
+        let (directory, node, store) = fixture_store().await;
         let cache = Arc::new(
             FilesystemAuditArchive::open(
                 directory.path().join("persistent/tenant-audit-archives"),
@@ -618,7 +621,7 @@ mod tests {
             .install_tenant_audit_archive(cache, archive.clone())
             .unwrap();
         let engine = replay_engine(&store, uuid::Uuid::new_v4().to_string());
-        (directory, engine, store, archive)
+        (directory, node, engine, store, archive)
     }
 
     fn replay_engine(store: &Arc<TenantStore>, incarnation: String) -> Arc<TenantEngine> {
@@ -703,7 +706,7 @@ mod tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replay_without_an_installed_placement_is_unavailable_and_selects_no_default() {
-        let (directory, mut store) = fixture_store().await;
+        let (directory, mut node, mut store) = fixture_store().await;
         let engine = TenantEngine::new(
             "tenant".into(),
             uuid::Uuid::new_v4().to_string(),
@@ -724,11 +727,13 @@ mod tests {
                 // A complete restart without installation is still not a
                 // placement: nothing persisted earlier may select one now.
                 store.shutdown().await.unwrap();
+                node.shutdown().await.unwrap();
                 let disk = store.scratch_disk().clone();
                 let persistent = store.persistent_disk().clone();
                 let storage = persistent.native_storage_config();
                 drop(store);
-                let node = NodeStore::open_existing(
+                assert!(node.retire().is_retired());
+                node = NodeStore::open_existing(
                     directory.path().join("persistent/node.kv"),
                     kasumi_store::test_utils::NODE_STORE_ID,
                     persistent,
@@ -737,7 +742,7 @@ mod tests {
                 )
                 .unwrap();
                 store = TenantStore::open_existing_fixture(
-                    node,
+                    node.clone(),
                     "tenant".into(),
                     Arc::new(LocalKeyProvider::new([43; 32])),
                 )
@@ -779,9 +784,13 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn failed_prune_publication_keeps_selected_prefix_and_replays_staged_archive()
     -> crate::test_fixture_failure::FixtureResult<()> {
-        let (_directory, engine, store, _archive) = fixture().await;
+        let (_directory, _node, engine, store, _archive) = fixture().await;
         let command = prepare(engine.clone()).await?.unwrap();
         let applying = engine.clone();
         tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<()> {
@@ -891,7 +900,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn uncertain_publication_keeps_hot_prefix_and_apply_never_recontacts_external_archive() {
-        let (_directory, engine, store, archive) = fixture().await;
+        let (_directory, _node, engine, store, archive) = fixture().await;
         let before = engine.generation().unwrap();
         archive.fail.store(true, Ordering::SeqCst);
         assert!(prepare(engine.clone()).await.is_err());
@@ -968,7 +977,7 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn uncertain_preparation_reopens_the_same_encrypted_object_after_restart() {
-        let (directory, engine, store, archive) = fixture().await;
+        let (directory, node, engine, store, archive) = fixture().await;
         let incarnation = engine.generation().unwrap().state.incarnation.clone();
         archive.fail.store(true, Ordering::SeqCst);
         assert!(prepare(engine.clone()).await.is_err());
@@ -977,10 +986,12 @@ mod tests {
         archive.read(&reference.object).await.unwrap();
         store.shutdown().await.unwrap();
         drop(engine);
+        node.shutdown().await.unwrap();
         let disk = store.scratch_disk().clone();
         let persistent = store.persistent_disk().clone();
         let storage = persistent.native_storage_config();
         drop(store);
+        assert!(node.retire().is_retired());
 
         let node = NodeStore::open_existing(
             directory.path().join("persistent/node.kv"),
@@ -1034,7 +1045,7 @@ mod tests {
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authenticated_wrong_prefix_and_corrupt_ciphertext_never_prune() {
-        let (_directory, engine, store, _) = fixture().await;
+        let (_directory, _node, engine, store, _) = fixture().await;
         let before = engine.generation().unwrap();
         let mut builder =
             AuditSegmentBuilder::new(before.state.audit_retention.stream_id, 0, None).unwrap();

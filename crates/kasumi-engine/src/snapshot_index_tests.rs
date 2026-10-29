@@ -161,11 +161,11 @@ fn collection(name: &str) -> Record {
 fn document(collection: &str, id: usize) -> Record {
     Record::Document(
         collection.into(),
-        Arc::new(Document {
+        kasumi_types::OwnedDocument::Pending(Arc::new(Document {
             id: format!("row-{id:02}"),
             version: 1,
             body: json!({"collection": collection, "row": id}),
-        }),
+        })),
     )
 }
 

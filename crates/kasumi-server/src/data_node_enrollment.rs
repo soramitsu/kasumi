@@ -380,7 +380,7 @@ async fn initialize_domain(
         if let Some(grant) = grant {
             grant.check()?;
         }
-        let database = constructor_seat.run_snapshot(kasumi_engine::open_replicated(
+        let database = constructor_seat.run_snapshot_operation(kasumi_engine::open_replicated(
             config
                 .replication
                 .as_ref()
@@ -392,7 +392,7 @@ async fn initialize_domain(
             kasumi_raft::server_config(),
             audit,
         ))
-        .await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?;
+        .await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)??;
         pending.databases.push(database);
         #[cfg(test)]
         if tenant == CONTROL_TENANT {

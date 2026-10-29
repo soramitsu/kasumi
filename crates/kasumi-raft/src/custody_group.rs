@@ -130,11 +130,10 @@ impl CustodyRaftGroup {
                     "replicated custody cannot open in standalone mode"
                 );
             }
-            if let Some(first) = crate::control::first_applied_membership(custody.store())? {
-                if let crate::control::HeaderPayload::Membership(membership) = &first.header.payload
-                {
-                    crate::local::check_membership(membership, id)?;
-                }
+            if let Some(first) = crate::control::first_applied_membership(custody.store())?
+                && let crate::control::HeaderPayload::Membership(membership) = &first.header.payload
+            {
+                crate::local::check_membership(membership, id)?;
             }
             None
         };

@@ -39,6 +39,14 @@ fn applied(response: &AppliedResponse) -> kasumi_types::Result<WriteReceipt> {
     serde_json::from_slice(&response.data).unwrap()
 }
 
+fn admit_documents(fixture: &OrdinaryFixture, input: &Input) -> Result<u64> {
+    let command: Command = serde_json::from_slice(&input.bytes)?;
+    let before = fixture.fixture.storage.admission.snapshot().reserved_bytes;
+    fixture.engine.admit_document_publication(&command)?;
+    let after = fixture.fixture.storage.admission.snapshot().reserved_bytes;
+    Ok(after - before)
+}
+
 /// The tenant keeps serving: a later proposal admits and applies normally.
 fn serves_next(fixture: &OrdinaryFixture) -> Result<()> {
     let next = fixture.input(Operation::SetPolicy(policy()))?;
@@ -52,6 +60,10 @@ fn serves_next(fixture: &OrdinaryFixture) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_queue_spends_native_capacity_admitted_before_proposal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -90,6 +102,10 @@ async fn committed_queue_spends_native_capacity_admitted_before_proposal()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_proposal()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = OrdinaryFixture::new().await?;
@@ -100,7 +116,7 @@ async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_
     spent_escrow();
     let input = fixture.input(put("native-window", json!({"n": 1}), Precondition::Any))?;
     let before = revision(&fixture);
-    fixture.engine.admit_publication()?;
+    admit_documents(&fixture, &input)?;
     // Between admission and apply, native traffic holds every byte and slot:
     // the Entry sink planner, queued reader, publication write and capture
     // must all run on capacity admitted before the proposal.
@@ -110,15 +126,229 @@ async fn committed_entry_sink_and_capture_spend_native_capacity_admitted_before_
     spent_escrow();
     applied(&response)?;
     assert_eq!(revision(&fixture), before + 1);
+    // Publication completed under exhausted capacity. A new decoded read is
+    // separately admitted after the interfering traffic releases its grants.
+    drop(held);
+    let current = fixture.engine.generation()?;
     assert_eq!(
-        fixture.engine.generation()?.state.collections["docs"].documents["row"].body,
+        current.state.collections["docs"].documents["row"]
+            .load_owned(current.document_resolver())?
+            .body,
         json!({"n": 1})
     );
-    drop(held);
+    drop(current);
     serves_next(&fixture)?;
     drop(response);
     drop(input);
     drop(create);
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn committed_document_replace_and_patch_decode_dense_old_body_with_only_preadmitted_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = OrdinaryFixture::new().await?;
+    let admission = fixture.fixture.storage.admission.clone();
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    admit_documents(&fixture, &create)?;
+    applied(&fixture.apply(&create, || {})?)?;
+    let raw = (0..4097)
+        .map(|index| (index % 251) as u8)
+        .collect::<Vec<_>>();
+    let old = json!({"dense":vec![0; 8192], "proof":hex::encode(&raw), "tag":"old"});
+    let initial = fixture.input(put("dense-initial", old.clone(), Precondition::Absent))?;
+    admit_documents(&fixture, &initial)?;
+    applied(&fixture.apply(&initial, || {})?)?;
+    {
+        let generation = fixture.engine.generation()?;
+        let descriptor = generation.state.collections["docs"].documents["row"].stored()?;
+        assert!(
+            descriptor.body_decode_work > descriptor.body_bytes * 128,
+            "dense fixture must exceed the discarded canonical-byte multiplier"
+        );
+    }
+    for (index, operation) in [
+        put(
+            "dense-replace",
+            json!({"dense":vec![1;8192], "proof":hex::encode(&raw), "tag":"replace"}),
+            Precondition::Any,
+        ),
+        Operation::Mutate(MutationBatch {
+            idempotency_key: "dense-patch".into(),
+            read_set: vec![],
+            operations: vec![Mutation::Patch {
+                collection: "docs".into(),
+                id: "row".into(),
+                patch: json!({"tag":"patch"}),
+                expected: Precondition::Any,
+            }],
+        }),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let input = fixture.input(operation)?;
+        let admitted = admit_documents(&fixture, &input)?;
+        let held = exhaust_native(&admission);
+        let before = revision(&fixture);
+        let response = fixture.apply(&input, || {})?;
+        applied(&response)?;
+        let peak = crate::admission::ApplyEscrow::take_last_peak_for_test().unwrap();
+        assert!(
+            peak > 0 && peak <= admitted,
+            "apply peak {peak}, admitted {admitted}"
+        );
+        eprintln!(
+            "committed document admission: case={index} admitted_bytes={admitted} spent_peak_bytes={peak}; enforced grants, not process RSS"
+        );
+        assert_eq!(revision(&fixture), before + 1);
+        drop(held);
+        let generation = fixture.engine.generation()?;
+        let slot = &generation.state.collections["docs"].documents["row"];
+        assert!(matches!(
+            slot.as_ref(),
+            kasumi_types::DocumentSlot::Stored(_)
+        ));
+        let document = generation.load_document(slot)?;
+        assert_eq!(document.body["dense"], json!(vec![1; 8192]));
+        assert_eq!(document.body["proof"], json!(hex::encode(&raw)));
+        assert_eq!(
+            document.body["tag"],
+            if index == 0 { "replace" } else { "patch" }
+        );
+    }
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn committed_staged_dense_documents_share_transient_publication_credit()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use kasumi_types::{
+        AppendStagedChunk, BeginStagedTransaction, StagedChunk, StagedManifest,
+        StagedTransactionScope,
+    };
+
+    const DOCUMENTS: usize = 16;
+    let dense_len = |row| if row == DOCUMENTS - 1 { 12_288 } else { 8192 };
+    let fixture = OrdinaryFixture::new().await?;
+    let admission = fixture.fixture.storage.admission.clone();
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    admit_documents(&fixture, &create)?;
+    applied(&fixture.apply(&create, || {})?)?;
+    let chunks: Vec<_> = (0..2)
+        .map(|chunk| StagedChunk {
+            read_set: vec![],
+            operations: (chunk * 8..chunk * 8 + 8)
+                .map(|row| Mutation::Put {
+                    collection: "docs".into(),
+                    id: format!("row-{row:02}"),
+                    body: json!({"n": row, "dense": vec![row; dense_len(row)]}),
+                    expected: Precondition::Absent,
+                })
+                .collect(),
+        })
+        .collect();
+    let begin = BeginStagedTransaction {
+        scope: StagedTransactionScope {
+            tenant: "selected-sources".into(),
+            principal: "owner".into(),
+            incarnation: fixture.engine.generation()?.state.incarnation.clone(),
+        },
+        transaction_id: "dense-publication".into(),
+        manifest: StagedManifest::from_chunks(&chunks)?,
+        ttl_ms: 60_000,
+    };
+    let reference = begin.reference()?;
+    let input = fixture.input(Operation::BeginStaged(begin))?;
+    admit_documents(&fixture, &input)?;
+    applied(&fixture.apply(&input, || {})?)?;
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let input = fixture.input(Operation::AppendStaged(AppendStagedChunk {
+            transaction: reference.clone(),
+            index,
+            chunk,
+        }))?;
+        admit_documents(&fixture, &input)?;
+        applied(&fixture.apply(&input, || {})?)?;
+    }
+    let input = fixture.input(Operation::FinalizeStaged(reference))?;
+    // Summing all dense trees' transient work exceeds this unchanged fixture
+    // budget. The actual publication stages them sequentially, retaining writes.
+    let admitted = admit_documents(&fixture, &input)?;
+    let held = exhaust_native(&admission);
+    assert!(admission.memory().clone().reserve_installed(0).is_err());
+    let before = revision(&fixture);
+    let receipt = applied(&fixture.apply(&input, || {})?)?;
+    let peak = crate::admission::ApplyEscrow::take_last_peak_for_test().unwrap();
+    assert!(
+        peak > crate::admission::ApplyEscrow::BYTES && peak <= admitted,
+        "dense staged apply peak {peak}, admitted {admitted}"
+    );
+    assert_eq!(revision(&fixture), before + 1);
+    drop(held);
+    let generation = fixture.engine.generation()?;
+    assert_eq!(
+        generation.state.collections["docs"].documents.len(),
+        DOCUMENTS
+    );
+    for row in 0..DOCUMENTS {
+        let slot = &generation.state.collections["docs"].documents[&format!("row-{row:02}")];
+        let descriptor = slot.stored()?;
+        assert!(descriptor.body_decode_work > descriptor.body_bytes * 128);
+        let document = generation.load_document(slot)?;
+        assert_eq!(document.version, receipt.revision);
+        assert_eq!(
+            document.body,
+            json!({"n": row, "dense": vec![row; dense_len(row)]})
+        );
+    }
+    drop(generation);
+    serves_next(&fixture)?;
+    fixture.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_preproposal_refusal_preserves_original_generation_and_recovers()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = OrdinaryFixture::new().await?;
+    let create = fixture.input(Operation::CreateCollection(definition()))?;
+    admit_documents(&fixture, &create)?;
+    applied(&fixture.apply(&create, || {})?)?;
+    let input = fixture.input(put(
+        "refused-proof",
+        json!({"proof":"ab".repeat(32768)}),
+        Precondition::Absent,
+    ))?;
+    let original = fixture.engine.generation()?;
+    let held = exhaust_native(&fixture.fixture.storage.admission);
+    let command: Command = serde_json::from_slice(&input.bytes)?;
+    assert_eq!(
+        fixture
+            .engine
+            .admit_document_publication(&command)
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    assert!(Arc::ptr_eq(&original, &fixture.engine.generation()?));
+    assert!(original.state.collections["docs"].documents.is_empty());
+    drop(held);
+    admit_documents(&fixture, &input)?;
+    applied(&fixture.apply(&input, || {})?)?;
+    assert_eq!(revision(&fixture), original.state.revision + 1);
+    drop(original);
     fixture.close().await
 }
 
@@ -139,6 +369,10 @@ async fn observe_pressure(admission: &Arc<NodeAdmission>, pressured: bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn committed_entry_applies_when_rss_pressure_begins_after_its_admission()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let rss = Arc::new(Rss(AtomicU64::new(0)));

@@ -618,6 +618,49 @@ impl NodeStoreOpeningFailure {
     pub fn into_custody(self) -> NodeStartupFailureCustody {
         self.custody
     }
+
+    /// Acknowledge only a refused acquisition whose exact native owner already
+    /// closed before any engine or child operation began. Other failures return
+    /// their original custody unchanged. Retirement still requires the positive
+    /// census receipt; a pending receipt keeps the same provider and generation.
+    #[allow(
+        clippy::result_large_err,
+        reason = "ineligible cleanup returns the whole original native custody inline"
+    )]
+    pub fn retire_closed_acquisition_refusal(self) -> std::result::Result<NodeRetirement, Self> {
+        let custody = &self.custody;
+        let eligible = self.close_error.is_none()
+            && custody.local_error().is_none()
+            && custody.tables().is_none()
+            && custody.verification().is_none()
+            && custody.child_id().is_none()
+            && custody.child_disposition().is_none()
+            && custody.child_constructor().is_none()
+            && {
+                let report = custody.opening().report();
+                matches!(report.acquisition(), TerminalObservation::Returned(Err(_)))
+                    && matches!(report.opening_outer(), TerminalObservation::NotEntered)
+                    && matches!(report.ready_publication(), TerminalObservation::NotEntered)
+                    && matches!(report.engine().opening(), TerminalObservation::NotEntered)
+                    && matches!(
+                        report.engine().settlement(),
+                        kasumi_kv::DatabaseOpenSettlement::Closed
+                            | kasumi_kv::DatabaseOpenSettlement::Disposed
+                    )
+            };
+        if !eligible {
+            return Err(self);
+        }
+        let (opening, _, _, _, _, _, _, _) = self.custody.into_parts();
+        let id = opening.id();
+        let provider = opening.provider().clone();
+        let disposition = opening.retire();
+        Ok(NodeRetirement {
+            provider,
+            id,
+            disposition,
+        })
+    }
 }
 impl std::fmt::Debug for NodeStoreOpeningFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

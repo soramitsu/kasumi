@@ -201,6 +201,10 @@ fn durable_cursor(domains: &TenantStorageSet) -> Result<Option<LogId<u64>>> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn metadata_application_write_and_cursor_publish_together() -> FixtureResult<()> {
     let mut fixture = fixture(Behavior::Publish).await?;
     let step = entry(1, EntryPayload::Blank);
@@ -222,6 +226,10 @@ async fn metadata_application_write_and_cursor_publish_together() -> FixtureResu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn covered_replay_publishes_application_writes_without_rolling_custody_back()
 -> FixtureResult<()> {
     let mut fixture = fixture(Behavior::Publish).await?;
@@ -275,6 +283,10 @@ async fn covered_replay_publishes_application_writes_without_rolling_custody_bac
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_state()
 -> FixtureResult<()> {
     for behavior in [
@@ -318,6 +330,10 @@ async fn swallowed_missing_repeated_and_metadata_refusal_never_advance_resident_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> FixtureResult<()> {
     let mut fixture = fixture(Behavior::Publish).await?;
     fixture.machine.apply([command(1, b"old")]).await?;
@@ -351,6 +367,10 @@ async fn failed_joint_commit_preserves_application_and_custody_after_crash() -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn canceled_apply_retains_callback_error_and_send_only_panic_after_actual_drain()
 -> FixtureResult<()> {
     let fixture = fixture(Behavior::PanicAfterRefusal).await?;

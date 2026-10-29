@@ -492,6 +492,10 @@ async fn failed_final_handoff(panics: bool) -> anyhow::Result<()> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn application_source_final_check_precedes_group_delivery() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let sources = Sources::new(None);

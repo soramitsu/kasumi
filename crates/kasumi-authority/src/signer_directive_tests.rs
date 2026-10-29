@@ -28,7 +28,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     stop.action = SignerTrustAction::StopStage { staged_operation_id: command.operation_id };
     assert!(commit_directive(&service, &context, &verifier, &domain, &stop).await.is_err());
     assert!(service.backend.maintenance_status(stop.operation_id).unwrap().is_none());
-    let accepted = commit_directive(&service, &context, &verifier, &domain, &command).await.unwrap();
+    let accepted = commit_directive_or_exact_receipt(&f, &service, &context, &verifier, &domain, &command).await;
     accepted.check().unwrap();
     assert_eq!(accepted.status().phase, AuthorityMaintenancePhase::Completed);
     assert!(matches!(&accepted.status().command.action,
@@ -265,7 +265,7 @@ async fn issuer_permission_retains_original_policy_while_current_admin_can_read_
         *permission.status());
     // Renewing authorization preserves the original operation and its policy;
     // it cannot convert historical dispatch permission into a new grant.
-    let renewed = commit_directive(&service, &successor, &verifier, &domain, &command).await.unwrap();
+    let renewed = commit_directive_or_exact_receipt(&f, &service, &successor, &verifier, &domain, &command).await;
     assert_eq!(renewed.status(), permission.status());
     assert!(renewed.check().is_err());
     drop(permission);
@@ -297,6 +297,92 @@ async fn signer_replacement_requires_current_authorization_and_exact_live_owner(
     assert!(authority.replace_operational_signer(authorization, selected.clone(), deadline).await.is_err());
     assert!(Arc::ptr_eq(&selected, &authority.request_signer().unwrap()));
     fixture.close().await;
+}
+
+async fn elect_original_verifier(authority: &Arc<IndependentAuthority>) {
+    // Local signer permission belongs to this installed physical member. A
+    // different quorum leader cannot substitute its verifier for this replay.
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let metrics = authority.group.raft().metrics().borrow().clone();
+            if metrics.current_leader == Some(authority.local_node_id) {
+                if authority.group.linearizable_barrier().await.is_ok() {
+                    let after = authority.group.raft().metrics().borrow().clone();
+                    if after.current_leader == Some(authority.local_node_id)
+                        && after.current_term == metrics.current_term
+                    {
+                        return;
+                    }
+                }
+            } else {
+                authority.group.raft().trigger().elect().await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    })
+    .await
+    .expect("original physical verifier did not regain fixture leadership");
+}
+
+async fn commit_directive_or_exact_receipt(
+    fixture: &Fixture,
+    authority: &Arc<IndependentAuthority>,
+    context: &RequestContext,
+    verifier: &TrustVerifierIdentity,
+    domain: &str,
+    command: &SignerTrustCommand,
+) -> CommittedSignerDirective {
+    assert_eq!(verifier.node_id, authority.local_node_id);
+    elect_original_verifier(authority).await;
+    match commit_directive(authority, context, verifier, domain, command).await {
+        Ok(permission) => return permission,
+        Err(error)
+            if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+        Err(error) => panic!("original local signer directive rejected: {error:?}"),
+    }
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        // Read the exact historical outcome before replaying permission on the
+        // original member. Never replace the verifier, command, or credential.
+        let current = fixture.leader().await;
+        match read_directive(&current, context, verifier, domain, command.operation_id).await {
+            Ok(status) => {
+                if let Some(status) = &status {
+                    assert!(matches!(
+                        &status.command.action,
+                        AuthorityMaintenanceAction::AuthorizeSignerTrust { directive }
+                            if directive.verifier == *verifier
+                                && directive.domain_sha256 == domain
+                                && directive.command == *command
+                    ));
+                    assert_eq!(status.phase, AuthorityMaintenancePhase::Completed);
+                }
+                elect_original_verifier(authority).await;
+                match commit_directive(authority, context, verifier, domain, command).await {
+                    Ok(permission) => {
+                        if let Some(status) = &status {
+                            assert_eq!(permission.status(), status);
+                        }
+                        return permission;
+                    }
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                        ) => {}
+                    Err(error) => panic!("exact local signer replay rejected: {error:?}"),
+                }
+            }
+            Err(error)
+                if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+            Err(error) => panic!("exact signer directive receipt rejected: {error:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "original local signer directive has no exact receipt before the setup deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 // A lost signing Start acknowledgement leaves the immutable operation uncertain.

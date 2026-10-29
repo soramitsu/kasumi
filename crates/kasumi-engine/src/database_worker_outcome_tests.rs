@@ -182,6 +182,10 @@ async fn until(mut predicate: impl FnMut() -> bool) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn sealed_database_admission_preserves_raft_storage_until_shutdown()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
@@ -225,6 +229,10 @@ fn panic_issue(failure: &DrainFailure, component: &str) -> kasumi_types::drain::
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn idle_audit_timer_leaves_proposal_and_shared_preparation_capacity_free()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("idle-audit").await?;
@@ -261,6 +269,10 @@ async fn idle_audit_timer_leaves_proposal_and_shared_preparation_capacity_free()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
@@ -316,6 +328,10 @@ async fn cancelled_database_drain_keeps_monitor_panic_before_pending_audit_child
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn aborted_database_monitor_retains_its_blocking_child_and_distinct_panic()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
@@ -378,6 +394,10 @@ async fn aborted_database_monitor_retains_its_blocking_child_and_distinct_panic(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn database_audit_blocking_panic_is_terminal_and_retained()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
@@ -408,6 +428,10 @@ async fn database_audit_blocking_panic_is_terminal_and_retained()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_tenant_drain()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let blocked_directory = kasumi_store::test_utils::private_tempdir()?;
@@ -536,6 +560,10 @@ async fn database_shutdown_cancels_undispatched_shared_permit_wait_before_other_
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_panic()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;
@@ -589,6 +617,10 @@ async fn cancelled_backup_producer_and_shutdown_waiter_keep_original_blocking_pa
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn admitted_full_backup_cancelled_caller_retains_exact_state_stream_producer_until_release()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new("tenant").await?;

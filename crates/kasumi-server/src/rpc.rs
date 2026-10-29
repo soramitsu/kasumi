@@ -198,7 +198,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
@@ -225,7 +225,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
@@ -250,24 +250,14 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
             .get(&context, &request.collection, &request.id)
             .await;
         let Some(result) = result.map_err(|error| self.registry.status(&context, error))? else {
-            return Ok(Response::new(
-                release_response(
-                    &self.auth,
-                    &context,
-                    fence,
-                    GetResponse { document: None },
-                    false,
-                )
-                .await
-                .map_err(status)?,
-            ));
+            return response_owner::release_absent_get(fence, &self.auth, &context).await;
         };
         response_owner::PendingReply::new(result, fence)
             .convert(|result, fence| {
@@ -292,7 +282,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
@@ -376,7 +366,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         let result = database
@@ -399,20 +389,25 @@ impl kasumi_data_server::KasumiData for NativeData {
         request: Request<MutateRequest>,
     ) -> Result<Response<WriteReceipt>, Status> {
         let context = verified(&self.auth, &request).await?;
-        let batch = decode_json(&request.into_inner().batch_json).map_err(status)?;
+        let batch: kasumi_types::MutationBatch =
+            decode_json(&request.into_inner().batch_json).map_err(status)?;
         let database = routed(&self.registry, &self.auth, &context).await?;
         let fence = self
             .auth
-            .audit_result(&context, database.response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
+            .await
+            .map_err(status)?;
+        let reply = self
+            .auth
+            .audit_result(
+                &context,
+                response_owner::PreparedMutationReply::prepare(fence, &batch),
+            )
             .await
             .map_err(status)?;
         let result = database.mutate(context.clone(), batch).await;
         let result = result.map_err(|error| self.registry.status(&context, error))?;
-        let response = receipt(result);
-        let response = release_response(&self.auth, &context, fence, response, true)
-            .await
-            .map_err(status)?;
-        Ok(Response::new(response))
+        reply.release(result, &self.auth, &context).await
     }
     async fn begin_staged_transaction(
         &self,
@@ -579,7 +574,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let mut fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         self.auth
@@ -611,7 +606,7 @@ impl kasumi_data_server::KasumiData for NativeData {
         let database = routed(&self.registry, &self.auth, &context).await?;
         let mut fence = self
             .auth
-            .audit_result(&context, database.owned_response_fence(&context))
+            .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
         self.auth

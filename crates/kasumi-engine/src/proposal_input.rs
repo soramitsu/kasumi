@@ -16,10 +16,12 @@ struct TopologyCredit {
 pub(crate) struct OperationInput {
     pub(super) operation: Operation,
     topology: Option<TopologyCredit>,
+    waiting: Option<Reservation>,
 }
 pub(super) struct ProposalCommand {
     pub(super) command: Command,
     _topology: Option<TopologyCredit>,
+    _waiting: Option<Reservation>,
 }
 
 impl OperationInput {
@@ -27,6 +29,7 @@ impl OperationInput {
         Self {
             operation,
             topology: None,
+            waiting: None,
         }
     }
     pub(super) fn check_admission(&self, destination: &NodeAdmission) -> Result<()> {
@@ -46,6 +49,7 @@ impl OperationInput {
         let Self {
             operation,
             topology,
+            waiting,
         } = self;
         ProposalCommand {
             command: Command {
@@ -56,7 +60,24 @@ impl OperationInput {
                 operation,
             },
             _topology: topology,
+            _waiting: waiting,
         }
+    }
+
+    /// Hold an undispatched mutation's actual input capacities while waiting
+    /// for an existing proposal slot. It consumes bytes/ledger space, never an
+    /// active execution slot. The input always retires before this grant.
+    pub(super) fn admit_waiting_mutation(
+        &mut self,
+        node: &Arc<NodeAdmission>,
+        context: &RequestContext,
+    ) -> Result<bool> {
+        let Operation::Mutate(batch) = &self.operation else {
+            return Ok(false);
+        };
+        let bytes = waiting_mutation_bytes(context, batch)?;
+        self.waiting = Some(node.reserve_waiting(bytes, None)?);
+        Ok(true)
     }
     /// Synchronous concrete producer. The caller's source DTO dies before this
     /// returns. Its new JSON/key/batch backing is preclaimed and never separated
@@ -108,8 +129,103 @@ impl OperationInput {
                 node: node.clone(),
                 _reservation: reservation,
             }),
+            waiting: None,
         })
     }
+}
+
+pub(super) fn retained_string_bytes(value: &String) -> Result<u64> {
+    kasumi_query::vec_bytes::<u8>(value.capacity())
+}
+pub(super) fn retained_json_bytes(body: &Value, depth: usize) -> Result<u64> {
+    if depth > 128 {
+        return Err(overflow());
+    }
+    match body {
+        Value::String(text) => retained_string_bytes(text),
+        Value::Array(values) => values.iter().try_fold(
+            kasumi_query::vec_bytes::<Value>(values.capacity())?,
+            |total, item| add(total, retained_json_bytes(item, depth + 1)?),
+        ),
+        Value::Object(values) => values.iter().try_fold(
+            // Removing the last entry may retain an empty BTree root.
+            tree::<String, Value>(values.len().max(1))?,
+            |total, (key, item)| {
+                add(
+                    add(total, retained_string_bytes(key)?)?,
+                    retained_json_bytes(item, depth + 1)?,
+                )
+            },
+        ),
+        Value::Number(number) => {
+            let length = crate::accounting::encoded_len(number).map_err(|_| overflow())?;
+            add(mul(count(length)?, 2)?, 64)
+        }
+        _ => Ok(0),
+    }
+}
+
+fn waiting_mutation_bytes(context: &RequestContext, batch: &MutationBatch) -> Result<u64> {
+    // Fixed request/future/cancellation backing and the four-action scope tree.
+    let mut bytes = 16 << 10;
+    for text in [
+        &context.principal,
+        &context.tenant,
+        &context.request_id,
+        &batch.idempotency_key,
+    ] {
+        bytes = add(bytes, retained_string_bytes(text)?)?;
+    }
+    bytes = add(
+        bytes,
+        kasumi_query::vec_bytes::<ReadAssertion>(batch.read_set.capacity())?,
+    )?;
+    bytes = add(
+        bytes,
+        kasumi_query::vec_bytes::<Mutation>(batch.operations.capacity())?,
+    )?;
+    for assertion in &batch.read_set {
+        match assertion {
+            ReadAssertion::Snapshot { incarnation, .. } => {
+                bytes = add(bytes, retained_string_bytes(incarnation)?)?
+            }
+            ReadAssertion::Document { collection, id, .. } => {
+                bytes = add(
+                    add(bytes, retained_string_bytes(collection)?)?,
+                    retained_string_bytes(id)?,
+                )?;
+            }
+            ReadAssertion::Collection { collection, .. } => {
+                bytes = add(bytes, retained_string_bytes(collection)?)?
+            }
+            ReadAssertion::Before { .. } | ReadAssertion::NotBefore { .. } => {}
+        }
+    }
+    for mutation in &batch.operations {
+        let (collection, id, body) = match mutation {
+            Mutation::Put {
+                collection,
+                id,
+                body,
+                ..
+            } => (collection, id, Some(body)),
+            Mutation::Patch {
+                collection,
+                id,
+                patch,
+                ..
+            } => (collection, id, Some(patch)),
+            Mutation::Delete { collection, id, .. } => (collection, id, None),
+        };
+        bytes = add(
+            add(bytes, retained_string_bytes(collection)?)?,
+            retained_string_bytes(id)?,
+        )?;
+        if let Some(body) = body {
+            bytes = add(bytes, retained_json_bytes(body, 0)?)?;
+        }
+    }
+    Ok(bytes)
 }
 
 fn overflow() -> Error {
@@ -139,7 +255,7 @@ fn backing(n: usize) -> Result<u64> {
         .and_then(|n| u64::try_from(n).ok())
         .ok_or_else(overflow)
 }
-fn tree<K, V>(entries: usize) -> Result<u64> {
+pub(super) fn tree<K, V>(entries: usize) -> Result<u64> {
     // Pinned Rust B=6: one whole internal node per input entry bounds sparse
     // nodes. Requalify this policy with Rust/Serde/serde_json/allocator updates.
     let n = size_of::<K>()

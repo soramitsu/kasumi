@@ -135,6 +135,10 @@ fn physical(root: &std::path::Path) -> Result<kasumi_engine::test_utils::Fixture
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns whole native failure custody without allocating or erasing the original owner."
+)]
 async fn real_three_voter_raft_and_learner_replicate_and_read_over_pinned_mutual_tls_http()
 -> FixtureResult<()> {
     let ca = Authority::new()?;
@@ -356,6 +360,10 @@ async fn real_three_voter_raft_and_learner_replicate_and_read_over_pinned_mutual
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture returns whole native failure custody without allocating or erasing the original owner."
+)]
 async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_limit_body()
 -> FixtureResult<()> {
     let ca = Authority::new()?;
@@ -576,7 +584,7 @@ async fn peer_requests_bind_certificate_source_candidate_target_and_group_and_li
             .await
             .is_err()
     );
-    let entries = (0..4).map(|index| serde_json::json!({"log_id":{"leader_id":{"term":1,"node_id":1},"index":index},"payload":{"Normal":kasumi_raft::RaftCommand::application(vec![171; 100])}})).collect::<Vec<_>>();
+    let entries = (0..4).map(|index| serde_json::json!({"log_id":{"leader_id":{"term":1,"node_id":1},"index":index},"payload":{"Normal":kasumi_raft::RaftCommand::application(vec![171; 100])},"initialization":null})).collect::<Vec<_>>();
     let oversized: RpcRequest = serde_json::from_value(
         serde_json::json!({"rpc":"append","payload":{"vote":{"leader_id":{"term":1,"node_id":1},"committed":true},"prev_log_id":null,"leader_commit":null,"entries":entries}}),
     )?;

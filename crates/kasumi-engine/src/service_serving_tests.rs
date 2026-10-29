@@ -182,6 +182,9 @@ impl ServingFixture {
             .await
             .unwrap();
         fixture
+            .settle_acknowledged(&leader, "initial collection")
+            .await;
+        fixture
     }
     async fn open(&mut self, create: bool) {
         let group = format!("{}/{}", self.context.tenant, self.bootstrap.incarnation);
@@ -323,6 +326,38 @@ impl ServingFixture {
         for db in &self.databases {
             db.group.raft().runtime_config().elect(false);
         }
+    }
+    async fn settle_acknowledged(&self, leader: &Database, phase: &str) {
+        let through = leader
+            .group
+            .raft()
+            .metrics()
+            .borrow()
+            .last_log_index
+            .expect("acknowledged operation has a Raft log position");
+        // A leader acknowledgment does not finish every follower's native
+        // apply. Advance the shared fixture clock only after those unrelated
+        // admitted writes finish, so expiry targets the controlled boundary.
+        tokio::time::timeout(Duration::from_secs(30), async {
+            loop {
+                if self.databases.iter().all(|db| {
+                    db.group
+                        .raft()
+                        .metrics()
+                        .borrow()
+                        .last_applied
+                        .as_ref()
+                        .is_some_and(|log| log.index >= through)
+                }) {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!("replicas did not apply acknowledged {phase} through {through}")
+        });
     }
     async fn leader(&self, phase: &str) -> Arc<Database> {
         let mut last_barrier_error = None;
@@ -680,6 +715,9 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
         .mutate(fixture.context.clone(), credential_batch("accepted"))
         .await
         .unwrap();
+    fixture
+        .settle_acknowledged(&db, "accepted document before late-release expiry")
+        .await;
     let encoded = serde_json::to_vec(&Ok::<_, Error>(accepted.clone())).unwrap();
     let response = db.response_fence(&fixture.context).unwrap();
     let read = db

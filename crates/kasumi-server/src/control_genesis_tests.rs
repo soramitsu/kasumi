@@ -290,11 +290,19 @@ async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_e
     let (mut config, storage) = config(directory.path())?;
     config.control.initial_limits.max_document_bytes = 1;
     config.validate()?;
-    let error =
-        crate::data_node_enrollment::initialize_with_storage(config.clone(), storage.clone())
-            .await
-            .unwrap_err();
-    assert!(format!("{error:#}").contains("Control genesis exceeds"));
+    let error = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        crate::data_node_enrollment::initialize_with_storage(config.clone(), storage.clone()),
+    )
+    .await
+    .expect("failed Control genesis must return after draining its actual owners")
+    .unwrap_err();
+    let original = error.downcast_ref::<kasumi_types::Error>().unwrap();
+    assert_eq!(original.code, kasumi_types::ErrorCode::QuotaExceeded);
+    assert_eq!(
+        original.message,
+        "Control genesis exceeds its document budget"
+    );
     let (node, security) = existing(&config, &storage).await?;
     assert!(
         crate::node_enrollment::require_complete(

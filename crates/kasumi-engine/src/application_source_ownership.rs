@@ -14,12 +14,16 @@ pub(super) use capacity::LaneFundingRef;
 
 enum CreditFunding {
     Ordinary(Reservation),
+    DocumentRead(crate::admission::DocumentWorkspace),
     Publication(capacity::PublicationCredit),
 }
 pub(super) struct SourceCredit(Option<Arc<CreditFunding>>);
 impl SourceCredit {
     pub(super) fn new(reservation: Reservation) -> Self {
         Self(Some(Arc::new(CreditFunding::Ordinary(reservation))))
+    }
+    pub(super) fn document_read(credit: crate::admission::DocumentWorkspace) -> Self {
+        Self(Some(Arc::new(CreditFunding::DocumentRead(credit))))
     }
     pub(super) fn required_bytes() -> anyhow::Result<u64> {
         super::allocated(std::mem::size_of::<CreditFunding>() + 2 * std::mem::size_of::<usize>())
@@ -49,6 +53,10 @@ impl SourceCredit {
             CreditFunding::Publication(account) => Some(account),
             CreditFunding::Ordinary(reservation) => {
                 let _ = reservation;
+                None
+            }
+            CreditFunding::DocumentRead(credit) => {
+                let _ = credit;
                 None
             }
         }
@@ -120,7 +128,6 @@ impl<T> Strong<T> {
     pub(super) fn credit_address(&self) -> usize {
         self.credit.allocation_address()
     }
-    #[cfg(test)]
     pub(super) fn ptr_eq(&self, other: &Self) -> bool {
         Arc::ptr_eq(
             self.value.as_ref().expect("source owner"),

@@ -2,6 +2,7 @@
 //! `cargo test -p kasumi-query --release bench_ -- --ignored --nocapture`
 use super::*;
 use crate::source_test_utils::FixtureQueries;
+use crate::source_test_utils::{pending, pending_document};
 use serde_json::json;
 use std::time::Instant;
 
@@ -43,7 +44,7 @@ fn collections(filler: usize) -> BTreeMap<String, CollectionState> {
             });
             (
                 id.clone(),
-                Arc::new(Document {
+                pending(Document {
                     id,
                     version: 1,
                     body,
@@ -113,7 +114,7 @@ fn measure(
                         let mut pins = Vec::with_capacity(remaining.len());
                         let mut bytes = 0;
                         for (id, score) in remaining {
-                            let document = collection.documents.get(id).unwrap();
+                            let document = pending_document(collection.documents.get(id).unwrap());
                             bytes += document_clone_bytes(document)?;
                             pins.push((document.clone(), score));
                         }
@@ -225,26 +226,29 @@ fn bench_per_row_costs() {
     time("map lookup + Arc clone", &mut || {
         let pinned: Vec<_> = rows
             .iter()
-            .map(|row| documents.get(&row.id).unwrap().clone())
+            .map(|row| documents.get(row.id()).unwrap().clone())
             .collect();
         std::hint::black_box(pinned);
     });
     time("json_clone_bytes walk", &mut || {
         let total: u64 = rows
             .iter()
-            .map(|row| allocation::json_clone_bytes(&row.body).unwrap())
+            .map(|row| allocation::json_clone_bytes(&pending_document(row).body).unwrap())
             .sum();
         std::hint::black_box(total);
     });
     time("encoded length (counting writer)", &mut || {
         let mut budget = ResultBudget::new(usize::MAX);
         for row in &rows {
-            budget.account(&row.body).unwrap();
+            budget.account(&pending_document(row).body).unwrap();
         }
         std::hint::black_box(budget.bytes);
     });
     time("deep clone of body", &mut || {
-        let cloned: Vec<_> = rows.iter().map(|row| row.body.clone()).collect();
+        let cloned: Vec<_> = rows
+            .iter()
+            .map(|row| pending_document(row).body.clone())
+            .collect();
         std::hint::black_box(cloned);
     });
 }

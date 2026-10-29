@@ -138,14 +138,22 @@ class DevStandaloneTests(unittest.TestCase):
 
     def test_a_failure_after_serving_stops_both_children_and_removes_the_directory(self):
         (self.root / "profile.json").write_text(json.dumps(profile(self.root)))
+        # Popen can return before the shell has finished writing its PID file.
+        # Let each simulated response wait for that child's completed startup.
+        for name in ("server.ready", "watcher.ready"):
+            os.mkfifo(self.root / name, 0o600)
         for name in ("kasumid", "kasumictl"):
             binary = self.root / name
             binary.write_text("#!/bin/sh\ncase \"$1\" in\n"
                               f"init) mkdir -p \"$4/profiles\" && cp {self.root}/profile.json \"$4/profiles/default.json\";;\n"
-                              f"serve) echo $$ > {self.root}/server.pid; exec sleep 30;;\n"
-                              f"credential) echo $$ > {self.root}/watcher.pid; exec sleep 30;;\n"
-                              "--profile) echo '{\"ok\":true,\"result\":{\"collections\":[]}}';;\n"
-                              "*) echo 'create refused' >&2; exit 1;;\nesac\n")
+                              f"serve) echo $$ > {self.root}/server.pid; "
+                              f"echo ready > {self.root}/server.ready; exec sleep 30;;\n"
+                              f"credential) echo $$ > {self.root}/watcher.pid; "
+                              f"echo ready > {self.root}/watcher.ready; exec sleep 30;;\n"
+                              f"--profile) read ready < {self.root}/server.ready; "
+                              "echo '{\"ok\":true,\"result\":{\"collections\":[]}}';;\n"
+                              f"*) read ready < {self.root}/watcher.ready; "
+                              "echo 'create refused' >&2; exit 1;;\nesac\n")
             binary.chmod(0o700)
         definition = self.root / "claims.collection.json"
         definition.write_text(json.dumps({"name": "claims"}))

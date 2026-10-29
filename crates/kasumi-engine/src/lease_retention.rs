@@ -141,6 +141,20 @@ pub(crate) fn document_heap(document: &Document, budget: usize) -> Result<usize>
     value_heap(&document.body, &mut bytes, budget)?;
     Ok(bytes)
 }
+pub(crate) fn document_slot_heap(document: &DocumentSlot, budget: usize) -> Result<usize> {
+    match document {
+        DocumentSlot::Pending(document) => {
+            let mut bytes = document_heap(document, budget)?;
+            add(&mut bytes, 128, budget)?;
+            Ok(bytes)
+        }
+        DocumentSlot::Stored(document) => {
+            let mut bytes = std::mem::size_of::<DocumentSlot>() + 128;
+            add(&mut bytes, document.id.capacity(), budget)?;
+            Ok(bytes)
+        }
+    }
+}
 fn archive_reference_heap(document: &ArchivedDocument, budget: usize) -> Result<usize> {
     let mut bytes = 256usize;
     add(
@@ -325,7 +339,13 @@ impl Roots {
                         .get(id)
                         .is_none_or(|current| !Arc::ptr_eq(value, current))
                 {
-                    self.account_payload(0, name, id, |limit| document_heap(value, limit), budget)?;
+                    self.account_payload(
+                        0,
+                        name,
+                        id,
+                        |limit| document_slot_heap(value, limit),
+                        budget,
+                    )?;
                 }
             }
             for difference in old.archived_documents.diff(&new.archived_documents) {
@@ -693,7 +713,19 @@ impl LeaseManager {
                 for id in candidates {
                     cancellation.check()?;
                     let document_bytes = if let Some(document) = collection.documents.get(&id) {
-                        crate::accounting::encoded_len(document)?
+                        // Selection needs only the exact logical wire length.
+                        // Stored slots cannot serialize without a source loan,
+                        // and decoding here would do I/O under the lease lock.
+                        document
+                            .document_bytes()
+                            .ok()
+                            .and_then(|bytes| usize::try_from(bytes).ok())
+                            .ok_or_else(|| {
+                                Error::new(
+                                    ErrorCode::Corruption,
+                                    "snapshot document length is invalid",
+                                )
+                            })?
                     } else {
                         collection
                             .archived_documents
@@ -749,6 +781,8 @@ impl LeaseManager {
                             backup_bindings: root.generation.backup_bindings.clone(),
                             snapshot_accounting: Default::default(),
                             application_selection: root.generation.clone_application_selection(),
+                            staged_documents: root.generation.staged_documents.clone(),
+                            document_sources: root.generation.clone_document_sources(),
                             _read_reservations: vec![],
                         }),
                         scan_ids: ids,
@@ -783,7 +817,7 @@ impl LeaseManager {
             if let Some(document) = source.documents.get(&key.id) {
                 add(
                     &mut retained_bytes,
-                    document_heap(document, usize::MAX)?
+                    document_slot_heap(document, usize::MAX)?
                         .saturating_mul(3)
                         .saturating_add(1024),
                     usize::MAX,
@@ -837,6 +871,8 @@ impl LeaseManager {
                 backup_bindings: root.generation.backup_bindings.clone(),
                 snapshot_accounting: Default::default(),
                 application_selection: root.generation.clone_application_selection(),
+                staged_documents: root.generation.staged_documents.clone(),
+                document_sources: root.generation.clone_document_sources(),
                 _read_reservations: vec![],
             }),
             scan_ids,

@@ -39,6 +39,10 @@ struct CommandInput {
 }
 
 impl Fixture {
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::new_with_node(|storage, path| {
             storage
@@ -140,6 +144,10 @@ impl Fixture {
         };
         Ok(CommandInput { position, bytes })
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn prepare<'a>(
         &'a self,
         input: &'a CommandInput,
@@ -182,6 +190,10 @@ impl Fixture {
                 .collect(),
         ))
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     fn fresh(&self) -> crate::test_fixture_failure::FixtureResult<CommittedBaseline> {
         let command_input = self.command(Operation::SetPolicy(policy()))?;
         let prepared = self.prepare(&command_input)?;
@@ -190,10 +202,11 @@ impl Fixture {
             let stage = PrimaryStage::begin_fresh(&mut authority)?.begin_catalog()?;
             let mut stage = stage;
             for (name, collection) in &input.accepted().state.collections {
-                let source = crate::index_source::StateCollection::new(
+                let source = crate::index_source::StateCollection::with_resolver(
                     &input.accepted().state,
                     name,
                     collection,
+                    input.previous().document_resolver(),
                 );
                 let (next, built) = build_fresh_collection(
                     stage,
@@ -269,6 +282,14 @@ impl Fixture {
                             .unwrap(),
                     );
                 }
+                let resolver = accepted
+                    .candidate()
+                    .resolver_for_selection(self.roots.clone(), captured.clone())?;
+                accepted
+                    .candidate()
+                    .document_sources
+                    .set(resolver)
+                    .map_err(|_| anyhow::anyhow!("fixture document source already set"))?;
                 accepted
                     .candidate()
                     .application_selection
@@ -278,9 +299,7 @@ impl Fixture {
                 Ok(())
             },
         )?;
-        prior
-            .context("actual baseline publication omitted result")
-            .map_err(Into::into)
+        prior.context("actual baseline publication omitted result")
     }
     fn read<T>(
         &self,
@@ -394,6 +413,10 @@ fn put(namespace: &str, key: &[u8], value: &[u8]) -> WriteOp {
 
 // Keep actual key renewal runnable during this long synchronous staging/abort loop.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_bounded()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -473,7 +496,9 @@ async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_
     assert_eq!(fixture.selector()?, selected);
     // Old accepted source remains live after every pending resource was erased.
     assert_eq!(
-        old_generation.state.collections["docs"].documents[&id(27, true)].body,
+        old_generation.state.collections["docs"].documents[&id(27, true)]
+            .load_owned(old_generation.document_resolver())?
+            .body,
         json!({"value":27})
     );
     let reader = crate::primary_tree::read::SelectedPrimary::open(
@@ -504,6 +529,10 @@ async fn primary_cow_actual_accepted_path_is_unselected_and_abort_is_separately_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shape()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for forged in [false, true] {
@@ -539,6 +568,10 @@ async fn primary_cow_complete_map_diff_rejects_omitted_id_and_real_multi_id_shap
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pending()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -582,6 +615,10 @@ async fn primary_cow_foreign_apply_guard_on_same_store_pair_is_refused_before_pe
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_captured_mapping_refuses_valid_alternate_manifest_with_unchanged_selector()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -656,6 +693,10 @@ async fn primary_cow_captured_mapping_refuses_valid_alternate_manifest_with_unch
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_committed_phase()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for fault in 0..4 {
@@ -766,6 +807,10 @@ async fn primary_cow_abort_rejects_bootstrap_missing_inventory_and_ambiguous_com
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_cancel_during_new_chunks_retains_original_and_pending_is_abortable()
 -> crate::test_fixture_failure::FixtureResult<()> {
     #[derive(Debug)]
@@ -850,14 +895,15 @@ fn archive(fixture: &Fixture, name: &str) -> Result<()> {
     let generation = fixture.engine.generation()?;
     let state = &generation.state;
     let archive_id = format!("archive-{name}");
-    let document = state.collections[name].documents["same"].clone();
+    let document =
+        state.collections[name].documents["same"].load_owned(generation.document_resolver())?;
     let chunk = HistoryArchiveChunk {
         kind: HistoryArchiveKind::HistorySubset,
         archive_id: archive_id.clone(),
         source_incarnation: state.incarnation.clone(),
         collection: name.into(),
         index: 0,
-        documents: vec![document],
+        documents: vec![Arc::new(document.as_ref().clone())],
     };
     let (digest, bytes) = staged_digest(&chunk)?;
     let operation = Operation::PublishHistoryArchive(PublishHistoryArchive {
@@ -890,6 +936,10 @@ fn archive(fixture: &Fixture, name: &str) -> Result<()> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_tree_identity()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for archived in [false, true] {
@@ -931,9 +981,14 @@ async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_
                 CanonicalDto::Definition(&collection.definition),
             )?;
             stage = next;
-            let record =
-                crate::index_source::record(collection, "same", collection.data_epoch)?.unwrap();
-            let (dto, kind, version, semantic) = match record {
+            let record = crate::index_source::record(
+                collection,
+                "same",
+                collection.data_epoch,
+                input.previous().document_resolver(),
+            )?
+            .unwrap();
+            let (dto, kind, version, semantic) = match record.as_record() {
                 kasumi_query::Record::Live(document) => (
                     CanonicalDto::Live(document),
                     tree::RecordKind::Live,
@@ -1023,6 +1078,10 @@ async fn primary_cow_baseline_rejects_cross_collection_dto_alias_even_with_same_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancellation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for fault in 0..3 {
@@ -1033,8 +1092,12 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
         let (mut authority, input) = prepared.accepted()?.primary_input()?.split();
         let mut stage = PrimaryStage::begin_fresh(&mut authority)?.begin_catalog()?;
         let collection = &input.accepted().state.collections["docs"];
-        let source =
-            crate::index_source::StateCollection::new(&input.accepted().state, "docs", collection);
+        let source = crate::index_source::StateCollection::with_resolver(
+            &input.accepted().state,
+            "docs",
+            collection,
+            input.previous().document_resolver(),
+        );
         let (next, built) = build_fresh_collection(
             stage,
             &source,
@@ -1052,7 +1115,11 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
             stage
                 .stage_dto(
                     built.manifest().tree_id,
-                    CanonicalDto::Live(collection.documents[&id(0, false)].as_ref()),
+                    CanonicalDto::Live(
+                        collection.documents[&id(0, false)]
+                            .load_owned(input.previous().document_resolver())?
+                            .as_ref(),
+                    ),
                 )?
                 .0
         } else {
@@ -1117,6 +1184,10 @@ async fn primary_cow_baseline_checks_actual_inventory_count_and_original_cancell
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -1155,6 +1226,10 @@ async fn primary_cow_actual_two_page_working_set_and_retirement_are_precharged()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_real_slot_refusal_precedes_pending_effects()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

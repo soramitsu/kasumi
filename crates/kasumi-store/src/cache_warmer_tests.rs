@@ -112,6 +112,14 @@ struct ReadGate {
     changed: Condvar,
 }
 impl ReadGate {
+    fn pause(&self) {
+        self.entered.notify_one();
+        let mut released = self.released.lock().unwrap();
+        while !*released {
+            released = self.changed.wait(released).unwrap();
+        }
+    }
+
     fn release(&self) {
         *self.released.lock().unwrap() = true;
         self.changed.notify_all();
@@ -128,7 +136,7 @@ struct Probe {
     group: kasumi_kv::backends::InMemoryGroup,
     reads: AtomicUsize,
     closes: AtomicUsize,
-    fail_read: AtomicBool,
+    read_failure: Mutex<Option<io::Error>>,
     gate: ReadGate,
 }
 impl SegmentGroupBackend for Probe {
@@ -172,14 +180,10 @@ impl SegmentGroupBackend for Probe {
     fn read(&self, file: GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
         self.reads.fetch_add(1, Ordering::AcqRel);
         if self.gate.armed.swap(false, Ordering::AcqRel) {
-            self.gate.entered.notify_one();
-            let mut released = self.gate.released.lock().unwrap();
-            while !*released {
-                released = self.gate.changed.wait(released).unwrap();
-            }
+            self.gate.pause();
         }
-        if self.fail_read.swap(false, Ordering::AcqRel) {
-            return Err(io::Error::other("automatic cache read failure"));
+        if let Some(error) = self.read_failure.lock().take() {
+            return Err(error);
         }
         self.group.read(file, at, out)
     }
@@ -241,7 +245,7 @@ impl Fixture {
             group: crash,
             reads: AtomicUsize::new(0),
             closes: AtomicUsize::new(0),
-            fail_read: AtomicBool::new(false),
+            read_failure: Mutex::new(None),
             gate: ReadGate::default(),
         });
         let admission = native();
@@ -532,7 +536,7 @@ async fn automatic_warmer_shutdown_cancellation_retains_blocked_child_and_charge
 #[tokio::test]
 async fn automatic_warmer_retains_original_native_failure_through_shutdown() {
     let fixture = Fixture::cold().await;
-    fixture.probe.fail_read.store(true, Ordering::Release);
+    *fixture.probe.read_failure.lock() = Some(io::Error::other("automatic cache read failure"));
     fixture.node.prepare_cache_warming().await.unwrap();
     fixture.node.activate_cache_warming().unwrap();
     fixture.wait(|s| s.failed).await;
@@ -540,6 +544,158 @@ async fn automatic_warmer_retains_original_native_failure_through_shutdown() {
     assert!(first.to_string().contains("automatic cache read failure"));
     let second = fixture.node.shutdown().await.unwrap_err();
     assert_eq!(first.to_string(), second.to_string());
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+}
+
+#[tokio::test]
+async fn automatic_warmer_stop_between_check_and_admission_drains_cleanly() {
+    let fixture = Fixture::cold().await;
+    let gate = Arc::new(ReadGate::default());
+    let _release_on_panic = ReleaseGate(&gate);
+    let before = gate.clone();
+    fixture
+        .node
+        .body()
+        .db
+        .before_registered_admission_for_test(Box::new(move || before.pause()));
+    fixture.node.prepare_cache_warming().await.unwrap();
+    let reads = fixture.probe.reads.load(Ordering::Acquire);
+    fixture.node.activate_cache_warming().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
+        .await
+        .unwrap();
+
+    // The child passed its first stopped check, but has not acquired the
+    // registered opening. Shutdown must seal and wait for that exact child.
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), fixture.node.shutdown())
+            .await
+            .is_err()
+    );
+    assert!(fixture.node.body().db.is_stopped());
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 0);
+    assert!(matches!(
+        fixture.node.body().db.warm_cache_if_needed(1),
+        Err(kasumi_kv::StorageError::DatabaseClosed)
+    ));
+    assert_eq!(
+        fixture
+            .node
+            .body()
+            .db
+            .queue_registered_read()
+            .err()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    gate.release();
+    tokio::time::timeout(Duration::from_secs(10), fixture.node.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    let status = fixture.node.cache_worker_status();
+    assert!(status.stopped && !status.failed, "{status:?}");
+    assert_eq!(fixture.probe.reads.load(Ordering::Acquire), reads);
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+    fixture.node.shutdown().await.unwrap();
+}
+
+#[derive(Debug)]
+struct NativeBrokenPipe(Arc<()>);
+impl std::fmt::Display for NativeBrokenPipe {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("original native broken pipe")
+    }
+}
+impl std::error::Error for NativeBrokenPipe {}
+
+#[tokio::test]
+async fn automatic_warmer_preserves_native_broken_pipe_during_stop() {
+    let fixture = Fixture::cold().await;
+    let _release_on_panic = ReleaseGate(&fixture.probe.gate);
+    let original = Arc::new(());
+    *fixture.probe.read_failure.lock() = Some(io::Error::new(
+        io::ErrorKind::BrokenPipe,
+        NativeBrokenPipe(original.clone()),
+    ));
+    fixture.probe.gate.armed.store(true, Ordering::Release);
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture.node.activate_cache_warming().unwrap();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        fixture.probe.gate.entered.notified(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), fixture.node.shutdown())
+            .await
+            .is_err()
+    );
+    assert!(fixture.node.body().db.is_stopped());
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 0);
+    fixture.probe.gate.release();
+    let first = tokio::time::timeout(Duration::from_secs(10), fixture.node.shutdown())
+        .await
+        .unwrap()
+        .unwrap_err();
+    // The native failure fenced admission before close. Physical closure is
+    // proved, but its failed shutdown observation and undisposed owner must
+    // remain retained; a concurrent stop cannot turn this into a clean drain.
+    assert_eq!(first.completion(), DrainCompletion::Retained);
+    {
+        let opening = crate::RegisteredNodeOpening::retained(
+            fixture.memory.clone(),
+            fixture.node.registered_opening_id().unwrap(),
+        )
+        .expect("the original failed opening remains owned");
+        assert!(opening.children_retired());
+        let report = opening.report();
+        let engine = report.engine();
+        assert_eq!(engine.phase(), kasumi_kv::DatabaseOpenPhase::Closing);
+        assert_eq!(
+            engine.settlement(),
+            kasumi_kv::DatabaseOpenSettlement::DrainedWithFailure
+        );
+        assert_eq!(
+            engine.native_disposition(),
+            kasumi_kv::BackendNativeDisposition::Drained
+        );
+        assert!(!engine.disposal().complete());
+    }
+    let native_error = first
+        .issues()
+        .iter()
+        .flat_map(|issue| issue.error().chain())
+        .filter_map(|error| error.downcast_ref::<io::Error>())
+        .find(|error| {
+            error
+                .get_ref()
+                .is_some_and(|original| original.is::<NativeBrokenPipe>())
+        })
+        .expect("the exact native I/O error must survive a concurrent stop");
+    assert_eq!(native_error.kind(), io::ErrorKind::BrokenPipe);
+    assert!(Arc::ptr_eq(
+        &native_error
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<NativeBrokenPipe>()
+            .unwrap()
+            .0,
+        &original
+    ));
+    assert!(fixture.node.cache_worker_status().failed);
+    let second = fixture.node.shutdown().await.unwrap_err();
+    assert_eq!(second.completion(), DrainCompletion::Retained);
+    assert_eq!(first.issues().len(), second.issues().len());
+    assert!(
+        first
+            .issues()
+            .iter()
+            .zip(second.issues())
+            .all(|(first, second)| { kasumi_types::drain::DrainIssueRef::ptr_eq(first, second) })
+    );
     assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
 }
 

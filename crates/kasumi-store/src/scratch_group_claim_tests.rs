@@ -23,7 +23,8 @@ fn fixture() -> (
     };
     let disk = crate::test_utils::retry_disk_registry(|| {
         ScratchDisk::open_fixture(&config, memory.clone())
-    }).unwrap();
+    })
+    .unwrap();
     let owner = Owner::new(&disk, 8 << 20).unwrap();
     let backend = Backend(owner.clone());
     // Actual native creation publishes the initial selected root. The claim

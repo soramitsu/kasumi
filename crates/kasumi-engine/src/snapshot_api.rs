@@ -2,7 +2,7 @@
 //! generation is exclusively the responsibility of the Raft/storage coordinator.
 use super::{TenantEngine, snapshot_bundle, validation_baseline::OwnedValidation};
 use crate::{
-    admission::{CancelOnDrop, NodeAdmission, Reservation},
+    admission::{CancelOnDrop, DocumentReadBudget, NodeAdmission, Reservation},
     backup_verify::{VerificationDeadline, VerificationPhase},
 };
 use kasumi_query::QueryCancellation;
@@ -42,7 +42,7 @@ struct Work {
     store: Arc<TenantStore>,
     token: QueryCancellation,
     deadline: VerificationDeadline,
-    reservation: Reservation,
+    reservation: Arc<Reservation>,
 }
 impl Work {
     fn check(&self) -> anyhow::Result<()> {
@@ -128,7 +128,7 @@ impl TenantEngine {
             store,
             token: token.clone(),
             deadline,
-            reservation: admission.reserve(WORKSPACE, Some(token))?,
+            reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
         let output = deadline
             .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
@@ -170,7 +170,7 @@ impl TenantEngine {
             store,
             token: token.clone(),
             deadline,
-            reservation: admission.reserve(WORKSPACE, Some(token))?,
+            reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
         let wait_phase = VerificationPhase::start("public_restore.wait", Some(deadline));
         let output = deadline
@@ -189,8 +189,28 @@ impl TenantEngine {
                             .materialization_workspace()?
                             .checked_sub(WORKSPACE)
                             .ok_or_else(|| anyhow::anyhow!("snapshot workspace overflow"))?;
-                        work.reservation.reserve_additional(additional)?;
+                        Arc::get_mut(&mut work.reservation)
+                            .ok_or_else(|| anyhow::anyhow!("snapshot workspace already shared"))?
+                            .reserve_additional(additional)?;
                         Ok(layout)
+                    })?;
+                    let document_budget = kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        let capacity = layout.document_workspace()?;
+                        if capacity == 0 {
+                            return Ok(None);
+                        }
+                        Ok(Some(DocumentReadBudget::bind_shared(
+                            &admission,
+                            work.reservation.clone(),
+                            layout.materialization_base_workspace()?,
+                            capacity,
+                        )?))
+                    })?;
+                    let document_scope = kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        document_budget
+                            .map(|budget| budget.enter())
+                            .transpose()
+                            .map_err(Into::into)
                     })?;
                     let phase = VerificationPhase::start("public_restore.decode", Some(deadline));
                     let generation = snapshot_bundle::read(
@@ -217,6 +237,7 @@ impl TenantEngine {
                             VerificationPhase::start("public_restore.discard", Some(deadline));
                         drop(generation);
                         drop(prior);
+                        drop(document_scope);
                         phase.complete();
                         Ok((prepared, work))
                     })
@@ -267,7 +288,7 @@ impl TenantEngine {
             store,
             token: token.clone(),
             deadline,
-            reservation: admission.reserve(WORKSPACE, Some(token))?,
+            reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
         let (_, work) = deadline
             .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {

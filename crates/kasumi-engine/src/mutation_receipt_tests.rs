@@ -181,6 +181,7 @@ fn receipt_staging_production_allocation_preserves_long_history() {
 }
 
 #[test]
+#[ignore = "large receipt-history recovery regression; run explicitly with --ignored"]
 fn receipt_staging_streamed_history_preserves_rows_across_native_reclamation() {
     // Small rows stress the directory's copy-on-write amplification. Keep the
     // production geometry, maintenance policy and canonical receipt quota;

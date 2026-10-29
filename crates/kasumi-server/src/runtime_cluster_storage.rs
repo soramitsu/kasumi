@@ -124,6 +124,17 @@ impl ClusterStorage {
     ) -> Result<Self> {
         let mut persistent = crate::persistent_disk::fixture_config(&directory.join("persistent"));
         let issuers = if canonical { 3 } else { 0 };
+        // Consolidating the original data, issuer-audit and issuer-authority
+        // disks must preserve their aggregate descriptor allowance. Each native
+        // transaction claims its whole cache window in addition to open roots.
+        let original_disk_owners = data_nodes
+            .checked_add(issuers * 2)
+            .context("fixture disk owner count overflow")?;
+        persistent.max_open_files = u32::try_from(multiply(
+            u64::from(persistent.max_open_files),
+            original_disk_owners,
+        )?)
+        .context("fixture descriptor capacity overflow")?;
         if canonical {
             let recovery = directory.join("canonical-recovery");
             kasumi_store::private_files::create_directory(&recovery)?;

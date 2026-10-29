@@ -355,7 +355,7 @@ impl Database {
                         )
                     })
                 })
-                .map_err(Into::into)
+                .map_err(crate::index_source::into_anyhow)
             },
         )
         .await

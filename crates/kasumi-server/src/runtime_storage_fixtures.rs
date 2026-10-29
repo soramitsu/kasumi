@@ -54,32 +54,39 @@ pub(crate) fn standalone_storage(
     RuntimeStorage::isolated_fixture(policy, &persistent, &scratch)
 }
 
-pub(crate) async fn initialize_standalone(
-    directory: &Path,
-    tenant: &str,
-) -> Result<(crate::standalone::InitializedInstallation, RuntimeStorage)> {
-    // Keep the former fixture's ordinary budget after node audit maintenance
-    // admits one 128 MiB native KV escrow and protects another 128 MiB for
-    // maintenance writes. Both amounts remain charged or guarded by admission.
-    let mut policy = AdmissionConfig::default();
-    let former_total = policy.resolved_fixture_total_bytes()?;
-    policy.max_inflight_bytes = Some(
-        former_total
-            .checked_add(4 * AuditRetentionBudget::MAINTENANCE_BYTES)
-            .context("standalone fixture admission total overflow")?,
-    );
-    let storage = standalone_storage(directory, policy)?;
-    let installed = crate::standalone::initialize_with_storage(
-        directory,
-        tenant,
-        kasumi_store::DirectoryPolicy::fixture(),
-        kasumi_store::FileAllocationPolicy::fixture(),
-        crate::standalone::StandaloneNetwork::fixture(),
-        crate::standalone::local_audit_placements(tenant),
-        storage.clone(),
-    )
-    .await?;
-    Ok((installed, storage))
+pub(crate) fn initialize_standalone<'a>(
+    directory: &'a Path,
+    tenant: &'a str,
+) -> impl std::future::Future<
+    Output = Result<(crate::standalone::InitializedInstallation, RuntimeStorage)>,
+> + 'a {
+    // Construct this large cold-start future outside its caller's poll frame.
+    // Boxing at the await site still leaves its inline construction temporary
+    // on that frame while the nested startup-owner futures are polled.
+    Box::pin(async move {
+        // Keep the former fixture's ordinary budget after node audit maintenance
+        // admits one 128 MiB native KV escrow and protects another 128 MiB for
+        // maintenance writes. Both amounts remain charged or guarded by admission.
+        let mut policy = AdmissionConfig::default();
+        let former_total = policy.resolved_fixture_total_bytes()?;
+        policy.max_inflight_bytes = Some(
+            former_total
+                .checked_add(4 * AuditRetentionBudget::MAINTENANCE_BYTES)
+                .context("standalone fixture admission total overflow")?,
+        );
+        let storage = standalone_storage(directory, policy)?;
+        let installed = crate::standalone::initialize_with_storage(
+            directory,
+            tenant,
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+            crate::standalone::StandaloneNetwork::fixture(),
+            crate::standalone::local_audit_placements(tenant),
+            storage.clone(),
+        )
+        .await?;
+        Ok((installed, storage))
+    })
 }
 
 /// A low-level fixture owns its TempDir in the calling scope. Physical and

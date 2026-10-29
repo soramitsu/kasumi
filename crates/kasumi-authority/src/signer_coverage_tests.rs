@@ -58,9 +58,15 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
             certificate: certificate.clone(),
         },
     };
-    let stage_permission = commit_directive(&authority, &context, &physical, &domain, &local_stage)
-        .await
-        .unwrap();
+    let stage_permission = commit_directive_or_exact_receipt(
+        &fixture,
+        &authority,
+        &context,
+        &physical,
+        &domain,
+        &local_stage,
+    )
+    .await;
     stage_permission.check().unwrap();
     drop(stage_permission);
     let global = fixture
@@ -157,20 +163,30 @@ async fn coverage_dispatch_precedes_permission_and_survives_exact_encrypted_rest
         .operational_configuration()
         .unwrap()
         .revision;
-    assert_eq!(
-        authority
-            .signer_coverage(
-                context.clone(),
-                SignerCoverageRequest::Start {
-                    command: duplicate_physical
-                }
-            )
+    let duplicate_request = SignerCoverageRequest::Start {
+        command: duplicate_physical,
+    };
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    let duplicate_error = loop {
+        elect_original_verifier(&authority).await;
+        match authority
+            .signer_coverage(context.clone(), duplicate_request.clone())
             .await
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::Conflict
-    );
+        {
+            Err(error)
+                if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+            Err(error) => break error,
+            Ok(_) => panic!("duplicate physical coverage unexpectedly accepted"),
+        }
+        // Leadership loss can hide the rejected transition's acknowledgement.
+        // Repeat only this exact command and still require the Conflict outcome.
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "exact duplicate coverage did not resolve before the setup deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
+    assert_eq!(duplicate_error.code, ErrorCode::Conflict);
     assert!(
         authority
             .signer_coverage(

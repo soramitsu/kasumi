@@ -569,7 +569,8 @@ impl Database {
                 && now >= recovery::dispatch_limit(operation, pending)?
             {
                 return Ok(Some(RecoveryDispatch::PublishRoute(
-                    recovery::route::next_input(state, operation)?,
+                    recovery::route::next_input(state, operation, current.document_resolver())
+                        .map_err(source_read_error)?,
                 )));
             }
             if let RecoveryDispatch::Target { node_id, request } = &pending.input
@@ -788,9 +789,10 @@ impl Database {
             RecoveryPhase::Activate | RecoveryPhase::Confirm | RecoveryPhase::StopActivation => {
                 recovery::activation::next_dispatch(state, operation, phase_id, now, expires)?
             }
-            RecoveryPhase::Publish => {
-                RecoveryDispatch::PublishRoute(recovery::route::next_input(state, operation)?)
-            }
+            RecoveryPhase::Publish => RecoveryDispatch::PublishRoute(
+                recovery::route::next_input(state, operation, current.document_resolver())
+                    .map_err(source_read_error)?,
+            ),
             RecoveryPhase::RetireSource => {
                 RecoveryDispatch::RetireSource(recovery::retirement_request(
                     operation,

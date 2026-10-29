@@ -145,6 +145,12 @@ impl Fixture {
             .trust
     }
     async fn exact_administrative(&self, command: AuthorityCommand) -> AuthorityReceipt {
+        self.exact_signed_administrative(command).await.receipt
+    }
+    async fn exact_signed_administrative(
+        &self,
+        command: AuthorityCommand,
+    ) -> kasumi_serving::SignedAuthorityReceipt {
         let context = self.context("operator");
         let expected_digest = command.digest().unwrap();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
@@ -160,7 +166,7 @@ impl Fixture {
                     assert_eq!(receipt.receipt.command, command);
                     assert_eq!(receipt.receipt.command_digest, expected_digest);
                     if fence.release().await.is_ok() {
-                        return receipt.receipt;
+                        return receipt;
                     }
                 }
                 Ok((None, fence)) => {
@@ -183,7 +189,7 @@ impl Fixture {
                 Ok((receipt, fence)) if fence.release().await.is_ok() => {
                     assert_eq!(receipt.receipt.command, command);
                     assert_eq!(receipt.receipt.command_digest, expected_digest);
-                    return receipt.receipt;
+                    return receipt;
                 }
                 Ok(_) => {}
                 Err(error)
@@ -434,6 +440,9 @@ impl Fixture {
         for service in &self.services {
             service.shutdown().await.unwrap();
         }
+        self.reopen_after_service_drain().await;
+    }
+    async fn reopen_after_service_drain(&mut self) {
         for store in &self.stores {
             store.shutdown().await.unwrap();
         }
@@ -899,16 +908,12 @@ async fn actual_encrypted_source_materialization_is_fenced_but_independent_custo
             b"closed-control",
         )])
         .unwrap();
-    service
-        .execute(
-            fixture.context("operator"),
-            fixture.command(AuthorityAction::Fence {
-                incarnation: source,
-                authority_epoch: 1,
-            }),
-        )
-        .await
-        .unwrap();
+    fixture
+        .exact_administrative(fixture.command(AuthorityAction::Fence {
+            incarnation: source,
+            authority_epoch: 1,
+        }))
+        .await;
     fixture.clock.0.store(1000, Ordering::SeqCst);
     assert!(stores.application().get("payload", b"journal").is_err());
     assert!(
@@ -1029,12 +1034,10 @@ async fn exact_target_preparation_cannot_serve_and_needs_a_fresh_active_lease_af
     gate.renew(acquire(&fixture, &service, &prepared_boot).await)
         .unwrap();
     fixture.clock.0.store(1000, Ordering::SeqCst);
-    let accepted = service
-        .execute(fixture.context("operator"), activate)
-        .await
-        .unwrap()
-        .0;
+    let accepted = fixture.exact_signed_administrative(activate).await;
     let proof = fixture.trust.clone().verify_activation(accepted).unwrap();
+    drop(service);
+    let service = fixture.leader().await;
     let lease = acquire(&fixture, &service, &active_boot).await;
     assert_eq!(lease.activation_digest(), proof.digest().unwrap());
     gate.promote_prepared(lease).unwrap();

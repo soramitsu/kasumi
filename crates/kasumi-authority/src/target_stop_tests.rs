@@ -75,42 +75,35 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         source_epoch: 1,
         target: never_prepared.clone(),
     });
-    service
-        .execute(fixture.context("operator"), stop)
-        .await
-        .unwrap();
-    let delayed = service
-        .execute(
-            fixture.context("operator"),
-            fixture.command(AuthorityAction::PrepareTarget {
-                source_incarnation: source,
-                source_epoch: 1,
-                target: never_prepared.clone(),
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
+    let stopped = fixture.exact_administrative(stop).await;
     assert!(matches!(
-        delayed.receipt.outcome,
+        stopped.outcome,
+        AuthorityOutcome::TargetStopped { .. }
+    ));
+    let delayed = fixture
+        .exact_administrative(fixture.command(AuthorityAction::PrepareTarget {
+            source_incarnation: source,
+            source_epoch: 1,
+            target: never_prepared.clone(),
+        }))
+        .await;
+    assert!(matches!(
+        delayed.outcome,
         AuthorityOutcome::Rejected { .. }
     ));
-    let changed = service
-        .execute(
-            fixture.context("operator"),
-            fixture.command(AuthorityAction::StopTarget {
-                source_incarnation: source,
-                source_epoch: 2,
-                target: replacement.clone(),
-            }),
-        )
-        .await
-        .unwrap()
-        .0;
+    let changed = fixture
+        .exact_administrative(fixture.command(AuthorityAction::StopTarget {
+            source_incarnation: source,
+            source_epoch: 2,
+            target: replacement.clone(),
+        }))
+        .await;
     assert!(matches!(
-        changed.receipt.outcome,
+        changed.outcome,
         AuthorityOutcome::Rejected { .. }
     ));
+    drop(service);
+    let service = fixture.leader().await;
     use kasumi_raft::StateMachineBackend;
     let mut snapshot = Vec::new();
     service.backend.snapshot(&mut snapshot).unwrap();
@@ -157,20 +150,105 @@ async fn permanent_target_stop_defeats_missing_and_prepared_generations_then_reo
         fence_digest: fenced.digest().unwrap(),
         target: replacement,
     });
+    let activation_context = fixture.context("operator");
     assert!(
         service
-            .execute(fixture.context("operator"), activate.clone())
+            .execute(activation_context.clone(), activate.clone())
             .await
             .is_err()
     );
     fixture.clock.0.store(3000, Ordering::SeqCst);
-    let denied = fixture.exact_administrative(activate).await;
+    let denied = exact_stopped_activation_after_current_drain(
+        &fixture,
+        activation_context,
+        activate,
+    )
+    .await;
     assert!(matches!(
         denied.outcome,
         AuthorityOutcome::Rejected { .. }
     ));
     drop(fence);
     fixture.close().await;
+}
+
+async fn exact_stopped_activation_after_current_drain(
+    fixture: &Fixture,
+    context: RequestContext,
+    command: AuthorityCommand,
+) -> AuthorityReceipt {
+    let AuthorityAction::Activate { fence_digest, .. } = &command.action else {
+        panic!("expected the original stopped-target activation")
+    };
+    let expected_digest = command.digest().unwrap();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "stopped-target activation has no exact receipt after its current-term drain"
+        );
+        let current = fixture.leader().await;
+        match current
+            .receipt(context.clone(), &command.tenant, command.command_id)
+            .await
+        {
+            Ok((Some(receipt), fence)) => {
+                assert_eq!(receipt.receipt.command, command);
+                assert_eq!(receipt.receipt.command_digest, expected_digest);
+                match fence.release().await {
+                    Ok(()) => return receipt.receipt,
+                    Err(error) if error.code == ErrorCode::Unavailable => continue,
+                    Err(error) => panic!("exact activation receipt release failed: {error:?}"),
+                }
+            }
+            Ok((None, fence)) => match fence.release().await {
+                Ok(()) => {}
+                Err(error) if error.code == ErrorCode::Unavailable => continue,
+                Err(error) => panic!("activation receipt absence release failed: {error:?}"),
+            },
+            Err(error) if error.code == ErrorCode::Unavailable => continue,
+            Err(error) => panic!("exact activation receipt read failed: {error:?}"),
+        }
+        match current.execute(context.clone(), command.clone()).await {
+            Ok((receipt, fence)) => {
+                assert_eq!(receipt.receipt.command, command);
+                assert_eq!(receipt.receipt.command_digest, expected_digest);
+                match fence.release().await {
+                    Ok(()) => return receipt.receipt,
+                    Err(error) if error.code == ErrorCode::Unavailable => {}
+                    Err(error) => panic!("activation response release failed: {error:?}"),
+                }
+            }
+            Err(error)
+                if error.code == ErrorCode::Unavailable
+                    && error.message
+                        == "exact fence drain has not completed; retry the same identity" =>
+            {
+                // An election starts a new process/term witness. Only advance
+                // this fixture clock after observing that exact witness; an
+                // old leader's elapsed interval cannot authorize the new one.
+                let drains = current.drains.lock().unwrap();
+                let witness = drains.get(fence_digest).unwrap();
+                if witness.term == current.term() {
+                    let ready_at = witness.started
+                        + Duration::from_millis(
+                            fixture.installation.manifest.drain_ms().unwrap(),
+                        );
+                    fixture.clock.0.fetch_max(
+                        u64::try_from(ready_at.as_millis()).unwrap(),
+                        Ordering::SeqCst,
+                    );
+                }
+            }
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                ) => {}
+            Err(error) => panic!("stopped-target activation rejected before its receipt: {error:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]

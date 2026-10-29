@@ -18,6 +18,8 @@ const MAX_PROPOSALS: usize = 32;
 #[derive(Default)]
 pub(super) struct Jobs {
     state: Mutex<State>,
+    entry_queue: tokio::sync::Mutex<()>,
+    changed: tokio::sync::Notify,
     // Registration and terminal failure use the same short synchronous gate.
     // A failed child closes it before releasing its final poll, including panic.
     closed: Arc<Mutex<bool>>,
@@ -27,8 +29,29 @@ struct State {
     #[cfg(test)]
     admitted: u64,
     slots: [Option<Arc<BackgroundWork>>; MAX_PROPOSALS],
+    reserved: [bool; MAX_PROPOSALS],
     budget: Option<BackgroundWorkBudget>,
     report: DrainReport,
+}
+
+/// One already-free registry position; no child has been dispatched. Dropping
+/// a cancelled or refused preflight makes the exact position available again.
+pub(super) struct Entry<'a> {
+    jobs: &'a Jobs,
+    slot: usize,
+    installed: bool,
+}
+impl Drop for Entry<'_> {
+    fn drop(&mut self) {
+        if !self.installed {
+            self.jobs
+                .state
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .reserved[self.slot] = false;
+            self.jobs.changed.notify_waiters();
+        }
+    }
 }
 
 pub(super) struct Response {
@@ -56,6 +79,84 @@ impl Drop for TerminalFence {
 }
 
 impl Jobs {
+    /// Wait with only the caller's separately charged input, without growing
+    /// this fixed registry. The short entry queue orders capacity waiters; it
+    /// is released before the command's execution or any network workflow.
+    pub(super) async fn entry(&self, admission: &Arc<NodeAdmission>) -> Result<Entry<'_>> {
+        let _turn = self.entry_queue.lock().await;
+        loop {
+            let changed = self.changed.notified();
+            tokio::pin!(changed);
+            changed.as_mut().enable();
+            let workers = {
+                let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+                self.observe_locked(&mut state);
+                if *self.closed.lock().unwrap_or_else(|p| p.into_inner()) {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "proposal work is closed; recovery required",
+                    ));
+                }
+                if let Some(slot) = state
+                    .slots
+                    .iter()
+                    .enumerate()
+                    .position(|(slot, worker)| worker.is_none() && !state.reserved[slot])
+                {
+                    state.reserved[slot] = true;
+                    return Ok(Entry {
+                        jobs: self,
+                        slot,
+                        installed: false,
+                    });
+                }
+                state.slots.clone()
+            };
+            if let Some(worker) = workers.iter().flatten().next() {
+                let count = workers.iter().flatten().count();
+                let future_bytes =
+                    kasumi_query::vec_bytes::<u8>(std::mem::size_of_val(&worker.drain()))?;
+                let bytes = future_bytes
+                    .checked_mul(count as u64)
+                    // Each pinned Box contains one concrete sized future, so
+                    // its Vec element is exactly one pointer, not a trait object.
+                    .and_then(|bytes| {
+                        bytes.checked_add(kasumi_query::vec_bytes::<usize>(count).ok()?)
+                    })
+                    .and_then(|bytes| bytes.checked_add(4096))
+                    .ok_or_else(|| {
+                        Error::new(
+                            ErrorCode::ResourceExhausted,
+                            "proposal wait workspace overflow",
+                        )
+                    })?;
+                let mut workspace = admission.reserve(bytes, None)?;
+                workspace.retain(bytes);
+                let mut waits: Vec<_> = workers
+                    .iter()
+                    .flatten()
+                    .map(|worker| Box::pin(worker.drain()))
+                    .collect();
+                // Await any exact join, not the lowest numbered registry slot.
+                // A child notification can precede Tokio's completed handle;
+                // these futures are woken by the actual owned JoinHandles.
+                // Cancelling the wait preserves every registered child.
+                tokio::select! {
+                    _ = std::future::poll_fn(|cx| {
+                        for wait in &mut waits {
+                            if wait.as_mut().poll(cx).is_ready() {
+                                return std::task::Poll::Ready(());
+                            }
+                        }
+                        std::task::Poll::Pending
+                    }) => {},
+                    _ = &mut changed => {},
+                }
+            } else {
+                changed.await;
+            }
+        }
+    }
     fn required_bytes() -> anyhow::Result<u64> {
         BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1)?
             .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
@@ -134,21 +235,33 @@ impl Jobs {
         mut work: ProposalWork,
         command: ProposalCommand,
         max_bytes: usize,
+        entry: Option<Entry<'_>>,
     ) -> Result<Call<Response>> {
-        self.start_task(Box::pin(async move {
-            let bytes = work.run(command, max_bytes).await?;
-            work._reservation.retain_workspace();
-            Ok(Response {
-                bytes,
-                _reservation: work._reservation,
-                _registration: work._registration,
-            })
-        }))
+        self.start_task_at(
+            Box::pin(async move {
+                let bytes = work.run(command, max_bytes).await?;
+                work._reservation.retain_workspace();
+                Ok(Response {
+                    bytes,
+                    _reservation: work._reservation,
+                    _registration: work._registration,
+                })
+            }),
+            entry,
+        )
     }
 
     fn start_task<T: Send + 'static>(
         &self,
         task: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+    ) -> Result<Call<T>> {
+        self.start_task_at(task, None)
+    }
+
+    fn start_task_at<T: Send + 'static>(
+        &self,
+        task: impl Future<Output = anyhow::Result<T>> + Send + 'static,
+        mut entry: Option<Entry<'_>>,
     ) -> Result<Call<T>> {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         self.observe_locked(&mut state);
@@ -159,11 +272,27 @@ impl Jobs {
                 "proposal work is closed; recovery required",
             ));
         }
-        let slot = state
-            .slots
-            .iter()
-            .position(Option::is_none)
-            .ok_or_else(|| Error::new(ErrorCode::ResourceExhausted, "proposal registry is full"))?;
+        let slot = if let Some(entry) = &entry {
+            if !std::ptr::eq(entry.jobs, self)
+                || !state.reserved[entry.slot]
+                || state.slots[entry.slot].is_some()
+            {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "proposal entry reservation changed",
+                ));
+            }
+            entry.slot
+        } else {
+            state
+                .slots
+                .iter()
+                .enumerate()
+                .position(|(slot, worker)| worker.is_none() && !state.reserved[slot])
+                .ok_or_else(|| {
+                    Error::new(ErrorCode::ResourceExhausted, "proposal registry is full")
+                })?
+        };
         let budget = state.budget.as_ref().ok_or_else(|| {
             Error::new(
                 ErrorCode::Unavailable,
@@ -201,6 +330,11 @@ impl Jobs {
                 )
             })?;
         state.slots[slot] = Some(worker.clone());
+        if let Some(entry) = &mut entry {
+            entry.installed = true;
+            state.reserved[slot] = false;
+        }
+        self.changed.notify_waiters();
         #[cfg(test)]
         {
             state.admitted = admitted;
@@ -243,6 +377,7 @@ impl Jobs {
         let workers = {
             let state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             *self.closed.lock().unwrap_or_else(|p| p.into_inner()) = true;
+            self.changed.notify_waiters();
             state.slots.clone()
         };
         let mut retained = None;

@@ -91,6 +91,10 @@ impl AdmittedReadReport {
         self.try_lock()
             .is_some_and(|state| state.routine_diagnostic_detachable())
     }
+    pub(crate) fn is_settled_capacity_denied(&self) -> bool {
+        self.try_lock()
+            .is_some_and(|state| NodeReadReport { state }.is_settled_capacity_denied())
+    }
     pub(super) fn lock(&self) -> MutexGuard<'_, ReaderState> {
         self.state.as_ref().expect("admitted reader report").lock()
     }

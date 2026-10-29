@@ -1456,6 +1456,209 @@ fn native_entry_visitor_does_not_replay_callbacks_after_a_namespace_race() {
 }
 
 #[test]
+fn opening_census_retries_an_unrelated_namespace_race_after_retiring_partial_slots() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let original = ready_group(&path, &disk, 1);
+    put(&original, GroupFile::segment(1), b"one");
+    put(&original, GroupFile::directory(2), b"two");
+    let identity = original.identity().unwrap();
+    close(&original);
+    let bytes = tree(&path);
+    let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let neighbor = directory.path().join("neighbor");
+    let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
+    *group.census_hook.lock() = Some(Box::new({
+        let disk = disk.clone();
+        let entries = entries.clone();
+        let retries = retries.clone();
+        move |stage| {
+            if stage == CensusTestStage::RetryClose {
+                retries.fetch_add(1, Ordering::SeqCst);
+            } else if entries.fetch_add(1, Ordering::SeqCst) == 0 {
+                let (root, relative) = disk
+                    .binding(&neighbor)
+                    .expect("neighbor is in the installed fixture");
+                let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+                disk.delete_file(file)?;
+            }
+            Ok(())
+        }
+    }));
+    group.acquire_prepared(&NodeOpeningMode::Existing).unwrap();
+    assert_eq!(retries.load(Ordering::SeqCst), 1);
+    assert_eq!(entries.load(Ordering::SeqCst), 3);
+    assert_eq!(group.identity().unwrap(), identity);
+    assert_eq!(read_all(&group, GroupFile::segment(1)), b"one");
+    assert_eq!(read_all(&group, GroupFile::directory(2)), b"two");
+    assert_eq!(tree(&path), bytes);
+    assert_eq!(group.cached_files(), 1);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    close(&group);
+    assert_eq!(disk.snapshot().open_files, 0);
+}
+
+#[test]
+fn opening_census_bounds_namespace_retries_and_retains_the_last_partial_pass() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let original = ready_group(&path, &disk, 1);
+    put(&original, GroupFile::segment(1), b"one");
+    close(&original);
+    let bytes = tree(&path);
+    let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let neighbor = directory.path().join("neighbor");
+    let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
+    *group.census_hook.lock() = Some(Box::new({
+        let disk = disk.clone();
+        let entries = entries.clone();
+        let retries = retries.clone();
+        move |stage| {
+            if stage == CensusTestStage::RetryClose {
+                retries.fetch_add(1, Ordering::SeqCst);
+            } else {
+                entries.fetch_add(1, Ordering::SeqCst);
+                let (root, relative) = disk
+                    .binding(&neighbor)
+                    .expect("neighbor is in the installed fixture");
+                let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+                disk.delete_file(file)?;
+            }
+            Ok(())
+        }
+    }));
+    let error = group
+        .acquire_prepared(&NodeOpeningMode::Existing)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<io::Error>().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(entries.load(Ordering::SeqCst), LIST_ATTEMPTS);
+    assert_eq!(retries.load(Ordering::SeqCst), LIST_ATTEMPTS - 1);
+    assert_eq!(group.cached_files(), 1);
+    assert_eq!(disk.snapshot().open_files, 2);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    assert_eq!(tree(&path), bytes);
+    close(&group);
+    assert_eq!(disk.snapshot().open_files, 0);
+}
+
+#[test]
+fn opening_census_does_not_retry_a_visitor_would_block_error() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let original = ready_group(&path, &disk, 1);
+    put(&original, GroupFile::segment(1), b"one");
+    close(&original);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
+    *group.census_hook.lock() = Some(Box::new({
+        let calls = calls.clone();
+        move |stage| {
+            assert!(stage == CensusTestStage::Entry);
+            calls.fetch_add(1, Ordering::SeqCst);
+            Err(io::ErrorKind::WouldBlock.into())
+        }
+    }));
+    let error = group
+        .acquire_prepared(&NodeOpeningMode::Existing)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<io::Error>().unwrap().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    assert_eq!(group.cached_files(), 1);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    close(&group);
+    assert_eq!(disk.snapshot().open_files, 0);
+}
+
+#[test]
+fn opening_census_retry_preserves_an_independent_descriptor_close_failure() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let original = ready_group(&path, &disk, 1);
+    put(&original, GroupFile::segment(1), b"one");
+    close(&original);
+    let bytes = tree(&path);
+    let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let neighbor = directory.path().join("neighbor");
+    let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
+    *group.census_hook.lock() = Some(Box::new({
+        let disk = disk.clone();
+        let entries = entries.clone();
+        let retries = retries.clone();
+        move |stage| {
+            if stage == CensusTestStage::RetryClose {
+                retries.fetch_add(1, Ordering::SeqCst);
+                NodeDiskFile::fail_next_native_close(libc::EIO);
+            } else {
+                entries.fetch_add(1, Ordering::SeqCst);
+                let (root, relative) = disk
+                    .binding(&neighbor)
+                    .expect("neighbor is in the installed fixture");
+                let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+                disk.delete_file(file)?;
+            }
+            Ok(())
+        }
+    }));
+    let error = group
+        .acquire_prepared(&NodeOpeningMode::Existing)
+        .unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<io::Error>().unwrap().raw_os_error(),
+        Some(libc::EIO)
+    );
+    assert_eq!(entries.load(Ordering::SeqCst), 1);
+    assert_eq!(retries.load(Ordering::SeqCst), 1);
+    assert_eq!(group.retained_failed_files(), 1);
+    assert_eq!(group.cached_files(), 1);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    let custody = group.retained_file_custody();
+    assert!(custody.is_some_and(|(_, error)| error.is_some()));
+    let closed = group.close();
+    assert_eq!(
+        closed.native_disposition(),
+        BackendNativeDisposition::Retained
+    );
+    assert_eq!(
+        closed.into_result().unwrap_err().raw_os_error(),
+        Some(libc::EIO)
+    );
+    let attempts = NodeDiskFile::native_close_attempts();
+    let closed = group.close();
+    assert_eq!(
+        closed.native_disposition(),
+        BackendNativeDisposition::Retained
+    );
+    assert_eq!(
+        closed.into_result().unwrap_err().raw_os_error(),
+        Some(libc::EIO)
+    );
+    assert_eq!(NodeDiskFile::native_close_attempts(), attempts);
+    assert_eq!(group.retained_file_custody(), custody);
+    assert!(disk.reconcile(&CensusCancellation::default()).is_err());
+    assert_eq!(tree(&path), bytes);
+}
+
+#[test]
 fn sealed_group_witness_is_allocation_free_and_rejects_foreign_identity() {
     let memory = memory();
     let directory = private_tempdir().unwrap();

@@ -33,7 +33,7 @@ pub struct ChangeRecord {
     pub collection: String,
     pub id: String,
     /// Full immutable after-image, or None for a deletion.
-    pub document: Option<Arc<Document>>,
+    pub document: Option<Arc<crate::DocumentSlot>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

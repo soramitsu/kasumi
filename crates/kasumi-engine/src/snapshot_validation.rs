@@ -462,7 +462,7 @@ impl ValidatedApplicationSnapshot {
                 "snapshot collection identity or epoch differs"
             );
             let source = crate::index_source::StateCollection::new(h, &name, &collection);
-            validate_collection(&source).map_err(kasumi_query::ReadFailure::into_query_error)?;
+            validate_collection(&source).map_err(crate::index_source::into_anyhow)?;
             schema_bytes = schema_bytes
                 .checked_add(encoded_len(&collection.definition)? as u64)
                 .context("schema byte overflow")?;
@@ -488,7 +488,7 @@ impl ValidatedApplicationSnapshot {
                     &name,
                     &collection,
                 )])
-                .map_err(kasumi_query::ReadFailure::into_query_error)?;
+                .map_err(crate::index_source::into_anyhow)?;
                 current = Some((name.clone(), collection, validators));
             }
             let (_, collection, validators) =
@@ -1198,6 +1198,13 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    fn pending_document_mut(slot: &mut Arc<DocumentSlot>) -> &mut Document {
+        match Arc::make_mut(slot) {
+            DocumentSlot::Pending(document) => Arc::make_mut(document),
+            DocumentSlot::Stored(_) => panic!("expected pending snapshot fixture"),
+        }
+    }
+
     // These fixtures hold the image, structural index and semantic scratch
     // table together. Match the other multi-table fixtures' bounded slot count;
     // the 64 MiB byte cap and semantic/admission assertions remain unchanged.
@@ -1226,7 +1233,7 @@ mod tests {
         state.revision = 3;
         state.schema_epoch = 1;
         state.policy_epoch = 1;
-        let documents: imbl::OrdMap<String, Arc<Document>> = [
+        let documents: imbl::OrdMap<String, Arc<DocumentSlot>> = [
             Arc::new(Document {
                 id: "a".into(),
                 version: 3,
@@ -1239,13 +1246,13 @@ mod tests {
             }),
         ]
         .into_iter()
-        .map(|doc| (doc.id.clone(), doc))
+        .map(|doc| (doc.id.clone(), Arc::new(DocumentSlot::Pending(doc))))
         .collect();
         let records: Vec<_> = documents
             .values()
             .map(|doc| ChangeRecord {
                 collection: "rows".into(),
-                id: doc.id.clone(),
+                id: doc.id().to_owned(),
                 document: Some(doc.clone()),
             })
             .collect();
@@ -1263,7 +1270,7 @@ mod tests {
         state.document_count = documents.len() as u64;
         state.logical_bytes = documents
             .values()
-            .map(|doc| encoded_len(&doc.body).unwrap() as u64)
+            .map(|doc| doc.body_bytes().unwrap())
             .sum();
         state.collections.insert(
             "rows".into(),
@@ -1899,7 +1906,7 @@ mod tests {
         );
         let verified = crate::backup_verify::VerifiedState::Indexed(Box::new(indexed));
         assert_eq!(
-            crate::retirement_closure::digest(&state, || Ok(())).unwrap(),
+            crate::retirement_closure::digest(&state, None, || Ok(())).unwrap(),
             crate::retirement_closure::digest_verified(&verified, || Ok(())).unwrap()
         );
     }
@@ -1911,7 +1918,7 @@ mod tests {
         )
         .unwrap();
         let mut state = state();
-        Arc::make_mut(
+        pending_document_mut(
             state
                 .collections
                 .get_mut("rows")
@@ -1929,7 +1936,11 @@ mod tests {
             panic!("validated zero-version document absent");
         };
         assert_eq!(document.version, 0);
-        assert_eq!(document.body, state.collections["rows"].documents["a"].body);
+        let DocumentSlot::Pending(expected) = state.collections["rows"].documents["a"].as_ref()
+        else {
+            panic!("expected pending fixture")
+        };
+        assert_eq!(document.body, expected.body);
         // This path reconstructs the real runtime QueryIndexes after the same
         // canonical snapshot checks, so both input adapters are exercised.
         TenantEngine::verify_logical_snapshot(&image, &state).unwrap();
@@ -1981,7 +1992,18 @@ mod tests {
             let image = encoded(disk, state, row);
             let full = crate::snapshot_codec::read(image.disk(), &mut image.reader())
                 .map_err(SnapshotFailure::from)
-                .and_then(|decoded| TenantEngine::verify_logical_snapshot(&image, &decoded.state));
+                .and_then(|decoded| {
+                    // Validation needs only this metadata baseline. Release
+                    // the first decode's encrypted tables before the verifier
+                    // independently reconstructs the same canonical image.
+                    let state = decoded.state;
+                    drop(decoded.receipts);
+                    drop(decoded.backup_bindings);
+                    drop(decoded.terminals);
+                    drop(decoded.target_resolutions);
+                    drop(decoded.documents);
+                    TenantEngine::verify_logical_snapshot(&image, &state)
+                });
             assert_eq!(full.is_ok(), accepted, "full {case}: {full:?}");
             let indexed = ValidatedApplicationSnapshot::validate(image, 128 << 20, || Ok(()));
             assert_eq!(indexed.is_ok(), accepted, "indexed {case}");
@@ -2110,7 +2132,7 @@ mod tests {
                 1 => candidate.logical_bytes += 1,
                 2 => candidate.collections.get_mut("rows").unwrap().data_epoch = 2,
                 3 => {
-                    Arc::make_mut(
+                    pending_document_mut(
                         candidate
                             .collections
                             .get_mut("rows")
@@ -2123,7 +2145,7 @@ mod tests {
                     candidate.logical_bytes = candidate.collections["rows"]
                         .documents
                         .values()
-                        .map(|d| encoded_len(&d.body).unwrap() as u64)
+                        .map(|d| d.body_bytes().unwrap())
                         .sum();
                 }
                 4 => candidate.change_feed.event_count += 1,

@@ -17,6 +17,10 @@ fn charged(admission: &NodeAdmission) -> (u64, u64, u64, usize) {
     )
 }
 
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the original native custody error inline without an extra allocation"
+)]
 fn reject_without_entering(guard: &mut OriginalRecoveryGuard<'_>) {
     let callbacks_created = AtomicUsize::new(0);
     let callbacks_entered = AtomicUsize::new(0);

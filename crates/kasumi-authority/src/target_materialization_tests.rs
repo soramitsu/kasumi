@@ -61,8 +61,16 @@ fn assert_target_close_outcomes(
         (Err(failure), Err(repeated)) => (failure, repeated),
         outcomes => panic!("target drain changed its original outcome: {outcomes:?}"),
     };
-    assert_eq!(failure.completion(), DrainCompletion::Complete);
-    assert_eq!(repeated.completion(), DrainCompletion::Complete);
+    assert_eq!(
+        failure.completion(),
+        DrainCompletion::Complete,
+        "{failure:?}"
+    );
+    assert_eq!(
+        repeated.completion(),
+        DrainCompletion::Complete,
+        "{repeated:?}"
+    );
     assert_eq!(failure.issues().len(), 1, "{failure:?}");
     assert_eq!(repeated.issues().len(), 1, "{repeated:?}");
     let issue = &failure.issues()[0];
@@ -274,6 +282,7 @@ struct MaterialFixture {
     _source_physical: PhysicalFixture,
     target_files: std::sync::Mutex<BTreeSet<u64>>,
     target_nodes: std::sync::Mutex<BTreeMap<u64, NodeStore>>,
+    target_start_timeout_ms: u64,
 }
 impl MaterialFixture {
     async fn new() -> Self {
@@ -443,6 +452,7 @@ impl MaterialFixture {
             signers,
             target_files: Default::default(),
             target_nodes: Default::default(),
+            target_start_timeout_ms: 60_000,
             physical: (1..=3)
                 .map(|id| (id, PhysicalFixture::new().unwrap()))
                 .collect(),
@@ -1203,7 +1213,7 @@ impl MaterialFixture {
         let mut targets = vec![];
         for id in 1..=3 {
             let (scope, stores, audit) = self.phase(id, phase).await;
-            let operation = scope.begin_operation(60_000).unwrap();
+            let operation = scope.begin_operation(self.target_start_timeout_ms).unwrap();
             let (startup, initial_start) = self.initial_start(id, phase, &input).await;
             let owner = open_target_replica(
                 &operation,
@@ -1301,6 +1311,93 @@ async fn current_target(targets: &[RunningTarget]) -> usize {
     })
     .await
     .unwrap()
+}
+
+async fn elect_original_target(target: &RunningTarget) {
+    let database = target.owner.database();
+    let group = database.raft_group();
+    // Restore this selected physical member's quorum role without replacing
+    // its original phase owner or operation deadline.
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            target.operation.check().unwrap();
+            let metrics = group.raft().metrics().borrow().clone();
+            if metrics.current_leader == Some(target.id) {
+                if group.linearizable_barrier().await.is_ok() {
+                    let after = group.raft().metrics().borrow().clone();
+                    if after.current_leader == Some(target.id)
+                        && after.current_term == metrics.current_term
+                    {
+                        break;
+                    }
+                }
+            } else {
+                group.raft().trigger().elect().await.unwrap();
+            }
+            tokio::time::sleep(Duration::from_millis(300)).await;
+        }
+    })
+    .await
+    .expect("original target member did not regain fixture leadership");
+}
+
+async fn exact_target_completion(
+    target: &RunningTarget,
+    input: &kasumi_types::TargetCompletionInput,
+) -> kasumi_engine::VerifiedTargetCompletion {
+    loop {
+        target.operation.check().unwrap();
+        elect_original_target(target).await;
+        match target
+            .owner
+            .database()
+            .complete_target(&target.operation, input.clone())
+            .await
+        {
+            Ok(proof) => return proof,
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                ) => {}
+            Err(error) => panic!("original target completion rejected: {error:?}"),
+        }
+        target.operation.check().unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+async fn exact_target_activation(
+    target: &RunningTarget,
+    receipt: &kasumi_serving::SignedAuthorityReceipt,
+) -> kasumi_engine::VerifiedTargetActivation {
+    let database = target.owner.database();
+    loop {
+        target.operation.check().unwrap();
+        elect_original_target(target).await;
+        match database
+            .activate_target(&target.operation, receipt.clone())
+            .await
+        {
+            Ok(proof) => {
+                assert_eq!(
+                    proof.fact().issuer_receipt_sha256,
+                    receipt.receipt.digest().unwrap()
+                );
+                return proof;
+            }
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                ) => {}
+            Err(error) => panic!("original target activation rejected: {error:?}"),
+        }
+        // An uncertain acknowledgement is resolved with the same issuer winner,
+        // phase and operation. Its original deadline continues to bound retries.
+        target.operation.check().unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]
@@ -1718,7 +1815,10 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
 }
 #[tokio::test]
 async fn three_actual_materializations_initialize_and_commit_completion_with_restart_proof() {
-    let f = MaterialFixture::new().await;
+    let mut f = MaterialFixture::new().await;
+    // Capture one bounded setup lifetime for all three encrypted opens and the
+    // positive completion/replay checks; explicit expiry fixtures stay shorter.
+    f.target_start_timeout_ms = 300_000;
     let input = f.materialize_all().await;
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
@@ -1767,12 +1867,7 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
         f.target.checkpoint
     );
     assert!(first.revision > f.target.checkpoint.revision);
-    let again = selected
-        .owner
-        .database()
-        .complete_target(&selected.operation, initial_complete(&input))
-        .await
-        .unwrap();
+    let again = exact_target_completion(selected, &initial_complete(&input)).await;
     assert_eq!(again.observation().fact, first);
     drop(again);
     drop(proof);
@@ -1818,7 +1913,11 @@ async fn activated_target_keeps_operational_suspension_and_membership_across_res
 }
 
 async fn exercise_target_activation(maintenance: bool) {
-    let f = MaterialFixture::new().await;
+    let mut f = MaterialFixture::new().await;
+    // This positive integration case opens three encrypted replicas sequentially
+    // before activation and restart proof. Bound the original setup operations
+    // for that work; explicit expiry tests retain the fixture's shorter default.
+    f.target_start_timeout_ms = 300_000;
     let input = f.materialize_all().await;
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
@@ -1985,12 +2084,7 @@ async fn exercise_target_activation(maintenance: bool) {
     journal
         .prepare(&selected.operation, &activation_input.digest().unwrap())
         .unwrap();
-    let completed = selected
-        .owner
-        .database()
-        .activate_target(&selected.operation, accepted_signed.clone())
-        .await
-        .unwrap();
+    let completed = exact_target_activation(selected, &accepted_signed).await;
     assert_eq!(
         completed.fact().issuer_receipt_sha256,
         accepted.digest().unwrap()
@@ -2507,7 +2601,11 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .unwrap();
     unrelated.shutdown().await.unwrap();
     drop(unrelated);
-    let unrelated_bytes = std::fs::read(&file_path).unwrap();
+    let unrelated_image = kasumi_store::test_utils::capture_native_group_image(
+        &file_path,
+        node.persistent_disk().memory().clone(),
+    )
+    .unwrap();
     assert!(
         journal
             .reserve_materialization_file(&op)
@@ -2515,7 +2613,14 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
             .open(&file_path, f.physical[&1].scratch.clone())
             .is_err()
     );
-    assert_eq!(std::fs::read(&file_path).unwrap(), unrelated_bytes);
+    assert_eq!(
+        kasumi_store::test_utils::capture_native_group_image(
+            &file_path,
+            node.persistent_disk().memory().clone(),
+        )
+        .unwrap(),
+        unrelated_image
+    );
     assert_eq!(
         journal
             .materialization_file_id("city", f.target.incarnation)

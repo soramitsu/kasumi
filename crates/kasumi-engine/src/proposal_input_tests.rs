@@ -57,6 +57,69 @@ fn context() -> RequestContext {
 }
 
 #[test]
+fn waiting_mutation_charges_actual_spare_capacity_without_an_execution_slot() {
+    let node = node(2 << 20);
+    let active = (0..node.policy().max_inflight_operations)
+        .map(|_| node.reserve(0, None).unwrap())
+        .collect::<Vec<_>>();
+    assert!(node.reserve(0, None).is_err());
+    let baseline = node.snapshot();
+    let mut proof = String::with_capacity(128 << 10);
+    proof.push('x');
+    let address = proof.as_ptr();
+    let mut input = OperationInput::ordinary(Operation::Mutate(MutationBatch::new().upsert(
+        "docs",
+        "one",
+        Value::String(proof),
+    )));
+    assert!(input.admit_waiting_mutation(&node, &context()).unwrap());
+    let queued = node.snapshot();
+    assert_eq!(queued.inflight_operations, baseline.inflight_operations);
+    assert!(queued.reserved_bytes - baseline.reserved_bytes >= 128 << 10);
+    let command = input.into_command(context());
+    let Operation::Mutate(batch) = &command.command.operation else {
+        unreachable!()
+    };
+    let Mutation::Put {
+        body: Value::String(proof),
+        ..
+    } = &batch.operations[0]
+    else {
+        unreachable!()
+    };
+    assert_eq!(
+        proof.as_ptr(),
+        address,
+        "queue transfers the original input without copying proofs"
+    );
+    assert_eq!(node.snapshot().reserved_bytes, queued.reserved_bytes);
+    drop(command);
+    assert_eq!(node.snapshot().reserved_bytes, baseline.reserved_bytes);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        baseline.live_reservations
+    );
+    assert!(node.reserve(0, None).is_err());
+    drop(active);
+    assert_eq!(node.snapshot().inflight_operations, 0);
+}
+
+#[test]
+fn waiting_mutation_accounts_for_a_retained_empty_object_root() {
+    let mut map = serde_json::Map::new();
+    map.insert("removed".into(), Value::Null);
+    map.remove("removed");
+    let mut batch = MutationBatch::new().upsert("docs", "one", Value::Object(map));
+    let with_root = waiting_mutation_bytes(&context(), &batch).unwrap();
+    let Mutation::Put { body, .. } = &mut batch.operations[0] else {
+        unreachable!()
+    };
+    *body = Value::Null;
+    let without_root = waiting_mutation_bytes(&context(), &batch).unwrap();
+    assert_eq!(with_root - without_root, tree::<String, Value>(1).unwrap());
+}
+
+#[test]
 fn topology_input_denial_same_core_and_ordered_unpolled_destruction() {
     let source = topology(3);
     let quoted = quote(&source, 3).unwrap();

@@ -197,7 +197,9 @@ fn object_node_cost_is_visible_despite_a_small_wire_result() {
 #[test]
 fn typed_feed_quotes_borrow_and_cover_owned_cursor_and_after_image_clones() {
     use kasumi_query::{change_event_clone_bytes, change_feed_page_workspace_bytes};
-    use kasumi_types::{ChangeEvent, ChangeFeedCursor, ChangeFeedPage, ChangeRecord, Document};
+    use kasumi_types::{
+        ChangeEvent, ChangeFeedCursor, ChangeFeedPage, ChangeRecord, Document, DocumentSlot,
+    };
     use std::{collections::BTreeSet, sync::Arc};
     let response = fixture();
     let records: Vec<_> = response
@@ -206,13 +208,19 @@ fn typed_feed_quotes_borrow_and_cover_owned_cursor_and_after_image_clones() {
         .map(|row| ChangeRecord {
             collection: "docs".into(),
             id: row.id.clone(),
-            document: Some(Arc::new(Document {
+            document: Some(Arc::new(DocumentSlot::Pending(Arc::new(Document {
                 id: row.id.clone(),
                 version: row.version,
                 body: row.body.clone(),
-            })),
+            })))),
         })
         .collect();
+    fn decoded(record: &ChangeRecord) -> Option<&Document> {
+        record.document.as_deref().map(|slot| match slot {
+            DocumentSlot::Pending(document) => document.as_ref(),
+            DocumentSlot::Stored(_) => panic!("expected pending fixture"),
+        })
+    }
     let collections = BTreeSet::from(["docs".to_owned(), "other".to_owned()]);
     let measuring = Measurement::begin();
     let mut quote = change_feed_page_workspace_bytes(
@@ -224,7 +232,7 @@ fn typed_feed_quotes_borrow_and_cover_owned_cursor_and_after_image_clones() {
     )
     .unwrap();
     for record in &records {
-        quote += change_event_clone_bytes(record).unwrap();
+        quote += change_event_clone_bytes(record, decoded(record)).unwrap();
     }
     let walked = measuring.finish();
     assert_eq!(walked.allocations, 0);
@@ -239,7 +247,7 @@ fn typed_feed_quotes_borrow_and_cover_owned_cursor_and_after_image_clones() {
             commit_event_count: records.len(),
             collection: record.collection.clone(),
             id: record.id.clone(),
-            document: record.document.as_deref().cloned(),
+            document: decoded(record).cloned(),
         });
     }
     let page = ChangeFeedPage::Events {

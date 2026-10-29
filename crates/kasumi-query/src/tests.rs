@@ -1,5 +1,6 @@
 use super::*;
 use crate::source_test_utils::{FixtureQueries, validate_collection_fixture};
+use crate::source_test_utils::{pending, pending_document, pending_document_mut};
 use serde_json::json;
 
 fn definition(fields: &[(&str, ScalarType)]) -> CollectionDefinition {
@@ -36,7 +37,7 @@ fn collection(
             let id = format!("{i:03}");
             (
                 id.clone(),
-                Arc::new(Document {
+                pending(Document {
                     id,
                     version: 7,
                     body,
@@ -492,7 +493,7 @@ fn unique_indexes_are_compound_exact_and_sparse_only_for_missing() {
     QueryIndexes::build_fixture(&collections).unwrap();
     collections.get_mut("docs").unwrap().documents.insert(
         "dup".into(),
-        Arc::new(Document {
+        pending(Document {
             id: "dup".into(),
             version: 8,
             body: json!({"group":"a","n":"1"}),
@@ -824,7 +825,7 @@ fn generation_validators_survive_cache_eviction_without_recompiling_or_retaining
         );
         value.documents.insert(
             "000".into(),
-            Arc::new(Document {
+            pending(Document {
                 id: "000".into(),
                 version: 8,
                 body,
@@ -835,7 +836,10 @@ fn generation_validators_survive_cache_eviction_without_recompiling_or_retaining
     let updated = indexes.update_fixture(&previous, &next, &changed).unwrap();
     for value in next.values() {
         updated
-            .validate_document(&value.definition, &value.documents["000"].body)
+            .validate_document(
+                &value.definition,
+                &pending_document(&value.documents["000"]).body,
+            )
             .unwrap();
     }
     assert_eq!(
@@ -962,11 +966,11 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
     let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
     let documents = &mut next.get_mut("docs").unwrap().documents;
-    Arc::make_mut(documents.get_mut("001").unwrap()).body["n"] = json!(10001);
+    pending_document_mut(documents.get_mut("001").unwrap()).body["n"] = json!(10001);
     documents.remove("002");
     documents.insert(
         "new".into(),
-        Arc::new(Document {
+        pending(Document {
             id: "new".into(),
             version: 8,
             body: json!({"n":-1,"tag":"common"}),
@@ -1032,7 +1036,7 @@ fn incremental_text_updates_reuse_index_and_preserve_every_old_snapshot() {
     next.get_mut("docs").unwrap().documents.remove("001");
     next.get_mut("docs").unwrap().documents.insert(
         "added".into(),
-        Arc::new(Document {
+        pending(Document {
             id: "added".into(),
             version: 8,
             body: json!({"text":"ripe banana"}),
@@ -1309,7 +1313,7 @@ fn change_document<'a>(
     collections: &'a mut BTreeMap<String, CollectionState>,
     id: &str,
 ) -> &'a mut Document {
-    Arc::make_mut(
+    pending_document_mut(
         collections
             .get_mut("docs")
             .unwrap()
@@ -1345,7 +1349,7 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
         documents: old["docs"]
             .documents
             .iter()
-            .map(|(id, doc)| (id, doc.as_ref()))
+            .map(|(id, doc)| (id, pending_document(doc)))
             .collect(),
         archived_documents: old["docs"]
             .archived_documents
@@ -1358,7 +1362,7 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
     assert_eq!(encoded, serde_json::to_vec(&expected).unwrap());
     let recovered: CollectionState = serde_json::from_slice(&encoded).unwrap();
     assert_eq!(serde_json::to_vec(&recovered).unwrap(), encoded);
-    assert_eq!(recovered.documents["000"].body, body);
+    assert_eq!(pending_document(&recovered.documents["000"]).body, body);
 
     let mut next = old.clone();
     assert!(Arc::ptr_eq(
@@ -1376,7 +1380,7 @@ fn shared_document_representation_preserves_snapshot_bytes_and_historical_values
         .is_none()
     );
     change_document(&mut next, "000").body = json!({"new":true});
-    assert_eq!(old["docs"].documents["000"].body, body);
+    assert_eq!(pending_document(&old["docs"].documents["000"]).body, body);
     assert!(!Arc::ptr_eq(
         &old["docs"].documents["000"],
         &next["docs"].documents["000"]
@@ -1446,7 +1450,7 @@ fn pages_copy_only_their_rows_and_enforce_the_byte_bound() {
     let error = copy_page(
         ["002", "003", "004"]
             .iter()
-            .map(|id| (&*docs.documents[*id], None)),
+            .map(|id| (pending_document(&docs.documents[*id]), None)),
         &[],
         PageBound {
             rows: 100,
@@ -1460,7 +1464,8 @@ fn pages_copy_only_their_rows_and_enforce_the_byte_bound() {
     assert_eq!(memory.live_bytes(), 0);
     let next = |from: &[&str], select: &[String], rows: usize, bytes: usize| {
         copy_page(
-            from.iter().map(|id| (&*docs.documents[*id], None)),
+            from.iter()
+                .map(|id| (pending_document(&docs.documents[*id]), None)),
             select,
             PageBound { rows, bytes },
             &QueryCancellation::default(),
@@ -1482,7 +1487,7 @@ fn pages_copy_only_their_rows_and_enforce_the_byte_bound() {
         rows: ["000", "001"]
             .iter()
             .map(|id| {
-                let document = &docs.documents[*id];
+                let document = pending_document(&docs.documents[*id]);
                 QueryRow {
                     id: document.id.clone(),
                     version: document.version,

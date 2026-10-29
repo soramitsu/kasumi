@@ -312,10 +312,22 @@ impl Fixture {
             Arc::new(LocalKeyProvider::new([35; 32])),
         )
         .await?;
-        let resident = kasumi_engine::test_utils::open_fixture(
+        // Registration borrows a real replicated runtime with the required
+        // three-voter bootstrap. This resident serves no consensus requests;
+        // its route and access lease only witness isolation during cleanup.
+        let resident_bootstrap = ReplicatedBootstrap {
+            genesis: kasumi_engine::ReplicatedGenesis::Application,
+            incarnation: Uuid::new_v4().to_string(),
+            initial_policy: policy,
+            initial_limits: config.tenants[0].initial_limits.clone(),
+            voters: bootstrap.voters.clone(),
+        };
+        let resident = kasumi_engine::test_utils::open_fixture_replicated(
+            1,
             resident_stores,
-            policy,
-            config.tenants[0].initial_limits.clone(),
+            &resident_bootstrap,
+            Arc::new(kasumi_raft::InProcessRouter::default()),
+            kasumi_raft::server_config(),
             audit.clone(),
         )
         .await?;
@@ -391,6 +403,10 @@ impl crate::startup_owner::Runtime for Opened {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the original native custody error inline without an extra allocation"
+)]
 async fn retired_custody_route_uses_original_bootstrap_without_application_provider()
 -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -442,6 +458,10 @@ async fn retired_custody_route_uses_original_bootstrap_without_application_provi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the original native custody error inline without an extra allocation"
+)]
 async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter_drains()
 -> FixtureResult<()> {
     let _serial = crate::standalone::ownership_tests::drain_serial()
@@ -466,16 +486,19 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
             &config,
         ),
     )?;
+    let observed_inventory = inventory.clone();
+    let index =
+        crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
+            &config,
+            &config.tenants[0].tenant,
+        )?;
+    let original_address = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let returned_address = original_address.clone();
     let mut opening = Box::pin(crate::startup_owner::open(
         crate::startup_owner::Kind::Data,
         async move {
-            let index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(
-                &config,
-                &config.tenants[0].tenant,
-            )?;
             let mut claim = inventory.claim(index).await;
             assert!(claim.is_empty());
-            let original_address = std::sync::atomic::AtomicUsize::new(0);
             let work = async {
                 let outcome =
                     open_retired_source(&config, store, Some(&network), audit, admission).await;
@@ -483,7 +506,7 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
                     && let Some(ordinary) = original.original().source_error()
                 {
                     let outer: &(dyn std::error::Error + Send + Sync + 'static) = ordinary.as_ref();
-                    original_address.store(
+                    returned_address.store(
                         std::ptr::from_ref(outer).cast::<()>() as usize,
                         std::sync::atomic::Ordering::Relaxed,
                     );
@@ -502,7 +525,7 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
                                 original.as_ref();
                             assert_eq!(
                                 std::ptr::from_ref(outer).cast::<()>() as usize,
-                                original_address.load(std::sync::atomic::Ordering::Relaxed)
+                                returned_address.load(std::sync::atomic::Ordering::Relaxed)
                             );
                             assert!(original.to_string().contains("group already registered"));
                         })
@@ -520,6 +543,7 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
     tokio::time::timeout(Duration::from_secs(10), observation.entered.notified())
         .await
         .context("retired startup fixture did not acknowledge core entry")?;
+    let original_owner = observation.owner.lock().unwrap().as_ptr();
     // The actual duplicate registration has failed once cleanup closes request
     // admission. Its core remains blocked, so no error/RecoveringControl may return.
     tokio::time::timeout(Duration::from_secs(10), async {
@@ -570,7 +594,39 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
         error.downcast_ref::<RetiredFixtureMarker>().is_some(),
         "{error:#}"
     );
-    assert!(observation.owner.lock().unwrap().upgrade().is_none());
+    // The paid original-failure inventory deliberately keeps the closed owner
+    // and its exact cleanup report. Prove native drain from that report, rather
+    // than treating diagnostic facade disposal as the cleanup acknowledgement.
+    let retained_owner = observation.owner.lock().unwrap().upgrade().unwrap();
+    assert_eq!(Arc::as_ptr(&retained_owner), original_owner);
+    assert!(retained_owner.response_fence(&fixture.context).is_err());
+    drop(retained_owner);
+    assert!(observed_inventory.retained().await);
+    observed_inventory
+        .with_failure(index, |failure| {
+            use crate::administration::original_serving_runtime::CleanupEntry;
+            let original = failure
+                .retired_source_failure()
+                .expect("same retained retired-source carrier");
+            assert!(original.cleanup().is_none());
+            assert_eq!(
+                original.cleanup_observation().entry(),
+                CleanupEntry::Returned
+            );
+            assert_eq!(
+                original.cleanup_observation().future_disposal(),
+                CleanupEntry::Returned
+            );
+            assert!(!original.cleanup_observation().unsettled());
+            let error = original.original().source_error().unwrap();
+            let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+            assert_eq!(
+                std::ptr::from_ref(outer).cast::<()>() as usize,
+                original_address.load(std::sync::atomic::Ordering::Relaxed)
+            );
+        })
+        .await
+        .expect("the failed original remains in its paid seat after join");
     assert!(fixture.custody.store().check_access().is_err());
     fixture.resident.raft_group().check_access()?;
     fixture.audit.store().check_access()?;
@@ -594,6 +650,10 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "preserve the original native custody error inline without an extra allocation"
+)]
 async fn retired_preparation_panic_drains_only_new_custody_owner() -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let fault =

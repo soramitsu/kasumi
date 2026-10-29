@@ -236,7 +236,7 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
         .context("read Control topology through administration")?
         .engine()
         .generation()?;
-    let version = state.state.collections["topology"].documents["current"].version;
+    let version = state.state.collections["topology"].documents["current"].version();
     manage(
         &control_profile,
         ManagementCommand::ActivateTenant {

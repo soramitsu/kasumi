@@ -1,4 +1,5 @@
 use super::*;
+use crate::source_test_utils::pending;
 use crate::source_test_utils::{FixtureQueries, query_memory};
 use std::cell::{Cell, RefCell};
 
@@ -37,12 +38,12 @@ impl LoanSource {
         let definition: CollectionDefinition = serde_json::from_value(serde_json::json!({
             "name":"docs", "schema":{"type":"object"}, "write_mode":"mutable", "retention_class":"operational", "strict_read_audit":false, "indexes":[]
         })).unwrap();
-        let documents: imbl::OrdMap<String, Arc<Document>> = (0..3)
+        let documents: imbl::OrdMap<String, Arc<DocumentSlot>> = (0..3)
             .map(|n| {
                 let id = format!("d{n}");
                 (
                     id.clone(),
-                    Arc::new(Document {
+                    pending(Document {
                         id,
                         version: 7,
                         body: serde_json::json!({"order":2-n,"group":"g","n":n}),
@@ -106,6 +107,92 @@ impl Drop for Loan<'_> {
 }
 
 struct LimitedWorkspace(u64);
+
+#[test]
+fn cursor_source_copies_only_the_requested_page_with_one_exact_version_loan() {
+    let mut source = LoanSource::new();
+    source.fail_at = 2;
+    let mut memory = query_memory();
+    let page = copy_page_from_source(
+        &source,
+        [("d0", 7, None), ("d1", 7, None), ("d2", 7, None)].into_iter(),
+        &[],
+        PageBound {
+            rows: 1,
+            bytes: 1 << 20,
+        },
+        &QueryCancellation::default(),
+        &mut memory,
+    )
+    .unwrap();
+    assert_eq!(page.len(), 1);
+    assert_eq!(page[0].id, "d0");
+    assert_eq!(
+        source.calls.get(),
+        1,
+        "later cursor rows must remain undecoded"
+    );
+    assert_eq!(&*source.expected.borrow(), &[Some(7)]);
+    assert!(!source.active.get());
+}
+
+#[test]
+fn cursor_source_failure_retains_original_error_and_releases_partial_page() {
+    let mut source = LoanSource::new();
+    source.fail_at = 2;
+    let mut memory = query_memory();
+    let error = copy_page_from_source(
+        &source,
+        [("d0", 7, None), ("d1", 7, None)].into_iter(),
+        &[],
+        PageBound {
+            rows: 2,
+            bytes: 1 << 20,
+        },
+        &QueryCancellation::default(),
+        &mut memory,
+    )
+    .unwrap_err();
+    let ReadFailure::Source(error) = error else {
+        panic!("original source failure required");
+    };
+    assert!(Arc::ptr_eq(&error.0, &source.failure));
+    assert_eq!(memory.live_bytes(), 0);
+    assert!(!source.active.get());
+}
+
+#[test]
+fn cursor_source_rejects_stale_versions_and_changed_generation() {
+    let mut source = LoanSource::new();
+    let bound = PageBound {
+        rows: 2,
+        bytes: 1 << 20,
+    };
+    let error = copy_page_from_source(
+        &source,
+        [("d0", 8, None)].into_iter(),
+        &[],
+        bound,
+        &QueryCancellation::default(),
+        &mut query_memory(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, ReadFailure::Query(error) if error.code == ErrorCode::Corruption));
+    source.calls.set(0);
+    source.switch_after_first = true;
+    let error = copy_page_from_source(
+        &source,
+        [("d0", 7, None), ("d1", 7, None)].into_iter(),
+        &[],
+        bound,
+        &QueryCancellation::default(),
+        &mut query_memory(),
+    )
+    .unwrap_err();
+    assert!(matches!(error, ReadFailure::Query(error) if error.code == ErrorCode::Corruption));
+    assert_eq!(source.calls.get(), 1);
+    assert!(!source.active.get());
+}
 impl QueryWorkspace for LimitedWorkspace {
     fn ensure_peak(&mut self, total: u64) -> Result<()> {
         if total > self.0 {
@@ -656,7 +743,7 @@ fn fixture_headers_are_exclusive_and_deduplicate_verified_hydration() {
         archived_document_bytes: 0,
         documents: [(
             "b".to_owned(),
-            Arc::new(Document {
+            pending(Document {
                 id: "b".to_owned(),
                 version: 7,
                 body: serde_json::json!({}),

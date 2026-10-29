@@ -7,6 +7,10 @@ use std::{collections::BTreeMap, sync::Arc, time::Duration};
 const GROUP: &str = "tenant-a";
 const WAIT: Duration = Duration::from_secs(10);
 
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 fn scratch() -> FixtureResult<(tempfile::TempDir, Arc<kasumi_store::ScratchDisk>)> {
     let memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -15,6 +19,10 @@ fn scratch() -> FixtureResult<(tempfile::TempDir, Arc<kasumi_store::ScratchDisk>
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn standalone_recovers_legacy_singleton_snapshot_and_journal() -> FixtureResult<()> {
     let (_scratch_directory, disk) = scratch()?;
     let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -107,6 +115,10 @@ async fn standalone_recovers_legacy_singleton_snapshot_and_journal() -> FixtureR
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn standalone_rejects_cluster_membership_without_rewriting_it() -> FixtureResult<()> {
     let (_scratch_directory, disk) = scratch()?;
     let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -145,6 +157,10 @@ async fn standalone_rejects_cluster_membership_without_rewriting_it() -> Fixture
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_local_request_finishes_commit_and_remains_ordered() -> FixtureResult<()> {
     let (_scratch_directory, disk) = scratch()?;
     let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -187,6 +203,10 @@ async fn cancelled_local_request_finishes_commit_and_remains_ordered() -> Fixtur
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retained_local_readiness_probe_does_not_block_shutdown() -> FixtureResult<()> {
     use std::{future::Future, task::Poll};
 
@@ -250,6 +270,10 @@ async fn retained_local_readiness_probe_does_not_block_shutdown() -> FixtureResu
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn local_snapshot_failure_is_fenced_retained_and_drained() -> FixtureResult<()> {
     let (_scratch_directory, disk) = scratch()?;
     let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -322,6 +346,10 @@ async fn local_snapshot_failure_is_fenced_retained_and_drained() -> FixtureResul
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn installed_local_snapshot_repairs_legacy_missing_commit_cursor() -> FixtureResult<()> {
     let (_scratch_directory, disk) = scratch()?;
     let directory = kasumi_store::test_utils::private_tempdir()?;

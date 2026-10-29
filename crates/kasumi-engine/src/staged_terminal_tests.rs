@@ -152,7 +152,13 @@ fn stop(
     let pending = Pending::prepare(view, previous, &mut next, applied).unwrap();
     (next, pending)
 }
-async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
+async fn durable() -> (
+    tempfile::TempDir,
+    NodeStore,
+    Arc<TenantStore>,
+    TenantState,
+    View,
+) {
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     // The 32-slot fixture exhausted slots at 54,004,507 used bytes. Allow
     // bounded overlap of installed owners, replacement tables, transactions
@@ -169,7 +175,7 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     )
     .unwrap();
     let store = TenantStore::initialize_catalog_fixture(
-        node,
+        node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([89; 32])),
     )
@@ -183,12 +189,12 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     store
         .replace_namespaces(&install.replacements(), install.writes())
         .unwrap();
-    (directory, store, state, install.view)
+    (directory, node, store, state, install.view)
 }
 
 #[tokio::test]
 async fn selected_physical_rows_require_current_writer_bytes_without_repair() -> Result<()> {
-    let (_directory, store, initial, old) = durable().await;
+    let (_directory, _node, store, initial, old) = durable().await;
     let key = crate::state::staging::identity("owner", "selected-writer-bytes")?;
     let (state, pending) = stop(&initial, &old, "selected-writer-bytes", &applied(1));
     let selected = pending.stage()?;
@@ -292,7 +298,7 @@ async fn selected_physical_rows_require_current_writer_bytes_without_repair() ->
 
 #[tokio::test]
 async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Result<()> {
-    let (_directory, store, state, selected) = durable().await;
+    let (_directory, _node, store, state, selected) = durable().await;
     let checkpoint = "10".repeat(32);
     let canonical = store
         .get_bounded(CATALOG, checkpoint.as_bytes(), 64 << 10)?
@@ -345,7 +351,7 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
 
 #[tokio::test]
 async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reuse_it() {
-    let (_directory, _store, state, old) = durable().await;
+    let (_directory, _node, _store, state, old) = durable().await;
     let key = crate::state::staging::identity("owner", "first").unwrap();
     let identity = applied(1);
     let (next, pending) = stop(&state, &old, "first", &identity);
@@ -375,7 +381,7 @@ async fn durable_future_row_is_invisible_and_only_exact_original_replay_can_reus
 
 #[tokio::test]
 async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_replay() {
-    let (directory, store, initial, old) = durable().await;
+    let (directory, node, store, initial, old) = durable().await;
     let disk = store.scratch_disk().clone();
     let identity = applied(1);
     let key = crate::state::staging::identity("owner", "unapplied").unwrap();
@@ -386,7 +392,9 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     drop(durable_future);
     drop(old);
     store.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
     drop(store);
+    assert!(node.retire().is_retired());
 
     let reopened_node = NodeStore::open_existing_fixture(
         directory.path().join("persistent/node.kv"),
@@ -396,7 +404,7 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     )
     .unwrap();
     let reopened_store = TenantStore::open_existing_fixture(
-        reopened_node,
+        reopened_node.clone(),
         "tenant".into(),
         Arc::new(LocalKeyProvider::new([89; 32])),
     )
@@ -424,11 +432,14 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     drop(selected);
     drop(reopened);
     reopened_store.shutdown().await.unwrap();
+    reopened_node.shutdown().await.unwrap();
+    drop(reopened_store);
+    assert!(reopened_node.retire().is_retired());
 }
 
 #[tokio::test]
 async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_live_views() {
-    let (_directory, store, initial, old) = durable().await;
+    let (_directory, _node, store, initial, old) = durable().await;
     let (first_state, first) = stop(&initial, &old, "first", &applied(1));
     let first = first.stage().unwrap();
     let (second_state, second) = stop(&first_state, &first, "second", &applied(2));

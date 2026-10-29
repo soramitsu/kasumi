@@ -272,23 +272,35 @@ impl TenantEngine {
             let mut next = baseline.clone();
             apply.begin_mutation_change_tree(batch)?;
             let changed = batch_changes(batch);
-            let attempt = (|| -> Result<WriteReceipt> {
+            let attempt = (|| -> SourceResult<WriteReceipt> {
                 let receipt = apply_batch(
                     &mut next,
                     batch,
                     revision,
                     command.timestamp_ms,
                     &previous.indexes,
+                    previous.document_resolver(),
                 )?;
-                crate::index_source::validate_changes(&previous.indexes, state, &next, &changed)?;
+                crate::index_source::validate_changes_with_resolvers(
+                    &previous.indexes,
+                    state,
+                    &next,
+                    &changed,
+                    previous.document_resolver(),
+                    previous.document_resolver(),
+                )?;
                 crate::change_feed_state::append(state, &mut next, &changed)?;
                 Ok(receipt)
             })();
             // Captured state/index disagreements are replica failures. They cannot
             // select a permanent rejection receipt or advance the text writer.
             let attempt = match attempt {
-                Err(error) if error.code == ErrorCode::Corruption => return Err(error.into()),
-                outcome => outcome,
+                Err(ReadFailure::Source(error)) => return Err(error.0),
+                Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption => {
+                    return Err(error.into());
+                }
+                Err(ReadFailure::Query(error)) => Err(error),
+                Ok(receipt) => Ok(receipt),
             };
             if let Ok(receipt) = attempt.as_ref() {
                 let outcome = Ok(receipt.clone());
@@ -309,12 +321,17 @@ impl TenantEngine {
                     // shared writer generation, so it cannot precede a rejection.
                     // Any error from here is an outer replica failure; do not select
                     // a rejection receipt and continue with the old text writer.
-                    let indexes = Arc::new(crate::index_source::update(
-                        &previous.indexes,
-                        state,
-                        &next,
-                        &changed,
-                    )?);
+                    let indexes = Arc::new(
+                        crate::index_source::update_with_resolvers(
+                            &previous.indexes,
+                            state,
+                            &next,
+                            &changed,
+                            previous.document_resolver(),
+                            previous.document_resolver(),
+                        )
+                        .map_err(crate::index_source::into_anyhow)?,
+                    );
                     let receipts = pending.stage()?;
                     let candidate = Arc::new(Generation {
                         state: next,
@@ -325,6 +342,8 @@ impl TenantEngine {
                         indexes,
                         snapshot_accounting: accounting,
                         application_selection: std::sync::OnceLock::new(),
+                        staged_documents: previous.staged_documents.clone(),
+                        document_sources: std::sync::OnceLock::new(),
                         _read_reservations: vec![],
                     });
                     return Ok(PreparedCommand {
@@ -373,6 +392,8 @@ impl TenantEngine {
                 indexes: previous.indexes.clone(),
                 snapshot_accounting: accounting,
                 application_selection: std::sync::OnceLock::new(),
+                staged_documents: previous.staged_documents.clone(),
+                document_sources: std::sync::OnceLock::new(),
                 _read_reservations: vec![],
             });
             Ok(PreparedCommand {
@@ -450,6 +471,8 @@ impl TenantEngine {
             indexes: previous.indexes.clone(),
             snapshot_accounting: accounting,
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         });
         Ok(PreparedCommand {

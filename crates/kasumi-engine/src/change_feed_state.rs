@@ -65,7 +65,8 @@ pub(crate) fn append(
         for id in ids {
             let before = old.documents.get(id);
             let after = new.documents.get(id);
-            if before.map(|document| document.version) == after.map(|document| document.version) {
+            if before.map(|document| document.version()) == after.map(|document| document.version())
+            {
                 continue;
             }
             let record = ChangeRecord {
@@ -74,7 +75,7 @@ pub(crate) fn append(
                 document: after.cloned(),
             };
             record_bytes = record_bytes
-                .checked_add(encoded_len(&record)?)
+                .checked_add(crate::accounting::change_record_bytes(&record)?)
                 .ok_or_else(|| Error::new(ErrorCode::QuotaExceeded, "change feed size overflow"))?;
             records.push(record);
         }
@@ -151,7 +152,7 @@ pub(crate) fn validate_restored(state: &TenantState) -> Result<()> {
                 || record
                     .document
                     .as_ref()
-                    .is_some_and(|doc| doc.id != record.id || doc.version != commit.revision)
+                    .is_some_and(|doc| doc.id() != record.id || doc.version() != commit.revision)
             {
                 return Err(Error::new(
                     ErrorCode::Corruption,
@@ -159,7 +160,7 @@ pub(crate) fn validate_restored(state: &TenantState) -> Result<()> {
                 ));
             }
             record_bytes = record_bytes
-                .checked_add(encoded_len(record)?)
+                .checked_add(crate::accounting::change_record_bytes(record)?)
                 .ok_or_else(|| Error::new(ErrorCode::Corruption, "change feed record overflow"))?;
         }
         if record_bytes != commit.record_bytes {

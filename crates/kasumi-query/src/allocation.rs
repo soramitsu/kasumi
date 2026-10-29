@@ -161,13 +161,29 @@ pub fn change_feed_page_workspace_bytes(
 
 /// Heap backing copied from one internal shared record into an owned public
 /// after-image. The inline event and Document slots belong to the page vector.
-/// This borrowed walk must run before any field or JSON body is cloned.
-pub fn change_event_clone_bytes(record: &ChangeRecord) -> Result<u64> {
+/// This borrowed walk must run before any field or JSON body is cloned. The
+/// selected resolver separately admits the decoded source loan; this quote is
+/// for the owned public after-image that can outlive that loan.
+pub fn change_event_clone_bytes(record: &ChangeRecord, decoded: Option<&Document>) -> Result<u64> {
+    if record.document.is_some() != decoded.is_some()
+        || record
+            .document
+            .as_ref()
+            .zip(decoded)
+            .is_some_and(|(stored, document)| {
+                stored.id() != document.id || stored.version() != document.version
+            })
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "feed decoded source identity differs",
+        ));
+    }
     let mut bytes = add(
         string_clone_bytes(&record.collection)?,
         string_clone_bytes(&record.id)?,
     )?;
-    if let Some(document) = &record.document {
+    if let Some(document) = decoded {
         bytes = add(bytes, document_clone_bytes(document)?)?;
     }
     Ok(bytes)

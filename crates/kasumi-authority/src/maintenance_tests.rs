@@ -31,6 +31,54 @@ impl Fixture {
             _ => panic!("expected operation status"),
         }
     }
+    async fn resume_maintenance_to_exact_completion(
+        &self,
+        command: &AuthorityMaintenanceCommand,
+    ) -> AuthorityMaintenanceStatus {
+        let context = self.context("operator");
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut request = AuthorityMaintenanceRequest::Status {
+            operation_id: command.operation_id,
+        };
+        loop {
+            let current = self.leader().await;
+            let response = current.maintenance(context.clone(), request).await;
+            // A lost Resume acknowledgement cannot authorize another operation.
+            // Observe this permanent identity before resuming the same command.
+            request = AuthorityMaintenanceRequest::Status {
+                operation_id: command.operation_id,
+            };
+            match response {
+                Ok((AuthorityMaintenanceResponse::Operation { status }, fence)) => {
+                    assert_eq!(status.command, *command);
+                    if fence.release().await.is_ok() {
+                        if status.phase == AuthorityMaintenancePhase::Completed {
+                            return status;
+                        }
+                        assert!(
+                            !status.phase.terminal(),
+                            "original maintenance reached a different terminal phase: {status:?}"
+                        );
+                        request = AuthorityMaintenanceRequest::Resume {
+                            operation_id: command.operation_id,
+                        };
+                    }
+                }
+                Ok(_) => panic!("expected exact maintenance operation status"),
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) => {}
+                Err(error) => panic!("exact maintenance resume rejected: {error:?}"),
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "original maintenance has no completed exact status before the setup deadline"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     async fn add_fourth(&mut self) {
         self.add_fourth_with_budget(self.settings.resource_budget_bytes)
             .await;
@@ -352,11 +400,8 @@ async fn maintenance_prepared_stop_and_dispatched_restart_are_exact() {
         .unwrap();
     assert_eq!(observed.phase, AuthorityMaintenancePhase::Dispatched);
     let done = fixture
-        .maintenance(AuthorityMaintenanceRequest::Resume {
-            operation_id: command.operation_id,
-        })
-        .await
-        .unwrap();
+        .resume_maintenance_to_exact_completion(&command)
+        .await;
     assert_eq!(done.command, command);
     assert_eq!(done.phase, AuthorityMaintenancePhase::Completed);
     assert_eq!(
@@ -480,11 +525,8 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
     fixture.clock.0.store(1999, Ordering::SeqCst);
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Resume {
-                operation_id: revoke.operation_id
-            })
+            .resume_maintenance_to_exact_completion(&revoke)
             .await
-            .unwrap()
             .phase,
         AuthorityMaintenancePhase::Completed
     );

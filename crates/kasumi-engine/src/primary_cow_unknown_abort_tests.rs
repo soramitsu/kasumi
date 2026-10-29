@@ -254,6 +254,10 @@ fn require_delete(write: &WriteOp, namespace: &str, expected_key: &[u8]) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settlement_batches()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for boundary in [
@@ -366,9 +370,16 @@ async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settle
                 &[],
             )
             .unwrap_err();
-        assert!(
-            retry.chain().any(|cause| matches!(&(cause.downcast_ref::<kasumi_kv::CoreError>()), Some(native_error) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::OwnerFailed)))),
-            "fenced abort retry lost owner failure: {retry:#}"
+        assert_eq!(
+            retry
+                .downcast_ref::<io::Error>()
+                .expect("registered owner fence")
+                .kind(),
+            io::ErrorKind::BrokenPipe
+        );
+        assert_eq!(
+            scope.owners.backend.state.lock().unwrap().finishes - before_finishes,
+            1
         );
         drop(retry);
         assert!(Arc::ptr_eq(&old_generation, &fixture.engine.generation()?));
@@ -552,7 +563,7 @@ async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settle
         assert_eq!(version, Some(2));
         reader.close().unwrap();
         drop(generation);
-        original_unknown(&failure, address, 1);
+        let unknown = original_unknown(&failure, address, 1);
         restarted.close().await;
         drop(failure);
         drop(prior);
@@ -562,7 +573,7 @@ async fn primary_cow_unknown_abort_reopens_complete_progress_resource_and_settle
         drop(remaining);
         drop(image);
         let Scope { fixture, owners } = scope;
-        cleanup(fixture, owners, true).await;
+        cleanup(fixture, owners, Some(unknown)).await;
     }
     Ok(())
 }

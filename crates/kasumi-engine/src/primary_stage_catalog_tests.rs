@@ -132,6 +132,10 @@ fn primary_catalog_member_codec_is_fixed_and_contextual() -> Result<()> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_encrypted_finish_and_separate_abort_units_preserve_old_pin()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -254,6 +258,10 @@ async fn primary_catalog_encrypted_finish_and_separate_abort_units_preserve_old_
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_empty_zero_work_and_first_finish_bind_actual_records()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for changed in 0..4 {
@@ -364,6 +372,10 @@ async fn primary_catalog_empty_zero_work_and_first_finish_bind_actual_records()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_append_refusals_preserve_durable_membership()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for refusal in 0..7 {
@@ -464,6 +476,10 @@ async fn primary_catalog_append_refusals_preserve_durable_membership()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_partial_verifier_keeps_its_exact_pin()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -522,6 +538,10 @@ async fn primary_catalog_partial_verifier_keeps_its_exact_pin()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_verifier_refuses_mutations_and_pin_replacement()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for action in 0..7 {
@@ -591,6 +611,10 @@ async fn primary_catalog_verifier_refuses_mutations_and_pin_replacement()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_abort_missing_or_corrupt_owned_rows_retains_progress()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for mapping_row in [false, true] {
@@ -674,6 +698,10 @@ async fn primary_catalog_abort_missing_or_corrupt_owned_rows_retains_progress()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_real_admission_denial_precedes_append_effects()
 -> crate::test_fixture_failure::FixtureResult<()> {
     for slots in [false, true] {
@@ -794,6 +822,10 @@ fn live_collection<'a, 'b>(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_catalog_nonempty_totals_and_mapping_cow_preserve_membership()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

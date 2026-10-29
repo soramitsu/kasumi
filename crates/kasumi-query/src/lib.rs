@@ -25,7 +25,7 @@ pub use allocation::{
 };
 mod page;
 use page::PageWriter;
-pub use page::{PageBound, copy_page};
+pub use page::{PageBound, copy_page, copy_page_from_source};
 mod scalar;
 mod search;
 mod seek;

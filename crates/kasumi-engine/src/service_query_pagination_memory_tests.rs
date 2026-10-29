@@ -1,20 +1,35 @@
 fn pagination_memory_rows() -> PinnedRows {
+    let mut generation = query_memory_generation();
     let rows: Vec<_> = (0..3)
         .map(|id| PinnedRow {
-            document: Arc::new(Document {
+            document: Arc::new(DocumentSlot::Pending(Arc::new(Document {
                 id: format!("row-{id}"),
                 version: 7,
                 body: json!({"nested": vec![json!({}); 128], "label": "value"}),
-            }),
+            }))),
             score: None,
         })
         .collect();
     let bytes = kasumi_query::vec_bytes::<PinnedRow>(rows.len()).unwrap() as usize
         + rows
             .iter()
-            .map(|row| crate::retained_document_bytes(&row.document).unwrap())
+            .map(|row| pinned_slot_bytes(&row.document).unwrap() as usize)
             .sum::<usize>();
-    PinnedRows { rows, bytes }
+    Arc::get_mut(&mut generation)
+        .unwrap()
+        .state
+        .collections
+        .get_mut("docs")
+        .unwrap()
+        .documents = rows
+        .iter()
+        .map(|row| (row.document.id().to_owned(), row.document.clone()))
+        .collect();
+    PinnedRows {
+        rows,
+        generation: Some(generation),
+        bytes,
+    }
 }
 
 fn pagination_page(rows: &PinnedRows, range: std::ops::Range<usize>) -> QueryResponse {
@@ -22,11 +37,16 @@ fn pagination_page(rows: &PinnedRows, range: std::ops::Range<usize>) -> QueryRes
         revision: 7,
         rows: rows.rows[range]
             .iter()
-            .map(|row| QueryRow {
-                id: row.document.id.clone(),
-                version: row.document.version,
-                body: row.document.body.clone(),
-                score: row.score,
+            .map(|row| {
+                let DocumentSlot::Pending(document) = row.document.as_ref() else {
+                    panic!("fixture pending document");
+                };
+                QueryRow {
+                    id: document.id.clone(),
+                    version: document.version,
+                    body: document.body.clone(),
+                    score: row.score,
+                }
             })
             .collect(),
         aggregates: vec![],
@@ -131,7 +151,10 @@ fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
     let (mut fresh, first_page, _, initial) = pagination_fresh_owner(&node, &cancellation);
     let cursor = pagination_cursor(&mut fresh, 1);
     assert!(fresh.memory.is_none());
-    assert!(Arc::ptr_eq(fresh.reservation.as_ref().unwrap(), &cursor.reservation));
+    assert!(Arc::ptr_eq(
+        fresh.reservation.as_ref().unwrap(),
+        &cursor.reservation
+    ));
     drop((fresh, first_page));
     let full = initial + OUTPUT_CHARGE_BYTES;
     assert_eq!(crate::test_utils::reserved_payload_bytes(&node), full);
@@ -149,7 +172,10 @@ fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
         crate::test_utils::reserved_payload_bytes(&node),
         full + input + page_bytes
     );
-    assert_eq!(node.snapshot().live_reservations, admitted.live_reservations);
+    assert_eq!(
+        node.snapshot().live_reservations,
+        admitted.live_reservations
+    );
     assert_eq!(
         node.snapshot().inflight_operations,
         admitted.inflight_operations
@@ -749,4 +775,133 @@ async fn pagination_memory_public_read_outputs_outlive_shutdown_and_release_inde
     admitted_read_output_drops_one_charge(&node, snapshot);
     admitted_read_output_drops_one_charge(&node, point);
     admitted_read_output_drops_one_charge(&node, scan);
+}
+
+#[tokio::test]
+async fn pagination_native_continuation_keeps_worker_and_decode_charge_after_cancellation() {
+    struct PausedNativeDocument {
+        original: Arc<dyn DocumentResolver>,
+        entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
+        released: Mutex<std::sync::mpsc::Receiver<()>>,
+    }
+    impl DocumentResolver for PausedNativeDocument {
+        fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
+            // Resolve the actual encrypted selected body and hold its original
+            // decoded owner; the gate never substitutes a fixture document.
+            let document = self.original.load(descriptor)?;
+            if let Some(entered) = self.entered.lock().unwrap().take() {
+                let _ = entered.send(());
+                // Independent wall-clock bound also terminates the old inline
+                // implementation, which blocks this current-thread runtime.
+                self.released
+                    .lock()
+                    .unwrap()
+                    .recv_timeout(Duration::from_secs(5))
+                    .map_err(|_| anyhow::anyhow!("native continuation pause expired"))?;
+            }
+            Ok(document)
+        }
+    }
+
+    let fixture = CredentialFixture::new().await;
+    for id in ["a", "b"] {
+        fixture
+            .db
+            .mutate(fixture.context.clone(), credential_batch(id))
+            .await
+            .unwrap();
+    }
+    let mut request = query_memory_request();
+    let first = fixture
+        .db
+        .query(&fixture.context, request.clone())
+        .await
+        .unwrap();
+    request.cursor = first.cursor.clone();
+    let token = request.cursor.as_ref().unwrap().clone();
+    drop(first);
+    let (entered, entry) = tokio::sync::oneshot::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    {
+        let mut cursors = fixture.db.cursors.lock().unwrap();
+        let cursor = cursors.get_mut(&token).unwrap();
+        let rows = Arc::get_mut(&mut cursor.rows).expect("only cursor retains these rows");
+        assert!(
+            rows.rows
+                .iter()
+                .all(|row| matches!(row.document.as_ref(), DocumentSlot::Stored(_)))
+        );
+        let mut selected = rows.generation.as_ref().unwrap().lease_view();
+        let original = selected.document_sources.take().unwrap();
+        assert!(
+            selected
+                .document_sources
+                .set(Arc::new(PausedNativeDocument {
+                    original,
+                    entered: Mutex::new(Some(entered)),
+                    released: Mutex::new(released),
+                }))
+                .is_ok()
+        );
+        rows.generation = Some(Arc::new(selected));
+    }
+    let node = fixture.db.admission().clone();
+    let baseline_decode = node
+        .snapshot()
+        .resident_reserved_bytes_by_origin
+        .document_source;
+    let held_slots = fixture
+        .db
+        .query_slots
+        .clone()
+        .acquire_many_owned(3)
+        .await
+        .unwrap();
+    assert_eq!(fixture.db.query_slots.available_permits(), 1);
+    let database = fixture.db.clone();
+    let context = fixture.context.clone();
+    let continuation = tokio::spawn(async move { database.query(&context, request).await });
+    tokio::time::timeout(Duration::from_secs(2), entry)
+        .await
+        .expect("native continuation must yield the async runtime")
+        .unwrap();
+    assert!(!continuation.is_finished());
+    // A current-thread timer progresses while the actual decoded source waits.
+    tokio::time::sleep(Duration::from_millis(1)).await;
+    assert_eq!(fixture.db.query_slots.available_permits(), 0);
+    let held_decode = node
+        .snapshot()
+        .resident_reserved_bytes_by_origin
+        .document_source;
+    assert!(held_decode > baseline_decode);
+    continuation.abort();
+    assert!(continuation.await.unwrap_err().is_cancelled());
+    assert_eq!(fixture.db.query_slots.available_permits(), 0);
+    assert_eq!(
+        node.snapshot()
+            .resident_reserved_bytes_by_origin
+            .document_source,
+        held_decode
+    );
+    let mut draining = Box::pin(fixture.db.work.drain());
+    assert!(
+        std::future::poll_fn(|cx| Poll::Ready(draining.as_mut().poll(cx)))
+            .await
+            .is_pending()
+    );
+    release.send(()).unwrap();
+    tokio::time::timeout(Duration::from_secs(5), &mut draining)
+        .await
+        .unwrap();
+    drop(draining);
+    assert_eq!(fixture.db.query_slots.available_permits(), 1);
+    assert_eq!(
+        node.snapshot()
+            .resident_reserved_bytes_by_origin
+            .document_source,
+        baseline_decode
+    );
+    drop(held_slots);
+    assert_eq!(fixture.db.query_slots.available_permits(), 4);
+    fixture.close().await;
 }

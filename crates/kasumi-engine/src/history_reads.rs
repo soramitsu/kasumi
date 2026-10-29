@@ -2,6 +2,10 @@
 //! reads. A missing destination, object, key or digest never becomes absence.
 use super::*;
 
+/// An independently owned decoded loan, never a copy made merely to cross an
+/// await boundary. Archive loans retain their chunk charge in HistoryReadCache.
+pub(super) type ReadDocument = OwnedDocument;
+
 pub(super) struct HistoryReadCache {
     chunks: HashMap<(String, usize), Arc<HistoryArchiveChunk>>,
     manifests: BTreeSet<String>,
@@ -73,7 +77,7 @@ impl Database {
         id: &str,
         cancellation: &QueryCancellation,
         cache: &mut HistoryReadCache,
-    ) -> Result<Option<Arc<Document>>> {
+    ) -> Result<Option<ReadDocument>> {
         cancellation.check()?;
         self.access()?;
         let collection = generation
@@ -82,7 +86,12 @@ impl Database {
             .get(collection_name)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "history collection missing"))?;
         if let Some(document) = collection.documents.get(id) {
-            return Ok(Some(document.clone()));
+            let document = document
+                .load_owned(generation.document_resolver())
+                .map_err(document_load_error)?;
+            cancellation.check()?;
+            self.access()?;
+            return Ok(Some(document));
         }
         let Some(reference) = collection.archived_documents.get(id) else {
             return Ok(None);
@@ -231,7 +240,7 @@ impl Database {
         }
         cancellation.check()?;
         self.access()?;
-        Ok(Some(document.clone()))
+        Ok(Some(ReadDocument::Pending(document.clone())))
     }
 
     pub(super) async fn verified_history_object(
@@ -302,7 +311,7 @@ impl Database {
                         cancellation,
                         memory,
                     )
-                    .map_err(ReadFailure::into_query_error)
+                    .map_err(source_read_error)
                 {
                     Ok(ids) => {
                         let candidate_bytes = memory.live_bytes() - candidate_baseline;
@@ -357,16 +366,25 @@ impl Database {
                     .state
                     .collections
                     .get(&name)
-                    .is_some_and(|collection| collection.archived_documents.contains_key(&id))
+                    .is_some_and(|collection| {
+                        collection.archived_documents.contains_key(&id)
+                            && !collection.documents.contains_key(&id)
+                    })
                     && let Some(document) = self
                         .history_document(&generation, &name, &id, cancellation, &mut cache)
                         .await?
                 {
+                    let ReadDocument::Pending(document) = document else {
+                        return Err(Error::new(
+                            ErrorCode::Corruption,
+                            "archive-only read selected a live body",
+                        ));
+                    };
                     collections
                         .get_mut(&name)
                         .expect("validated collection")
                         .documents
-                        .insert(id, document);
+                        .insert(id, Arc::new(DocumentSlot::Pending(document)));
                 }
             }
             // Target IDs moved into the overlay and its cloned metadata live

@@ -1,6 +1,8 @@
 //! Ordered large-transaction lifecycle. All payload storage is replicated and
 //! encrypted with its tenant, and remains outside the document/index namespace.
 use super::*;
+use crate::index_source::SourceResult;
+use kasumi_query::ReadFailure;
 
 pub(crate) fn identity(principal: &str, transaction_id: &str) -> Result<String> {
     validate_name(principal)?;
@@ -438,7 +440,8 @@ pub(super) fn apply(
     command: &Command,
     revision: u64,
     indexes: &QueryIndexes,
-) -> Result<(Result<WriteReceipt>, bool)> {
+    resolver: Option<&dyn DocumentResolver>,
+) -> SourceResult<(Result<WriteReceipt>, bool)> {
     authorize_discovery_state(state, &command.context, Action::Write)?;
     let receipt = || WriteReceipt {
         revision,
@@ -473,7 +476,8 @@ pub(super) fn apply(
                 return Err(Error::new(
                     ErrorCode::InvalidArgument,
                     "staged upload TTL outside bounds",
-                ));
+                )
+                .into());
             }
             let key = identity(&command.context.principal, &request.transaction_id)?;
             let manifest_digest = staged_digest(&request.manifest)?.0;
@@ -483,7 +487,8 @@ pub(super) fn apply(
                     return Err(Error::new(
                         ErrorCode::Conflict,
                         "staged transaction ID reused for different input",
-                    ));
+                    )
+                    .into());
                 }
                 return Ok((
                     existing.outcome.resolved().unwrap_or_else(|| Ok(receipt())),
@@ -529,15 +534,13 @@ pub(super) fn apply(
                 return Err(Error::new(
                     ErrorCode::InvalidArgument,
                     "staged chunk index outside manifest",
-                ));
+                )
+                .into());
             }
             validate_chunk(&request.chunk, &state.limits)?;
             let (digest, bytes) = staged_digest(&request.chunk)?;
             if stage.manifest.chunk_digests[request.index] != digest {
-                return Err(Error::new(
-                    ErrorCode::Conflict,
-                    "staged chunk digest mismatch",
-                ));
+                return Err(Error::new(ErrorCode::Conflict, "staged chunk digest mismatch").into());
             }
             for mutation in &request.chunk.operations {
                 if !stage
@@ -548,7 +551,8 @@ pub(super) fn apply(
                     return Err(Error::new(
                         ErrorCode::Conflict,
                         "staged write collection outside manifest",
-                    ));
+                    )
+                    .into());
                 }
             }
             for assertion in &request.chunk.read_set {
@@ -559,7 +563,8 @@ pub(super) fn apply(
                     return Err(Error::new(
                         ErrorCode::Conflict,
                         "staged read collection outside manifest",
-                    ));
+                    )
+                    .into());
                 }
             }
             if let Some(outcome) = stage.outcome.resolved() {
@@ -581,7 +586,8 @@ pub(super) fn apply(
                 return Err(Error::new(
                     ErrorCode::Conflict,
                     "staged payload exceeds manifest declaration",
-                ));
+                )
+                .into());
             }
             let key = identity(
                 &command.context.principal,
@@ -607,14 +613,14 @@ pub(super) fn apply(
                 return Ok((outcome, false));
             }
             if stage.chunks.len() != stage.manifest.chunk_digests.len() {
-                return Err(Error::new(
-                    ErrorCode::Conflict,
-                    "staged transaction is incomplete",
-                ));
+                return Err(
+                    Error::new(ErrorCode::Conflict, "staged transaction is incomplete").into(),
+                );
             }
             let key = identity(&command.context.principal, &reference.transaction_id)?;
             let mut staged = state.clone();
-            let outcome = validate_complete(&stage).and_then(|()| {
+            let outcome = (|| -> SourceResult<WriteReceipt> {
+                validate_complete(&stage)?;
                 let operations: Vec<_> = stage
                     .chunks
                     .values()
@@ -639,15 +645,27 @@ pub(super) fn apply(
                     false,
                     indexes,
                     patch_expansion_limit,
+                    resolver,
                 )?;
-                crate::index_source::validate_changes(indexes, state, &staged, &changes(&stage))?;
+                crate::index_source::validate_changes_with_resolvers(
+                    indexes,
+                    state,
+                    &staged,
+                    &changes(&stage),
+                    resolver,
+                    resolver,
+                )?;
                 Ok(receipt)
-            });
+            })();
             // An inconsistent captured source is not a transaction outcome.
             // Keep the original active stage and its permanent terminal unset.
             let outcome = match outcome {
-                Err(error) if error.code == ErrorCode::Corruption => return Err(error),
-                outcome => outcome,
+                Err(ReadFailure::Source(error)) => return Err(ReadFailure::Source(error)),
+                Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption => {
+                    return Err(ReadFailure::Query(error));
+                }
+                Err(ReadFailure::Query(error)) => Err(error),
+                Ok(receipt) => Ok(receipt),
             };
             if outcome.is_err() {
                 staged = state.clone();
@@ -670,7 +688,8 @@ pub(super) fn apply(
                     return Err(Error::new(
                         ErrorCode::Conflict,
                         "staged transaction ID reused for different input",
-                    ));
+                    )
+                    .into());
                 }
                 // This is an acknowledgement of the guarded resolution attempt.
                 // The service separately returns the original permanent status.
@@ -703,10 +722,7 @@ pub(super) fn apply(
             }
             Ok((Ok(receipt()), false))
         }
-        _ => Err(Error::new(
-            ErrorCode::InvalidArgument,
-            "operation is not staged",
-        )),
+        _ => Err(Error::new(ErrorCode::InvalidArgument, "operation is not staged").into()),
     }
 }
 

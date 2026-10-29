@@ -181,6 +181,10 @@ impl Cluster {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart()
 -> FixtureResult<()> {
     let mut cluster = Cluster::new().await?;
@@ -256,6 +260,10 @@ async fn partition_rejects_minority_reads_and_writes_and_recovers_after_full_res
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> FixtureResult<()> {
     let mut cluster = Cluster::new().await?;
     let leader = cluster.leader(&[]).await?;
@@ -341,6 +349,10 @@ async fn snapshot_catches_up_partitioned_follower_and_replaces_a_voter() -> Fixt
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -394,6 +406,10 @@ async fn one_voter_acknowledgment_recovers_without_a_snapshot() -> FixtureResult
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -497,6 +513,10 @@ async fn fatal_snapshot_capture_blocks_even_local_generation_access() -> Fixture
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn raft_crash_worker() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -526,6 +546,10 @@ async fn raft_crash_worker() -> FixtureResult<()> {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -549,7 +573,7 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
                 return anyhow::Ok(());
             }
         }
-        return Err(anyhow::anyhow!("worker exited before acknowledging").into());
+        Err(anyhow::anyhow!("worker exited before acknowledging"))
     })
     .await??;
     child.kill().await?;
@@ -571,6 +595,10 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_membership()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);

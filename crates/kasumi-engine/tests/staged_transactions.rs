@@ -121,9 +121,9 @@ fn apply(db: &FixtureEngine, timestamp_ms: u64, operation: Operation) -> Result<
 }
 fn engine(limits: Limits) -> FixtureEngine {
     let db = FixtureEngine::new(
-        // Receipt and terminal scratch tables overlap during publication and
-        // restore. Match the mutation/schema fixtures' slot allowance; keep bytes fixed.
-        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        // Restore body/blob tables overlap retained receipt and terminal groups.
+        // Fund their metadata slots while preserving the 64 MiB byte cap.
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128),
         "tenant".into(),
         "incarnation".into(),
         policy(),
@@ -189,7 +189,7 @@ fn large_transaction_stays_invisible_then_publishes_one_generation_and_permanent
             .collections
             .values()
             .flat_map(|collection| collection.documents.values())
-            .all(|doc| doc.version == receipt.revision)
+            .all(|doc| doc.version() == receipt.revision)
     );
     assert!(committed.state.staged_transactions.is_empty());
     assert!(committed.state.active_staged_transactions.is_empty());
@@ -686,6 +686,7 @@ fn staged_crash_worker() {
 
 #[tokio::test]
 async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_once() {
+    use std::io::Read;
     use std::os::unix::fs::DirBuilderExt;
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();
     // The harness marker belongs outside the private installed storage root.
@@ -713,23 +714,40 @@ async fn killed_upload_recovers_encrypted_invisible_chunks_and_finishes_exactly_
     }
     child.kill().unwrap();
     child.wait().unwrap();
-    let raw = std::fs::read(directory.path().join("persistent/node.kv")).unwrap();
+    let path = directory.path().join("persistent/node.kv");
+    let physical = common::PhysicalFixture::new(&path, Default::default());
+    let memory = physical.storage.persistent.memory().clone();
+    let image =
+        kasumi_store::test_utils::capture_native_group_image(&path, memory.clone()).unwrap();
     let amount = b"90071992547409931234567890.123456789";
-    assert!(
-        !raw.windows(amount.len()).any(|bytes| bytes == amount),
-        "invisible staging payload must still be encrypted on disk"
+    for entry in std::fs::read_dir(&path).unwrap() {
+        let entry = entry.unwrap();
+        assert!(entry.file_type().unwrap().is_file());
+        let mut file = std::fs::File::open(entry.path()).unwrap();
+        let mut buffer = [0; 64 << 10];
+        let mut overlap = 0;
+        loop {
+            let read = file.read(&mut buffer[overlap..]).unwrap();
+            if read == 0 {
+                break;
+            }
+            let total = overlap + read;
+            assert!(
+                !buffer[..total]
+                    .windows(amount.len())
+                    .any(|bytes| bytes == amount),
+                "invisible staging payload must still be encrypted on disk"
+            );
+            overlap = (amount.len() - 1).min(total);
+            buffer.copy_within(total - overlap..total, 0);
+        }
+    }
+    assert_eq!(
+        kasumi_store::test_utils::capture_native_group_image(&path, memory).unwrap(),
+        image
     );
-    drop(raw);
-    let physical = common::PhysicalFixture::new(
-        &directory.path().join("persistent/node.kv"),
-        Default::default(),
-    );
-    let (db, audit, node) = open(
-        &physical,
-        &directory.path().join("persistent/node.kv"),
-        false,
-    )
-    .await;
+    drop(image);
+    let (db, audit, node) = open(&physical, &path, false).await;
     let chunks = chunks();
     let (_, reference) = begin(
         &db.engine().generation().unwrap().state.incarnation,
@@ -1061,17 +1079,27 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
     )
     .await
     .unwrap();
+    let mut documents = vec![Mutation::Put {
+        collection: "docs".into(),
+        id: "large".into(),
+        expected: Precondition::Absent,
+        body: json!({"n":1,"body":"a".repeat(256 << 10)}),
+    }];
+    // Stored bodies retain compact descriptors. Eight shared entries make one
+    // replaced tree path exceed 32 KiB once its metadata is retained, without
+    // treating the large document's disk-backed body as resident lease memory.
+    documents.extend((0..7).map(|ordinal| Mutation::Put {
+        collection: "docs".into(),
+        id: format!("companion-{ordinal}"),
+        expected: Precondition::Absent,
+        body: json!({"n":ordinal + 2}),
+    }));
     db.mutate(
         context(),
         MutationBatch {
             idempotency_key: "large-root".into(),
             read_set: vec![],
-            operations: vec![Mutation::Put {
-                collection: "docs".into(),
-                id: "large".into(),
-                expected: Precondition::Absent,
-                body: json!({"n":1,"body":"a".repeat(256 << 10)}),
-            }],
+            operations: documents,
         },
     )
     .await
@@ -1147,13 +1175,11 @@ async fn small_lease_budget_shares_large_roots_and_expires_on_retained_version_p
             .code,
         ErrorCode::CursorExpired
     );
-    assert_eq!(
-        db.engine().generation().unwrap().state.collections["docs"].documents["large"].body["body"]
-            .as_str()
-            .unwrap()
-            .as_bytes()[0],
-        b'b'
-    );
+    let current = db.engine().generation().unwrap();
+    let document = kasumi_engine::test_utils::fixture_document(&current, "docs", "large").unwrap();
+    assert_eq!(document.body["body"].as_str().unwrap().as_bytes()[0], b'b');
+    drop(document);
+    drop(current);
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
     node.shutdown().await.unwrap();

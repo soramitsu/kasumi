@@ -191,3 +191,38 @@ pub fn copy_page<'a, W: QueryWorkspace>(
         Ok(writer.finish())
     })
 }
+
+/// Copy a cursor page from compact identities in its exact selected source.
+/// Each decoded loan ends after that row is copied; later rows remain on disk.
+pub fn copy_page_from_source<'a, S: crate::DocumentSource + ?Sized, W: QueryWorkspace>(
+    source: &S,
+    rows: impl ExactSizeIterator<Item = (&'a str, u64, Option<f32>)>,
+    select: &[String],
+    bound: PageBound,
+    cancellation: &QueryCancellation,
+    memory: &mut QueryMemory<W>,
+) -> crate::ReadResult<Vec<QueryRow>, S::Failure> {
+    let source = crate::document_source::BoundSource::new(source);
+    memory.scope(|memory| {
+        let selection = (!select.is_empty())
+            .then(|| Selection::new(select, "select"))
+            .transpose()?;
+        let mut writer = PageWriter::new(selection.as_ref(), bound, rows.len(), memory)?;
+        for (id, version, score) in rows {
+            cancellation.check()?;
+            if writer.is_full()
+                || !crate::document_source::with_live(
+                    &source,
+                    id,
+                    Some(version),
+                    cancellation,
+                    |document| writer.push(document, score, memory),
+                )?
+            {
+                break;
+            }
+        }
+        cancellation.check()?;
+        Ok(writer.finish())
+    })
+}

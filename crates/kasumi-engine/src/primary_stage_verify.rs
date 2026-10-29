@@ -19,6 +19,7 @@ pub(crate) struct BaselineVerifier<'guard, 'engine> {
     stage: PrimaryStage<'guard, 'engine>,
     work: Work,
     candidate: Arc<Generation>,
+    previous: Arc<Generation>,
     bootstrap: [u8; 32],
     catalog: CatalogId,
     inventory: Inventory,
@@ -108,6 +109,7 @@ impl<'guard, 'engine> BaselineVerifier<'guard, 'engine> {
             stage,
             work,
             candidate: input.accepted().clone(),
+            previous: input.previous().clone(),
             bootstrap: input.bootstrap(),
             catalog: catalog.id(),
             inventory,
@@ -382,13 +384,18 @@ impl<'guard, 'engine> BaselineVerifier<'guard, 'engine> {
                         && state.archived_documents.contains_key(entry.id)),
                     "accepted graph contains hydrated duplicate"
                 );
-                let record = crate::index_source::record(state, entry.id, state.data_epoch)?
-                    .context("accepted row absent")?;
+                let record = crate::index_source::record(
+                    state,
+                    entry.id,
+                    state.data_epoch,
+                    self.previous.document_resolver(),
+                )?
+                .context("accepted row absent")?;
                 ensure!(
-                    record.version() == leaf.version,
+                    record.as_record().version() == leaf.version,
                     "accepted row version differs"
                 );
-                let totals = match record {
+                let totals = match record.as_record() {
                     Record::Live(document) => {
                         ensure!(leaf.kind == RecordKind::Live, "accepted row kind differs");
                         let mut count = CountHash::new();

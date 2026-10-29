@@ -66,14 +66,14 @@ pub(crate) enum Record {
     Header(Box<TenantState>),
     Lineage(u64, RestoreLineageLink),
     Collection(String, CollectionState),
-    Document(String, Arc<Document>),
+    Document(String, OwnedDocument),
     Archived(String, String, Arc<ArchivedDocument>),
     Receipt(Box<crate::mutation_receipt::Row>),
     Stage(String, StagedTransaction),
     StageChunk(String, usize, Arc<StagedChunk>),
     ActiveStage(String),
     Change(u64, Arc<ChangeCommit>),
-    ChangeItem(u64, u64, ChangeRecord),
+    ChangeItem(u64, u64, WireChangeRecord),
     Archive(String, Arc<RetainedHistoryArchive>),
     Activation(String, StoredSchemaActivation),
     Retirement(String, Box<StoredRetirement>),
@@ -88,6 +88,29 @@ pub(crate) enum Record {
     TargetResolution(Box<crate::target_resolution::Row>),
     RecoveryCompletionHistory(String, Box<RecoveryCompletionHistory>),
     BackupBinding(Box<crate::backup_binding::Row>),
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+pub(crate) struct WireChangeRecord {
+    pub collection: String,
+    pub id: String,
+    pub document: Option<OwnedDocument>,
+}
+impl WireChangeRecord {
+    pub(crate) fn from_record(
+        record: &ChangeRecord,
+        resolver: Option<&dyn DocumentResolver>,
+    ) -> anyhow::Result<Self> {
+        Ok(Self {
+            collection: record.collection.clone(),
+            id: record.id.clone(),
+            document: record
+                .document
+                .as_ref()
+                .map(|slot| slot.load_owned(resolver))
+                .transpose()?,
+        })
+    }
 }
 impl Record {
     pub(crate) fn order(&self) -> (u8, String, String) {
@@ -128,6 +151,51 @@ pub(crate) fn records<'a>(
     kind: u8,
     primary: Option<&str>,
 ) -> anyhow::Result<Box<dyn Iterator<Item = anyhow::Result<Record>> + Send + 'a>> {
+    records_with_resolver(state, kind, primary, None)
+}
+pub(crate) fn records_with_resolver<'a>(
+    state: &'a TenantState,
+    kind: u8,
+    primary: Option<&str>,
+    resolver: Option<&'a dyn DocumentResolver>,
+) -> anyhow::Result<Box<dyn Iterator<Item = anyhow::Result<Record>> + Send + 'a>> {
+    if kind == 3 {
+        let primary = primary.map(str::to_owned);
+        return Ok(Box::new(
+            state
+                .collections
+                .iter()
+                .filter(move |(name, _)| primary.as_ref().is_none_or(|p| p == *name))
+                .flat_map(move |(name, collection)| {
+                    collection.documents.values().map(move |slot| {
+                        Ok(Record::Document(name.clone(), slot.load_owned(resolver)?))
+                    })
+                }),
+        ));
+    }
+    if kind == 10 {
+        let primary = primary.map(str::to_owned);
+        return Ok(Box::new(
+            state
+                .change_feed
+                .commits
+                .iter()
+                .filter(move |(sequence, _)| {
+                    primary
+                        .as_ref()
+                        .is_none_or(|p| p == &format!("{sequence:020}"))
+                })
+                .flat_map(move |(sequence, commit)| {
+                    commit.records.iter().enumerate().map(move |(i, record)| {
+                        Ok(Record::ChangeItem(
+                            *sequence,
+                            i as u64,
+                            WireChangeRecord::from_record(record, resolver)?,
+                        ))
+                    })
+                }),
+        ));
+    }
     if kind == 14 {
         let primary = primary.map(str::to_owned);
         return Ok(Box::new(
@@ -178,12 +246,7 @@ pub(crate) fn records<'a>(
                     },
                 )
             })),
-            3 => Box::new(collections.flat_map(|(name, collection)| {
-                collection
-                    .documents
-                    .values()
-                    .map(move |document| Record::Document(name.clone(), document.clone()))
-            })),
+            3 => unreachable!("document loans handled above"),
             4 => Box::new(collections.flat_map(|(name, collection)| {
                 collection
                     .archived_documents
@@ -215,17 +278,7 @@ pub(crate) fn records<'a>(
                 header.records.clear();
                 Record::Change(*i, Arc::new(header))
             })),
-            10 => Box::new(
-                state
-                    .change_feed
-                    .commits
-                    .iter()
-                    .flat_map(|(sequence, commit)| {
-                        commit.records.iter().enumerate().map(move |(i, record)| {
-                            Record::ChangeItem(*sequence, i as u64, record.clone())
-                        })
-                    }),
-            ),
+            10 => unreachable!("change-feed loans handled above"),
             11 => Box::new(
                 state
                     .history_archives
@@ -458,12 +511,32 @@ impl<'a> Encoder<'a> {
         Ok(())
     }
 }
+#[cfg(test)]
 pub(crate) fn write(
     state: &TenantState,
     receipts: &crate::mutation_receipt::View,
     backup_bindings: &crate::backup_binding::View,
     terminals: &crate::staged_terminal::View,
     target_resolutions: &crate::target_resolution::View,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    write_with_resolver(
+        state,
+        receipts,
+        backup_bindings,
+        terminals,
+        target_resolutions,
+        None,
+        writer,
+    )
+}
+pub(crate) fn write_with_resolver(
+    state: &TenantState,
+    receipts: &crate::mutation_receipt::View,
+    backup_bindings: &crate::backup_binding::View,
+    terminals: &crate::staged_terminal::View,
+    target_resolutions: &crate::target_resolution::View,
+    resolver: Option<&dyn DocumentResolver>,
     writer: &mut dyn Write,
 ) -> anyhow::Result<()> {
     anyhow::ensure!(
@@ -482,7 +555,7 @@ pub(crate) fn write(
                 encoder.record(Record::Receipt(Box::new(row?)))?;
             }
         } else {
-            for record in records(state, kind, None)? {
+            for record in records_with_resolver(state, kind, None, resolver)? {
                 encoder.record(record?)?;
             }
         }
@@ -565,18 +638,25 @@ impl StreamSummary {
         selected.maximum_decode_work = selected.maximum_decode_work.max(work);
         Ok(())
     }
-    /// Resident semantic records and fixed stream framing, excluding encrypted
-    /// permanent point rows. Recovery completion history (kind 23) is resident.
-    /// This is not an allocator or hard-RSS measurement; the snapshot quota
-    /// separately includes staged terminal rows, which remain permanent here.
+    /// Compact descriptor/maps and other semantic metadata. Document and feed
+    /// payload bytes live in encrypted tables; their typed decode is charged by
+    /// the separate one-record maximum. This estimate is not measured RSS.
     pub(crate) fn resident_bytes(&self) -> anyhow::Result<u64> {
         self.kinds
             .iter()
             .enumerate()
             .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22 | 24))
-            .try_fold(64u64, |total, (_, kind)| {
+            .try_fold(64u64, |total, (number, kind)| {
+                // Names are bounded at validation; include duplicated map keys,
+                // Arc/descriptor control and conservative tree/vector capacity.
+                let bytes = match number {
+                    3 => kind.records.checked_mul(4096),
+                    10 => kind.records.checked_mul(8192),
+                    _ => Some(kind.framed_bytes),
+                }
+                .ok_or_else(|| anyhow::anyhow!("compact snapshot size overflow"))?;
                 total
-                    .checked_add(kind.framed_bytes)
+                    .checked_add(bytes)
                     .ok_or_else(|| anyhow::anyhow!("resident snapshot byte overflow"))
             })
     }
@@ -597,7 +677,7 @@ impl StreamSummary {
     /// Resident/index estimate plus structurally accounted peak typed decode
     /// work. Permanent table length consumes scratch, never this RAM estimate.
     /// See `record_work` for the explicit model; neither term measures hard RSS.
-    pub(crate) fn materialization_workspace(&self) -> anyhow::Result<u64> {
+    pub(crate) fn materialization_base_workspace(&self) -> anyhow::Result<u64> {
         let record = self.maximum_decode_work();
         self.resident_bytes()?
             .checked_mul(3)
@@ -605,6 +685,35 @@ impl StreamSummary {
             .and_then(|bytes| bytes.checked_add(64 << 20))
             .ok_or_else(|| anyhow::anyhow!("snapshot materialization workspace overflow"))
     }
+
+    pub(crate) fn document_workspace(&self) -> anyhow::Result<u64> {
+        crate::document_restore::workspace(
+            self.kinds[3]
+                .maximum_payload_bytes
+                .max(self.kinds[10].maximum_payload_bytes),
+            self.kinds[3]
+                .maximum_decode_work
+                .max(self.kinds[10].maximum_decode_work),
+        )
+    }
+
+    pub(crate) fn materialization_workspace(&self) -> anyhow::Result<u64> {
+        let documents = self.document_workspace()?;
+        self.materialization_base_workspace()?
+            .checked_add(documents)
+            .and_then(|bytes| {
+                bytes.checked_add(if documents == 0 {
+                    0
+                } else {
+                    crate::admission::DocumentReadBudget::CONTROL_BYTES
+                })
+            })
+            .ok_or_else(|| anyhow::anyhow!("snapshot document workspace overflow"))
+    }
+}
+
+pub(crate) fn bounded_json_work(wire_bytes: u64, sites: u64) -> anyhow::Result<u64> {
+    record_work::bounded_work(wire_bytes, sites)
 }
 
 fn finish_summary(
@@ -858,6 +967,7 @@ pub(crate) struct Decoded {
     pub(crate) backup_bindings: crate::backup_binding::View,
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
+    pub(crate) documents: crate::document_restore::StagedDocuments,
 }
 pub(crate) fn read(
     disk: &Arc<kasumi_store::ScratchDisk>,
@@ -868,6 +978,7 @@ pub(crate) fn read(
     let mut backup_bindings: Option<crate::backup_binding::Builder> = None;
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
+    let mut documents: Option<crate::document_restore::Builder> = None;
     let summary = visit(reader, |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
@@ -912,6 +1023,17 @@ pub(crate) fn read(
                     &header.staged_terminal_head.origin_incarnation,
                 )?);
             }
+            documents = Some(crate::document_restore::Builder::new(
+                disk,
+                header
+                    .limits
+                    .max_snapshot_bytes
+                    .checked_mul(8)
+                    .and_then(|v| v.checked_add(64 << 20))
+                    .ok_or_else(|| anyhow::anyhow!("document staging budget overflow"))?,
+                &header.tenant,
+                &header.incarnation,
+            )?);
             state = Some(*header);
             return Ok(());
         }
@@ -936,12 +1058,19 @@ pub(crate) fn read(
                     state.collections.insert(k, collection);
                 }
                 Record::Document(k, document) => {
+                    let descriptor = documents
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
+                        .push(&document)?;
                     state
                         .collections
                         .get_mut(&k)
                         .ok_or_else(|| anyhow::anyhow!("document collection missing"))?
                         .documents
-                        .insert(document.id.clone(), document);
+                        .insert(
+                            document.id.clone(),
+                            Arc::new(DocumentSlot::Stored(descriptor)),
+                        );
                 }
                 Record::Archived(k, id, reference) => {
                     state
@@ -991,6 +1120,17 @@ pub(crate) fn read(
                     state.change_feed.commits.insert(i, commit);
                 }
                 Record::ChangeItem(i, index, change) => {
+                    let document = change
+                        .document
+                        .as_ref()
+                        .map(|document| {
+                            documents
+                                .as_mut()
+                                .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
+                                .push(document)
+                                .map(|descriptor| Arc::new(DocumentSlot::Stored(descriptor)))
+                        })
+                        .transpose()?;
                     let commit = state
                         .change_feed
                         .commits
@@ -1001,7 +1141,11 @@ pub(crate) fn read(
                         index == commit.records.len() as u64,
                         "change record sequence differs"
                     );
-                    commit.records.push(change);
+                    commit.records.push(ChangeRecord {
+                        collection: change.collection,
+                        id: change.id,
+                        document,
+                    });
                 }
                 Record::Archive(k, archive) => {
                     state.history_archives.insert(k, archive);
@@ -1167,6 +1311,9 @@ pub(crate) fn read(
             summary,
             terminals,
             target_resolutions,
+            documents: documents
+                .ok_or_else(|| anyhow::anyhow!("snapshot document builder absent"))?
+                .finish()?,
         })
     })
 }
@@ -1213,7 +1360,7 @@ mod tests {
     #[test]
     fn canonical_stream_requires_terminal_counts_digest_and_exact_eof() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1257,7 +1404,7 @@ mod tests {
     #[test]
     fn oversized_record_is_rejected_before_payload_read_or_allocation() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1270,7 +1417,7 @@ mod tests {
     #[test]
     fn authenticated_duplicate_header_is_rejected() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;
@@ -1298,7 +1445,7 @@ mod tests {
     #[test]
     fn archived_audit_prefix_preserves_absolute_sequences_and_head() {
         let scratch = crate::codec_fixture::ScratchScope::new(
-            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
         )
         .unwrap();
         let disk = &scratch.disk;

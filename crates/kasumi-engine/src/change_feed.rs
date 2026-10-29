@@ -129,6 +129,7 @@ impl Database {
         }
         read.page = Some(build_change_feed_page(
             state,
+            read.generation.document_resolver(),
             context,
             &read.request,
             &cancellation,
@@ -190,6 +191,7 @@ struct BorrowedEnvelope<'a> {
 
 pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
     state: &TenantState,
+    resolver: Option<&dyn DocumentResolver>,
     context: &RequestContext,
     request: &ReadChangeFeed,
     cancellation: &QueryCancellation,
@@ -295,6 +297,26 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     next.after_sequence = sequence;
                     continue;
                 }
+                let document = record
+                    .document
+                    .as_ref()
+                    .map(|slot| match slot.as_ref() {
+                        DocumentSlot::Pending(document) => Ok(DocumentLoan::Pending(document)),
+                        DocumentSlot::Stored(document) => {
+                            let resolver = resolver.ok_or_else(|| {
+                                Error::new(
+                                    ErrorCode::Unavailable,
+                                    "change feed document resolver is unavailable",
+                                )
+                            })?;
+                            document
+                                .load(resolver)
+                                .map(DocumentLoan::Stored)
+                                .map_err(document_load_error)
+                        }
+                    })
+                    .transpose()?;
+                let decoded = document.as_ref().map(AsRef::as_ref);
                 let borrowed = BorrowedEvent {
                     sequence,
                     revision: commit.revision,
@@ -302,7 +324,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     commit_event_count: commit.records.len(),
                     collection: &record.collection,
                     id: &record.id,
-                    document: record.document.as_deref(),
+                    document: decoded,
                 };
                 let event_bytes = crate::accounting::encoded_len(&borrowed)?
                     .checked_add(1)
@@ -325,7 +347,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                         "change feed event count differs from committed metadata",
                     ));
                 }
-                memory.reserve(kasumi_query::change_event_clone_bytes(record)?)?;
+                memory.reserve(kasumi_query::change_event_clone_bytes(record, decoded)?)?;
                 let event = ChangeEvent {
                     sequence,
                     revision: commit.revision,
@@ -333,7 +355,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                     commit_event_count: commit.records.len(),
                     collection: record.collection.clone(),
                     id: record.id.clone(),
-                    document: record.document.as_deref().cloned(),
+                    document: decoded.cloned(),
                 };
                 bytes += event_bytes;
                 next.after_sequence = sequence;

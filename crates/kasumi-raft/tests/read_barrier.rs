@@ -129,6 +129,10 @@ impl Fixture {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadline()
 -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -162,6 +166,10 @@ async fn fresh_quorum_round_recovers_after_a_600ms_stall_within_original_deadlin
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn permanent_partition_exhausts_five_seconds_without_reducing_membership() -> FixtureResult<()>
 {
     let fixture = Fixture::new().await?;
@@ -186,6 +194,10 @@ async fn permanent_partition_exhausts_five_seconds_without_reducing_membership()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline() -> FixtureResult<()>
 {
     let fixture = Fixture::new().await?;
@@ -201,6 +213,10 @@ async fn key_seal_interrupts_pending_quorum_probe_without_waiting_for_deadline()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_secs(60));
@@ -223,6 +239,10 @@ async fn custody_key_seal_interrupts_pending_probe_and_denies_new_writes() -> Fi
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn higher_term_stops_retry_and_never_releases_a_stale_read() -> FixtureResult<()> {
     let fixture = Fixture::new().await?;
     fixture.pause(Duration::from_secs(60));

@@ -69,11 +69,13 @@ fn installed_genesis_allows_enrollment_approval_without_reopening_schema() {
         state.collections["tenant_enrollments"].definition,
         ControlPlane::enrollment_definition()
     );
-    ControlPlane::applied_topology(state).unwrap();
+    ControlPlane::applied_topology(state, None).unwrap();
     let mut missing = state.clone();
     missing.collections.remove("tenant_enrollments");
     assert_eq!(
-        ControlPlane::applied_topology(&missing).unwrap_err().code,
+        ControlPlane::applied_topology(&missing, None)
+            .unwrap_err()
+            .code,
         ErrorCode::Corruption
     );
     let mut changed = state.clone();
@@ -84,7 +86,9 @@ fn installed_genesis_allows_enrollment_approval_without_reopening_schema() {
         .definition
         .strict_read_audit = false;
     assert_eq!(
-        ControlPlane::applied_topology(&changed).unwrap_err().code,
+        ControlPlane::applied_topology(&changed, None)
+            .unwrap_err()
+            .code,
         ErrorCode::Corruption
     );
     let directory = kasumi_store::test_utils::private_tempdir().unwrap();

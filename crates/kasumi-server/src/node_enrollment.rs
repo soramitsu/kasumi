@@ -187,25 +187,37 @@ fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> 
                 .iter()
                 .map(|tenant| (tenant.tenant.as_str(), tenant.incarnation.as_ref())),
         ) {
-            require_genesis_record(store, tenant,
-                incarnation.map(|value| Uuid::parse_str(value)).transpose()?, digest)?;
+            require_genesis_record(
+                store,
+                tenant,
+                incarnation
+                    .map(|value| Uuid::parse_str(value))
+                    .transpose()?,
+                digest,
+            )?;
         }
     }
     Ok(())
 }
 
 fn require_genesis_record(
-    store: &TenantStore, tenant: &str, incarnation: Option<Uuid>, digest: &str,
+    store: &TenantStore,
+    tenant: &str,
+    incarnation: Option<Uuid>,
+    digest: &str,
 ) -> Result<()> {
-    let record = tenant_record(store, tenant)?
-        .context("genesis tenant or Control enrollment is missing")?;
+    let record =
+        tenant_record(store, tenant)?.context("genesis tenant or Control enrollment is missing")?;
     ensure!(
         record.stage == Stage::Prepared
             && matches!(&record.origin, Origin::Genesis { input_sha256 } if input_sha256 == digest),
         "genesis tenant or Control enrollment differs"
     );
     if let Some(incarnation) = incarnation {
-        ensure!(record.incarnation == incarnation, "genesis incarnation differs");
+        ensure!(
+            record.incarnation == incarnation,
+            "genesis incarnation differs"
+        );
     }
     Ok(())
 }

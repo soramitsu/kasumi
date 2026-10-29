@@ -238,57 +238,6 @@ impl Drop for TransactionSpace {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn scratch_claim_diagnostic_filesystem_floor_preserves_promises_on_denial() {
-        let directory = crate::test_utils::private_tempdir().unwrap();
-        let memory = crate::test_utils::TestDiskMemory::new(32 << 20, 64);
-        let config = ScratchDiskConfig {
-            directory: directory.path().to_owned(),
-            max_bytes: 1 << 20,
-            min_free_bytes: 8192,
-            file_allocation_policy: crate::FileAllocationPolicy::new(4096).unwrap(),
-            native_cache_bytes: 0,
-        };
-        let disk = crate::test_utils::retry_disk_registry(|| {
-            ScratchDisk::open_fixture(&config, memory.clone())
-        })
-        .unwrap();
-        let before = disk.snapshot();
-        let required = before.filesystem_pending_bytes + 4096 + config.min_free_bytes;
-        *disk.available_override.lock().unwrap() = Some(required - 1);
-        let mut diagnostic = ReserveDiagnostic::default();
-        assert!(matches!(
-            disk.reserve_transaction_space_staged(4096, 1, &mut diagnostic),
-            Err(ReserveFailure::Capacity)
-        ));
-        assert_eq!(diagnostic.stage, "filesystem_available_bytes");
-        assert_eq!(diagnostic.requested, Some(required));
-        assert_eq!(diagnostic.current, None);
-        assert_eq!(diagnostic.limit, Some(required - 1));
-        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
-        assert_eq!(
-            disk.snapshot().filesystem_pending_bytes,
-            before.filesystem_pending_bytes
-        );
-        assert_eq!(disk.lock_state().reserved_files, 0);
-        assert!(disk.transaction_ready());
-
-        *disk.available_override.lock().unwrap() = Some(required);
-        let mut space = disk.reserve_transaction_space(4096, 1).unwrap();
-        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 4096);
-        space.finish().unwrap();
-        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
-        assert_eq!(
-            disk.snapshot().filesystem_pending_bytes,
-            before.filesystem_pending_bytes
-        );
-        assert_eq!(disk.lock_state().reserved_files, 0);
-    }
-}
 impl Charge {
     pub(crate) fn transaction_bytes(&self) -> u64 {
         self.bytes
@@ -349,7 +298,10 @@ impl FileAttempt {
         // Transfer the complete standing allowance before inode birth. A
         // failed acquired attempt retains it, and finish moves it into Charge.
         let allowance = self.disk.file_ceiling(0)?;
-        space.bytes = space.bytes.checked_sub(allowance).ok_or(io::ErrorKind::InvalidData)?;
+        space.bytes = space
+            .bytes
+            .checked_sub(allowance)
+            .ok_or(io::ErrorKind::InvalidData)?;
         self.bytes = allowance;
         // The NUL-terminated name and descriptor owner are already retained.
         let descriptor = unsafe {
@@ -398,12 +350,17 @@ impl FileAttempt {
         {
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let allocated = metadata.blocks().checked_mul(512).ok_or(io::ErrorKind::InvalidData)?;
+        let allocated = metadata
+            .blocks()
+            .checked_mul(512)
+            .ok_or(io::ErrorKind::InvalidData)?;
         if allocated > self.bytes {
             return Err(io::ErrorKind::InvalidData.into());
         }
         let mut pending = self.disk.device.lock();
-        let next = pending.checked_sub(allocated).ok_or(io::ErrorKind::InvalidData)?;
+        let next = pending
+            .checked_sub(allocated)
+            .ok_or(io::ErrorKind::InvalidData)?;
         pending.set_pending(next)?;
         self.allocated = allocated;
         self.identity = Some((metadata.dev(), metadata.ino()));
@@ -431,5 +388,57 @@ impl FileAttempt {
                 release_on_drop: true,
             },
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn scratch_claim_diagnostic_filesystem_floor_preserves_promises_on_denial() {
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let memory = crate::test_utils::TestDiskMemory::new(32 << 20, 64);
+        let config = ScratchDiskConfig {
+            directory: directory.path().to_owned(),
+            max_bytes: 1 << 20,
+            min_free_bytes: 8192,
+            file_allocation_policy: crate::FileAllocationPolicy::new(4096).unwrap(),
+            native_cache_bytes: 0,
+        };
+        let disk = crate::test_utils::retry_disk_registry(|| {
+            ScratchDisk::open_fixture(&config, memory.clone())
+        })
+        .unwrap();
+        let before = disk.snapshot();
+        let required = before.filesystem_pending_bytes + 4096 + config.min_free_bytes;
+        *disk.available_override.lock().unwrap() = Some(required - 1);
+        let mut diagnostic = ReserveDiagnostic::default();
+        assert!(matches!(
+            disk.reserve_transaction_space_staged(4096, 1, &mut diagnostic),
+            Err(ReserveFailure::Capacity)
+        ));
+        assert_eq!(diagnostic.stage, "filesystem_available_bytes");
+        assert_eq!(diagnostic.requested, Some(required));
+        assert_eq!(diagnostic.current, None);
+        assert_eq!(diagnostic.limit, Some(required - 1));
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(
+            disk.snapshot().filesystem_pending_bytes,
+            before.filesystem_pending_bytes
+        );
+        assert_eq!(disk.lock_state().reserved_files, 0);
+        assert!(disk.transaction_ready());
+
+        *disk.available_override.lock().unwrap() = Some(required);
+        let mut space = disk.reserve_transaction_space(4096, 1).unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + 4096);
+        space.finish().unwrap();
+        assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+        assert_eq!(
+            disk.snapshot().filesystem_pending_bytes,
+            before.filesystem_pending_bytes
+        );
+        assert_eq!(disk.lock_state().reserved_files, 0);
     }
 }

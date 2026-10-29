@@ -39,6 +39,10 @@ fn selected(fixture: &Fixture, input: &CommandInput) -> Result<()> {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent_outcome()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -55,12 +59,27 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
     assert_eq!(receipt.revision, 3);
     selected(&fixture, &input1)?;
     let accepted = fixture.engine.generation()?;
+    let slot = &accepted.state.collections["docs"].documents[&id(0, false)];
+    slot.stored()?;
     assert_eq!(
-        accepted.state.collections["docs"].documents[&id(0, false)].version,
+        accepted.load_document(slot)?.body,
+        json!({"accepted": true})
+    );
+    for commit in accepted.state.change_feed.commits.values() {
+        for event in &commit.records {
+            if let Some(slot) = &event.document {
+                slot.stored()?;
+                let _verified = accepted.load_document(slot)?;
+            }
+        }
+    }
+
+    assert_eq!(
+        accepted.state.collections["docs"].documents[&id(0, false)].version(),
         3
     );
     assert_eq!(
-        old.state.collections["docs"].documents[&id(0, false)].version,
+        old.state.collections["docs"].documents[&id(0, false)].version(),
         2
     );
     let input2 = fixture.command(Operation::Mutate(MutationBatch {
@@ -81,7 +100,7 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
     let after_rejection = fixture.engine.generation()?;
     assert_eq!(after_rejection.state.revision, 4);
     assert_eq!(
-        after_rejection.state.collections["docs"].documents[&id(0, false)].version,
+        after_rejection.state.collections["docs"].documents[&id(0, false)].version(),
         3
     );
     assert!(Arc::ptr_eq(&accepted.indexes, &after_rejection.indexes));
@@ -100,7 +119,9 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
         after_rejection.state.mutation_receipt_head
     );
     assert_eq!(
-        observed.state.collections["docs"].documents[&id(0, false)].body,
+        observed
+            .load_document(&observed.state.collections["docs"].documents[&id(0, false)])?
+            .body,
         json!({"accepted":true})
     );
     drop(observed);
@@ -118,6 +139,10 @@ async fn ordered_command_real_sink_publishes_acceptance_rejection_and_idempotent
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordered_command_real_sink_rejects_full_context_substitution_after_preparation()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -194,6 +219,10 @@ async fn ordered_command_real_sink_rejects_full_context_substitution_after_prepa
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_outcome()
 -> crate::test_fixture_failure::FixtureResult<()> {
     struct Refuse<'a> {
@@ -266,6 +295,8 @@ async fn ordered_command_frozen_refusal_keeps_actual_guard_and_encoded_sealed_ou
         indexes: old.indexes.clone(),
         snapshot_accounting: old.snapshot_accounting.clone(),
         application_selection: std::sync::OnceLock::new(),
+        staged_documents: None,
+        document_sources: std::sync::OnceLock::new(),
         _read_reservations: vec![],
     });
     fixture.engine.publish_generation(Some(frozen.clone()));

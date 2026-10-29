@@ -170,7 +170,10 @@ impl OperatorState {
             .as_ref()
             .expect("operator owns the original recovery inventory");
         let mut seat = inventory.claim(index).await;
-        seat.run_snapshot(work).await.map_err(snapshot_marker)
+        Ok(seat
+            .run_snapshot_operation(work)
+            .await
+            .map_err(snapshot_marker)??)
     }
     /// Borrowing this same inventory introduces no new control or grant. The
     /// caller claims its seat and begins the loan before constructing work.

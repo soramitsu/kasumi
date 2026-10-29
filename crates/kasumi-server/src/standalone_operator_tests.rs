@@ -43,7 +43,7 @@ where
 {
     // Keep the two-worker runtime used by these ownership cases, but build
     // their large encrypted-catalog futures outside libtest's small stack.
-    std::thread::Builder::new()
+    let fixture = std::thread::Builder::new()
         .name(name.into())
         .stack_size(16 << 20)
         .spawn(move || {
@@ -54,9 +54,11 @@ where
                 .build()
                 .unwrap()
                 .block_on(Box::pin(make()))
-        })?
-        .join()
-        .expect("standalone ownership fixture thread panicked")
+        })?;
+    match fixture.join() {
+        Ok(result) => result,
+        Err(original) => std::panic::resume_unwind(original),
+    }
 }
 fn install(path: &Path, phase: &'static str, fail: bool) -> CheckpointControl {
     let checkpoint = Arc::new(Checkpoint {

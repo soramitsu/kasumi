@@ -124,6 +124,10 @@ fn remove_only_injected_unknown(fixture: &Fixture, cell: &CellRef) {
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_actual_point_drop_panic_preserves_capture_error_and_separate_payload()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -192,6 +196,10 @@ async fn selected_sources_actual_point_drop_panic_preserves_capture_error_and_se
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn selected_sources_actual_point_drop_panic_still_cancels_queued_reader()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

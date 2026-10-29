@@ -23,6 +23,7 @@ impl VerifiedControlTopology {
             .get("topology")
             .and_then(|collection| collection.documents.get("current"))
             .ok_or_else(|| changed("Control topology disappeared before release"))?;
+        let document = state.load_document(document).map_err(document_load_error)?;
         if document.version != self.observation.topology.version
             || serde_json::to_value(&self.observation.topology.topology)
                 .map_err(|_| changed("Control topology release encoding failed"))?
@@ -31,6 +32,7 @@ impl VerifiedControlTopology {
         {
             return Err(changed("Control topology changed before release"));
         }
+        drop(document);
         drop(state);
         self.fence.check()
     }
@@ -107,6 +109,7 @@ impl Database {
                 .get("topology")
                 .and_then(|collection| collection.documents.get("current"))
                 .ok_or_else(|| changed("installed Control topology unavailable"))?;
+            let document = state.load_document(document).map_err(document_load_error)?;
             let mut size = BoundedSize(0);
             serde_json::to_writer(&mut size, &document.body).map_err(|_| {
                 Error::new(
@@ -129,7 +132,7 @@ impl Database {
                 term: fence.term(),
                 leader_node_id: fence.local_node_id(),
                 voters: fence.voters().collect(),
-                topology: ControlPlane::applied_topology(&state.state)?,
+                topology: ControlPlane::applied_topology(&state.state, state.document_resolver())?,
                 admitted_at_ms,
                 not_after_ms,
             };

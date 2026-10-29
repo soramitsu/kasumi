@@ -16,15 +16,51 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
     let source = proposal_topology();
     let key = "cancelled-topology-input";
     let exact = proposal_input::retained_for_test(&source, key);
-    let command_workspace = ((8 << 20) + (64 << 10)) * 3u64;
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));
-    let gate = fixture.db.proposal_gate.lock().await;
-    let mut request = Box::pin(plane.replace_topology(
-        fixture.credential(clock.clone()),
-        source,
+    let context = fixture.credential(clock.clone());
+    let mut quoted = proposal_input::OperationInput::topology(
+        fixture.db.admission(),
+        proposal_topology(),
         Precondition::Absent,
-        key.into(),
-    ));
+        key,
+    )
+    .unwrap();
+    // The actual queue retains input/control backing in addition to the
+    // topology producer's exact grant. Measure that same synchronous admission
+    // before dispatch; it contributes one retained charge, no active slot.
+    let before_waiting = fixture.db.admission().snapshot();
+    assert!(
+        quoted
+            .admit_waiting_mutation(fixture.db.admission(), &context)
+            .unwrap()
+    );
+    let after_waiting = fixture.db.admission().snapshot();
+    let waiting_bytes = after_waiting.reserved_bytes - before_waiting.reserved_bytes;
+    assert!(waiting_bytes > 0);
+    assert_eq!(
+        after_waiting.live_reservations,
+        before_waiting.live_reservations + 1
+    );
+    assert_eq!(
+        after_waiting.inflight_operations,
+        before_waiting.inflight_operations
+    );
+    let quoted = quoted.into_command(context.clone());
+    let max_bytes = proposal_input_len(&quoted.command).unwrap() + (64 << 10);
+    let Operation::Mutate(batch) = &quoted.command.operation else {
+        panic!("topology input must be a mutation");
+    };
+    let input_bytes = kasumi_raft::ApplicationInputRequirements::for_capacity(max_bytes)
+        .with_mutation_change_tree(batch)
+        .unwrap()
+        .with_token::<ProposalBudget>()
+        .unwrap();
+    let command_workspace =
+        max_bytes as u64 * 3 + input_bytes + ProposalBudget::required_bytes().unwrap();
+    drop(quoted);
+    let gate = fixture.db.proposal_gate.lock().await;
+    let mut request =
+        Box::pin(plane.replace_topology(context, source, Precondition::Absent, key.into()));
     tokio::time::timeout(
         Duration::from_secs(5),
         fixture.db.proposals.wait_for_admission(request.as_mut()),
@@ -34,9 +70,9 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
     let admitted = fixture.db.admission().snapshot();
     assert_eq!(
         admitted.reserved_bytes,
-        before.reserved_bytes + command_workspace + exact
+        before.reserved_bytes + command_workspace + exact + waiting_bytes
     );
-    assert_eq!(admitted.live_reservations, before.live_reservations + 2);
+    assert_eq!(admitted.live_reservations, before.live_reservations + 3);
     drop(request);
     assert_eq!(
         fixture.db.admission().snapshot().reserved_bytes,
@@ -105,7 +141,7 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
     check_topology_input_drop(
         address,
         move || {
-            let error = jobs.start(work, command, 8 << 20).err().unwrap();
+            let error = jobs.start(work, command, 8 << 20, None).err().unwrap();
             assert_eq!(error.code, ErrorCode::Unavailable);
         },
         || {

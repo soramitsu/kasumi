@@ -36,7 +36,7 @@ fn guarded_request(fixture: &CredentialFixture, id: &str, deadline: u64) -> Stop
                     .documents
                     .get("guard")
                     .map_or(ReadPrecondition::Absent, |document| {
-                        ReadPrecondition::Version(document.version)
+                        ReadPrecondition::Version(document.version())
                     }),
             },
         ],
@@ -213,9 +213,10 @@ async fn accepted_stop_release_failure_is_unknown_and_reopen_recovers_exact_tomb
         storage.admission.clone(),
     )
     .unwrap();
-    let application = TenantStore::open_existing_fixture(node.clone(), context.tenant.clone(), provider)
-        .await
-        .unwrap();
+    let application =
+        TenantStore::open_existing_fixture(node.clone(), context.tenant.clone(), provider)
+            .await
+            .unwrap();
     let stores = kasumi_store::test_utils::open_existing_custody_fixture(
         application,
         Arc::new(LocalKeyProvider::new([241; 32])),

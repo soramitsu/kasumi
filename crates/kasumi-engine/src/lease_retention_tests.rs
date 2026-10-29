@@ -101,7 +101,10 @@ fn fixture(
         CollectionState {
             definition,
             data_epoch: 1,
-            documents,
+            documents: documents
+                .into_iter()
+                .map(|(id, document)| (id, Arc::new(DocumentSlot::Pending(document))))
+                .collect(),
             archived_documents: Default::default(),
             archived_document_bytes: 0,
         },
@@ -125,6 +128,8 @@ fn install(engine: &TenantEngine, state: TenantState) {
         backup_bindings: engine.generation().unwrap().backup_bindings.clone(),
         snapshot_accounting,
         application_selection: std::sync::OnceLock::new(),
+        staged_documents: None,
+        document_sources: std::sync::OnceLock::new(),
         _read_reservations: vec![],
     })));
 }
@@ -334,14 +339,22 @@ fn publication_expires_full_roots_while_two_inflight_selections_keep_only_bounde
     );
     assert_eq!(page_one.generation.state.revision, lease.header.revision);
     assert_eq!(
-        page_one.generation.state.collections["docs"].documents["d0000"].body["value"]
+        page_one
+            .generation
+            .load_document(&page_one.generation.state.collections["docs"].documents["d0000"])
+            .unwrap()
+            .body["value"]
             .as_str()
             .unwrap()
             .as_bytes()[0],
         b'x'
     );
+    let current = engine.generation().unwrap();
     assert_eq!(
-        engine.generation().unwrap().state.collections["docs"].documents["d0063"].body["value"]
+        current
+            .load_document(&current.state.collections["docs"].documents["d0063"])
+            .unwrap()
+            .body["value"]
             .as_str()
             .unwrap()
             .as_bytes()[0],
@@ -396,7 +409,7 @@ fn publication_enforces_aggregate_retention_before_another_page_or_monitor_tick(
         + LEASE_HANDLE_BYTES;
     let old = engine.generation().unwrap().state.collections["docs"].documents["d0000"].clone();
     let delta =
-        document_heap(&old, usize::MAX).unwrap() + RETAINED_ENTRY_BYTES + path_bytes(128, 1);
+        document_slot_heap(&old, usize::MAX).unwrap() + RETAINED_ENTRY_BYTES + path_bytes(128, 1);
     let mut state = engine.generation().unwrap().state.clone();
     state.limits.atomic.max_snapshot_lease_bytes = base * 3 + delta * 2 - 1;
     install(&engine, state);

@@ -304,8 +304,11 @@ impl Fixture {
             tenant.create_documents().await;
         }
         for i in 0..3 {
-            a.put(&format!("a-{i}"), json!({"tenant": "a", "version": 1, "i": i}))
-                .await;
+            a.put(
+                &format!("a-{i}"),
+                json!({"tenant": "a", "version": 1, "i": i}),
+            )
+            .await;
         }
         b.put("b-0", json!({"write": 0})).await;
         a.shutdown().await;

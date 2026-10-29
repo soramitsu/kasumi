@@ -58,6 +58,10 @@ mod history;
 pub use history::*;
 mod shared_document;
 pub use shared_document::{AdmittedDocumentOwner, SharedDocument};
+mod stored_document;
+pub use stored_document::{
+    DocumentLoan, DocumentResolver, DocumentSlot, OwnedDocument, StoredDocument,
+};
 mod retirement;
 pub use retirement::*;
 mod custody;
@@ -365,7 +369,7 @@ pub struct CollectionState {
     pub data_epoch: u64,
     #[serde(serialize_with = "serialize_resident_map")]
     // Leaf copy-on-write clones Arc handles, never unrelated JSON bodies.
-    pub documents: imbl::OrdMap<String, std::sync::Arc<Document>>,
+    pub documents: imbl::OrdMap<String, std::sync::Arc<DocumentSlot>>,
     #[serde(serialize_with = "serialize_resident_map")]
     pub archived_documents: imbl::OrdMap<String, std::sync::Arc<ArchivedDocument>>,
     pub archived_document_bytes: usize,

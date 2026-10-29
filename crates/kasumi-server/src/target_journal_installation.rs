@@ -163,6 +163,10 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "preserve the original native custody error inline without an extra allocation"
+    )]
     async fn target_templates_keep_independent_same_name_and_target_only_audit_choices()
     -> Result<()> {
         let directory = kasumi_store::test_utils::private_tempdir()?;

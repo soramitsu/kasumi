@@ -316,10 +316,13 @@ fn bind_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<
 
 fn require_deployment(stores: &TenantStorageSet, binding: &[u8]) -> anyhow::Result<()> {
     let installed = stores.deployment_binding()?;
-    anyhow::ensure!(
-        installed.as_ref().map(|value| value.as_bytes()) == Some(binding),
-        "required deployment binding is absent or differs"
-    );
+    if installed.as_ref().map(|value| value.as_bytes()) != Some(binding) {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "required deployment binding is absent or differs",
+        )
+        .into());
+    }
     Ok(())
 }
 

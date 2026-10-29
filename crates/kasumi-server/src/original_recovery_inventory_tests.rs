@@ -203,6 +203,49 @@ impl Drop for OpaqueOriginal {
 }
 
 #[tokio::test]
+async fn original_recovery_operation_result_returns_exact_error_and_leaves_seat_available() {
+    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let before = admission.snapshot();
+    let inventory =
+        OriginalRecoveries::new(&admission, OriginalRecoveryParticipants::one("tenant")).unwrap();
+    let mut seat = inventory.claim(0).await;
+    let mut original = kasumi_types::Error::new(
+        kasumi_types::ErrorCode::QuotaExceeded,
+        "original fixture operation exceeded its document budget",
+    );
+    original.mark_denial_audit_attempted();
+    let original_backing = original.message.as_ptr();
+    let returned = seat
+        .run_snapshot_operation(async { Err::<(), _>(original.into()) })
+        .await
+        .unwrap_or_else(|_| panic!("ordinary operation must leave no retained failure"))
+        .unwrap_err();
+    assert_eq!(returned.code, kasumi_types::ErrorCode::QuotaExceeded);
+    assert_eq!(
+        returned.message,
+        "original fixture operation exceeded its document budget"
+    );
+    assert_eq!(returned.message.as_ptr(), original_backing);
+    assert!(returned.denial_audit_attempted());
+    assert!(seat.with_failure(|_| ()).is_none());
+    assert_eq!(
+        seat.run_snapshot_operation(async { Ok(17) })
+            .await
+            .unwrap_or_else(|_| panic!("ordinary operation must leave its seat available"))
+            .unwrap(),
+        17
+    );
+    drop(seat);
+    assert!(!inventory.retained().await);
+    drop(inventory);
+    assert_eq!(admission.snapshot().reserved_bytes, before.reserved_bytes);
+    assert_eq!(
+        admission.snapshot().live_reservations,
+        before.live_reservations
+    );
+}
+
+#[tokio::test]
 async fn original_recovery_opaque_source_keeps_actual_original_and_charge_after_facade_drop() {
     let admission = NodeAdmission::new(Default::default()).unwrap();
     let before = admission.snapshot();
@@ -222,16 +265,29 @@ async fn original_recovery_opaque_source_keeps_actual_original_and_charge_after_
     let address = inventory.state().seats.as_ref().unwrap().as_ptr() as usize;
     let mut seat = inventory.claim(0).await;
     let capture_watch = watching.snapshot().count;
-    let marker = seat
-        .capture_snapshot(original.into())
-        .expect("preheld empty seat");
-    assert_eq!(
-        watching.snapshot().count,
-        capture_watch,
-        "paid handoff allocated"
-    );
-    assert_eq!(marker.index, 0);
-    drop(marker);
+    {
+        let marker = seat
+            .run_snapshot_operation(async { Err::<(), _>(original.into()) })
+            .await
+            .unwrap_err();
+        let calls = Cell::new(0);
+        let refused = seat
+            .run_snapshot_operation(async {
+                calls.set(calls.get() + 1);
+                Ok(())
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(calls.get(), 0, "occupied seat polled a new constructor");
+        assert_eq!(refused.index, marker.index);
+        assert_eq!(refused.stage, marker.stage);
+        assert_eq!(
+            watching.snapshot().count,
+            capture_watch,
+            "paid handoff allocated"
+        );
+        assert_eq!(marker.index, 0);
+    }
     assert_eq!(
         seat.with_failure(|failure| failure
             .original()
@@ -256,6 +312,80 @@ async fn original_recovery_opaque_source_keeps_actual_original_and_charge_after_
     let observed = watching.finish();
     assert!(!observed.overflow);
     assert!(!observed.allocation(address).unwrap().freed);
+}
+
+#[tokio::test]
+async fn original_recovery_operation_adapter_keeps_registered_creation_and_original_diagnostic() {
+    use kasumi_store::{EncryptedTable, ScratchDisk, test_utils::TestDiskMemory};
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let path = directory.path().join("scratch");
+    let memory = TestDiskMemory::new(64 << 20, 64);
+    let disk = ScratchDisk::fixture(&path, memory.clone());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let original = EncryptedTable::new(&disk, 1 << 20, disk.native_cache_config())
+        .err()
+        .expect("actual registered directory refusal");
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let owner_id = original.owner_id().expect("registered creation owner");
+    let diagnostic = original.with_diagnostic(|report| {
+        report.unwrap().admission_error().unwrap() as *const std::io::Error as usize
+    });
+    let retained = memory.snapshot();
+    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let inventory =
+        OriginalRecoveries::new(&admission, OriginalRecoveryParticipants::one("tenant")).unwrap();
+    let mut seat = inventory.claim(0).await;
+    let marker = seat
+        .run_snapshot_operation(async {
+            Err::<(), _>(kasumi_engine::SnapshotFailure::Creation(original))
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(marker.index, 0);
+    assert_eq!(
+        seat.with_failure(|failure| {
+            let original = failure.original().creation().unwrap();
+            assert_eq!(original.owner_id(), Some(owner_id));
+            original.with_diagnostic(|report| {
+                report.unwrap().admission_error().unwrap() as *const std::io::Error as usize
+            })
+        }),
+        Some(diagnostic)
+    );
+    drop(seat);
+    assert!(inventory.retained().await);
+    drop(inventory);
+    assert_eq!(memory.snapshot().used_bytes, retained.used_bytes);
+    assert_eq!(
+        memory.snapshot().live_reservations,
+        retained.live_reservations
+    );
+}
+
+#[tokio::test]
+async fn original_recovery_snapshot_still_retains_ordinary_error() {
+    let admission = NodeAdmission::new(Default::default()).unwrap();
+    let inventory =
+        OriginalRecoveries::new(&admission, OriginalRecoveryParticipants::one("tenant")).unwrap();
+    let mut seat = inventory.claim(0).await;
+    let original = kasumi_types::Error::new(kasumi_types::ErrorCode::Unavailable, "original");
+    let backing = original.message.as_ptr() as usize;
+    seat.run_snapshot(async { Err::<(), _>(original.into()) })
+        .await
+        .unwrap_err();
+    assert_eq!(
+        seat.with_failure(|failure| failure
+            .original()
+            .operation_error()
+            .unwrap()
+            .message
+            .as_ptr() as usize),
+        Some(backing)
+    );
+    drop(seat);
+    assert!(inventory.retained().await);
 }
 
 #[derive(Debug)]
@@ -754,8 +884,7 @@ async fn original_recovery_rpc_ready_output_keeps_actual_backing_and_original_di
             panic: Some(original_panic),
         })
         .await
-        .err()
-        .expect("retained original output and panic");
+        .expect_err("retained original output and panic");
     guard.with_report(|report| {
         assert!(report.original().is_none(), "no invented body error");
         match report.output().unwrap() {

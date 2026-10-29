@@ -385,6 +385,7 @@ async fn exercise_completed_recovery(
     activation_outcome: Option<bool>,
     inspect_completion: bool,
 ) {
+    let manual = inspect_completion.then(manual_epoch);
     let CompletionFixture {
         live:
             RoutePublicationFixture {
@@ -397,7 +398,11 @@ async fn exercise_completed_recovery(
         completed,
         outcome,
     } = {
-        let prepared = Box::pin(prepare_completion(planned, inspect_completion));
+        let prepared = Box::pin(prepare_completion(
+            planned,
+            inspect_completion,
+            manual.as_ref().map(|(_, epoch)| epoch.clone()),
+        ));
         prepared.await
     };
     // The preparation poll frame has returned before resolving the original
@@ -411,6 +416,7 @@ async fn exercise_completed_recovery(
             complete_phase,
             completed,
             &attestation,
+            manual.as_ref().map(|(elapsed, _)| elapsed.as_ref()),
         ))
         .await;
     } else {
@@ -438,7 +444,13 @@ async fn exercise_completed_recovery(
         // The old future and its poll frame are gone; this moves the same
         // storage owners and original request into the next phase. No detached
         // task, replacement authorization or altered deadline is introduced.
-        Box::pin(exercise_route_publication(&mut fixture, database, &request)).await;
+        Box::pin(exercise_route_publication(
+            &mut fixture,
+            database,
+            &request,
+            manual.as_ref().map(|(elapsed, _)| elapsed.as_ref()),
+        ))
+        .await;
     }
 }
 // Carry the exact prepared completion out of the preparation future before
@@ -450,8 +462,12 @@ struct CompletionFixture {
     completed: TargetCompletionFact,
     outcome: RecoveryDispatchOutcome,
 }
-async fn prepare_completion(planned: bool, inspect_completion: bool) -> CompletionFixture {
-    let mut f = Fixture::new().await;
+async fn prepare_completion(
+    planned: bool,
+    inspect_completion: bool,
+    epoch: Option<Arc<kasumi_clock::EpochClock>>,
+) -> CompletionFixture {
+    let mut f = Fixture::configured_with_epoch_clock(Limits::default(), 8 << 20, epoch).await;
     let mut request = request(&f);
     let mut attestation = BTreeMap::new();
     for node in request.target_nodes.values_mut() {
@@ -1979,7 +1995,12 @@ async fn read_topology(f: &Fixture) -> kasumi_engine::control::VersionedTopology
     .await
     .expect("original topology read did not acquire its durable release fence")
 }
-async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request: &RecoveryStart) {
+async fn exercise_route_publication(
+    f: &mut Fixture,
+    db: Arc<Database>,
+    request: &RecoveryStart,
+    elapsed: Option<&kasumi_store::test_utils::ManualClock>,
+) {
     use kasumi_engine::control::{ControlNode, ControlPlane, DeploymentMode, TenantRoute};
     let initialization_context = f.context("owner");
     tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
@@ -2111,15 +2132,7 @@ async fn exercise_route_publication(f: &mut Fixture, db: Arc<Database>, request:
     .await;
     let original_cutoff = prepared.dispatch_limit().await.unwrap();
     drop(prepared);
-    let now = kasumi_clock::EpochClock::system()
-        .unwrap()
-        .observe()
-        .unwrap()
-        .utc_ms();
-    tokio::time::sleep(Duration::from_millis(
-        original_cutoff.saturating_sub(now) + 20,
-    ))
-    .await;
+    expire_fixture_deadline(f, elapsed, original_cutoff).await;
     let (fresh, input) = prepare_next(f, &db, request.operation_id).await;
     let old = read_recovery_phase(f, f.context("owner"), request.operation_id, expired).await;
     assert_eq!(old.dispatch_limit().await.unwrap(), original_cutoff);
@@ -2883,7 +2896,11 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
             }
         }
     }
-    let mut f = Fixture::new().await;
+    // Durable/quorum work must not consume the original one-second target
+    // interval before its positive admission and explicit revocation checks.
+    let (elapsed, epoch) = manual_epoch();
+    let mut f =
+        Fixture::configured_with_epoch_clock(Limits::default(), 8 << 20, Some(epoch.clone())).await;
     let db = f.leader().await;
     let mut start = request(&f);
     start.phase_timeout_ms = 15_000;
@@ -2966,11 +2983,7 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     let RecoveryDispatch::Target { request, .. } = &mut input else {
         panic!("target dispatch required")
     };
-    request.not_after_ms = kasumi_clock::EpochClock::system()
-        .unwrap()
-        .now_ms()
-        .unwrap()
-        + 1000;
+    request.not_after_ms = epoch.now_ms().unwrap() + 1000;
     let frozen = input.clone();
     let head = db
         .recovery_status(f.context("owner"), operation)
@@ -2987,10 +3000,7 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     .await
     .unwrap();
     drop(head);
-    let observation = kasumi_clock::EpochClock::system()
-        .unwrap()
-        .observe()
-        .unwrap();
+    let observation = epoch.observe().unwrap();
     let guard = Arc::new(Guard(AtomicBool::new(true)));
     let mut guarded = f.context("owner");
     guarded.authorization = RequestAuthorization::from_verified_credential_with_liveness(
@@ -3018,7 +3028,7 @@ async fn recovery_expired_target_requires_fresh_control_admission_and_fences_rev
     assert!(dispatch.admit_dispatch().await.is_err());
     drop(status);
     drop(dispatch);
-    tokio::time::sleep(Duration::from_millis(1050)).await;
+    elapsed.advance(Duration::from_millis(1050));
     let old = db
         .recovery_phase(f.context("owner"), operation, pending)
         .await
@@ -3221,6 +3231,25 @@ async fn commit_next_control_for(
     .await;
     intent
 }
+// Advance only the explicitly paired test clock; real-clock scenarios keep
+// waiting for their original cutoff. No phase or credential deadline changes.
+async fn expire_fixture_deadline(
+    f: &Fixture,
+    elapsed: Option<&kasumi_store::test_utils::ManualClock>,
+    cutoff: u64,
+) {
+    let epoch = f
+        .epoch
+        .clone()
+        .unwrap_or_else(|| kasumi_clock::EpochClock::system().unwrap());
+    let duration = Duration::from_millis(cutoff.saturating_sub(epoch.now_ms().unwrap()) + 20);
+    if let Some(elapsed) = elapsed {
+        elapsed.advance(duration);
+    } else {
+        tokio::time::sleep(duration).await;
+    }
+}
+
 async fn resolve_expired_completion(
     f: &Fixture,
     db: &Arc<Database>,
@@ -3228,20 +3257,14 @@ async fn resolve_expired_completion(
     original_phase: Uuid,
     fact: TargetCompletionFact,
     keys: &BTreeMap<u64, Ed25519KeyPair>,
+    elapsed: Option<&kasumi_store::test_utils::ManualClock>,
 ) {
     let original = read_recovery_phase(f, f.context("owner"), operation, original_phase)
         .await
         .record()
         .clone();
     let old_intent = fact.completion_intent.clone();
-    let now = f.context("owner").authorization.expires_at_ms().unwrap() - 60_000;
-    tokio::time::sleep(Duration::from_millis(
-        old_intent
-            .original_credential_expires_at_ms
-            .saturating_sub(now)
-            + 20,
-    ))
-    .await;
+    expire_fixture_deadline(f, elapsed, old_intent.original_credential_expires_at_ms).await;
     let context = f.context("owner");
     tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {

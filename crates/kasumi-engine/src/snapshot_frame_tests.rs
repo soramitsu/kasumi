@@ -24,11 +24,11 @@ fn header() -> Vec<u8> {
 fn permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers() {
     let document = serde_json::to_vec(&Record::Document(
         "rows".into(),
-        Arc::new(Document {
+        kasumi_types::OwnedDocument::Pending(Arc::new(Document {
             id: "one".into(),
             version: 1,
             body: serde_json::json!({"large": "x".repeat(1024)}),
-        }),
+        })),
     ))
     .unwrap();
     for kind in [5, 21, 22] {
@@ -144,6 +144,30 @@ fn permanent_aggregate_does_not_become_ram_and_all_layout_arithmetic_is_checked(
 }
 
 #[test]
+fn document_materialization_reserves_peak_work_and_compact_metadata_not_all_bodies() {
+    let mut layout = StreamSummary::empty();
+    layout.add(0, 4096).unwrap();
+    let empty = layout.materialization_workspace().unwrap();
+    assert_eq!(layout.document_workspace().unwrap(), 0);
+    assert_eq!(empty, layout.materialization_base_workspace().unwrap());
+    layout.add(3, 512 << 10).unwrap();
+    layout.record_work(3, 5 << 20).unwrap();
+    let source = layout.document_workspace().unwrap();
+    let first = layout.materialization_workspace().unwrap();
+    assert!(source >= (5 << 20) + (8 * (512 << 10)) + (1 << 20));
+    for _ in 0..255 {
+        layout.add(3, 512 << 10).unwrap();
+        layout.record_work(3, 5 << 20).unwrap();
+    }
+    assert_eq!(layout.document_workspace().unwrap(), source);
+    assert_eq!(
+        layout.materialization_workspace().unwrap() - first,
+        255 * 4096 * 3
+    );
+    assert!(layout.bytes > layout.materialization_workspace().unwrap());
+}
+
+#[test]
 fn inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto() {
     struct Bounded<'a>(&'a [u8]);
     impl Read for Bounded<'_> {
@@ -154,11 +178,11 @@ fn inspection_reads_large_typed_payload_in_fixed_chunks_before_any_dto() {
     }
     let payload = serde_json::to_vec(&Record::Document(
         "rows".into(),
-        Arc::new(Document {
+        kasumi_types::OwnedDocument::Pending(Arc::new(Document {
             id: "one".into(),
             version: 1,
             body: serde_json::json!({"payload": "x".repeat(256 << 10)}),
-        }),
+        })),
     ))
     .unwrap();
     let image = raw(&[(0, header()), (3, payload)]);

@@ -75,7 +75,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
         .await
         .unwrap();
     assert_eq!(proof.checkpoint().tenant, "checkpoint");
-    let published_payload = fixture.reserved_payload();
+    let published_payload = fixture.settled_payload().await;
     assert!(
         published_payload >= production_payload
             && published_payload - production_payload <= 1 << 20,
@@ -87,7 +87,7 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
         .await
         .unwrap();
     assert_eq!(independently_verified.checkpoint(), proof.checkpoint());
-    assert_eq!(fixture.reserved_payload(), published_payload);
+    assert_eq!(fixture.settled_payload().await, published_payload);
     fixture.close().await;
 }
 
@@ -146,6 +146,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
     )
     .await
     .unwrap();
+    let document_backing = document_backing_bytes(&target, &admission).await;
     let source = kasumi_engine::RestoreSource {
         destination_alias: "approved".into(),
         destination: fixture.destination.clone(),
@@ -166,14 +167,24 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         1
     );
     let proposal_metadata = Database::fixture_proposal_metadata_bytes().unwrap();
-    let expected_live =
-        production_payload + (128 << 20) + snapshot_owner_bytes() + proposal_metadata;
+    let expected_live = production_payload
+        + (128 << 20)
+        + snapshot_owner_bytes()
+        + proposal_metadata
+        + document_backing;
     let restored_payload = fixture.settled_payload().await;
     assert!(
         restored_payload >= expected_live && restored_payload - expected_live <= 1 << 20,
-        "target node metadata remains bounded"
+        "target node metadata remains bounded: restored={restored_payload} expected={expected_live} baseline={production_payload} proposal={proposal_metadata} snapshot={:?}",
+        admission.snapshot(),
     );
     let restore_metadata = restored_payload - expected_live;
+    let settled = settled_admission(&admission).await;
+    assert_eq!(
+        settled.reserved_bytes - settled.bookkeeping_bytes - settled.resident_reserved_bytes,
+        128 << 20,
+        "only the held destination operation remains; materialization has fully retired"
+    );
     // Restore's mandatory audit proposal installs its own fixed registry. A
     // successful drain releases that registry and retires the selected
     // application source (its Cell, retained decode workspace and the selected
@@ -183,8 +194,8 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         .checked_sub(fixture.settled_payload().await)
         .expect("drain releases the proposal registry");
     assert!(
-        selected_source > 0 && selected_source <= 1 << 20,
-        "drain retires only the bounded selected source"
+        selected_source >= document_backing && selected_source - document_backing <= 1 << 20,
+        "drain retires both document tables and the bounded selected source: released={selected_source} tables={document_backing}"
     );
     domains.custody().store().shutdown().await.unwrap();
     target.shutdown().await.unwrap();
@@ -254,6 +265,7 @@ async fn restore_hands_off_verified_workspace_with_production_and_destination_re
         production_payload
             + (128 << 20)
             + snapshot_owner_bytes()
+            + document_backing
             + restore_metadata
             + application_catalog_charge
             + custody_catalog_charge
@@ -467,9 +479,13 @@ async fn cancelled_restore_publication_keeps_storage_and_workspace_until_write_d
     assert!(matches!(task.await, Err(error) if error.is_cancelled()));
     assert!(weak.upgrade().is_some());
     assert!(fixture.reserved_payload() > production_payload);
+    assert!(admission.snapshot().inflight_operations > 0);
     release_tx.send(()).unwrap();
     tokio::time::timeout(std::time::Duration::from_secs(5), async {
-        while weak.upgrade().is_some() {
+        // Publication destroys its stores before its final workspace charge.
+        // Wait for that same operation's ledger retirement as well as the last
+        // storage facade; target disposal alone is not worker completion.
+        while weak.upgrade().is_some() || admission.snapshot().inflight_operations != 0 {
             tokio::task::yield_now().await;
         }
     })
@@ -522,6 +538,81 @@ fn snapshot_owner_bytes() -> u64 {
     kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS).unwrap()
 }
 
+/// Each unpublished bootstrap document source owns two full encrypted native
+/// groups, including their fixed directory/pin indexes, 256 descriptor slots,
+/// and both prepaid transaction-file vectors. Use the actual native constructor
+/// and exact installed governor to price those owners; optional page/value
+/// cache credit is excluded and stays within the existing residual allowance.
+async fn document_backing_bytes(
+    store: &TenantStore,
+    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+) -> u64 {
+    let disk = store.scratch_disk();
+    let before = settled_admission(admission).await;
+    let census = disk.memory().storage_census().snapshot();
+    let tables = [
+        kasumi_store::EncryptedTable::new(disk, 128 << 20, disk.native_cache_config())
+            .unwrap_or_else(|original| std::panic::panic_any(original)),
+        kasumi_store::EncryptedTable::new(disk, 128 << 20, disk.native_cache_config())
+            .unwrap_or_else(|original| std::panic::panic_any(original)),
+    ];
+    let installed = settled_admission(admission).await;
+    let fixed = installed
+        .resident_reserved_bytes_by_origin
+        .other_ordinary
+        .checked_sub(before.resident_reserved_bytes_by_origin.other_ordinary)
+        .expect("two native scratch groups retain their fixed owners");
+    assert!(fixed > 0);
+    let active = disk.memory().storage_census().snapshot();
+    assert_eq!(active.databases, census.databases + 2);
+    assert_eq!(active.segment_groups, census.segment_groups + 2);
+    for table in &tables {
+        table
+            .close()
+            .unwrap_or_else(|original| std::panic::panic_any(original));
+    }
+    drop(tables);
+    let retired = settled_admission(admission).await;
+    assert_eq!(
+        retired.resident_reserved_bytes,
+        before.resident_reserved_bytes
+    );
+    assert_eq!(retired.live_reservations, before.live_reservations);
+    let retired = disk.memory().storage_census().snapshot();
+    assert_eq!(retired.databases, census.databases);
+    assert_eq!(retired.segment_groups, census.segment_groups);
+    assert_eq!(retired.retained_panics, census.retained_panics);
+    fixed
+        + kasumi_engine::admission::MemoryCore::required_installed_reservation_bytes(64 << 10)
+            .unwrap()
+}
+
+/// Retain one actual coherent observation from two maintenance periods. The
+/// ordering prefers completed operation/native work; it never constructs an
+/// imaginary snapshot from independent minima of different counters.
+async fn settled_admission(
+    admission: &kasumi_engine::admission::NodeAdmission,
+) -> kasumi_engine::admission::AdmissionSnapshot {
+    let quietness = |sample: &kasumi_engine::admission::AdmissionSnapshot| {
+        (
+            sample.inflight_operations,
+            sample.resident_reserved_bytes_by_origin.other_ordinary,
+            sample.live_reservations,
+            sample.resident_reserved_bytes,
+        )
+    };
+    let mut settled = admission.snapshot();
+    let until = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
+    while tokio::time::Instant::now() < until {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+        let sample = admission.snapshot();
+        if quietness(&sample) < quietness(&settled) {
+            settled = sample;
+        }
+    }
+    settled
+}
+
 struct Fixture {
     directory: tempfile::TempDir,
     physical: common::PhysicalFixture,
@@ -537,19 +628,19 @@ impl Fixture {
             .checked_sub(self.physical.initial_disk_metadata_bytes)
             .expect("actual installed disk metadata remains charged")
     }
-    /// Payload and ledger slots while no service-audit retention pass is in
-    /// flight. Each pass, every 250 ms, briefly adds its own native read
-    /// leases, so exact comparisons keep the lowest samples of two periods.
+    /// At a boundary with no concurrent fixture request, drain actual audit
+    /// jobs and pause retention only for one coherent accounting census. The
+    /// guard drops before the caller starts another API request or shutdown.
     async fn settled(&self) -> (u64, usize) {
-        let live = || self.audit.admission().snapshot().live_reservations;
-        let (mut payload, mut reservations) = (self.reserved_payload(), live());
-        let until = tokio::time::Instant::now() + std::time::Duration::from_millis(500);
-        while tokio::time::Instant::now() < until {
-            tokio::time::sleep(std::time::Duration::from_millis(2)).await;
-            payload = payload.min(self.reserved_payload());
-            reservations = reservations.min(live());
-        }
-        (payload, reservations)
+        let _quiescent = self.audit.quiescent_jobs_for_test().await;
+        let snapshot = self.audit.admission().snapshot();
+        let payload = snapshot
+            .reserved_bytes
+            .checked_sub(snapshot.bookkeeping_bytes)
+            .expect("admission bookkeeping exceeds its total charge")
+            .checked_sub(self.physical.initial_disk_metadata_bytes)
+            .expect("actual installed disk metadata remains charged");
+        (payload, snapshot.live_reservations)
     }
     async fn settled_payload(&self) -> u64 {
         self.settled().await.0

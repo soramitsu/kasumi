@@ -56,13 +56,13 @@ impl VerifiedBackup {
         incarnation: String,
         target_origin: Option<TargetOrigin>,
     ) -> std::result::Result<PreparedState, kasumi_store::ScratchOperationFailure> {
-        let workspace = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        let layout = kasumi_store::ScratchOperationFailure::ordinary(|| {
             let crate::backup_verify::VerifiedState::Indexed(source) = &self.state else {
                 anyhow::bail!("restore requires independently verified indexed state");
             };
             // The authenticated index records exact resident and point spans. The
             // permanent ciphertext tables remain on the shared scratch governor.
-            source.index().summary().materialization_workspace()
+            Ok(source.index().summary())
         })?;
         // The completed verifier owns one operation and its bounded indexes.
         // Its worker transfers that charge only after dropping those indexes.
@@ -88,10 +88,39 @@ impl VerifiedBackup {
                         incarnation,
                         self.checkpoint,
                         target_origin,
-                        || retained_materialization.handoff_workspace(&admission, workspace),
+                        || {
+                            let convert = |error: anyhow::Error| {
+                                error.downcast::<Error>().unwrap_or_else(|error| {
+                                    Error::new(ErrorCode::ResourceExhausted, error.to_string())
+                                })
+                            };
+                            retained_materialization.handoff_workspace(
+                                &admission,
+                                layout.materialization_workspace().map_err(convert)?,
+                            )?;
+                            let capacity = layout.document_workspace().map_err(convert)?;
+                            if capacity == 0 {
+                                return Ok(None);
+                            }
+                            crate::admission::DocumentReadBudget::bind_shared(
+                                &admission,
+                                retained_materialization.clone(),
+                                layout.materialization_base_workspace().map_err(convert)?,
+                                capacity,
+                            )?
+                            .enter()
+                            .map(Some)
+                        },
                     )
                     .map_err(crate::SnapshotFailure::into_scratch_failure)?;
                     kasumi_store::ScratchOperationFailure::ordinary(|| {
+                        // Materialization has finished its document encode/decode
+                        // work. Keep the same owner and full base allowance through
+                        // publication; a live document loan rejects this handoff.
+                        retained_materialization.handoff_workspace(
+                            &admission,
+                            layout.materialization_base_workspace()?,
+                        )?;
                         // This is still the original reservation identity and work slot.
                         // The prepared result owns it through target publication.
                         drop(self._reservation);

@@ -875,10 +875,10 @@ mod tests {
             // actual original committed document position; no resident outcome
             // map is retained or used as an alternate resolution path.
             let expected = WriteReceipt {
-                revision: original.version,
+                revision: original.version(),
                 versions: std::collections::BTreeMap::from([(
                     "/docs/one".into(),
-                    original.version,
+                    original.version(),
                 )]),
             };
             if mcp {
@@ -969,7 +969,10 @@ mod tests {
             assert_eq!(after.state.mutation_receipt_head, original_head);
             assert_eq!(after.state.collections["docs"].documents["one"], original);
             assert_eq!(
-                original.body["n"].to_string(),
+                kasumi_engine::test_utils::fixture_document(&committed, "docs", "one")
+                    .unwrap()
+                    .body["n"]
+                    .to_string(),
                 "90071992547409931234567890.123456789"
             );
             fixture.close().await;

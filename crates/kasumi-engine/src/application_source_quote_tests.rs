@@ -57,6 +57,10 @@ fn producer_plan(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_quote_is_allocation_free_bound_and_covers_real_capture_peak()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -123,6 +127,10 @@ async fn source_quote_is_allocation_free_bound_and_covers_real_capture_peak()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_quote_reader_retained_amount_matches_actual_installed_provider_requests()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
@@ -191,6 +199,10 @@ fn source_quote_actual_engine_provider_token_is_preclaimed_and_request_is_pure()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn source_quote_covered_planning_tracks_actual_rows_and_transferred_backing()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;

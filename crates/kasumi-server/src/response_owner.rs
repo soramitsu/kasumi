@@ -133,6 +133,196 @@ pub(crate) fn owner_bytes<T>() -> Result<u64> {
     )
 }
 
+fn native_codec_bytes(len: usize) -> Result<u64> {
+    let framed = len.checked_add(5).ok_or_else(overflow)?;
+    let growth = framed.checked_mul(2).ok_or_else(overflow)?;
+    add(
+        allocation_bytes(growth.max(8192))?,
+        allocation_bytes(framed.max(8192))?,
+    )
+}
+
+struct MutationReceiptQuote {
+    entries: usize,
+    path_allocations: u64,
+    encoded_bytes: usize,
+    retained_bytes: u64,
+}
+impl MutationReceiptQuote {
+    fn for_batch(batch: &kasumi_types::MutationBatch) -> Result<Self> {
+        fn varint(mut value: usize) -> usize {
+            let mut bytes = 1;
+            while value >= 128 {
+                value >>= 7;
+                bytes += 1;
+            }
+            bytes
+        }
+        let entries = batch.operations.len();
+        let contract = kasumi_client::NATIVE_WRITE_RECEIPT_CONTRACT;
+        // Revision fields may use all ten protobuf varint bytes. Identity
+        // strings are the only variable receipt payload; document bodies are
+        // never part of this reply. Duplicate mutation targets overquote safely.
+        let mut encoded_bytes = 11usize
+            .checked_add(1 + varint(contract.len()) + contract.len())
+            .ok_or_else(overflow)?;
+        let mut path_allocations = 0;
+        for mutation in &batch.operations {
+            let (collection, id) = mutation.target();
+            let mut path = 2usize;
+            for part in [collection, id] {
+                path = path
+                    .checked_add(part.len())
+                    .and_then(|bytes| {
+                        bytes
+                            .checked_add(part.bytes().filter(|b| matches!(*b, b'~' | b'/')).count())
+                    })
+                    .ok_or_else(overflow)?;
+            }
+            // The service decodes receipt keys from JSON. Six bytes per byte
+            // bounds escaped input scratch as well as each retained String.
+            path_allocations = add(
+                path_allocations,
+                allocation_bytes(path.checked_mul(6).ok_or_else(overflow)?)?,
+            )?;
+            let entry = path
+                .checked_add(1 + varint(path) + 11)
+                .ok_or_else(overflow)?;
+            encoded_bytes = encoded_bytes
+                .checked_add(1 + varint(entry))
+                .and_then(|bytes| bytes.checked_add(entry))
+                .ok_or_else(overflow)?;
+        }
+        if encoded_bytes > MAX_RESPONSE_BYTES {
+            return Err(overflow());
+        }
+        // Pinned std BTree B=6: eleven String/u64 pairs and twelve edges,
+        // plus four pointer widths for header/alignment. One internal node
+        // per target covers the returned receipt while its Vec is constructed.
+        let node = (size_of::<String>() + size_of::<u64>()) * 11 + 16 * size_of::<usize>();
+        let tree = allocation_bytes(node)?
+            .checked_mul(entries as u64)
+            .ok_or_else(overflow)?;
+        let vector = allocation_bytes(
+            entries
+                .checked_mul(size_of::<crate::rpc::proto::VersionEntry>())
+                .ok_or_else(overflow)?,
+        )?;
+        let retained_bytes = [
+            tree,
+            path_allocations,
+            vector,
+            allocation_bytes(contract.len())?,
+            native_codec_bytes(encoded_bytes)?,
+            owner_bytes::<ResponseFence<'static>>()?,
+        ]
+        .into_iter()
+        .try_fold(0, add)?;
+        Ok(Self {
+            entries,
+            path_allocations,
+            encoded_bytes,
+            retained_bytes,
+        })
+    }
+}
+
+/// Admit a mutation's bounded receipt before its write. All later DTO and
+/// transport allocations spend this original grant; no post-commit admission
+/// can turn an accepted write into a definite capacity rejection.
+pub(crate) struct PreparedMutationReply {
+    quote: MutationReceiptQuote,
+    fence: ResponseFence<'static>,
+}
+
+/// The absent Get DTO has no heap fields. Its transport still needs an owner
+/// after the access check, just like a nonempty admitted document response.
+pub(crate) async fn release_absent_get(
+    mut fence: ResponseFence<'static>,
+    auth: &crate::auth::Authenticator,
+    context: &RequestContext,
+) -> std::result::Result<tonic::Response<crate::rpc::proto::GetResponse>, tonic::Status> {
+    fence
+        .retain_response_bytes(
+            add(
+                native_codec_bytes(0).map_err(status)?,
+                owner_bytes::<ResponseFence<'static>>().map_err(status)?,
+            )
+            .map_err(status)?,
+        )
+        .map_err(status)?;
+    auth.audit_result(context, fence.check())
+        .await
+        .map_err(status)?;
+    let mut response = tonic::Response::new(crate::rpc::proto::GetResponse { document: None });
+    response.extensions_mut().insert(ReplyOwner::new(fence));
+    Ok(response)
+}
+
+impl PreparedMutationReply {
+    pub(crate) fn prepare(
+        mut fence: ResponseFence<'static>,
+        batch: &kasumi_types::MutationBatch,
+    ) -> Result<Self> {
+        let quote = MutationReceiptQuote::for_batch(batch)?;
+        fence.retain_response_bytes(quote.retained_bytes)?;
+        Ok(Self { quote, fence })
+    }
+
+    pub(crate) async fn release(
+        self,
+        value: kasumi_types::WriteReceipt,
+        auth: &crate::auth::Authenticator,
+        context: &RequestContext,
+    ) -> std::result::Result<tonic::Response<crate::rpc::proto::WriteReceipt>, tonic::Status> {
+        use prost::Message as _;
+        let uncertain = || {
+            status(Error::new(
+                ErrorCode::UnknownOutcome,
+                "write response release was fenced; resolve or retry the same idempotency key",
+            ))
+        };
+        if value.versions.len() > self.quote.entries {
+            return Err(uncertain());
+        }
+        let paths = value
+            .versions
+            .keys()
+            .try_fold(0u64, |total, path| {
+                add(
+                    total,
+                    allocation_bytes(path.len().checked_mul(6).ok_or_else(overflow)?)?,
+                )
+            })
+            .map_err(|_| uncertain())?;
+        if paths > self.quote.path_allocations {
+            return Err(uncertain());
+        }
+        let mut versions = Vec::with_capacity(value.versions.len());
+        for (target_path, revision) in value.versions {
+            versions.push(crate::rpc::proto::VersionEntry {
+                target_path,
+                revision,
+            });
+        }
+        let message = crate::rpc::proto::WriteReceipt {
+            revision: value.revision,
+            contract: kasumi_client::NATIVE_WRITE_RECEIPT_CONTRACT.into(),
+            versions,
+        };
+        if message.encoded_len() > self.quote.encoded_bytes {
+            return Err(uncertain());
+        }
+        auth.audit_result(context, self.fence.check())
+            .await
+            .map_err(|_| uncertain())?;
+        let owner = ReplyOwner::new(self.fence);
+        let mut response = tonic::Response::new(message);
+        response.extensions_mut().insert(owner);
+        Ok(response)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ReplyOwner {
     _owner: Arc<dyn Any + Send + Sync>,
@@ -182,16 +372,10 @@ impl<T: Send + Sync + 'static, U: prost::Message> NativeReply<T, U> {
                 "native response exceeds byte limit",
             )));
         }
-        let framed = len.checked_add(5).ok_or_else(|| status(overflow()))?;
         // Tonic 0.14 starts with an 8KiB BytesMut. Doubling growth can hold
         // old+new allocations together; account that separately from the
         // protobuf representation and the still-owned source JSON tree.
-        let growth = framed.checked_mul(2).ok_or_else(|| status(overflow()))?;
-        let codec = add(
-            allocation_bytes(growth.max(8192)).map_err(status)?,
-            allocation_bytes(framed.max(8192)).map_err(status)?,
-        )
-        .map_err(status)?;
+        let codec = native_codec_bytes(len).map_err(status)?;
         self.pending
             .fence
             .retain_response_bytes(
@@ -303,6 +487,35 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mutation_reply_quote_covers_escaped_targets_and_maximum_protobuf_revisions() {
+        use prost::Message as _;
+        let batch = kasumi_types::MutationBatch::new().insert(
+            "co~l",
+            "id/~💳",
+            serde_json::json!({"proof":"a".repeat(65_536)}),
+        );
+        let quote = MutationReceiptQuote::for_batch(&batch).unwrap();
+        let message = crate::rpc::proto::WriteReceipt {
+            revision: u64::MAX,
+            contract: kasumi_client::NATIVE_WRITE_RECEIPT_CONTRACT.into(),
+            versions: vec![crate::rpc::proto::VersionEntry {
+                target_path: "/co~0l/id~1~0💳".into(),
+                revision: u64::MAX,
+            }],
+        };
+        assert_eq!(message.encoded_len(), quote.encoded_bytes);
+        assert!(quote.retained_bytes < 64 << 10);
+        let tiny =
+            kasumi_types::MutationBatch::new().insert("co~l", "id/~💳", serde_json::json!({}));
+        assert_eq!(
+            MutationReceiptQuote::for_batch(&tiny)
+                .unwrap()
+                .retained_bytes,
+            quote.retained_bytes
+        );
+    }
 
     #[test]
     fn changed_serializer_cannot_grow_the_admitted_destination() {

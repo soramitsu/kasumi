@@ -1,18 +1,19 @@
 //! Lending access to one captured immutable generation and collection.
 //!
-//! This adapter performs no I/O. Hydrated read views keep their reservations
-//! and exact index owner alive through the captured Generation. Authorization
-//! and current key access remain the enclosing service's responsibility.
+//! Stored bodies are decoded only inside an admitted loan from this generation's
+//! exact resolver. Hydrated read views retain their reservations and index owner.
+//! Authorization and current key access remain the enclosing service's duty.
 
 use crate::Generation;
+use crate::index_source::{DocumentSourceFailure, RecordLoan, SourceResult};
 use kasumi_query::{
     CollectionRecords, DocumentSource, Header, QueryCancellation, QueryIndexes, ReadResult, Record,
-    RecordKind, SourceIdentity,
+    SourceIdentity,
 };
 use kasumi_types::{
     CollectionDefinition, CollectionState, Error, ErrorCode, Result, validate_name,
 };
-use std::{convert::Infallible, ops::Bound, sync::Arc};
+use std::{ops::Bound, sync::Arc};
 
 /// One selected collection of an immutable generation, including any verified
 /// hydration overlay. Cloning the source retains that exact owner and view.
@@ -54,13 +55,18 @@ impl GenerationDocumentSource {
         &self.generation.state.collections[&self.collection]
     }
 
-    fn record(&self, id: &str) -> Result<Option<Record<'_>>> {
-        crate::index_source::record(self.collection(), id, self.generation.state.revision)
+    fn record(&self, id: &str) -> SourceResult<Option<RecordLoan<'_>>> {
+        crate::index_source::record(
+            self.collection(),
+            id,
+            self.generation.state.revision,
+            self.generation.document_resolver(),
+        )
     }
 }
 
 impl CollectionRecords for GenerationDocumentSource {
-    type Failure = Infallible;
+    type Failure = DocumentSourceFailure;
 
     fn identity(&self) -> SourceIdentity<'_> {
         SourceIdentity::new(
@@ -79,8 +85,12 @@ impl CollectionRecords for GenerationDocumentSource {
         &self,
         lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
     ) -> ReadResult<(), Self::Failure> {
-        crate::index_source::visit(self.collection(), self.generation.state.revision, lend)
-            .map_err(Into::into)
+        crate::index_source::visit(
+            self.collection(),
+            self.generation.state.revision,
+            self.generation.document_resolver(),
+            lend,
+        )
     }
 }
 
@@ -100,13 +110,15 @@ impl DocumentSource for GenerationDocumentSource {
         let record = self.record(id);
         cancellation.check()?;
         let record = record?;
-        if expected_version
-            .is_some_and(|version| record.is_none_or(|record| record.version() != version))
-        {
+        if expected_version.is_some_and(|version| {
+            record
+                .as_ref()
+                .is_none_or(|record| record.as_record().version() != version)
+        }) {
             return Err(corruption("source document expected version differs").into());
         }
         cancellation.check()?;
-        let result = lend(record)?;
+        let result = lend(record.as_ref().map(RecordLoan::as_record))?;
         cancellation.check()?;
         Ok(result)
     }
@@ -136,17 +148,8 @@ impl DocumentSource for GenerationDocumentSource {
         };
         let header = id
             .map(|id| -> Result<_> {
-                let record = self
-                    .record(id)?
-                    .ok_or_else(|| corruption("source header lost its record"))?;
-                Ok(Header {
-                    id,
-                    version: record.version(),
-                    kind: match record {
-                        Record::Live(_) => RecordKind::Live,
-                        Record::Archived(_) => RecordKind::Archived,
-                    },
-                })
+                crate::index_source::header(collection, id, self.generation.state.revision)?
+                    .ok_or_else(|| corruption("source header lost its record"))
             })
             .transpose();
         cancellation.check()?;

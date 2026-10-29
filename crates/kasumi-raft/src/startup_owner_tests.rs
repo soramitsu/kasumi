@@ -86,6 +86,10 @@ async fn pending<F: Future>(future: std::pin::Pin<&mut F>) {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_startup_and_drain_keep_actual_child_panic_and_charge() -> FixtureResult<()> {
     let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
     let owner = SnapshotBufferOwner::new(1, charge)?;
@@ -134,6 +138,10 @@ async fn cancelled_startup_and_drain_keep_actual_child_panic_and_charge() -> Fix
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let (return_group, group_ready) = tokio::sync::oneshot::channel();
@@ -183,6 +191,10 @@ async fn cancelled_unclaimed_group_cleanup_keeps_same_actual_child() -> FixtureR
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn delivered_startup_is_not_closed_by_node_startup_census() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -213,6 +225,10 @@ async fn delivered_startup_is_not_closed_by_node_startup_census() -> FixtureResu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn oversized_startup_is_rejected_before_polling_or_global_publication() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak = Arc::downgrade(&owner);
@@ -281,6 +297,10 @@ impl crate::StateMachineBackend for Backend {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycle()
 -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -364,6 +384,10 @@ async fn cancelled_local_initialization_drains_real_group_and_breaks_router_cycl
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn startup_census_closes_delivery_before_waiting_for_active_caller() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let (return_group, group_ready) = tokio::sync::oneshot::channel();
@@ -506,6 +530,10 @@ async fn assert_original_poll_panic_retained(
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn direct_claim_poll_panic_keeps_original_payload_future_and_registry() -> FixtureResult<()> {
     let (charge, charge_retired) = crate::test_utils::observed_budget_charge();
     let owner = SnapshotBufferOwner::new(1, charge)?;
@@ -530,6 +558,10 @@ async fn direct_claim_poll_panic_keeps_original_payload_future_and_registry() ->
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn direct_abandoned_opening_poll_panic_is_never_repolled_by_drain() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let (state, future) =
@@ -544,6 +576,10 @@ async fn direct_abandoned_opening_poll_panic_is_never_repolled_by_drain() -> Fix
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_future()
 -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
@@ -555,6 +591,10 @@ async fn direct_cleanup_poll_panic_keeps_original_payload_and_exact_cleanup_futu
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custody()
 -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
@@ -596,6 +636,10 @@ async fn cleanup_retained_result_cannot_be_promoted_to_complete_or_release_custo
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let polled = Arc::new(AtomicBool::new(false));
@@ -633,6 +677,10 @@ async fn synchronous_enrollment_allows_census_before_the_claimant_is_polled() ->
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> FixtureResult<()> {
     let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
@@ -720,6 +768,10 @@ async fn panicked_core_closes_group_access_and_drains_complete_for_reopen() -> F
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
     let weak_owner = Arc::downgrade(&owner);
@@ -757,6 +809,10 @@ async fn retained_cleanup_keeps_exact_group_after_shutdown_future_returns() -> F
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop()
 -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;
@@ -810,6 +866,10 @@ async fn delivered_apply_failure_keeps_registry_and_fence_after_all_facades_drop
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence() -> FixtureResult<()>
 {
     let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
@@ -903,6 +963,10 @@ async fn positive_delivered_shutdown_releases_existing_registry_root_and_fence()
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn delivered_shutdown_keeps_actual_initial_quote_original_after_worker_and_storage_join()
 -> FixtureResult<()> {
     use kasumi_store::{
@@ -1075,6 +1139,10 @@ async fn delivered_shutdown_keeps_actual_initial_quote_original_after_worker_and
 }
 
 #[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn actual_group_cleanup_poll_panic_keeps_group_outside_unwinding_generator()
 -> FixtureResult<()> {
     let owner = SnapshotBufferOwner::new(1, kasumi_types::SharedBudgetCharge::new(()))?;

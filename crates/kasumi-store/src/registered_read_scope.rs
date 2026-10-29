@@ -68,6 +68,22 @@ impl NodeScopedReadFailure {
         self.retirement_panic.get().is_some()
     }
 
+    /// Classify only the original capacity refusal after positive native
+    /// retirement. This observes the existing report without acknowledging or
+    /// releasing custody. Independent body errors, bounds and panics are not
+    /// capacity proof, even if another observation was a known refusal.
+    pub fn is_settled_capacity_denied(&self) -> bool {
+        !self.has_retirement_panic()
+            && self.body_error.as_ref().is_none_or(|error| {
+                let outer: &(dyn std::error::Error + Send + Sync + 'static) = error.as_ref();
+                matches!(
+                    outer.downcast_ref::<NodeReadAccessError>(),
+                    Some(NodeReadAccessError::Reported)
+                )
+            })
+            && self.report.is_settled_capacity_denied()
+    }
+
     /// Retire only exact recognized routine outcomes after positive native
     /// release AND disposal, or a native clean acquisition refusal. This preserves every original observation and
     /// needs no new admission. Concurrent observations/aliases may leave the

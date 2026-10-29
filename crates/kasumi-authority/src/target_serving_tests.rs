@@ -171,6 +171,9 @@ impl Serving {
         )
         .await
         .unwrap();
+        // Reinstall the fixture's live audit placement before serving replay.
+        kasumi_engine::test_utils::install_local_replica_audit_placement(stores.application())
+            .unwrap();
         let owner = kasumi_engine::open_serving_target(
             projection.clone(),
             stores.clone(),

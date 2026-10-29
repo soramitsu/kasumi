@@ -523,6 +523,7 @@ pub(super) fn read(
 
 #[cfg(test)]
 mod tests {
+    include!("snapshot_restore_document_tests.rs");
     use super::*;
     use kasumi_raft::StateMachineBackend;
     use kasumi_store::{AuditSegmentBuilder, NodeStore, test_utils::LocalKeyProvider};
@@ -539,7 +540,9 @@ mod tests {
         tenant: &str,
     ) -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
-        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32);
+        // Bundle validation overlaps the current six immutable tables with
+        // its replacement; keep the same byte bound and fund their slots.
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
         kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
             .unwrap();
         let disk =
@@ -704,11 +707,16 @@ mod tests {
                     engine.generation().unwrap().backup_bindings.clone(),
                     engine.generation().unwrap().terminals.clone(),
                     engine.generation().unwrap().target_resolutions.clone(),
+                    engine.generation().unwrap().staged_documents.clone(),
                 )
                 .unwrap(),
         )));
         references
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn capture(
         engine: Arc<TenantEngine>,
     ) -> crate::test_fixture_failure::FixtureResult<Vec<u8>> {
@@ -721,6 +729,10 @@ mod tests {
         })
         .await?
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
     async fn restore(
         engine: Arc<TenantEngine>,
         bytes: Vec<u8>,
@@ -875,6 +887,7 @@ mod tests {
                     source.generation().unwrap().backup_bindings.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
+                    source.generation().unwrap().staged_documents.clone(),
                 )
                 .unwrap(),
         )));
@@ -890,6 +903,7 @@ mod tests {
                     source.generation().unwrap().backup_bindings.clone(),
                     source.generation().unwrap().terminals.clone(),
                     source.generation().unwrap().target_resolutions.clone(),
+                    source.generation().unwrap().staged_documents.clone(),
                 )
                 .unwrap(),
         )));
@@ -1059,6 +1073,11 @@ mod tests {
             StagedTransaction, StagedTransactionScope, WriteReceipt, staged_digest,
         };
 
+        // Preserve the same 131,072 manifest digests in the permanent stream
+        // while halving durable row batches; this tests byte admission rather
+        // than per-row I/O throughput under the unchanged restore deadline.
+        const ROWS: u64 = 256;
+        const MANIFEST_CHUNKS: usize = 512;
         let incarnation = uuid::Uuid::new_v4().to_string();
         let maximum = 80 << 20;
         let config = crate::test_utils::admission_config_with_bookkeeping(
@@ -1076,7 +1095,7 @@ mod tests {
         ) = admitted_pair(&incarnation, config).await;
         let previous = source.generation().unwrap();
         let mut state = previous.state.clone();
-        state.revision = 512;
+        state.revision = ROWS;
         let manifest = StagedManifest::from_chunks(&vec![
             StagedChunk {
                 read_set: vec![],
@@ -1086,7 +1105,7 @@ mod tests {
                     expected: Precondition::Any,
                 }],
             };
-            256
+            MANIFEST_CHUNKS
         ])
         .unwrap();
         let mut builder = Builder::new(
@@ -1096,7 +1115,7 @@ mod tests {
             &incarnation,
         )
         .unwrap();
-        for ordinal in 1..=512 {
+        for ordinal in 1..=ROWS {
             let transaction_id = format!("terminal-{ordinal:04}");
             let row = Row {
                 ordinal,
@@ -1155,17 +1174,22 @@ mod tests {
                 state,
                 previous.receipts.clone(),
                 previous.backup_bindings.clone(),
-                install.view,
+                install.view.clone(),
                 previous.target_resolutions.clone(),
+                previous.staged_documents.clone(),
             )
             .unwrap();
         source.publish_generation(Some(Arc::new(generation)));
         drop(previous);
+        // The durable source now owns the committed terminal namespace. End
+        // the completed import's private table before measuring restore work.
+        drop(install);
+        drop(staged);
         let installed_payload = crate::test_utils::reserved_payload_bytes(&admission);
 
         let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
         let layout = inspect(&mut image.reader()).unwrap();
-        assert_eq!(layout.kinds[21].records, 512);
+        assert_eq!(layout.kinds[21].records, ROWS);
         assert!(layout.bytes.checked_mul(3).unwrap() + (64 << 20) > maximum);
         assert!(layout.materialization_workspace().unwrap() < maximum);
         let available = layout.materialization_workspace().unwrap() - 1;
@@ -1197,7 +1221,7 @@ mod tests {
             .prepare_snapshot_restore(image.clone(), admission.clone(), 60_000)
             .await
             .unwrap();
-        assert_eq!(prepared.revision(), 512);
+        assert_eq!(prepared.revision(), ROWS);
         assert_eq!(prepared.image(), &image);
         assert_eq!(target.generation().unwrap().state.revision, 0);
         assert_eq!(target.generation().unwrap().terminals.head().count, 0);
@@ -1214,18 +1238,12 @@ mod tests {
     async fn public_capture_and_restore_preparation_are_complete_admitted_and_never_publish() {
         let incarnation = uuid::Uuid::new_v4().to_string();
         let config = crate::admission::AdmissionConfig::default();
-        let operation_capacity = config
-            .resolved_fixture_total_bytes()
-            .unwrap()
-            .checked_sub(
-                crate::admission::NodeAdmission::required_bookkeeping_bytes(&config).unwrap(),
-            )
-            .unwrap();
+        let original_total = config.resolved_fixture_total_bytes().unwrap();
         let (
             (_source_dir, source, source_store),
             (_target_dir, target, target_store),
             admission,
-            _metadata_bytes,
+            metadata_bytes,
         ) = admitted_pair(&incarnation, config).await;
         install_chain(&source, &source_store);
         let installed_payload = crate::test_utils::reserved_payload_bytes(&admission);
@@ -1267,8 +1285,15 @@ mod tests {
             crate::test_utils::reserved_payload_bytes(&admission),
             installed_payload
         );
+        // The live native stores retain index charges as well as disk metadata.
+        // Leave the same operation headroom after accounting for all owners.
+        let available = original_total
+            .checked_add(metadata_bytes)
+            .unwrap()
+            .checked_sub(admission.snapshot().reserved_bytes)
+            .unwrap();
         let held = admission
-            .reserve(operation_capacity.checked_sub(1 << 20).unwrap(), None)
+            .reserve(available.checked_sub(1 << 20).unwrap(), None)
             .unwrap();
         assert_eq!(
             source

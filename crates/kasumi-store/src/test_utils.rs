@@ -301,6 +301,15 @@ impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
         Ok(crate::DiskMemoryLease::new(self.take_installed(bytes)?))
     }
 
+    fn reserve_document_decode(
+        self: std::sync::Arc<Self>,
+        bytes: u64,
+    ) -> std::io::Result<crate::DiskMemoryLease> {
+        // This fixture has one bounded resident ledger. Keep the real lease
+        // and its allocation charged, just as for physical fixture owners.
+        Ok(crate::DiskMemoryLease::new(self.take_installed(bytes)?))
+    }
+
     fn install_native_constructor(
         self: std::sync::Arc<Self>,
         install: &mut crate::NativeConstructorInstall<'_>,

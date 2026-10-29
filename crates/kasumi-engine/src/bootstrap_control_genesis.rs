@@ -178,11 +178,11 @@ impl ControlGenesis {
                 data_epoch: 1,
                 documents: imbl::OrdMap::from_iter([(
                     "current".to_owned(),
-                    Arc::new(Document {
+                    Arc::new(DocumentSlot::Pending(Arc::new(Document {
                         id: "current".into(),
                         version: 1,
                         body,
-                    }),
+                    }))),
                 )]),
                 archived_documents: imbl::OrdMap::new(),
                 archived_document_bytes: 0,
@@ -191,7 +191,15 @@ impl ControlGenesis {
         let enrollment = ControlPlane::enrollment_definition();
         state.collections.insert(
             enrollment.name.clone(),
-            schema::prepare_collection(state, None, &enrollment, true)?,
+            schema::prepare_collection(state, None, &enrollment, true, None).map_err(|error| {
+                match error {
+                    kasumi_query::ReadFailure::Query(error) => error,
+                    kasumi_query::ReadFailure::Source(_) => Error::new(
+                        ErrorCode::Unavailable,
+                        "Control genesis document source is unavailable",
+                    ),
+                }
+            })?,
         );
         if let ControlLifecycleGenesis::Installed {
             command_id,

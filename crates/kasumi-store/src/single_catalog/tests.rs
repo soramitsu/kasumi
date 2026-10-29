@@ -360,9 +360,29 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
     let scratch_directory = crate::test_utils::private_tempdir().unwrap();
     let fixture_scratch =
         crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+    let directory = crate::test_utils::private_tempdir()?;
+    // Persistent disk metadata remains installed beyond native node retirement.
+    // Keep independent groups under one disk owner instead of retaining five
+    // separate fixed inventories in this test's unchanged memory budget.
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        crate::NodeDisk::fixture_for_path(
+            directory.path().join("partial.kv"),
+            fixture_memory.clone(),
+        )
+    })?;
+    let baseline = fixture_memory.snapshot();
     for existing in [false, true] {
         for claim in [false, true] {
-            let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
+            let node = NodeStore::create_new(
+                directory
+                    .path()
+                    .join(format!("singleton-{existing}-{claim}.kv")),
+                crate::test_utils::NODE_STORE_ID,
+                disk.clone(),
+                fixture_scratch.clone(),
+                crate::test_utils::node_storage_config(),
+            )
+            .expect("bounded node fixture setup succeeds");
             if existing {
                 open(input(node.clone(), Mode::Initialize))
                     .await?
@@ -419,9 +439,23 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
                 .await
                 .map_err(|original| anyhow::Error::new(original.observation()))?;
             assert_eq!(contents(&node)?, before);
+            // Joining initializers does not dispose their original node. Each
+            // completed case must retire before the same memory funds the next.
+            node.shutdown().await.unwrap();
+            assert!(node.retire().is_retired());
+            let retired = fixture_memory.snapshot();
+            assert_eq!(retired.used_bytes, baseline.used_bytes);
+            assert_eq!(retired.live_reservations, baseline.live_reservations);
         }
     }
-    let (_directory, node) = node(fixture_memory.clone(), fixture_scratch.clone())?;
+    let node = NodeStore::create_new(
+        directory.path().join("partial.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        disk.clone(),
+        fixture_scratch.clone(),
+        crate::test_utils::node_storage_config(),
+    )
+    .expect("bounded node fixture setup succeeds");
     let mut request = input(node.clone(), Mode::Initialize);
     request.provider = Arc::new(FailingProvider {
         generate: AtomicUsize::new(0),
@@ -440,7 +474,13 @@ async fn buffered_singleton_preparation_errors_require_actual_claim_and_preserve
     assert_eq!(contents(&node)?, partial);
     drain(&node)
         .await
-        .map_err(|original| anyhow::Error::new(original.observation()))
+        .map_err(|original| anyhow::Error::new(original.observation()))?;
+    node.shutdown().await.unwrap();
+    assert!(node.retire().is_retired());
+    let retired = fixture_memory.snapshot();
+    assert_eq!(retired.used_bytes, baseline.used_bytes);
+    assert_eq!(retired.live_reservations, baseline.live_reservations);
+    Ok(())
 }
 
 #[tokio::test]

@@ -43,11 +43,11 @@ fn query_memory_generation() -> Arc<crate::Generation> {
         data_epoch: 7,
         documents: [(
             "a".to_owned(),
-            Arc::new(Document {
+            Arc::new(DocumentSlot::Pending(Arc::new(Document {
                 id: "a".into(),
                 version: 7,
                 body: json!({"value": "x".repeat(1024)}),
-            }),
+            }))),
         )]
         .into_iter()
         .collect(),
@@ -142,7 +142,9 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
         time_bounds: None,
     };
     let generation = query_memory_generation();
-    let expected_document = generation.state.collections["docs"].documents["a"]
+    let expected_document = generation
+        .load_document(&generation.state.collections["docs"].documents["a"])
+        .unwrap()
         .as_ref()
         .clone();
     let metadata = 512

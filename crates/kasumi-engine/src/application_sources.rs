@@ -74,6 +74,12 @@ fn cell_bytes() -> Result<u64> {
     )
 }
 
+/// Actual temporary reader control backing, separate from its native fork and
+/// body decoding. A composite bootstrap resolver can hold two such readers.
+pub(crate) fn document_reader_credit_bytes() -> Result<u64> {
+    cell_bytes()
+}
+
 /// Real installed-provider workspace. The proof keeps its own mutable grant;
 /// the independently charged cell remains funded even if a decoder unwinds.
 pub(crate) struct Workspace {
@@ -698,6 +704,19 @@ impl SourceRoots {
         }
         Ok(())
     }
+    pub(crate) fn admit_document_publication(&self, bytes: u64) -> Result<()> {
+        self.admit_publication()?;
+        if bytes != 0 {
+            self.admit_apply_escrow()?;
+        }
+        let escrow = self.escrow.lock().unwrap_or_else(|p| p.into_inner());
+        if let Some(escrow) = escrow.as_ref() {
+            // A smaller next request must not retain a prior unspent peak.
+            escrow.admit_document_capacity(bytes)?;
+        }
+        Ok(())
+    }
+
     fn admit_source_grant(&self, scoped: bool) -> Result<()> {
         let replaced = {
             let mut slot = self.publication.lock().unwrap_or_else(|p| p.into_inner());
@@ -1034,7 +1053,19 @@ impl SourceRootsRef {
             )
         } else {
             let baseline = cell_bytes()?;
-            let reservation = self.admission.reserve_application_source(baseline)?;
+            // Only a nonpublishing reader may spend the read workflow's exact
+            // source slice. Canonical selections retain their own admission.
+            let credit = if !canonical
+                && crate::admission::DocumentReadBudget::current_for(self.admission.memory())
+                    .is_some()
+            {
+                SourceCredit::document_read(crate::admission::DocumentWorkspace::new(
+                    &self.admission,
+                    baseline,
+                )?)
+            } else {
+                SourceCredit::new(self.admission.reserve_application_source(baseline)?)
+            };
             let workspace = if canonical {
                 let peak = match plan {
                     Some(plan) => plan.peak_bytes(),
@@ -1068,7 +1099,7 @@ impl SourceRootsRef {
             } else {
                 None
             };
-            (SourceCredit::new(reservation), workspace, false)
+            (credit, workspace, false)
         };
         let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
         ensure!(
@@ -1419,6 +1450,13 @@ impl RootPreparation {
                         Err(error) => {
                             #[cfg(test)]
                             let error = capture_access_test_hook::selection_failure(error);
+                            #[cfg_attr(
+                                test,
+                                allow(
+                                    clippy::useless_conversion,
+                                    reason = "The test hook already returns Anyhow; production still converts the original SelectionFailure custody."
+                                )
+                            )]
                             self.cell.record_failure(error.into(), false);
                         }
                     }
@@ -1915,15 +1953,13 @@ impl SourceRootsRef {
     }
 }
 
-// This exact-fork capability is the private boundary for the pending disk
-// DocumentSource cutover. No runtime document reads use it in this stage.
-#[cfg(test)]
+// Exact native-view loans for immutable document bodies. A loan never advances
+// a selected generation to the current physical root.
 struct ForkPermit {
     roots: SourceRootsRef,
     parent: CellRef,
     view: Option<ViewRef>,
 }
-#[cfg(test)]
 impl Drop for ForkPermit {
     fn drop(&mut self) {
         drop(self.view.take());
@@ -2057,10 +2093,10 @@ impl SelectedApplication {
 #[path = "application_sources_tests.rs"]
 pub(crate) mod tests;
 
-// Used by the real encrypted staging candidate; activation is not wired yet.
-#[cfg(test)]
+// Shared by primary-tree fixtures and production immutable document reads.
 #[path = "application_source_reader.rs"]
 mod primary_reader;
+pub(crate) use primary_reader::DocumentReader;
 #[cfg(test)]
 pub(crate) use primary_reader::SourceReader;
 

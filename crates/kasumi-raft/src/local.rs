@@ -133,8 +133,10 @@ where
         // Legacy Raft could crash after installing it but before saving the log
         // commit/purge cursors. Repair that window before replaying the suffix.
         let committed = saved_committed.max(applied);
-        if (saved_committed < applied || logs.last_log_id < applied) && applied.is_some() {
-            log.purge(applied.expect("snapshot floor")).await?;
+        if (saved_committed < applied || logs.last_log_id < applied)
+            && let Some(snapshot_floor) = applied
+        {
+            log.purge(snapshot_floor).await?;
             logs = log.get_log_state().await?;
         }
         if saved_committed < committed {

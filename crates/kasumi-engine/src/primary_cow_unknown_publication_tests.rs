@@ -15,6 +15,10 @@ fn final_operation() -> Operation {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
 async fn primary_cow_unknown_final_publication_reopens_complete_commit_and_refuses_abort()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let scope = Scope::new().await?;
@@ -70,7 +74,7 @@ async fn primary_cow_unknown_final_publication_reopens_complete_commit_and_refus
     let failure = publication::publish(fixture, prepared, publication, &mut |_| Ok(()))
         .err()
         .context("unknown final publication acknowledged")?;
-    original_unknown(failure.original(), address, 1);
+    let unknown = original_unknown(failure.original(), address, 1);
     assert!(!failure.visibility_entered());
     assert_eq!(failure.proposed_writes().len(), 5);
     assert!(Arc::ptr_eq(
@@ -245,6 +249,6 @@ async fn primary_cow_unknown_final_publication_reopens_complete_commit_and_refus
     drop(image);
     drop(command_input);
     restarted.close().await;
-    cleanup(scope.fixture, scope.owners, true).await;
+    cleanup(scope.fixture, scope.owners, Some(unknown)).await;
     Ok(())
 }

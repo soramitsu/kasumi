@@ -1,7 +1,12 @@
 //! Test joins keep every owning failure inline; no blanket Anyhow erasure.
 
 #[derive(Debug)]
+#[allow(
+    clippy::large_enum_variant,
+    reason = "This fixture carrier keeps each original native failure inline; allocating an error Box or erasing its type would change the ownership under test."
+)]
 pub(crate) enum FixtureFailure {
+    Documents(kasumi_query::ReadFailure<crate::index_source::DocumentSourceFailure>),
     Snapshot(crate::SnapshotFailure),
     SnapshotContext {
         context: &'static str,
@@ -23,7 +28,8 @@ impl FixtureFailure {
             Self::Snapshot(original) => original.admission_refusal(),
             Self::SnapshotContext { original, .. } => original.admission_refusal(),
             Self::Publication(original) => original.admission_refusal(),
-            Self::Selection(_)
+            Self::Documents(_)
+            | Self::Selection(_)
             | Self::SourceCapacity(_)
             | Self::NodeStartup(_)
             | Self::InitializerDrainObservation(_)
@@ -35,6 +41,7 @@ impl FixtureFailure {
 impl std::fmt::Display for FixtureFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::Documents(original) => original.fmt(f),
             Self::Snapshot(original) => original.fmt(f),
             Self::SnapshotContext { context, original } => write!(f, "{context}: {original}"),
             Self::Publication(original) => original.fmt(f),
@@ -44,6 +51,15 @@ impl std::fmt::Display for FixtureFailure {
             Self::InitializerDrainObservation(original) => original.fmt(f),
             Self::Operation(original) => original.fmt(f),
         }
+    }
+}
+impl From<kasumi_query::ReadFailure<crate::index_source::DocumentSourceFailure>>
+    for FixtureFailure
+{
+    fn from(
+        original: kasumi_query::ReadFailure<crate::index_source::DocumentSourceFailure>,
+    ) -> Self {
+        Self::Documents(original)
     }
 }
 impl From<kasumi_store::NodeStoreStartFailure> for FixtureFailure {

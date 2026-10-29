@@ -139,6 +139,8 @@ impl<'engine> ApplyOwner<'engine> {
             indexes: previous.indexes.clone(),
             snapshot_accounting: previous.snapshot_accounting.clone(),
             application_selection: std::sync::OnceLock::new(),
+            staged_documents: previous.staged_documents.clone(),
+            document_sources: std::sync::OnceLock::new(),
             _read_reservations: vec![],
         });
         Ok(AcceptedGeneration {
@@ -200,6 +202,88 @@ pub(super) struct AcceptedGeneration<'engine> {
 }
 
 impl AcceptedGeneration<'_> {
+    /// Stage each changed after-image once. The same compact handle is retained
+    /// by both the current document map and its complete change-feed event.
+    pub(super) fn prepare_documents(
+        &mut self,
+        roots: &crate::application_sources::SourceRootsRef,
+    ) -> anyhow::Result<Option<crate::document_store::PreparedDocuments>> {
+        // Metadata, rejection, replay and deletion-only publications have no
+        // new after-image. They must not obtain a new body grant after commit.
+        let pending = self.delta.changed.iter().any(|(name, ids)| {
+            self.candidate
+                .state
+                .collections
+                .get(name)
+                .is_some_and(|collection| {
+                    ids.iter().any(|id| {
+                        collection
+                            .documents
+                            .get(id)
+                            .is_some_and(|slot| matches!(slot.as_ref(), DocumentSlot::Pending(_)))
+                    })
+                })
+        });
+        if !pending {
+            return Ok(None);
+        }
+        let selected = self
+            .owner
+            .previous
+            .application_selection
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("previous document selection missing"))?;
+        let mut prepared = crate::document_store::PreparedDocuments::new(
+            roots,
+            selected,
+            &self.candidate.state.tenant,
+            &self.candidate.state.incarnation,
+        )?;
+        let candidate = Arc::get_mut(&mut self.candidate)
+            .ok_or_else(|| anyhow::anyhow!("unpublished document candidate escaped"))?;
+        for (name, ids) in &self.delta.changed {
+            let collection = candidate
+                .state
+                .collections
+                .get_mut(name)
+                .ok_or_else(|| anyhow::anyhow!("changed document collection absent"))?;
+            for id in ids {
+                let Some(slot) = collection.documents.get(id) else {
+                    continue;
+                };
+                if let DocumentSlot::Pending(document) = slot.as_ref() {
+                    let descriptor = prepared.stage(document)?;
+                    collection
+                        .documents
+                        .insert(id.clone(), Arc::new(DocumentSlot::Stored(descriptor)));
+                }
+            }
+        }
+        let latest_key = candidate
+            .state
+            .change_feed
+            .commits
+            .get_max()
+            .map(|(key, _)| *key);
+        if let Some(latest) =
+            latest_key.and_then(|key| candidate.state.change_feed.commits.get_mut(&key))
+            && latest.revision == candidate.state.revision
+        {
+            for record in &mut Arc::make_mut(latest).records {
+                if record.document.is_some() {
+                    let slot = candidate
+                        .state
+                        .collections
+                        .get(&record.collection)
+                        .and_then(|collection| collection.documents.get(&record.id))
+                        .ok_or_else(|| anyhow::anyhow!("new change-feed after-image absent"))?;
+                    slot.stored()?;
+                    record.document = Some(slot.clone());
+                }
+            }
+        }
+        Ok(Some(prepared))
+    }
     #[cfg(test)]
     pub(crate) fn primary_input(
         &self,

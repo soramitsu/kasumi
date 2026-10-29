@@ -1051,16 +1051,22 @@ async fn local_lost_file_binding_cleanup_requires_the_original_node_identity_imp
     persistent
         .reconcile(&kasumi_store::CensusCancellation::default())
         .unwrap();
-    let bytes = std::fs::read(&path).unwrap();
+    let image =
+        kasumi_store::test_utils::capture_native_group_image(&path, persistent.memory().clone())
+            .unwrap();
     assert!(
         stop_with_storage(&configuration, request.operation_id, storage.clone())
             .await
             .is_err()
     );
-    assert_eq!(std::fs::read(&path).unwrap(), bytes);
+    assert_eq!(
+        kasumi_store::test_utils::capture_native_group_image(&path, persistent.memory().clone())
+            .unwrap(),
+        image
+    );
     assert_eq!(persistent.snapshot().open_files, 0);
     persistent.pause().unwrap();
-    std::fs::remove_file(&path).unwrap();
+    std::fs::remove_dir_all(&path).unwrap();
     std::fs::rename(&preserved, &path).unwrap();
     persistent
         .reconcile(&kasumi_store::CensusCancellation::default())
@@ -1193,6 +1199,12 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_
             "existing tenant catalog absent"
         };
         assert!(format!("{error:#}").contains(expected), "{error:#}");
+        if dispatched {
+            assert_eq!(
+                error.downcast_ref::<Error>().unwrap().code,
+                ErrorCode::Corruption
+            );
+        }
         assert_eq!(journal.target_preparation, stage);
         assert_eq!(
             record(operator.store(), request.operation_id)
@@ -1221,6 +1233,12 @@ async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_
             .await
             .expect_err("incomplete target resume must reject");
         assert!(format!("{error:#}").contains(expected), "{error:#}");
+        if dispatched {
+            assert_eq!(
+                error.downcast_ref::<Error>().unwrap().code,
+                ErrorCode::Corruption
+            );
+        }
         assert_eq!(
             kasumi_store::NodeGroupIdentity::read(&path).unwrap(),
             identity
@@ -1696,6 +1714,7 @@ async fn local_audit_placement_custody_impl() {
             .phase,
         LocalRecoveryPhase::Stopped
     );
+    drain_operations().await.unwrap();
 }
 
 #[test]
