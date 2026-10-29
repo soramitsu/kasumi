@@ -2005,8 +2005,9 @@ impl NodeRuntime {
             tasks
                 .maintenance
                 .spawn(manager.clone().probe_readiness(tasks.data_stop.subscribe()));
-            let mut stop = tasks.data_stop.subscribe();
-            tasks.maintenance.spawn(async move { loop { tokio::select! { _=stop.changed()=>return Ok(()), _=tokio::time::sleep(Duration::from_millis(250))=>{ if manager.reconcile().await.is_err() { tracing::warn!("serving reconciliation unavailable; will retry"); } } } } });
+            tasks
+                .maintenance
+                .spawn(manager.reconcile_while_serving(tasks.data_stop.subscribe()));
         }
         if shutdown.requested() {
             Ok(())

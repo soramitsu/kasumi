@@ -1567,6 +1567,11 @@ impl Database {
             .err()
             .map(|_| "restore_preparation")
     }
+    /// Fixed class of this database's most recent key-access lease failure.
+    /// Diagnostics only, like `serving_failure_class`.
+    pub fn key_lease_failure_class(&self) -> Option<&'static str> {
+        self.store.key_lease_failure_class()
+    }
     fn materialization_access(&self) -> Result<()> {
         if self.closing.load(Ordering::Acquire) {
             return Err(Error::new(
