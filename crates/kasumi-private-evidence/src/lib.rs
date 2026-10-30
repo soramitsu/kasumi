@@ -583,6 +583,24 @@ pub struct KasumiBackend {
 }
 
 impl KasumiBackend {
+    const SNAPSHOT_OWNERS: usize = 2;
+
+    fn snapshot_limits() -> ClientDecodeLimits {
+        ClientDecodeLimits {
+            max_request_bytes: 128 << 10,
+            max_wire_bytes: 8 << 20,
+            max_json_bytes: 8 << 20,
+            max_depth: 32,
+            max_nodes: 100_000,
+            max_string_bytes: 1 << 20,
+            max_number_bytes: 128,
+            max_rows: READ_GROUP,
+            // Bulk reads carry at most one full hex chunk of payload plus
+            // the metadata of at most eight independently checked rows.
+            max_decoded_bytes: 32 << 20,
+        }
+    }
+
     pub fn from_installed_profile(path: &Path, binding: &InstalledProfileBinding) -> Result<Self> {
         binding.validate()?;
         let (profile, digest) = ClientProfile::load_with_sha256(path)?;
@@ -598,9 +616,18 @@ impl KasumiBackend {
         let config = profile.connection(false)?;
         let credential = Arc::new(FileCredentialSource::new(&profile.bearer_file)?);
         let pool = KasumiClientPool::new(BTreeMap::from([(1, config)]), credential)?;
+        // Pool retries retain the admitted original request while a separately
+        // admitted transport attempt runs. Fund both existing owner slots with
+        // the same fixed decode limits used by every snapshot read.
+        let resource_bytes = Self::snapshot_limits()
+            .accounted_bytes()
+            .map_err(anyhow::Error::from)?
+            .checked_mul(Self::SNAPSHOT_OWNERS as u64)
+            .context("custody snapshot resource budget overflow")?;
         Ok(Self {
             pool,
-            resources: ClientResources::new(128 << 20, 2).map_err(anyhow::Error::from)?,
+            resources: ClientResources::new(resource_bytes, Self::SNAPSHOT_OWNERS)
+                .map_err(anyhow::Error::from)?,
             expected_incarnation: binding.incarnation,
         })
     }
@@ -647,19 +674,7 @@ impl CustodyBackend for KasumiBackend {
         };
         let options = SnapshotReadOptions {
             resources: self.resources.clone(),
-            limits: ClientDecodeLimits {
-                max_request_bytes: 128 << 10,
-                max_wire_bytes: 8 << 20,
-                max_json_bytes: 8 << 20,
-                max_depth: 32,
-                max_nodes: 100_000,
-                max_string_bytes: 1 << 20,
-                max_number_bytes: 128,
-                max_rows: READ_GROUP,
-                // Bulk reads carry at most one full hex chunk of payload plus
-                // the metadata of at most eight independently checked rows.
-                max_decoded_bytes: 32 << 20,
-            },
+            limits: Self::snapshot_limits(),
             deadline,
             expected_incarnation: self.expected_incarnation,
         };

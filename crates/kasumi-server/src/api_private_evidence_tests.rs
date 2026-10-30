@@ -1,3 +1,5 @@
+include!("api_private_evidence_retry_tests.rs");
+
 struct PrivateEvidenceTransportFixture {
     fixture: Fixture,
     context: RequestContext,
@@ -17,6 +19,12 @@ impl PrivateEvidenceTransportFixture {
 }
 
 async fn private_evidence_transport_fixture() -> PrivateEvidenceTransportFixture {
+    private_evidence_transport_fixture_with_router(std::convert::identity).await
+}
+
+async fn private_evidence_transport_fixture_with_router(
+    configure: impl FnOnce(Router) -> Router,
+) -> PrivateEvidenceTransportFixture {
     use kasumi_client::{ClientProfile, ProfileAuthorityEndpoint, ProfileTlsFiles};
     use kasumi_private_evidence::{
         CHUNK_BYTES, InstalledProfileBinding, collection_definition_sha256, collection_definitions,
@@ -144,7 +152,8 @@ async fn private_evidence_transport_fixture() -> PrivateEvidenceTransportFixture
         },
     )
     .unwrap();
-    let router = tonic::service::Routes::new(fixture.data().service()).into_axum_router();
+    let router =
+        configure(tonic::service::Routes::new(fixture.data().service()).into_axum_router());
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(crate::tls::serve_tls(
         listener,
@@ -261,6 +270,7 @@ async fn private_evidence_four_full_chunks_roundtrip_through_secure_native_trans
 struct RecordingPrivateEvidenceBackend {
     native: kasumi_private_evidence::KasumiBackend,
     submitted: Arc<std::sync::Mutex<Vec<MutationBatch>>>,
+    reads: usize,
 }
 
 #[async_trait::async_trait]
@@ -290,13 +300,21 @@ impl kasumi_private_evidence::CustodyBackend for RecordingPrivateEvidenceBackend
         ids: &[String],
         timeout: std::time::Duration,
     ) -> anyhow::Result<Vec<Option<kasumi_types::Document>>> {
-        kasumi_private_evidence::CustodyBackend::read_records(
+        self.reads += 1;
+        let result = kasumi_private_evidence::CustodyBackend::read_records(
             &mut self.native,
             collection,
             ids,
             timeout,
         )
-        .await
+        .await;
+        if let Err(error) = &result {
+            eprintln!(
+                "real custody read {} failed for {collection} {ids:?}: {error:#}",
+                self.reads
+            );
+        }
+        result
     }
 }
 
@@ -315,6 +333,7 @@ fn recording_private_evidence_custody(
         RecordingPrivateEvidenceBackend {
             native,
             submitted: submitted.clone(),
+            reads: 0,
         },
         binding.manifest_collection.clone(),
         binding.chunk_collection.clone(),
@@ -444,22 +463,7 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
                 assert!(custody.read(&evidence, DEADLINE).await.unwrap().is_none());
             }
             let batches = submitted.lock().unwrap().clone();
-            let mut native = KasumiBackend::from_installed_profile(&profile, &binding).unwrap();
-            let mut receipts = Vec::new();
-            for batch in &batches {
-                let receipt = native
-                    .resolve(&evidence.scope, batch, DEADLINE)
-                    .await
-                    .unwrap()
-                    .expect("original refusal must be durable");
-                assert_eq!(receipt.request_digest, batch.digest().unwrap());
-                assert_eq!(
-                    receipt.outcome.as_ref().unwrap_err().code,
-                    kasumi_types::ErrorCode::QuotaExceeded
-                );
-                receipts.push(receipt);
-            }
-            (evidence, payload, use_batch, batches, receipts)
+            (evidence, payload, use_batch, batches)
         });
     }
     barrier.wait().await;
@@ -478,6 +482,31 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
         0
     );
 
+    // Inspect retained receipts only after all workflow clients have dropped.
+    // A second inspector per in-flight owner would test 200 connections against
+    // the listener's 128-connection bound, not the required 100 workflows.
+    let mut native =
+        KasumiBackend::from_installed_profile(&transport.profile_path, &transport.binding).unwrap();
+    let mut refused = Vec::new();
+    for (evidence, payload, use_batch, batches) in originals {
+        let mut receipts = Vec::new();
+        for batch in &batches {
+            let receipt = native
+                .resolve(&evidence.scope, batch, DEADLINE)
+                .await
+                .unwrap()
+                .expect("original refusal must be durable");
+            assert_eq!(receipt.request_digest, batch.digest().unwrap());
+            assert_eq!(
+                receipt.outcome.as_ref().unwrap_err().code,
+                kasumi_types::ErrorCode::QuotaExceeded
+            );
+            receipts.push(receipt);
+        }
+        refused.push((evidence, payload, use_batch, batches, receipts));
+    }
+    drop(native);
+
     // Authorized quota repair changes no evidence, owner identity or receipt.
     transport
         .fixture
@@ -488,7 +517,7 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
     let barrier = Arc::new(tokio::sync::Barrier::new(WORKFLOWS + 1));
     let mut recovered = tokio::task::JoinSet::new();
     let deadline = tokio::time::Instant::now() + DEADLINE;
-    for (evidence, payload, use_batch, batches, receipts) in originals {
+    for (evidence, payload, use_batch, batches, receipts) in refused {
         let profile = transport.profile_path.clone();
         let binding = transport.binding.clone();
         let barrier = barrier.clone();
