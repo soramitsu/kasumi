@@ -16,7 +16,7 @@ use kasumi_client::{
 use kasumi_transport::credentials::FileCredentialSource;
 use kasumi_types::{
     CollectionDefinition, CollectionRetentionClass, CollectionWriteMode, Document, DocumentKey,
-    Mutation, MutationBatch, MutationReceipt, MutationReceiptScope, Precondition,
+    ErrorCode, Mutation, MutationBatch, MutationReceipt, MutationReceiptScope, Precondition,
     ReadSnapshotRequest, SchemaSnapshot, WriteReceipt, validate_name,
 };
 use serde::{Deserialize, Serialize};
@@ -44,6 +44,10 @@ const READ_GROUP: usize = 8;
 const ID_FRAME: &[u8] = b"kasumi.private-evidence.id.v1\0";
 const BATCH_FRAME: &[u8] = b"kasumi.private-evidence.batch.v1\0";
 const BATCH_KEY_PREFIX: &str = "private-evidence/batch/";
+const RETRY_KEY_PREFIX: &str = "private-evidence/quota-retry/";
+/// Lifetime recovery budget per exact original batch, in addition to its original
+/// attempt. A call creates at most one new attempt per exact batch; durable refusals remain.
+const MAX_QUOTA_RETRIES: usize = 64;
 /// Documents in one append batch, inside Kasumi's per-batch operation limit.
 const MAX_APPEND_BATCH_DOCUMENTS: usize = 128;
 /// Encoded bytes kept free in each append batch for its key and framing.
@@ -59,6 +63,8 @@ pub enum CustodyError {
     Inconsistent,
     #[error("Kasumi rejected the original private evidence write")]
     Rejected,
+    #[error("private evidence exhausted its retained quota-retry budget")]
+    RetryLimitReached,
     #[error("private evidence outcome is unknown for {0}; resolve the same ID before retrying")]
     UnknownOutcome(String),
     #[error(transparent)]
@@ -369,6 +375,37 @@ fn append_batch_key(operations: &[Mutation]) -> String {
     format!("{BATCH_KEY_PREFIX}{}", hex::encode(digest.finalize()))
 }
 
+/// Bind the bounded attempt number to the complete original batch, including every
+/// byte and target. Scope is also present in each immutable evidence document.
+fn quota_retry_key(original: &MutationBatch, attempt: usize) -> Result<String> {
+    let digest = original
+        .digest()
+        .map_err(|_| CustodyError::Invalid("batch digest"))?;
+    Ok(format!("{RETRY_KEY_PREFIX}{digest}/{attempt}"))
+}
+
+fn valid_append_key(batch: &MutationBatch) -> bool {
+    let base_key = append_batch_key(&batch.operations);
+    if batch.idempotency_key == base_key {
+        return true;
+    }
+    let Some(suffix) = batch.idempotency_key.strip_prefix(RETRY_KEY_PREFIX) else {
+        return false;
+    };
+    let Some((_, number)) = suffix.split_once('/') else {
+        return false;
+    };
+    let Ok(attempt) = number.parse::<usize>() else {
+        return false;
+    };
+    if !(1..=MAX_QUOTA_RETRIES).contains(&attempt) || number != attempt.to_string() {
+        return false;
+    }
+    let mut original = batch.clone();
+    original.idempotency_key = base_key;
+    quota_retry_key(&original, attempt).is_ok_and(|key| key == batch.idempotency_key)
+}
+
 fn append_batch(documents: &[PendingDocument]) -> Result<MutationBatch> {
     let operations: Vec<_> = documents.iter().map(PendingDocument::put).collect();
     let batch = MutationBatch {
@@ -421,7 +458,7 @@ pub fn validate_append_batch(batch: &MutationBatch, manifests: &str, chunks: &st
         || batch.operations.len() > MAX_APPEND_BATCH_DOCUMENTS
         || targets.len() != batch.operations.len()
         || encoded.len() > REQUIRED_MAX_BATCH_BYTES
-        || batch.idempotency_key != append_batch_key(&batch.operations)
+        || !valid_append_key(batch)
         || batch.operations.iter().any(|operation| {
             !matches!(
                 operation,
@@ -903,43 +940,18 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
             };
         }
         let original = put(collection, id.clone(), proposed.clone());
-        let submit = self
-            .backend
-            .mutate(&original, Self::remaining(deadline)?)
-            .await;
-        let (receipt, recovered) = match submit {
-            Ok(receipt) => (receipt, false),
-            Err(_) => {
-                let remaining = Self::remaining(deadline)
-                    .map_err(|_| CustodyError::UnknownOutcome(id.clone()))?;
-                let resolution = self
-                    .backend
-                    .resolve(&self.scope, &original, remaining)
-                    .await
-                    .map_err(|_| CustodyError::UnknownOutcome(id.clone()))?
-                    .ok_or_else(|| CustodyError::UnknownOutcome(id.clone()))?;
-                let expected = original.digest().map_err(|_| CustodyError::Inconsistent)?;
-                if resolution.scope != self.scope || resolution.request_digest != expected {
-                    return Err(CustodyError::Inconsistent);
-                }
-                (
-                    resolution.outcome.map_err(|_| CustodyError::Rejected)?,
-                    true,
-                )
-            }
-        };
-        if receipt.revision == 0
-            || receipt.versions
-                != BTreeMap::from([(document_receipt_path(collection, &id), receipt.revision)])
-        {
-            return Err(CustodyError::Inconsistent);
-        }
+        let (receipt, recovered) = self.put_batch(&original, deadline).await?;
         let after = self
             .one(collection, id.clone(), deadline)
             .await
             .map_err(|_| CustodyError::UnknownOutcome(id.clone()))?;
         match after {
-            Some(document) if document.body == proposed && document.version == receipt.revision => {
+            Some(document)
+                if document.body == proposed
+                    && receipt
+                        .as_ref()
+                        .is_none_or(|receipt| document.version == receipt.revision) =>
+            {
                 if recovered {
                     Ok(AppendOutcome::Recovered)
                 } else {
@@ -1047,32 +1059,19 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
         Ok(documents)
     }
 
-    /// Submit one append batch and check its exact receipt: every document committed at
-    /// the receipt's revision. A lost reply is resolved only through the retained
-    /// receipt of this exact batch. Returns whether it was so recovered.
-    async fn put_batch(&mut self, batch: &MutationBatch, deadline: Instant) -> Result<bool> {
-        let unknown = || CustodyError::UnknownOutcome(batch.idempotency_key.clone());
-        let (receipt, recovered) =
-            match self.backend.mutate(batch, Self::remaining(deadline)?).await {
-                Ok(receipt) => (receipt, false),
-                Err(_) => {
-                    let remaining = Self::remaining(deadline).map_err(|_| unknown())?;
-                    let resolution = self
-                        .backend
-                        .resolve(&self.scope, batch, remaining)
-                        .await
-                        .map_err(|_| unknown())?
-                        .ok_or_else(unknown)?;
-                    let expected = batch.digest().map_err(|_| CustodyError::Inconsistent)?;
-                    if resolution.scope != self.scope || resolution.request_digest != expected {
-                        return Err(CustodyError::Inconsistent);
-                    }
-                    (
-                        resolution.outcome.map_err(|_| CustodyError::Rejected)?,
-                        true,
-                    )
-                }
-            };
+    fn checked_resolution(
+        &self,
+        batch: &MutationBatch,
+        resolution: MutationReceipt,
+    ) -> Result<std::result::Result<WriteReceipt, kasumi_types::Error>> {
+        let expected = batch.digest().map_err(|_| CustodyError::Inconsistent)?;
+        if resolution.scope != self.scope || resolution.request_digest != expected {
+            return Err(CustodyError::Inconsistent);
+        }
+        Ok(resolution.outcome)
+    }
+
+    fn checked_write(batch: &MutationBatch, receipt: &WriteReceipt) -> Result<()> {
         let versions: BTreeMap<_, _> = batch
             .operations
             .iter()
@@ -1084,7 +1083,108 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
         if receipt.revision == 0 || receipt.versions != versions {
             return Err(CustodyError::Inconsistent);
         }
-        Ok(recovered)
+        Ok(())
+    }
+
+    /// Exact readback after a proven refusal. Never changes a document identity or
+    /// body. A partial concurrent append is handled by append_many's subset retry.
+    async fn refused_batch_present(
+        &mut self,
+        batch: &MutationBatch,
+        deadline: Instant,
+    ) -> Result<bool> {
+        let mut present = 0;
+        for operation in &batch.operations {
+            let Mutation::Put {
+                collection,
+                id,
+                body,
+                ..
+            } = operation
+            else {
+                return Err(CustodyError::Invalid("evidence append batch"));
+            };
+            if let Some(document) = self.one(collection, id.clone(), deadline).await? {
+                if document.body != *body {
+                    return Err(CustodyError::Conflict);
+                }
+                present += 1;
+            }
+        }
+        if present > 0 && present < batch.operations.len() {
+            return Err(CustodyError::Rejected);
+        }
+        Ok(present == batch.operations.len())
+    }
+
+    /// Resolve each exact candidate before dispatch. Only a retained, authenticated
+    /// quota refusal allows a successor. A newly refused attempt ends this call,
+    /// so a continuing outage cannot burn the entire retry budget in one request.
+    /// Missing/unknown receipts always retry the same candidate, never advance it.
+    async fn put_batch(
+        &mut self,
+        original: &MutationBatch,
+        deadline: Instant,
+    ) -> Result<(Option<WriteReceipt>, bool)> {
+        let mut batch = original.clone();
+        let mut checked_refused_documents = false;
+        for attempt in 0..=MAX_QUOTA_RETRIES {
+            let unknown = || CustodyError::UnknownOutcome(batch.idempotency_key.clone());
+            let retained = self
+                .backend
+                .resolve(&self.scope, &batch, Self::remaining(deadline)?)
+                .await
+                .map_err(|_| unknown())?;
+            if let Some(resolution) = retained {
+                match self.checked_resolution(&batch, resolution)? {
+                    Ok(receipt) => {
+                        Self::checked_write(&batch, &receipt)?;
+                        return Ok((Some(receipt), true));
+                    }
+                    Err(error) if error.code == ErrorCode::QuotaExceeded => {
+                        if !checked_refused_documents {
+                            if self.refused_batch_present(&batch, deadline).await? {
+                                return Ok((None, true));
+                            }
+                            // Every successor has the same document bodies and
+                            // targets. Read them once for the entire retained
+                            // refusal chain; absent-only writes still arbitrate
+                            // any concurrent append after this readback.
+                            checked_refused_documents = true;
+                        }
+                        if attempt == MAX_QUOTA_RETRIES {
+                            return Err(CustodyError::RetryLimitReached);
+                        }
+                        batch.idempotency_key = quota_retry_key(original, attempt + 1)?;
+                        continue;
+                    }
+                    Err(_) => return Err(CustodyError::Rejected),
+                }
+            }
+            let (receipt, recovered) = match self
+                .backend
+                .mutate(&batch, Self::remaining(deadline)?)
+                .await
+            {
+                Ok(receipt) => (receipt, attempt > 0),
+                Err(_) => {
+                    let remaining = Self::remaining(deadline).map_err(|_| unknown())?;
+                    let resolution = self
+                        .backend
+                        .resolve(&self.scope, &batch, remaining)
+                        .await
+                        .map_err(|_| unknown())?
+                        .ok_or_else(unknown)?;
+                    let receipt = self
+                        .checked_resolution(&batch, resolution)?
+                        .map_err(|_| CustodyError::Rejected)?;
+                    (receipt, true)
+                }
+            };
+            Self::checked_write(&batch, &receipt)?;
+            return Ok((Some(receipt), recovered));
+        }
+        Err(CustodyError::RetryLimitReached)
     }
 
     /// The documents of a refused batch that are not stored yet, read in groups within
@@ -1189,14 +1289,19 @@ impl<B: CustodyBackend> PrivateEvidenceCustody<B> {
                 // An interrupted earlier upload may already hold some of these
                 // documents. Write only the remaining ones, once.
                 Err(CustodyError::Rejected) => {
+                    let original_count = group.len();
                     let rest = self.unstored(group, deadline).await?;
                     if rest.is_empty() {
                         false
+                    } else if rest.len() == original_count {
+                        // A new terminal refusal ends this invocation. Replaying
+                        // the same set here would consume another retry attempt.
+                        return Err(CustodyError::Rejected);
                     } else {
-                        self.put_batch(&append_batch(&rest)?, deadline).await?
+                        self.put_batch(&append_batch(&rest)?, deadline).await?.1
                     }
                 }
-                outcome => outcome?,
+                outcome => outcome?.1,
             };
             if batch_recovered {
                 recovered.extend(components);
@@ -2226,5 +2331,9 @@ mod tests {
                 validate_append_batch(&refused, "evidence_manifests", "evidence_chunks").is_err()
             );
         }
+    }
+
+    mod quota_retry_tests {
+        include!("quota_retry_tests.rs");
     }
 }

@@ -13,6 +13,21 @@ stage operation SHA-256 and one component purpose. Its version-8 UUID is
 domain-separated and deterministic over that subject and the original Kasumi
 tenant/incarnation/principal, so a lost reply cannot lead to a fresh ID.
 
+Quota refusals are durable mutation outcomes. A later call resolves each exact
+attempt before dispatch. Only a retained `QuotaExceeded` receipt whose scope and
+full request digest match permits the next deterministic attempt. The retry key
+binds the complete original batch and its attempt number; document identities,
+bytes and absent-only preconditions remain unchanged. Exact existing documents
+are read back, while conflicting originals fail closed. An unavailable or missing
+receipt after dispatch never authorizes a different attempt.
+
+Each call creates at most one newly refused attempt per exact append batch. Recovery has a lifetime
+budget of 64 successors per exact batch, bounded further by the caller's deadline;
+exhaustion returns `RetryLimitReached` without deleting receipts or changing
+evidence. Applications must report that condition rather than treating it as a
+successful append or generating a new evidence identity. Restore capacity before
+retrying an ongoing quota refusal. Non-quota refusals do not authorize successors.
+
 The operator must install both definitions returned by
 `collection_definitions(manifests, chunks)` in the intended tenant. They require
 append-only operational retention and strict read audit. Grant only the
