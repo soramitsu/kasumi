@@ -510,6 +510,9 @@ mod tests {
     }
     impl Fixture {
         async fn new() -> Self {
+            Self::new_with_admission(Default::default()).await
+        }
+        async fn new_with_admission(admission: kasumi_engine::admission::AdmissionConfig) -> Self {
             let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
             let keys = serde_json::from_value(json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"test-key","x":URL_SAFE_NO_PAD.encode(key.public_key_raw())}]})).unwrap();
             let auth = Authenticator::with_test_keys(
@@ -529,7 +532,7 @@ mod tests {
             let key = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
             let dir = kasumi_store::test_utils::private_tempdir().unwrap();
             let physical =
-                crate::runtime_storage_fixtures::physical(dir.path(), Default::default()).unwrap();
+                crate::runtime_storage_fixtures::physical(dir.path(), admission).unwrap();
             let failures = crate::administration::OriginalRecoveries::new(
                 &physical.admission,
                 crate::administration::OriginalRecoveryParticipants::one("tenant-a"),

@@ -25,6 +25,13 @@ async fn private_evidence_transport_fixture() -> PrivateEvidenceTransportFixture
 async fn private_evidence_transport_fixture_with_router(
     configure: impl FnOnce(Router) -> Router,
 ) -> PrivateEvidenceTransportFixture {
+    private_evidence_transport_fixture_with_admission(Default::default(), configure).await
+}
+
+async fn private_evidence_transport_fixture_with_admission(
+    admission: kasumi_engine::admission::AdmissionConfig,
+    configure: impl FnOnce(Router) -> Router,
+) -> PrivateEvidenceTransportFixture {
     use kasumi_client::{ClientProfile, ProfileAuthorityEndpoint, ProfileTlsFiles};
     use kasumi_private_evidence::{
         CHUNK_BYTES, InstalledProfileBinding, collection_definition_sha256, collection_definitions,
@@ -34,7 +41,7 @@ async fn private_evidence_transport_fixture_with_router(
     use sha2::{Digest, Sha256};
     use std::{collections::BTreeMap, os::unix::fs::PermissionsExt};
 
-    let fixture = Fixture::new().await;
+    let fixture = Fixture::new_with_admission(admission).await;
     let context = RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
         principal: "person".into(),
@@ -152,8 +159,23 @@ async fn private_evidence_transport_fixture_with_router(
         },
     )
     .unwrap();
-    let router =
-        configure(tonic::service::Routes::new(fixture.data().service()).into_axum_router());
+    let diagnostics = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let admission = fixture.physical.admission.clone();
+    let router = configure(tonic::service::Routes::new(fixture.data().service()).into_axum_router())
+        .layer(axum::middleware::from_fn(move |request: HttpRequest<Body>, next: axum::middleware::Next| {
+            let diagnostics = diagnostics.clone();
+            let admission = admission.clone();
+            async move {
+                let path = request.uri().path().to_owned();
+                let response = next.run(request).await;
+                if let Some(status) = response.headers().get("grpc-status") {
+                    if status == "8" && path == "/kasumi.v1.KasumiData/ReadSnapshot" && diagnostics.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 8 {
+                        eprintln!("fixture native RPC {path} rejected: status={status:?}, message={:?}, admission={:?}, policy={:?}", response.headers().get("grpc-message"), admission.snapshot(), admission.policy());
+                    }
+                }
+                response
+            }
+        }));
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(crate::tls::serve_tls(
         listener,
@@ -265,12 +287,109 @@ async fn private_evidence_four_full_chunks_roundtrip_through_secure_native_trans
     transport.close().await;
 }
 
-/// Observe exact dispatches without replacing any transport, authentication,
-/// receipt, storage or readback behavior of the installed-profile backend.
+/// Record logical mutation originals without replacing transport,
+/// authentication, receipts, storage or readback. As Core does, only a typed
+/// server capacity refusal can resend the same immutable RPC input.
 struct RecordingPrivateEvidenceBackend {
     native: kasumi_private_evidence::KasumiBackend,
     submitted: Arc<std::sync::Mutex<Vec<MutationBatch>>>,
     reads: usize,
+    schedule: Arc<PrivateEvidenceRpcSchedule>,
+}
+
+/// Core bounds native reads independently of its 100 concurrent user workflows.
+/// This fixture likewise schedules individual RPCs, not complete custody work.
+/// The engine's unchanged default admits 64 operations; a native RPC also owns
+/// response-fence and audited-read work. Keep at most 32 RPCs in flight.
+struct PrivateEvidenceRpcSchedule {
+    slots: Arc<tokio::sync::Semaphore>,
+    active: std::sync::atomic::AtomicUsize,
+    peak: std::sync::atomic::AtomicUsize,
+    capacity_retries: std::sync::atomic::AtomicUsize,
+}
+
+struct PrivateEvidenceRpcPermit {
+    _slot: tokio::sync::OwnedSemaphorePermit,
+    schedule: Arc<PrivateEvidenceRpcSchedule>,
+}
+
+impl Drop for PrivateEvidenceRpcPermit {
+    fn drop(&mut self) {
+        self.schedule
+            .active
+            .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl PrivateEvidenceRpcSchedule {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            slots: Arc::new(tokio::sync::Semaphore::new(32)),
+            active: std::sync::atomic::AtomicUsize::new(0),
+            peak: std::sync::atomic::AtomicUsize::new(0),
+            capacity_retries: std::sync::atomic::AtomicUsize::new(0),
+        })
+    }
+
+    async fn admit(
+        self: &Arc<Self>,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<(PrivateEvidenceRpcPermit, std::time::Duration)> {
+        let slot = tokio::time::timeout_at(deadline, self.slots.clone().acquire_owned()).await??;
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        anyhow::ensure!(
+            !remaining.is_zero(),
+            "native RPC deadline elapsed while queued"
+        );
+        let active = self
+            .active
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        self.peak
+            .fetch_max(active, std::sync::atomic::Ordering::SeqCst);
+        Ok((
+            PrivateEvidenceRpcPermit {
+                _slot: slot,
+                schedule: self.clone(),
+            },
+            remaining,
+        ))
+    }
+
+    async fn retry_capacity(
+        &self,
+        error: &anyhow::Error,
+        attempt: &mut usize,
+        deadline: tokio::time::Instant,
+    ) -> anyhow::Result<bool> {
+        // From Core core_native_data_session.rs::read_error_is_capacity and
+        // CAPACITY_PAUSES. Require the server's closed ResourceExhausted code;
+        // unlike Core's broader decoder handling, this fixture never retries
+        // local admission/decode failures or terminal QuotaExceeded receipts.
+        let capacity = error
+            .downcast_ref::<kasumi_client::ClientError>()
+            .is_some_and(|error| match error {
+                kasumi_client::ClientError::DecodeRejected { code, database, .. } => {
+                    *code == tonic::Code::ResourceExhausted
+                        && *database == Some(kasumi_types::ErrorCode::ResourceExhausted)
+                }
+                kasumi_client::ClientError::Transport(status) => {
+                    status.code() == tonic::Code::ResourceExhausted
+                        && error.code() == Some(kasumi_types::ErrorCode::ResourceExhausted)
+                }
+                _ => false,
+            });
+        if !capacity {
+            return Ok(false);
+        }
+        let pauses = [10, 25, 50, 100];
+        let pause = std::time::Duration::from_millis(pauses[(*attempt).min(pauses.len() - 1)]);
+        tokio::time::timeout_at(deadline, tokio::time::sleep(pause)).await?;
+        *attempt += 1;
+        self.capacity_retries
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(true)
+    }
 }
 
 #[async_trait::async_trait]
@@ -280,8 +399,26 @@ impl kasumi_private_evidence::CustodyBackend for RecordingPrivateEvidenceBackend
         batch: &MutationBatch,
         timeout: std::time::Duration,
     ) -> anyhow::Result<WriteReceipt> {
+        let deadline = tokio::time::Instant::now() + timeout;
         self.submitted.lock().unwrap().push(batch.clone());
-        kasumi_private_evidence::CustodyBackend::mutate(&mut self.native, batch, timeout).await
+        let mut attempt = 0;
+        loop {
+            let (permit, remaining) = self.schedule.admit(deadline).await?;
+            let result =
+                kasumi_private_evidence::CustodyBackend::mutate(&mut self.native, batch, remaining)
+                    .await;
+            drop(permit);
+            if let Err(error) = &result {
+                if self
+                    .schedule
+                    .retry_capacity(error, &mut attempt, deadline)
+                    .await?
+                {
+                    continue;
+                }
+            }
+            return result;
+        }
     }
 
     async fn resolve(
@@ -290,8 +427,29 @@ impl kasumi_private_evidence::CustodyBackend for RecordingPrivateEvidenceBackend
         original: &MutationBatch,
         timeout: std::time::Duration,
     ) -> anyhow::Result<Option<kasumi_types::MutationReceipt>> {
-        kasumi_private_evidence::CustodyBackend::resolve(&mut self.native, scope, original, timeout)
-            .await
+        let deadline = tokio::time::Instant::now() + timeout;
+        let mut attempt = 0;
+        loop {
+            let (permit, remaining) = self.schedule.admit(deadline).await?;
+            let result = kasumi_private_evidence::CustodyBackend::resolve(
+                &mut self.native,
+                scope,
+                original,
+                remaining,
+            )
+            .await;
+            drop(permit);
+            if let Err(error) = &result {
+                if self
+                    .schedule
+                    .retry_capacity(error, &mut attempt, deadline)
+                    .await?
+                {
+                    continue;
+                }
+            }
+            return result;
+        }
     }
 
     async fn read_records(
@@ -300,21 +458,34 @@ impl kasumi_private_evidence::CustodyBackend for RecordingPrivateEvidenceBackend
         ids: &[String],
         timeout: std::time::Duration,
     ) -> anyhow::Result<Vec<Option<kasumi_types::Document>>> {
+        let deadline = tokio::time::Instant::now() + timeout;
         self.reads += 1;
-        let result = kasumi_private_evidence::CustodyBackend::read_records(
-            &mut self.native,
-            collection,
-            ids,
-            timeout,
-        )
-        .await;
-        if let Err(error) = &result {
-            eprintln!(
-                "real custody read {} failed for {collection} {ids:?}: {error:#}",
-                self.reads
-            );
+        let mut attempt = 0;
+        loop {
+            let (permit, remaining) = self.schedule.admit(deadline).await?;
+            let result = kasumi_private_evidence::CustodyBackend::read_records(
+                &mut self.native,
+                collection,
+                ids,
+                remaining,
+            )
+            .await;
+            drop(permit);
+            if let Err(error) = &result {
+                if self
+                    .schedule
+                    .retry_capacity(error, &mut attempt, deadline)
+                    .await?
+                {
+                    continue;
+                }
+                eprintln!(
+                    "real custody read {} failed for {collection} {ids:?}: {error:#}",
+                    self.reads
+                );
+            }
+            return result;
         }
-        result
     }
 }
 
@@ -322,6 +493,7 @@ fn recording_private_evidence_custody(
     profile: &std::path::Path,
     binding: &kasumi_private_evidence::InstalledProfileBinding,
     scope: kasumi_types::MutationReceiptScope,
+    schedule: Arc<PrivateEvidenceRpcSchedule>,
 ) -> (
     kasumi_private_evidence::PrivateEvidenceCustody<RecordingPrivateEvidenceBackend>,
     Arc<std::sync::Mutex<Vec<MutationBatch>>>,
@@ -334,6 +506,7 @@ fn recording_private_evidence_custody(
             native,
             submitted: submitted.clone(),
             reads: 0,
+            schedule,
         },
         binding.manifest_collection.clone(),
         binding.chunk_collection.clone(),
@@ -365,16 +538,49 @@ async fn append_private_evidence_fixture<B: kasumi_private_evidence::CustodyBack
 // This measures the actual custody subworkflow, not mobile enrollment, hardware
 // admission, finality verification or the complete retail activation deadline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[cfg_attr(
+    debug_assertions,
+    ignore = "release qualification: cargo test --release -p kasumi-server --lib api::tests::hundred_private_evidence_workflows_recover_retained_quota_refusals_over_native_tls -- --exact --nocapture"
+)]
 async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over_native_tls() {
+    private_evidence_quota_recovery_workflows(100).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn four_private_evidence_workflows_recover_retained_quota_refusals_over_native_tls() {
+    private_evidence_quota_recovery_workflows(4).await;
+}
+
+async fn private_evidence_quota_recovery_workflows(workflows: usize) {
     use kasumi_private_evidence::{
         AppendOutcome, CustodyBackend, CustodyError, EvidenceIdentity, KasumiBackend,
     };
     use sha2::{Digest, Sha256};
     use std::time::Duration;
 
-    const WORKFLOWS: usize = 100;
     const DEADLINE: Duration = Duration::from_secs(30);
-    let transport = private_evidence_transport_fixture().await;
+    // BPNG's installed admission floor is 12 GiB, selected by
+    // png2-deploy/scripts/sogeri-poc/deploy/kasumi-storage.py:69. The generic
+    // 512-MiB fixture reached 569 MB of its 588-MB metadata-inclusive limit at
+    // only 48/64 operations. Use deployed workload headroom for this capacity
+    // test; the fixture adds its exact disk metadata charges as usual.
+    let transport = private_evidence_transport_fixture_with_admission(
+        kasumi_engine::admission::AdmissionConfig {
+            max_inflight_bytes: (workflows == 100).then_some(12 << 30),
+            ..Default::default()
+        },
+        std::convert::identity,
+    )
+    .await;
+    assert_eq!(
+        transport
+            .fixture
+            .physical
+            .admission
+            .policy()
+            .max_inflight_operations,
+        64
+    );
     let limits = transport
         .fixture
         .db
@@ -399,9 +605,10 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
         principal: transport.binding.principal.clone(),
     };
     let mut originals = Vec::new();
-    let barrier = Arc::new(tokio::sync::Barrier::new(WORKFLOWS + 1));
+    let schedule = PrivateEvidenceRpcSchedule::new();
+    let barrier = Arc::new(tokio::sync::Barrier::new(workflows + 1));
     let mut rejected = tokio::task::JoinSet::new();
-    for owner in 0..WORKFLOWS {
+    for owner in 0..workflows {
         // Core uses one authenticated custody principal for distinct owners.
         // Each workflow retains its own immutable subject, bytes and receipts.
         let evidence = EvidenceIdentity::new(
@@ -417,9 +624,14 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
         let profile = transport.profile_path.clone();
         let binding = transport.binding.clone();
         let barrier = barrier.clone();
+        let schedule = schedule.clone();
         rejected.spawn(async move {
-            let (mut custody, submitted) =
-                recording_private_evidence_custody(&profile, &binding, evidence.scope.clone());
+            let (mut custody, submitted) = recording_private_evidence_custody(
+                &profile,
+                &binding,
+                evidence.scope.clone(),
+                schedule.clone(),
+            );
             barrier.wait().await;
             let refusal = append_private_evidence_fixture(
                 &mut custody,
@@ -443,8 +655,12 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
             // two owners to exercise traversal across more than one receipt.
             if owner < 2 {
                 drop(custody);
-                let (mut next, dispatched) =
-                    recording_private_evidence_custody(&profile, &binding, evidence.scope.clone());
+                let (mut next, dispatched) = recording_private_evidence_custody(
+                    &profile,
+                    &binding,
+                    evidence.scope.clone(),
+                    schedule,
+                );
                 let refusal = append_private_evidence_fixture(
                     &mut next, &evidence, &payload, use_batch, DEADLINE,
                 )
@@ -470,7 +686,7 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
     while let Some(result) = rejected.join_next().await {
         originals.push(result.unwrap());
     }
-    assert_eq!(originals.len(), WORKFLOWS);
+    assert_eq!(originals.len(), workflows);
     assert_eq!(
         transport
             .fixture
@@ -514,18 +730,28 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
         .administer(transport.context.clone(), Operation::SetLimits(limits))
         .await
         .unwrap();
-    let barrier = Arc::new(tokio::sync::Barrier::new(WORKFLOWS + 1));
+    let barrier = Arc::new(tokio::sync::Barrier::new(workflows + 1));
     let mut recovered = tokio::task::JoinSet::new();
+    assert_eq!(schedule.active.load(std::sync::atomic::Ordering::SeqCst), 0);
+    schedule.peak.store(0, std::sync::atomic::Ordering::SeqCst);
+    schedule
+        .capacity_retries
+        .store(0, std::sync::atomic::Ordering::SeqCst);
     let deadline = tokio::time::Instant::now() + DEADLINE;
     for (evidence, payload, use_batch, batches, receipts) in refused {
         let profile = transport.profile_path.clone();
         let binding = transport.binding.clone();
         let barrier = barrier.clone();
+        let schedule = schedule.clone();
         recovered.spawn(async move {
             // No in-memory attempt state survives: choose the successor solely
             // from the authenticated, matching persisted rejection receipts.
-            let (mut custody, submitted) =
-                recording_private_evidence_custody(&profile, &binding, evidence.scope.clone());
+            let (mut custody, submitted) = recording_private_evidence_custody(
+                &profile,
+                &binding,
+                evidence.scope.clone(),
+                schedule,
+            );
             barrier.wait().await;
             let remaining = || deadline.saturating_duration_since(tokio::time::Instant::now());
             assert_eq!(
@@ -575,8 +801,8 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
         completed
     })
     .await
-    .expect("all 100 independent native recovery workflows must finish within 30s");
-    assert_eq!(originals.len(), WORKFLOWS);
+    .expect("all independent native recovery workflows must finish within 30s");
+    assert_eq!(originals.len(), workflows);
     assert_eq!(
         transport
             .fixture
@@ -585,11 +811,20 @@ async fn hundred_private_evidence_workflows_recover_retained_quota_refusals_over
             .generation()
             .unwrap()
             .document_count(),
-        (2 * WORKFLOWS) as u64
+        (2 * workflows) as u64
     );
+    let peak_rpcs = schedule.peak.load(std::sync::atomic::Ordering::SeqCst);
+    assert!(
+        (2..=32).contains(&peak_rpcs),
+        "RPCs must overlap within the admitted bound"
+    );
+    assert_eq!(schedule.active.load(std::sync::atomic::Ordering::SeqCst), 0);
     eprintln!(
-        "100 real native TLS quota-recovery workflows: {:?}",
-        began.elapsed()
+        "{workflows} real native TLS quota-recovery workflows: {:?}; peak native RPCs: {peak_rpcs}/32; typed server capacity retries: {}",
+        began.elapsed(),
+        schedule
+            .capacity_retries
+            .load(std::sync::atomic::Ordering::SeqCst),
     );
 
     let mut native =
