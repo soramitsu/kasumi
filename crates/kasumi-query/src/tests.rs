@@ -1544,3 +1544,240 @@ fn pages_copy_only_their_rows_and_enforce_the_byte_bound() {
     };
     assert!(serde_json::to_vec(&response).unwrap().len() <= 1000);
 }
+
+#[test]
+fn negations_are_bounded_by_their_complement_not_the_collection() {
+    // Eight documents against a four-candidate budget.
+    let collections = collection(
+        definition(&[("/n", ScalarType::Number)]),
+        (0..8).map(|i| json!({"n":i})).collect(),
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let limits = Limits {
+        max_query_candidates: 4,
+        ..Limits::default()
+    };
+    let execute = |query: &QueryRequest| indexes.execute_fixture(&collections, query, &limits);
+    // The canonical never-matching filter matches nothing at any size.
+    let none = request().filter(Filter::or(Vec::<Filter>::new()));
+    assert!(ids(execute(&none).unwrap()).is_empty());
+    assert_eq!(
+        execute(&none.aggregate("n", Aggregation::count()))
+            .unwrap()
+            .aggregates,
+        vec![json!({"group":{},"values":{"n":0}})]
+    );
+    // A complement within the budget is admitted, as `exists: false` is.
+    for filter in [
+        !Filter::new().lt("/n", 4),
+        Filter::new().not_in("/n", [0, 1, 2, 3]),
+    ] {
+        assert_eq!(
+            ids(execute(&request().filter(filter)).unwrap()),
+            vec!["004", "005", "006", "007"]
+        );
+    }
+    // A complement beyond it still fails closed.
+    assert_eq!(
+        execute(&request().filter(Filter::new().ne("/n", 0)))
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+}
+
+#[test]
+fn repeated_membership_values_charge_their_posting_once() {
+    // Three of eight documents match, against a four-candidate budget.
+    let collections = collection(
+        definition(&[("/n", ScalarType::Number), ("/s", ScalarType::String)]),
+        (0..8)
+            .map(|i| json!({"n": i % 3, "s": if i % 3 == 0 { "open" } else { "closed" }}))
+            .collect(),
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let limits = Limits {
+        max_query_candidates: 4,
+        ..Limits::default()
+    };
+    let zero: Value = serde_json::from_str("0e5").unwrap();
+    // Equal values, including decimal spellings that normalize alike, select
+    // one posting. Adding it once per spelling would exceed the budget.
+    for filter in [
+        Filter::new().is_in("/s", ["open", "open"]),
+        Filter::new().is_in("/n", [json!(0), json!(0.0), zero]),
+    ] {
+        assert_eq!(
+            ids(indexes
+                .execute_fixture(&collections, &request().filter(filter), &limits)
+                .unwrap()),
+            vec!["000", "003", "006"]
+        );
+    }
+}
+
+#[test]
+fn counting_a_declared_array_field_counts_its_present_values() {
+    let collections = collection(
+        definition(&[("/tags", ScalarType::StringArray)]),
+        vec![
+            json!({}),
+            json!({"tags":null}),
+            json!({"tags":[]}),
+            json!({"tags":["x","y"]}),
+        ],
+    );
+    let counted = request().aggregate("tagged", Aggregation::count_of("/tags"));
+    assert_eq!(
+        run(&collections, &counted).unwrap().aggregates,
+        vec![json!({"group":{},"values":{"tagged":2}})]
+    );
+    // Arithmetic and grouping still require scalar fields.
+    for query in [
+        request().aggregate("sum", Aggregation::sum("/tags")),
+        request()
+            .group_by(["/tags"])
+            .aggregate("n", Aggregation::count()),
+    ] {
+        assert_eq!(
+            run(&collections, &query).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+    }
+}
+
+#[test]
+fn aggregate_group_keys_are_admitted_and_bounded_by_the_response() {
+    use crate::source_test_utils::{ResidentSource, query_memory};
+    // Eight distinct 4 KiB group keys on an unindexed field.
+    let keys: Vec<String> = (0..8)
+        .map(|i| format!("{i}{}", "k".repeat(4 << 10)))
+        .collect();
+    let mut bodies: Vec<Value> = keys.iter().map(|key| json!({"key":key})).collect();
+    let query = request()
+        .allow_scan()
+        .group_by(["/key"])
+        .aggregate("n", Aggregation::count());
+    let collections = collection(definition(&[]), bodies.clone());
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let source = ResidentSource {
+        collection: &collections["docs"],
+        indexes: &indexes,
+    };
+    let limits = Limits::default();
+    let mut memory = query_memory();
+    let response = indexes
+        .execute(&source, &query, &limits, &mut memory)
+        .map_err(ReadFailure::into_query_error)
+        .unwrap();
+    assert_eq!(response.aggregates.len(), 8);
+    // Each retained key copy is admitted beyond the provisional allowance.
+    let mut admitted = query_workspace_estimate(&limits, &query).unwrap();
+    for key in &keys {
+        admitted += allocation::string_clone_bytes(key).unwrap();
+    }
+    assert!(memory.peak_bytes() >= admitted);
+    // Every group returns its key, so grouping stops once the keys alone
+    // exceed the response: the unreadable last row is never reached.
+    bodies.push(json!({"key":{"not":"a scalar"}}));
+    let collections = collection(definition(&[]), bodies);
+    let limits = Limits {
+        max_result_bytes: 10_000,
+        ..Limits::default()
+    };
+    assert_eq!(
+        QueryIndexes::build_fixture(&collections)
+            .unwrap()
+            .execute_fixture(&collections, &query, &limits)
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+}
+
+#[test]
+fn fuzzy_terms_build_one_automaton_shared_by_every_field() {
+    let mut definition = definition(&[]);
+    definition.indexes = vec![IndexDefinition {
+        name: "text".into(),
+        fields: ["/title", "/body"]
+            .into_iter()
+            .map(|path| IndexField {
+                path: path.into(),
+                kind: ScalarType::String,
+            })
+            .collect(),
+        unique: false,
+        text: Some(TextIndex {
+            analyzer: Analyzer::UnicodeV1,
+        }),
+    }];
+    let collections = collection(
+        definition,
+        vec![
+            json!({"title":"kitten puppy","body":"other"}),
+            json!({"title":"other","body":"sitten puppy"}),
+            json!({"title":"kitten","body":"puppy"}),
+        ],
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let built = search::automaton_count();
+    let result = indexes
+        .execute_fixture(
+            &collections,
+            &text_query("kitten puppy", TextMode::Fuzzy),
+            &Limits::default(),
+        )
+        .unwrap();
+    // One field must hold every term: the third document splits them.
+    assert_eq!(
+        ids(result).into_iter().collect::<BTreeSet<_>>(),
+        BTreeSet::from(["000".into(), "001".into()])
+    );
+    // Two terms over two fields: one automaton per term, from cached builders.
+    assert_eq!(search::automaton_count(), built + 2);
+    assert!(std::ptr::eq(
+        search::levenshtein_builder(2).unwrap(),
+        search::levenshtein_builder(2).unwrap()
+    ));
+    assert!(search::levenshtein_builder(3).is_err());
+}
+
+#[test]
+fn one_schema_resolution_validates_a_run_of_documents() {
+    let collections = collection(
+        definition(&[("/n", ScalarType::Number)]),
+        vec![json!({"n":1})],
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let definition = &collections["docs"].definition;
+    let (digests, compiled) = (
+        validation::schema_digest_count(),
+        validation::compilation_count(),
+    );
+    let validator = indexes.schema_validator(definition).unwrap();
+    for n in 0..16 {
+        validator
+            .validate_document(definition, &json!({"n":n}))
+            .unwrap();
+    }
+    assert_eq!(
+        validator
+            .validate_document(definition, &json!({"n":"one"}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    // One schema digest for the whole run, reusing the generation's validator.
+    assert_eq!(validation::schema_digest_count(), digests + 1);
+    assert_eq!(validation::compilation_count(), compiled);
+    let mut foreign = definition.clone();
+    foreign.name = "foreign".into();
+    assert_eq!(
+        validator
+            .validate_document(&foreign, &json!({"n":1}))
+            .unwrap_err()
+            .code,
+        ErrorCode::Corruption
+    );
+}

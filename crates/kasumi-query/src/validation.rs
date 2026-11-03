@@ -16,6 +16,7 @@ const MAX_DEPTH: usize = 48;
 #[cfg(test)]
 thread_local! {
     static COMPILATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static SCHEMA_DIGESTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -23,7 +24,14 @@ pub(crate) fn compilation_count() -> usize {
     COMPILATIONS.with(std::cell::Cell::get)
 }
 
+#[cfg(test)]
+pub(crate) fn schema_digest_count() -> usize {
+    SCHEMA_DIGESTS.with(std::cell::Cell::get)
+}
+
 pub(crate) fn schema_sha256(schema: &Value) -> Result<[u8; 32]> {
+    #[cfg(test)]
+    SCHEMA_DIGESTS.with(|count| count.set(count.get() + 1));
     serde_json::to_vec(schema)
         .map(|encoded| Sha256::digest(encoded).into())
         .map_err(|e| invalid(e.to_string()))

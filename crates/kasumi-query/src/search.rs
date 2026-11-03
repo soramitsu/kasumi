@@ -383,12 +383,16 @@ impl TextSnapshot {
         // Intersecting two very common terms can produce few hits while reading
         // huge postings lists. Limit planned postings, as well as returned hits.
         let posting_limit = cap.saturating_mul(8) as u64;
+        let searched: Vec<Field> = fields
+            .paths
+            .iter()
+            .map(|(_, ranked, surface)| if surface_query { *surface } else { *ranked })
+            .collect();
         for terms in &tokenizations {
             cancellation.check()?;
-            for (_, ranked, surface) in &fields.paths {
-                cancellation.check()?;
-                let field = if surface_query { *surface } else { *ranked };
-                if request.mode == TextMode::Phrase && terms.len() > 1 {
+            if request.mode == TextMode::Phrase && terms.len() > 1 {
+                for &field in &searched {
+                    cancellation.check()?;
                     for (_, text) in terms {
                         self.charge_term(field, text, &mut posting_work, posting_limit)?;
                     }
@@ -398,27 +402,35 @@ impl TextSnapshot {
                             .map(|(position, text)| (*position, Term::from_field_text(field, text)))
                             .collect(),
                     )));
-                    continue;
                 }
-                let mut clauses: Vec<(Occur, Box<dyn Query>)> = Vec::new();
-                for (i, (_, text)) in terms.iter().enumerate() {
+                continue;
+            }
+            // Every searched field requires every term. A term's fuzzy automaton
+            // depends only on its text, so one is built per term and shared by
+            // all fields, and only one is alive at a time.
+            let mut clauses: Vec<Vec<(Occur, Box<dyn Query>)>> =
+                searched.iter().map(|_| Vec::new()).collect();
+            for (i, (_, text)) in terms.iter().enumerate() {
+                cancellation.check()?;
+                let dfa = if fuzzy {
+                    let japanese = fields.analyzer == Analyzer::JapaneseV1;
+                    if !japanese && request.fuzzy_distance() > 0 && text.chars().count() < 3 {
+                        return Err(invalid("fuzzy term is too short"));
+                    }
+                    // Single-character Japanese particles remain exact; editing
+                    // them would expand to nearly the entire term dictionary.
+                    let distance = if japanese && text.chars().count() < 2 {
+                        0
+                    } else {
+                        request.fuzzy_distance()
+                    };
+                    Some(fuzzy_automaton(text, distance)?)
+                } else {
+                    None
+                };
+                for (&field, field_clauses) in searched.iter().zip(&mut clauses) {
                     cancellation.check()?;
-                    let query: Box<dyn Query> = if fuzzy {
-                        let japanese = fields.analyzer == Analyzer::JapaneseV1;
-                        if !japanese && request.fuzzy_distance() > 0 && text.chars().count() < 3 {
-                            return Err(invalid("fuzzy term is too short"));
-                        }
-                        // Single-character Japanese particles remain exact; editing
-                        // them would expand to nearly the entire term dictionary.
-                        let distance = if japanese && text.chars().count() < 2 {
-                            0
-                        } else {
-                            request.fuzzy_distance()
-                        };
-                        let dfa = Arc::new(
-                            levenshtein_automata::LevenshteinAutomatonBuilder::new(distance, true)
-                                .build_dfa(text),
-                        );
+                    let query: Box<dyn Query> = if let Some(dfa) = &dfa {
                         let expansions = self.expand(
                             field,
                             Dfa(dfa.clone()),
@@ -476,9 +488,11 @@ impl TextSnapshot {
                             IndexRecordOption::WithFreqs,
                         ))
                     };
-                    clauses.push((Occur::Must, query));
+                    field_clauses.push((Occur::Must, query));
                 }
-                alternatives.push(Box::new(BooleanQuery::new(clauses)));
+            }
+            for field_clauses in clauses {
+                alternatives.push(Box::new(BooleanQuery::new(field_clauses)));
             }
         }
         let query = disjunction(alternatives);
@@ -581,6 +595,39 @@ fn disjunction(mut queries: Vec<Box<dyn Query>>) -> Box<dyn Query> {
         1 => queries.pop().unwrap(),
         _ => Box::new(DisjunctionMaxQuery::new(queries)),
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    static AUTOMATA: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn automaton_count() -> usize {
+    AUTOMATA.with(std::cell::Cell::get)
+}
+
+/// The parametric Levenshtein builder for one edit distance (0–2), with
+/// adjacent transpositions. Building one takes milliseconds at distance two
+/// and depends on nothing else, so each is built once per process.
+pub(crate) fn levenshtein_builder(
+    distance: u8,
+) -> Result<&'static levenshtein_automata::LevenshteinAutomatonBuilder> {
+    static BUILDERS: [OnceLock<levenshtein_automata::LevenshteinAutomatonBuilder>; 3] =
+        [OnceLock::new(), OnceLock::new(), OnceLock::new()];
+    let builder = BUILDERS
+        .get(usize::from(distance))
+        .ok_or_else(|| invalid("fuzzy distance must be 0, 1, or 2"))?;
+    Ok(builder
+        .get_or_init(|| levenshtein_automata::LevenshteinAutomatonBuilder::new(distance, true)))
+}
+
+/// One fuzzy term's automaton, shared by every field that term searches.
+fn fuzzy_automaton(text: &str, distance: u8) -> Result<Arc<levenshtein_automata::DFA>> {
+    let builder = levenshtein_builder(distance)?;
+    #[cfg(test)]
+    AUTOMATA.with(|count| count.set(count.get() + 1));
+    Ok(Arc::new(builder.build_dfa(text)))
 }
 
 // FST traversal may visit many nonmatching dictionary branches between yielded

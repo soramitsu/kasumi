@@ -94,21 +94,50 @@ impl ReadIds {
     }
 }
 
+/// One collection definition's compiled document schema. Resolving it encodes
+/// and hashes the whole schema; validating a document with it does neither, so
+/// callers that check several documents of one definition, such as one batch's
+/// writes to a collection, resolve it once.
+#[derive(Clone)]
+pub struct SchemaValidator {
+    collection: String,
+    validator: Arc<jsonschema::Validator>,
+}
+
+impl SchemaValidator {
+    /// `definition` must be the one this validator was resolved for: its schema
+    /// is checked first, then its index and text constraints.
+    pub fn validate_document(&self, definition: &CollectionDefinition, body: &Value) -> Result<()> {
+        if definition.name != self.collection {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "schema validator belongs to another collection",
+            ));
+        }
+        validation::validate_document_with_validator(definition, body, &self.validator)
+    }
+}
+
 impl QueryIndexes {
     /// Reuse this generation's validator only for the exact compiled schema.
     /// A missing collection or changed schema takes the fully checked compiler
     /// path. Index and text constraints always use the supplied definition.
+    pub fn schema_validator(&self, definition: &CollectionDefinition) -> Result<SchemaValidator> {
+        let schema_sha256 = validation::schema_sha256(&definition.schema)?;
+        let validator = match self.collections.get(&definition.name) {
+            Some(indexes) if indexes.schema_sha256 == schema_sha256 => indexes.validator.clone(),
+            _ => validation::compile(&definition.schema)?,
+        };
+        Ok(SchemaValidator {
+            collection: definition.name.clone(),
+            validator,
+        })
+    }
+
+    /// One document. Resolve `schema_validator` once to check several.
     pub fn validate_document(&self, definition: &CollectionDefinition, body: &Value) -> Result<()> {
-        if let Some(indexes) = self.collections.get(&definition.name)
-            && indexes.schema_sha256 == validation::schema_sha256(&definition.schema)?
-        {
-            return validation::validate_document_with_validator(
-                definition,
-                body,
-                &indexes.validator,
-            );
-        }
-        validate_document(definition, body)
+        self.schema_validator(definition)?
+            .validate_document(definition, body)
     }
 
     pub fn read_ids(&self) -> ReadIds {
@@ -543,10 +572,12 @@ impl QueryIndexes {
         let mut aggregate_kinds = Vec::with_capacity(request.aggregate.len());
         for (alias, aggregate) in &request.aggregate {
             validate_name(alias)?;
+            // Counting a field tests only its presence, so array fields count
+            // too. Arithmetic rejects them with the numeric check below.
             let kind = aggregate
                 .field
                 .as_deref()
-                .map(scalar_kind)
+                .map(|path| structured.field_kind(path, request.allow_scan))
                 .transpose()?
                 .flatten();
             match aggregate.function {
@@ -900,6 +931,10 @@ fn aggregate<S: DocumentSource + ?Sized, W: QueryWorkspace>(
     } else {
         let iterator_bytes = workspace::imbl_iterator_bytes()?;
         memory.reserve(iterator_bytes)?;
+        // A new group keeps its key: admit that copy before the map takes it.
+        // Every group returns its key, so grouping stops as soon as the keys'
+        // strings alone cannot fit in the response.
+        let mut returned = 0usize;
         for id in candidates {
             cancellation.check()?;
             document_source::with_live(source, id, None, cancellation, |document| {
@@ -909,8 +944,16 @@ fn aggregate<S: DocumentSource + ?Sized, W: QueryWorkspace>(
                     .zip(group_kinds)
                     .map(|(path, kind)| scalar(allocation::pointer(&document.body, path), *kind))
                     .collect::<Result<Vec<_>>>()?;
-                if !groups.contains_key(&key) && groups.len() >= limits.max_query_groups {
-                    return Err(exhausted("query group budget exceeded"));
+                if !groups.contains_key(&key) {
+                    if groups.len() >= limits.max_query_groups {
+                        return Err(exhausted("query group budget exceeded"));
+                    }
+                    let (bytes, strings) = group_key_bytes(&key, key.capacity())?;
+                    returned = returned.saturating_add(strings);
+                    if returned > limits.max_result_bytes {
+                        return Err(exhausted("query result byte budget exceeded"));
+                    }
+                    memory.reserve(bytes)?;
                 }
                 let values = groups
                     .entry(key)
@@ -1117,6 +1160,27 @@ fn exact_average(sum: &BigDecimal, count: u64, scale: i64) -> BigDecimal {
         quotient += if numerator.is_negative() { -1 } else { 1 };
     }
     BigDecimal::new(quotient, scale)
+}
+
+/// Backing retained by a new group's key of `capacity` slots, and the response
+/// bytes its strings take at the least: each is returned as a quoted string.
+fn group_key_bytes(key: &[Scalar], capacity: usize) -> Result<(u64, usize)> {
+    let mut bytes = allocation::vec_bytes::<Scalar>(capacity)?;
+    let mut returned = 0usize;
+    for part in key {
+        match part {
+            Scalar::String(text) => {
+                bytes = allocation::add(bytes, allocation::string_clone_bytes(text)?)?;
+                returned = returned.saturating_add(text.len()).saturating_add(2);
+            }
+            // Decimal ownership remains provisional, as for sort keys.
+            Scalar::Number(_) => {
+                bytes = allocation::add(bytes, scalar::PROVISIONAL_DECIMAL_KEY_BYTES)?;
+            }
+            Scalar::Missing | Scalar::Null | Scalar::Boolean(_) | Scalar::UpperBound => {}
+        }
+    }
+    Ok((bytes, returned))
 }
 
 fn group_value(key: Scalar, kind: Option<ScalarType>) -> Result<Option<Value>> {

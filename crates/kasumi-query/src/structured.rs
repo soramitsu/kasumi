@@ -6,7 +6,7 @@ use crate::{
 use imbl::{OrdMap, OrdSet};
 use kasumi_types::*;
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::ops::{Bound, RangeBounds};
 
 pub(crate) type IdSet = OrdSet<String>;
@@ -554,7 +554,8 @@ impl Structured {
     fn estimate(&self, node: &Node<'_>, universe: usize, budget: usize) -> Result<Option<usize>> {
         Ok(match node {
             Node::All => Some(universe),
-            Node::Not(_) => None,
+            // A complement depends on its input, except that of every document.
+            Node::Not(child) => matches!(**child, Node::All).then_some(0),
             Node::And(children) => {
                 let mut best = None;
                 for child in children {
@@ -695,9 +696,16 @@ impl Structured {
                 Ok(candidates)
             }
             Node::Not(child) => {
-                check_size(universe.len(), cap)?;
+                // The canonical never-matching filter needs no candidates.
+                if matches!(**child, Node::All) {
+                    return Ok(IdSet::new());
+                }
+                // The child bounds its own candidates and any documents it
+                // scans. Excluded IDs are a subset of the universe, so the
+                // complement's size is known before it is built.
                 let excluded =
                     self.candidates(source, child, universe, allow_scan, cap, cancellation)?;
+                check_size(universe.len().saturating_sub(excluded.len()), cap)?;
                 Ok(complement(universe, &excluded, cancellation)?)
             }
             Node::Leaf { path, test } => {
@@ -836,9 +844,16 @@ impl FieldIndex {
                 }
             }
             Test::In(values) => {
+                // Equal values, including decimal spellings that normalize
+                // alike, share one posting: add and charge it only once.
+                let mut keys = BTreeSet::new();
                 for value in *values {
                     cancellation.check()?;
-                    if let Some(ids) = self.entries.get(&scalar(Some(value), kind)?) {
+                    keys.insert(scalar(Some(value), kind)?);
+                }
+                for key in &keys {
+                    cancellation.check()?;
+                    if let Some(ids) = self.entries.get(key) {
                         add(ids)?;
                     }
                 }

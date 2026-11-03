@@ -65,7 +65,7 @@ pub(crate) fn scalar(value: Option<&Value>, kind: Option<ScalarType>) -> Result<
 // Explicit provisional allowances, not measured bounds on bigdecimal/num-bigint
 // allocation. Parsing, normalization and numeric comparisons need a separate
 // library audit before complete decimal workspace accounting is qualified.
-const PROVISIONAL_DECIMAL_KEY_BYTES: u64 = 256;
+pub(crate) const PROVISIONAL_DECIMAL_KEY_BYTES: u64 = 256;
 pub(crate) const PROVISIONAL_DECIMAL_SCRATCH_BYTES: u64 = 4096;
 
 /// Sort-key copies admit their actual String backing before construction.
