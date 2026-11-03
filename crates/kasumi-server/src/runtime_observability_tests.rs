@@ -500,6 +500,16 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
             .iter()
             .all(|group| group["storage"]["compaction_phase"].is_string())
     );
+    assert!(value["groups"].as_array().unwrap().iter().all(|group| {
+        [
+            "evacuation_surveyed_segments",
+            "evacuation_kept_segments",
+            "evacuation_kept_garbage_bytes",
+            "evacuation_survey_fallbacks_total",
+        ]
+        .iter()
+        .all(|field| group["storage"][field].is_u64())
+    }));
     assert!(
         value["groups"]
             .as_array()
@@ -547,6 +557,11 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         "kasumi_local_group_storage_reclaimed_files_total{tenant=\"tenant-a\"} ",
         "kasumi_local_group_storage_reclaimed_bytes_total{tenant=\"tenant-a\"} ",
         "kasumi_local_group_storage_relocated_bytes_total{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_evacuation_surveyed_segments{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_evacuation_kept_segments{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_evacuation_kept_garbage_bytes{tenant=\"tenant-a\"} ",
+        "kasumi_local_group_storage_evacuation_survey_fallbacks_total{tenant=\"tenant-a\"} 0\n",
+        "# TYPE kasumi_local_group_storage_evacuation_survey_fallbacks_total counter\n",
         "kasumi_local_group_storage_reclaim_invalidations_total{tenant=\"tenant-a\"} 0\n",
         "kasumi_local_group_storage_maintenance_deferrals_total{tenant=\"tenant-a\",class=\"capacity\"} ",
         "kasumi_local_group_storage_maintenance_deferrals_total{tenant=\"tenant-a\",class=\"rejected\"} 0\n",

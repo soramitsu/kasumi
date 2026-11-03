@@ -191,6 +191,13 @@ pub(crate) struct StorageObservation {
     pub reclaimed_files_total: u64,
     pub reclaimed_bytes_total: u64,
     pub relocated_bytes_total: u64,
+    /// Of the evacuation this process last selected for: old segments with
+    /// live values, those kept in place, and their estimated garbage.
+    pub evacuation_surveyed_segments: u64,
+    pub evacuation_kept_segments: u64,
+    pub evacuation_kept_garbage_bytes: u64,
+    /// Evacuations that kept every old segment, unsurveyed.
+    pub evacuation_survey_fallbacks_total: u64,
     pub reclaim_invalidations_total: u64,
     pub capacity_deferrals_total: u64,
     pub rejected_deferrals_total: u64,
@@ -218,6 +225,10 @@ impl From<&kasumi_store::StorageMaintenanceStatus> for StorageObservation {
             reclaimed_files_total: status.reclaimed_files_total,
             reclaimed_bytes_total: status.reclaimed_bytes_total,
             relocated_bytes_total: status.relocated_bytes_total,
+            evacuation_surveyed_segments: status.evacuation_surveyed_segments,
+            evacuation_kept_segments: status.evacuation_kept_segments,
+            evacuation_kept_garbage_bytes: status.evacuation_kept_garbage_bytes,
+            evacuation_survey_fallbacks_total: status.evacuation_survey_fallbacks_total,
             reclaim_invalidations_total: status.reclaim_invalidations_total,
             capacity_deferrals_total: status.capacity_deferrals_total,
             rejected_deferrals_total: status.rejected_deferrals_total,
@@ -880,6 +891,7 @@ impl Observation {
             "# TYPE kasumi_local_group_storage_reclaimed_files_total counter\n\
              # TYPE kasumi_local_group_storage_reclaimed_bytes_total counter\n\
              # TYPE kasumi_local_group_storage_relocated_bytes_total counter\n\
+             # TYPE kasumi_local_group_storage_evacuation_survey_fallbacks_total counter\n\
              # TYPE kasumi_local_group_storage_reclaim_invalidations_total counter\n\
              # TYPE kasumi_local_group_storage_maintenance_deferrals_total counter"
         )
@@ -995,10 +1007,26 @@ impl Observation {
                     "storage_snapshot_retained_bytes",
                     storage.snapshot_retained_bytes
                 );
+                group_gauge!(
+                    "storage_evacuation_surveyed_segments",
+                    storage.evacuation_surveyed_segments
+                );
+                group_gauge!(
+                    "storage_evacuation_kept_segments",
+                    storage.evacuation_kept_segments
+                );
+                group_gauge!(
+                    "storage_evacuation_kept_garbage_bytes",
+                    storage.evacuation_kept_garbage_bytes
+                );
                 for (name, value) in [
                     ("reclaimed_files_total", storage.reclaimed_files_total),
                     ("reclaimed_bytes_total", storage.reclaimed_bytes_total),
                     ("relocated_bytes_total", storage.relocated_bytes_total),
+                    (
+                        "evacuation_survey_fallbacks_total",
+                        storage.evacuation_survey_fallbacks_total,
+                    ),
                     (
                         "reclaim_invalidations_total",
                         storage.reclaim_invalidations_total,
