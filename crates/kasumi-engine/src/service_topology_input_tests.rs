@@ -113,7 +113,7 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
 
 #[tokio::test]
 async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit() {
-    use crate::document_pool::allocation_tests::check_topology_input_drop;
+    use crate::allocation_tests::check_topology_input_drop;
     let fixture = CredentialFixture::new().await;
     let node = fixture.db.admission().clone();
     let before = node.snapshot();

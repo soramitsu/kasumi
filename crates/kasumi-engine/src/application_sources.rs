@@ -1,5 +1,5 @@
 //! Exact application selection custody. This is a publication/lifecycle owner,
-//! not a primary tree, document source, authorization or cache-residency proof.
+//! not a document source, authorization or cache-residency proof.
 use crate::admission::{MemoryCore, NodeAdmission, Reservation};
 use anyhow::{Context as _, Result, ensure};
 use kasumi_query::QueryWorkspace;
@@ -24,9 +24,6 @@ use std::{
 #[path = "application_source_ownership.rs"]
 mod ownership;
 use ownership::SourceCredit;
-#[path = "application_source_cohort.rs"]
-mod cohort;
-use cohort::SourceCohort;
 #[path = "application_source_completion.rs"]
 pub(crate) mod completion;
 pub(crate) use completion::CompletionLoan;
@@ -43,7 +40,6 @@ type SourceRootsWeak = ownership::Weak<SourceRoots>;
 type CellRef = ownership::Strong<Cell>;
 type CellWeak = ownership::Weak<Cell>;
 type ViewRef = ownership::Strong<TenantStorageReadView>;
-type ProtectedViewRef = ownership::Strong<kasumi_store::PreparedTenantSourceReadView>;
 type FailureRef = ownership::Strong<FailureOwner>;
 
 type Position = SelectedApplicationPosition<Workspace>;
@@ -87,11 +83,7 @@ pub(crate) struct Workspace {
     baseline: u64,
     // Capture cannot grow beyond the complete producer-owned prospective quote.
     planned_peak: Option<u64>,
-    funding: WorkspaceFunding,
-}
-enum WorkspaceFunding {
-    Ordinary(Reservation),
-    Publication { credit: SourceCredit, retained: u64 },
+    reservation: Reservation,
 }
 impl SelectionWorkspace for Workspace {
     fn require_memory(&self, view: &kasumi_raft::SelectionReadIdentity<'_>) -> Result<()> {
@@ -107,15 +99,7 @@ impl SelectionWorkspace for Workspace {
             self.planned_peak.is_none_or(|peak| total <= peak),
             "application source exceeded prospective peak"
         );
-        match &mut self.funding {
-            WorkspaceFunding::Ordinary(reservation) => reservation.ensure_peak(total)?,
-            WorkspaceFunding::Publication { credit, .. } => {
-                ensure!(
-                    credit.publication_lane().is_some(),
-                    "source workspace lost lane funding"
-                );
-            }
-        }
+        self.reservation.ensure_peak(total)?;
         Ok(())
     }
     fn retain(&mut self, bytes: u64) -> Result<()> {
@@ -127,18 +111,8 @@ impl SelectionWorkspace for Workspace {
             self.planned_peak.is_none_or(|peak| bytes <= peak),
             "application source retained quote exceeds prospective peak"
         );
-        match &mut self.funding {
-            WorkspaceFunding::Ordinary(reservation) => {
-                reservation.ensure_peak(bytes)?;
-                reservation.retain(bytes);
-            }
-            WorkspaceFunding::Publication { retained, .. } => {
-                ensure!(
-                    bytes <= *retained,
-                    "source retained DTO exceeds funded lane"
-                );
-            }
-        }
+        self.reservation.ensure_peak(bytes)?;
+        self.reservation.retain(bytes);
         Ok(())
     }
 }
@@ -177,9 +151,6 @@ pub(crate) struct SourceRoots {
     // grant by an unscoped proposer and spent by the applying thread.
     escrow: Mutex<Option<Arc<crate::admission::ApplyEscrow>>>,
     completion: OnceLock<completion::CompletionRef>,
-    cohort: OnceLock<SourceCohort>,
-    construction_failure: OnceLock<RecordedFailure>,
-    capacity_cleanup_failure: OnceLock<RecordedFailure>,
     _reservation: SourceCredit,
 }
 struct CellState {
@@ -188,14 +159,12 @@ struct CellState {
     closed: bool,
     inflight: usize,
     view: Option<ViewRef>,
-    protected_view: Option<ProtectedViewRef>,
 }
 struct Cell {
     id: u64,
     roots: SourceRootsWeak,
     handles: AtomicUsize,
     state: Mutex<CellState>,
-    history_escape: Mutex<()>,
     position: OnceLock<Position>,
     // Node evacuations finished before this cell's view selected its root.
     evacuations: OnceLock<u64>,
@@ -266,6 +235,25 @@ impl SelectedApplication {
             .position
             .get()
             .is_some_and(|position| position.applied().is_none())
+    }
+    /// This exact (not covered) selection was captured at `entry`.
+    #[cfg(test)]
+    pub(crate) fn selected_at_entry(&self, entry: &kasumi_raft::AppliedEntryContext) -> bool {
+        self.cell.position.get().is_some_and(|position| {
+            !position.is_covered_reconstruction()
+                && matches!(
+                    position.applied(),
+                    Some(kasumi_raft::SelectedAppliedRef::Entry {
+                        log_id,
+                        previous,
+                        membership,
+                        command_sha256,
+                    }) if log_id == entry.log_id
+                        && previous == entry.previous
+                        && *membership == entry.membership
+                        && command_sha256 == entry.command_sha256
+                )
+        })
     }
 }
 
@@ -390,7 +378,6 @@ impl Cell {
         if slot.get().is_some() {
             return;
         }
-        self._reservation.seal_publication();
         // Conservatively retain until a callback-free inventory pass has made
         // the exact native disposition check outside every registry lock.
         self.native_retained.store(true, Ordering::Release);
@@ -511,8 +498,6 @@ pub(crate) struct RootPreparation {
     plan: Option<PreparedSelectionPlan>,
     points: Option<PreparedTenantPointWorkspace>,
     queued: Option<PreparedTenantStorageReadView>,
-    queued_source: Option<kasumi_store::PreparedRegisteredSource>,
-    cohort_points: bool,
     settled: bool,
 }
 
@@ -617,49 +602,12 @@ impl SourceRoots {
                 publication: Mutex::new(None),
                 escrow: Mutex::new(None),
                 completion: OnceLock::new(),
-                cohort: OnceLock::new(),
-                construction_failure: OnceLock::new(),
-                capacity_cleanup_failure: OnceLock::new(),
                 _reservation: credit.clone(),
             },
             credit,
         );
         let binding = kasumi_raft::ApplicationSourceBinding::new(roots.clone());
         Ok((roots, binding))
-    }
-    fn record_capacity_failure(&self, error: anyhow::Error) {
-        // Called only by the unique construction or consuming capacity-close
-        // worker. Its Running state prevents a second destructive invocation.
-        let target = if self.construction_failure.get().is_none() {
-            &self.construction_failure
-        } else {
-            &self.capacity_cleanup_failure
-        };
-        assert!(
-            target.get().is_none(),
-            "source capacity consumed more than once"
-        );
-        let owner = FailureRef::new(FailureOwner { original: error }, self._reservation.clone());
-        let mut report = DrainReport::default();
-        let issue = report.record(
-            "application source capacity",
-            0,
-            SourceFailure {
-                owner: owner.clone(),
-            }
-            .into(),
-        );
-        assert!(target.set(RecordedFailure { owner, issue }).is_ok());
-    }
-    fn capacity_failure_retained(&self) -> bool {
-        self.capacity_cleanup_failure.get().is_some()
-            || self.construction_failure.get().is_some_and(|failure| {
-                !self.cohort.get().is_some_and(SourceCohort::is_closed)
-                    || !failure
-                        .owner
-                        .original
-                        .is::<cohort::CohortAdmissionRefusal>()
-            })
     }
     fn retry_retirements(&self) {
         let end = self.gate.lock().unwrap_or_else(|p| p.into_inner()).next;
@@ -875,43 +823,6 @@ impl SourceRootsRef {
         assert!(self.completion.set(completion).is_ok());
         Ok(())
     }
-    /// Isolated construction check only. Production must first certify accepted
-    /// replay and every ingress path; its current snapshot/covered replay paths
-    /// are outside this ordinary envelope. Installing capacity cannot certify
-    /// that missing acceptance authority.
-    #[cfg(test)]
-    pub(crate) fn install_source_cohort(
-        &self,
-        envelope: kasumi_raft::PreparedOrdinarySourceEnvelope,
-    ) -> Result<()> {
-        ensure!(
-            self.cohort.get().is_none(),
-            "source cohort already installed"
-        );
-        ensure!(
-            self.gate.lock().unwrap_or_else(|p| p.into_inner()).next == 0,
-            "source cohort must precede first selected root"
-        );
-        envelope.require_stores(&self.stores)?;
-        assert!(self.cohort.set(SourceCohort::empty(envelope)).is_ok());
-        let cohort = self.cohort.get().expect("registered cohort construction");
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cohort.install(self)));
-        let error = match outcome {
-            Ok(Ok(())) => return Ok(()),
-            Ok(Err(error)) => error,
-            Err(payload) => SourcePanic {
-                _payload: Mutex::new(payload),
-            }
-            .into(),
-        };
-        cohort.seal();
-        self.record_capacity_failure(error);
-        Err(SourceFailure {
-            owner: self.construction_failure.get().unwrap().owner.clone(),
-        }
-        .into())
-    }
 
     pub(crate) fn completion(&self) -> Result<&completion::CompletionRef> {
         self.completion
@@ -987,12 +898,6 @@ impl SourceRootsRef {
         if let Some(points) = points.as_ref() {
             points.require_stores(&self.stores)?;
         }
-        if let Some(failure) = self.construction_failure.get() {
-            return Err(SourceFailure {
-                owner: failure.owner.clone(),
-            }
-            .into());
-        }
         self.retry_retirements();
         ensure!(
             !self
@@ -1003,31 +908,7 @@ impl SourceRootsRef {
             "application source preparation sealed"
         );
         // No admission/provider callback while the source gate is locked.
-        let mut cohort_loan = None;
-        let (credit, workspace, cohort_points) = if let Some(cohort) = self.cohort.get() {
-            ensure!(canonical, "protected cohort requires canonical selection");
-            let plan = plan.context("protected cohort requires a producer plan")?;
-            cohort.require_plan(plan)?;
-            // The current ordinary control planner owns separate admitted
-            // backing. Retire its actual completed loan before publication;
-            // standing capture consumes only the cohort's real final-row buffer.
-            // Until the wider planner borrows that buffer too, its admission is
-            // an explicit prerequisite outside this cohort's acceptance claim.
-            if let Some(planner) = points.take()
-                && let Err(payload) = planner.retire()
-            {
-                cohort.seal();
-                return Err(SourcePanic {
-                    _payload: Mutex::new(payload),
-                }
-                .into());
-            }
-            let loan = cohort.prepare_loan()?;
-            let credit = loan.credit().clone();
-            let workspace = cohort.workspace(self, &credit);
-            cohort_loan = Some(loan);
-            (credit, Some(workspace), true)
-        } else if let Some((plan, grant)) = plan
+        let (credit, workspace) = if let Some((plan, grant)) = plan
             .filter(|_| canonical && spend_publication)
             .and_then(|plan| self.take_publication(plan).map(|grant| (plan, grant)))
         {
@@ -1047,9 +928,8 @@ impl SourceRootsRef {
                     core: self.admission.memory().clone(),
                     baseline: 0,
                     planned_peak: Some(peak),
-                    funding: WorkspaceFunding::Ordinary(workspace),
+                    reservation: workspace,
                 }),
-                false,
             )
         } else {
             let baseline = cell_bytes()?;
@@ -1092,14 +972,12 @@ impl SourceRootsRef {
                     core: self.admission.memory().clone(),
                     baseline: 0,
                     planned_peak: plan.map(|_| peak),
-                    funding: WorkspaceFunding::Ordinary(
-                        self.admission.reserve_application_source(peak)?,
-                    ),
+                    reservation: self.admission.reserve_application_source(peak)?,
                 })
             } else {
                 None
             };
-            (credit, workspace, false)
+            (credit, workspace)
         };
         let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
         ensure!(
@@ -1121,9 +999,7 @@ impl SourceRootsRef {
                     closed: false,
                     inflight: 0,
                     view: None,
-                    protected_view: None,
                 }),
-                history_escape: Mutex::new(()),
                 position: OnceLock::new(),
                 evacuations: OnceLock::new(),
                 _metadata_parent: OnceLock::new(),
@@ -1145,12 +1021,8 @@ impl SourceRootsRef {
             roots: self.clone(),
             cell,
             plan: plan.cloned(),
-            points: cohort_loan
-                .map(cohort::PendingCohortLoan::commit)
-                .or_else(|| points.take()),
+            points: points.take(),
             queued: None,
-            queued_source: None,
-            cohort_points,
             settled: false,
         })
     }
@@ -1184,7 +1056,6 @@ impl SourceRoots {
                 && close_has_exact_native_retirement
                 && !state.closing
                 && state.view.is_none()
-                && state.protected_view.is_none()
             {
                 state.closed = true;
             }
@@ -1193,7 +1064,6 @@ impl SourceRoots {
         cell.native_retained
             .store(native_retained, Ordering::Release);
         if closed && !native_retained {
-            cell._reservation.prove_retirement();
             let (removed, empty) = {
                 let mut gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
                 let removed = gate.cells.remove(&cell.id);
@@ -1221,34 +1091,17 @@ impl SourceRoots {
             {
                 return;
             }
-            if state.closed
-                || (cell.close_failure.get().is_some()
-                    && state.view.is_none()
-                    && state.protected_view.is_none())
-            {
+            if state.closed || (cell.close_failure.get().is_some() && state.view.is_none()) {
                 None
             } else {
                 state.closing = true;
-                Some((state.view.take(), state.protected_view.take()))
+                Some(state.view.take())
             }
         };
-        if let Some((view, protected)) = close {
+        if let Some(view) = close {
             // No root/list/gate locks during native close or disposition work.
             let mut still_shared = None;
-            let mut protected_shared = None;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if let Some(protected) = protected {
-                    ensure!(view.is_none(), "application source has two native views");
-                    return match protected.try_unwrap() {
-                        Ok(view) => view.consume(kasumi_store::PreparedTenantSourceReadView::close),
-                        Err(view) => {
-                            protected_shared = Some(view);
-                            Err(anyhow::anyhow!(
-                                "application source has an uncounted protected alias"
-                            ))
-                        }
-                    };
-                }
                 view.map(|view| match view.try_unwrap() {
                     Ok(view) => view.consume(TenantStorageReadView::close),
                     Err(view) => {
@@ -1268,7 +1121,7 @@ impl SourceRoots {
             });
             let failed = outcome.is_err();
             if let Err(error) = outcome {
-                if still_shared.is_some() || protected_shared.is_some() {
+                if still_shared.is_some() {
                     // This retryable local alias refusal must not occupy the
                     // single consuming-close slot: a later actual close may
                     // fail with its own original native owner or panic.
@@ -1283,9 +1136,6 @@ impl SourceRoots {
             if let Some(view) = still_shared {
                 state.view = Some(view);
             }
-            if let Some(view) = protected_shared {
-                state.protected_view = Some(view);
-            }
         }
         self.finish_retirement(cell);
         self.wake();
@@ -1293,9 +1143,6 @@ impl SourceRoots {
 }
 impl RootPreparation {
     fn retire_points(&mut self) {
-        if self.cohort_points {
-            return;
-        }
         if let Some(points) = self.points.take()
             && let Err(payload) = points.retire()
         {
@@ -1307,20 +1154,11 @@ impl RootPreparation {
     }
     fn queue_planned_in_place(&mut self) -> Result<()> {
         ensure!(
-            self.plan.is_some()
-                && self.points.is_some()
-                && self.queued.is_none()
-                && self.queued_source.is_none()
-                && !self.settled,
+            self.plan.is_some() && self.points.is_some() && self.queued.is_none() && !self.settled,
             "prospective source queue is not pristine"
         );
         // The ordinary completion already owns self before this provider call.
         // Store retains its actual request on a failed pre-return acquisition.
-        #[cfg(test)]
-        if let Some(cohort) = self.roots.cohort.get() {
-            self.queued_source = Some(cohort.queue(&self.cell._reservation)?);
-            return Ok(());
-        }
         self.queued = Some(self.roots.stores.prepare_read_view()?);
         Ok(())
     }
@@ -1355,47 +1193,6 @@ impl RootPreparation {
             let _ = self.cell.evacuations.set(evacuations);
         }
         let acquired = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<()> {
-            if let Some(queued) = self.queued_source.take() {
-                let reader = queued.capture()?;
-                let backing = self
-                    .points
-                    .take()
-                    .context("protected source point backing absent")?;
-                let (view, backing) = backing
-                    .bind_source(&self.roots.stores, reader)?
-                    .into_source();
-                self.points = Some(backing);
-                let view = ProtectedViewRef::new(view, self.cell._reservation.clone());
-                self.cell
-                    .state
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .protected_view = Some(view.clone());
-                let workspace = self
-                    .cell
-                    .workspace
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .take()
-                    .expect("preclaimed source workspace");
-                let mut loan =
-                    view.point_reads(self.points.as_mut().expect("actual cohort backing"))?;
-                let result = kasumi_raft::selected_application_at_source_loan(
-                    &mut loan,
-                    boundary,
-                    mode,
-                    &self.roots.limits,
-                    workspace,
-                    Some(self.plan.as_ref().expect("protected producer plan")),
-                );
-                match result {
-                    Ok(position) => {
-                        let _ = self.cell.position.set(position);
-                    }
-                    Err(error) => self.cell.record_failure(error.into(), false),
-                }
-                return Ok(());
-            }
             #[cfg(test)]
             let originally_queued = self.queued.is_some();
             let acquired = match self.queued.take() {
@@ -1553,21 +1350,6 @@ impl Drop for RootPreparation {
         // Retire point buffers before cancelling/closing their actual reader.
         self.retire_points();
         if !self.settled {
-            if let Some(queued) = self.queued_source.take() {
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    queued.cancel_settled()
-                })) {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => self.cell.record_failure(error, true),
-                    Err(payload) => self.cell.record_failure(
-                        SourcePanic {
-                            _payload: Mutex::new(payload),
-                        }
-                        .into(),
-                        true,
-                    ),
-                }
-            }
             if let Some(queued) = self.queued.take() {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| queued.cancel())) {
                     Ok(Ok(())) => {}
@@ -1590,13 +1372,6 @@ impl Drop for RootPreparation {
                 .unwrap_or_else(|p| p.into_inner())
                 .preparing = false;
             self.roots.retire(&self.cell, true);
-        }
-        if self.cohort_points {
-            let cohort = self.roots.cohort.get().expect("owning source cohort");
-            match self.points.take() {
-                Some(points) => cohort.return_points(points),
-                None => cohort.consumed_points(),
-            }
         }
         self.roots.wake();
     }
@@ -1645,23 +1420,6 @@ impl kasumi_raft::ApplicationSourceCustody for SourceRoots {
         let mut pending = false;
         let mut report = DrainReport::default();
         let mut retained = None;
-        if let Some(cohort) = self.cohort.get() {
-            cohort.seal();
-        }
-        for failure in [
-            self.construction_failure.get(),
-            self.capacity_cleanup_failure.get(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            let issue = DrainFailure::retained(failure.issue.clone());
-            report.merge(&issue);
-            if self.capacity_failure_retained() {
-                retained = Some(issue);
-            }
-        }
-        let mut cell_retained = false;
         loop {
             let cell = {
                 let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
@@ -1694,44 +1452,6 @@ impl kasumi_raft::ApplicationSourceCustody for SourceRoots {
                 report.merge(&issue);
                 if !cell.state.lock().unwrap_or_else(|p| p.into_inner()).closed || native_retained {
                     retained = Some(issue);
-                    cell_retained = true;
-                }
-            }
-        }
-        if !pending
-            && !cell_retained
-            && self.capacity_cleanup_failure.get().is_none()
-            && !self.cohort.get().is_some_and(SourceCohort::close_failed)
-            && let Some(cohort) = self.cohort.get()
-        {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| cohort.poll_close())) {
-                Ok(Some(Ok(()))) => {}
-                Ok(None) => pending = true,
-                Ok(Some(Err(error))) => self.record_capacity_failure(error),
-                Err(payload) => {
-                    cohort.mark_close_failed();
-                    self.record_capacity_failure(
-                        SourcePanic {
-                            _payload: Mutex::new(payload),
-                        }
-                        .into(),
-                    );
-                }
-            }
-            if !cell_retained && !self.capacity_failure_retained() {
-                retained = None;
-            }
-            for failure in [
-                self.construction_failure.get(),
-                self.capacity_cleanup_failure.get(),
-            ]
-            .into_iter()
-            .flatten()
-            {
-                let issue = DrainFailure::retained(failure.issue.clone());
-                report.merge(&issue);
-                if self.capacity_failure_retained() {
-                    retained = Some(issue);
                 }
             }
         }
@@ -1744,8 +1464,6 @@ impl kasumi_raft::ApplicationSourceCustody for SourceRoots {
     fn is_drained(&self) -> bool {
         let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
         gate.preparations_closed
-            && !self.capacity_failure_retained()
-            && self.cohort.get().is_none_or(SourceCohort::is_closed)
             && gate.cells.values().all(|cell| {
                 let state = cell.state.lock().unwrap_or_else(|p| p.into_inner());
                 state.closed
@@ -2093,147 +1811,7 @@ impl SelectedApplication {
 #[path = "application_sources_tests.rs"]
 pub(crate) mod tests;
 
-// Shared by primary-tree fixtures and production immutable document reads.
+// Immutable document reads, plus test-only custody readers.
 #[path = "application_source_reader.rs"]
 mod primary_reader;
 pub(crate) use primary_reader::DocumentReader;
-#[cfg(test)]
-pub(crate) use primary_reader::SourceReader;
-
-// This permit keeps native close out of the short history exchange. It borrows
-// no apply mutex and drops its exact view alias before retirement is retried.
-struct HistoryPermit {
-    roots: SourceRootsRef,
-    cell: CellRef,
-    view: Option<ProtectedViewRef>,
-}
-impl Drop for HistoryPermit {
-    fn drop(&mut self) {
-        drop(self.view.take());
-        self.cell
-            .state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .inflight -= 1;
-        let force = self
-            .roots
-            .gate
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .preparations_closed;
-        self.roots.retire(&self.cell, force);
-        self.roots.wake();
-    }
-}
-impl SelectedApplication {
-    /// Before the first externally returned Generation, acquire a real ordinary
-    /// Engine lane replacement and then complete the same native/report/census
-    /// history transition. A refused precommit exchange preserves current.
-    pub(crate) fn retain_public_history(&self) -> Result<()> {
-        if self.cell._reservation.publication_lane().is_none() {
-            return Ok(());
-        }
-        let _exchange = self
-            .cell
-            .history_escape
-            .lock()
-            .map_err(|_| anyhow::anyhow!("source history exchange previously unwound"))?;
-        let roots = self
-            .cell
-            .roots
-            .upgrade()
-            .context("source registry retired")?;
-        let permit = {
-            let gate = roots.gate.lock().unwrap_or_else(|p| p.into_inner());
-            ensure!(
-                !gate.consumers_closed && !gate.preparations_closed,
-                "source consumers sealed"
-            );
-            let mut state = self.cell.state.lock().unwrap_or_else(|p| p.into_inner());
-            ensure!(
-                !state.preparing && !state.closing && !state.closed,
-                "source parent closed"
-            );
-            let view = state
-                .protected_view
-                .as_ref()
-                .context("protected source absent")?
-                .clone();
-            state.inflight = state
-                .inflight
-                .checked_add(1)
-                .context("source history permit overflow")?;
-            drop(state);
-            drop(gate);
-            HistoryPermit {
-                roots,
-                cell: self.cell.clone(),
-                view: Some(view),
-            }
-        };
-        let credit = &self.cell._reservation;
-        // Pure provider refusal occurs before touching the captured native root.
-        let prepared = credit.prepare_history()?;
-        let view = permit.view.as_ref().expect("actual history parent");
-        let outcome =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| view.retain_history()));
-        let disposition = view.history_disposition();
-        match disposition {
-            kasumi_store::SourceHistoryDisposition::History => {
-                if prepared {
-                    credit.commit_history();
-                }
-            }
-            kasumi_store::SourceHistoryDisposition::Current => {
-                if prepared && let Err(payload) = credit.abort_history() {
-                    // Preserve both independent observations before publishing a
-                    // redacted failure; never refund/reuse after unknown Drop.
-                    match outcome {
-                        Ok(Err(original)) => self.cell.record_failure(original, false),
-                        Err(original) => self.cell.record_failure(
-                            SourcePanic {
-                                _payload: Mutex::new(original),
-                            }
-                            .into(),
-                            false,
-                        ),
-                        Ok(Ok(_)) => self.cell.record_failure(
-                            anyhow::anyhow!("source history funding retirement failed"),
-                            false,
-                        ),
-                    }
-                    self.cell.record_point_failure(payload);
-                    return Err(self.cell.error());
-                }
-            }
-            kasumi_store::SourceHistoryDisposition::Transition => {}
-            kasumi_store::SourceHistoryDisposition::Retained => credit.seal_publication(),
-        }
-        match outcome {
-            Ok(Ok(true)) if disposition == kasumi_store::SourceHistoryDisposition::History => {
-                Ok(())
-            }
-            Ok(Ok(_)) => anyhow::bail!("source history transition is still pending"),
-            Ok(Err(error))
-                if disposition == kasumi_store::SourceHistoryDisposition::Current
-                    || disposition == kasumi_store::SourceHistoryDisposition::History =>
-            {
-                Err(error)
-            }
-            Ok(Err(error)) => {
-                self.cell.record_failure(error, false);
-                Err(self.cell.error())
-            }
-            Err(payload) => {
-                self.cell.record_failure(
-                    SourcePanic {
-                        _payload: Mutex::new(payload),
-                    }
-                    .into(),
-                    false,
-                );
-                Err(self.cell.error())
-            }
-        }
-    }
-}

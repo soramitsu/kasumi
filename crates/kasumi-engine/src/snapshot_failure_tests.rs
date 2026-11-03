@@ -251,7 +251,7 @@ impl std::fmt::Display for OwningContext {
 
 #[test]
 fn snapshot_admission_refusals_cross_public_and_native_boundaries_without_allocation() {
-    use crate::primary_tree::tests::AllocationGuard;
+    use crate::allocation_tests::AllocationGuard;
     for refused in [
         ScratchAdmissionRefusal::Busy,
         ScratchAdmissionRefusal::Sealed,

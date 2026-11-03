@@ -2,8 +2,8 @@
 //! before/after-System.dealloc observer and serialized retirement gates.
 use super::*;
 use crate::{
+    allocation_tests::measure_topology_input,
     application_sources::completion::OrdinarySourceCompletion,
-    document_pool::allocation_tests::measure_topology_input,
 };
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

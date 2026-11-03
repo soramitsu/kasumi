@@ -269,7 +269,6 @@ impl OrdinarySourceCompletion {
             let retired = source.closed
                 && source.inflight == 0
                 && source.view.is_none()
-                && source.protected_view.is_none()
                 && !cell.native_retained.load(Ordering::Acquire);
             !source.preparing && !source.closing && (legitimate_alias || retired)
         });

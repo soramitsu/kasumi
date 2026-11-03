@@ -1291,18 +1291,16 @@ async fn validation_baseline_real_ordered_retirement_uses_apply_prior_without_pu
     assert!(after.application_selection.get().is_some());
     assert!(fixture.engine.apply_lock.try_lock().is_ok());
     // The actual captured selection is bound to this exact Entry and revision.
-    let (_, selected_boundary, selected_revision) = after
-        .application_selection
-        .get()
-        .expect("published selected owner")
-        .primary_read_proof(after.state.revision_base)?;
-    assert_eq!(selected_revision, after.state.revision);
+    assert!(
+        after
+            .application_selection
+            .get()
+            .expect("published selected owner")
+            .selected_at_entry(&position)
+    );
     assert_eq!(
-        selected_boundary,
-        crate::primary_tree::records::boundary::producer(
-            kasumi_raft::ApplicationBoundaryRef::Entry(&position),
-        )
-        .expect("actual canonical Entry fingerprint"),
+        after.state.revision,
+        after.state.revision_base + position.log_id.index
     );
     drop(after);
     drop(before);

@@ -28,16 +28,15 @@ fn registered_source_funding_real_provider_counts_complete_layout_and_has_no_pos
     let fixture = tests::Fixture::new()?;
     let before = fixture.core().snapshot();
     let metadata = metadata_quote(&fixture)?;
-    let (result, live, peak, allocations) =
-        crate::document_pool::allocation_tests::measure_topology_input(|| {
-            let mut source = fixture.registered();
-            source.install();
-            source.queue(0, 0)?;
-            source.queue(1, 1)?;
-            source.prepare(0);
-            source.prepare(1);
-            Ok::<_, io::Error>(source)
-        });
+    let (result, live, peak, allocations) = crate::allocation_tests::measure_topology_input(|| {
+        let mut source = fixture.registered();
+        source.install();
+        source.queue(0, 0)?;
+        source.queue(1, 1)?;
+        source.prepare(0);
+        source.prepare(1);
+        Ok::<_, io::Error>(source)
+    });
     let mut source = result?;
     assert_eq!(source.phase(), Some(SourcePoolPhase::Ready));
     let native = source.native_snapshot().unwrap();
@@ -570,10 +569,9 @@ fn registered_source_partial_queue_actual_registration_contention_retains_report
     let before_census = fixture.core().storage_census.snapshot();
     let native_before = source.native_snapshot().unwrap();
     assert_eq!(native_before.assigned, 0);
-    let (result, live, peak, allocations) =
-        crate::document_pool::allocation_tests::measure_topology_input(|| {
-            source.queue_with_registration_census_held(0, 0)
-        });
+    let (result, live, peak, allocations) = crate::allocation_tests::measure_topology_input(|| {
+        source.queue_with_registration_census_held(0, 0)
+    });
     assert!(result.is_err());
     assert!(source.reader(0).is_none());
     assert!(

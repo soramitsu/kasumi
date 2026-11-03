@@ -4,7 +4,7 @@
 use super::*;
 use crate::{
     admission::{AdmissionConfig, NodeAdmission, ProposalBudget},
-    document_pool::allocation_tests::{check_mutation_change_tree_drop, measure_topology_input},
+    allocation_tests::{check_mutation_change_tree_drop, measure_topology_input},
 };
 use kasumi_raft::{
     AdmittedApplicationInput, ApplicationInputInstall, ApplicationInputRequirements,

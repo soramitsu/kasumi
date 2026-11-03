@@ -1754,14 +1754,8 @@ async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
     Ok(())
 }
 
-#[path = "primary_stage_tests.rs"]
-mod primary_stage_tests;
-
 #[path = "application_source_allocation_tests.rs"]
 pub(crate) mod allocation_tails;
-
-#[path = "primary_read_tests.rs"]
-mod primary_read_tests;
 
 #[path = "application_source_quote_tests.rs"]
 mod quote_tests;
@@ -1925,9 +1919,6 @@ async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling(
     drop(pressure);
     fixture.close().await
 }
-
-#[path = "application_source_cohort_tests.rs"]
-mod cohort_tests;
 
 #[path = "document_store_native_tests.rs"]
 mod document_store_native_tests;

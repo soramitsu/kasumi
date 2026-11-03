@@ -1,6 +1,6 @@
 use super::*;
 use crate::admission::AdmissionConfig;
-use crate::document_pool::allocation_tests::{check_topology_input_drop, measure_topology_input};
+use crate::allocation_tests::{check_topology_input_drop, measure_topology_input};
 use kasumi_types::control_topology::{ControlNode, DeploymentMode, TenantRoute};
 use std::collections::{BTreeMap, BTreeSet};
 

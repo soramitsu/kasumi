@@ -28,13 +28,7 @@ mod document_source;
 mod document_store;
 mod generation_metadata;
 pub use generation_metadata::{CollectionMetadata, LifecycleInstallationMetadata};
-// Unwired component prototype; runtime producers remain unchanged.
-#[cfg(test)]
-mod document_pool;
-// Unwired logical page codec; source/publication/cache integration remains separate.
 mod index_source;
-#[cfg(test)]
-mod primary_tree;
 pub use audit_source::authorize_audit_source;
 pub mod admission;
 mod audit_maintenance;
@@ -92,6 +86,8 @@ pub use service::{
 pub use state::{Generation, PreparedSnapshotRestore, TenantEngine, validate_genesis_inputs};
 mod snapshot_failure;
 pub use snapshot_failure::SnapshotFailure;
+#[cfg(test)]
+mod allocation_tests;
 #[cfg(test)]
 mod local_writer_capacity_tests;
 #[cfg(test)]

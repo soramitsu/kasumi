@@ -1,6 +1,6 @@
 use super::*;
 use crate::admission::{AdmissionConfig, NodeAdmission, ProposalBudget};
-use crate::primary_tree::tests::AllocationGuard;
+use crate::allocation_tests::AllocationGuard;
 use kasumi_raft::{ApplicationInputInstall, ApplicationInputRequirements, InputBindingError};
 use kasumi_types::{Mutation, MutationBatch, Precondition};
 

@@ -97,12 +97,11 @@ fn native_source_bank_real_provider_two_lanes_capture_with_ordinary_bytes_full()
     let fixture = Fixture::new()?;
     let before = fixture.core().snapshot();
     let mut reads = fixture.native();
-    let (result, live, peak, allocations) =
-        crate::document_pool::allocation_tests::measure_topology_input(|| {
-            reads.install()?;
-            reads.prepare(0)?;
-            reads.prepare(1)
-        });
+    let (result, live, peak, allocations) = crate::allocation_tests::measure_topology_input(|| {
+        reads.install()?;
+        reads.prepare(0)?;
+        reads.prepare(1)
+    });
     result.unwrap();
     assert!(ok(reads.pool().installation()));
     assert_eq!(reads.rights().settlement(), SourceRightsSettlement::Ready);

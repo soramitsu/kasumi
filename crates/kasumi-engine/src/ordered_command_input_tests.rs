@@ -208,7 +208,7 @@ fn ordered_command_actual_byte_binding_success_has_zero_requested_heap() {
         bytes.extend((0..(256 << 10)).map(|index| (index % 251) as u8));
         let context = position(&bytes);
         let (bound, live, peak, allocations) =
-            crate::document_pool::allocation_tests::measure_topology_input(|| {
+            crate::allocation_tests::measure_topology_input(|| {
                 ByteBoundCommand::check(&context, &bytes)
             });
         assert!(bound.is_ok());

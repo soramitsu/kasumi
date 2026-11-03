@@ -12,8 +12,6 @@ mod validation_baseline_tests;
 use crate::index_source::{DocumentSourceFailure, SourceResult};
 use kasumi_query::ReadFailure;
 use ordered_command::ByteBoundCommand;
-#[cfg(test)]
-use ordered_command::PreparedOrderedCommand;
 #[path = "custody_snapshot.rs"]
 mod custody_snapshot;
 #[path = "mutation_apply.rs"]
@@ -21,9 +19,6 @@ mod mutation_apply;
 #[path = "mutation_capacity.rs"]
 mod mutation_capacity;
 pub(crate) use mutation_capacity::admit_mutation_capacity;
-#[cfg(test)]
-#[path = "primary_projection.rs"]
-pub(crate) mod primary_projection;
 #[path = "snapshot_api.rs"]
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
@@ -1625,17 +1620,12 @@ impl TenantEngine {
         #[cfg(test)]
         validation_baseline_tests::observe_public_generation()?;
         let generation = self.current_generation()?;
-        if let Some(selection) = generation.application_selection.get() {
-            selection
-                .retain_public_history()
-                .map_err(|error| Error::new(ErrorCode::ResourceExhausted, error.to_string()))?;
-        }
         self.check_current_access()?;
         Ok(generation)
     }
 
-    // Private apply acquisition bypasses no access checks and does not use a
-    // future public history-escape API. Only ApplyOwner lends this owner.
+    // Private apply acquisition bypasses no access checks. Only ApplyOwner
+    // lends this owner.
     fn current_generation(&self) -> Result<Arc<Generation>> {
         self.check_current_access()?;
         self.current
@@ -4161,73 +4151,6 @@ mod restore_budget_tests {
             ErrorCode::QuotaExceeded
         );
         assert_eq!(engine.logical_snapshot(bytes.disk()).unwrap(), bytes);
-    }
-}
-
-// The prototype's authority is constructed in the owning state module. Private
-// fields prevent a caller from substituting another mutex or source registry.
-#[cfg(test)]
-pub(crate) struct PrimaryApplyGuard<'engine> {
-    roots: &'engine crate::application_sources::SourceRootsRef,
-    scope: [u8; 32],
-    bootstrap: [u8; 32],
-    _guard: PrimaryApplyLock<'engine>,
-}
-#[cfg(test)]
-enum PrimaryApplyLock<'engine> {
-    Owned(std::sync::MutexGuard<'engine, ()>),
-    Borrowed(&'engine std::sync::MutexGuard<'engine, ()>),
-}
-#[cfg(test)]
-impl PrimaryApplyLock<'_> {
-    fn held(&self) -> &() {
-        match self {
-            Self::Owned(guard) => guard,
-            Self::Borrowed(guard) => guard,
-        }
-    }
-}
-#[cfg(test)]
-impl PrimaryApplyGuard<'_> {
-    pub(crate) fn roots(&self) -> &crate::application_sources::SourceRootsRef {
-        let _held = self._guard.held();
-        self.roots
-    }
-    pub(crate) fn scope(&self) -> [u8; 32] {
-        self.scope
-    }
-    pub(crate) fn bootstrap(&self) -> [u8; 32] {
-        self.bootstrap
-    }
-}
-#[cfg(test)]
-impl TenantEngine {
-    pub(crate) fn lock_primary_apply(&self) -> anyhow::Result<PrimaryApplyGuard<'_>> {
-        use crate::primary_tree::records;
-        use anyhow::Context as _;
-        let guard = self
-            .apply_lock
-            .lock()
-            .map_err(|_| anyhow::anyhow!("application apply lock poisoned"))?;
-        let roots = self
-            .application_sources
-            .get()
-            .context("application sources not installed")?;
-        let bootstrap = self
-            .bootstrap_sha256
-            .get()
-            .context("authenticated application bootstrap absent")?;
-        let digest = records::boundary::raw_digest(bootstrap)
-            .map_err(|error| anyhow::anyhow!("primary record invalid: {error:?}"))?;
-        let scope = records::scope_hash(&self.tenant, &self.incarnation, digest)
-            .map_err(|error| anyhow::anyhow!("primary record invalid: {error:?}"))?;
-        roots.primary_installation().0.check_access()?;
-        Ok(PrimaryApplyGuard {
-            roots,
-            scope,
-            bootstrap: digest,
-            _guard: PrimaryApplyLock::Owned(guard),
-        })
     }
 }
 

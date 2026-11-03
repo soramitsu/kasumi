@@ -1,5 +1,5 @@
 use super::*;
-use crate::document_pool::allocation_tests::measure_topology_input;
+use crate::allocation_tests::measure_topology_input;
 use kasumi_store::NodeDiskMemoryAdmission;
 
 fn producer_plan(

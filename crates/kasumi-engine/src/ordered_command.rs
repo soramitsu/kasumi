@@ -239,49 +239,6 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
             }
         }
     }
-
-    #[cfg(test)]
-    pub(super) fn accepted(&self) -> anyhow::Result<&AcceptedGeneration<'engine>> {
-        match &self.owner {
-            OutcomeOwner::Candidate(accepted) => Ok(accepted),
-            OutcomeOwner::Frozen(_) => anyhow::bail!("ordered command has no accepted candidate"),
-        }
-    }
-    #[cfg(test)]
-    pub(super) fn position(&self) -> &'entry kasumi_raft::AppliedEntryContext {
-        self.position
-    }
-    #[cfg(test)]
-    pub(super) fn response(&self) -> &kasumi_raft::AppliedResponse {
-        &self.response
-    }
-    #[cfg(test)]
-    pub(super) fn omit_primary_id_for_test(&mut self, name: &str, id: &str) {
-        match &mut self.owner {
-            OutcomeOwner::Candidate(accepted) => accepted.omit_primary_id_for_test(name, id),
-            OutcomeOwner::Frozen(_) => panic!("test candidate absent"),
-        }
-    }
-    // This consumes the actual factory result. It cannot construct/reassemble
-    // an owner from raw parts and does not promote test primary graph authority.
-    #[cfg(test)]
-    pub(super) fn into_primary_test_parts(
-        self,
-    ) -> anyhow::Result<(
-        AcceptedGeneration<'engine>,
-        &'entry kasumi_raft::AppliedEntryContext,
-        kasumi_raft::AppliedResponse,
-    )> {
-        let Self {
-            position,
-            response,
-            owner,
-        } = self;
-        match owner {
-            OutcomeOwner::Candidate(accepted) => Ok((accepted, position, response)),
-            OutcomeOwner::Frozen(_) => anyhow::bail!("test primary candidate absent"),
-        }
-    }
 }
 
 struct OrdinaryAction<'engine, 'entry> {
@@ -350,3 +307,7 @@ pub(super) fn apply_ordinary(
         )),
     }
 }
+
+#[cfg(test)]
+#[path = "ordered_command_publication_tests.rs"]
+mod publication_tests;

@@ -1,7 +1,202 @@
 //! Actual ordinary backend/sink publication; the frozen negative separately
 //! installs test state and never claims authentic retirement or serving.
 use super::*;
-use kasumi_raft::{AppliedInput, ApplyPublisher, StateMachineBackend as _};
+use crate::{
+    admission::{AdmissionConfig, NodeAdmission, Reservation},
+    application_sources::{SourceRoots, SourceRootsRef},
+};
+use anyhow::Result;
+use kasumi_raft::{
+    ApplicationSourceCustody as _, AppliedEntryContext, AppliedInput, AppliedResponse,
+    ApplyPublisher, StateMachineBackend as _,
+};
+use kasumi_store::{TenantStorageSet, WriteOp, test_utils::LocalKeyProvider};
+use serde_json::json;
+use sha2::{Digest, Sha256};
+
+struct Fixture {
+    engine: TenantEngine,
+    roots: SourceRootsRef,
+    stores: Arc<TenantStorageSet>,
+    node: kasumi_store::NodeStore,
+    storage: crate::test_utils::FixtureStorage,
+    _buffers: Arc<kasumi_raft::SnapshotBufferOwner>,
+    _input: Reservation,
+    _directory: Option<tempfile::TempDir>,
+}
+struct CommandInput {
+    position: AppliedEntryContext,
+    bytes: Vec<u8>,
+}
+
+impl Fixture {
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let (mut persistent, mut scratch) =
+            crate::test_utils::fixture_disk_configs(directory.path())?;
+        persistent.native_storage.cache.byte_limit = 0;
+        scratch.native_cache_bytes = 0;
+        let config = crate::test_utils::isolated_disk_admission_config(
+            AdmissionConfig {
+                max_inflight_bytes: Some(256 << 20),
+                ..Default::default()
+            },
+            &persistent,
+            &scratch,
+        )?;
+        let admission = NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+        let storage =
+            crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
+        let input = storage.admission.reserve_resident(32 << 20)?;
+        let node = storage
+            .create_new(
+                directory.path().join("persistent/node.kv"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .map_err(crate::test_fixture_failure::FixtureFailure::NodeStartup)?;
+        let stores = TenantStorageSet::initialize_catalogs_fixture(
+            node.clone(),
+            "cow".into(),
+            Arc::new(LocalKeyProvider::new([77; 32])),
+            Arc::new(LocalKeyProvider::new([78; 32])),
+        )
+        .await?;
+        let incarnation = uuid::Uuid::from_u128(971).to_string();
+        let initial = TenantEngine::new(
+            "cow".into(),
+            incarnation.clone(),
+            policy(),
+            Limits::default(),
+        )?;
+        let image = initial.logical_snapshot(stores.application().scratch_disk())?;
+        crate::bootstrap::persist_fixture_bootstrap(
+            &stores,
+            &image,
+            1,
+            &format!("cow/{incarnation}"),
+        )?;
+        let (roots, binding) = SourceRoots::new(
+            stores.clone(),
+            storage.admission.clone(),
+            kasumi_raft::RaftLimits::default(),
+        )?;
+        let buffers = storage.admission.snapshot_buffer_owner()?;
+        roots.bind_lifecycle(&buffers, binding)?;
+        crate::test_utils::install_fixture_audit_placement(stores.application())?;
+        let engine = TenantEngine::from_bootstrap("cow", &image)?;
+        engine.install_storage_access(stores.application())?;
+        engine.install_application_sources(roots.clone(), &image)?;
+        Ok(Self {
+            engine,
+            roots,
+            stores,
+            node,
+            storage,
+            _buffers: buffers,
+            _input: input,
+            _directory: Some(directory),
+        })
+    }
+    fn command(&self, operation: Operation) -> Result<CommandInput> {
+        let revision = self.engine.current_generation()?.state.revision + 1;
+        let command = Command {
+            context: RequestContext {
+                authorization: RequestAuthorization::service_identity(),
+                principal: "owner".into(),
+                tenant: "cow".into(),
+                scopes: [Action::Read, Action::Write, Action::Admin]
+                    .into_iter()
+                    .collect(),
+                request_id: format!("request-{revision}"),
+            },
+            timestamp_ms: revision,
+            operation,
+        };
+        let bytes = serde_json::to_vec(&command)?;
+        let position = AppliedEntryContext {
+            log_id: log(revision),
+            previous: (revision > 1).then(|| log(revision - 1)),
+            membership: Default::default(),
+            command_sha256: hex::encode(Sha256::digest(&bytes)),
+            retirement_seed: None,
+        };
+        Ok(CommandInput { position, bytes })
+    }
+    fn publish(&self, operation: Operation) -> Result<()> {
+        let input = self.command(operation)?;
+        apply(self, &input)?;
+        Ok(())
+    }
+    fn seed(&self, rows: usize, long: bool) -> Result<()> {
+        self.publish(Operation::CreateCollection(definition("docs")))?;
+        self.publish(puts(
+            "seed",
+            (0..rows)
+                .map(|n| ("docs".to_owned(), id(n, long), json!({"value":n})))
+                .collect(),
+        ))
+    }
+    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
+        drop(self.engine);
+        self._buffers.drain_startup().await?;
+        std::future::poll_fn(|cx| self.roots.poll_drain(cx)).await?;
+        self.storage.admission.drain_snapshot_startups().await?;
+        self.stores.shutdown().await?;
+        self.node.shutdown().await?;
+        Ok(())
+    }
+}
+fn policy() -> Policy {
+    Policy {
+        grants: vec![Grant {
+            principal: "owner".into(),
+            collection: None,
+            actions: [Action::Admin, Action::Read, Action::Write]
+                .into_iter()
+                .collect(),
+        }],
+        strict_read_audit: false,
+    }
+}
+fn definition(name: &str) -> CollectionDefinition {
+    CollectionDefinition {
+        name: name.into(),
+        schema: json!({"type":"object"}),
+        indexes: vec![],
+        strict_read_audit: false,
+        retention_class: CollectionRetentionClass::Operational,
+        write_mode: CollectionWriteMode::Mutable,
+    }
+}
+fn log(index: u64) -> openraft::LogId<u64> {
+    openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), index)
+}
+fn id(n: usize, long: bool) -> String {
+    if long {
+        format!("{n:04}{}", "x".repeat(252))
+    } else {
+        format!("row-{n:04}")
+    }
+}
+fn puts(key: &str, rows: Vec<(String, String, serde_json::Value)>) -> Operation {
+    Operation::Mutate(MutationBatch {
+        idempotency_key: key.into(),
+        read_set: vec![],
+        operations: rows
+            .into_iter()
+            .map(|(collection, id, body)| Mutation::Put {
+                collection,
+                id,
+                body,
+                expected: Precondition::Any,
+            })
+            .collect(),
+    })
+}
 
 fn apply(fixture: &Fixture, input: &CommandInput) -> Result<AppliedResponse> {
     kasumi_raft::with_application_publisher_bound_for_test(
@@ -19,20 +214,15 @@ fn apply(fixture: &Fixture, input: &CommandInput) -> Result<AppliedResponse> {
 }
 fn selected(fixture: &Fixture, input: &CommandInput) -> Result<()> {
     let current = fixture.engine.generation()?;
-    let (_, fingerprint, revision) = current
-        .application_selection
-        .get()
-        .context("source absent")?
-        .primary_read_proof(current.state.revision_base)?;
-    assert_eq!(
-        fingerprint,
-        decode(records::boundary::producer(ApplicationBoundaryRef::Entry(
-            &input.position,
-        )))?
+    assert!(
+        current
+            .application_selection
+            .get()
+            .context("source absent")?
+            .selected_at_entry(&input.position)
     );
-    assert_eq!(revision, current.state.revision);
     assert_eq!(
-        revision,
+        current.state.revision,
         current.state.revision_base + input.position.log_id.index
     );
     Ok(())

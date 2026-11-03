@@ -193,7 +193,7 @@ fn capture_inline_admission_refusal_keeps_response_and_flags_without_allocating(
             let response = AppliedResponse::application(vec![23, 29, 31]);
             let address = response.data.as_ptr();
             let writes = [kasumi_store::WriteOp::delete("fixture", b"key")];
-            let counting = crate::primary_tree::tests::AllocationGuard::begin();
+            let counting = crate::allocation_tests::AllocationGuard::begin();
             let returned = capture_application(
                 |publisher| -> std::result::Result<(), ScratchOperationFailure> {
                     match mode {

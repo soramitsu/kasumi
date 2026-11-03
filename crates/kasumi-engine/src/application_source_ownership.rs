@@ -6,86 +6,29 @@ use std::{
     sync::{Arc, Weak as ArcWeak},
 };
 
-#[path = "application_source_capacity.rs"]
-mod capacity;
-#[cfg(test)]
-pub(super) use capacity::LaneFunding;
-pub(super) use capacity::LaneFundingRef;
-
+// Each variant only holds its grant until the last credit clone retires.
 enum CreditFunding {
-    Ordinary(Reservation),
-    DocumentRead(crate::admission::DocumentWorkspace),
-    Publication(capacity::PublicationCredit),
+    Ordinary {
+        _reservation: Reservation,
+    },
+    DocumentRead {
+        _workspace: crate::admission::DocumentWorkspace,
+    },
 }
 pub(super) struct SourceCredit(Option<Arc<CreditFunding>>);
 impl SourceCredit {
     pub(super) fn new(reservation: Reservation) -> Self {
-        Self(Some(Arc::new(CreditFunding::Ordinary(reservation))))
+        Self(Some(Arc::new(CreditFunding::Ordinary {
+            _reservation: reservation,
+        })))
     }
     pub(super) fn document_read(credit: crate::admission::DocumentWorkspace) -> Self {
-        Self(Some(Arc::new(CreditFunding::DocumentRead(credit))))
+        Self(Some(Arc::new(CreditFunding::DocumentRead {
+            _workspace: credit,
+        })))
     }
     pub(super) fn required_bytes() -> anyhow::Result<u64> {
         super::allocated(std::mem::size_of::<CreditFunding>() + 2 * std::mem::size_of::<usize>())
-    }
-    #[cfg(test)]
-    pub(super) fn publication(funding: &LaneFundingRef, lane: usize) -> anyhow::Result<Self> {
-        Ok(Self(Some(Arc::new(CreditFunding::Publication(
-            funding.assign(lane)?,
-        )))))
-    }
-    pub(super) fn publication_available(funding: &LaneFundingRef) -> anyhow::Result<Self> {
-        Ok(Self(Some(Arc::new(CreditFunding::Publication(
-            funding.assign_available()?,
-        )))))
-    }
-    pub(super) fn publication_lane(&self) -> Option<usize> {
-        self.publication_account()
-            .map(capacity::PublicationCredit::lane)
-    }
-    pub(super) fn seal_publication(&self) {
-        if let Some(account) = self.publication_account() {
-            account.seal();
-        }
-    }
-    fn publication_account(&self) -> Option<&capacity::PublicationCredit> {
-        match self.0.as_deref().expect("source credit") {
-            CreditFunding::Publication(account) => Some(account),
-            CreditFunding::Ordinary(reservation) => {
-                let _ = reservation;
-                None
-            }
-            CreditFunding::DocumentRead(credit) => {
-                let _ = credit;
-                None
-            }
-        }
-    }
-    pub(super) fn prepare_history(&self) -> anyhow::Result<bool> {
-        match self.publication_account() {
-            Some(account) => account.prepare_history(),
-            None => Ok(false),
-        }
-    }
-    pub(super) fn commit_history(&self) {
-        self.publication_account()
-            .expect("publication credit")
-            .commit_history();
-    }
-    pub(super) fn abort_history(&self) -> std::thread::Result<()> {
-        self.publication_account()
-            .expect("publication credit")
-            .abort_history()
-    }
-    pub(super) fn prove_retirement(&self) {
-        if let Some(account) = self.publication_account() {
-            account.prove_retirement();
-        }
-    }
-    #[cfg(test)]
-    pub(super) fn is_history(&self) -> bool {
-        self.publication_account()
-            .is_none_or(capacity::PublicationCredit::is_history)
     }
     #[cfg(test)]
     pub(super) fn allocation_address(&self) -> usize {

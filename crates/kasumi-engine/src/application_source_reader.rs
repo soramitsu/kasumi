@@ -16,13 +16,6 @@ impl SourceRoots {
         (&self.stores, &self.admission)
     }
 }
-impl SourceRootsRef {
-    #[cfg(test)]
-    pub(crate) fn open_primary_current(&self) -> Result<SourceReader> {
-        let preparation = self.prepare_kind(false)?;
-        SourceReader::acquire(preparation, false, false, false, || self.stores.read_view())
-    }
-}
 impl SelectedApplication {
     #[cfg(test)]
     pub(crate) fn open_primary_reader(&self, roots: &SourceRootsRef) -> Result<SourceReader> {
@@ -393,68 +386,6 @@ impl SourceReader {
 impl Drop for SourceReader {
     fn drop(&mut self) {
         self.release();
-    }
-}
-
-#[cfg(test)]
-impl SelectedApplication {
-    /// Existing-key publication only advances the exact selected Entry.
-    /// This checks retained identity, never refreshes or manufactures a source.
-    pub(crate) fn require_next_primary_entry(
-        &self,
-        next: &kasumi_raft::AppliedEntryContext,
-        revision_base: u64,
-    ) -> Result<()> {
-        self.primary_read_proof(revision_base)?;
-        let position = self
-            .cell
-            .position
-            .get()
-            .context("selected primary proof absent")?;
-        let Some(kasumi_raft::SelectedAppliedRef::Entry { log_id, .. }) = position.applied() else {
-            anyhow::bail!("primary publication prior is not an exact Entry");
-        };
-        ensure!(
-            log_id.index.checked_add(1) == Some(next.log_id.index) && next.previous == Some(log_id),
-            "primary publication is not the next exact Entry"
-        );
-        Ok(())
-    }
-    /// This primitive accepts only an exact producer/custody pin. Covered replay
-    /// needs the future selected primary producer token and remains unavailable.
-    pub(crate) fn primary_read_proof(
-        &self,
-        revision_base: u64,
-    ) -> Result<(
-        [u8; 32],
-        crate::primary_tree::records::boundary::Fingerprint,
-        u64,
-    )> {
-        use crate::primary_tree::records::boundary;
-        let position = self
-            .cell
-            .position
-            .get()
-            .context("selected primary proof absent")?;
-        ensure!(
-            !position.is_covered_reconstruction(),
-            "covered primary source has no exact producer binding"
-        );
-        let index = match position.applied() {
-            None => 0,
-            Some(kasumi_raft::SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
-            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => {
-                meta.last_log_id.map_or(0, |id| id.index)
-            }
-        };
-        let revision = revision_base
-            .checked_add(index)
-            .context("selected primary revision overflow")?;
-        let bootstrap = boundary::raw_digest(&position.bootstrap().digest)
-            .map_err(|e| anyhow::anyhow!("primary bootstrap digest invalid: {e:?}"))?;
-        let fingerprint = boundary::selected(position.applied(), &position.bootstrap().digest)
-            .map_err(|e| anyhow::anyhow!("primary producer invalid: {e:?}"))?;
-        Ok((bootstrap, fingerprint, revision))
     }
 }
 

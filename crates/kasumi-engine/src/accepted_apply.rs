@@ -284,45 +284,6 @@ impl AcceptedGeneration<'_> {
         }
         Ok(Some(prepared))
     }
-    #[cfg(test)]
-    pub(crate) fn primary_input(
-        &self,
-    ) -> anyhow::Result<super::primary_projection::AcceptedPrimary<'_>> {
-        use crate::primary_tree::records;
-        use anyhow::Context as _;
-        let engine = self.owner.engine;
-        let roots = engine
-            .application_sources
-            .get()
-            .context("application sources absent")?;
-        let bootstrap = records::boundary::raw_digest(
-            engine
-                .bootstrap_sha256
-                .get()
-                .context("application bootstrap absent")?,
-        )
-        .map_err(|error| anyhow::anyhow!("primary bootstrap invalid: {error:?}"))?;
-        let scope = records::scope_hash(&engine.tenant, &engine.incarnation, bootstrap)
-            .map_err(|error| anyhow::anyhow!("primary scope invalid: {error:?}"))?;
-        roots.primary_installation().0.check_access()?;
-        Ok(super::primary_projection::AcceptedPrimary {
-            authority: super::PrimaryApplyGuard {
-                roots,
-                scope,
-                bootstrap,
-                _guard: super::PrimaryApplyLock::Borrowed(&self.owner._guard),
-            },
-            candidate: super::primary_projection::PrimaryCandidate {
-                previous: &self.owner.previous,
-                accepted: &self.candidate,
-                changed: &self.delta.changed,
-                guard: &self.owner._guard,
-                roots,
-                scope,
-                bootstrap,
-            },
-        })
-    }
 
     pub(super) fn candidate(&self) -> &Generation {
         &self.candidate
@@ -406,14 +367,3 @@ impl PrimaryDelta {
 #[cfg(test)]
 #[path = "accepted_apply_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-impl AcceptedGeneration<'_> {
-    pub(super) fn omit_primary_id_for_test(&mut self, name: &str, id: &str) {
-        self.delta
-            .changed
-            .get_mut(name)
-            .expect("test changed collection")
-            .remove(id);
-    }
-}

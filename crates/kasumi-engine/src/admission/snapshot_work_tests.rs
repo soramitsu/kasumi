@@ -582,32 +582,28 @@ mod deallocation {
         unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
             let pointer = unsafe { System.alloc(layout) };
             if !pointer.is_null() {
-                crate::document_pool::allocation_tests::allocated(layout.size());
-                crate::primary_tree::tests::note_allocation();
+                crate::allocation_tests::allocated(layout.size());
             }
             pointer
         }
         unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
             let pointer = unsafe { System.alloc_zeroed(layout) };
             if !pointer.is_null() {
-                crate::document_pool::allocation_tests::allocated(layout.size());
-                crate::primary_tree::tests::note_allocation();
+                crate::allocation_tests::allocated(layout.size());
             }
             pointer
         }
         unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
             let moved = unsafe { System.realloc(pointer, layout, size) };
             if !moved.is_null() {
-                crate::document_pool::allocation_tests::reallocated(layout.size(), size);
-                crate::primary_tree::tests::note_allocation();
+                crate::allocation_tests::reallocated(layout.size(), size);
             }
             moved
         }
         unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
             let owner = OWNER.before(pointer, layout);
             let wake = WAKE.before(pointer, layout);
-            let documents =
-                crate::document_pool::allocation_tests::before_deallocate(pointer, layout);
+            let watched = crate::allocation_tests::before_deallocate(pointer, layout);
             let publication =
                 crate::admission::source_publication::allocation_tests::before_deallocate(
                     pointer, layout,
@@ -618,7 +614,7 @@ mod deallocation {
             unsafe { System.dealloc(pointer, layout) };
             crate::application_sources::tests::allocation_tails::after_deallocate(sources);
             crate::admission::source_publication::allocation_tests::after_deallocate(publication);
-            crate::document_pool::allocation_tests::deallocated(layout.size(), documents);
+            crate::allocation_tests::deallocated(layout.size(), watched);
             if owner {
                 OWNER.finished.store(true, Ordering::Release);
             }

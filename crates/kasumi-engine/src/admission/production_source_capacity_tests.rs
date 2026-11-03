@@ -7,9 +7,9 @@ async fn production_current_next_source_owners_reuse_positive_retirement_under_p
 -> Result<()> {
     let fixture = Fixture::new(0).await?;
     fixture.write(b"current")?;
-    // These actual buffers are independent of the native/report rights. The
-    // future Engine cohort composes their concrete quote; this test owns all
-    // overlap explicitly rather than granting a synthetic capacity allowance.
+    // These actual buffers are independent of the native/report rights; this
+    // test owns all overlap explicitly rather than granting a synthetic
+    // capacity allowance.
     let current_backing = fixture.backing()?;
     let next_backing = fixture.backing()?;
     let replacement_backing = fixture.backing()?;
