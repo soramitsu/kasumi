@@ -74,6 +74,14 @@ pub struct NativeAdmin {
 }
 
 async fn verified<T>(auth: &Authenticator, request: &Request<T>) -> Result<RequestContext, Status> {
+    // The listener verified and audited this bearer before reading the body.
+    if let Some(context) = request
+        .extensions()
+        .get::<crate::request_admission::Authenticated>()
+        .and_then(|verified| verified.context(auth))
+    {
+        return Ok(context.clone());
+    }
     let mut values = request.metadata().get_all("authorization").iter();
     let first = values
         .next()

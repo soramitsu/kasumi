@@ -241,7 +241,11 @@ use configured_tenant_enrollment::ProvisionSelection;
 #[derive(Default)]
 struct ManagementGate {
     closed: AtomicBool,
+    /// Reconciliation and enrollment exclude each other here.
     active: Arc<tokio::sync::Mutex<()>>,
+    /// Commands run one at a time per tenant. A backup or key rotation of one
+    /// tenant, which can take minutes, leaves every other tenant's free.
+    tenants: std::sync::Mutex<BTreeMap<String, Arc<tokio::sync::Mutex<()>>>>,
 }
 impl ManagementGate {
     fn close(&self) {
@@ -263,8 +267,53 @@ impl ManagementGate {
         }
         Ok(guard)
     }
+    fn tenant(&self, tenant: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut tenants = self.tenants.lock().unwrap_or_else(|p| p.into_inner());
+        tenants.entry(tenant.to_owned()).or_default().clone()
+    }
+    /// Enter each tenant's gate in order: Control before a tenant it
+    /// provisions. Names come from verified contexts and configured targets.
+    async fn enter_tenants(
+        &self,
+        tenants: &[&str],
+    ) -> kasumi_types::Result<Vec<tokio::sync::OwnedMutexGuard<()>>> {
+        let mut guards = Vec::with_capacity(tenants.len());
+        for tenant in tenants {
+            if self.closed.load(Ordering::Acquire) {
+                return Err(Self::closed_error());
+            }
+            guards.push(self.tenant(tenant).lock_owned().await);
+        }
+        if self.closed.load(Ordering::Acquire) {
+            return Err(Self::closed_error());
+        }
+        Ok(guards)
+    }
+    /// Reconciliation leaves a tenant whose command is running to a later pass.
+    fn try_enter_tenant(&self, tenant: &str) -> Option<tokio::sync::OwnedMutexGuard<()>> {
+        if self.closed.load(Ordering::Acquire) {
+            return None;
+        }
+        let guard = self.tenant(tenant).try_lock_owned().ok()?;
+        (!self.closed.load(Ordering::Acquire)).then_some(guard)
+    }
     async fn drain(&self) -> tokio::sync::MutexGuard<'_, ()> {
-        self.active.lock().await
+        let active = self.active.lock().await;
+        // Admission is closed, so a command queued on a tenant's gate fails
+        // once it gets it. Waiting out each running command is enough, and
+        // holding none of their gates cannot deadlock with one that is
+        // waiting for its second gate.
+        let tenants = self
+            .tenants
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+            .cloned()
+            .collect::<Vec<_>>();
+        for tenant in tenants {
+            drop(tenant.lock().await);
+        }
+        active
     }
 }
 
@@ -727,7 +776,10 @@ impl Administration {
         let context = &invocation.context;
         let command = &invocation.command;
         let source = &invocation.source;
-        let _guard = self.gate.enter().await?;
+        let tenants = std::iter::once(context.tenant.as_str())
+            .chain(provisioning_tenant(command))
+            .collect::<Vec<_>>();
+        let _guard = self.gate.enter_tenants(&tenants).await?;
         let mut admitted = false;
         let mutation = !matches!(command, ManagementCommand::Status { .. });
         let mut result: Result<serde_json::Value> = async {
@@ -1125,24 +1177,30 @@ impl Administration {
                     .context("route missing")?;
                 let mut topology = current.topology;
                 validate_voters(&topology, &voters)?;
-                if let Some(route) = topology.tenants.get_mut(&context.tenant) {
-                    route.voters = voters;
-                }
-                topology.validate()?;
-                self.event(
-                    context,
-                    SecurityEventKind::Membership,
-                    SecurityOutcome::Started,
-                )
-                .await?;
-                plane
-                    .replace_topology(
-                        self.control_context.clone(),
-                        topology,
-                        Precondition::Version(current.version),
-                        format!("membership-{}", context.request_id),
+                let membership = metrics
+                    .membership_config
+                    .log_id()
+                    .as_ref()
+                    .map_or_else(|| "initial".to_owned(), ToString::to_string);
+                if let Some(key) =
+                    publish_voters(&mut topology, &context.tenant, voters, &membership)?
+                {
+                    topology.validate()?;
+                    self.event(
+                        context,
+                        SecurityEventKind::Membership,
+                        SecurityOutcome::Started,
                     )
                     .await?;
+                    plane
+                        .replace_topology(
+                            self.control_context.clone(),
+                            topology,
+                            Precondition::Version(current.version),
+                            key,
+                        )
+                        .await?;
+                }
                 self.event(
                     context,
                     SecurityEventKind::Membership,
@@ -1394,6 +1452,9 @@ impl Administration {
             if tenant.starts_with("__kasumi_") {
                 continue;
             }
+            let Some(_tenant) = self.gate.try_enter_tenant(&tenant) else {
+                continue;
+            };
             let context = RequestContext {
                 tenant: tenant.clone(),
                 ..self.control_context.clone()
@@ -1524,6 +1585,9 @@ impl Administration {
         let topology = ControlPlane::local_topology(&self.control)?;
         let topology = &topology.topology;
         for (tenant, route) in &topology.tenants {
+            let Some(_tenant) = self.gate.try_enter_tenant(tenant) else {
+                continue;
+            };
             let original = self
                 .config
                 .tenants
@@ -1772,6 +1836,31 @@ fn administrative_error(error: &anyhow::Error) -> Option<&kasumi_types::Error> {
         .or_else(|| configured_tenant_enrollment::approval_error(error))
 }
 
+/// Point `tenant`'s route at its committed `voters`, identified by the log ID
+/// of that `membership`. Returns the receipt key of the topology write, or
+/// None when the route already has them: republishing writes nothing, so
+/// callers cannot grow Control's permanent receipts, and a change has one
+/// receipt whatever request IDs its callers retry with.
+fn publish_voters(
+    topology: &mut ControlTopology,
+    tenant: &str,
+    voters: BTreeSet<u64>,
+    membership: &str,
+) -> kasumi_types::Result<Option<String>> {
+    let route = topology.tenants.get_mut(tenant).ok_or_else(|| {
+        kasumi_types::Error::new(
+            kasumi_types::ErrorCode::InvalidArgument,
+            "membership publication requires a tenant route",
+        )
+    })?;
+    if route.voters == voters {
+        return Ok(None);
+    }
+    let key = hex_digest(format!("{tenant}/{}/{membership}", route.incarnation).as_bytes());
+    route.voters = voters;
+    Ok(Some(format!("membership-{key}")))
+}
+
 fn hex_digest(bytes: &[u8]) -> String {
     Sha256::digest(bytes)
         .iter()
@@ -1875,6 +1964,114 @@ mod tests {
             Err(error) if error.code == kasumi_types::ErrorCode::Unavailable
         ));
         drop(shutdown);
+    }
+
+    #[tokio::test]
+    async fn long_tenant_command_leaves_other_tenants_free_until_shutdown() {
+        use std::{future::Future, task::Poll, time::Duration};
+        let gate = ManagementGate::default();
+        // A backup or key rotation of one tenant can take minutes.
+        let backup = gate.enter_tenants(&["a"]).await.unwrap();
+        let other = tokio::time::timeout(Duration::from_secs(5), gate.enter_tenants(&["b"]))
+            .await
+            .expect("another tenant's command is not queued behind the backup")
+            .unwrap();
+        // Reconciliation still runs and leaves only the busy tenant for later.
+        let reconciling = tokio::time::timeout(Duration::from_secs(5), gate.enter())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(gate.try_enter_tenant("a").is_none());
+        drop(other);
+        assert!(gate.try_enter_tenant("b").is_some());
+        drop(reconciling);
+        let mut same = Box::pin(gate.enter_tenants(&["a"]));
+        // Control provisioning a tenant waits for that tenant's command too.
+        let mut provisioning = Box::pin(gate.enter_tenants(&["control", "a"]));
+        std::future::poll_fn(|cx| {
+            assert!(same.as_mut().poll(cx).is_pending());
+            assert!(provisioning.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        gate.close();
+        assert!(gate.try_enter_tenant("b").is_none());
+        let mut shutdown = Box::pin(gate.drain());
+        std::future::poll_fn(|cx| {
+            assert!(shutdown.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        drop(backup);
+        for queued in [same, provisioning] {
+            let queued = tokio::time::timeout(Duration::from_secs(5), queued)
+                .await
+                .unwrap();
+            assert!(matches!(
+                queued,
+                Err(error) if error.code == kasumi_types::ErrorCode::Unavailable
+            ));
+        }
+        let shutdown = tokio::time::timeout(Duration::from_secs(5), shutdown)
+            .await
+            .unwrap();
+        let late = gate.enter_tenants(&["b"]).await;
+        assert!(matches!(
+            late,
+            Err(error) if error.code == kasumi_types::ErrorCode::Unavailable
+        ));
+        drop(shutdown);
+    }
+
+    #[test]
+    fn republished_membership_writes_nothing_and_retries_share_one_receipt() {
+        use kasumi_engine::control::{DeploymentMode, TenantRoute};
+        let route = |voters: [u64; 3]| TenantRoute {
+            incarnation: "generation-1".into(),
+            mode: DeploymentMode::Replicated,
+            voters: BTreeSet::from(voters),
+        };
+        let mut topology = ControlTopology::default();
+        topology.tenants.insert("tenant".into(), route([1, 2, 3]));
+        // Fresh request IDs never matter: publishing the route's own voters
+        // again writes no topology version and no permanent receipt.
+        for _ in 0..3 {
+            let unchanged =
+                publish_voters(&mut topology, "tenant", BTreeSet::from([1, 2, 3]), "1-1-7");
+            assert_eq!(unchanged.unwrap(), None);
+        }
+        let retry = topology.clone();
+        let key = publish_voters(&mut topology, "tenant", BTreeSet::from([1, 2, 4]), "2-1-40")
+            .unwrap()
+            .unwrap();
+        assert_eq!(topology.tenants["tenant"], route([1, 2, 4]));
+        // A retry of the same committed membership reuses its receipt key;
+        // another membership change gets its own.
+        for (membership, same) in [("2-1-40", true), ("3-2-52", false)] {
+            let other = publish_voters(
+                &mut retry.clone(),
+                "tenant",
+                BTreeSet::from([1, 2, 4]),
+                membership,
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(other == key, same);
+        }
+        let published =
+            publish_voters(&mut topology, "tenant", BTreeSet::from([1, 2, 4]), "2-1-40");
+        assert_eq!(published.unwrap(), None);
+        // A tenant without a route, such as Control, has nothing to publish.
+        let before = topology.clone();
+        let error = publish_voters(
+            &mut topology,
+            crate::runtime::CONTROL_TENANT,
+            BTreeSet::from([1, 2, 4]),
+            "2-1-40",
+        )
+        .unwrap_err();
+        assert_eq!(error.code, kasumi_types::ErrorCode::InvalidArgument);
+        assert_eq!(topology, before);
     }
 
     #[test]

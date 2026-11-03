@@ -9,6 +9,17 @@ no deferred installation or implicit default. Explicit bootstrap and custody
 arguments must match the audit facade before storage or startup work begins.
 Sharing a memory core does not make different runtime facades interchangeable.
 
+The MCP, native-data and administrative gRPC listeners authenticate before
+reading client bodies. They reserve `256 * body_bytes + 16 KiB` against this
+same node budget before buffering or decoding, and retain that reservation
+through the handler. The conservative expansion covers JSON with many tiny
+objects as well as arrays and temporary decode allocations. Content-Length or
+the gRPC message prefix funds the declared size; bodies without a declared
+length grow their reservation before each frame reaches the decoder. Sending
+the body must finish within 60 seconds. The wire-size limit is an upper bound,
+not a promise of admission: large requests can require a larger configured
+budget, and concurrent requests share the remaining headroom.
+
 The default high-water mark is half physical RAM, reduced by Linux cgroup memory
 ceilings. The low-water mark is seven eighths of high water. The workspace budget
 defaults to the smaller of one quarter of high water and 512 MiB, with 64 active

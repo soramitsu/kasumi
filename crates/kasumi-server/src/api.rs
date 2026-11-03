@@ -474,10 +474,11 @@ mod tests {
     include!("api_facade_tests.rs");
     include!("api_data_cli_tests.rs");
     include!("rpc_seek_paging_tests.rs");
+    include!("api_request_admission_tests.rs");
     use super::*;
     use crate::{
         auth::{AuthConfig, Authenticator},
-        mcp::{McpConfig, router},
+        mcp::{McpConfig, routes},
         rpc::{
             NativeAdmin, NativeData,
             proto::{self, kasumi_admin_server::KasumiAdmin, kasumi_data_server::KasumiData},
@@ -684,10 +685,11 @@ mod tests {
             format!("Bearer {}", encode(&header, &claims, &self.key).unwrap())
         }
         fn router(&self) -> Router {
-            router(
+            routes(
                 McpConfig::new("https://kasumi.example/mcp".into()).unwrap(),
                 self.registry.clone(),
                 self.auth.clone(),
+                None,
             )
             .unwrap()
         }

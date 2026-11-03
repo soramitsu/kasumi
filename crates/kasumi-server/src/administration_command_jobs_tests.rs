@@ -27,6 +27,18 @@ fn jobs() -> (Arc<NodeAdmission>, Arc<CommandJobs>, u64) {
     (admission, jobs, baseline)
 }
 
+/// Submit a child whose deadline no test reaches.
+fn submit(
+    jobs: &CommandJobs,
+    task: impl Future<Output = Result<()>> + Send + 'static,
+) -> Result<(Arc<CommandJob>, oneshot::Receiver<()>)> {
+    jobs.submit(
+        tokio::time::Instant::now() + Duration::from_secs(300),
+        "membership command timed out",
+        task,
+    )
+}
+
 async fn registered(jobs: &CommandJobs, count: usize) {
     tokio::time::timeout(Duration::from_secs(5), async {
         while jobs.registered() != count {
@@ -91,10 +103,16 @@ async fn canceled_waiter_leaves_original_command_error_for_exact_shutdown_drain(
     assert_eq!(admission.snapshot().reserved_bytes, baseline);
 }
 
+fn unknown_outcome(error: &anyhow::Error) -> bool {
+    error
+        .downcast_ref::<kasumi_types::Error>()
+        .is_some_and(|error| error.code == kasumi_types::ErrorCode::UnknownOutcome)
+}
+
 #[tokio::test]
-async fn deadline_returns_unknown_while_success_remains_in_bounded_custody() {
+async fn deadline_stops_the_child_and_leaves_its_unknown_outcome_for_drain() {
     let (_admission, jobs, _baseline) = jobs();
-    let (release, waiting) = oneshot::channel::<()>();
+    let (_release, waiting) = oneshot::channel::<()>();
     let error = jobs
         .execute(
             tokio::time::Instant::now() + Duration::from_millis(20),
@@ -106,40 +124,92 @@ async fn deadline_returns_unknown_while_success_remains_in_bounded_custody() {
         )
         .await
         .unwrap_err();
-    assert_eq!(
-        error.downcast_ref::<kasumi_types::Error>().unwrap().code,
-        kasumi_types::ErrorCode::UnknownOutcome
-    );
+    assert!(unknown_outcome(&error));
     assert_eq!(jobs.registered(), 1);
-    release.send(()).unwrap();
-    jobs.drain().await.unwrap();
+    // The child ends at the same deadline without being released.
+    let failure = tokio::time::timeout(Duration::from_secs(5), jobs.drain())
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    assert!(
+        failure.issues().iter().all(
+            |issue| issue.component() == "membership command" && unknown_outcome(issue.error())
+        )
+    );
+    assert_eq!(jobs.registered(), 0);
+}
+
+#[tokio::test]
+async fn unreachable_learner_cannot_wedge_later_membership_commands() {
+    let (_admission, jobs, _baseline) = jobs();
+    // AddLearner's catch-up never returns for a learner nobody can reach.
+    let owner = jobs.clone();
+    let stuck = tokio::spawn(async move {
+        owner
+            .execute(
+                tokio::time::Instant::now() + Duration::from_millis(300),
+                std::future::pending(),
+                "learner catch-up deadline exceeded; inspect membership",
+            )
+            .await
+    });
+    registered(&jobs, 1).await;
+    // This command's caller gives up while the stuck one still runs, so it
+    // must never reach Raft afterwards.
+    let late = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let marker = late.clone();
+    let error = jobs
+        .execute(
+            tokio::time::Instant::now() + Duration::from_millis(50),
+            async move {
+                marker.store(true, Ordering::Release);
+                Ok(())
+            },
+            "membership deadline exceeded; inspect committed membership",
+        )
+        .await
+        .unwrap_err();
+    assert!(unknown_outcome(&error));
+    let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let marker = dispatched.clone();
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        jobs.execute(
+            tokio::time::Instant::now() + Duration::from_secs(5),
+            async move {
+                marker.store(true, Ordering::Release);
+                Ok(())
+            },
+            "membership deadline exceeded; inspect committed membership",
+        ),
+    )
+    .await
+    .expect("a later command runs once the stuck one reaches its deadline")
+    .unwrap();
+    assert!(dispatched.load(Ordering::Acquire));
+    assert!(!late.load(Ordering::Acquire));
+    assert!(unknown_outcome(&stuck.await.unwrap().unwrap_err()));
+    let failure = jobs.drain().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
     assert_eq!(jobs.registered(), 0);
 }
 
 #[tokio::test]
 async fn timed_out_commands_never_exhaust_the_fixed_inventory() {
     let (_admission, jobs, _baseline) = jobs();
-    // More timed-out commands than slots, e.g. retried AddLearner calls during
-    // a long catch-up: each slot is free again once its outcome is delivered.
+    // More timed-out commands than slots, e.g. retried AddLearner calls for an
+    // unreachable learner: each child ends at its deadline and frees its slot.
     for attempt in 0..2 * COMMAND_SLOTS {
-        let (release, waiting) = oneshot::channel::<()>();
         let error = jobs
             .execute(
                 tokio::time::Instant::now() + Duration::from_millis(5),
-                async move {
-                    waiting.await?;
-                    Err(anyhow::anyhow!("learner unreachable"))
-                },
+                std::future::pending(),
                 "membership command timed out",
             )
             .await
             .unwrap_err();
-        assert_eq!(
-            error.downcast_ref::<kasumi_types::Error>().unwrap().code,
-            kasumi_types::ErrorCode::UnknownOutcome,
-            "{attempt}"
-        );
-        release.send(()).unwrap();
+        assert!(unknown_outcome(&error), "{attempt}");
         tokio::time::timeout(Duration::from_secs(5), async {
             loop {
                 jobs.observe();
@@ -167,15 +237,14 @@ async fn aborted_drain_retries_with_original_join_error_and_fenced_admission() {
     let (_admission, jobs, _baseline) = jobs();
     let (release, waiting) = oneshot::channel::<()>();
     let (entered, observed_entry) = oneshot::channel::<()>();
-    let (panicked, panic_receive) = jobs
-        .submit(async move {
-            entered.send(()).unwrap();
-            waiting.await.unwrap();
-            panic!("original membership child panic");
-            #[allow(unreachable_code)]
-            Ok(())
-        })
-        .unwrap();
+    let (panicked, panic_receive) = submit(&jobs, async move {
+        entered.send(()).unwrap();
+        waiting.await.unwrap();
+        panic!("original membership child panic");
+        #[allow(unreachable_code)]
+        Ok(())
+    })
+    .unwrap();
     observed_entry.await.unwrap();
     let mut first = Box::pin(jobs.drain());
     poll_fn(|cx| {
@@ -198,7 +267,7 @@ async fn aborted_drain_retries_with_original_join_error_and_fenced_admission() {
     assert!(jobs.closed.load(Ordering::Acquire));
     for _ in 0..128 {
         jobs.observe();
-        assert!(jobs.submit(async { Ok(()) }).is_err());
+        assert!(submit(&jobs, async { Ok(()) }).is_err());
     }
     let failure = jobs.drain().await.unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
@@ -224,18 +293,20 @@ async fn original_command_error_finishes_its_turn_and_remains_owned() {
     let (_admission, jobs, _baseline) = jobs();
     let marker = Arc::new(());
     let original = marker.clone();
-    let (_first, first_receive) = jobs
-        .submit(async move { Err(OriginalCommandError(original).into()) })
+    let (_first, first_receive) =
+        submit(
+            &jobs,
+            async move { Err(OriginalCommandError(original).into()) },
+        )
         .unwrap();
     drop(first_receive);
     let dispatched = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let observed = dispatched.clone();
-    let (_second, second_receive) = jobs
-        .submit(async move {
-            observed.store(true, Ordering::Release);
-            Ok(())
-        })
-        .unwrap();
+    let (_second, second_receive) = submit(&jobs, async move {
+        observed.store(true, Ordering::Release);
+        Ok(())
+    })
+    .unwrap();
     tokio::time::timeout(Duration::from_secs(5), second_receive)
         .await
         .unwrap()
@@ -280,21 +351,19 @@ async fn cancelled_waiter_does_not_let_later_accepted_command_overtake() {
     let (release, blocked) = oneshot::channel::<()>();
     let order = Arc::new(Mutex::new(Vec::new()));
     let first_order = order.clone();
-    let (_first, first_receive) = jobs
-        .submit(async move {
-            blocked.await?;
-            first_order.lock().unwrap().push(1_u8);
-            Ok(())
-        })
-        .unwrap();
+    let (_first, first_receive) = submit(&jobs, async move {
+        blocked.await?;
+        first_order.lock().unwrap().push(1_u8);
+        Ok(())
+    })
+    .unwrap();
     drop(first_receive);
     let second_order = order.clone();
-    let (_second, mut second_receive) = jobs
-        .submit(async move {
-            second_order.lock().unwrap().push(2_u8);
-            Ok(())
-        })
-        .unwrap();
+    let (_second, mut second_receive) = submit(&jobs, async move {
+        second_order.lock().unwrap().push(2_u8);
+        Ok(())
+    })
+    .unwrap();
     assert!(
         tokio::time::timeout(Duration::from_millis(10), &mut second_receive)
             .await
@@ -315,24 +384,22 @@ async fn predecessor_panic_fences_an_already_queued_membership_child() {
     let (_admission, jobs, _baseline) = jobs();
     let (started, observed_start) = oneshot::channel::<()>();
     let (release, blocked) = oneshot::channel::<()>();
-    let (_first, first_receive) = jobs
-        .submit(async move {
-            started.send(()).unwrap();
-            blocked.await.unwrap();
-            panic!("predecessor membership panic");
-            #[allow(unreachable_code)]
-            Ok(())
-        })
-        .unwrap();
+    let (_first, first_receive) = submit(&jobs, async move {
+        started.send(()).unwrap();
+        blocked.await.unwrap();
+        panic!("predecessor membership panic");
+        #[allow(unreachable_code)]
+        Ok(())
+    })
+    .unwrap();
     observed_start.await.unwrap();
     let dispatched = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let marker = dispatched.clone();
-    let (second, second_receive) = jobs
-        .submit(async move {
-            marker.fetch_add(1, Ordering::AcqRel);
-            Ok(())
-        })
-        .unwrap();
+    let (second, second_receive) = submit(&jobs, async move {
+        marker.fetch_add(1, Ordering::AcqRel);
+        Ok(())
+    })
+    .unwrap();
     release.send(()).unwrap();
     assert!(first_receive.await.is_err());
     tokio::time::timeout(Duration::from_secs(5), second_receive)
@@ -359,7 +426,7 @@ async fn predecessor_panic_fences_an_already_queued_membership_child() {
 async fn unclaimed_terminal_outcomes_fill_only_the_precharged_fixed_inventory() {
     let (admission, jobs, baseline) = jobs();
     for _ in 0..COMMAND_SLOTS {
-        let (job, receive) = jobs.submit(async { Ok(()) }).unwrap();
+        let (job, receive) = submit(&jobs, async { Ok(()) }).unwrap();
         receive.await.unwrap();
         tokio::time::timeout(Duration::from_secs(5), async {
             while job.child.observed().is_none() {
@@ -371,7 +438,7 @@ async fn unclaimed_terminal_outcomes_fill_only_the_precharged_fixed_inventory() 
     }
     jobs.observe();
     assert_eq!(jobs.registered(), COMMAND_SLOTS);
-    let error = match jobs.submit(async { Ok(()) }) {
+    let error = match submit(&jobs, async { Ok(()) }) {
         Ok(_) => panic!("unclaimed command exceeded fixed child inventory"),
         Err(error) => error,
     };

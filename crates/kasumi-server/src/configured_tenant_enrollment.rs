@@ -343,6 +343,11 @@ impl Administration {
         reservation: kasumi_engine::admission::Reservation,
     ) -> Result<PreparedTenant> {
         let gate = self.gate.enter().await?;
+        // Also exclude Control's own commands and any for the enrolled tenant.
+        let tenants = std::iter::once(invocation.context.tenant.as_str())
+            .chain(provisioning_tenant(&invocation.command))
+            .collect::<Vec<_>>();
+        let tenant_gates = self.gate.enter_tenants(&tenants).await?;
         self.check_enrollment(&invocation)?;
         let proposal = invocation
             .provisioning
@@ -364,6 +369,7 @@ impl Administration {
             _reservation: reservation,
             proposal,
             _gate: gate,
+            _tenant_gates: tenant_gates,
             resident: None,
             resources: Default::default(),
             lease: None,
@@ -682,6 +688,7 @@ struct PreparedTenant {
     invocation: ManagementInvocation,
     proposal: Proposal,
     _gate: tokio::sync::OwnedMutexGuard<()>,
+    _tenant_gates: Vec<tokio::sync::OwnedMutexGuard<()>>,
     resident: Option<ManagedTenant>,
     resources: crate::startup_resources::Resources,
     lease: Option<Arc<RuntimeLease>>,

@@ -32,6 +32,7 @@ mod readiness_probe;
 mod recovery_allocation_watch;
 mod recovery_cli;
 pub mod recovery_runtime;
+mod request_admission;
 mod retired_source_failure;
 pub mod rpc;
 pub mod runtime;

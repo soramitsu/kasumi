@@ -213,8 +213,13 @@ impl CommandJobs {
         }
     }
 
+    /// The child runs `task` only until `deadline`, its caller's own bound. A
+    /// Raft call that never returns, such as catch-up of an unreachable
+    /// learner, would otherwise hold every later membership command forever.
     fn submit(
         &self,
+        deadline: tokio::time::Instant,
+        timeout_message: &'static str,
         task: impl Future<Output = Result<()>> + Send + 'static,
     ) -> Result<(Arc<CommandJob>, oneshot::Receiver<()>)> {
         self.observe();
@@ -265,7 +270,19 @@ impl CommandJobs {
                     guard.finish(Turn::Blocked);
                     return;
                 }
-                let result = task.await;
+                // A predecessor can use up this command's time. Its caller
+                // has stopped waiting, so it is never dispatched late.
+                let result = if tokio::time::Instant::now() >= deadline {
+                    Err(kasumi_types::Error::new(
+                        kasumi_types::ErrorCode::Unavailable,
+                        "membership command deadline elapsed before dispatch",
+                    )
+                    .into())
+                } else {
+                    tokio::time::timeout_at(deadline, task)
+                        .await
+                        .unwrap_or_else(|_| Err(unknown(timeout_message)))
+                };
                 *delivered.value.lock().unwrap_or_else(|p| p.into_inner()) = Some(result);
                 delivered.delivered.store(true, Ordering::Release);
                 let _ = send.send(());
@@ -290,7 +307,7 @@ impl CommandJobs {
         if tokio::time::Instant::now() >= deadline {
             return Err(unknown(timeout_message));
         }
-        let (job, receive) = self.submit(task)?;
+        let (job, receive) = self.submit(deadline, timeout_message, task)?;
         // Every return, including a deadline or cancellation before the
         // outcome is taken, ends this caller's wait.
         let _waiting = Waiting(&job.outcome);

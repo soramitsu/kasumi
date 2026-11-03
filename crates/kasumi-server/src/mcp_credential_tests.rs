@@ -376,10 +376,11 @@ impl Fixture {
             .unwrap()
     }
     fn router(&self) -> Router {
-        router(
+        routes(
             McpConfig::new("https://kasumi.example/mcp".into()).unwrap(),
             self.registry.clone(),
             self.auth.clone(),
+            None,
         )
         .unwrap()
     }
@@ -1571,4 +1572,21 @@ async fn native_admin_change_refused_at_its_acknowledgement_fence_is_unknown_out
     );
     drop(admin);
     fixture.close().await;
+}
+
+#[test]
+fn request_admission_covers_object_heavy_json_and_array_growth() {
+    // Per-object B-tree allocations make these much larger than the 32x
+    // number-array estimate. Cross array capacity boundaries as well.
+    for count in [1usize, 17, 513, 1025] {
+        for item in ["0", r#"{"":0}"#, r#"{"":{"":{"":0}}}"#] {
+            let bytes = format!("[{}]", vec![item; count].join(","));
+            let tree = value_tree_bytes(bytes.as_bytes()).unwrap();
+            let wire_and_tree = tree + 2 * bytes.len() as u64;
+            assert!(
+                crate::request_admission::quote(bytes.len() as u64) >= wire_and_tree,
+                "{count} copies of {item} exceed their request reservation"
+            );
+        }
+    }
 }

@@ -356,10 +356,8 @@ impl RuntimeConfig {
         self.mcp.tls.validate()?;
         self.native.validate()?;
         self.admin.validate()?;
-        // Building a router validates protocol origins/hosts without opening it.
-        let _ = crate::mcp::router(
+        crate::mcp::validate(
             self.mcp.protocol.clone(),
-            DatabaseRegistry::default(),
             Authenticator::new(self.auth.clone())?,
         )?;
         ensure!(
@@ -1611,12 +1609,22 @@ impl NodeRuntime {
                     administration.clone();
                 network.install_enrollment_readiness(Arc::downgrade(&provider))?;
             }
-            let mcp =
-                crate::mcp::router(config.mcp.protocol.clone(), registry.clone(), auth.clone())?;
+            let mcp = crate::mcp::router(
+                config.mcp.protocol.clone(),
+                registry.clone(),
+                auth.clone(),
+                admission.clone(),
+            )?;
+            // Native bearers are verified, and bodies admitted, before decoding.
+            let request_admission = axum::middleware::from_fn_with_state(
+                crate::request_admission::RequestAdmission::native(admission.clone(), auth.clone()),
+                crate::request_admission::admit,
+            );
             let native = tonic::service::Routes::new(
                 native_data_service(registry.clone(), auth.clone()),
             )
-            .into_axum_router();
+            .into_axum_router()
+            .layer(request_admission.clone());
             let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone(), runtime.original_recoveries.take().expect("same prepaid RPC inventory")).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
             if let Some(verifier) = &runtime.signer_verifier {
                 native_admin = native_admin.with_control_signer(crate::control_signer_runtime::ControlSignerRuntime::new(
@@ -1636,7 +1644,7 @@ impl NodeRuntime {
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(runtime.control.database.clone(), signer, auth.clone())?.service());
             }
             if let Some(target)=&runtime.target_recovery {admin=admin.add_service(crate::rpc::NativeTargetRecovery::new(target.clone(),auth.clone()).service());}
-            let admin = admin.into_axum_router().merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));
+            let admin = admin.into_axum_router().layer(request_admission).merge(crate::observability::router(auth.clone(), administration, runtime.telemetry.clone()));
             runtime.tls_reload = Some(crate::tls_reload::RuntimeTlsReload::new(
                 vec![
                     (crate::tls_reload::ListenerSource::OAuth(config.mcp.tls.clone()), mcp_tls.clone()),

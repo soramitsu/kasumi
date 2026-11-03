@@ -542,10 +542,29 @@ fn rejected(state: &HttpAuth, error: Error) -> Response {
 }
 
 /// Returns routes only. The runtime must serve this router through TLS 1.3.
+/// Each authenticated request body is admitted against `admission` before
+/// the SDK buffers and parses it.
 pub fn router(
     config: McpConfig,
     registry: DatabaseRegistry,
     auth: Arc<Authenticator>,
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
+) -> anyhow::Result<Router> {
+    routes(config, registry, auth, Some(admission))
+}
+
+/// Building the routes validates protocol origins and hosts without serving.
+pub(crate) fn validate(config: McpConfig, auth: Arc<Authenticator>) -> anyhow::Result<()> {
+    routes(config, DatabaseRegistry::default(), auth, None).map(drop)
+}
+
+/// Without `admission`, request bodies are not charged: only validation and
+/// tests that account for every response byte themselves build these routes.
+pub(crate) fn routes(
+    config: McpConfig,
+    registry: DatabaseRegistry,
+    auth: Arc<Authenticator>,
+    admission: Option<Arc<kasumi_engine::admission::NodeAdmission>>,
 ) -> anyhow::Result<Router> {
     config.validate()?;
     let metadata = auth.protected_resource_metadata(&config.public_url);
@@ -588,9 +607,15 @@ pub fn router(
         },
         sdk_config,
     )?;
-    let protected = Router::new()
-        .route_service("/mcp", service)
-        .route_layer(middleware::from_fn_with_state(state, authenticate));
+    let mut protected = Router::new().route_service("/mcp", service);
+    if let Some(admission) = admission {
+        // Inside authentication: an anonymous request never holds a charge.
+        protected = protected.route_layer(middleware::from_fn_with_state(
+            crate::request_admission::RequestAdmission::authenticated(admission),
+            crate::request_admission::admit,
+        ));
+    }
+    let protected = protected.route_layer(middleware::from_fn_with_state(state, authenticate));
     let Some(metadata) = metadata else {
         return Ok(protected);
     };
