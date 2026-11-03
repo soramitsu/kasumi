@@ -2410,3 +2410,48 @@ async fn killed_process_recovers_acknowledged_documents_receipts_and_bootstrap_p
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn undecodable_nesting_is_refused_before_proposal_and_the_tenant_keeps_serving() {
+    let (_dir, _physical, db, _key, _store, audit) = database(false).await;
+    // Up to 121 nested objects the command decodes and apply refuses the
+    // document. From 122 its envelope reaches serde_json's recursion limit, so
+    // a committed entry would stop apply instead of rejecting one write.
+    for depth in [121usize, 122, 123, 124, 200] {
+        let mut nested = json!(1);
+        for _ in 0..depth {
+            nested = json!({ "n": nested });
+        }
+        let error = db
+            .mutate(
+                context("owner"),
+                batch(
+                    &format!("deep-{depth}"),
+                    vec![Mutation::Put {
+                        collection: "people".into(),
+                        id: "deep".into(),
+                        body: json!({"email": "deep", "age": 1, "nested": nested}),
+                        expected: Precondition::Any,
+                    }],
+                ),
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.code,
+                ErrorCode::InvalidArgument | ErrorCode::ResourceExhausted
+            ),
+            "depth {depth}: {error:?}"
+        );
+        let id = format!("after-{depth}");
+        db.mutate(
+            context("owner"),
+            batch(&id, vec![put(&id, &id, Precondition::Absent)]),
+        )
+        .await
+        .unwrap();
+    }
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+}

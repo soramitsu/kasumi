@@ -554,6 +554,9 @@ impl ProposalWork {
             bytes.len() <= max_bytes,
             "command exceeds proposal byte budget"
         );
+        if let Err(error) = proposal_input::check_command_nesting(&bytes) {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+        }
         phase!("publication_admission");
         if let Err(error) = self.source_engine.admit_document_publication(command) {
             // Nothing was proposed. The committed entry's own source capacity is

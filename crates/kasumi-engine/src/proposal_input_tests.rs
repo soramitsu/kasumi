@@ -249,3 +249,17 @@ fn topology_input_validation_failures_preserve_canonical_error_and_release_paylo
         // this grant proves only construction scratch and original JSON death.
     }
 }
+
+#[test]
+fn command_nesting_bound_matches_the_committed_decoder() {
+    let nested = |depth: usize| format!("{}{}", "[".repeat(depth), "]".repeat(depth));
+    let decodes = |depth: usize| serde_json::from_str::<Value>(&nested(depth)).is_ok();
+    assert!(decodes(MAX_COMMAND_NESTING));
+    assert!(!decodes(MAX_COMMAND_NESTING + 1));
+    assert!(check_command_nesting(nested(MAX_COMMAND_NESTING).as_bytes()).is_ok());
+    let error = check_command_nesting(nested(MAX_COMMAND_NESTING + 1).as_bytes()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    // Brackets inside strings, including after an escaped quote, never nest.
+    let quoted = format!(r#"["\"{}{}"]"#, "[".repeat(200), "{".repeat(200));
+    assert!(check_command_nesting(quoted.as_bytes()).is_ok());
+}

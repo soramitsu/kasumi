@@ -228,6 +228,44 @@ fn waiting_mutation_bytes(context: &RequestContext, batch: &MutationBatch) -> Re
     Ok(bytes)
 }
 
+/// Replicas decode every committed command with serde_json's default
+/// recursion limit, which refuses a 128th nested container.
+pub(super) const MAX_COMMAND_NESTING: usize = 127;
+
+/// Refuse an encoded command that replicas could not decode. Admission bounds
+/// are looser than that limit, and an undecodable entry would commit and then
+/// stop apply, and so the tenant, on every replica.
+pub(super) fn check_command_nesting(bytes: &[u8]) -> Result<()> {
+    let (mut depth, mut string, mut escaped) = (0usize, false, false);
+    for &byte in bytes {
+        if string {
+            if escaped {
+                escaped = false;
+            } else if byte == b'\\' {
+                escaped = true;
+            } else if byte == b'"' {
+                string = false;
+            }
+            continue;
+        }
+        match byte {
+            b'"' => string = true,
+            b'{' | b'[' => {
+                depth += 1;
+                if depth > MAX_COMMAND_NESTING {
+                    return Err(Error::new(
+                        ErrorCode::InvalidArgument,
+                        "JSON exceeds the depth or node-count limit",
+                    ));
+                }
+            }
+            b'}' | b']' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 fn overflow() -> Error {
     Error::new(
         ErrorCode::ResourceExhausted,
