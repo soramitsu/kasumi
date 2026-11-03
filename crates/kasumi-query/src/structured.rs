@@ -848,7 +848,11 @@ impl FieldIndex {
                 if !empty_range(&range) {
                     for (visited, (key, ids)) in self.entries.range(range).enumerate() {
                         cancellation.check()?;
-                        check_size(visited + 1, cap)?;
+                        // Survivors of an earlier conjunct already passed the
+                        // candidate budget, and only they can be added here.
+                        if whole {
+                            check_size(visited + 1, cap)?;
+                        }
                         if !matches!(key, Scalar::Missing | Scalar::Null) {
                             add(ids)?;
                         }

@@ -373,6 +373,38 @@ fn candidate_group_and_response_budgets_fail_closed() {
 }
 
 #[test]
+fn a_selective_equality_bounds_a_broad_range_conjunct() {
+    let collections = collection(
+        definition(&[("/tenant", ScalarType::String), ("/n", ScalarType::Number)]),
+        (0..8)
+            .map(|i| json!({"tenant": if i == 3 { "acme" } else { "other" }, "n": i}))
+            .collect(),
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let limits = Limits {
+        max_query_candidates: 4,
+        ..Limits::default()
+    };
+    // The range alone spans more keys than the budget admits.
+    let mut query = request().filter(Filter::new().gte("/n", 0));
+    assert_eq!(
+        indexes
+            .execute_fixture(&collections, &query, &limits)
+            .unwrap_err()
+            .code,
+        ErrorCode::ResourceExhausted
+    );
+    // After the rare equality, only its one survivor can match the range.
+    query.filter = Filter::new().eq("/tenant", "acme").gte("/n", 0);
+    assert_eq!(
+        ids(indexes
+            .execute_fixture(&collections, &query, &limits)
+            .unwrap()),
+        vec!["003"]
+    );
+}
+
+#[test]
 fn engine_owns_pagination_and_query_does_not_truncate_snapshot() {
     let collections = collection(definition(&[]), vec![json!({}), json!({}), json!({})]);
     let mut query = request().limit(1);
@@ -741,7 +773,18 @@ fn invalid_queries_fail_without_hits_and_json_recursion_is_bounded() {
         Filter::new().contains("/tags", Value::Null),
         Filter::new().contains("/n", 1),
         Filter::new().gt("/n", 1).lt("/n", "z"),
-        Filter::new().gt("/n", 1).gte("/n", 2),
+        // The builder splits these into two conjuncts; the wire form may not.
+        Filter {
+            fields: BTreeMap::from([(
+                "/n".into(),
+                Condition {
+                    gt: Some(1.into()),
+                    gte: Some(2.into()),
+                    ..Condition::default()
+                },
+            )]),
+            ..Filter::default()
+        },
         Filter::new().is_in("/n", (0..257).collect::<Vec<_>>()),
         Filter {
             fields: BTreeMap::from([("/n".into(), Condition::default())]),
