@@ -117,6 +117,52 @@ async fn deadline_returns_unknown_while_success_remains_in_bounded_custody() {
 }
 
 #[tokio::test]
+async fn timed_out_commands_never_exhaust_the_fixed_inventory() {
+    let (_admission, jobs, _baseline) = jobs();
+    // More timed-out commands than slots, e.g. retried AddLearner calls during
+    // a long catch-up: each slot is free again once its outcome is delivered.
+    for attempt in 0..2 * COMMAND_SLOTS {
+        let (release, waiting) = oneshot::channel::<()>();
+        let error = jobs
+            .execute(
+                tokio::time::Instant::now() + Duration::from_millis(5),
+                async move {
+                    waiting.await?;
+                    Err(anyhow::anyhow!("learner unreachable"))
+                },
+                "membership command timed out",
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error.downcast_ref::<kasumi_types::Error>().unwrap().code,
+            kasumi_types::ErrorCode::UnknownOutcome,
+            "{attempt}"
+        );
+        release.send(()).unwrap();
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                jobs.observe();
+                if jobs.registered() == 0 {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+    }
+    let failure = jobs.drain().await.unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Complete);
+    assert!(
+        failure
+            .issues()
+            .iter()
+            .all(|issue| issue.component() == "membership command")
+    );
+}
+
+#[tokio::test]
 async fn aborted_drain_retries_with_original_join_error_and_fenced_admission() {
     let (_admission, jobs, _baseline) = jobs();
     let (release, waiting) = oneshot::channel::<()>();

@@ -1468,6 +1468,50 @@ impl Administration {
         self.gate.close();
     }
 
+    /// Fixed closure cause and key-lease class of a node control plane that
+    /// can no longer serve. Unlike an original tenant, the control plane has
+    /// no in-process fresh admission: only reopening the daemon recovers it.
+    /// An orderly shutdown is not a closure.
+    pub(crate) fn control_closure(&self) -> Option<(&'static str, &'static str)> {
+        self.control
+            .serving_failure_class()
+            .filter(|cause| *cause != "shutting_down")
+            .map(|cause| {
+                (
+                    cause,
+                    self.control.key_lease_failure_class().unwrap_or("none"),
+                )
+            })
+    }
+
+    /// Serving reconciliation. Returns only when the control plane has closed:
+    /// every later reconciliation, readiness probe and credential renewal would
+    /// fail, so the daemon must stop (non-zero) for its service manager to
+    /// reopen it, instead of staying up while unable to serve.
+    pub(crate) async fn reconcile_while_serving(
+        self: Arc<Self>,
+        mut stop: tokio::sync::watch::Receiver<bool>,
+    ) -> Result<()> {
+        loop {
+            tokio::select! {
+                _ = stop.changed() => return Ok(()),
+                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+            }
+            if let Some((closure_cause, key_lease_class)) = self.control_closure() {
+                tracing::error!(
+                    event = "control_plane_closed",
+                    closure_cause,
+                    key_lease_class,
+                    "control plane closed; daemon stopping for restart"
+                );
+                anyhow::bail!("control plane closed; daemon restart required");
+            }
+            if self.reconcile().await.is_err() {
+                tracing::warn!("serving reconciliation unavailable; will retry");
+            }
+        }
+    }
+
     pub(crate) async fn reconcile(&self) -> Result<()> {
         let _guard = self.gate.enter().await?;
         if self.close_retired_generations().await.is_err() {

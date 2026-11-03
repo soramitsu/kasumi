@@ -791,13 +791,12 @@ impl SegmentGroupBackend for Backend {
             }
             let Some((index, file)) = entry else { break };
             slot = index + 1;
-            let mut name = [0u8; 23];
+            let mut name = [0u8; 22];
             for (index, byte) in name[..16].iter_mut().enumerate() {
                 *byte = b"0123456789abcdef"[((file.id >> (4 * (15 - index))) & 15) as usize];
             }
             let suffix: &[u8] = match file.kind {
                 FileKind::Segment => b".kvseg",
-                FileKind::Checkpoint => b".kvckpt",
                 FileKind::Directory => b".kvdir",
             };
             name[16..16 + suffix.len()].copy_from_slice(suffix);

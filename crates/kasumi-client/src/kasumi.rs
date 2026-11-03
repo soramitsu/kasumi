@@ -325,7 +325,7 @@ where
 }
 
 /// `UnknownOutcome` for a resend that failed after an uncertain attempt.
-fn unresolved(later: &ClientError) -> ClientError {
+pub(crate) fn unresolved(later: &ClientError) -> ClientError {
     let reason = match later {
         ClientError::Transport(status) => status.message().to_owned(),
         other => other.to_string(),

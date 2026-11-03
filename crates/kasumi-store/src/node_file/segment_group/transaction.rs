@@ -10,15 +10,14 @@ pub(super) struct GroupTransaction {
     lengths: [u64; 2],
 }
 impl GroupTransaction {
-    fn range(&self, file: GroupFile) -> io::Result<(usize, FileSpaceRange)> {
+    fn range(&self, file: GroupFile) -> (usize, FileSpaceRange) {
         match file.kind {
-            GroupFileKind::Segment => Ok((0, self.plan.new_segments)),
-            GroupFileKind::Directory => Ok((1, self.plan.new_directories)),
-            GroupFileKind::Checkpoint => Err(io::ErrorKind::InvalidInput.into()),
+            GroupFileKind::Segment => (0, self.plan.new_segments),
+            GroupFileKind::Directory => (1, self.plan.new_directories),
         }
     }
     pub(super) fn authorize_create(&mut self, file: GroupFile) -> io::Result<()> {
-        let (index, range) = self.range(file)?;
+        let (index, range) = self.range(file);
         if range.maximum_len(file.id).is_none()
             || range.first_id.checked_add(self.created[index]) != Some(file.id)
         {
@@ -49,7 +48,7 @@ impl GroupTransaction {
             }
             return Err(io::ErrorKind::InvalidData.into());
         }
-        let (index, range) = self.range(file)?;
+        let (index, range) = self.range(file);
         let offset = file
             .id
             .checked_sub(range.first_id)
@@ -195,7 +194,6 @@ impl NodeSegmentGroup {
             *stage = match existing.file.kind {
                 GroupFileKind::Segment => "segment_tail_settle",
                 GroupFileKind::Directory => "directory_tail_settle",
-                GroupFileKind::Checkpoint => "checkpoint_tail_settle",
             };
             crate::sync_trace::site(crate::sync_trace::Site::ReserveSettle, || {
                 self.effect(handle.settle_growth(initial))
@@ -204,7 +202,6 @@ impl NodeSegmentGroup {
             *stage = match existing.file.kind {
                 GroupFileKind::Segment => "segment_tail_growth_quote",
                 GroupFileKind::Directory => "directory_tail_growth_quote",
-                GroupFileKind::Checkpoint => "checkpoint_tail_growth_quote",
             };
             bytes = bytes
                 .checked_add(

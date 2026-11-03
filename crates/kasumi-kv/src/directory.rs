@@ -37,13 +37,12 @@ mod update;
 mod walk;
 pub(crate) use leaf::{DirectoryLeaf, MAX_DIRECTORY_LEAF_RECORDS};
 pub(crate) use pack::{DirectoryCursor, DirectoryPackPlan};
-// The production Core cutover will consume this staged mutation boundary.
-#[cfg_attr(not(test), allow(unused_imports))]
 pub(crate) use update::{
     DirectoryEdit, DirectoryMutator, DirectoryWriteWorkspace, MAX_DIRECTORY_BATCH_EDITS,
 };
-#[cfg_attr(not(test), allow(unused_imports))]
-pub(crate) use walk::{DirectoryWalkProgress, DirectoryWalker};
+#[cfg(test)]
+pub(crate) use walk::DirectoryWalkProgress;
+pub(crate) use walk::DirectoryWalker;
 
 #[path = "directory_reachability.rs"]
 mod reachability;
@@ -590,6 +589,7 @@ struct PendingPage<B = PageBuffer> {
 }
 
 impl PendingPage {
+    #[cfg(test)]
     fn new(admission: &Arc<dyn StorageAdmission>) -> Result<Self, CoreError> {
         Ok(Self {
             buffer: PageBuffer::new(admission)?,
@@ -651,6 +651,7 @@ struct Carry {
 /// A bounded streaming bulk loader. Input must be strictly increasing; a
 /// refused input leaves the previous prefix intact. Any backend failure
 /// poisons the builder; only a new unpublished build may follow it.
+#[cfg(test)]
 pub(crate) struct DirectoryBuilder<'a> {
     backend: &'a dyn DirectoryBackend,
     admission: Arc<dyn StorageAdmission>,
@@ -664,6 +665,7 @@ pub(crate) struct DirectoryBuilder<'a> {
     _lease: NativeResidentLease,
 }
 
+#[cfg(test)]
 impl<'a> DirectoryBuilder<'a> {
     pub(crate) fn new(
         backend: &'a dyn DirectoryBackend,
@@ -1220,6 +1222,7 @@ impl DirectoryReadWorkspace {
         (Self::payload_request_bytes(0) + LEASE_ALLOWANCE) as u64
     }
     /// The grant of a workspace that also keeps warming's ancestor pages.
+    #[cfg(test)]
     pub(crate) const fn warming_request_bytes() -> u64 {
         (Self::payload_request_bytes(WARM_ANCESTORS) + LEASE_ALLOWANCE) as u64
     }

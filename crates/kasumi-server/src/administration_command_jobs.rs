@@ -24,6 +24,14 @@ pub(super) fn metadata_bytes() -> Result<u64> {
         .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
 }
 
+/// Marks an outcome abandoned once its caller stops waiting for it.
+struct Waiting<'a>(&'a Outcome);
+impl Drop for Waiting<'_> {
+    fn drop(&mut self) {
+        self.0.abandoned.store(true, Ordering::Release);
+    }
+}
+
 fn unknown(message: &'static str) -> anyhow::Error {
     kasumi_types::Error::new(kasumi_types::ErrorCode::UnknownOutcome, message).into()
 }
@@ -32,6 +40,8 @@ struct Outcome {
     value: Mutex<Option<Result<()>>>,
     delivered: AtomicBool,
     consumed: AtomicBool,
+    /// Its caller timed out or was cancelled and will never take it.
+    abandoned: AtomicBool,
 }
 impl Outcome {
     fn new() -> Self {
@@ -39,6 +49,7 @@ impl Outcome {
             value: Mutex::new(None),
             delivered: AtomicBool::new(false),
             consumed: AtomicBool::new(false),
+            abandoned: AtomicBool::new(false),
         }
     }
     fn take(&self) -> Option<Result<()>> {
@@ -165,9 +176,11 @@ impl CommandJobs {
             .count()
     }
 
-    // Completed claimed commands reclaim slots. Unclaimed outcomes stay in the
-    // fixed inventory until shutdown records the original Result. A failed
-    // child also stays installed so its exact JoinError survives retry.
+    // Completed claimed commands reclaim slots, and so do outcomes whose caller
+    // stopped waiting: their error moves to the drain report, so shutdown
+    // still records the original Result without the slot. Other unclaimed
+    // outcomes stay in the fixed inventory. A failed child also stays
+    // installed so its exact JoinError survives retry.
     pub(super) fn observe(&self) {
         let mut registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());
         for index in 0..COMMAND_SLOTS {
@@ -189,6 +202,11 @@ impl CommandJobs {
                         // Drain records the missing outcome once, after joining
                         // this exact child. The slot cannot be reclaimed here.
                         self.closed.store(true, Ordering::Release);
+                    } else if job.outcome.abandoned.load(Ordering::Acquire) {
+                        if let Some(Err(error)) = job.outcome.take() {
+                            registry.report.record("membership command", index, error);
+                        }
+                        registry.jobs[index] = None;
                     }
                 }
             }
@@ -273,6 +291,9 @@ impl CommandJobs {
             return Err(unknown(timeout_message));
         }
         let (job, receive) = self.submit(task)?;
+        // Every return, including a deadline or cancellation before the
+        // outcome is taken, ends this caller's wait.
+        let _waiting = Waiting(&job.outcome);
         tokio::time::timeout_at(deadline, async {
             receive
                 .await

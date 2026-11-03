@@ -174,6 +174,7 @@ impl DirectoryWalker {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn root(&self) -> DirectoryRoot {
         self.root
     }

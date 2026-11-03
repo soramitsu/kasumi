@@ -742,6 +742,31 @@ fn open_file_metadata_budget_is_bounded_and_close_returns_only_metadata_capacity
 }
 
 #[test]
+fn a_delete_refused_for_headroom_has_no_effect_and_keeps_the_disk_open() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, config) = installation();
+    let disk = open(config.clone(), fixture_memory.clone());
+    let garbage = disk
+        .create_file("data", Path::new("garbage"), DiskWork::Foreground)
+        .unwrap();
+    // Outstanding namespace promises need more headroom than remains.
+    assert!(namespace_pending(&disk) > 0);
+    *disk.available_override.lock().unwrap() = Some(0);
+    assert_eq!(
+        disk.delete_file(garbage).unwrap_err().kind(),
+        io::ErrorKind::StorageFull
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert!(config.roots["data"].join("garbage").exists());
+    *disk.available_override.lock().unwrap() = None;
+    // Every other owner keeps working, and the file deletes once headroom returns.
+    let garbage = disk.open_file("data", Path::new("garbage")).unwrap();
+    disk.delete_file(garbage).unwrap();
+    assert!(!config.roots["data"].join("garbage").exists());
+    clean(&disk, &[]);
+}
+
+#[test]
 fn persistent_and_scratch_cannot_spend_the_same_filesystem_promise() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let (directory, config) = installation();

@@ -371,6 +371,7 @@ impl DiskState {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn inline_maintenance_budget(&self) -> MaintenanceBudget {
         self.maintenance.policy.inline_budget()
     }

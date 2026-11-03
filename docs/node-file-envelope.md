@@ -11,7 +11,7 @@ formats have no migration or fallback reader.
 
 The root file is exactly 12,288 bytes: its envelope followed by two 4096-byte
 native root slots. Other files use sixteen lowercase hexadecimal digits for
-a nonzero identifier followed by `.kvseg`, `.kvckpt` or `.kvdir`, for example
+a nonzero identifier followed by `.kvseg` or `.kvdir`, for example
 `0000000000000001.kvseg`. Other spellings and extra entries are rejected.
 File identifiers are allocated through native KV's durable intents; the
 physical owner also refuses an identifier at or below the highest identifier
@@ -21,7 +21,7 @@ it has observed for that file kind.
 | --- | --- |
 | 0..16 | ASCII `KASUMI-NODE-SEG1` |
 | 16..32 | Non-nil installed node store UUID, in UUID byte order |
-| 32 | Kind: 1 root, 2 segment, 3 checkpoint, 4 directory arena |
+| 32 | Kind: 1 root, 2 segment, 4 directory arena (3 is retired and rejected) |
 | 33 | State: 1 Prepared, 2 Ready |
 | 34..40 | Required zero bytes |
 | 40..48 | File identifier as a little-endian `u64`; zero only for the root |

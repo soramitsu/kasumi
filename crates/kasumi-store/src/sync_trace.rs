@@ -25,7 +25,6 @@ pub(crate) enum Site {
     Other,
     KvSegment,
     KvDirectory,
-    KvCheckpoint,
     KvRoot,
     KvNames,
     ReserveSettle,
@@ -42,11 +41,10 @@ pub(crate) enum Site {
 }
 
 #[cfg(feature = "sync-trace")]
-const SITES: [(Site, &str); 17] = [
+const SITES: [(Site, &str); 16] = [
     (Site::Other, "other"),
     (Site::KvSegment, "kv_segment"),
     (Site::KvDirectory, "kv_directory"),
-    (Site::KvCheckpoint, "kv_checkpoint"),
     (Site::KvRoot, "kv_root"),
     (Site::KvNames, "kv_names"),
     (Site::ReserveSettle, "reserve_settle"),

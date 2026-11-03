@@ -100,7 +100,7 @@ impl KasumiClientPool {
     async fn request<T, F>(
         &mut self,
         pinned: Option<u64>,
-        replay: bool,
+        resend: Resend,
         timeout: Duration,
         dispatch: F,
     ) -> NativeResult<(u64, T)>
@@ -112,12 +112,12 @@ impl KasumiClientPool {
             return Err(deadline());
         }
         let end = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
-        self.request_until(pinned, replay, end, dispatch).await
+        self.request_until(pinned, resend, end, dispatch).await
     }
     async fn request_until<T, F>(
         &mut self,
         pinned: Option<u64>,
-        replay: bool,
+        resend: Resend,
         end: Instant,
         mut dispatch: F,
     ) -> NativeResult<(u64, T)>
@@ -143,11 +143,22 @@ impl KasumiClientPool {
             members.rotate_left(index);
             members
         };
+        // Set once a dispatched write failed without a definite outcome. A
+        // later refusal (expired bearer, admission, current policy) precedes
+        // the receipt lookup and cannot rule that attempt out.
+        let mut uncertain = false;
+        let settle = |uncertain: bool, error: ClientError| {
+            if uncertain {
+                crate::kasumi::unresolved(&error)
+            } else {
+                error
+            }
+        };
         loop {
             for member in &members {
                 let remaining = end.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
-                    return Err(deadline());
+                    return Err(settle(uncertain, deadline()));
                 }
                 let attempt_end = Instant::now()
                     + remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
@@ -171,27 +182,30 @@ impl KasumiClientPool {
                     dispatch(client, &bearer).await
                 })
                 .await;
+                let replay = resend != Resend::Never;
                 match result {
                     Ok(Ok(reply)) => {
                         if Instant::now() >= end {
-                            return Err(deadline());
+                            return Err(settle(uncertain, deadline()));
                         }
                         self.preferred = *member;
                         return Ok((*member, reply));
                     }
                     Ok(Err(error)) if retryable(&error) && (!dispatched || replay) => {
+                        uncertain |= dispatched && resend == Resend::Write;
                         self.clients.remove(member);
                     }
                     Err(_) if !dispatched || replay => {
+                        uncertain |= dispatched && resend == Resend::Write;
                         self.clients.remove(member);
                     }
                     Err(_) => return Err(deadline()),
-                    Ok(Err(error)) => return Err(error),
+                    Ok(Err(error)) => return Err(settle(uncertain, error)),
                 }
             }
             let remaining = end.saturating_duration_since(Instant::now());
             if remaining.is_zero() {
-                return Err(deadline());
+                return Err(settle(uncertain, deadline()));
             }
             tokio::time::sleep(remaining.min(Duration::from_millis(25))).await;
             if pinned.is_none() {
@@ -206,7 +220,7 @@ impl KasumiClientPool {
         batch: &MutationBatch,
         timeout: Duration,
     ) -> NativeResult<WriteReceipt> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Write, timeout, |client, token| {
             let batch = batch.clone();
             Box::pin(async move { client.mutate(token, &batch).await })
         })
@@ -222,7 +236,7 @@ impl KasumiClientPool {
         original: &MutationBatch,
         timeout: Duration,
     ) -> NativeResult<Option<MutationReceipt>> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Read, timeout, |client, token| {
             let original = original.clone();
             let scope = expected_scope.clone();
             Box::pin(async move {
@@ -239,7 +253,7 @@ impl KasumiClientPool {
         request: &BeginStagedTransaction,
         timeout: Duration,
     ) -> NativeResult<WriteReceipt> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Write, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.begin_staged_transaction(token, &request).await })
         })
@@ -251,7 +265,7 @@ impl KasumiClientPool {
         request: &AppendStagedChunk,
         timeout: Duration,
     ) -> NativeResult<WriteReceipt> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Write, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.append_staged_chunk(token, &request).await })
         })
@@ -263,7 +277,7 @@ impl KasumiClientPool {
         request: &StagedTransactionRef,
         timeout: Duration,
     ) -> NativeResult<WriteReceipt> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Write, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.finalize_staged_transaction(token, &request).await })
         })
@@ -275,7 +289,7 @@ impl KasumiClientPool {
         request: &StopStagedTransaction,
         timeout: Duration,
     ) -> NativeResult<StagedTransactionStatus> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Write, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.stop_staged_transaction(token, &request).await })
         })
@@ -287,7 +301,7 @@ impl KasumiClientPool {
         request: &StagedTransactionRef,
         timeout: Duration,
     ) -> NativeResult<StagedTransactionStatus> {
-        self.request(None, true, timeout, |client, token| {
+        self.request(None, Resend::Read, timeout, |client, token| {
             let request = request.clone();
             Box::pin(async move { client.staged_transaction_status(token, &request).await })
         })
@@ -301,21 +315,21 @@ impl KasumiClientPool {
     ) -> NativeResult<AdmittedResponse<SnapshotReadResponse>> {
         let call = options.admit()?;
         let prepared = snapshot_decode::prepare_read(request, &call)?;
-        self.snapshot_request(None, true, prepared, call, options)
+        self.snapshot_request(None, Resend::Read, prepared, call, options)
             .await
             .map(|(_, reply)| reply)
     }
     async fn snapshot_request<T: snapshot_decode::SnapshotOutput>(
         &mut self,
         member: Option<u64>,
-        replay: bool,
+        resend: Resend,
         prepared: Arc<snapshot_decode::Prepared>,
         first: snapshot_decode::Call,
         options: &SnapshotReadOptions,
     ) -> NativeResult<(u64, AdmittedResponse<T>)> {
         let mut first = Some(first);
         let options = options.clone();
-        self.request_until(member, replay, options.deadline, |client, token| {
+        self.request_until(member, resend, options.deadline, |client, token| {
             // A cancelled attempt may still own transport/decode work. Each
             // subsequent attempt acquires a separate aggregate reservation.
             let call = first.take().map_or_else(|| options.admit(), Ok);
@@ -357,7 +371,7 @@ impl KasumiClientPool {
     ) -> NativeResult<(u64, AdmittedResponse<QueryResponse>)> {
         let mut first = Some(first);
         let options = options.clone();
-        self.request_until(member, true, options.deadline, |client, token| {
+        self.request_until(member, Resend::Read, options.deadline, |client, token| {
             let call = first.take().map_or_else(|| options.admit(), Ok);
             let prepared = prepared.clone();
             Box::pin(async move { client.query_prepared(token, prepared, call?).await })
@@ -404,7 +418,7 @@ impl KasumiClientPool {
         let call = options.admit()?;
         let prepared = snapshot_decode::prepare_open(request, &call)?;
         let (member, lease) = self
-            .snapshot_request(None, false, prepared, call, options)
+            .snapshot_request(None, Resend::Never, prepared, call, options)
             .await?;
         Ok(RoutedSnapshotLease {
             installation: self.installation,
@@ -422,7 +436,7 @@ impl KasumiClientPool {
         self.require_installation(lease.installation)
             .map_err(snapshot_decode::normalize)?;
         let prepared = snapshot_decode::prepare_points(&lease.lease, documents, &call)?;
-        self.snapshot_request(Some(lease.member), true, prepared, call, options)
+        self.snapshot_request(Some(lease.member), Resend::Read, prepared, call, options)
             .await
             .map(|(_, reply)| reply)
     }
@@ -439,7 +453,7 @@ impl KasumiClientPool {
             .map_err(snapshot_decode::normalize)?;
         let prepared =
             snapshot_decode::prepare_scan(&lease.lease, collection, after_id, limit, &call)?;
-        self.snapshot_request(Some(lease.member), true, prepared, call, options)
+        self.snapshot_request(Some(lease.member), Resend::Read, prepared, call, options)
             .await
             .map(|(_, reply)| reply)
     }
@@ -449,10 +463,15 @@ impl KasumiClientPool {
         timeout: Duration,
     ) -> NativeResult<()> {
         self.require_installation(lease.installation)?;
-        self.request(Some(lease.member), true, timeout, |client, token| {
-            let id = lease.lease.lease_id.clone();
-            Box::pin(async move { client.close_snapshot_lease(token, &id).await })
-        })
+        self.request(
+            Some(lease.member),
+            Resend::Read,
+            timeout,
+            |client, token| {
+                let id = lease.lease.lease_id.clone();
+                Box::pin(async move { client.close_snapshot_lease(token, &id).await })
+            },
+        )
         .await
         .map(|(_, reply)| reply)
     }
@@ -466,6 +485,19 @@ impl KasumiClientPool {
         Ok(())
     }
 }
+/// Whether a failed attempt may be sent again, and what a resend means.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Resend {
+    /// Never after dispatch: a second attempt could create another snapshot
+    /// on a different member.
+    Never,
+    /// Any member may answer again; a refusal is the read's own result.
+    Read,
+    /// The identical write with its idempotency key. After an attempt that
+    /// may have applied, no later failure is reported as definite.
+    Write,
+}
+
 fn deadline() -> ClientError {
     tonic::Status::deadline_exceeded("installed native operation deadline elapsed; resolve uncertain writes with the original batch").into()
 }

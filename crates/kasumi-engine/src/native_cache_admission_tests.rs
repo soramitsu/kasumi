@@ -361,7 +361,6 @@ impl SegmentGroupBackend for CountedGroup {
         match file.kind {
             FileKind::Segment => &self.segment_reads,
             FileKind::Directory => &self.directory_reads,
-            FileKind::Checkpoint => return self.with_file(file, |f| f.read_exact_at(out, at)),
         }
         .fetch_add(1, Ordering::AcqRel);
         self.with_file(file, |handle| handle.read_exact_at(out, at))

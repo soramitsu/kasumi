@@ -2,7 +2,6 @@
 //! commitment or a Raft outcome. The receiver must authenticate the phase
 //! through installed Control before calling this method, and only a new
 //! reservation may ever be considered for a one-use child ticket.
-#![allow(dead_code)]
 use super::*;
 use kasumi_raft::{
     TARGET_PREBIND_KEY, TARGET_PREBIND_NAMESPACE, TargetFirstMembershipHistory,

@@ -122,9 +122,12 @@ impl Administration {
                 let readiness_error_class = error
                     .downcast_ref::<SweepFailure>()
                     .map_or("unclassified", |failure| failure.class());
+                let control_closure_cause =
+                    self.control_closure().map_or("none", |(cause, _)| cause);
                 tracing::warn!(
                     event = "readiness_probe_failed",
                     readiness_error_class,
+                    control_closure_cause,
                     "complete readiness coverage unavailable"
                 );
             }

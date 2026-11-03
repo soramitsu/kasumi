@@ -715,6 +715,58 @@ fn every_commit_effect_recovers_one_complete_root_or_the_previous_root() {
 }
 
 #[test]
+fn every_interrupted_commit_reopens_writable() {
+    for timing in [FaultTiming::BeforeEffect, FaultTiming::AfterEffect] {
+        for op in [
+            GroupOp::Create,
+            GroupOp::Write,
+            GroupOp::Sync,
+            GroupOp::SyncNames,
+            GroupOp::RootWrite,
+            GroupOp::RootSync,
+        ] {
+            for nth in 1..=32 {
+                let group = InMemoryGroup::new();
+                let admission = Admission::new(16 << 20);
+                let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+                group.fail(op, nth, timing);
+                let successful = state
+                    .commit(&[
+                        Operation::create_table("accounts"),
+                        Operation::put("accounts", b"a", b"account"),
+                    ])
+                    .is_ok();
+                drop(state);
+                // An interrupted segment or arena roll leaves a durable intent.
+                // Reopening settles it instead of refusing every later batch.
+                let mut reopened =
+                    DiskState::open(Arc::new(group.crash()), admission, GROUP, LARGE_CACHE)
+                        .unwrap();
+                reopened
+                    .commit(&[
+                        Operation::create_table("later"),
+                        Operation::put("later", b"b", b"later"),
+                    ])
+                    .unwrap_or_else(|error| panic!("{op:?} {timing:?} {nth}: {error:?}"));
+                let root = reopened.snapshot().unwrap();
+                assert_eq!(
+                    reopened
+                        .get(&root, "later", b"b", 100)
+                        .unwrap()
+                        .unwrap()
+                        .as_bytes(),
+                    b"later"
+                );
+                if successful {
+                    break;
+                }
+                assert!(nth < 32, "unbounded effect count");
+            }
+        }
+    }
+}
+
+#[test]
 fn cache_hits_still_enforce_owner_and_snapshot_scope() {
     let admission = Admission::new(16 << 20);
     let mut state = create(

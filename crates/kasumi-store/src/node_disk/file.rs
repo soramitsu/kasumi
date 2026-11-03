@@ -1144,6 +1144,8 @@ fn execute_publication(
     retained: &mut FileOwner,
 ) -> io::Result<()> {
     let mut renamed = false;
+    // A refused namespace preflight precedes every effect, like AlreadyExists.
+    let mut refused = false;
     let mut transition = None;
     let result = (|| -> io::Result<()> {
         let owner = &mut *retained;
@@ -1189,20 +1191,23 @@ fn execute_publication(
             disk.unit,
             disk.config.file_allocation_policy,
         )?;
-        transition = Some(ParentTransition::prepare(
-            disk,
-            state,
-            (owner.parent_custody().identity(), -1),
-            Some((
-                target
-                    .parent
-                    .as_ref()
-                    .expect("prepared destination parent")
-                    .identity(),
-                1,
-            )),
-            Some(DiskWork::Maintenance),
-        )?);
+        transition = Some(
+            ParentTransition::prepare(
+                disk,
+                state,
+                (owner.parent_custody().identity(), -1),
+                Some((
+                    target
+                        .parent
+                        .as_ref()
+                        .expect("prepared destination parent")
+                        .identity(),
+                    1,
+                )),
+                Some(DiskWork::Maintenance),
+            )
+            .inspect_err(|_| refused = true)?,
+        );
         #[cfg(target_os = "linux")]
         let status = unsafe {
             libc::renameat2(
@@ -1359,7 +1364,7 @@ fn execute_publication(
         Ok(())
     })();
     if let Err(error) = result {
-        if renamed || error.kind() != io::ErrorKind::AlreadyExists {
+        if renamed || !(refused || error.kind() == io::ErrorKind::AlreadyExists) {
             disk.fail_locked(state);
             return Err(retained.record_error(error));
         }
@@ -1741,6 +1746,23 @@ impl NodeDisk {
             .lock()
             .expect("exclusive unpoisoned file owner");
         if let Err(error) = owner.check_enrollment(&mut state, &budget) {
+            drop(budget);
+            drop(state);
+            drop(owner);
+            return Err(error);
+        }
+        // A delete the namespace preflight refuses (no physical headroom, or
+        // a parent with reserved children) has had no effect. Refuse it like
+        // the enrollment check above, without failing the whole disk.
+        if len.is_none()
+            && let Err(error) = ParentTransition::preflight(
+                self,
+                &mut state,
+                (owner.parent_custody().identity(), -1),
+                None,
+                None,
+            )
+        {
             drop(budget);
             drop(state);
             drop(owner);

@@ -554,7 +554,6 @@ impl Cohort {
             let lowest = match candidate.file.kind {
                 FileKind::Segment => &mut survivors.lowest_segment,
                 FileKind::Directory => &mut survivors.lowest_arena,
-                FileKind::Checkpoint => continue,
             };
             *lowest = Some(lowest.map_or(candidate.file.id, |id| id.min(candidate.file.id)));
         }

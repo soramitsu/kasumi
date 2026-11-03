@@ -155,7 +155,10 @@ pub(crate) struct ListenerInventory {
 impl ListenerInventory {
     fn new(limits: ListenerLimits) -> Self {
         Self {
-            connections: crate::tls_tasks::Tasks::new(limits.max_connections),
+            // The semaphore bounds live connections. A task drops its permit
+            // before tokio reaps it, so a replacement can be admitted while the
+            // finished task is still counted; exhaustion would seal the listener.
+            connections: crate::tls_tasks::Tasks::new(limits.max_connections.saturating_mul(2)),
             // Invalid/overflowing settings fail before accepting any socket.
             // Hyper 1.11.1 dispatches H2Stream and, for a successful
             // CONNECT, UpgradedSendStreamTask before that H2Stream exits.

@@ -267,6 +267,7 @@ impl<'a> DirectoryMutator<'a> {
     /// remain exactly those supplied in `value`; only the copied pages and
     /// private root receive `generation`. The owner must durably publish the
     /// finished root before retiring any old page or value location.
+    #[cfg(test)]
     pub(crate) fn rewrite(
         &mut self,
         root: DirectoryRoot,

@@ -118,11 +118,6 @@ impl DiskOpening {
                 "group incarnation differs from owner",
             )));
         }
-        if superblock.checkpoint().is_some() {
-            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                "checkpoint-only root is retired",
-            )));
-        }
         let mut selected = superblock
             .directory()
             .map_or(empty_root(group_id), |commit| commit.root);
@@ -146,7 +141,6 @@ impl DiskOpening {
                 match file.kind {
                     crate::group::FileKind::Segment => floor.segment = floor.segment.min(file.id),
                     crate::group::FileKind::Directory => floor.arena = floor.arena.min(file.id),
-                    crate::group::FileKind::Checkpoint => {}
                 }
             }
             Ok(())
@@ -207,6 +201,9 @@ impl DiskOpening {
         state.reclaim.evacuated = selected.generation;
         state.compact = Compaction::resume(superblock.compaction(), &state.owner.admission)?;
         *state.owner.lock()? = superblock;
+        state
+            .writer
+            .settle_intent(state.owner.backend.as_ref(), &mut Roll(state.owner.clone()))?;
         state.finish_recorded_garbage()?;
         state.arm_reopen_round()?;
         let _ = DirectoryReader::new(state.arena.as_ref(), state.owner.admission.clone()).next(
@@ -309,6 +306,7 @@ impl DiskOpening {
         });
         Ok(())
     }
+    #[cfg(test)]
     pub(crate) fn completed(&self) -> Option<&DiskState> {
         self.completed.as_ref()
     }

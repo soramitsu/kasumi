@@ -1,4 +1,6 @@
-//! Private capacity foundation. No Database/Store capture corridor is activated.
+//! Protected source-read pin lanes. Production source reads acquire them
+//! incrementally through `retained` (see `retained_source_read.rs`); the eager
+//! `reserve_*`/`prepare_protected` constructors exist only for registry tests.
 //! A prepared pin owns its actual admitted Arc before root selection; installing
 //! it uses only the caller's serialized current root and no provider callbacks.
 use super::*;
@@ -56,6 +58,7 @@ fn same_pin(slot: &Slot, pin: PinIdentity) -> bool {
 }
 
 impl SnapshotPins {
+    #[cfg(test)]
     pub(crate) fn reserve_source_rights(&self) -> Result<SourcePinRights, CoreError> {
         let lease = self.inner.reserve(source_rights_request_bytes())?;
         // The admitted stack owner owns any installed lanes until its Arc is
@@ -95,6 +98,7 @@ impl SnapshotPins {
         Ok(rights)
     }
 
+    #[cfg(test)]
     pub(crate) fn prepare_protected(
         &self,
         rights: &SourcePinRights,
@@ -213,6 +217,7 @@ impl SnapshotPins {
         Ok(prepared.pin.take().expect("installed prepared pin"))
     }
 
+    #[cfg(test)]
     pub(crate) fn reserve_history(&self, pin: &SnapshotPin) -> Result<HistoryPinRight, CoreError> {
         self.inner.check()?;
         if !RetiredArc::ptr_eq(&self.inner, &pin.inner.registry) {

@@ -77,7 +77,6 @@ fn usage(group: &InMemoryGroup) -> Usage {
                 usage.arena_files += 1;
                 usage.arena_bytes += len;
             }
-            FileKind::Checkpoint => {}
         }
     }
     usage

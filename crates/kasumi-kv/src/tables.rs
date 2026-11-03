@@ -426,6 +426,17 @@ fn check_key_bound<K: TableCodec>(key: K::Input<'_>) -> Result<(), TableError> {
     Ok(())
 }
 
+/// Refuse a value commit would reject, before it is staged with the batch.
+fn check_value_bound<V: TableCodec>(value: V::Input<'_>) -> Result<(), TableError> {
+    if V::encoded_len(value) > MAX_VALUE_BYTES {
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+            "table value exceeds storage limit",
+        ))
+        .into());
+    }
+    Ok(())
+}
+
 fn admit_clone(core: &Core, bytes: &[u8]) -> Result<LeasedBytes, TableError> {
     let charge = bytes.len().saturating_add(128);
     let lease = core.reserve_workspace(charge as u64)?;
@@ -1720,11 +1731,21 @@ impl Pending {
         )
     }
 
+    /// Stage one admitted row. A row this batch already staged under the same
+    /// key is replaced and freed, so its admitted bytes return to the batch's
+    /// credit; the table's staging overhead stays with the table.
     fn stage(&mut self, table: &SharedTableName, key: Vec<u8>, value: Option<Vec<u8>>) {
-        self.writes
+        let key_len = key.len();
+        let replaced = self
+            .writes
             .entry(table.clone())
             .or_default()
             .insert(key, value);
+        if let Some(replaced) = replaced {
+            // Codec lengths are exact, so this is the charge it was admitted with.
+            self.credit.used -=
+                key_len + replaced.map_or(0, |value| value.len()) + STAGED_ROW_OVERHEAD;
+        }
     }
 
     fn discard(&mut self) -> Discarded {
@@ -2082,6 +2103,8 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         key: K::Input<'_>,
         value: V::Input<'_>,
     ) -> Result<Option<AccessGuard<V>>, TableError> {
+        check_key_bound::<K>(key)?;
+        check_value_bound::<V>(value)?;
         self.step(|| {
             let charge = staged_row_charge(K::encoded_len(key), V::encoded_len(value))?;
             {
@@ -2101,6 +2124,7 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
     }
 
     pub fn remove(&mut self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>, TableError> {
+        check_key_bound::<K>(key)?;
         self.step(|| {
             let charge = staged_row_charge(K::encoded_len(key), 0)?;
             {
@@ -3282,6 +3306,55 @@ mod tests {
                 8 << 20
             );
         }
+    }
+
+    #[test]
+    fn rows_commit_would_reject_are_refused_when_staged() {
+        let database = database(InMemoryGroup::new());
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            let long_key = vec![b'k'; MAX_KEY_BYTES + 1];
+            assert!(table.insert(long_key.as_slice(), b"value").is_err());
+            assert!(table.remove(long_key.as_slice()).is_err());
+            let large = vec![0; MAX_VALUE_BYTES + 1];
+            assert!(table.insert(b"large", large.as_slice()).is_err());
+            // The refusals leave the batch usable.
+            table.insert(b"kept", b"row").unwrap();
+        }
+        write.commit().unwrap();
+        let read = database.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        assert_eq!(table.get(b"kept").unwrap().unwrap().value(), b"row");
+        assert!(table.get(b"large").unwrap().is_none());
+    }
+
+    #[test]
+    fn overwriting_a_staged_row_returns_its_staging_credit() {
+        let database = database(InMemoryGroup::new());
+        let value = vec![0x5a; 1 << 20];
+        // Far more cumulative row bytes than one batch admits, yet only one
+        // live row: every insert and tombstone replaces the staged row.
+        let rounds = MAX_BATCH_BYTES / value.len() + 8;
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for round in 0..rounds {
+                if round % 2 == 0 {
+                    table.insert(b"key", value.as_slice()).unwrap();
+                } else {
+                    table.remove(b"key").unwrap();
+                }
+            }
+            table.insert(b"key", value.as_slice()).unwrap();
+        }
+        write.commit().unwrap();
+        let read = database.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        assert_eq!(
+            table.get(b"key").unwrap().unwrap().value(),
+            value.as_slice()
+        );
     }
 
     #[test]

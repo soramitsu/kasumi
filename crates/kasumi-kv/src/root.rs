@@ -16,33 +16,36 @@
 //! newest confirmed segment, and the segment the newest intent sealed with its
 //! synchronized length and newest commit. A segment identifier is published as
 //! an intent before its create-only file exists and is never reused; at most
-//! one intent is outstanding. It also references the newest checkpoint by
-//! identifier, length, replay-start segment and SHA-256, and lists garbage
-//! files. An unlink cannot be undone, so a garbage file is unlinked only
-//! through the root the slots select, after synchronizing the root file and
-//! with both slots holding that root, and after its readers have drained; an
-//! unpublished or unknown-outcome successor never unlinks a file the durable
-//! root still needs. A record leaves the list only through `publish_forget`
-//! with an `Unlinked` proof of a confirmed unlink and parent synchronization;
-//! a listing that no longer shows the file is no such proof, and
-//! `publish_root` refuses a successor that drops a record. Only a segment
-//! wholly before the checkpoint's replay start and holding no value that
-//! checkpoint references may be retired, so neither checkpoint loading nor
-//! replay meets a missing segment. The last identifier of each kind is never
-//! allocated, so arithmetic on a decoded root never overflows.
+//! one intent is outstanding. It also lists garbage files. An unlink cannot be
+//! undone, so a garbage file is unlinked only through the root the slots
+//! select, after synchronizing the root file and with both slots holding that
+//! root, and after its readers have drained; an unpublished or unknown-outcome
+//! successor never unlinks a file the durable root still needs. A record
+//! leaves the list only through `publish_forget` with an `Unlinked` proof of a
+//! confirmed unlink and parent synchronization; a listing that no longer shows
+//! the file is no such proof, and `publish_root` refuses a successor that
+//! drops a record. Files become garbage only through directory reachability
+//! proofs (`root_directory.rs`), so replay never meets a missing segment. The
+//! last identifier of each kind is never allocated, so arithmetic on a decoded
+//! root never overflows.
 //!
-//! `KASUMI-KVROOT005` persists the compaction cycle, immutable evacuation
-//! worklist and exact ordinal (`root_compaction.rs`) at bytes 2384..4080; the
-//! remainder up to the checksum must be zero. Slots of the retired formats
-//! 001, 002, 003 and 004 are refused before their checksum is examined: there
-//! is no reader or migration for them.
+//! `KASUMI-KVROOT005` persists the directory commit at bytes 2208..2384 and
+//! the compaction cycle, immutable evacuation worklist and exact ordinal
+//! (`root_compaction.rs`) at bytes 2384..4080; the remainder up to the
+//! checksum must be zero. Bytes 64..128 once held an index-checkpoint
+//! allocator and reference that no release ever advanced; they keep that only
+//! written value, so deployed roots stay byte-identical. Slots of the retired
+//! formats 001 through 004 are refused before their checksum is examined:
+//! there is no reader or migration for them, and a retired slot is never
+//! mistaken for a torn publication.
 
-use crate::checkpoint::{CheckpointRef, CheckpointSummary};
 use crate::core::CoreError;
 use crate::group::{FileKind, GroupFile, ROOT_FILE_NAME, SegmentGroupBackend};
+#[cfg(test)]
+use crate::segment::SegmentRoll;
 use crate::segment::{
-    FORMAT_VERSION, LogBounds, SEGMENT_BYTES, SEGMENT_HEADER_BYTES, SealedSegment, SegmentRoll,
-    crc32c, le_u32, le_u64, reject_legacy,
+    FORMAT_VERSION, LogBounds, SEGMENT_BYTES, SEGMENT_HEADER_BYTES, SealedSegment, crc32c, le_u32,
+    le_u64, reject_legacy,
 };
 
 #[path = "root_directory.rs"]
@@ -67,7 +70,13 @@ const RETIRED_ROOT_MAGICS: [[u8; 16]; 4] = [
     *b"KASUMI-KVROOT004",
 ];
 pub(crate) const MAX_GARBAGE: usize = 128;
-const CHECKPOINT_AT: usize = 72;
+/// The retired checkpoint fields: next identifier one, then no reference.
+const RETIRED_CHECKPOINT_AT: usize = 64;
+const RETIRED_CHECKPOINT: [u8; SEALED_AT - RETIRED_CHECKPOINT_AT] = {
+    let mut bytes = [0; SEALED_AT - RETIRED_CHECKPOINT_AT];
+    bytes[0] = 1;
+    bytes
+};
 const SEALED_AT: usize = 128;
 const GARBAGE_COUNT_AT: usize = 152;
 const GARBAGE_AT: usize = 160;
@@ -117,8 +126,6 @@ pub(crate) struct Superblock {
     last_segment_id: u64,
     /// The segment the newest intent sealed; present once one was sealed.
     sealed: Option<SealedSegment>,
-    next_checkpoint_id: u64,
-    checkpoint: Option<CheckpointRef>,
     next_directory_id: u64,
     last_directory_id: u64,
     directory: Option<DirectoryCommit>,
@@ -133,10 +140,8 @@ pub(crate) struct Superblock {
 pub(crate) enum FileRole {
     Live,
     Garbage,
-    /// The outstanding segment intent.
+    /// The outstanding segment or directory intent.
     PendingCreate,
-    /// A checkpoint created under an intent but never referenced.
-    Orphan,
     /// Not allocated by this root: a substitution that fails closed.
     Unexpected,
 }
@@ -148,7 +153,6 @@ pub(crate) enum FileRole {
 #[cfg(test)]
 pub(crate) struct Census {
     pub(crate) live_segments: Vec<u64>,
-    pub(crate) orphans: Vec<GroupFile>,
     /// Recorded garbage still listed; its space is still held.
     pub(crate) garbage_present: Vec<GroupFile>,
     /// Recorded garbage the listing no longer shows. An unlink whose parent
@@ -185,8 +189,6 @@ impl Superblock {
             next_segment_id: 1,
             last_segment_id: 0,
             sealed: None,
-            next_checkpoint_id: 1,
-            checkpoint: None,
             next_directory_id: 1,
             last_directory_id: 0,
             directory: None,
@@ -221,10 +223,6 @@ impl Superblock {
     /// The next identifier each kind would allocate (segment, directory).
     pub(crate) fn next_file_ids(&self) -> (u64, u64) {
         (self.next_segment_id, self.next_directory_id)
-    }
-
-    pub(crate) fn checkpoint(&self) -> Option<CheckpointRef> {
-        self.checkpoint
     }
 
     pub(crate) fn garbage(&self) -> &[GroupFile] {
@@ -291,119 +289,6 @@ impl Superblock {
         }
         let mut next = self.successor()?;
         next.last_segment_id = segment_id;
-        Ok(next)
-    }
-
-    pub(crate) fn reserve_checkpoint(&self) -> Result<(Self, u64), CoreError> {
-        let mut next = self.successor()?;
-        let id = self.next_checkpoint_id;
-        next.next_checkpoint_id =
-            id.checked_add(1)
-                .filter(|&next| next != u64::MAX)
-                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                    "checkpoint identifier overflow",
-                )))?;
-        Ok((next, id))
-    }
-
-    /// Reference a written, synchronized checkpoint. The replaced checkpoint
-    /// becomes garbage in the same publication.
-    pub(crate) fn install_checkpoint(&self, reference: CheckpointRef) -> Result<Self, CoreError> {
-        if self.directory.is_some() {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "directory root already owns replay",
-            )));
-        }
-        if reference.id == 0
-            || reference.id >= self.next_checkpoint_id
-            || self
-                .checkpoint
-                .is_some_and(|current| reference.id <= current.id)
-            || self.garbage.contains(&GroupFile::checkpoint(reference.id))
-        {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "checkpoint was not reserved by this root",
-            )));
-        }
-        // Replay never moves back over segments the previous one let retire.
-        if reference.start_segment_id == 0
-            || reference.start_segment_id > self.last_segment_id
-            || self
-                .checkpoint
-                .is_some_and(|current| reference.start_segment_id < current.start_segment_id)
-        {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "checkpoint replay start is outside the log",
-            )));
-        }
-        let mut next = self.successor()?;
-        if let Some(previous) = next.checkpoint.replace(reference) {
-            next.add_garbage(GroupFile::checkpoint(previous.id))?;
-        }
-        Ok(next)
-    }
-
-    /// Record a segment for unlink. It must lie wholly before the installed
-    /// checkpoint's replay start, which also keeps the newest segment, and
-    /// hold no value that checkpoint references; `checkpoint` is that
-    /// checkpoint's summary, bound to the installed reference by identifier,
-    /// length, replay start and digest. A full list is a recoverable capacity
-    /// denial.
-    pub(crate) fn retire_segment(
-        &self,
-        segment_id: u64,
-        checkpoint: &CheckpointSummary,
-    ) -> Result<Self, CoreError> {
-        if self.directory.is_some() {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "segment retirement needs directory reachability proof",
-            )));
-        }
-        let Some(current) = self.checkpoint else {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "no installed checkpoint covers the segment",
-            )));
-        };
-        let header = &checkpoint.header;
-        if checkpoint.reference != current
-            || header.checkpoint_id != current.id
-            || header.start.position.segment_id != current.start_segment_id
-        {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "checkpoint summary is not the installed checkpoint",
-            )));
-        }
-        if segment_id == 0
-            || segment_id >= current.start_segment_id
-            || checkpoint
-                .segment_live_bytes
-                .binary_search_by_key(&segment_id, |&(id, _)| id)
-                .is_ok()
-        {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "segment is still needed by the installed checkpoint",
-            )));
-        }
-        let mut next = self.successor()?;
-        next.add_garbage(GroupFile::segment(segment_id))?;
-        Ok(next)
-    }
-
-    /// Record an unreferenced checkpoint file, such as an unfinished one, for
-    /// unlink. A full list is a recoverable capacity denial.
-    pub(crate) fn retire_checkpoint(&self, checkpoint_id: u64) -> Result<Self, CoreError> {
-        if checkpoint_id == 0
-            || checkpoint_id >= self.next_checkpoint_id
-            || self
-                .checkpoint
-                .is_some_and(|current| current.id == checkpoint_id)
-        {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "checkpoint cannot be retired by this root",
-            )));
-        }
-        let mut next = self.successor()?;
-        next.add_garbage(GroupFile::checkpoint(checkpoint_id))?;
         Ok(next)
     }
 
@@ -499,34 +384,24 @@ impl Superblock {
     }
 
     pub(crate) fn classify(&self, file: GroupFile) -> FileRole {
-        let (next, current) = match file.kind {
-            FileKind::Segment => (self.next_segment_id, None),
-            FileKind::Checkpoint => (
-                self.next_checkpoint_id,
-                self.checkpoint.map(|reference| reference.id),
-            ),
-            FileKind::Directory => (self.next_directory_id, None),
+        let (next, pending) = match file.kind {
+            FileKind::Segment => (self.next_segment_id, self.pending_segment()),
+            FileKind::Directory => (self.next_directory_id, self.pending_directory()),
         };
         if file.id == 0 || file.id >= next {
             FileRole::Unexpected
         } else if self.garbage.binary_search(&file).is_ok() {
             FileRole::Garbage
-        } else if (file.kind == FileKind::Segment && self.pending_segment() == Some(file.id))
-            || (file.kind == FileKind::Directory && self.pending_directory() == Some(file.id))
-        {
+        } else if pending == Some(file.id) {
             FileRole::PendingCreate
-        } else if matches!(file.kind, FileKind::Segment | FileKind::Directory)
-            || current == Some(file.id)
-        {
-            FileRole::Live
         } else {
-            FileRole::Orphan
+            FileRole::Live
         }
     }
 
     /// Classify every directory entry. An entry that is neither the root nor
     /// a group file, a file this root never allocated, or a missing root or
-    /// referenced checkpoint fails closed.
+    /// referenced directory arena fails closed.
     pub(crate) fn visit_census(
         &self,
         backend: &dyn SegmentGroupBackend,
@@ -542,7 +417,6 @@ impl Superblock {
         impl std::error::Error for VisitorStopped {}
 
         let mut root = false;
-        let mut checkpoint_found = self.checkpoint.is_none();
         let directory = self.directory.and_then(|commit| commit.root.page);
         let mut directory_found = directory.is_none();
         let mut garbage_found = [false; MAX_GARBAGE];
@@ -565,9 +439,6 @@ impl Superblock {
                         "group holds a file its root never allocated",
                     )));
                 }
-                checkpoint_found |= self
-                    .checkpoint
-                    .is_some_and(|reference| file == GroupFile::checkpoint(reference.id));
                 directory_found |=
                     directory.is_some_and(|page| file == GroupFile::directory(page.arena_id));
                 if let Ok(index) = self.garbage.binary_search(&file) {
@@ -601,11 +472,6 @@ impl Superblock {
                 "group root file is missing",
             )));
         }
-        if !checkpoint_found {
-            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                "referenced checkpoint is missing",
-            )));
-        }
         if !directory_found {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "referenced directory arena is missing",
@@ -630,7 +496,6 @@ impl Superblock {
                     census.live_segments.push(file.id)
                 }
                 CensusEntry::Present(file, FileRole::Garbage) => census.garbage_present.push(file),
-                CensusEntry::Present(file, FileRole::Orphan) => census.orphans.push(file),
                 CensusEntry::GarbageUnlinkPending(file) => census.garbage_unlink_pending.push(file),
                 CensusEntry::Present(_, _) => {}
             }
@@ -638,7 +503,6 @@ impl Superblock {
         })?;
         census.live_segments.sort_unstable();
         census.garbage_present.sort_unstable();
-        census.orphans.sort_unstable();
         Ok(census)
     }
 
@@ -664,43 +528,17 @@ impl Superblock {
         {
             return Some("root sealed segment record is invalid");
         }
-        if self.next_checkpoint_id == 0
-            || self.next_checkpoint_id == u64::MAX
-            || self.checkpoint.is_some_and(|reference| {
-                reference.id == 0
-                    || reference.id >= self.next_checkpoint_id
-                    || reference.len == 0
-                    || reference.start_segment_id == 0
-                    || reference.start_segment_id > self.last_segment_id
-            })
-        {
-            return Some("root checkpoint reference is invalid");
-        }
         if let Some(reason) = self.directory_invariant_violation() {
             return Some(reason);
         }
-        let start = self
-            .checkpoint
-            .map_or(0, |reference| reference.start_segment_id);
+        // These are structural guards only. Runtime recovery checks complete
+        // root reachability before unlinking decoded garbage.
         if self.garbage.len() > MAX_GARBAGE
             || self.garbage.windows(2).any(|pair| pair[0] >= pair[1])
-            || self.garbage.iter().any(|file| match file.kind {
-                FileKind::Segment => {
-                    if self.directory.is_some() {
-                        !self.directory_file_is_retirable(*file)
-                    } else {
-                        file.id == 0 || file.id >= start
-                    }
-                }
-                FileKind::Checkpoint => {
-                    file.id == 0
-                        || file.id >= self.next_checkpoint_id
-                        || self.checkpoint.is_some_and(|current| current.id == file.id)
-                }
-                // These are structural guards only. Runtime recovery checks
-                // complete root reachability before unlinking decoded garbage.
-                FileKind::Directory => !self.directory_file_is_retirable(*file),
-            })
+            || self
+                .garbage
+                .iter()
+                .any(|file| !self.directory_file_is_retirable(*file))
         {
             return Some("root garbage list is invalid");
         }
@@ -718,14 +556,7 @@ impl Superblock {
         bytes[40..48].copy_from_slice(&self.generation.to_le_bytes());
         bytes[48..56].copy_from_slice(&self.next_segment_id.to_le_bytes());
         bytes[56..64].copy_from_slice(&self.last_segment_id.to_le_bytes());
-        bytes[64..72].copy_from_slice(&self.next_checkpoint_id.to_le_bytes());
-        if let Some(reference) = self.checkpoint {
-            let at = CHECKPOINT_AT;
-            bytes[at..at + 8].copy_from_slice(&reference.id.to_le_bytes());
-            bytes[at + 8..at + 16].copy_from_slice(&reference.len.to_le_bytes());
-            bytes[at + 16..at + 24].copy_from_slice(&reference.start_segment_id.to_le_bytes());
-            bytes[at + 24..at + 56].copy_from_slice(&reference.sha256);
-        }
+        bytes[RETIRED_CHECKPOINT_AT..SEALED_AT].copy_from_slice(&RETIRED_CHECKPOINT);
         if let Some(sealed) = self.sealed {
             let at = SEALED_AT;
             bytes[at..at + 8].copy_from_slice(&sealed.segment_id.to_le_bytes());
@@ -784,6 +615,7 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
     let garbage_count = le_u32(&bytes[GARBAGE_COUNT_AT..GARBAGE_COUNT_AT + 4]) as usize;
     if le_u32(&bytes[16..20]) != FORMAT_VERSION
         || bytes[20..24].iter().any(|&byte| byte != 0)
+        || bytes[RETIRED_CHECKPOINT_AT..SEALED_AT] != RETIRED_CHECKPOINT
         || bytes[GARBAGE_COUNT_AT + 4..GARBAGE_AT]
             .iter()
             .any(|&byte| byte != 0)
@@ -797,24 +629,6 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
     {
         return Err(layout);
     }
-    let checkpoint_id = le_u64(&bytes[CHECKPOINT_AT..CHECKPOINT_AT + 8]);
-    let checkpoint = if checkpoint_id == 0 {
-        if bytes[CHECKPOINT_AT + 8..SEALED_AT]
-            .iter()
-            .any(|&byte| byte != 0)
-        {
-            return Err(layout);
-        }
-        None
-    } else {
-        let at = CHECKPOINT_AT;
-        Some(CheckpointRef {
-            id: checkpoint_id,
-            len: le_u64(&bytes[at + 8..at + 16]),
-            start_segment_id: le_u64(&bytes[at + 16..at + 24]),
-            sha256: bytes[at + 24..at + 56].try_into().expect("32 bytes"),
-        })
-    };
     let sealed_id = le_u64(&bytes[SEALED_AT..SEALED_AT + 8]);
     let sealed = if sealed_id == 0 {
         if bytes[SEALED_AT + 8..GARBAGE_COUNT_AT]
@@ -858,8 +672,6 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
         next_segment_id: le_u64(&bytes[48..56]),
         last_segment_id: le_u64(&bytes[56..64]),
         sealed,
-        next_checkpoint_id: le_u64(&bytes[64..72]),
-        checkpoint,
         next_directory_id,
         last_directory_id,
         directory,
@@ -1135,28 +947,19 @@ fn publish(
     Ok(())
 }
 
-/// The next generation of one group that moves no allocation back, never
-/// replaces the checkpoint with an older one or moves its replay start back,
-/// changes the sealed record only with a new segment intent, and changes the
-/// compaction record only by in-phase progress or one phase transition.
+/// The next generation of one group that moves no allocation or directory
+/// commit back, changes the sealed record only with a new segment intent, and
+/// changes the compaction record only by in-phase progress or one phase
+/// transition.
 fn is_successor(previous: &Superblock, next: &Superblock) -> bool {
-    let checkpoint_regressed = previous.checkpoint.is_some_and(|current| {
-        next.checkpoint.is_none_or(|reference| {
-            reference.id < current.id
-                || (reference.id == current.id && reference != current)
-                || reference.start_segment_id < current.start_segment_id
-        })
-    });
     previous.generation.checked_add(1) == Some(next.generation)
         && previous.group_id == next.group_id
         && next.next_segment_id >= previous.next_segment_id
         && next.last_segment_id >= previous.last_segment_id
-        && next.next_checkpoint_id >= previous.next_checkpoint_id
         && next.next_directory_id >= previous.next_directory_id
         && next.last_directory_id >= previous.last_directory_id
         && directory::directory_successor(previous.directory, next.directory)
         && compaction_successor(previous, next)
-        && !checkpoint_regressed
         && (next.next_segment_id != previous.next_segment_id || next.sealed == previous.sealed)
 }
 
@@ -1189,18 +992,22 @@ pub(crate) fn repair_mirror(
     Ok(())
 }
 
-/// Segment allocation through durable root publications.
+/// Segment allocation through durable root publications, for log tests that
+/// drive a segment writer without a directory.
+#[cfg(test)]
 pub(crate) struct RootRoll<'a> {
     backend: &'a dyn SegmentGroupBackend,
     root: &'a mut Superblock,
 }
 
+#[cfg(test)]
 impl<'a> RootRoll<'a> {
     pub(crate) fn new(backend: &'a dyn SegmentGroupBackend, root: &'a mut Superblock) -> Self {
         Self { backend, root }
     }
 }
 
+#[cfg(test)]
 impl SegmentRoll for RootRoll<'_> {
     fn reserve(&mut self, sealed: Option<SealedSegment>) -> Result<u64, CoreError> {
         let (next, segment_id) = self.root.reserve_segment(sealed)?;
@@ -1219,17 +1026,22 @@ impl SegmentRoll for RootRoll<'_> {
 
 #[cfg(test)]
 mod tests {
+    use super::directory::tests::{commit, proof, retirement_root};
     use super::*;
-    use crate::checkpoint::CheckpointHeader;
     use crate::group::{FaultTiming, GroupOp, InMemoryGroup};
+    use crate::segment::LEGACY_MAGIC;
     use crate::segment::test_support::{GROUP, corrupt_reason};
-    use crate::segment::{LEGACY_MAGIC, LogPosition, ReplayStart};
+
+    /// The next generation with no other change.
+    fn bumped(root: &Superblock) -> Superblock {
+        root.successor().unwrap()
+    }
 
     fn published(generations: u64) -> (InMemoryGroup, Superblock) {
         let group = InMemoryGroup::new();
         let mut root = Superblock::genesis(GROUP);
         for _ in 0..generations {
-            let (next, _) = root.reserve_checkpoint().unwrap();
+            let next = bumped(&root);
             publish_root(&group, &root, &next).unwrap();
             root = next;
         }
@@ -1279,53 +1091,23 @@ mod tests {
         next.confirm_segment(id).unwrap()
     }
 
-    fn reference(id: u64, start_segment_id: u64) -> CheckpointRef {
-        CheckpointRef {
-            id,
-            len: 100 * id,
-            start_segment_id,
-            sha256: [id as u8; 32],
-        }
+    /// Record `files` as garbage under reachability proofs for `root`.
+    fn retire(root: &Superblock, files: &[GroupFile]) -> Superblock {
+        let proofs: Vec<_> = files.iter().map(|&file| proof(root, file)).collect();
+        root.retire_directory_files(&proofs).unwrap()
     }
 
-    /// The summary of checkpoint `reference(checkpoint_id, start_segment_id)`,
-    /// which references values in `referenced`.
-    fn summary(checkpoint_id: u64, start_segment_id: u64, referenced: &[u64]) -> CheckpointSummary {
-        CheckpointSummary {
-            reference: reference(checkpoint_id, start_segment_id),
-            header: CheckpointHeader {
-                group_id: GROUP,
-                checkpoint_id,
-                start: ReplayStart {
-                    position: LogPosition {
-                        segment_id: start_segment_id,
-                        offset: 200,
-                    },
-                    batch_seq: 7,
-                    chain: [7; 32],
-                },
-            },
-            tables: 1,
-            rows: referenced.len() as u64,
-            live_bytes: 10 * referenced.len() as u64,
-            segment_live_bytes: referenced.iter().map(|&id| (id, 10)).collect(),
-        }
-    }
-
-    /// Four segments, checkpoint 2 replaying from segment 4 with values in
-    /// segment 3, and segments 1 and 2 plus checkpoint 1 as garbage.
+    /// Four segments and four arenas, the selected directory page in arena 3
+    /// replaying from segment 3, and segments 1 and 2 plus arena 1 as garbage.
     fn rich() -> Superblock {
-        let mut root = Superblock::genesis(GROUP);
-        for _ in 0..4 {
-            root = grown(&root);
-        }
-        let (next, _) = root.reserve_checkpoint().unwrap();
-        let (next, _) = next.reserve_checkpoint().unwrap();
-        let root = next.install_checkpoint(reference(1, 2)).unwrap();
-        let root = root.install_checkpoint(reference(2, 4)).unwrap();
-        let current = summary(2, 4, &[3]);
-        let root = root.retire_segment(2, &current).unwrap();
-        root.retire_segment(1, &current).unwrap()
+        retire(
+            &retirement_root(),
+            &[
+                GroupFile::segment(1),
+                GroupFile::segment(2),
+                GroupFile::directory(1),
+            ],
+        )
     }
 
     #[test]
@@ -1336,9 +1118,10 @@ mod tests {
             [
                 GroupFile::segment(1),
                 GroupFile::segment(2),
-                GroupFile::checkpoint(1)
+                GroupFile::directory(1)
             ]
         );
+        assert_eq!(root.directory().unwrap().root.page.unwrap().arena_id, 3);
         assert_eq!(root.sealed.map(|sealed| sealed.segment_id), Some(3));
         let bytes = root.encode().unwrap();
         assert_eq!(decode_slot(&bytes).unwrap(), SlotImage::Valid(root.clone()));
@@ -1463,7 +1246,7 @@ mod tests {
             (GroupOp::RootSync, 1, FaultTiming::BeforeEffect),
         ] {
             let (group, root) = published(4);
-            let (newer, _) = root.reserve_checkpoint().unwrap();
+            let newer = bumped(&root);
             group.fail(op, nth, timing);
             assert!(
                 matches!(&(publish_root(&group, &root, &newer)), Err(native_error) if native_error.is_unknown_commit())
@@ -1491,7 +1274,7 @@ mod tests {
     #[test]
     fn selection_after_a_restart_without_power_loss_survives_power_loss() {
         let (group, root) = published(2);
-        let (next, _) = root.reserve_checkpoint().unwrap();
+        let next = bumped(&root);
         // Slot B holds generation 3 in the page cache only.
         group.fail(GroupOp::RootSync, 1, FaultTiming::BeforeEffect);
         assert!(
@@ -1517,7 +1300,7 @@ mod tests {
         // reopen selects the only intact copy from B: the slot generation 5
         // writes first.
         let (group, root) = published(4);
-        let (next, _) = root.reserve_checkpoint().unwrap();
+        let next = bumped(&root);
         // The first sync is the restored copy's; the second is slot B's.
         for nth in [1, 2] {
             let damaged = group.crash();
@@ -1576,19 +1359,25 @@ mod tests {
     fn checksum_valid_field_changes_fail_closed() {
         let bytes = rich().encode().unwrap();
         let entry = |index: usize| GARBAGE_AT + index * GARBAGE_ENTRY_BYTES;
-        let cases: [(&str, usize, u8); 18] = [
+        let cases: [(&str, usize, u8); 17] = [
             (
                 "root slot has an unsupported layout",
                 16,
                 (FORMAT_VERSION + 1) as u8,
             ),
             ("root slot has an unsupported layout", 21, 1),
+            // A checkpoint identifier was never allocated or referenced.
+            (
+                "root slot has an unsupported layout",
+                RETIRED_CHECKPOINT_AT,
+                2,
+            ),
+            ("root slot has an unsupported layout", 72, 1),
             (
                 "root slot has an unsupported layout",
                 GARBAGE_COUNT_AT + 5,
                 1,
             ),
-            ("root slot has an unsupported layout", CHECKPOINT_AT + 8, 1),
             ("root slot has an unsupported layout", SEALED_AT + 8, 1),
             ("root slot has an unsupported layout", 2000, 1),
             ("root slot has an unsupported layout", entry(0) + 1, 1),
@@ -1598,25 +1387,17 @@ mod tests {
             ("root sealed segment record is invalid", SEALED_AT, 1),
             // A 4096-byte length loses its only nonzero byte.
             ("root sealed segment record is invalid", SEALED_AT + 9, 0),
-            ("root checkpoint reference is invalid", CHECKPOINT_AT, 9),
-            (
-                "root checkpoint reference is invalid",
-                CHECKPOINT_AT + 16,
-                9,
-            ),
             ("root garbage list is invalid", entry(0) + 8, 2),
-            // A garbage segment at the checkpoint's replay start.
+            // The newest confirmed segment as garbage.
             ("root garbage list is invalid", entry(1) + 8, 4),
-            ("root garbage list is invalid", entry(2) + 8, 2),
+            // The arena holding the selected directory page as garbage.
+            ("root garbage list is invalid", entry(2) + 8, 3),
             ("root garbage entry has an unknown kind", entry(0), 7),
         ];
         for (reason, at, value) in cases {
             let mut image = bytes;
-            if at == CHECKPOINT_AT + 8 {
-                // A reference-free root must carry no length or digest.
-                image[CHECKPOINT_AT..CHECKPOINT_AT + 8].fill(0);
-            }
             if at == SEALED_AT + 8 {
+                // A root without a sealed record must carry no length.
                 image[SEALED_AT..SEALED_AT + 8].fill(0);
             }
             image[at] = value;
@@ -1630,7 +1411,7 @@ mod tests {
         let (group, root) = published(2);
         // Same generation, different content.
         let mut other = root.clone();
-        other.next_checkpoint_id += 1;
+        other.next_directory_id += 1;
         let image = other.encode().unwrap();
         let damaged = group.crash();
         damaged.with_durable_root(RootSlot::B, |bytes| bytes.copy_from_slice(&image));
@@ -1756,14 +1537,14 @@ mod tests {
             assert!(root.reserve_segment(wrong).is_err(), "{wrong:?}");
         }
         let (next, pending) = root.reserve_segment(sealing(&root)).unwrap();
-        let (next, orphan) = next.reserve_checkpoint().unwrap();
+        let (next, pending_arena) = next.reserve_directory().unwrap();
         for file in [
             GroupFile::segment(1),
             GroupFile::segment(3),
             GroupFile::segment(4),
             GroupFile::segment(pending),
-            GroupFile::checkpoint(2),
-            GroupFile::checkpoint(orphan),
+            GroupFile::directory(3),
+            GroupFile::directory(pending_arena),
         ] {
             group.insert_foreign(file, Vec::new());
         }
@@ -1777,32 +1558,31 @@ mod tests {
             next.classify(GroupFile::segment(pending + 1)),
             FileRole::Unexpected
         );
-        assert_eq!(next.classify(GroupFile::checkpoint(2)), FileRole::Live);
+        assert_eq!(next.classify(GroupFile::directory(1)), FileRole::Garbage);
+        assert_eq!(next.classify(GroupFile::directory(3)), FileRole::Live);
         assert_eq!(
-            next.classify(GroupFile::checkpoint(orphan)),
-            FileRole::Orphan
+            next.classify(GroupFile::directory(pending_arena)),
+            FileRole::PendingCreate
         );
-        assert_eq!(
-            next.classify(GroupFile::checkpoint(0)),
-            FileRole::Unexpected
-        );
+        for unexpected in [
+            GroupFile::segment(0),
+            GroupFile::directory(0),
+            GroupFile::directory(pending_arena + 1),
+        ] {
+            assert_eq!(next.classify(unexpected), FileRole::Unexpected);
+        }
         let census = next.census(&group).unwrap();
         assert_eq!(census.live_segments, [3, 4]);
-        assert_eq!(census.orphans, [GroupFile::checkpoint(orphan)]);
         assert_eq!(census.garbage_present, [GroupFile::segment(1)]);
         assert_eq!(
             census.garbage_unlink_pending,
-            [GroupFile::segment(2), GroupFile::checkpoint(1)]
+            [GroupFile::segment(2), GroupFile::directory(1)]
         );
-        let retired = next.retire_checkpoint(orphan).unwrap();
-        assert!(retired.garbage.contains(&GroupFile::checkpoint(orphan)));
-        assert!(next.retire_checkpoint(2).is_err());
-        assert!(next.retire_checkpoint(orphan + 1).is_err());
 
-        group.remove_foreign(GroupFile::checkpoint(2));
+        group.remove_foreign(GroupFile::directory(3));
         assert_eq!(
             corrupt_reason(next.census(&group)),
-            "referenced checkpoint is missing"
+            "referenced directory arena is missing"
         );
     }
 
@@ -1969,14 +1749,15 @@ mod tests {
         for name in [
             "0000000000000003.kvseg.tmp",
             "0000000000000003.KVSEG",
-            "000000000000000A.kvckpt",
+            // Index checkpoints are not part of the format.
+            "000000000000000a.kvckpt",
             "3.kvseg",
             "notes.txt",
             "root.kvroot~",
         ] {
             let group = InMemoryGroup::new();
             group.insert_foreign(GroupFile::segment(3), Vec::new());
-            group.insert_foreign(GroupFile::checkpoint(2), Vec::new());
+            group.insert_foreign(GroupFile::directory(3), Vec::new());
             root.census(&group).unwrap();
             group.insert_stray(name);
             assert_eq!(
@@ -1988,96 +1769,39 @@ mod tests {
     }
 
     #[test]
-    fn retirement_needs_a_checkpoint_that_no_longer_uses_the_segment() {
-        let mut root = Superblock::genesis(GROUP);
-        for _ in 0..4 {
-            root = grown(&root);
-        }
-        let (root, id) = root.reserve_checkpoint().unwrap();
-        // Without a checkpoint nothing retires, not even the oldest segment.
-        assert!(
-            matches!(&(root.retire_segment(1, &summary(id, 3, &[]))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
-        );
-        for start in [0, 5] {
-            assert!(root.install_checkpoint(reference(id, start)).is_err());
-        }
-        let installed = root.install_checkpoint(reference(id, 3)).unwrap();
-        let current = summary(id, 3, &[1]);
-        // A referenced value, the replay start, the newest segment, and
-        // identifiers the root never confirmed all stay.
-        for segment_id in [0, 1, 3, 4, 5] {
-            assert!(
-                matches!(&(installed.retire_segment(segment_id, &current)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_)))),
-                "{segment_id}"
-            );
-        }
-        // Only the installed checkpoint's own summary is accepted.
-        for other in [summary(id, 4, &[]), summary(id + 1, 3, &[])] {
-            assert!(installed.retire_segment(2, &other).is_err());
-        }
-        // A stale or hand-built summary with the right identifier and replay
-        // start but another digest or length would free segment 1.
-        for forged in [
-            CheckpointRef {
-                sha256: [0xee; 32],
-                ..current.reference
-            },
-            CheckpointRef {
-                len: current.reference.len + 16,
-                ..current.reference
-            },
-        ] {
-            let stale = CheckpointSummary {
-                reference: forged,
-                segment_live_bytes: Vec::new(),
-                ..current.clone()
-            };
-            assert!(
-                matches!(&(installed.retire_segment(1, &stale)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
-                    "checkpoint summary is not the installed checkpoint"
-                ))))
-            );
-        }
-        let retired = installed.retire_segment(2, &current).unwrap();
-        assert_eq!(retired.garbage, [GroupFile::segment(2)]);
-        assert!(retired.retire_segment(2, &current).is_err());
-        // A later checkpoint never moves the replay start back.
-        let (reserved, later) = retired.reserve_checkpoint().unwrap();
-        assert!(reserved.install_checkpoint(reference(later, 2)).is_err());
-        let moved = reserved.install_checkpoint(reference(later, 4)).unwrap();
-        moved.retire_segment(3, &summary(later, 4, &[1])).unwrap();
-    }
-
-    #[test]
     fn full_garbage_list_is_a_recoverable_denial() {
         let group = InMemoryGroup::new();
         let mut root = Superblock::genesis(GROUP);
-        for _ in 0..=MAX_GARBAGE + 1 {
+        // The newest segment and the replay start are never retirable.
+        let last = MAX_GARBAGE as u64 + 2;
+        while root.last_segment_id() < last {
             let (next, id) = root.reserve_segment(sealing(&root)).unwrap();
             advance(&group, &mut root, next);
             let next = root.confirm_segment(id).unwrap();
             advance(&group, &mut root, next);
         }
-        let (next, id) = root.reserve_checkpoint().unwrap();
+        let (next, arena) = root.reserve_directory().unwrap();
         advance(&group, &mut root, next);
-        let start = MAX_GARBAGE as u64 + 2;
-        let next = root.install_checkpoint(reference(id, start)).unwrap();
+        let next = root.confirm_directory(arena).unwrap();
         advance(&group, &mut root, next);
-        let current = summary(id, start, &[]);
+        let mut anchor = commit(1);
+        anchor.start.position.segment_id = last;
+        let next = root.install_directory(anchor).unwrap();
+        advance(&group, &mut root, next);
         for segment_id in 1..=MAX_GARBAGE as u64 {
-            let next = root.retire_segment(segment_id, &current).unwrap();
+            let next = retire(&root, &[GroupFile::segment(segment_id)]);
             advance(&group, &mut root, next);
         }
         let full = root.encode().unwrap();
         assert_eq!(decode_slot(&full).unwrap(), SlotImage::Valid(root.clone()));
+        let overflow = GroupFile::segment(MAX_GARBAGE as u64 + 1);
         assert!(
-            matches!(&(root.retire_segment(MAX_GARBAGE as u64 + 1, &current)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+            matches!(&(root.retire_directory_files(&[proof(&root, overflow)])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
         );
         let unlinked = root.unlink_garbage(&group, GroupFile::segment(1)).unwrap();
         let root = publish_forget(&group, &root, unlinked).unwrap();
         assert_eq!(selected(&group.crash()).0, root);
-        root.retire_segment(MAX_GARBAGE as u64 + 1, &current)
-            .unwrap();
+        retire(&root, &[overflow]);
     }
 
     fn advance(group: &InMemoryGroup, root: &mut Superblock, next: Superblock) {
@@ -2085,9 +1809,10 @@ mod tests {
         *root = next;
     }
 
-    /// Four created segments and created checkpoint 1, which replays from
-    /// segment 3 and references values in segment 2; every step published.
-    fn with_checkpoint() -> (InMemoryGroup, Superblock) {
+    /// Four created segments and created arena 1, whose directory commit
+    /// replays from segment 3, so segments 1 and 2 are retirable; every step
+    /// published.
+    fn with_directory() -> (InMemoryGroup, Superblock) {
         let group = InMemoryGroup::new();
         let mut root = Superblock::genesis(GROUP);
         for _ in 0..4 {
@@ -2097,20 +1822,24 @@ mod tests {
             let next = root.confirm_segment(id).unwrap();
             advance(&group, &mut root, next);
         }
-        let (next, id) = root.reserve_checkpoint().unwrap();
+        let (next, arena) = root.reserve_directory().unwrap();
         advance(&group, &mut root, next);
-        group.create(GroupFile::checkpoint(id)).unwrap();
-        let next = root.install_checkpoint(reference(id, 3)).unwrap();
+        group.create(GroupFile::directory(arena)).unwrap();
+        let next = root.confirm_directory(arena).unwrap();
+        advance(&group, &mut root, next);
+        let mut anchor = commit(1);
+        anchor.start.position.segment_id = 3;
+        let next = root.install_directory(anchor).unwrap();
         advance(&group, &mut root, next);
         (group, root)
     }
 
     #[test]
     fn garbage_leaves_the_root_only_after_a_confirmed_unlink() {
-        let (group, mut root) = with_checkpoint();
-        let next = root.retire_segment(1, &summary(1, 3, &[2])).unwrap();
-        advance(&group, &mut root, next);
+        let (group, mut root) = with_directory();
         let retired = GroupFile::segment(1);
+        let next = retire(&root, &[retired]);
+        advance(&group, &mut root, next);
 
         // The unlink removes the name, but its parent synchronization fails.
         group.fail(GroupOp::Unlink, 1, FaultTiming::AfterEffect);
@@ -2158,12 +1887,11 @@ mod tests {
     #[test]
     fn garbage_unlink_follows_only_the_mirrored_selected_root() {
         let retired = GroupFile::segment(1);
-        let current = summary(1, 3, &[2]);
 
         // A successor that was never published records the file as garbage,
         // but the durable root still counts it live.
-        let (group, mut root) = with_checkpoint();
-        let unpublished = root.retire_segment(1, &current).unwrap();
+        let (group, mut root) = with_directory();
+        let unpublished = retire(&root, &[retired]);
         let before = slots(&group);
         assert!(
             matches!(&(unpublished.unlink_garbage(&group, retired)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
@@ -2180,7 +1908,7 @@ mod tests {
         // Once published, a stale copy of that root is refused as well.
         advance(&group, &mut root, unpublished);
         let stale = root.clone();
-        let (next, _) = root.reserve_checkpoint().unwrap();
+        let next = bumped(&root);
         advance(&group, &mut root, next);
         assert!(
             matches!(&(stale.unlink_garbage(&group, retired)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
@@ -2199,8 +1927,8 @@ mod tests {
         // first, so the successor recording the file is durable before any
         // unlink, and only a mirrored one unlinks.
         for (nth, mirrored) in [(1, false), (2, true)] {
-            let (group, root) = with_checkpoint();
-            let retiring = root.retire_segment(1, &current).unwrap();
+            let (group, root) = with_directory();
+            let retiring = retire(&root, &[retired]);
             group.fail(GroupOp::RootSync, nth, FaultTiming::BeforeEffect);
             assert!(
                 matches!(&(publish_root(&group, &root, &retiring)), Err(native_error) if native_error.is_unknown_commit())
@@ -2249,8 +1977,8 @@ mod tests {
         }
 
         // A failed synchronization of the root file unlinks nothing.
-        let (group, mut root) = with_checkpoint();
-        let next = root.retire_segment(1, &current).unwrap();
+        let (group, mut root) = with_directory();
+        let next = retire(&root, &[retired]);
         advance(&group, &mut root, next);
         group.fail(GroupOp::RootSync, 1, FaultTiming::BeforeEffect);
         assert!(
@@ -2284,10 +2012,10 @@ mod tests {
             corrupt_reason(decode_slot(&segment_ceiling)),
             "root segment intent is invalid"
         );
-        let checkpoint_ceiling = with(&[(64, u64::MAX)]);
+        let directory_ceiling = with(&[(DIRECTORY_AT, u64::MAX)]);
         assert_eq!(
-            corrupt_reason(decode_slot(&checkpoint_ceiling)),
-            "root checkpoint reference is invalid"
+            corrupt_reason(decode_slot(&directory_ceiling)),
+            "root directory intent is invalid"
         );
 
         // Just below the ceiling, with an outstanding intent, every derived
@@ -2296,7 +2024,8 @@ mod tests {
             (48, u64::MAX - 1),
             (56, u64::MAX - 3),
             (SEALED_AT, u64::MAX - 3),
-            (64, u64::MAX - 1),
+            (DIRECTORY_AT, u64::MAX - 1),
+            (DIRECTORY_AT + 8, u64::MAX - 2),
         ]);
         let SlotImage::Valid(root) = decode_slot(&near).unwrap() else {
             panic!("near-ceiling root does not decode");
@@ -2310,7 +2039,7 @@ mod tests {
         for id in [u64::MAX - 1, u64::MAX] {
             assert_eq!(root.classify(GroupFile::segment(id)), FileRole::Unexpected);
             assert_eq!(
-                root.classify(GroupFile::checkpoint(id)),
+                root.classify(GroupFile::directory(id)),
                 FileRole::Unexpected
             );
         }
@@ -2319,7 +2048,7 @@ mod tests {
             GroupFile::segment(3),
             GroupFile::segment(4),
             GroupFile::segment(u64::MAX - 2),
-            GroupFile::checkpoint(2),
+            GroupFile::directory(3),
         ] {
             group.insert_foreign(file, Vec::new());
         }
@@ -2334,30 +2063,17 @@ mod tests {
             matches!(&(confirmed.reserve_segment(sealing(&confirmed))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("segment identifier overflow"))))
         );
         assert!(
-            matches!(&(confirmed.reserve_checkpoint()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("checkpoint identifier overflow"))))
+            matches!(&(confirmed.reserve_directory()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("directory identifier overflow"))))
         );
     }
 
     #[test]
     fn publication_refuses_dropped_garbage_and_regressed_state() {
-        let group = InMemoryGroup::new();
-        let mut root = Superblock::genesis(GROUP);
-        for _ in 0..2 {
-            let (next, id) = root.reserve_segment(sealing(&root)).unwrap();
-            advance(&group, &mut root, next);
-            let next = root.confirm_segment(id).unwrap();
-            advance(&group, &mut root, next);
-        }
-        let (next, first) = root.reserve_checkpoint().unwrap();
-        advance(&group, &mut root, next);
-        let (next, second) = root.reserve_checkpoint().unwrap();
-        advance(&group, &mut root, next);
-        let next = root.install_checkpoint(reference(first, 1)).unwrap();
-        advance(&group, &mut root, next);
+        let (group, mut root) = with_directory();
         let stale = root.clone();
-        let next = root.install_checkpoint(reference(second, 2)).unwrap();
+        let recorded = GroupFile::segment(1);
+        let next = retire(&root, &[recorded]);
         advance(&group, &mut root, next);
-        let recorded = GroupFile::checkpoint(first);
         assert_eq!(root.garbage(), [recorded]);
         let before = slots(&group);
 
@@ -2367,7 +2083,7 @@ mod tests {
         cleared.garbage.clear();
         let mut derived = stale.clone();
         while derived.generation() <= root.generation() {
-            derived = derived.reserve_checkpoint().unwrap().0;
+            derived = bumped(&derived);
         }
         for candidate in [&cleared, &derived] {
             assert!(
@@ -2401,10 +2117,15 @@ mod tests {
         let unlinked = root.unlink_garbage(&group, recorded).unwrap();
         root = publish_forget(&group, &root, unlinked).unwrap();
         assert!(root.garbage().is_empty());
-        // The older root would now reference the unlinked checkpoint again.
-        let mut regressed = stale;
+        // A newer directory commit; the older root would select the older one.
+        let older = root.clone();
+        let mut newer = commit(2);
+        newer.start.position.segment_id = 3;
+        let next = root.install_directory(newer).unwrap();
+        advance(&group, &mut root, next);
+        let mut regressed = older;
         while regressed.generation() <= root.generation() {
-            regressed = regressed.reserve_checkpoint().unwrap().0;
+            regressed = bumped(&regressed);
         }
         let before = slots(&group);
         assert!(
@@ -2418,13 +2139,15 @@ mod tests {
 
     #[test]
     fn non_successor_publication_has_no_effect() {
-        let (group, root) = published(2);
+        let (group, mut root) = published(2);
+        let (next, _) = root.reserve_directory().unwrap();
+        advance(&group, &mut root, next);
         let before = slots(&group);
         let (next, _) = root.reserve_segment(None).unwrap();
         let mut skipped = next.clone();
         skipped.generation += 1;
         let mut regressed = next.clone();
-        regressed.next_checkpoint_id = 1;
+        regressed.next_directory_id = 1;
         let mut foreign = next.clone();
         foreign.group_id = [9; 16];
         for candidate in [skipped, regressed, foreign, root.clone()] {
@@ -2433,9 +2156,8 @@ mod tests {
             );
         }
         // A stale predecessor the slots do not hold is refused as well.
-        let mut stale = root.clone();
-        stale.next_checkpoint_id += 1;
-        let (stale_next, _) = stale.reserve_checkpoint().unwrap();
+        let stale = bumped(&root);
+        let stale_next = bumped(&stale);
         assert!(
             matches!(&(publish_root(&group, &stale, &stale_next)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
         );

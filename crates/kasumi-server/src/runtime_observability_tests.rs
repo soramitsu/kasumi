@@ -1703,3 +1703,102 @@ async fn generated_standalone_profile_idle_budget() {
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
 }
+
+#[test]
+fn standalone_daemon_stops_when_its_control_plane_closes() {
+    // Same installed stack and stack allowance as the generated profile above.
+    std::thread::Builder::new()
+        .name("standalone control closure".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(standalone_control_closure_stops_daemon()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn standalone_control_closure_stops_daemon() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let root = directory.path().join("kasumi");
+    let directory_policy = kasumi_store::DirectoryPolicy::fixture();
+    let file_allocation_policy = kasumi_store::FileAllocationPolicy::fixture();
+    let (persistent, scratch) =
+        crate::standalone::installation_disks(&root, directory_policy, file_allocation_policy)
+            .unwrap();
+    let policy = generated_admission(&persistent, &scratch).unwrap();
+    let storage = crate::runtime_memory::RuntimeStorage::isolated_installation(policy).unwrap();
+    let installation = crate::standalone::initialize_with_storage(
+        &root,
+        "tenant-a",
+        directory_policy,
+        file_allocation_policy,
+        crate::standalone::StandaloneNetwork::fixture(),
+        crate::standalone::local_audit_placements("tenant-a"),
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
+    let mut control = ClientProfile::load(&installation.control_profile).unwrap();
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect::<Vec<_>>();
+    config.mcp.listen = listeners[0].local_addr().unwrap();
+    config.native.listen = listeners[1].local_addr().unwrap();
+    config.admin.listen = listeners[2].local_addr().unwrap();
+    config.mcp.protocol = crate::mcp::McpConfig::new(format!(
+        "https://localhost:{}/mcp",
+        config.mcp.listen.port()
+    ))
+    .unwrap();
+    control.mcp_endpoint = config.mcp.protocol.public_url.clone();
+    control.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
+    control.administrative_members.get_mut(&1).unwrap().endpoint =
+        format!("https://localhost:{}", config.admin.listen.port());
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
+    drop(listeners);
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let management = runtime.administration.as_ref().unwrap().clone();
+    let control_store = runtime.control.store.clone();
+    let (_stop, shutdown) = watch::channel(false);
+    let mut serving = tokio::spawn(runtime.serve(shutdown));
+    let client = http(&control, true);
+    let operator = control.bearer().unwrap();
+    let ready = format!(
+        "{}/ready",
+        control.administrative_member().unwrap().endpoint
+    );
+    let value: serde_json::Value = ready_response(&client, &ready, &operator, "control_closure")
+        .await
+        .json()
+        .await
+        .unwrap();
+    assert_eq!(value["ready"], true);
+    assert!(management.control_closure().is_none());
+
+    // A sealed key lease is one of the fences the control plane never
+    // recovers from in process. Serving must end with an error (a non-zero
+    // daemon exit) instead of retrying reconciliation forever.
+    control_store.seal();
+    assert_eq!(management.control_closure().unwrap().0, "key_lease_sealed");
+    let error = tokio::time::timeout(Duration::from_secs(30), &mut serving)
+        .await
+        .expect("daemon kept serving after its control plane closed")
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        format!("{error:#}").contains("control plane closed"),
+        "unexpected serving failure: {error:#}"
+    );
+}

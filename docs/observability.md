@@ -207,6 +207,14 @@ is still complete. Its issues are logged once as component names, and the stale
 generation leaves the registry. While fresh admission is pending, a live
 credential bound to that exact incarnation receives `Unavailable` (retry the
 same request). Unknown tenants and other credentials still receive `Forbidden`.
+
+The node control plane has no such in-process fresh admission. When it closes
+(any `closure_cause` below other than `shutting_down`), the reconciliation loop
+logs `control_plane_closed` at ERROR and the daemon drains and exits non-zero,
+so its service manager reopens it (`deploy/kasumi.service` restarts on
+failure). Run every `kasumid serve` under a restarting supervisor: a daemon that
+stays down outlives its issued credentials, which then need
+`recover-existing-credentials`.
 Each event carries only fixed classes:
 
 | `event` | Fields |
@@ -215,7 +223,8 @@ Each event carries only fixed classes:
 | `original_tenant_drain_completed_with_issues` | `components`: drain component names |
 | `original_tenant_recovery_failed` (message `original tenant remains closed pending fresh admission`) | `recover_stage`: `enrollment_mismatch`, `previous_lease_retained`, `previous_detach`, `previous_shutdown_retained`, `custody_open`, `access_lease`, `key_provider`, `storage_open`, `admission_reserve`, `engine_open`, `route_register`, `setup_route_changed`, `publish`, `initialize`, `unclassified`; `closure_cause` |
 | `original_tenant_reopened` | `closure_cause`, `key_lease_class`, `drained_with_issues`, `failed_attempts` |
-| `readiness_probe_failed` | `readiness_error_class`: `control_unavailable`, `epoch_unavailable`, `epoch_changed`, `stopped`, `admission_reserve`, `memory_pressure`, `route_invalid`, `generation_unavailable`, `probe_admission`, `actor_probe_failed`, `probe_deadline`, `unclassified` |
+| `control_plane_closed` (ERROR, message `control plane closed; daemon stopping for restart`) | `closure_cause` (as for `original_tenant_closed`), `key_lease_class` |
+| `readiness_probe_failed` | `readiness_error_class`: `control_unavailable`, `epoch_unavailable`, `epoch_changed`, `stopped`, `admission_reserve`, `memory_pressure`, `route_invalid`, `generation_unavailable`, `probe_admission`, `actor_probe_failed`, `probe_deadline`, `unclassified`; `control_closure_cause`: a `closure_cause`, or `none` |
 
 A consensus write that commits and then loses group access before its result
 is released returns `UnknownOutcome`. It no longer fails the proposal child, so

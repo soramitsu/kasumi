@@ -2,7 +2,6 @@
 //! A serialized Control phase is history, not authority to call the writer.
 //! Runtime admission must verify it through installed Control and reserve the
 //! exact dispatch in the independent journal before using this format.
-#![allow(dead_code)]
 
 use anyhow::{Context, Result, ensure};
 use kasumi_store::TenantStore;

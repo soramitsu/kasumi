@@ -90,21 +90,13 @@ impl Superblock {
         Ok(next)
     }
 
-    /// Record one file for retirement under a completed reachability proof.
-    /// The proof constructor belongs to the reclaim module; callers cannot
-    /// substitute a boolean or a hand-built list of supposedly dead pages.
-    pub(crate) fn retire_directory_file(
-        &self,
-        proof: &ReachabilityProof,
-    ) -> Result<Self, CoreError> {
-        self.retire_directory_files(std::slice::from_ref(proof))
-    }
-
     /// Publish one bounded garbage batch after the selected root and all pins
     /// have been scanned. Every proof must describe this exact publication,
     /// so allocation/confirmation changes invalidate a proof even when they
     /// preserve the selected DirectoryCommit. Pin epochs are checked under
-    /// the DiskState lock by the reclaim owner before this transition.
+    /// the DiskState lock by the reclaim owner before this transition. The
+    /// proof constructor belongs to the reclaim module; callers cannot
+    /// substitute a boolean or a hand-built list of supposedly dead pages.
     pub(crate) fn retire_directory_files(
         &self,
         proofs: &[ReachabilityProof],
@@ -177,7 +169,6 @@ impl Superblock {
                     && self.pending_directory() != Some(file.id)
                     && commit.root.page.is_none_or(|page| page.arena_id != file.id)
             }
-            FileKind::Checkpoint => false,
         }
     }
 
@@ -195,11 +186,8 @@ impl Superblock {
         {
             return Some("root directory intent is invalid");
         }
-        if let Some(commit) = self.directory {
-            if self.checkpoint.is_some() {
-                return Some("root has two replay authorities");
-            }
-            if commit.root.validate().is_err()
+        if let Some(commit) = self.directory
+            && (commit.root.validate().is_err()
                 || commit.root.group_id != self.group_id
                 || commit.root.generation != commit.start.batch_seq
                 || commit.start.batch_seq == 0
@@ -211,10 +199,9 @@ impl Superblock {
                 || commit
                     .root
                     .page
-                    .is_some_and(|page| page.arena_id > self.last_directory_id)
-            {
-                return Some("root directory commit is invalid");
-            }
+                    .is_some_and(|page| page.arena_id > self.last_directory_id))
+        {
+            return Some("root directory commit is invalid");
         }
         None
     }
@@ -307,7 +294,7 @@ pub(super) fn decode_directory(
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::directory::DirectoryPageRef;
     use crate::group::{FaultTiming, GroupOp, InMemoryGroup, SegmentGroupBackend};
@@ -318,14 +305,14 @@ mod tests {
     use crate::segment::crc32c;
     use crate::segment::test_support::{GROUP, corrupt_reason};
 
-    fn allocated() -> Superblock {
+    pub(in crate::root) fn allocated() -> Superblock {
         let (root, id) = Superblock::genesis(GROUP).reserve_segment(None).unwrap();
         let root = root.confirm_segment(id).unwrap();
         let (root, id) = root.reserve_directory().unwrap();
         root.confirm_directory(id).unwrap()
     }
 
-    fn commit(sequence: u64) -> DirectoryCommit {
+    pub(in crate::root) fn commit(sequence: u64) -> DirectoryCommit {
         DirectoryCommit {
             root: DirectoryRoot {
                 group_id: GROUP,
@@ -349,7 +336,10 @@ mod tests {
         }
     }
 
-    fn retirement_root() -> Superblock {
+    /// Segments 1..=4 and arenas 1..=4, with the selected directory page in
+    /// arena 3 replaying from segment 3: segments 1 and 2 and arenas 1 and 2
+    /// are retirable.
+    pub(in crate::root) fn retirement_root() -> Superblock {
         let mut root = allocated();
         for _ in 0..2 {
             let sealed = crate::segment::SealedSegment {
@@ -377,7 +367,7 @@ mod tests {
         root.confirm_segment(id).unwrap()
     }
 
-    fn proof(root: &Superblock, file: GroupFile) -> ReachabilityProof {
+    pub(in crate::root) fn proof(root: &Superblock, file: GroupFile) -> ReachabilityProof {
         ReachabilityProof::for_test(root.directory().unwrap(), root.generation(), file)
     }
 
@@ -411,10 +401,9 @@ mod tests {
             GroupFile::directory(3),
             GroupFile::directory(4),
             GroupFile::directory(5),
-            GroupFile::checkpoint(1),
         ] {
             assert!(
-                matches!(&(root.retire_directory_file(&proof(&root, file))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
+                matches!(&(root.retire_directory_files(&[proof(&root, file)])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                     "directory retirement file is protected"
                 )))),
                 "{file:?}"
@@ -423,12 +412,12 @@ mod tests {
         let (pending, id) = root.reserve_directory().unwrap();
         assert!(
             pending
-                .retire_directory_file(&proof(&pending, GroupFile::directory(id)))
+                .retire_directory_files(&[proof(&pending, GroupFile::directory(id))])
                 .is_err()
         );
         assert!(
             pending
-                .retire_directory_file(&proof(&pending, GroupFile::directory(4)))
+                .retire_directory_files(&[proof(&pending, GroupFile::directory(4))])
                 .is_err()
         );
         let sealed = crate::segment::SealedSegment {
@@ -439,7 +428,7 @@ mod tests {
         let (pending, id) = root.reserve_segment(Some(sealed)).unwrap();
         assert!(
             pending
-                .retire_directory_file(&proof(&pending, GroupFile::segment(id)))
+                .retire_directory_files(&[proof(&pending, GroupFile::segment(id))])
                 .is_err()
         );
     }
@@ -451,7 +440,7 @@ mod tests {
         let (new_allocation, _) = root.reserve_directory().unwrap();
         assert_eq!(new_allocation.directory(), root.directory());
         assert!(
-            matches!(&(new_allocation.retire_directory_file(&old_proof)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
+            matches!(&(new_allocation.retire_directory_files(std::slice::from_ref(&old_proof))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory reachability proof is stale"
             ))))
         );
@@ -460,7 +449,7 @@ mod tests {
         let other_proof =
             ReachabilityProof::for_test(other_commit, root.generation(), GroupFile::directory(1));
         assert!(
-            matches!(&(root.retire_directory_file(&other_proof)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
+            matches!(&(root.retire_directory_files(std::slice::from_ref(&other_proof))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory reachability proof is stale"
             ))))
         );
@@ -474,7 +463,7 @@ mod tests {
             GroupFile::directory(1),
         );
         assert!(
-            matches!(&(advanced.retire_directory_file(&forged_generation)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
+            matches!(&(advanced.retire_directory_files(std::slice::from_ref(&forged_generation))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(
                 "directory reachability proof is stale"
             ))))
         );
@@ -508,7 +497,7 @@ mod tests {
         let full = root.retire_directory_files(&proofs).unwrap();
         assert_eq!(full.garbage().len(), MAX_GARBAGE);
         assert!(
-            matches!(&(full.retire_directory_file(&proof(&full, GroupFile::segment(1)))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
+            matches!(&(full.retire_directory_files(&[proof(&full, GroupFile::segment(1))])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
         );
         assert_eq!(full.garbage().len(), MAX_GARBAGE);
     }
@@ -526,7 +515,7 @@ mod tests {
         }
         group.sync_root().unwrap();
         let file = GroupFile::directory(1);
-        let retired = root.retire_directory_file(&proof(&root, file)).unwrap();
+        let retired = root.retire_directory_files(&[proof(&root, file)]).unwrap();
         assert!(retired.unlink_garbage(&group, file).is_err());
         assert!(group.exists(file).unwrap());
         publish_root(&group, &root, &retired).unwrap();

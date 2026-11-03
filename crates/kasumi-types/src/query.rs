@@ -69,10 +69,16 @@ impl Filter {
         self.fields.is_empty() && self.and.is_empty() && self.or.is_empty() && self.not.is_none()
     }
 
-    /// Matches when at least one of `filters` matches.
+    /// Matches when at least one of `filters` matches, so no alternatives
+    /// match no document. The wire form rejects an empty `or`; the negated
+    /// empty filter is its canonical never-matching spelling.
     pub fn or(filters: impl IntoIterator<Item = Filter>) -> Self {
+        let or: Vec<Filter> = filters.into_iter().collect();
+        if or.is_empty() {
+            return !Self::new();
+        }
         Self {
-            or: filters.into_iter().collect(),
+            or,
             ..Self::default()
         }
     }
@@ -182,17 +188,17 @@ impl Filter {
         slot: impl Fn(&mut Condition) -> &mut Option<T>,
         value: T,
     ) -> Self {
-        let condition = self.fields.entry(path.clone()).or_default();
-        if slot(condition).is_none() {
-            *slot(condition) = Some(value);
-            return self;
+        let mut condition = Condition::default();
+        *slot(&mut condition) = Some(value);
+        let existing = self.fields.entry(path.clone()).or_default();
+        if existing.disjoint(&condition) {
+            existing.merge(condition);
+        } else {
+            self.and.push(Filter {
+                fields: BTreeMap::from([(path, condition)]),
+                ..Filter::default()
+            });
         }
-        let mut repeated = Condition::default();
-        *slot(&mut repeated) = Some(value);
-        self.and.push(Filter {
-            fields: BTreeMap::from([(path, repeated)]),
-            ..Filter::default()
-        });
         self
     }
 }
@@ -228,13 +234,16 @@ impl Condition {
         (only_eq && !eq.is_object() && !eq.is_array()).then_some(eq)
     }
 
+    /// Whether both conditions fit in one: each operator at most once, and a
+    /// field takes only one lower bound (`gt` or `gte`) and one upper bound
+    /// (`lt` or `lte`).
     fn disjoint(&self, other: &Condition) -> bool {
+        let lower = |condition: &Condition| condition.gt.is_some() || condition.gte.is_some();
+        let upper = |condition: &Condition| condition.lt.is_some() || condition.lte.is_some();
         (self.eq.is_none() || other.eq.is_none())
             && (self.ne.is_none() || other.ne.is_none())
-            && (self.gt.is_none() || other.gt.is_none())
-            && (self.gte.is_none() || other.gte.is_none())
-            && (self.lt.is_none() || other.lt.is_none())
-            && (self.lte.is_none() || other.lte.is_none())
+            && !(lower(self) && lower(other))
+            && !(upper(self) && upper(other))
             && (self.r#in.is_none() || other.r#in.is_none())
             && (self.nin.is_none() || other.nin.is_none())
             && (self.exists.is_none() || other.exists.is_none())
@@ -900,6 +909,43 @@ mod tests {
 
     fn parse(value: Value) -> Result<QueryRequest, String> {
         serde_json::from_value(value).map_err(|error| error.to_string())
+    }
+
+    #[test]
+    fn exclusive_and_inclusive_bounds_become_separate_conjuncts() {
+        let filter = Filter::new()
+            .gt("/n", 1)
+            .gte("/n", 5)
+            .lte("/n", 9)
+            .lt("/n", 7);
+        assert_eq!(
+            serde_json::to_value(&filter.fields["/n"]).unwrap(),
+            json!({"gt": 1, "lte": 9})
+        );
+        assert_eq!(filter.and.len(), 2);
+        for conjunct in &filter.and {
+            let condition = &conjunct.fields["/n"];
+            assert!(!(condition.gt.is_some() && condition.gte.is_some()));
+            assert!(!(condition.lt.is_some() && condition.lte.is_some()));
+        }
+        let joined = Filter::new().gt("/n", 1).and(Filter::new().gte("/n", 5));
+        assert_eq!(joined.fields["/n"].gte, None);
+        assert_eq!(joined.and.len(), 1);
+    }
+
+    #[test]
+    fn empty_alternatives_match_nothing_instead_of_everything() {
+        let none = Filter::or(Vec::<Filter>::new());
+        assert!(!none.is_all());
+        let query = QueryRequest::new("invoices").filter(none);
+        let encoded = serde_json::to_value(&query).unwrap();
+        assert_eq!(encoded["filter"], json!({"not": {}}));
+        assert_eq!(parse(encoded).unwrap(), query);
+        // Combined with other constraints it still excludes every document.
+        let combined = Filter::new()
+            .eq("/status", "open")
+            .and(Filter::or(Vec::<Filter>::new()));
+        assert_eq!(combined.not, Some(Box::new(Filter::new())));
     }
 
     #[test]
