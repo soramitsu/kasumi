@@ -536,6 +536,73 @@ fn inspected_reader_failure_retires_directly_after_successful_close() {
 }
 
 #[test]
+fn failed_reader_finish_waits_for_its_close_attempt_under_opening_contention() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("reader-failed-finish.kasumi");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    let tables = opening.queue_node_tables().unwrap();
+    assert_eq!(tables.run(), NodeWriterPhase::Finished);
+    opening.publish_ready_after_tables(&tables).unwrap();
+    assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
+    let hash = [11u8; 32];
+    {
+        let state = opening.registration.owner().state.lock();
+        let transaction = state.engine.database().unwrap().begin_write().unwrap();
+        {
+            let mut catalog = transaction.open_table(crate::CATALOG).unwrap();
+            catalog
+                .insert(hash.as_slice(), b"ciphertext".as_slice())
+                .unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+
+    let reader = opening.queue_read().unwrap();
+    assert_eq!(reader.begin(), NodeReadPhase::Active);
+    // A routine bounded-read refusal fails the reader with its transaction
+    // still installed.
+    assert!(matches!(
+        reader.catalog_bytes(hash, 1),
+        Err(NodeReadAccessError::Reported)
+    ));
+    assert_eq!(reader.phase(), NodeReadPhase::Failed);
+    // Another opening operation owns the lock when the caller settles.
+    let held = opening.registration.owner().state.lock();
+    let (entered, started) = std::sync::mpsc::sync_channel(0);
+    let worker = std::thread::spawn(move || {
+        entered.send(()).unwrap();
+        let phase = reader.finish();
+        (phase, reader)
+    });
+    started.recv().unwrap();
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(
+        !worker.is_finished(),
+        "a failed reader reported its phase before its transaction close attempt"
+    );
+    drop(held);
+    let (phase, reader) = worker.join().unwrap();
+    assert_eq!(phase, NodeReadPhase::Finished);
+    assert!(matches!(
+        reader.report().read_failure(),
+        TerminalObservation::Returned(Err(kasumi_kv::BoundedReadError::BoundExceeded))
+    ));
+    assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
+}
+
+#[test]
 fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("reader-owned-output.kasumi");
@@ -574,24 +641,18 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
     assert_eq!(point.as_bytes(), value);
     assert_eq!(row.key(), key);
     assert_eq!(row.value(), value);
-    let row_charge = TestDiskMemory::required_reservation_bytes(
-        crate::disk_memory::add(
-            crate::disk_memory::allocation::<u8>(8192).unwrap(),
-            crate::disk_memory::allocation::<u8>(64).unwrap(),
-        )
-        .unwrap(),
-    )
-    .unwrap();
     let native_charge =
         |len: usize| TestDiskMemory::required_reservation_bytes(native_output_bytes(len)).unwrap();
     let point_total = native_charge(value.len());
-    let row_total = row_charge + native_charge(key.len()) + native_charge(value.len());
+    // A range row holds only the exact native key and value charges, never a
+    // second reservation sized to the caller's maximum key and value bounds.
+    let row_total = native_charge(key.len()) + native_charge(value.len());
     let charged = memory.snapshot();
     assert_eq!(
         charged.used_bytes - before.used_bytes,
         point_total + row_total
     );
-    assert_eq!(charged.live_reservations - before.live_reservations, 4);
+    assert_eq!(charged.live_reservations - before.live_reservations, 3);
 
     assert_eq!(reader.finish(), NodeReadPhase::Finished);
     assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
@@ -601,7 +662,7 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
     drop(row);
     let after_row = memory.snapshot();
     assert_eq!(held.used_bytes - after_row.used_bytes, row_total);
-    assert_eq!(held.live_reservations - after_row.live_reservations, 3);
+    assert_eq!(held.live_reservations - after_row.live_reservations, 2);
     drop(point);
     let after_point = memory.snapshot();
     assert_eq!(after_row.used_bytes - after_point.used_bytes, point_total);
@@ -609,6 +670,71 @@ fn owned_reader_point_and_range_bytes_keep_exact_credit_after_close() {
         after_row.live_reservations - after_point.live_reservations,
         1
     );
+}
+
+#[test]
+fn range_row_under_a_large_value_bound_needs_only_its_exact_native_credit() {
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("reader-large-bound.kasumi");
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = disk(&path, &memory);
+    let opening = RegisteredNodeOpening::prepare(
+        &path,
+        ID,
+        disk,
+        NodeOpeningMode::Create,
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap();
+    assert_eq!(opening.open(), NodeOpeningPhase::Open);
+    let tables = opening.queue_node_tables().unwrap();
+    assert_eq!(tables.run(), NodeWriterPhase::Finished);
+    opening.publish_ready_after_tables(&tables).unwrap();
+    assert_eq!(tables.retire(), StorageCensusDisposition::Retired);
+    let key = b"tenant/row";
+    let value = b"encrypted value";
+    {
+        let state = opening.registration.owner().state.lock();
+        let transaction = state.engine.database().unwrap().begin_write().unwrap();
+        {
+            let mut records = transaction.open_table(crate::RECORDS).unwrap();
+            records.insert(key.as_slice(), value.as_slice()).unwrap();
+        }
+        transaction.commit().unwrap();
+    }
+
+    let reader = opening.queue_read().unwrap();
+    assert_eq!(reader.begin(), NodeReadPhase::Active);
+    // A restore scan of document bodies passes a 32 MiB value bound. With far
+    // less headroom than that bound, a small stored row must still be readable.
+    let before_fill = memory.snapshot();
+    let headroom = 1 << 20;
+    let fill_bytes = (256u64 << 20)
+        .checked_sub(before_fill.bookkeeping_bytes + before_fill.used_bytes + headroom)
+        .and_then(|available| {
+            available.checked_sub(TestDiskMemory::required_reservation_bytes(0).unwrap())
+        })
+        .expect("the opened reader leaves more than 1 MiB of headroom");
+    let fill = memory.clone().reserve_installed(fill_bytes).unwrap();
+    let row = reader
+        .next_record(b"tenant/", None, 32 << 20)
+        .unwrap()
+        .expect("stored row");
+    assert_eq!(row.key(), key);
+    assert_eq!(row.value(), value);
+    let cursor = row.into_key();
+    assert!(
+        reader
+            .next_record(b"tenant/", Some(cursor.as_bytes()), 32 << 20)
+            .unwrap()
+            .is_none()
+    );
+    drop(cursor);
+    drop(fill);
+    assert_eq!(reader.finish(), NodeReadPhase::Finished);
+    assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
+    assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 }
 
 #[test]

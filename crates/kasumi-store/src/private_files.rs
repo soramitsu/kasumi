@@ -57,7 +57,7 @@ fn options() -> OpenOptions {
 }
 
 pub fn read(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
-    let file = options().read(true).open(path)?;
+    let mut file = options().read(true).open(path)?;
     let metadata = file.metadata()?;
     ensure!(
         metadata.is_file(),
@@ -68,11 +68,18 @@ pub fn read(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
         metadata.len() <= maximum as u64,
         "operator material exceeds size limit"
     );
+    // Read into one exact zeroizing allocation. A growing buffer would move
+    // secret prefixes and free the old allocations without wiping them.
+    let length = usize::try_from(metadata.len())?;
     let mut bytes = Zeroizing::new(Vec::new());
-    file.take(maximum as u64 + 1).read_to_end(&mut bytes)?;
+    bytes
+        .try_reserve_exact(length)
+        .context("operator material allocation failed")?;
+    bytes.resize(length, 0);
+    file.read_exact(&mut bytes)?;
     ensure!(
-        bytes.len() <= maximum,
-        "operator material exceeds size limit"
+        file.read(&mut [0; 1])? == 0,
+        "operator material changed while it was read"
     );
     Ok(bytes)
 }
@@ -261,5 +268,27 @@ impl Drop for ExclusiveLock {
                 libc::flock(self.0.as_raw_fd(), libc::LOCK_UN);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_read_fills_one_exact_zeroizing_allocation() {
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let directory = root.path().join("private");
+        create_directory(&directory).unwrap();
+        let path = directory.join("material.json");
+        // Large enough that an unsized read would grow and free old copies.
+        let material = (0..5000u32).map(|n| (n % 251) as u8).collect::<Vec<_>>();
+        create(&path, &material).unwrap();
+        let (bytes, allocations, requested) =
+            crate::allocation_tests::measure_requested(|| read(&path, 1 << 20).unwrap());
+        assert_eq!(bytes.as_slice(), material.as_slice());
+        assert_eq!(allocations, 1);
+        assert_eq!(requested, material.len());
+        assert!(read(&path, material.len() - 1).is_err());
     }
 }

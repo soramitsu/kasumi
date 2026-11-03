@@ -141,6 +141,57 @@ fn managed_same_extent_rename_invalidates_scan_without_fencing_healthy_storage()
     disk.delete_file(file).unwrap();
 }
 #[test]
+fn namespace_effects_outside_the_listed_directory_keep_its_scan_current() {
+    let (root, config, memory) = fixture();
+    for name in ["listed", "other"] {
+        crate::private_files::create_directory(&root.path().join(name)).unwrap();
+    }
+    let disk = open(&config, &memory);
+    for name in ["listed/one", "listed/two"] {
+        drop(
+            disk.create_file("fixture", Path::new(name), DiskWork::Foreground)
+                .unwrap(),
+        );
+    }
+    let cancel = CensusCancellation::default();
+    let listed = || {
+        disk.open_directory("fixture", Path::new("listed"))
+            .unwrap()
+            .cursor(&cancel)
+            .unwrap()
+    };
+    let mut reading = listed();
+    let mut seen = vec![reading.next(&cancel).unwrap().unwrap().name().to_owned()];
+    // A sibling and an ancestor change; neither changes the listed entries.
+    for name in ["other/three", "four"] {
+        drop(
+            disk.create_file("fixture", Path::new(name), DiskWork::Foreground)
+                .unwrap(),
+        );
+    }
+    while let Some(entry) = reading.next(&cancel).unwrap() {
+        seen.push(entry.name().to_owned());
+    }
+    seen.sort();
+    assert_eq!(seen, [c"one".to_owned(), c"two".to_owned()]);
+    drop(reading);
+
+    // A change to the listed directory itself still invalidates its scan.
+    let mut reading = listed();
+    reading.next(&cancel).unwrap().unwrap();
+    drop(
+        disk.create_file("fixture", Path::new("listed/five"), DiskWork::Foreground)
+            .unwrap(),
+    );
+    assert_eq!(
+        reading.next(&cancel).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    drop(reading);
+    assert_eq!(disk.snapshot().open_directories, 0);
+}
+#[test]
 fn configured_name_boundary_is_read_without_truncation_or_native_name_copy() {
     let (_root, config, memory) = fixture();
     let disk = open(&config, &memory);

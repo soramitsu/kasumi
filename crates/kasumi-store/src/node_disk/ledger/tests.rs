@@ -17,6 +17,7 @@ fn directory(binding: u8, parent: Option<Identity>) -> AccountedDirectory {
         live_handles: 0,
         transaction_children: 0,
         transaction_claimed: false,
+        membership_generation: 0,
     }
 }
 

@@ -373,20 +373,22 @@ fn file_capacity_remains_independent_of_directory_membership() {
     );
     assert!(!directory.path().join("overflow").exists());
     // The same admitted namespace now completes over retained bounded steps.
-    let old = disk
-        .lock_state()
-        .accounted
-        .iter()
-        .map(|(key, entry)| (*key, *entry))
-        .collect::<std::collections::BTreeMap<_, _>>();
-    disk.reconcile(&CensusCancellation::default()).unwrap();
-    assert_eq!(
+    // Census rebuilds accounting; listing generations are in-memory only.
+    let accounting = || {
         disk.lock_state()
             .accounted
             .iter()
-            .map(|(key, entry)| (*key, *entry))
-            .collect::<std::collections::BTreeMap<_, _>>(),
-        old
-    );
+            .map(|(key, entry)| {
+                let mut entry = *entry;
+                if let Some(directory) = entry.directory_mut() {
+                    directory.membership_generation = 0;
+                }
+                (*key, entry)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>()
+    };
+    let old = accounting();
+    disk.reconcile(&CensusCancellation::default()).unwrap();
+    assert_eq!(accounting(), old);
     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
 }

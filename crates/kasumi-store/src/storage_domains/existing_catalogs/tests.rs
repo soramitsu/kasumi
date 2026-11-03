@@ -234,6 +234,26 @@ async fn caller_cancellation_never_closes_a_borrowed_custody_owner() -> Result<(
 }
 
 #[tokio::test]
+async fn stopped_node_refuses_existing_catalogs_before_registering_a_worker() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    // Shutdown has stopped the database and drained its initializers; a later
+    // open must not leave a worker that no drain will join.
+    fixture.node.shutdown().await.unwrap();
+    let error = fixture
+        .custody()
+        .await
+        .err()
+        .expect("a stopped node opened an existing catalog");
+    assert!(
+        format!("{error:#}").contains("node catalog admission is closed"),
+        "{error:#}"
+    );
+    let initializers = fixture.node.body().initializers.lock().await;
+    assert!(initializers.handles.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
 async fn buffered_existing_pair_ticket_publishes_nothing_and_drains_its_new_workers() -> Result<()>
 {
     let fixture = Fixture::new().await?;

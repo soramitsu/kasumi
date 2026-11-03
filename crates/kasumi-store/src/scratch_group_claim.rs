@@ -461,7 +461,8 @@ impl State {
                     .checked_add(length)
                     .ok_or(io::ErrorKind::InvalidData)?;
             }
-            spool.sync_all()?;
+            // Settlement flushes the cached block and synchronizes the exact
+            // extent before observing it; a preceding sync would repeat it.
             spool.settle_growth(length)?;
         }
         if seen != created
@@ -478,7 +479,6 @@ impl State {
             .spool
             .spool()
             .ok_or(io::ErrorKind::BrokenPipe)?;
-        root.sync_all()?;
         root.settle_growth(root.len())?;
         self.transaction
             .as_mut()

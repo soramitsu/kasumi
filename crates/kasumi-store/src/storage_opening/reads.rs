@@ -115,11 +115,10 @@ impl AdmittedReadBytes {
     }
 }
 
-/// Both owned vectors share the pre-effect reservation for this one row.
+/// Each owned vector retains its own exact native reservation for this row.
 pub struct OwnedEncryptedRow {
     key: kasumi_kv::AdmittedValue,
     value: kasumi_kv::AdmittedValue,
-    _charge: crate::DiskMemoryLease,
 }
 impl OwnedEncryptedRow {
     pub fn key(&self) -> &[u8] {
@@ -129,15 +128,10 @@ impl OwnedEncryptedRow {
         self.value.as_bytes()
     }
     /// Keep only the native-admitted key for the next range seek. The value
-    /// and its pessimistic outer reservation are released before that seek.
+    /// and its native reservation are released before that seek.
     pub fn into_key(self) -> AdmittedReadBytes {
-        let Self {
-            key,
-            value,
-            _charge,
-        } = self;
+        let Self { key, value } = self;
         drop(value);
-        drop(_charge);
         AdmittedReadBytes {
             bytes: key,
             _charge: None,
@@ -1227,16 +1221,9 @@ impl RegisteredNodeRead {
         {
             return Err(NodeReadAccessError::InvalidInput);
         }
-        // engine may return an 8192-byte stored key even for a short seek prefix.
-        let key_bound =
-            crate::disk_memory::allocation::<u8>(8192).map_err(NodeReadAccessError::Admission)?;
-        let value_bound = crate::disk_memory::allocation::<u8>(
-            u64::try_from(max_value_bytes).map_err(|_| NodeReadAccessError::InvalidInput)?,
-        )
-        .map_err(NodeReadAccessError::Admission)?;
-        let bound = crate::disk_memory::add(key_bound, value_bound)
-            .map_err(NodeReadAccessError::Admission)?;
-        let charge = self.reserve_output(bound)?;
+        // Core reserves the exact stored key and value before copying them and
+        // keeps each native lease with its bytes. A caller's value bound is not
+        // charged again: it may be far larger than any actual row.
         self.read_current(|transaction| {
             transaction.next_bytes(crate::RECORDS, prefix, after, max_value_bytes)
         })
@@ -1244,7 +1231,6 @@ impl RegisteredNodeRead {
             result.map(|row| OwnedEncryptedRow {
                 key: row.key,
                 value: row.value,
-                _charge: charge,
             })
         })
     }
@@ -1253,13 +1239,19 @@ impl RegisteredNodeRead {
         loop {
             let mut state = request.state.lock();
             let phase = request.finish_observed(&mut state);
-            if phase != NodeReadPhase::Active {
+            // A failed ordinary read keeps its installed transaction until
+            // that transaction's own close attempt; losing the opening lock to
+            // another operation is not that attempt.
+            let unclosed = phase == NodeReadPhase::Failed
+                && state.source.is_none()
+                && state.transaction.is_some();
+            if phase != NodeReadPhase::Active && !unclosed {
                 return phase;
             }
-            // An active reader can remain Active here only when another
-            // opening operation briefly owns its state lock. Do not report a
-            // failed catalog read before the same transaction gets its actual
-            // close and disposal attempt. Release the reader lock so the
+            // An active or failed reader can remain unclosed here only when
+            // another opening operation briefly owns its state lock. Do not
+            // report a failed catalog read before the same transaction gets its
+            // actual close and disposal attempt. Release the reader lock so the
             // competing opening operation can finish before this retry.
             drop(state);
             std::thread::yield_now();

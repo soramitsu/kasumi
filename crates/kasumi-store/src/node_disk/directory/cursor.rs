@@ -151,7 +151,7 @@ impl NodeDiskDirectory {
         let entry = *state.accounted[&self.owner().identity]
             .directory()
             .expect("verified directory");
-        let generation = state.namespace_generation;
+        let generation = entry.membership_generation;
         let next = state
             .open_directory_cursors
             .checked_add(1)
@@ -258,9 +258,22 @@ impl NodeDiskDirectoryCursor {
                 self.stop(io::ErrorKind::Other);
                 return Err(io::ErrorKind::Other.into());
             }
-            if state.namespace_generation != self.generation {
-                // A managed mutation makes this scan incomplete, even a rename
-                // that preserved length/blocks/count. It does not corrupt disk.
+            let identity = self
+                .directory
+                .as_ref()
+                .expect("retained directory")
+                .owner()
+                .identity;
+            if state
+                .accounted
+                .get(&identity)
+                .and_then(AccountedInode::directory)
+                .is_some_and(|entry| entry.membership_generation != self.generation)
+            {
+                // A managed mutation of this directory makes this scan
+                // incomplete, even a rename that preserved length/blocks/count.
+                // It does not corrupt disk. Effects elsewhere leave it current;
+                // a missing enrollment fails the verification below.
                 drop(state);
                 self.stop(io::ErrorKind::WouldBlock);
                 return Err(io::ErrorKind::WouldBlock.into());

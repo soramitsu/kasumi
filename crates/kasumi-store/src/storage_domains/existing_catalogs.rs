@@ -127,6 +127,12 @@ pub(super) async fn open(
     }
     let (send, receive) = oneshot::channel();
     let mut tasks = node.body().initializers.lock().await;
+    // Shutdown stops the database before its final initializer drain; a task
+    // registered after that drain would never be joined.
+    ensure!(
+        !node.body().db.is_stopped(),
+        "node catalog admission is closed"
+    );
     if !tasks.reap_finished().await {
         return Err(crate::InitializerDrainObservation {
             opening_id: node.opening.id(),

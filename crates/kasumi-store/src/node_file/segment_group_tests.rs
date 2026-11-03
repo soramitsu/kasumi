@@ -1430,16 +1430,16 @@ fn native_entry_visitor_does_not_replay_callbacks_after_a_namespace_race() {
     let disk = fixture_disk(&path, &memory);
     let group = ready_group(&path, &disk, 1);
     put(&group, GroupFile::directory(1), b"arena");
-    let neighbor = directory.path().join("neighbor");
-    let (root, relative) = disk.binding(&neighbor).unwrap();
-    let mut created = None;
+    let race = path.join("race");
+    let (root, relative) = disk.binding(&race).unwrap();
     let mut visited = 0;
     let error = SegmentGroupBackend::visit_entries(&*group, &mut |_| {
         visited += 1;
-        // A different installed owner changes the shared namespace generation.
-        // This pass must abort, even though the group names did not change.
-        created = Some(disk.create_file(root, relative, DiskWork::Foreground)?);
-        Ok(())
+        // A different installed owner changes this group's directory and
+        // restores its names. This pass must abort, even though the group
+        // names did not change.
+        let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+        disk.delete_file(file)
     })
     .unwrap_err();
     assert_eq!(error.kind(), io::ErrorKind::WouldBlock);
@@ -1453,12 +1453,58 @@ fn native_entry_visitor_does_not_replay_callbacks_after_a_namespace_race() {
     })
     .unwrap();
     assert_eq!(count, 2);
-    disk.delete_file(created.take().unwrap()).unwrap();
     close(&group);
 }
 
 #[test]
-fn opening_census_retries_an_unrelated_namespace_race_after_retiring_partial_slots() {
+fn opening_census_ignores_namespace_effects_outside_its_directory() {
+    let memory = memory();
+    let directory = private_tempdir().unwrap();
+    let path = directory.path().join("group");
+    let disk = fixture_disk(&path, &memory);
+    let original = ready_group(&path, &disk, 1);
+    put(&original, GroupFile::segment(1), b"one");
+    put(&original, GroupFile::directory(2), b"two");
+    close(&original);
+    let bytes = tree(&path);
+    let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let neighbor = directory.path().join("neighbor");
+    let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
+    *group.census_hook.lock() = Some(Box::new({
+        let disk = disk.clone();
+        let entries = entries.clone();
+        let retries = retries.clone();
+        move |stage| {
+            if stage == CensusTestStage::RetryClose {
+                retries.fetch_add(1, Ordering::SeqCst);
+            } else {
+                // Another installed owner changes a sibling of the group on
+                // the same disk after every inspected entry.
+                entries.fetch_add(1, Ordering::SeqCst);
+                let (root, relative) = disk
+                    .binding(&neighbor)
+                    .expect("neighbor is in the installed fixture");
+                let file = disk.create_file(root, relative, DiskWork::Foreground)?;
+                disk.delete_file(file)?;
+            }
+            Ok(())
+        }
+    }));
+    group.acquire_prepared(&NodeOpeningMode::Existing).unwrap();
+    assert_eq!(retries.load(Ordering::SeqCst), 0);
+    assert_eq!(entries.load(Ordering::SeqCst), 2);
+    assert_eq!(read_all(&group, GroupFile::segment(1)), b"one");
+    assert_eq!(read_all(&group, GroupFile::directory(2)), b"two");
+    assert_eq!(tree(&path), bytes);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().open_directory_cursors, 0);
+    close(&group);
+    assert_eq!(disk.snapshot().open_files, 0);
+}
+
+#[test]
+fn opening_census_retries_a_namespace_race_in_its_directory_after_retiring_partial_slots() {
     let memory = memory();
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("group");
@@ -1471,7 +1517,9 @@ fn opening_census_retries_an_unrelated_namespace_race_after_retiring_partial_slo
     let bytes = tree(&path);
     let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let neighbor = directory.path().join("neighbor");
+    // Created and removed again inside the group directory: the names are
+    // restored, but the listed directory changed under the open cursor.
+    let neighbor = path.join("race");
     let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
     *group.census_hook.lock() = Some(Box::new({
         let disk = disk.clone();
@@ -1516,7 +1564,8 @@ fn opening_census_bounds_namespace_retries_and_retains_the_last_partial_pass() {
     let bytes = tree(&path);
     let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let neighbor = directory.path().join("neighbor");
+    // Every pass sees its own directory change and restore its names.
+    let neighbor = path.join("race");
     let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
     *group.census_hook.lock() = Some(Box::new({
         let disk = disk.clone();
@@ -1599,7 +1648,8 @@ fn opening_census_retry_preserves_an_independent_descriptor_close_failure() {
     let bytes = tree(&path);
     let entries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let retries = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let neighbor = directory.path().join("neighbor");
+    // The group directory changes and restores its names under the cursor.
+    let neighbor = path.join("race");
     let group = NodeSegmentGroup::retained_prepared(&path, ID, disk.clone(), 1);
     *group.census_hook.lock() = Some(Box::new({
         let disk = disk.clone();

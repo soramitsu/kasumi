@@ -662,6 +662,7 @@ impl ParentTransition {
                     len: metadata.len(),
                     children: change.children,
                     settled: observed <= change.before.bytes,
+                    membership_generation: self.generation,
                     ..change.before
                 },
             ));

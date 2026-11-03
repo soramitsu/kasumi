@@ -436,6 +436,9 @@ struct AccountedDirectory {
     live_handles: u32,
     transaction_children: u64,
     transaction_claimed: bool,
+    /// Namespace generation of the last settled change to this directory's
+    /// entries; zero from census. A listing compares only its own directory.
+    membership_generation: u64,
 }
 
 struct State {

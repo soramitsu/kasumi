@@ -94,6 +94,46 @@ impl Keyring {
     fn key_ref(&self) -> String {
         format!("kasumi.file-key/{}/{}", self.id, self.domain)
     }
+    /// The canonical writer bytes in one exact zeroizing allocation. A growing
+    /// buffer would move key material and free the old allocations unwiped.
+    fn encode(&self) -> Result<Zeroizing<Vec<u8>>> {
+        struct Count(usize);
+        impl std::io::Write for Count {
+            fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+                self.0 = self
+                    .0
+                    .checked_add(encoded.len())
+                    .ok_or_else(|| std::io::Error::other("file keyring size overflow"))?;
+                Ok(encoded.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        // Writes only into the reserved capacity, so it never reallocates.
+        struct Fill<'a>(&'a mut Vec<u8>);
+        impl std::io::Write for Fill<'_> {
+            fn write(&mut self, encoded: &[u8]) -> std::io::Result<usize> {
+                if encoded.len() > self.0.capacity() - self.0.len() {
+                    return Err(std::io::Error::other("file keyring serialization changed"));
+                }
+                self.0.extend_from_slice(encoded);
+                Ok(encoded.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        let mut count = Count(0);
+        serde_json::to_writer(&mut count, self)?;
+        let mut bytes = Zeroizing::new(Vec::new());
+        bytes
+            .try_reserve_exact(count.0)
+            .context("file keyring allocation failed")?;
+        serde_json::to_writer(Fill(&mut bytes), self)?;
+        ensure!(bytes.len() == count.0, "file keyring serialization changed");
+        Ok(bytes)
+    }
     fn key(&self, version: u64) -> Result<SecretKey> {
         let bytes = Zeroizing::new(
             STANDARD.decode(
@@ -123,7 +163,7 @@ impl FileKeyProvider {
             active: 1,
             versions: BTreeMap::from([(1, STANDARD.encode(SecretKey::random()?.as_bytes()))]),
         };
-        private_files::create(path, &Zeroizing::new(serde_json::to_vec(&ring)?))?;
+        private_files::create(path, &ring.encode()?)?;
         Self::open(path)
     }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
@@ -213,7 +253,7 @@ impl FileKeyProvider {
             ring.active,
             STANDARD.encode(SecretKey::random()?.as_bytes()),
         );
-        let bytes = Zeroizing::new(serde_json::to_vec(&ring)?);
+        let bytes = ring.encode()?;
         ensure!(
             bytes.len() <= MAX_KEYRING_BYTES,
             "keyring storage budget exceeded"
@@ -386,6 +426,33 @@ mod tests {
         let ring = FileKeyProvider::read(&path)?;
         let writer = Zeroizing::new(serde_json::to_vec(&ring)?);
         assert!(writer.as_slice() == rotated.as_slice());
+        Ok(())
+    }
+
+    #[test]
+    fn keyring_encoding_fills_one_exact_allocation_with_the_canonical_writer_bytes() -> Result<()> {
+        let ring = Keyring {
+            format: 1,
+            id: Uuid::new_v4(),
+            domain: "application".into(),
+            active: 40,
+            versions: (1..=40u8)
+                .map(|version| (u64::from(version), STANDARD.encode([version; 32])))
+                .collect(),
+        };
+        ring.validate()?;
+        // Forty generations need several growth steps from an unsized buffer.
+        let (encoded, allocations, requested) =
+            crate::allocation_tests::measure_requested(|| ring.encode());
+        let encoded = encoded?;
+        assert_eq!(allocations, 1);
+        assert_eq!(requested, encoded.len());
+        let writer = Zeroizing::new(serde_json::to_vec(&ring)?);
+        assert!(
+            encoded.as_slice() == writer.as_slice(),
+            "persisted keyring bytes changed"
+        );
+        FileKeyProvider::decode(&encoded)?;
         Ok(())
     }
 

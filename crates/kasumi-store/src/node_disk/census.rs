@@ -692,6 +692,7 @@ fn enroll_directory(
                     live_handles: 0,
                     transaction_children: 0,
                     transaction_claimed: false,
+                    membership_generation: 0,
                 })
             )
             .is_none(),

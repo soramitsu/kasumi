@@ -132,6 +132,25 @@ fn scratch_claim_consumes_real_quota_without_readmission_and_finishes_complete_p
     close(database, &disk);
 }
 #[test]
+fn scratch_claim_finish_synchronizes_each_settled_extent_once() {
+    let (_directory, disk, _memory, _owner, backend, database) = fixture();
+    backend.reserve_transaction(&plan()).unwrap();
+    backend.create(GroupFile::segment(1)).unwrap();
+    backend
+        .write(GroupFile::segment(1), 0, &[7; 65_537])
+        .unwrap();
+    backend.sync(GroupFile::segment(1)).unwrap();
+    let before = disk.physical_synchronizations();
+    backend.finish_transaction(GROUP, 1).unwrap();
+    // The created segment and the root each settle once: settlement flushes
+    // and synchronizes the exact extent it observes.
+    assert_eq!(disk.physical_synchronizations() - before, 2);
+    let mut bytes = [0; 65_537];
+    backend.read(GroupFile::segment(1), 0, &mut bytes).unwrap();
+    assert_eq!(bytes, [7; 65_537]);
+    close(database, &disk);
+}
+#[test]
 fn scratch_claim_capacity_denial_is_before_namespace_or_root_mutation() {
     let (_directory, disk, memory, owner, backend, database) = fixture();
     let before = disk.snapshot();

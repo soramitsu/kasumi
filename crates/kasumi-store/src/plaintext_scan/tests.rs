@@ -260,10 +260,12 @@ async fn installed_scan_denies_resident_pressure_without_partial_output_and_can_
     fixture.store.write_batch(&operations)?;
     fixture.store.visit("docs", value.len(), |_, _| Ok(()))?;
     let baseline = fixture.memory.snapshot();
+    // Leave less headroom than the 12 MiB of rows the scan must retain. Each
+    // row charges only its exact copies, never the 32 MiB record bound.
     let filler = MEMORY_LIMIT
         - baseline.bookkeeping_bytes
         - baseline.used_bytes
-        - (40 << 20)
+        - (8 << 20)
         - TestDiskMemory::required_reservation_bytes(0)?;
     let pressure = fixture.memory.clone().reserve_installed(filler)?;
     let full = fixture.memory.snapshot();

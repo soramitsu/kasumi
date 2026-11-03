@@ -1032,8 +1032,10 @@ impl S3BackupDestination {
         url: &Url,
         payload: &[u8],
         now: time::OffsetDateTime,
-        mut canonical: std::collections::BTreeMap<&str, String>,
+        canonical: std::collections::BTreeMap<&str, String>,
     ) -> Result<HeaderMap> {
+        // Values include the signed session token; wipe all on every return.
+        let mut canonical = WipedHeaders(canonical);
         let credentials = S3Credentials::load(self.credential.as_ref())?;
         let timestamp = now.format(time::macros::format_description!(
             "[year][month][day]T[hour][minute][second]Z"
@@ -1057,24 +1059,18 @@ impl S3BackupDestination {
             canonical.insert("x-amz-security-token", token.to_string());
         }
         let signed_names = canonical.keys().copied().collect::<Vec<_>>().join(";");
-        let canonical_headers = canonical
-            .iter()
-            .map(|(name, value)| {
-                format!(
-                    "{name}:{}\n",
-                    value.split_whitespace().collect::<Vec<_>>().join(" ")
-                )
-            })
-            .collect::<String>();
-        let canonical_request = format!(
-            "{method}\n{}\n{}\n{canonical_headers}\n{signed_names}\n{payload_hash}",
+        let canonical_request = canonical_request(
+            method,
             url.path(),
-            sessions_s3::canonical_query(url)
-        );
+            &sessions_s3::canonical_query(url),
+            &canonical,
+            &signed_names,
+            &payload_hash,
+        )?;
         let scope = format!("{date}/{}/s3/aws4_request", self.region);
         let to_sign = format!(
             "AWS4-HMAC-SHA256\n{timestamp}\n{scope}\n{}",
-            hex::encode(Sha256::digest(canonical_request))
+            hex::encode(Sha256::digest(canonical_request.as_bytes()))
         );
         let key = Zeroizing::new(format!("AWS4{}", credentials.secret_access_key.as_str()));
         let date_key = Zeroizing::new(hmac(key.as_bytes(), date.as_bytes()));
@@ -1083,11 +1079,10 @@ impl S3BackupDestination {
         let signing_key = Zeroizing::new(hmac(service_key.as_ref(), b"aws4_request"));
         let signature = hex::encode(hmac(signing_key.as_ref(), to_sign.as_bytes()));
         let mut headers = HeaderMap::new();
-        for (name, mut value) in canonical {
-            let mut header = HeaderValue::from_str(&value)?;
-            if name == "x-amz-security-token" {
+        for (name, value) in canonical.iter() {
+            let mut header = HeaderValue::from_str(value)?;
+            if *name == "x-amz-security-token" {
                 header.set_sensitive(true);
-                value.zeroize();
             }
             headers.insert(
                 reqwest::header::HeaderName::from_bytes(name.as_bytes())?,
@@ -1102,6 +1097,86 @@ impl S3BackupDestination {
         headers.insert(reqwest::header::AUTHORIZATION, authorization);
         Ok(headers)
     }
+}
+
+/// SigV4 header values, including a session token, wiped on every return path.
+struct WipedHeaders<'a>(std::collections::BTreeMap<&'a str, String>);
+impl<'a> std::ops::Deref for WipedHeaders<'a> {
+    type Target = std::collections::BTreeMap<&'a str, String>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for WipedHeaders<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for WipedHeaders<'_> {
+    fn drop(&mut self) {
+        for value in self.0.values_mut() {
+            value.zeroize();
+        }
+    }
+}
+
+/// The SigV4 canonical request in one exact zeroizing allocation. Header values
+/// include the session token, so no line is formatted, joined or grown in a
+/// temporary buffer that would be freed without wiping it.
+fn canonical_request(
+    method: &str,
+    path: &str,
+    query: &str,
+    headers: &std::collections::BTreeMap<&str, String>,
+    signed_names: &str,
+    payload_hash: &str,
+) -> Result<Zeroizing<String>> {
+    // Five line breaks separate the method, path, query, header block, signed
+    // names and payload hash. Each header line is `name:value` and a line
+    // break, with every whitespace run in its value collapsed to one space.
+    let length = [method, path, query, signed_names, payload_hash]
+        .iter()
+        .try_fold(5usize, |total, part| total.checked_add(part.len()))
+        .and_then(|fixed| {
+            headers.iter().try_fold(fixed, |total, (name, value)| {
+                let words = value.split_whitespace();
+                let separators = words.clone().count().saturating_sub(1);
+                let line = total
+                    .checked_add(name.len())?
+                    .checked_add(separators)?
+                    .checked_add(2)?;
+                words.map(str::len).try_fold(line, usize::checked_add)
+            })
+        })
+        .context("S3 canonical request length overflow")?;
+    let mut request = Zeroizing::new(String::new());
+    request
+        .try_reserve_exact(length)
+        .context("S3 canonical request allocation failed")?;
+    for part in [method, path, query] {
+        request.push_str(part);
+        request.push('\n');
+    }
+    for (name, value) in headers {
+        request.push_str(name);
+        request.push(':');
+        for (index, word) in value.split_whitespace().enumerate() {
+            if index != 0 {
+                request.push(' ');
+            }
+            request.push_str(word);
+        }
+        request.push('\n');
+    }
+    request.push('\n');
+    request.push_str(signed_names);
+    request.push('\n');
+    request.push_str(payload_hash);
+    ensure!(
+        request.len() == length,
+        "S3 canonical request length changed"
+    );
+    Ok(request)
 }
 
 fn valid_segment(value: &str) -> bool {
@@ -2323,6 +2398,35 @@ mod s3_tests {
         assert!(headers["authorization"].to_str().unwrap().ends_with(
             "Signature=f0e8bdb87c964420e857bd35b5d6ed310bd44f0170aba48dd91039c6036bdb41"
         ));
+    }
+
+    #[test]
+    fn sigv4_canonical_request_fills_one_exact_zeroizing_allocation() {
+        let headers = std::collections::BTreeMap::from([
+            ("host", "examplebucket.s3.amazonaws.com".to_owned()),
+            ("range", " bytes=0-9 ".to_owned()),
+            ("x-amz-security-token", "session\t  token".to_owned()),
+        ]);
+        // No header line or partial request is formatted into another buffer:
+        // the session token is copied once, into the wiped request itself.
+        let (request, allocations, requested) = crate::allocation_tests::measure_requested(|| {
+            canonical_request(
+                "GET",
+                "/test.txt",
+                "a=1&b=2",
+                &headers,
+                "host;range;x-amz-security-token",
+                "e3b0c442",
+            )
+        });
+        let request = request.unwrap();
+        assert_eq!(
+            request.as_str(),
+            "GET\n/test.txt\na=1&b=2\nhost:examplebucket.s3.amazonaws.com\nrange:bytes=0-9\n\
+             x-amz-security-token:session token\n\nhost;range;x-amz-security-token\ne3b0c442"
+        );
+        assert_eq!(allocations, 1);
+        assert_eq!(requested, request.len());
     }
 
     #[derive(Debug, Clone, PartialEq, Eq)]

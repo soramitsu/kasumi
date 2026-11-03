@@ -1425,6 +1425,7 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         live_handles: 1,
         transaction_children: 0,
         transaction_claimed: false,
+        membership_generation: 0,
     };
     assert!(
         state

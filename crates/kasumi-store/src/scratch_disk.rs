@@ -108,6 +108,8 @@ pub struct ScratchDisk {
     available_override: Mutex<Option<u64>>,
     #[cfg(test)]
     after_file_open_error: Mutex<Option<io::Error>>,
+    #[cfg(test)]
+    synchronizations: std::sync::atomic::AtomicU64,
     _memory_charge: Lease,
 }
 impl std::fmt::Debug for ScratchDisk {
@@ -229,6 +231,8 @@ impl ScratchDisk {
             available_override: Mutex::new(None),
             #[cfg(test)]
             after_file_open_error: Mutex::new(None),
+            #[cfg(test)]
+            synchronizations: std::sync::atomic::AtomicU64::new(0),
             _memory_charge: charge,
         });
         drop(disk.state.lock().expect("unpublished scratch state"));
@@ -342,6 +346,22 @@ impl ScratchDisk {
             filesystem_used_bytes: physical.map(|(_, used)| used),
             filesystem_admission_ready: pending.admission_ready(),
         }
+    }
+    /// Every physical synchronization of an anonymous extent of this governor.
+    pub(crate) fn synchronized(&self, file: &File) -> io::Result<()> {
+        crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
+            crate::sync_trace::sync(|| file.sync_all())
+        })?;
+        #[cfg(test)]
+        self.synchronizations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+    /// Successful physical synchronizations issued through this governor.
+    #[cfg(test)]
+    pub(crate) fn physical_synchronizations(&self) -> u64 {
+        self.synchronizations
+            .load(std::sync::atomic::Ordering::Relaxed)
     }
     fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {
         self.state.lock().unwrap_or_else(|p| {
@@ -623,10 +643,9 @@ impl Charge {
     // This also settles a reservation whose capacity was never physically used.
     pub(crate) fn shrink(&mut self, file: &File, ciphertext_len: u64) -> io::Result<()> {
         self.check_owner(file)?;
-        crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
-            crate::sync_trace::sync(|| file.sync_all())
-        })
-        .inspect_err(|_| self.fail_owner())?;
+        self.disk
+            .synchronized(file)
+            .inspect_err(|_| self.fail_owner())?;
         let metadata = file.metadata().inspect_err(|_| self.fail_owner())?;
         let bytes = self.disk.file_ceiling(ciphertext_len)?;
         let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
