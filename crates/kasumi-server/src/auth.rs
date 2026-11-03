@@ -3,7 +3,14 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jw
 use kasumi_clock::EpochClock;
 use kasumi_types::{Action, Error, ErrorCode, RequestAuthorization, RequestContext, Result};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
+    time::Duration,
+};
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -85,7 +92,11 @@ pub struct Authenticator {
     clock: Arc<EpochClock>,
     client: reqwest::Client,
     cache: RwLock<Option<CachedKeys>>,
-    refresh: tokio::sync::Mutex<()>,
+    /// Serializes refreshes. Holds the number of the local signer reload that
+    /// produced the cache; requests whose key is cached never wait on it.
+    refresh: tokio::sync::Mutex<u64>,
+    /// Local signer reloads begun, numbered while holding `refresh`.
+    reloads: AtomicU64,
     audit: std::sync::OnceLock<Arc<dyn RequestAuditSink>>,
     local_credentials: std::sync::OnceLock<Arc<crate::local_auth::LocalCredentials>>,
 }
@@ -170,7 +181,8 @@ impl Authenticator {
             clock,
             client,
             cache: RwLock::new(None),
-            refresh: tokio::sync::Mutex::new(()),
+            refresh: tokio::sync::Mutex::new(0),
+            reloads: AtomicU64::new(0),
             audit: std::sync::OnceLock::new(),
             local_credentials: std::sync::OnceLock::new(),
         }))
@@ -289,17 +301,61 @@ impl Authenticator {
         authenticator
     }
 
+    /// Whether the cache already trusts `kid` without a refresh: the local
+    /// signer's keys until a reload, an external JWKS for its lifetime.
+    async fn cached(&self, kid: &str) -> Result<bool> {
+        let cache = self.cache.read().await;
+        let Some(cache) = cache
+            .as_ref()
+            .filter(|cache| cache.keys.find(kid).is_some())
+        else {
+            return Ok(false);
+        };
+        Ok(match self.config.source {
+            AuthKeySource::Local { .. } => true,
+            AuthKeySource::ExternalOAuth { .. } => {
+                self.clock
+                    .elapsed_clock()
+                    .now()
+                    .checked_sub(cache.fetched)
+                    .ok_or_else(unauthorized)?
+                    < Duration::from_secs(300)
+            }
+        })
+    }
+
     /// Fetched only from operator configuration, never token jku/x5u/issuer input.
     async fn refresh_keys(&self, requested_kid: &str) -> Result<()> {
-        let _guard = self.refresh.lock().await;
+        // A cached key never waits behind a JWKS fetch or a signer reload.
+        if self.cached(requested_kid).await? {
+            return Ok(());
+        }
+        let begun = self.reloads.load(Ordering::Acquire);
+        let mut loaded = self.refresh.lock().await;
+        if self.cached(requested_kid).await? {
+            return Ok(());
+        }
         let jwks_uri = match &self.config.source {
             AuthKeySource::Local { signer_file } => {
-                let keys =
-                    crate::local_auth::trusted_keys(signer_file).map_err(|_| unavailable())?;
+                // Rotation only appends generations, and a kid is issued only
+                // after its generation is written. A reload begun while this
+                // request waited has read it, so the kid is unknown.
+                if *loaded > begun {
+                    return Err(unauthorized());
+                }
+                let reload = self.reloads.fetch_add(1, Ordering::AcqRel) + 1;
+                let signer_file = signer_file.clone();
+                let keys = tokio::task::spawn_blocking(move || {
+                    crate::local_auth::trusted_keys(&signer_file)
+                })
+                .await
+                .map_err(|_| unavailable())?
+                .map_err(|_| unavailable())?;
                 *self.cache.write().await = Some(CachedKeys {
                     keys,
                     fetched: self.clock.elapsed_clock().now(),
                 });
+                *loaded = reload;
                 return Ok(());
             }
             AuthKeySource::ExternalOAuth { jwks_uri, .. } => jwks_uri,
@@ -307,17 +363,6 @@ impl Authenticator {
         {
             let cache = self.cache.read().await;
             if let Some(cache) = cache.as_ref() {
-                if self
-                    .clock
-                    .elapsed_clock()
-                    .now()
-                    .checked_sub(cache.fetched)
-                    .ok_or_else(unauthorized)?
-                    < Duration::from_secs(300)
-                    && cache.keys.find(requested_kid).is_some()
-                {
-                    return Ok(());
-                }
                 // Unknown-kid floods cannot turn verification into an unbounded JWKS fetcher.
                 if self
                     .clock
@@ -911,5 +956,95 @@ mod tests {
                 RequestAuditKind::AccessDenied
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn cached_external_key_verifies_without_waiting_for_a_refresh() {
+        let (auth, key) = fixture().await;
+        // A JWKS fetch holds this lock for up to its whole HTTP timeout.
+        let refreshing = auth.refresh.lock().await;
+        let context = tokio::time::timeout(
+            Duration::from_secs(5),
+            auth.authenticate(&bearer(&key, &claims(), "at+jwt")),
+        )
+        .await
+        .expect("a cached key waited behind a refresh")
+        .unwrap();
+        assert_eq!(context.principal, "person");
+        drop(refreshing);
+    }
+
+    #[tokio::test]
+    async fn local_signer_is_reloaded_only_for_an_unknown_kid() {
+        use kasumi_store::private_files;
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let private = root.path().join("operator");
+        private_files::create_directory(&private).unwrap();
+        let signer = private.join("signer.json");
+        crate::local_auth::initialize_signer(&signer).unwrap();
+        let auth = Authenticator::new(AuthConfig {
+            issuer: "https://localhost/local".into(),
+            audience: "https://localhost/kasumi".into(),
+            source: AuthKeySource::Local {
+                signer_file: signer.clone(),
+            },
+            algorithms: vec![Algorithm::EdDSA],
+            access_token_types: BTreeSet::from(["at+jwt".into()]),
+        })
+        .unwrap();
+        let kid = |generation: usize| {
+            crate::local_auth::trusted_keys(&signer).unwrap().keys[generation]
+                .common
+                .key_id
+                .clone()
+                .unwrap()
+        };
+        let first = kid(0);
+        let begun = |auth: &Authenticator| auth.reloads.load(Ordering::Acquire);
+        auth.refresh_keys(&first).await.unwrap();
+        assert_eq!(begun(&auth), 1);
+
+        // A known kid neither reads the signer file nor waits on a reload.
+        let installed = private_files::read(&signer, 1 << 20).unwrap();
+        private_files::replace(&signer, b"unreadable signer").unwrap();
+        let reloading = auth.refresh.lock().await;
+        tokio::time::timeout(Duration::from_secs(5), auth.refresh_keys(&first))
+            .await
+            .expect("a cached key waited behind a reload")
+            .unwrap();
+        drop(reloading);
+        assert_eq!(begun(&auth), 1);
+        // An unknown kid reloads; a failed reload keeps the trusted keys.
+        assert_eq!(
+            auth.refresh_keys("unknown").await.unwrap_err().code,
+            ErrorCode::Unavailable
+        );
+        assert_eq!(begun(&auth), 2);
+        auth.refresh_keys(&first).await.unwrap();
+        private_files::replace(&signer, &installed).unwrap();
+
+        // Requests that waited behind one reload share it instead of rereading.
+        let reloading = auth.refresh.lock().await;
+        let waiting = [(); 2].map(|()| {
+            let auth = auth.clone();
+            tokio::spawn(async move { auth.refresh_keys("unknown").await })
+        });
+        for _ in 0..8 {
+            tokio::task::yield_now().await;
+        }
+        drop(reloading);
+        let mut outcomes = Vec::new();
+        for task in waiting {
+            outcomes.push(task.await.unwrap().map_err(|error| error.code));
+        }
+        assert_eq!(outcomes, [Ok(()), Err(ErrorCode::Unauthorized)]);
+        assert_eq!(begun(&auth), 3);
+
+        // A rotated generation is trusted on its first use.
+        crate::local_auth::rotate_signer(&signer).unwrap();
+        let second = kid(1);
+        auth.refresh_keys(&second).await.unwrap();
+        assert_eq!(begun(&auth), 4);
+        assert!(auth.cached(&first).await.unwrap() && auth.cached(&second).await.unwrap());
     }
 }

@@ -824,7 +824,6 @@ async fn rotate_certificates_owned(
                 certificate: root.join("profiles/client.pem"),
                 private_key: root.join("profiles/client-key.pem"),
             };
-            let old_admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
             let mut replacements = Vec::with_capacity(4);
             for (name, files, client_auth) in [
                 ("mcp", &config.mcp.tls, false),
@@ -898,10 +897,11 @@ async fn rotate_certificates_owned(
                     && let Ok(mut profile) = ClientProfile::load(&path)
                 {
                     profile.native_certificate_pin = native_pin.clone();
+                    // Generated profiles name only this installation's admin
+                    // listener. Pin its current leaf even after an interrupted
+                    // rotation replaced the leaf these profiles still pin.
                     for member in profile.administrative_members.values_mut() {
-                        if member.certificate_pins.remove(&old_admin_pin) {
-                            member.certificate_pins.insert(admin_pin.clone());
-                        }
+                        member.certificate_pins = BTreeSet::from([admin_pin.clone()]);
                     }
                     private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
                 }

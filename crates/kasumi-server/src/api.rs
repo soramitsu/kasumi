@@ -400,6 +400,17 @@ pub(crate) fn mutation_release<T>(result: Result<T>) -> Result<T> {
     })
 }
 
+/// After a mutation's effect committed, a later fence, encoding or release
+/// failure of any code withholds its acknowledgement but cannot reject it.
+pub(crate) fn committed_release<T>(result: Result<T>) -> Result<T> {
+    result.map_err(|_| {
+        Error::new(
+            ErrorCode::UnknownOutcome,
+            "write response release was fenced; resolve or retry the same idempotency key",
+        )
+    })
+}
+
 /// Release an already encoded adapter response only while its captured access
 /// fence still holds. Database methods cannot audit a denial arising after
 /// their result was returned, so this boundary owns its separate denial event.
@@ -414,12 +425,7 @@ pub(crate) async fn release_response<T>(
     if mutation {
         // The response exists, so the effect was accepted. A seal, policy
         // change or admission cancellation now withholds it but cannot reject it.
-        release.map_err(|_| {
-            Error::new(
-                ErrorCode::UnknownOutcome,
-                "write response release was fenced; resolve or retry the same idempotency key",
-            )
-        })?;
+        committed_release(release)?;
     } else {
         release?;
     }

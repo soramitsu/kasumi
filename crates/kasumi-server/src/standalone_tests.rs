@@ -228,6 +228,21 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
                 .contains("Raft membership requires replicated mode")
         );
     }
+    // A tenant administrator cannot tell an installed tenant from an unknown
+    // name: provisioning names are resolved only for Control.
+    for tenant in ["tenant-a", "never-configured"] {
+        let error = manager
+            .execute_for_test(
+                context("tenant-a"),
+                crate::administration::ManagementCommand::ApproveTenant {
+                    tenant: tenant.into(),
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code, kasumi_types::ErrorCode::Forbidden);
+        assert_eq!(error.message, "control-group identity required");
+    }
     drop(database);
     drop(manager);
     registry
@@ -747,9 +762,34 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         old_client_certificate
     );
     private_files::replace(&ca_path, &old_ca).unwrap();
+    // An interrupted earlier rotation replaced the admin leaf without
+    // rewriting the profiles, which still pin the original certificate.
+    private_files::replace(
+        &config.admin.tls.certificate,
+        &std::fs::read(&config.mcp.tls.certificate).unwrap(),
+    )
+    .unwrap();
+    private_files::replace(
+        &config.admin.tls.private_key,
+        &private_files::read(&config.mcp.tls.private_key, 1 << 20).unwrap(),
+    )
+    .unwrap();
     rotate_certificates_with_storage(&installation.configuration, storage.clone())
         .await
         .unwrap();
+    let admin_pin = BTreeSet::from([hex::encode(
+        config.admin.tls.load().unwrap().certificate_pin(),
+    )]);
+    for path in [&installation.control_profile, &installation.tenant_profile] {
+        assert_eq!(
+            ClientProfile::load(path)
+                .unwrap()
+                .administrative_member()
+                .unwrap()
+                .certificate_pins,
+            admin_pin
+        );
+    }
     let updated = ClientProfile::load(&installation.control_profile).unwrap();
     assert_ne!(
         old_client_certificate,

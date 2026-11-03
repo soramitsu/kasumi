@@ -142,6 +142,11 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Self {
+        Self::with_cache_work_reserve(None).await
+    }
+    /// `reserve` overrides the cache-work headroom that every document source
+    /// grant, and so every proposal, leaves free.
+    async fn with_cache_work_reserve(reserve: Option<u64>) -> Self {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let private = directory.path().join("private");
         private_files::create_directory(&private).unwrap();
@@ -149,6 +154,7 @@ impl Fixture {
         initialize_signer(&signer).unwrap();
         let mut config = kasumi_engine::admission::AdmissionConfig {
             max_inflight_bytes: Some(256 << 20),
+            cache_work_reserve_bytes: reserve,
             ..Default::default()
         };
         let bookkeeping =
@@ -291,6 +297,24 @@ impl Fixture {
         drop(fence);
         assert_eq!(self.admission.snapshot().reserved_bytes, before);
         workspace
+    }
+    /// The least headroom that admits a database response fence. Ordinary
+    /// grants also leave the ledger's protected margin free.
+    fn response_fence_headroom(&self) -> u64 {
+        let available = self.budget - self.admission.snapshot().reserved_bytes;
+        let (mut refused, mut admitted) = (0, available);
+        while admitted - refused > 1 {
+            let probe = refused + (admitted - refused) / 2;
+            let filler = self.reserve_all_but(probe);
+            let captured = self.database.response_fence(&Self::context()).is_ok();
+            drop(filler);
+            if captured {
+                admitted = probe;
+            } else {
+                refused = probe;
+            }
+        }
+        admitted
     }
     /// Take every admission byte except `headroom` with one resident charge.
     fn reserve_all_but(&self, headroom: u64) -> kasumi_engine::admission::Reservation {
@@ -1464,5 +1488,87 @@ async fn exact_response_charges_are_retained_until_http_release() {
     assert_eq!(released.inflight_operations, 0);
     assert_eq!(released.live_reservations, baseline.live_reservations);
     drop(quiescent);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_admin_change_refused_at_its_acknowledgement_fence_is_unknown_outcome() {
+    use crate::rpc::proto::{SetPolicyRequest, kasumi_admin_server::KasumiAdmin};
+    // A proposal's source grant leaves the cache-work reserve free and its
+    // workspace is quoted from the batch budget; the response fence is quoted
+    // from the result budget. Shrink only the former two, so the change can
+    // commit in headroom too small for its acknowledgement fence.
+    let fixture = Fixture::with_cache_work_reserve(Some(1 << 20)).await;
+    fixture
+        .database
+        .administer(
+            Fixture::context(),
+            Operation::SetLimits(Limits {
+                max_document_bytes: 64 << 10,
+                max_batch_bytes: 64 << 10,
+                ..Limits::default()
+            }),
+        )
+        .await
+        .unwrap();
+    let generation = fixture.database.engine().generation().unwrap();
+    let issued = fixture
+        .credentials
+        .create(
+            CreateCredential {
+                family_id: Uuid::new_v4(),
+                principal: "person".into(),
+                tenant: "tenant-a".into(),
+                resource: CredentialResource::Database {
+                    incarnation: Uuid::parse_str(&generation.state.incarnation).unwrap(),
+                },
+                scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
+                lifetime_seconds: DEFAULT_CREDENTIAL_LIFETIME_SECONDS,
+            },
+            "initializer",
+        )
+        .unwrap();
+    let mut policy = generation.policy().clone();
+    drop(generation);
+    policy.grants.push(Grant {
+        principal: "reader".into(),
+        collection: Some("docs".into()),
+        actions: BTreeSet::from([Action::Read]),
+    });
+    let admin = crate::rpc::NativeAdmin::new(
+        fixture.registry.clone(),
+        fixture.auth.clone(),
+        crate::administration::OriginalRecoveries::new(
+            &fixture.admission,
+            crate::administration::OriginalRecoveryParticipants::one("tenant-a"),
+        )
+        .unwrap(),
+    );
+    let mut request = tonic::Request::new(SetPolicyRequest {
+        policy_json: serde_json::to_vec(&policy).unwrap(),
+    });
+    request.metadata_mut().insert(
+        "authorization",
+        format!("Bearer {}", issued.token).parse().unwrap(),
+    );
+    // The change commits within this headroom. Its acknowledgement fence, taken
+    // at the new policy epoch, then cannot reserve its workspace.
+    let filler = fixture.reserve_all_but(fixture.response_fence_headroom() - 1);
+    let refused = admin.set_policy(request).await.unwrap_err();
+    drop(filler);
+    let error: Error = serde_json::from_slice(refused.details()).unwrap();
+    assert_eq!(error.code, ErrorCode::UnknownOutcome, "{error:?}");
+    assert!(
+        fixture
+            .database
+            .engine()
+            .generation()
+            .unwrap()
+            .policy()
+            .grants
+            .iter()
+            .any(|grant| grant.principal == "reader")
+    );
+    drop(admin);
     fixture.close().await;
 }

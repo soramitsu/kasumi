@@ -470,6 +470,13 @@ impl Administration {
             .database
             .engine()
             .authorize(&context, None, Action::Admin)?;
+        // Before any lookup: another administrator's reply must not reveal
+        // whether a named tenant is configured or installed on this node.
+        if provisioning_tenant(&command).is_some()
+            || matches!(command, ManagementCommand::ApprovePeerPool { .. })
+        {
+            require_control(&context)?;
+        }
         let provisioning = provisioning_tenant(&command)
             .map(|name| match &command {
                 ManagementCommand::ApproveTenant { .. }
@@ -487,9 +494,6 @@ impl Administration {
                     "tenant provisioning denied",
                 )
             })?;
-        if provisioning.is_some() || matches!(command, ManagementCommand::ApprovePeerPool { .. }) {
-            require_control(&context)?;
-        }
         let enrollment_deadline = if matches!(command, ManagementCommand::PrepareTenant { .. }) {
             Some(
                 configured_tenant_enrollment::capture_deadline().map_err(|error| {

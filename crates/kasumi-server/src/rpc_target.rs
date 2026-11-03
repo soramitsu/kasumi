@@ -35,6 +35,11 @@ fn unresolved(_: impl std::fmt::Display) -> Status {
         "target acknowledgement unavailable; recover the exact committed identity",
     ))
 }
+/// An executed step's later release refusal, whatever its retained code,
+/// withholds the acknowledgement; it never reports the step as rejected.
+fn executed_release(failure: crate::target_runtime::TargetCallFailure) -> Status {
+    unresolved(retained_error(failure))
+}
 #[tonic::async_trait]
 impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecovery {
     async fn read_initial_start(
@@ -237,9 +242,37 @@ impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecover
                 "target RPC final release command={} error={failure:#}",
                 reply.response.command_id
             );
-            status(retained_error(failure))
+            executed_release(failure)
         })?;
         context.authorization.check_live().map_err(unresolved)?;
         Ok(Response::new(response))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::target_runtime::TargetCallFailure;
+
+    #[test]
+    fn executed_step_release_refusal_is_never_a_definite_rejection() {
+        use kasumi_store::ScratchAdmissionRefusal::{Busy, Sealed};
+        use kasumi_types::ErrorCode;
+        let failures = || {
+            [
+                TargetCallFailure::Admission(Busy),
+                TargetCallFailure::Admission(Sealed),
+            ]
+        };
+        // Reported by their retained codes, these would read as refusals.
+        assert_eq!(
+            failures().map(|failure| retained_error(failure).code),
+            [ErrorCode::ResourceExhausted, ErrorCode::Unavailable]
+        );
+        for failure in failures() {
+            let refused = executed_release(failure);
+            let error: kasumi_types::Error = serde_json::from_slice(refused.details()).unwrap();
+            assert_eq!(error.code, ErrorCode::UnknownOutcome);
+        }
     }
 }

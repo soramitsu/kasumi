@@ -2,8 +2,8 @@
 //! their respective TLS 1.3 listeners; these adapters open no sockets themselves.
 use crate::{
     api::{
-        DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, decode_json, encode_json,
-        mutation_release, release_response, response_owner, status,
+        DatabaseRegistry, MAX_REQUEST_BYTES, MAX_RESPONSE_BYTES, committed_release, decode_json,
+        encode_json, mutation_release, release_response, response_owner, status,
     },
     auth::Authenticator,
 };
@@ -871,11 +871,12 @@ impl NativeAdmin {
         let result = result.map_err(|error| self.registry.status(&context, error))?;
         // Policy/schema/suspension operations intentionally change the epoch.
         // Capture their resulting epoch before constructing the acknowledgement.
-        let fence = self
-            .auth
-            .audit_result(&context, database.response_fence(&context))
-            .await
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+        let fence = committed_release(
+            self.auth
+                .audit_result(&context, database.response_fence(&context))
+                .await,
+        )
+        .map_err(status)?;
         let response = receipt(result);
         let response = release_response(&self.auth, &context, fence, response, true)
             .await
@@ -1039,21 +1040,21 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
                         .await
                     })
                     .await?;
-                let fence = self
-                    .auth
-                    .audit_result(
-                        &context,
-                        database.backup_checkpoint_response_fence(&context, &proof),
-                    )
-                    .await
-                    .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+                let fence = committed_release(
+                    self.auth
+                        .audit_result(
+                            &context,
+                            database.backup_checkpoint_response_fence(&context, &proof),
+                        )
+                        .await,
+                )
+                .map_err(status)?;
                 let response = BackupCheckpointResponse {
-                    response_json: encode_json(proof.checkpoint()).map_err(status)?,
+                    response_json: committed_release(encode_json(proof.checkpoint()))
+                        .map_err(status)?,
                 };
-                self.auth
-                    .audit_result(&context, fence.check())
-                    .await
-                    .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+                committed_release(self.auth.audit_result(&context, fence.check()).await)
+                    .map_err(status)?;
                 Ok(Response::new(
                     release_response(&self.auth, &context, operation_fence, response, true)
                         .await
@@ -1177,14 +1178,15 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
             .activate_schema(context.clone(), request.clone())
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let fence = self
-            .auth
-            .audit_result(
-                &context,
-                database.schema_activation_response_fence(&context, &request),
-            )
-            .await
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+        let fence = committed_release(
+            self.auth
+                .audit_result(
+                    &context,
+                    database.schema_activation_response_fence(&context, &request),
+                )
+                .await,
+        )
+        .map_err(status)?;
         Ok(Response::new(
             release_response(&self.auth, &context, fence, receipt(result), true)
                 .await
@@ -1272,15 +1274,22 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         // Administration owns its operation denials, including nested database
         // requests. The adapter owns only its route and response fences.
         let result = result.map_err(|error| self.registry.status(&context, error))?;
+        // A completed mutation's acknowledgement can be withheld, not rejected.
+        let encoded = encode_json(&result);
         let response = ManagementResponse {
-            result_json: encode_json(&result).map_err(status)?,
+            result_json: if mutation {
+                committed_release(encoded)
+            } else {
+                encoded
+            }
+            .map_err(status)?,
         };
         let release = self
             .auth
             .audit_result(&context, fence.check_release())
             .await;
         if mutation {
-            mutation_release(release)
+            committed_release(release)
         } else {
             release
         }

@@ -16,14 +16,15 @@ impl NativeAdmin {
             .abort_retirement(context.clone(), request)
             .await
             .map_err(|error| self.registry.status(&context, error))?;
-        let fence = self
-            .auth
-            .audit_result(
-                &context,
-                database.retirement_resolution_response_fence(&context, &resolution),
-            )
-            .await
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+        let fence = committed_release(
+            self.auth
+                .audit_result(
+                    &context,
+                    database.retirement_resolution_response_fence(&context, &resolution),
+                )
+                .await,
+        )
+        .map_err(status)?;
         let observation = match &resolution {
             kasumi_engine::VerifiedRetirementResolution::Stopped(proof) => proof.status().clone(),
             kasumi_engine::VerifiedRetirementResolution::Retired(proof) => {
@@ -37,7 +38,7 @@ impl NativeAdmin {
             }
         };
         let response = RetirementStatusResponse {
-            response_json: encode_json(&Some(observation)).map_err(status)?,
+            response_json: committed_release(encode_json(&Some(observation))).map_err(status)?,
         };
         Ok(Response::new(
             release_response(&self.auth, &context, fence, response, true)
@@ -108,12 +109,9 @@ impl NativeAdmin {
             .execute(context.clone(), request)
             .await
             .map_err(status)?;
-        let fence = custody
-            .response_fence(&context)
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+        let fence = committed_release(custody.response_fence(&context)).map_err(status)?;
         let response = CustodyReceiptResponse {
-            response_json: encode_json(&result)
-                .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?,
+            response_json: committed_release(encode_json(&result)).map_err(status)?,
         };
         Ok(Response::new(
             release_response(&self.auth, &context, fence, response, true)
@@ -164,16 +162,17 @@ impl NativeAdmin {
             .await?;
         // Retirement intentionally changes the policy epoch. This is the
         // committed epoch fence, while the original live credential is retained.
-        let fence = self
-            .auth
-            .audit_result(
-                &context,
-                database.retirement_response_fence(&context, &proof),
-            )
-            .await
-            .map_err(|error| status(mutation_release::<()>(Err(error)).unwrap_err()))?;
+        let fence = committed_release(
+            self.auth
+                .audit_result(
+                    &context,
+                    database.retirement_response_fence(&context, &proof),
+                )
+                .await,
+        )
+        .map_err(status)?;
         let response = RetirementReceiptResponse {
-            response_json: encode_json(proof.receipt()).map_err(status)?,
+            response_json: committed_release(encode_json(proof.receipt())).map_err(status)?,
         };
         Ok(Response::new(
             release_response(&self.auth, &context, fence, response, true)
