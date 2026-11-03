@@ -2602,6 +2602,7 @@ impl Database {
         context: &RequestContext,
         request: ReadSnapshotRequest,
     ) -> Result<RegisteredOutput<SnapshotReadResponse>> {
+        let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
         self.access()?;
         if request.documents.len() > 256
             || request.queries.len() > 16
@@ -2652,32 +2653,36 @@ impl Database {
         }
         let cancellation = QueryCancellation::default();
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        let registration = Arc::new(self.work.begin(cancellation.clone())?);
-        let workspace = snapshot_workspace(&self.engine.generation()?.state.limits, &request)?;
-        let reservation = self
-            .admission()
-            .reserve(workspace, Some(cancellation.clone()))?;
         drop(keys);
-        let mut input = SnapshotInput {
+        let waiting = query_admission::WaitingSnapshot::admit(
+            self.admission(),
+            &self.work,
             request,
-            memory: QueryMemory::empty(reservation),
-        };
+            collections,
+            &cancellation,
+        )?;
+        // Queue only retained input. The existing four worker slots bound
+        // quorum barriers, hydration and evaluation, not just blocking work.
+        let permit = query_admission::permit(&self.query_slots, &cancellation, deadline).await?;
+        tokio::select! {
+            result = tokio::time::timeout_at(deadline, self.barrier()) =>
+                result.map_err(|_| query_admission::deadline_error())??,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        }
+        self.access()?;
+        for collection in &waiting.collections {
+            self.engine
+                .authorize(context, Some(collection), Action::Read)?;
+        }
+        let generation = self.engine.generation()?;
+        let state = &generation.state;
+        let workspace = snapshot_workspace(&state.limits, &waiting.request)?;
+        let (mut input, registration, collections) =
+            waiting.into_input(self.admission(), workspace, &cancellation)?;
         input
             .memory
             .reserve(query_input_workspace(&input.request, 1)?)?;
         let request = &input.request;
-        tokio::select! {
-            result = self.barrier() => result?,
-            _ = cancelled(&cancellation) => return Err(cancelled_error()),
-        }
-        let generation = self.engine.generation()?;
-        let state = &generation.state;
-        if snapshot_workspace(&state.limits, request)? > workspace {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "snapshot limits changed during admission",
-            ));
-        }
         let mut release_collections = BTreeMap::new();
         for collection in &collections {
             self.engine.authorize_release(
@@ -2704,12 +2709,6 @@ impl Database {
                 ));
             }
         }
-        let permit = self.query_slots.clone().try_acquire_owned().map_err(|_| {
-            Error::new(
-                ErrorCode::ResourceExhausted,
-                "query concurrency limit reached",
-            )
-        })?;
         let mut work = SnapshotWork {
             generation: generation.clone(),
             request: input.request,
@@ -2718,19 +2717,20 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        work.generation = self
-            .hydrate_history(
+        work.generation = tokio::select! {
+            result = tokio::time::timeout_at(deadline, self.hydrate_history(
                 work.generation.clone(),
                 &work.request.documents,
                 &work.request.queries,
                 &cancellation,
                 &mut work.memory,
-            )
-            .await?;
+            )) => result.map_err(|_| query_admission::deadline_error())??,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        };
         let worker = tokio::task::spawn_blocking(move || work.run());
         let mut output = tokio::select! {
-            result = tokio::time::timeout(kasumi_store::NATIVE_READ_TIMEOUT, worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot deadline exceeded"))?
+            result = tokio::time::timeout_at(deadline, worker) => result
+                .map_err(|_| query_admission::deadline_error())?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
@@ -2743,14 +2743,26 @@ impl Database {
                 let pause = self.bounded_read_pause.lock().unwrap().clone();
                 if let Some(pause) = pause {
                     pause.entered.notify_one();
-                    pause.resume.notified().await;
+                    tokio::select! {
+                        result = tokio::time::timeout_at(deadline, pause.resume.notified()) =>
+                            result.map_err(|_| query_admission::deadline_error())?,
+                        _ = cancelled(&cancellation) => return Err(cancelled_error()),
+                    }
                 }
             }
             // Serialize with command admission. A completed prior proposal is
             // included by the second barrier; a new proposal cannot overtake
             // this witness while the gate is held.
-            let _gate = self.proposal_gate.lock().await;
-            self.barrier().await?;
+            let _gate = tokio::select! {
+                result = tokio::time::timeout_at(deadline, self.proposal_gate.lock()) =>
+                    result.map_err(|_| query_admission::deadline_error())?,
+                _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            };
+            tokio::select! {
+                result = tokio::time::timeout_at(deadline, self.barrier()) =>
+                    result.map_err(|_| query_admission::deadline_error())??,
+                _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            }
             let leader_term = if self.embedded {
                 None
             } else {
@@ -2837,16 +2849,22 @@ impl Database {
             if events.is_empty() {
                 break;
             }
-            admitted_release_future(self.admission(), || {
-                self.submit(context.clone(), Operation::AuditBatch(events))
-            })
-            .await
-            .map_err(read_audit_failure)?;
+            tokio::select! {
+                result = tokio::time::timeout_at(deadline, admitted_release_future(self.admission(), || {
+                    self.submit(context.clone(), Operation::AuditBatch(events))
+                })) => result
+                    .map_err(|_| query_admission::deadline_error())?
+                    .map_err(read_audit_failure)?,
+                _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            }
         }
         // Recheck every collection after the last asynchronous audit. A policy
         // change during an earlier release must not leak the assembled result.
         self.access()?;
         self.admission().check_release(&cancellation)?;
+        if tokio::time::Instant::now() >= deadline {
+            return Err(query_admission::deadline_error());
+        }
         for collection in release_collections.keys() {
             self.engine.authorize_release(
                 context,
@@ -3516,6 +3534,7 @@ mod tests {
     include!("service_staged_stop_tests.rs");
     include!("service_schema_tests.rs");
     include!("service_snapshot_audit_tests.rs");
+    include!("service_snapshot_admission_tests.rs");
     include!("service_credential_tests.rs");
     include!("service_proposal_tests.rs");
     include!("service_topology_input_tests.rs");

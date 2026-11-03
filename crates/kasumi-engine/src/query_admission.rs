@@ -61,6 +61,92 @@ impl WaitingQuery {
     }
 }
 
+pub(super) struct WaitingSnapshot {
+    pub request: ReadSnapshotRequest,
+    pub collections: BTreeSet<String>,
+    registration: Arc<WorkRegistration>,
+    bytes: u64,
+    // All retained request backing must retire before its waiting grant.
+    reservation: Reservation,
+}
+
+impl WaitingSnapshot {
+    pub fn admit(
+        node: &Arc<NodeAdmission>,
+        fence: &Arc<WorkFence>,
+        request: ReadSnapshotRequest,
+        collections: BTreeSet<String>,
+        cancellation: &QueryCancellation,
+    ) -> Result<Self> {
+        let bytes = snapshot_request_bytes(&request, &collections)?;
+        let reservation = node.reserve_waiting(bytes, Some(cancellation.clone()))?;
+        let registration = match fence.begin(cancellation.clone()) {
+            Ok(registration) => Arc::new(registration),
+            Err(error) => {
+                drop(request);
+                drop(collections);
+                return Err(error);
+            }
+        };
+        Ok(Self {
+            request,
+            collections,
+            registration,
+            bytes,
+            reservation,
+        })
+    }
+
+    pub fn into_input(
+        self,
+        node: &Arc<NodeAdmission>,
+        workspace: u64,
+        cancellation: &QueryCancellation,
+    ) -> Result<(SnapshotInput, Arc<WorkRegistration>, BTreeSet<String>)> {
+        let reservation = node.reserve(add(workspace, self.bytes)?, Some(cancellation.clone()))?;
+        let mut memory = QueryMemory::empty(reservation);
+        memory.reserve(self.bytes)?;
+        let Self {
+            request,
+            collections,
+            registration,
+            reservation: waiting,
+            ..
+        } = self;
+        let input = SnapshotInput { request, memory };
+        drop(waiting);
+        Ok((input, registration, collections))
+    }
+}
+
+fn snapshot_request_bytes(
+    request: &ReadSnapshotRequest,
+    collections: &BTreeSet<String>,
+) -> Result<u64> {
+    let mut bytes = add(
+        16 << 10,
+        kasumi_query::vec_bytes::<DocumentKey>(request.documents.capacity())?,
+    )?;
+    for key in &request.documents {
+        bytes = add(
+            add(bytes, retained_string_bytes(&key.collection)?)?,
+            retained_string_bytes(&key.id)?,
+        )?;
+    }
+    bytes = add(
+        bytes,
+        kasumi_query::vec_bytes::<QueryRequest>(request.queries.capacity())?,
+    )?;
+    for query in &request.queries {
+        bytes = add(bytes, request_bytes(query)?)?;
+    }
+    bytes = add(bytes, tree::<String, ()>(collections.len().max(1))?)?;
+    for collection in collections {
+        bytes = add(bytes, retained_string_bytes(collection)?)?;
+    }
+    Ok(bytes)
+}
+
 pub(super) fn deadline_error() -> Error {
     Error::new(ErrorCode::ResourceExhausted, "query deadline exceeded")
 }
