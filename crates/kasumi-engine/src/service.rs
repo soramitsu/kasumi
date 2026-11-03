@@ -2857,9 +2857,11 @@ impl Database {
             tokio::select! {
                 result = tokio::time::timeout_at(deadline, admitted_release_future(self.admission(), || {
                     self.submit(context.clone(), Operation::AuditBatch(events))
-                })) => result
-                    .map_err(|_| query_admission::deadline_error())?
-                    .map_err(read_audit_failure)?,
+                })) => {
+                    result
+                        .map_err(|_| query_admission::deadline_error())?
+                        .map_err(read_audit_failure)?;
+                }
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             }
         }
