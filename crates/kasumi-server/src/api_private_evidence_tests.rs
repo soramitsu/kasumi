@@ -168,10 +168,12 @@ async fn private_evidence_transport_fixture_with_admission(
             async move {
                 let path = request.uri().path().to_owned();
                 let response = next.run(request).await;
-                if let Some(status) = response.headers().get("grpc-status") {
-                    if status == "8" && path == "/kasumi.v1.KasumiData/ReadSnapshot" && diagnostics.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 8 {
-                        eprintln!("fixture native RPC {path} rejected: status={status:?}, message={:?}, admission={:?}, policy={:?}", response.headers().get("grpc-message"), admission.snapshot(), admission.policy());
-                    }
+                if let Some(status) = response.headers().get("grpc-status")
+                    && status == "8"
+                    && path == "/kasumi.v1.KasumiData/ReadSnapshot"
+                    && diagnostics.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 8
+                {
+                    eprintln!("fixture native RPC {path} rejected: status={status:?}, message={:?}, admission={:?}, policy={:?}", response.headers().get("grpc-message"), admission.snapshot(), admission.policy());
                 }
                 response
             }
@@ -229,7 +231,7 @@ async fn private_evidence_four_full_chunks_roundtrip_through_secure_native_trans
     )
     .unwrap();
     let mut custody =
-        PrivateEvidenceCustody::from_installed_profile(&profile_path, &binding).unwrap();
+        PrivateEvidenceCustody::from_installed_profile(profile_path, binding).unwrap();
     let timeout = Duration::from_secs(60);
     assert_eq!(
         custody.append(&evidence, &payload, timeout).await.unwrap(),
@@ -408,14 +410,13 @@ impl kasumi_private_evidence::CustodyBackend for RecordingPrivateEvidenceBackend
                 kasumi_private_evidence::CustodyBackend::mutate(&mut self.native, batch, remaining)
                     .await;
             drop(permit);
-            if let Err(error) = &result {
-                if self
+            if let Err(error) = &result
+                && self
                     .schedule
                     .retry_capacity(error, &mut attempt, deadline)
                     .await?
-                {
-                    continue;
-                }
+            {
+                continue;
             }
             return result;
         }
@@ -439,14 +440,13 @@ impl kasumi_private_evidence::CustodyBackend for RecordingPrivateEvidenceBackend
             )
             .await;
             drop(permit);
-            if let Err(error) = &result {
-                if self
+            if let Err(error) = &result
+                && self
                     .schedule
                     .retry_capacity(error, &mut attempt, deadline)
                     .await?
-                {
-                    continue;
-                }
+            {
+                continue;
             }
             return result;
         }
