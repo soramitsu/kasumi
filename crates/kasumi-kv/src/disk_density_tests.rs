@@ -7,7 +7,10 @@ fn finish_density_after_foreground_change(state: &mut DiskState) {
     for _ in 0..20_000 {
         let progress = step(state, ONE);
         assert!(progress.units <= 1);
-        assert_eq!(progress.relocated_bytes, 0, "density retried value evacuation");
+        assert_eq!(
+            progress.relocated_bytes, 0,
+            "density retried value evacuation"
+        );
         assert_eq!(state.compact.stats.entries, 0);
         assert_eq!(state.compact.stats.copied_bytes, 0);
         if phase(state) == CompactionPhase::Idle {
@@ -173,6 +176,48 @@ fn foreground_root_collapse_reselects_density_without_repeating_evacuation() {
         }
     }
     drop((original, before_collapse, collapsed, current));
+    drop(state);
+    assert_eq!(admission.used.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn dense_levels_publish_one_packing_cursor_per_step_not_per_pair() {
+    let admission = Admission::new(12 << 20);
+    let mut state = create(
+        Arc::new(InMemoryGroup::new()),
+        admission.clone(),
+        LARGE_CACHE,
+    );
+    let original = populate_sparse_directory(&mut state, 48);
+    let budget = MaintenanceBudget {
+        units: 64,
+        mutations: 64,
+    };
+    // The first cycle packs every sparse pair; the second only verifies.
+    assert!(drive_cycle(&mut state, budget).density_commits > 0);
+    seal_files(&mut state);
+    evacuate_all(&mut state);
+    let height = state.selected.height;
+    assert!(height >= 3);
+    let generation = state.owner.lock().unwrap().generation();
+    let mut pairs = 0;
+    while phase(&state) == CompactionPhase::Packing {
+        step(&mut state, budget);
+        pairs += state.compact.stats.density_pairs;
+        assert_eq!(state.compact.stats.density_commits, 0);
+    }
+    assert_eq!(phase(&state), CompactionPhase::Idle);
+    // One cursor per level, each within one step's units, and the finish.
+    let publications = state.owner.lock().unwrap().generation() - generation;
+    assert!(pairs > 2 * usize::from(height), "{pairs} pairs");
+    assert_eq!(publications, u64::from(height) + 1, "{pairs} pairs");
+    for index in 0..48u16 {
+        assert_eq!(
+            value(&mut state, &original, &long_key(index)).unwrap(),
+            index.to_be_bytes()
+        );
+    }
+    drop(original);
     drop(state);
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }

@@ -2,7 +2,8 @@
 //!
 //! Continuations are logical keys, never paths retained across publications,
 //! and every step persists the current level and continuation as a lower
-//! bound. Foreground changes may leave an already visited range sparse again;
+//! bound once, after skipping the dense pairs its unit budget allows.
+//! Foreground changes may leave an already visited range sparse again;
 //! the pass does not restart for them, and the next cycle packs it. Each level
 //! durably caps its remaining work at the selected entry count at its start
 //! plus 64 plans, so a
@@ -46,60 +47,70 @@ impl DiskState {
         if !can_mutate(budget, progress) {
             return Ok(false);
         }
-        let density = &self.compact.density;
-        let level = density.level;
-        let remaining = if density.remaining == 0 {
-            self.selected.entries.saturating_add(LEVEL_SLACK)
-        } else {
-            density.remaining
-        };
-        let lower = density
-            .next
-            .as_ref()
-            .map_or(DirectoryKey::table("\0"), DirectoryCursor::key);
-        let plan = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
-            .pack_after(self.selected, level, lower)?;
-        progress.units += 1;
-        let truncated = remaining == 1 && plan.as_ref().is_some_and(|plan| plan.next().is_some());
-        let next_level = plan.as_ref().is_none_or(|plan| plan.next().is_none()) || truncated;
-        let cursor = if next_level {
-            (level + 1, CompactionCursor::NONE, 0)
-        } else {
-            (
-                level,
-                CompactionCursor::lower_bound(plan.as_ref().unwrap().next().unwrap().key())?,
-                remaining - 1,
-            )
-        };
-        if let Some(plan) = &plan {
-            if plan.references().1.is_some() {
-                self.compact.stats.density_pairs += 1;
-            }
-            if plan.needs_pack() {
-                self.maintain_pair(plan, cursor)?;
-                self.compact.stats.maintenance_commits += 1;
-                self.compact.stats.density_commits += 1;
+        // Verified skips advance only the in-memory continuation, which stays
+        // ahead of the persisted lower bound. The step's one publication
+        // persists them: a packed pair's commit, or the cursor alone once the
+        // level ends or the unit budget is spent.
+        let cursor = loop {
+            let density = &self.compact.density;
+            let level = density.level;
+            let remaining = if density.remaining == 0 {
+                self.selected.entries.saturating_add(LEVEL_SLACK)
             } else {
-                self.publish_phase(|root| {
-                    root.advance_packing_cursor(cursor.0, cursor.1, cursor.2)
-                })?;
+                density.remaining
+            };
+            let lower = density
+                .next
+                .as_ref()
+                .map_or(DirectoryKey::table("\0"), DirectoryCursor::key);
+            let plan = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
+                .pack_after(self.selected, level, lower)?;
+            progress.units += 1;
+            let truncated =
+                remaining == 1 && plan.as_ref().is_some_and(|plan| plan.next().is_some());
+            let next_level = plan.as_ref().is_none_or(|plan| plan.next().is_none()) || truncated;
+            let cursor = if next_level {
+                (level + 1, CompactionCursor::NONE, 0)
+            } else {
+                (
+                    level,
+                    CompactionCursor::lower_bound(plan.as_ref().unwrap().next().unwrap().key())?,
+                    remaining - 1,
+                )
+            };
+            let packed = plan.as_ref().is_some_and(DirectoryPackPlan::needs_pack);
+            if let Some(plan) = &plan {
+                if plan.references().1.is_some() {
+                    self.compact.stats.density_pairs += 1;
+                }
+                if packed {
+                    self.maintain_pair(plan, cursor)?;
+                    self.compact.stats.maintenance_commits += 1;
+                    self.compact.stats.density_commits += 1;
+                }
             }
-        } else {
-            self.publish_phase(|root| root.advance_packing_cursor(cursor.0, cursor.1, cursor.2))?;
-        }
+            if truncated {
+                self.compact.stats.density_truncated_levels += 1;
+            }
+            self.compact.density = Density {
+                level: cursor.0,
+                next: if next_level {
+                    None
+                } else {
+                    plan.and_then(DirectoryPackPlan::into_next)
+                },
+                remaining: cursor.2,
+            };
+            if packed {
+                progress.mutations += 1;
+                return Ok(true);
+            }
+            if next_level || progress.units >= budget.units {
+                break cursor;
+            }
+        };
+        self.publish_phase(|root| root.advance_packing_cursor(cursor.0, cursor.1, cursor.2))?;
         progress.mutations += 1;
-        if truncated {
-            self.compact.stats.density_truncated_levels += 1;
-        }
-        self.compact.density = Density {
-            level: cursor.0,
-            next: if next_level {
-                None
-            } else {
-                plan.and_then(DirectoryPackPlan::into_next)
-            },
-            remaining: cursor.2,
-        };
         Ok(true)
     }
 
