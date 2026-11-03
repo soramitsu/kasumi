@@ -351,6 +351,36 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_visitor_reads_the_store_again_while_a_key_writer_waits() -> Result<()> {
+        let fixture = Fixture::new().await?;
+        fixture
+            .store
+            .write_batch(&[WriteOp::put("docs", b"key", b"value".to_vec())])?;
+        let store = fixture.store.clone();
+        let (done, finished) = std::sync::mpsc::channel();
+        // Plain threads, so a regression fails by timeout instead of hanging.
+        std::thread::spawn(move || {
+            let result = store.visit("docs", 16, |_, _| {
+                // A key-state writer (lease renewal or seal) queues while the
+                // visit is in its callback.
+                let sealing = store.clone();
+                let writer = std::thread::spawn(move || sealing.seal());
+                std::thread::sleep(Duration::from_millis(100));
+                // A nested read of the same store must not wait behind it.
+                let _ = store.get_bounded("docs", b"key", 16);
+                writer.join().unwrap();
+                Ok(())
+            });
+            let _ = done.send(result.is_ok());
+        });
+        finished
+            .recv_timeout(Duration::from_secs(30))
+            .expect("visit deadlocked behind a queued key-state writer");
+        let _ = fixture.shutdown().await;
+        Ok(())
+    }
+
+    #[tokio::test]
     async fn installed_visit_holds_plaintext_credit_through_success_error_and_panic() -> Result<()>
     {
         let fixture = Fixture::new().await?;

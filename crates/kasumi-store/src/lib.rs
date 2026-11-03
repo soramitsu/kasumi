@@ -2626,19 +2626,43 @@ impl TenantStore {
         let _access = AccessGuard(self);
         validate_record(namespace, &[], 0)?;
         self.check_access()?;
-        let state = self.state.read();
-        self.require_access(&state)?;
-        let index = state.keys.get(INDEX_KEY).context("index key missing")?;
-        let mut prefix = [0u8; 64];
-        prefix[..32].copy_from_slice(&tenant_hash(&self.tenant));
-        prefix[32..].copy_from_slice(&keyed_hash(
-            index,
-            &[
-                b"kasumi.namespace.v1",
-                self.tenant.as_bytes(),
-                namespace.as_bytes(),
-            ],
-        ));
+        // The key state is read per record and never held across `visitor`.
+        // A visitor may read this store again, and a nested read behind a
+        // queued lease renewal or seal would wait forever.
+        let prefix = {
+            let state = self.state.read();
+            self.require_access(&state)?;
+            let index = state.keys.get(INDEX_KEY).context("index key missing")?;
+            let mut prefix = [0u8; 64];
+            prefix[..32].copy_from_slice(&tenant_hash(&self.tenant));
+            prefix[32..].copy_from_slice(&keyed_hash(
+                index,
+                &[
+                    b"kasumi.namespace.v1",
+                    self.tenant.as_bytes(),
+                    namespace.as_bytes(),
+                ],
+            ));
+            prefix
+        };
+        let mut visit = |disk_key: &[u8], envelope: &[u8]| -> Result<()> {
+            let plaintext;
+            let record = {
+                let state = self.state.read();
+                self.require_access(&state)?;
+                check_encrypted_record_budget(envelope, namespace.len(), 4096, max_value_bytes)?;
+                plaintext = visit_record::AdmittedPlaintextRecord::prepare(
+                    self, disk_key, envelope, &state,
+                )?;
+                self.decode_record_fields(disk_key, plaintext.plaintext(), &state)?
+            };
+            ensure!(
+                record.value.len() <= max_value_bytes,
+                "record value exceeds visit budget"
+            );
+            ensure!(record.namespace == namespace, "record namespace mismatch");
+            visitor(record.key, record.value)
+        };
         #[cfg(any(test, feature = "test-utils"))]
         if self.node.body().db.has_fixture_direct_database() {
             let tx = self.node.body().db.begin_read()?;
@@ -2648,32 +2672,12 @@ impl TenantStore {
                 if !key.value().starts_with(&prefix) {
                     break;
                 }
-                self.require_access(&state)?;
-                check_encrypted_record_budget(
-                    value.value(),
-                    namespace.len(),
-                    4096,
-                    max_value_bytes,
-                )?;
-                let plaintext = visit_record::AdmittedPlaintextRecord::prepare(
-                    self,
-                    key.value(),
-                    value.value(),
-                    &state,
-                )?;
-                let record =
-                    self.decode_record_fields(key.value(), plaintext.plaintext(), &state)?;
-                ensure!(
-                    record.value.len() <= max_value_bytes,
-                    "record value exceeds visit budget"
-                );
-                ensure!(record.namespace == namespace, "record namespace mismatch");
-                visitor(record.key, record.value)?;
+                visit(key.value(), value.value())?;
             }
-            return self.require_access(&state);
+            return self.require_access(&self.state.read());
         }
         let encrypted_limit =
-            encrypted_record_limit(namespace.len(), 4096, max_value_bytes, &state)?;
+            encrypted_record_limit(namespace.len(), 4096, max_value_bytes, &self.state.read())?;
         self.node.with_registered_read(|reader| {
             let mut cursor: Option<AdmittedReadBytes> = None;
             while let Some(row) = reader.next_record(
@@ -2681,24 +2685,10 @@ impl TenantStore {
                 cursor.as_ref().map(AdmittedReadBytes::as_bytes),
                 encrypted_limit,
             )? {
-                self.require_access(&state)?;
-                check_encrypted_record_budget(row.value(), namespace.len(), 4096, max_value_bytes)?;
-                let plaintext = visit_record::AdmittedPlaintextRecord::prepare(
-                    self,
-                    row.key(),
-                    row.value(),
-                    &state,
-                )?;
-                let record = self.decode_record_fields(row.key(), plaintext.plaintext(), &state)?;
-                ensure!(
-                    record.value.len() <= max_value_bytes,
-                    "record value exceeds visit budget"
-                );
-                ensure!(record.namespace == namespace, "record namespace mismatch");
-                visitor(record.key, record.value)?;
+                visit(row.key(), row.value())?;
                 cursor = Some(row.into_key());
             }
-            self.require_access(&state)
+            self.require_access(&self.state.read())
         })
     }
 
