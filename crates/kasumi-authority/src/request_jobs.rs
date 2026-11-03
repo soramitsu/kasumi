@@ -21,6 +21,21 @@ struct RequestJob {
     child: Arc<BackgroundWork>,
     outcome: Arc<Mutex<Option<TerminalOutcome>>>,
     claimed: AtomicBool,
+    /// The waiter timed out or was cancelled and will never claim.
+    abandoned: AtomicBool,
+}
+
+/// Marks its job abandoned when the waiting caller stops waiting.
+pub(super) struct RequestWaiter(Arc<RequestJob>);
+impl RequestWaiter {
+    pub(super) fn child(&self) -> &Arc<BackgroundWork> {
+        &self.0.child
+    }
+}
+impl Drop for RequestWaiter {
+    fn drop(&mut self) {
+        self.0.abandoned.store(true, Ordering::Release);
+    }
 }
 struct Registry {
     jobs: Vec<Option<Arc<RequestJob>>>,
@@ -96,8 +111,9 @@ impl RequestJobs {
     }
 
     /// Actual nonblocking joins reclaim successful commands and results the
-    /// caller positively joined. An unclaimed rejection stays in the fixed
-    /// inventory for shutdown; panic diagnostics retain their original Arc.
+    /// caller positively joined. A rejection whose waiter is gone moves to the
+    /// drain report, which keeps the original error for shutdown without
+    /// holding a slot; panic diagnostics retain their original Arc.
     pub(super) fn observe(&self, requests: &Semaphore) {
         let mut registry = self.registry.lock().unwrap_or_else(|p| p.into_inner());
         for index in 0..registry.jobs.len() {
@@ -127,6 +143,19 @@ impl RequestJobs {
                         Some(Err(_)) if job.claimed.load(Ordering::Acquire) => {
                             registry.jobs[index] = None;
                         }
+                        // Its waiter timed out or was cancelled. Retaining the
+                        // slot would refuse every request once all slots hold
+                        // such outcomes, until restart.
+                        Some(Err(error)) if job.abandoned.load(Ordering::Acquire) => {
+                            let error = error.clone();
+                            drop(outcome);
+                            registry.report.record(
+                                "authority request outcome",
+                                index,
+                                error.into(),
+                            );
+                            registry.jobs[index] = None;
+                        }
                         Some(Err(_)) => {}
                     }
                 }
@@ -138,7 +167,7 @@ impl RequestJobs {
         &self,
         requests: Arc<Semaphore>,
         task: impl Future<Output = Result<T>> + Send + 'static,
-    ) -> Result<(Arc<BackgroundWork>, oneshot::Receiver<Result<T>>)> {
+    ) -> Result<(RequestWaiter, oneshot::Receiver<Result<T>>)> {
         self.observe(&requests);
         if requests.is_closed() {
             return Err(unavailable("authority request admission is closed"));
@@ -181,12 +210,14 @@ impl RequestJobs {
                 &self.budget,
             )
             .map_err(unavailable)?;
-        registry.jobs[slot] = Some(Arc::new(RequestJob {
-            child: child.clone(),
+        let job = Arc::new(RequestJob {
+            child,
             outcome,
             claimed: AtomicBool::new(false),
-        }));
-        Ok((child, receive))
+            abandoned: AtomicBool::new(false),
+        });
+        registry.jobs[slot] = Some(job.clone());
+        Ok((RequestWaiter(job), receive))
     }
 
     fn claim(&self, child: &Arc<BackgroundWork>, requests: &Semaphore) {
@@ -263,7 +294,8 @@ impl IndependentAuthority {
                 "authority request deadline expired before dispatch",
             ));
         }
-        let (child, receive) = self.request_jobs.submit(self.requests.clone(), task)?;
+        let (waiter, receive) = self.request_jobs.submit(self.requests.clone(), task)?;
+        let child = waiter.child();
         let received = tokio::time::timeout_at(deadline, async {
             let result = receive.await;
             // Keep the real JoinError, including its original panic payload, in
@@ -278,8 +310,9 @@ impl IndependentAuthority {
         .map_err(unknown)??;
         let result = received.map_err(unknown)?;
         // Only this caller can claim delivery after joining the exact child.
-        // A timeout or cancelled future leaves its terminal outcome installed.
-        self.request_jobs.claim(&child, &self.requests);
+        // A timeout or cancelled future drops its waiter instead; observation
+        // then moves an unclaimed rejection to the drain report.
+        self.request_jobs.claim(child, &self.requests);
         result
     }
 }

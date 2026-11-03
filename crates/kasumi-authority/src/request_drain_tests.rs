@@ -137,13 +137,13 @@ async fn acknowledgement_timeout_keeps_original_command_owner_and_actual_complet
 }
 
 #[tokio::test]
-async fn timed_out_waiter_keeps_original_rejection_until_exact_shutdown_drain() {
+async fn timed_out_waiter_frees_its_slot_and_keeps_original_rejection_for_shutdown_drain() {
     use kasumi_types::drain::DrainCompletion;
     let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
     let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
     let requests = Arc::new(Semaphore::new(AUTHORITY_REQUEST_SLOTS));
     let (release, waiting) = tokio::sync::oneshot::channel::<()>();
-    let (child, mut receive) = jobs
+    let (waiter, mut receive) = jobs
         .submit::<()>(requests.clone(), async move {
             waiting.await.unwrap();
             Err(Error::new(
@@ -157,11 +157,14 @@ async fn timed_out_waiter_keeps_original_rejection_until_exact_shutdown_drain() 
             .await
             .is_err()
     );
+    // The caller stops waiting without claiming the outcome.
     drop(receive);
+    let child = waiter.child().clone();
+    drop(waiter);
     release.send(()).unwrap();
     child.drain().await.unwrap();
     jobs.observe(&requests);
-    assert_eq!(jobs.registered(), 1);
+    assert_eq!(jobs.registered(), 0);
     assert!(!requests.is_closed());
     let failure = jobs.drain(&requests).await.unwrap_err();
     assert_eq!(failure.completion(), DrainCompletion::Complete);
@@ -231,7 +234,7 @@ async fn actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_
         authority.requests.is_closed(),
         "actual unwind must fence before a later admission probe"
     );
-    let original = panicked.drain().await.unwrap_err();
+    let original = panicked.child().drain().await.unwrap_err();
     assert!(
         original.issues()[0]
             .error()
@@ -246,7 +249,7 @@ async fn actual_child_panic_fences_admission_and_cancelled_drain_keeps_original_
     })
     .await;
     drop(cancelled);
-    assert!(blocked.observed().is_none());
+    assert!(blocked.child().observed().is_none());
     release.send(()).unwrap();
     let first = tokio::time::timeout(Duration::from_secs(10), authority.shutdown())
         .await
@@ -302,7 +305,7 @@ async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped
     .unwrap();
     let requests = Arc::new(tokio::sync::Semaphore::new(AUTHORITY_REQUEST_SLOTS));
     let (release, waiting) = tokio::sync::oneshot::channel::<()>();
-    let (child, receive) = jobs
+    let (waiter, receive) = jobs
         .submit(requests, async move {
             waiting.await.unwrap();
             Ok(())
@@ -312,7 +315,7 @@ async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped
     drop(jobs);
     assert_eq!(admission.snapshot().reserved_bytes, baseline + bytes);
     assert_eq!(admission.snapshot().inflight_operations, 0);
-    let mut first = Box::pin(child.drain());
+    let mut first = Box::pin(waiter.child().drain());
     std::future::poll_fn(|cx| {
         assert!(first.as_mut().poll(cx).is_pending());
         Poll::Ready(())
@@ -321,8 +324,8 @@ async fn request_registry_metadata_charge_outlives_cancelled_waiters_and_dropped
     drop(first);
     assert_eq!(admission.snapshot().reserved_bytes, baseline + bytes);
     release.send(()).unwrap();
-    child.drain().await.unwrap();
-    drop(child);
+    waiter.child().drain().await.unwrap();
+    drop(waiter);
     assert_eq!(admission.snapshot().reserved_bytes, baseline);
 }
 
@@ -357,6 +360,36 @@ async fn request_child_inventory_is_bounded_and_capacity_denial_does_not_fence_o
     }
     jobs.drain(&requests).await.unwrap();
     assert_eq!(jobs.registered(), 0);
+}
+
+#[tokio::test]
+async fn unclaimed_rejections_never_exhaust_the_request_inventory() {
+    let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+    let jobs = RequestJobs::new(request_budget(&admission)).unwrap();
+    let requests = Arc::new(tokio::sync::Semaphore::new(AUTHORITY_REQUEST_SLOTS));
+    // More abandoned rejections than slots, e.g. waiters timing out while
+    // quorum is lost: each one's slot is free again once it is observed.
+    for attempt in 0..2 * AUTHORITY_REQUEST_SLOTS {
+        let (waiter, receive) = jobs
+            .submit::<()>(requests.clone(), async move {
+                Err(Error::new(ErrorCode::Unavailable, "quorum unavailable"))
+            })
+            .unwrap_or_else(|error| panic!("attempt {attempt}: {error:?}"));
+        drop(receive);
+        let child = waiter.child().clone();
+        drop(waiter);
+        child.drain().await.unwrap();
+    }
+    jobs.observe(&requests);
+    assert_eq!(jobs.registered(), 0);
+    assert!(!requests.is_closed());
+    let failure = jobs.drain(&requests).await.unwrap_err();
+    assert!(
+        failure
+            .issues()
+            .iter()
+            .all(|issue| issue.component() == "authority request outcome")
+    );
 }
 
 #[tokio::test]
