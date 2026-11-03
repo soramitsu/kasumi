@@ -17,6 +17,7 @@ use crate::core::{
 use crate::core::{CacheWarmup, CacheWarmupStatus};
 use crate::group::SegmentGroupBackend;
 use crate::native_owned_arc::NativeOwnedArc;
+use crate::segment::MAX_BATCH_OPERATIONS;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::io;
@@ -1614,6 +1615,9 @@ struct Pending {
     created: BTreeMap<SharedTableName, [u8; 2]>,
     writes: StagedRows,
     credit: StagingCredit,
+    // Operations the batch publishes: one per staged row, two per created
+    // table, and one for a type table the writer's snapshot lacks.
+    operations: usize,
     // The writer gate is held here rather than by the transaction facade, so
     // a rollback from any table handle releases it immediately.
     writer: Option<WriterLease>,
@@ -1673,6 +1677,7 @@ impl Pending {
             created: BTreeMap::new(),
             writes: BTreeMap::new(),
             credit: StagingCredit::default(),
+            operations: 0,
             writer: Some(writer),
             staging: Staging::Active,
         }
@@ -1717,9 +1722,20 @@ impl Pending {
         Ok(())
     }
 
-    /// Admit one staged row, and on a table's first row that table's own
-    /// staging structure. Its shared name already owns a separate admission.
+    /// The published operation count after `count` more. A commit refuses a
+    /// batch above `MAX_BATCH_OPERATIONS`, so staging refuses it first.
+    fn operations_after(&self, count: usize) -> Result<usize, TableError> {
+        self.operations
+            .checked_add(count)
+            .filter(|operations| *operations <= MAX_BATCH_OPERATIONS)
+            .ok_or_else(|| CoreError::new(crate::CoreErrorCause::CapacityDenied).into())
+    }
+
+    /// Admit one staged row as one published operation, and on a table's
+    /// first row that table's own staging structure. Its shared name already
+    /// owns a separate admission.
     fn reserve_row(&mut self, core: &Core, table: &str, row: usize) -> Result<(), TableError> {
+        let operations = self.operations_after(1)?;
         let charge = if self.writes.contains_key(table) {
             Some(row)
         } else {
@@ -1728,12 +1744,15 @@ impl Pending {
         self.reserve(
             core,
             charge.ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?,
-        )
+        )?;
+        self.operations = operations;
+        Ok(())
     }
 
     /// Stage one admitted row. A row this batch already staged under the same
-    /// key is replaced and freed, so its admitted bytes return to the batch's
-    /// credit; the table's staging overhead stays with the table.
+    /// key is replaced and freed, so its admitted bytes and its operation
+    /// return to the batch's credit; the table's staging overhead stays with
+    /// the table.
     fn stage(&mut self, table: &SharedTableName, key: Vec<u8>, value: Option<Vec<u8>>) {
         let key_len = key.len();
         let replaced = self
@@ -1745,6 +1764,7 @@ impl Pending {
             // Codec lengths are exact, so this is the charge it was admitted with.
             self.credit.used -=
                 key_len + replaced.map_or(0, |value| value.len()) + STAGED_ROW_OVERHEAD;
+            self.operations -= 1;
         }
     }
 
@@ -1833,16 +1853,21 @@ impl WriteTransaction {
                 if *tags != definition.tags() {
                     return Err(TableError::TypeMismatch(name.to_string()));
                 }
-                false
+                None
             } else if snapshot.table_exists(name)? {
                 check_table_type(&self.inner.core, snapshot, definition)?;
-                false
+                None
             } else {
+                // Its creation and type row; the batch's first creation also
+                // creates the type table when this snapshot lacks it.
+                let types = pending.created.is_empty() && !snapshot.table_exists(TABLE_TYPES)?;
+                let operations = pending.operations_after(2 + usize::from(types))?;
                 pending.reserve(&self.inner.core, name.len().saturating_add(512))?;
-                true
+                Some(operations)
             };
             let name = SharedTableName::new(&self.inner.core, name)?;
-            if create {
+            if let Some(operations) = create {
+                pending.operations = operations;
                 pending.created.insert(name.clone(), definition.tags());
             }
             Ok((snapshot.clone(), name))
@@ -2344,38 +2369,46 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                     .map(AdmittedValue::into_parts)
                     .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()))
             };
-            let (staged_key, staged_value) = if let Some(staged) = &self.staged {
+            // The next staged row is compared in place. Only a row this step
+            // returns is copied, so a large staged row after committed ones
+            // is neither admitted nor copied until the range reaches it.
+            let (key, staged_for_key) = if let Some(staged) = &self.staged {
                 let pending = lock(staged);
                 pending.ensure_active()?;
                 let start = match self.after.as_ref().map(OwnedKeyBytes::as_bytes) {
                     Some(after) if after >= self.start.as_bytes() => Bound::Excluded(after),
                     _ => Bound::Included(self.start.as_bytes()),
                 };
-                pending
+                let staged_row = pending
                     .writes
                     .get(&*self.table)
                     .and_then(|writes| writes.range::<[u8], _>((start, Bound::Unbounded)).next())
-                    .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()))
-                    .map(|(key, value)| -> Result<_, TableError> {
-                        let key = admit_clone(&self.inner.core, key)?;
-                        let value = value
-                            .as_deref()
-                            .map(|value| admit_clone(&self.inner.core, value))
-                            .transpose()?;
-                        Ok((Some(key), Some(value)))
-                    })
-                    .transpose()?
-                    .unwrap_or((None, None))
+                    .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()));
+                let staged_value = |value: &Option<Vec<u8>>| {
+                    value
+                        .as_deref()
+                        .map(|value| admit_clone(&self.inner.core, value))
+                        .transpose()
+                };
+                match (base_key, staged_row) {
+                    (None, None) => return Ok(None),
+                    (Some(base), None) => (base, None),
+                    (Some(base), Some((key, _))) if base.0.as_slice() < key.as_slice() => {
+                        (base, None)
+                    }
+                    (Some(base), Some((key, value))) if base.0.as_slice() == key.as_slice() => {
+                        (base, Some(staged_value(value)?))
+                    }
+                    (_, Some((key, value))) => (
+                        admit_clone(&self.inner.core, key)?,
+                        Some(staged_value(value)?),
+                    ),
+                }
             } else {
-                (None, None)
-            };
-            let (key, staged_for_key) = match (base_key, staged_key) {
-                (None, None) => return Ok(None),
-                (Some(key), None) => (key, None),
-                (None, Some(key)) => (key, staged_value),
-                (Some(base), Some(staged)) if base.0 < staged.0 => (base, None),
-                (Some(base), Some(staged)) if base.0 == staged.0 => (base, staged_value),
-                (Some(_), Some(staged)) => (staged, staged_value),
+                match base_key {
+                    Some(base) => (base, None),
+                    None => return Ok(None),
+                }
             };
             let cursor = OwnedKeyBytes::copy(
                 &self.inner.core,
@@ -3355,6 +3388,111 @@ mod tests {
             table.get(b"key").unwrap().unwrap().value(),
             value.as_slice()
         );
+    }
+
+    #[test]
+    fn staging_refuses_operations_one_commit_cannot_publish() {
+        const OTHER: TableDefinition<&[u8], &[u8]> = TableDefinition::new("other");
+        let key = |index: usize| (index as u64).to_be_bytes();
+        let is_denied =
+            |result: Result<(), TableError>| result.is_err_and(|error| error.is_capacity_denied());
+        let database = database(InMemoryGroup::new());
+        // The first table also creates the type table: three operations.
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for index in 0..MAX_BATCH_OPERATIONS - 4 {
+                table.delete_key(&key(index)).unwrap();
+            }
+            // Restaging a counted row returns its operation.
+            table.delete_key(&key(0)).unwrap();
+            table.delete_key(&key(MAX_BATCH_OPERATIONS - 4)).unwrap();
+            assert!(is_denied(table.delete_key(b"over")));
+        }
+        assert!(write.commit().unwrap_err().0.is_capacity_denied());
+
+        // Exactly one full batch commits.
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for index in 0..MAX_BATCH_OPERATIONS - 3 {
+                table.delete_key(&key(index)).unwrap();
+            }
+        }
+        write.commit().unwrap();
+
+        // With both tables present, every operation is a row; a new table
+        // needs two more.
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for index in 0..MAX_BATCH_OPERATIONS - 1 {
+                table.delete_key(&key(index)).unwrap();
+            }
+            assert!(is_denied(write.open_table(OTHER).map(drop)));
+        }
+        assert!(write.commit().unwrap_err().0.is_capacity_denied());
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for index in 0..MAX_BATCH_OPERATIONS - 1 {
+                table.delete_key(&key(index)).unwrap();
+            }
+            table.insert(b"last", b"row").unwrap();
+            assert!(is_denied(table.insert(b"over", b"row").map(drop)));
+        }
+        assert!(write.commit().unwrap_err().0.is_capacity_denied());
+        let read = database.begin_read().unwrap();
+        assert!(matches!(
+            read.open_table(OTHER),
+            Err(TableError::DoesNotExist(_))
+        ));
+        let table = read.open_table(BYTES).unwrap();
+        for key in [&b"last"[..], b"over"] {
+            assert!(table.get(key).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn range_copies_only_the_staged_row_it_returns() {
+        let admission = Arc::new(WorkspaceCeiling::new());
+        let database = Database::builder(admission.clone(), GROUP, CacheConfig::default())
+            .create_with_backend(InMemoryGroup::new())
+            .unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for key in [b"a", b"b", b"c", b"d"] {
+                table.insert(key, b"committed").unwrap();
+            }
+        }
+        write.commit().unwrap();
+        let write = database.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            table.insert(b"b", b"staged").unwrap();
+            table.remove(b"c").unwrap();
+            table.insert(b"z", vec![0x3c; 8 << 20].as_slice()).unwrap();
+            // Committed rows before the large staged row fit; admitting that
+            // row at every step would deny the batch before reaching it.
+            admission.limit.store(4 << 20, Ordering::Release);
+            let mut rows = table.iter().unwrap();
+            let expected: [(&[u8], &[u8]); 3] = [
+                (b"a", b"committed"),
+                (b"b", b"staged"),
+                (b"d", b"committed"),
+            ];
+            for (key, value) in expected {
+                let (row_key, row_value) = rows.next().unwrap().unwrap();
+                assert_eq!((row_key.value(), row_value.value()), (key, value));
+            }
+            admission.limit.store(u64::MAX, Ordering::Release);
+            let (key, value) = rows.next().unwrap().unwrap();
+            assert_eq!(key.value(), b"z");
+            assert_eq!(value.value().len(), 8 << 20);
+            assert!(rows.next().is_none());
+        }
+        write.commit().unwrap();
     }
 
     #[test]

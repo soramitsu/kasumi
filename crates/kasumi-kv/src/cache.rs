@@ -67,13 +67,15 @@ pub struct CacheStats {
     pub provider_overhead_bytes: u64,
 }
 
-/// A slot pass belongs to one cache's unchanged membership/layout. Demand
-/// hits may reorder LRU links without invalidating it. Structural changes
-/// restart the next step; completion therefore describes a quiescent pass,
-/// not a snapshot retained across concurrent cache changes.
+/// A slot pass belongs to one cache's slot layout. Only a directory resize or
+/// clear moves every entry, so only those restart the next step. Demand hits,
+/// retained misses and evictions between steps leave the pass in place: an
+/// entry they insert or shift behind the cursor waits for the next pass, so
+/// completion covers every entry that kept its slot throughout, not a
+/// snapshot retained across concurrent cache changes.
 #[derive(Clone, Copy, Debug, Default)]
 pub(crate) struct CacheCursor {
-    version: Option<u64>,
+    layout: Option<u64>,
     next_slot: usize,
 }
 
@@ -98,7 +100,7 @@ pub(crate) struct CacheCandidateStep<K> {
     pub(crate) work: usize,
     /// True only after reaching the end without an outstanding candidate.
     pub(crate) complete: bool,
-    /// Membership/layout changed since the preceding step. The cursor has
+    /// The slot layout changed since the preceding step. The cursor has
     /// restarted at slot zero, and any earlier completeness claim is stale.
     pub(crate) restarted: bool,
 }
@@ -276,6 +278,9 @@ pub struct NativeCache<K = u64> {
     // Never wrap and make an old externally held proof appear current.
     // Exhaustion permanently disables traversal and conditional removal.
     structural_version: Option<u64>,
+    // The structural version of the latest resize or clear; slot cursors
+    // stay valid while it is unchanged.
+    layout_version: Option<u64>,
     publication_active: bool,
     publication_head: Option<K>,
     publication_marked: usize,
@@ -303,6 +308,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             maintenance_provider_denials: 0,
             maintenance_provider_refused: false,
             structural_version: Some(1),
+            layout_version: Some(1),
             publication_active: false,
             publication_head: None,
             publication_marked: 0,
@@ -459,7 +465,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             !self.publication_active,
             "publication candidates are active"
         );
-        self.bump_structure();
+        self.bump_layout();
         self.slots = Vec::new();
         self.slots_lease = None;
         self.slots_charge = 0;
@@ -709,9 +715,9 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
     /// Inspect at most `max_slots` slots and return at most one retained
     /// identity. This allocates nothing, does not load data and does not touch
     /// demand counters, frequency or recency. The caller releases its cache
-    /// lock before a disk-backed reachability proof. On a stable pass, a kept
-    /// candidate is followed by the next slot; a removed one is revisited so
-    /// backward-shift deletion cannot hide its replacement.
+    /// lock before a disk-backed reachability proof. A kept candidate is
+    /// followed by the next slot; a removed one is revisited so backward-shift
+    /// deletion cannot hide its replacement.
     pub(crate) fn candidate_step(
         &self,
         cursor: &mut CacheCursor,
@@ -721,10 +727,11 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             .check_owner()
             .map_err(|_| AdmissionError::OwnerFailed)?;
         let version = self.structural_version.ok_or(AdmissionError::OwnerFailed)?;
-        let restarted = cursor.version.is_some_and(|old| old != version);
-        if cursor.version != Some(version) {
+        let layout = self.layout_version.ok_or(AdmissionError::OwnerFailed)?;
+        let restarted = cursor.layout.is_some_and(|old| old != layout);
+        if cursor.layout != Some(layout) {
             *cursor = CacheCursor {
-                version: Some(version),
+                layout: Some(layout),
                 next_slot: 0,
             };
         }
@@ -760,7 +767,8 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
     /// while its structure version, slot, full key and payload owner still
     /// match. The caller must already have proved that identity dispensable
     /// under the current selected root and pins. False leaves both ownership
-    /// and cursor unchanged; the next step detects structural invalidation.
+    /// and cursor unchanged: a pass continues past a candidate that changed,
+    /// and the next step detects a layout change.
     /// This releases one alias only, preserving other aliases/output guards.
     pub(crate) fn remove_candidate(
         &mut self,
@@ -773,7 +781,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             .map_err(|_| AdmissionError::OwnerFailed)?;
         let version = self.structural_version.ok_or(AdmissionError::OwnerFailed)?;
         if version != candidate.version
-            || cursor.version != Some(version)
+            || cursor.layout != self.layout_version
             || cursor.next_slot != candidate.slot + 1
             || !self.slots.get(candidate.slot).is_some_and(|entry| {
                 entry.as_ref().is_some_and(|entry| {
@@ -791,7 +799,6 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             return Err(AdmissionError::OwnerFailed);
         }
         self.remove_slot(candidate.slot);
-        cursor.version = self.structural_version;
         cursor.next_slot = candidate.slot;
         Ok(true)
     }
@@ -1053,6 +1060,17 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         self.fits_charges(self.slots_charge, add)
     }
 
+    /// The charge of a `slots` directory if it and `charge` more fit in
+    /// place of the current directory.
+    fn slots_fit(&self, slots: usize, charge: u64) -> Result<Option<u64>, AdmissionError> {
+        let slots_charge = Self::slots_charge(slots).ok_or(AdmissionError::CapacityDenied)?;
+        let fits = match slots_charge.checked_add(charge) {
+            Some(add) => self.fits_charges(self.slots_charge, add)?,
+            None => false,
+        };
+        Ok(fits.then_some(slots_charge))
+    }
+
     fn fits_charges(&self, remove: u64, add: u64) -> Result<bool, AdmissionError> {
         if let Some(pool) = &self.accounting {
             return Ok(pool.fits(remove, add, self.config.byte_limit));
@@ -1278,7 +1296,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
     fn shrink_directory_inner(&mut self) -> Result<(), AdmissionError> {
         if self.entries == 0 {
             if !self.slots.is_empty() {
-                self.bump_structure();
+                self.bump_layout();
             }
             self.slots = Vec::new();
             self.slots_lease = None;
@@ -1329,16 +1347,27 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             } else {
                 self.slots.len()
             };
-            let next_slots_charge =
-                Self::slots_charge(required_slots).ok_or(AdmissionError::CapacityDenied)?;
-            let fits = match next_slots_charge.checked_add(charge) {
-                Some(add) => self.fits_charges(self.slots_charge, add)?,
-                None => false,
-            };
-            if fits {
+            if let Some(slots_charge) = self.slots_fit(required_slots, charge)? {
                 if required_slots != self.slots.len() {
-                    self.resize_slots_observed(required_slots, next_slots_charge, maintenance)?;
+                    self.resize_slots_observed(required_slots, slots_charge, maintenance)?;
                 }
+                return Ok(true);
+            }
+            // Evictions also free their share of the directory. A directory
+            // sized for the remaining entries, as a later trim would leave
+            // it, can fit a value the current one cannot; otherwise evicting
+            // every entry would still refuse it.
+            let compact_slots = self
+                .entries
+                .checked_add(1)
+                .and_then(|entries| entries.checked_mul(2))
+                .ok_or(AdmissionError::CapacityDenied)?
+                .max(MIN_SLOTS)
+                .next_power_of_two();
+            if compact_slots < required_slots
+                && let Some(slots_charge) = self.slots_fit(compact_slots, charge)?
+            {
+                self.resize_slots_observed(compact_slots, slots_charge, maintenance)?;
                 return Ok(true);
             }
             if self.head == NONE {
@@ -1428,7 +1457,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             new_lease = Some(lease);
             slots
         };
-        self.bump_structure();
+        self.bump_layout();
         let mut old = std::mem::replace(&mut self.slots, slots);
         if let Some(lease) = new_lease {
             self.slots_lease = Some(lease);
@@ -1559,6 +1588,12 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         self.structural_version = self
             .structural_version
             .and_then(|version| version.checked_add(1));
+    }
+
+    /// A resize or clear moves every entry, so it also restarts slot passes.
+    fn bump_layout(&mut self) {
+        self.bump_structure();
+        self.layout_version = self.structural_version;
     }
 
     fn record_access(&mut self, key: K) {
@@ -3403,6 +3438,7 @@ mod tests {
             let mut cursor = CacheCursor::default();
             let candidate = next_candidate(&cache, &mut cursor);
             let other = (0..8).find(|&key| key != candidate.key).unwrap();
+            let slots = cache.slots.len();
             match mutation {
                 0 => {
                     drop(load(&mut cache, 100, 64));
@@ -3417,10 +3453,68 @@ mod tests {
             let count = cache.entries;
             assert!(!cache.remove_candidate(&mut cursor, &candidate).unwrap());
             assert_eq!(cache.entries, count);
-            let restarted = cache.candidate_step(&mut cursor, 1).unwrap();
-            assert!(restarted.restarted);
-            assert!(restarted.work <= 1);
+            // Only a resize or clear moves the slots and restarts the pass.
+            let step = cache.candidate_step(&mut cursor, 1).unwrap();
+            assert_eq!(step.restarted, cache.slots.len() != slots, "{mutation}");
+            assert!(step.work <= 1);
         }
+    }
+
+    #[test]
+    fn demand_misses_and_evictions_between_steps_do_not_restart_a_slot_pass() {
+        let (mut cache, _) = cache_for(8, 64);
+        for key in 0..8 {
+            drop(load(&mut cache, key, 64));
+        }
+        let slots = cache.slots.len();
+        let mut cursor = CacheCursor::default();
+        let mut work = 0;
+        for miss in 100.. {
+            // A retained demand miss in a full cache evicts its LRU entry.
+            let evictions = cache.counters.evictions;
+            assert!(cache.get(miss).is_none());
+            drop(load(&mut cache, miss, 64));
+            assert!(cache.contains(miss));
+            assert_eq!(cache.counters.evictions, evictions + 1);
+            assert_eq!(cache.slots.len(), slots);
+            let step = cache.candidate_step(&mut cursor, 1).unwrap();
+            assert!(!step.restarted);
+            work += step.work;
+            if step.complete {
+                break;
+            }
+            assert!(work <= slots);
+        }
+        assert_eq!(work, slots);
+    }
+
+    #[test]
+    fn retaining_a_value_shrinks_a_directory_its_evictions_emptied() {
+        const LARGE: u64 = 1 << 20;
+        // A budget for many small entries, whose grown directory alone leaves
+        // too little room for one large value.
+        let (mut cache, admission) = cache_for(512, 64);
+        for key in 0..512 {
+            drop(load(&mut cache, key, 64));
+        }
+        assert_eq!(cache.slots.len(), 1024);
+        let directory = NativeCache::<u64>::slots_charge(1024).unwrap();
+        let charge = 512 * CachedBytes::charge_for_len(64).unwrap() + directory / 4;
+        let len = (charge - (CachedBytes::charge_for_len(1).unwrap() - 1)) as usize;
+        assert_eq!(CachedBytes::charge_for_len(len), Some(charge));
+        // Frequent enough to replace any small entry.
+        for _ in 0..16 {
+            assert!(cache.get(LARGE).is_none());
+        }
+        let value = load(&mut cache, LARGE, len);
+        assert!(cache.contains(LARGE));
+        assert!(cache.slots.len() < 1024);
+        assert!(cache.entries > 1);
+        assert!(cache.counters.evictions < 512);
+        assert!(cache.stats().resident_bytes <= cache.config().byte_limit);
+        drop(value);
+        drop(cache);
+        assert_eq!(admission.used(), 0);
     }
 
     #[test]

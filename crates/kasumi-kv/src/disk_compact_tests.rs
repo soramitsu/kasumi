@@ -1182,6 +1182,59 @@ fn regular_large_write_and_leaf_relocation_fit_fixed_native_workspace() {
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
 
+/// A leaf rewrite only orders its relocation records, like an ordinary
+/// commit's operation records; its root publication fully synchronizes them.
+/// Stopped at that synchronization, it reopens at the original or the
+/// relocated row whatever prefix of its barriers the device kept, and only a
+/// kept commit record recovers the relocation. Evacuation then finishes.
+#[test]
+fn ordered_relocation_barriers_recover_at_every_kept_prefix() {
+    let admission = Admission::new(32 << 20);
+    let group = InMemoryGroup::with_ordered_syncs();
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    state
+        .commit(&[
+            Operation::create_table("accounts"),
+            Operation::put("accounts", b"a", b"cold"),
+        ])
+        .unwrap();
+    let original = location(&state, state.selected, b"a");
+    seal_files(&mut state);
+    state.request_compaction().unwrap();
+    assert!(step(&mut state, ONE).phase_changed);
+    assert_eq!(phase(&state), CompactionPhase::Evacuating);
+    assert_eq!(group.pending_barriers(), 0);
+
+    group.fail(GroupOp::RootSync, 1, FaultTiming::BeforeEffect);
+    assert!(state.maintenance_step(ONE).is_err());
+    drop(state);
+    // Relocation records, directory pages, preparation and commit records,
+    // and the first root copy.
+    let pending = group.pending_barriers();
+    assert_eq!(pending, 5);
+    let mut relocated = Vec::new();
+    for keep in 0..=pending {
+        let mut state = DiskState::open(
+            Arc::new(group.crash_keeping_barriers(keep)),
+            admission.clone(),
+            GROUP,
+            LARGE_CACHE,
+        )
+        .unwrap();
+        let root = state.snapshot().unwrap();
+        assert_eq!(value(&mut state, &root, b"a").unwrap(), b"cold");
+        relocated.push(location(&state, root.root(), b"a") != original);
+        drop(root);
+        drive_cycle(&mut state, STEP);
+        let root = state.snapshot().unwrap();
+        assert_eq!(value(&mut state, &root, b"a").unwrap(), b"cold");
+        let (batch_seq, moved) = location(&state, root.root(), b"a");
+        assert_eq!(batch_seq, original.0);
+        assert!(moved.segment_id > original.1.segment_id);
+    }
+    assert_eq!(relocated, [false, false, false, false, true, true]);
+}
+
 mod residency_edges {
     include!("disk_residency_tests.rs");
 }

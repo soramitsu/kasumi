@@ -513,7 +513,7 @@ fn commit_workspace_denial_settles_a_retained_writer_and_the_next_writer_commits
 }
 
 #[test]
-fn rejected_commit_input_settles_and_releases_the_writer() {
+fn operations_past_the_commit_limit_roll_back_while_staging() {
     let backend = CrashBackend::default();
     let mut opening = Database::builder(Admission::new(), GROUP, CacheConfig::default())
         .retain_backend(Box::new(backend.clone()), DatabaseOpenMode::Create);
@@ -523,19 +523,18 @@ fn rejected_commit_input_settles_and_releases_the_writer() {
 
     let mut writer = opening.database().unwrap().begin_write().unwrap().retain();
     {
-        // Staging admits every row; with its table creation the batch is one
-        // operation over the limit only commit enforces.
+        // With its table creation the batch reaches the commit limit two rows
+        // early. The next row rolls the writer back before commit could
+        // refuse the whole batch.
         let mut table = writer.transaction().unwrap().open_table(FRESH).unwrap();
-        for index in 0..kasumi_kv::MAX_BATCH_OPERATIONS as u32 {
+        for index in 0..kasumi_kv::MAX_BATCH_OPERATIONS as u32 - 2 {
             table.insert(&index.to_be_bytes(), b"value").unwrap();
         }
+        assert!(is_denied(table.insert(b"over", b"value")));
     }
     let report = writer.commit();
     assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
-    assert!(
-        matches!(&(report.rejected_no_effect()), Some(StorageError::Core(native_error)) if matches!(native_error.rejected_cause(), Some(kasumi_kv::CoreErrorCause::InvalidInput(_))))
-    );
-    assert!(!report.is_capacity_denied());
+    assert!(report.is_capacity_denied());
     assert_eq!(backend.effects(), effects);
     assert!(
         writer

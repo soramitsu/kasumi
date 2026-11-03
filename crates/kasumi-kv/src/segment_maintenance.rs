@@ -117,10 +117,11 @@ pub(super) fn validate_maintenance(
 impl SegmentWriter {
     /// Prepare a leaf's bounded physical maintenance batch. Every source is
     /// verified in a read-only pass before any destination writes. A second
-    /// pass streams each source while checking its CRC again. The operation
-    /// prefix is synchronized once, except when a segment rollover requires
-    /// sealing the previous file. Up to MAX_BATCH_BYTES may be copied, but
-    /// memory and each backend read/write are bounded by IO_WINDOW.
+    /// pass streams each source while checking its CRC again. Like an ordinary
+    /// batch's records, the operation prefix is only ordered once; a segment
+    /// rollover still fully synchronizes the file it seals. Up to
+    /// MAX_BATCH_BYTES may be copied, but memory and each backend read/write
+    /// are bounded by IO_WINDOW.
     pub(crate) fn prepare_maintenance(
         &mut self,
         backend: &dyn SegmentGroupBackend,
@@ -247,7 +248,9 @@ impl SegmentWriter {
         }
         self.flush(backend)?;
         let end = self.position().expect("maintenance has an active segment");
-        backend.sync(GroupFile::segment(end.segment_id))?;
+        // Ordered before the directory pages and the records that bind them;
+        // the publication that follows a commit makes all of them durable.
+        backend.sync_ordered(GroupFile::segment(end.segment_id))?;
         Ok(PreparedBatch {
             identity: PreparedIdentity {
                 group_id: self.group_id,
