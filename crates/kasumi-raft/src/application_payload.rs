@@ -1,7 +1,8 @@
 //! One application byte encoding with explicit proposal storage ownership.
 use anyhow::{Context, Result};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use kasumi_store::{DiskMemoryLease, PlaintextValue};
-use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Visitor};
 use std::{fmt, ops::Deref, sync::Arc};
 
 /// The caller transfers its actual owned proposal into the group.
@@ -172,14 +173,34 @@ impl fmt::Debug for ApplicationPayload {
             .finish_non_exhaustive()
     }
 }
+/// Peer RPC JSON carries one base64 string rather than a number per byte,
+/// 1.33x instead of ~3.5x the payload and far cheaper to parse. The binary log
+/// encoding keeps the exact byte-sequence layout that replay borrows.
 impl Serialize for ApplicationPayload {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        self.as_bytes().serialize(serializer)
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&BASE64.encode(self.as_bytes()))
+        } else {
+            self.as_bytes().serialize(serializer)
+        }
     }
 }
 impl<'de> Deserialize<'de> for ApplicationPayload {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
-        Vec::<u8>::deserialize(deserializer).map(Self::ingress)
+        if !deserializer.is_human_readable() {
+            return Vec::<u8>::deserialize(deserializer).map(Self::ingress);
+        }
+        struct Text;
+        impl Visitor<'_> for Text {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("base64 application bytes")
+            }
+            fn visit_str<E: serde::de::Error>(self, text: &str) -> std::result::Result<Vec<u8>, E> {
+                BASE64.decode(text).map_err(E::custom)
+            }
+        }
+        deserializer.deserialize_str(Text).map(Self::ingress)
     }
 }
 

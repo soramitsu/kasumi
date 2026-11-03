@@ -230,7 +230,16 @@ async fn stored_and_generated_forms_preserve_one_canonical_wire_and_decode_as_in
     let expected = vec![0x71; 64 << 10];
     let generated = ApplicationProposal::generated(expected.clone())
         .admit(&fixture.store, &Arc::downgrade(&lease))?;
-    assert_eq!(serde_json::to_vec(&stored)?, serde_json::to_vec(&expected)?);
+    // Peer JSON carries one base64 string and decodes as the same bytes.
+    let text = BASE64.encode(&expected);
+    let json = serde_json::to_vec(&stored)?;
+    assert_eq!(json, serde_json::to_vec(&text)?);
+    assert_eq!(serde_json::to_vec(&generated)?, json);
+    assert_eq!(
+        serde_json::from_slice::<ApplicationPayload>(&json)?.as_bytes(),
+        expected
+    );
+    assert!(serde_json::from_slice::<ApplicationPayload>(br#""not base64!""#).is_err());
     let wire = postcard::to_allocvec(&stored)?;
     assert_eq!(wire, postcard::to_allocvec(&expected)?);
     assert_eq!(wire, postcard::to_allocvec(&generated)?);
@@ -254,7 +263,7 @@ async fn stored_and_generated_forms_preserve_one_canonical_wire_and_decode_as_in
     let previous = PreviousCommand::Application(expected.clone());
     assert_eq!(
         serde_json::to_vec(&command)?,
-        serde_json::to_vec(&previous)?
+        serde_json::to_vec(&serde_json::json!({ "Application": text }))?
     );
     let command_wire = postcard::to_allocvec(&command)?;
     assert_eq!(command_wire, postcard::to_allocvec(&previous)?);
