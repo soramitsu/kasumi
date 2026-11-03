@@ -368,7 +368,7 @@ fn save_new_catalog(store: &TenantStore) -> Result<()> {
                     "new catalog has orphan physical rows"
                 );
             }
-            catalogs.insert(hash.as_slice(), bytes.as_slice())?;
+            catalogs.put(hash.as_slice(), bytes.as_slice())?;
         }
         store.access.check()?;
         tx.commit()

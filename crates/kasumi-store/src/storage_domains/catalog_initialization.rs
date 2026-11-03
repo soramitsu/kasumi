@@ -357,7 +357,7 @@ fn save_new_catalogs(application: &Arc<TenantStore>, custody: &Arc<TenantStore>)
                         "new catalog has orphan physical rows"
                     );
                 }
-                catalogs.insert(hash.as_slice(), bytes.as_slice())?;
+                catalogs.put(hash.as_slice(), bytes.as_slice())?;
             }
         }
         application.access.check()?;

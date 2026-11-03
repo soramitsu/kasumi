@@ -104,7 +104,7 @@ impl BindingPutRequest {
                 let _staging =
                     crate::test_utils::BindingStagingScope::enter(self.application.node.memory());
                 table
-                    .insert(state.plan.key().as_slice(), state.plan.envelope())
+                    .put(state.plan.key().as_slice(), state.plan.envelope())
                     .map_err(BindingInstallBodyError::Table)?;
             }
             drop(table);

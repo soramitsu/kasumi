@@ -1841,7 +1841,7 @@ impl NodeStore {
             let bytes = serde_json::to_vec(catalog)?;
             let tx = self.body().db.begin_write()?;
             tx.open_table(CATALOG)?
-                .insert(tenant_hash(tenant).as_slice(), bytes.as_slice())?;
+                .put(tenant_hash(tenant).as_slice(), bytes.as_slice())?;
             return tx.commit().context("committing wrapped-key catalog");
         }
 
@@ -3010,7 +3010,7 @@ fn write_domain(
                     &catalog.active,
                     data,
                 )?;
-                table.insert(disk_key.as_slice(), admitted.bytes())?;
+                table.put(disk_key.as_slice(), admitted.bytes())?;
             }
             WriteOp::Delete { namespace, key } => {
                 ensure!(

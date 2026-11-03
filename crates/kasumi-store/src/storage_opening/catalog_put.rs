@@ -167,7 +167,7 @@ impl CatalogPutRequest {
                     }
                 }
                 for plan in state.plan.entries() {
-                    catalogs.insert(plan.hash().as_slice(), plan.bytes())?;
+                    catalogs.put(plan.hash().as_slice(), plan.bytes())?;
                 }
                 state.plan.check_access()?;
                 Ok(())

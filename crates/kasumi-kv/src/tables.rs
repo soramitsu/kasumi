@@ -2148,6 +2148,22 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
         })
     }
 
+    /// Stage a value without reading or admitting the prior value; the
+    /// caller does not receive the bytes it replaces.
+    pub fn put(&mut self, key: K::Input<'_>, value: V::Input<'_>) -> Result<(), TableError> {
+        check_key_bound::<K>(key)?;
+        check_value_bound::<V>(value)?;
+        self.step(|| {
+            let charge = staged_row_charge(K::encoded_len(key), V::encoded_len(value))?;
+            self.inner.core.check_read_owner()?;
+            let mut pending = lock(&self.staged);
+            pending.ensure_active()?;
+            pending.reserve_row(&self.inner.core, &self.name, charge)?;
+            pending.stage(&self.name, K::encode(key), Some(V::encode(value)));
+            Ok(())
+        })
+    }
+
     pub fn remove(&mut self, key: K::Input<'_>) -> Result<Option<AccessGuard<V>>, TableError> {
         check_key_bound::<K>(key)?;
         self.step(|| {
@@ -2961,6 +2977,94 @@ mod tests {
                 .unwrap()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn put_needs_no_old_value_headroom_and_preserves_pinned_reader() {
+        let admission = Arc::new(WorkspaceCeiling::new());
+        let backend = InMemoryGroup::new();
+        let database = Database::builder(admission.clone(), GROUP, CacheConfig::default())
+            .create_with_backend(backend.clone())
+            .unwrap();
+        let value = vec![0xa5; 8 << 20];
+        let write = database.begin_write().unwrap();
+        write
+            .open_table(BYTES)
+            .unwrap()
+            .put(b"large", value.as_slice())
+            .unwrap();
+        write.commit().unwrap();
+        let old = database.begin_read().unwrap();
+        // Directory/replay workspace fits; copying the 8 MiB old value does not.
+        admission.limit.store(4 << 20, Ordering::Release);
+        let write = database.begin_write().unwrap();
+        assert!(
+            write
+                .open_table(BYTES)
+                .unwrap()
+                .insert(b"large", b"small")
+                .is_err_and(|error| error.is_capacity_denied())
+        );
+        drop(write);
+        let write = database.begin_write().unwrap();
+        let mut table = write.open_table(BYTES).unwrap();
+        table.put(b"large", b"small").unwrap();
+        assert_eq!(table.get(b"large").unwrap().unwrap().value(), b"small");
+        drop(table);
+        write.commit().unwrap();
+        admission.limit.store(u64::MAX, Ordering::Release);
+        assert_eq!(
+            old.open_table(BYTES)
+                .unwrap()
+                .get(b"large")
+                .unwrap()
+                .unwrap()
+                .value(),
+            value.as_slice()
+        );
+        drop(old);
+        database.close().unwrap();
+        let reopened = Database::builder(admission, GROUP, CacheConfig::default())
+            .open_with_backend(backend.crash())
+            .unwrap();
+        let read = reopened.begin_read().unwrap();
+        assert_eq!(
+            read.open_table(BYTES)
+                .unwrap()
+                .get(b"large")
+                .unwrap()
+                .unwrap()
+                .value(),
+            b"small"
+        );
+    }
+
+    #[test]
+    fn put_validates_bounds_and_obeys_staged_order() {
+        let database = database(InMemoryGroup::new());
+        let write = database.begin_write().unwrap();
+        let mut table = write.open_table(BYTES).unwrap();
+        let oversized = vec![0x44; MAX_KEY_BYTES + 1];
+        assert!(
+            matches!(&(table.put(oversized.as_slice(), b"value")), Err(TableError::Storage(StorageError::Core(
+                native_error
+            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
+        );
+        table.put(b"key", b"first").unwrap();
+        table.delete_key(b"key").unwrap();
+        assert!(table.get(b"key").unwrap().is_none());
+        table.put(b"key", b"second").unwrap();
+        table.put(b"other", b"third").unwrap();
+        assert_eq!(
+            table.insert(b"other", b"fourth").unwrap().unwrap().value(),
+            b"third"
+        );
+        drop(table);
+        write.commit().unwrap();
+        let read = database.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        assert_eq!(table.get(b"key").unwrap().unwrap().value(), b"second");
+        assert_eq!(table.get(b"other").unwrap().unwrap().value(), b"fourth");
     }
 
     #[test]

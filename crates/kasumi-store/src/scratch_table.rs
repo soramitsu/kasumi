@@ -380,7 +380,7 @@ impl EncryptedTable {
         );
         let tx = self.owner.database().begin_write()?;
         {
-            tx.open_table(TABLE)?.insert(key, value)?;
+            tx.open_table(TABLE)?.put(key, value)?;
         }
         tx.commit()?;
         Ok(())
