@@ -167,6 +167,9 @@ impl<C: RoutedClient> InstalledPool<C> {
         let preferred = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(preferred);
         let mut attempted = false;
+        // A dispatched effect failed without a definite outcome. A later probe
+        // or dispatch refusal cannot rule it out.
+        let mut uncertain = false;
         loop {
             for member in &members {
                 let remaining = budget.remaining()?;
@@ -241,7 +244,9 @@ impl<C: RoutedClient> InstalledPool<C> {
                         if dispatched && policy == Dispatch::Once {
                             return Err(error);
                         }
+                        uncertain |= dispatched;
                     }
+                    Err(error) if uncertain => return Err(crate::kasumi::unresolved(&error)),
                     Err(error) => return Err(error),
                 }
             }
