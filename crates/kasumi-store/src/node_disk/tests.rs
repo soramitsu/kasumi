@@ -391,6 +391,123 @@ fn file_synchronization_does_not_hold_disk_state_across_the_syscall() {
     clean(&disk, &["slow", "other"]);
 }
 
+/// Publishing a file and its parent, or syncing an enrolled directory, also
+/// runs each blocking sync without State: another file's write, read, sync
+/// and settlement complete meanwhile, and a failure latched during the sync
+/// still makes it report failure.
+#[test]
+fn file_and_directory_publication_syncs_do_not_hold_disk_state() {
+    for publication in [true, false] {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let (_directory, config) = installation();
+        let disk = open(config, fixture_memory);
+        let directory = disk.open_directory("data", Path::new("")).unwrap();
+        let slow = disk
+            .create_file("data", Path::new("slow"), DiskWork::Foreground)
+            .unwrap();
+        let other = disk
+            .create_file("data", Path::new("other"), DiskWork::Foreground)
+            .unwrap();
+        for file in [&slow, &other] {
+            file.reserve_growth(0, 16 << 10, DiskWork::Foreground)
+                .unwrap();
+            file.grow_reserved(4096).unwrap();
+            file.write_all_at(&[1; 64], 0).unwrap();
+        }
+        let timeout = std::time::Duration::from_secs(5);
+        for fail in [false, true] {
+            let (entered, entered_rx) = std::sync::mpsc::channel();
+            let (release, release_rx) = std::sync::mpsc::channel();
+            *disk.sync_pause.lock().unwrap() = Some(file::SyncPause {
+                entered,
+                release: release_rx,
+            });
+            std::thread::scope(|scope| {
+                let paused = scope.spawn(|| {
+                    if publication {
+                        slow.sync_all_and_parent()
+                    } else {
+                        directory.sync_all()
+                    }
+                });
+                entered_rx.recv_timeout(timeout).unwrap();
+                if fail {
+                    disk.fail();
+                } else {
+                    other.write_all_at(&[2; 64], 64).unwrap();
+                    let mut bytes = [0; 64];
+                    other.read_exact_at(&mut bytes, 64).unwrap();
+                    assert_eq!(bytes, [2; 64]);
+                    other.sync_all().unwrap();
+                    other.settle_growth(4096).unwrap();
+                    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+                }
+                release.send(()).unwrap();
+                assert_eq!(paused.join().unwrap().is_err(), fail);
+            });
+            slow.write_all_at(&[3; 64], 64).ok();
+        }
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    }
+}
+
+/// A full sync after the last write is not repeated by a later publication
+/// of that file: sync_all_and_parent then syncs only the parent, publication
+/// renames without another file sync, and a rename within one directory
+/// syncs that directory once.
+#[test]
+fn durable_file_publication_skips_repeated_syncs() {
+    let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let (_directory, config) = installation();
+    let disk = open(config, fixture_memory);
+    let nested = disk
+        .open_directory("data", Path::new(""))
+        .unwrap()
+        .create_child(c"nested", DiskWork::Foreground)
+        .unwrap();
+    let full = || disk.physical_synchronizations().1;
+    let file = disk
+        .create_file("data", Path::new("source"), DiskWork::Foreground)
+        .unwrap();
+    // Creation synchronized the empty file and its parent.
+    let before = full();
+    file.sync_all_and_parent().unwrap();
+    assert_eq!(full(), before + 1, "only the parent after creation");
+    file.reserve_growth(0, 4096, DiskWork::Foreground).unwrap();
+    file.grow_reserved(4096).unwrap();
+    file.write_all_at(&[5; 64], 0).unwrap();
+    let before = full();
+    file.sync_all().unwrap();
+    file.sync_all_and_parent().unwrap();
+    assert_eq!(full(), before + 2, "one file and one parent sync");
+    let before = full();
+    let file = disk
+        .publish_file(file, "data", Path::new("destination"))
+        .unwrap();
+    assert_eq!(full(), before + 1, "same-directory rename syncs it once");
+    let before = full();
+    let file = disk
+        .publish_file(file, "data", Path::new("nested/destination"))
+        .unwrap();
+    assert_eq!(
+        full(),
+        before + 2,
+        "both parents of a cross-directory rename"
+    );
+    let mut bytes = [0; 64];
+    file.read_exact_at(&mut bytes, 0).unwrap();
+    assert_eq!(bytes, [5; 64]);
+    let before = full();
+    disk.delete_file(file).unwrap();
+    assert_eq!(
+        full(),
+        before + 1,
+        "a durable file is unlinked without a sync"
+    );
+    drop(nested);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+}
+
 fn seed(config: &NodeDiskConfig, name: &str, len: u64) {
     let file = std::fs::OpenOptions::new()
         .read(true)

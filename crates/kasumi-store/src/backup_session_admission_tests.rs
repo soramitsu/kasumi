@@ -58,12 +58,9 @@ fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() 
         .unwrap()
         .unwrap();
     let (valid, allocations) =
-        crate::allocation_tests::measure(|| terminal::validate(&intent, session, Terminal::Intent));
+        crate::allocation_tests::measure(|| terminal::classify(&intent, session, Terminal::Intent));
     valid.unwrap();
-    assert_eq!(
-        allocations, 0,
-        "classification streams the admitted fixed buffer"
-    );
+    assert_eq!(allocations, 0, "classification reads a fixed header");
     let (small, allocations) =
         crate::allocation_tests::measure(|| terminal::read(&intent, session, Terminal::Intent, 0));
     assert_eq!(small.unwrap_err().kind(), std::io::ErrorKind::InvalidInput);
@@ -107,6 +104,44 @@ fn terminal_publication_keeps_original_inode_full_extent_and_exact_ciphertext() 
             .unwrap(),
         b"original encrypted outcome"
     );
+}
+
+/// An object put into a classified session synchronizes once per namespace
+/// change: the session directory's classification, the temporary's create
+/// (file and parent), its contents, and the publishing rename. It reads only
+/// the published intent's fixed header, never the whole terminal record.
+#[test]
+fn session_object_put_syncs_each_change_once_and_reads_only_terminal_headers() {
+    let temporary = private_tempdir().unwrap();
+    let disk = open(temporary.path(), 8);
+    let directory = Directory::open(temporary.path(), disk.clone()).unwrap();
+    let session = Uuid::new_v4();
+    directory
+        .put(session, BackupSessionSlot::Intent, b"intent")
+        .unwrap();
+    directory
+        .put(session, BackupSessionSlot::Object(Uuid::new_v4()), b"first")
+        .unwrap();
+    let object = Uuid::new_v4();
+    let syncs = disk.physical_synchronizations();
+    let read = disk.physical_read_bytes();
+    directory
+        .put(session, BackupSessionSlot::Object(object), b"object bytes")
+        .unwrap();
+    assert_eq!(disk.physical_synchronizations().1 - syncs.1, 5);
+    assert_eq!(disk.physical_synchronizations().0, syncs.0);
+    assert_eq!(
+        disk.physical_read_bytes() - read,
+        terminal::HEADER_BYTES as u64
+    );
+    assert_eq!(
+        directory
+            .get(session, BackupSessionSlot::Object(object), 64)
+            .unwrap()
+            .unwrap(),
+        b"object bytes"
+    );
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
 }
 
 #[test]

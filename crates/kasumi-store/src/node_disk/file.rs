@@ -689,9 +689,14 @@ fn execute_prepared(
                 .identity(),
             1,
         );
-        Some(match transaction_permit {
-            Some(permit) => ParentTransition::preflight_transaction(disk, state, first, permit)?,
-            None => ParentTransition::preflight(disk, state, first, None, work)?,
+        Some(match (transaction_permit, admitted_growth) {
+            (Some(permit), _) => {
+                ParentTransition::preflight_transaction(disk, state, first, permit)?
+            }
+            // Without a transaction permit, only a namespace admission
+            // supplies precharged growth.
+            (None, Some(_)) => ParentTransition::preflight_admitted(disk, state, first)?,
+            (None, None) => ParentTransition::preflight(disk, state, first, None, work)?,
         })
     } else {
         None
@@ -1153,7 +1158,7 @@ fn execute_publication(
             return Err(io::ErrorKind::Other.into());
         }
         {
-            let budget = owner
+            let mut budget = owner
                 .budget()
                 .lock()
                 .map_err(|_| io::ErrorKind::InvalidData)?;
@@ -1171,7 +1176,14 @@ fn execute_publication(
             {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            disk.synchronized(|| actual.sync_all())?;
+            // A full sync after this exclusive owner's last write already
+            // made the contents durable before the name can appear.
+            if budget.synced == Synced::Durable {
+                crate::sync_trace::skipped();
+            } else {
+                disk.synchronized(|| actual.sync_all())?;
+                budget.synced = Synced::Durable;
+            }
         }
         verify_parent(
             &disk.roots[&target.root],
@@ -1301,7 +1313,17 @@ fn execute_publication(
         })?;
         #[cfg(test)]
         disk.namespace_checkpoint(NamespaceFailure::PublishDestinationSync)?;
-        disk.synchronized(|| owner.parent().sync_all())?;
+        // A rename within one directory changed only the directory just synced.
+        let source = owner
+            .retiring_parent
+            .as_ref()
+            .expect("retained source parent")
+            .identity();
+        if owner.parent_custody().identity() == source {
+            crate::sync_trace::skipped();
+        } else {
+            disk.synchronized(|| owner.parent().sync_all())?;
+        }
         verify_parent(
             &disk.roots[&old_root],
             &old_parent_names,
@@ -1546,7 +1568,9 @@ impl NodeDisk {
             {
                 return Err(io::ErrorKind::StorageFull.into());
             }
-            if transaction.is_none() {
+            // A namespace admission or transaction permit already paid for
+            // this file; only an ordinary create checks the current policy.
+            if transaction.is_none() && admitted.is_none() {
                 self.reserve(&mut state, 0, work)?;
             }
             let required = 1 + super::batch::reserved_entries(&state);
@@ -1810,7 +1834,11 @@ impl NodeDisk {
                 }
                 file_extent(&metadata, self.unit, self.config.file_allocation_policy)
             } else {
-                self.synchronized(|| actual.sync_all())?;
+                if budget.synced == Synced::Durable {
+                    crate::sync_trace::skipped();
+                } else {
+                    self.synchronized(|| actual.sync_all())?;
+                }
                 let transition = ParentTransition::prepare(
                     self,
                     &mut state,
@@ -3097,7 +3125,13 @@ impl NodeDiskFile {
         file.read_exact_at(out, offset).map_err(|error| {
             self.0.disk.fail();
             self.0.record_error(error)
-        })
+        })?;
+        #[cfg(test)]
+        self.0
+            .disk
+            .read_bytes
+            .fetch_add(out.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
     }
 
     /// Verified materialization retires only pending filesystem promises; the
@@ -3188,12 +3222,30 @@ impl NodeDiskFile {
         budget.settled = false;
         self.0.record_enrollment(&mut state, &budget);
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        let outcome = (|| -> io::Result<()> {
+        let verified = (|| -> io::Result<()> {
             self.0.verify(file)?;
             if file.metadata()?.len() != budget.actual_len {
                 return Err(io::ErrorKind::InvalidData.into());
             }
-            self.0.disk.synchronized(|| file.sync_all())?;
+            Ok(())
+        })();
+        if let Err(error) = verified {
+            self.0.disk.fail_locked(&mut state);
+            return Err(self.0.record_error(error));
+        }
+        // Both blocking syncs run without State, as in `synchronize`. The
+        // budget lock keeps this file unchanged, this live owner retains its
+        // parent, and both are verified again under State before success.
+        drop(state);
+        #[cfg(test)]
+        self.0.disk.sync_checkpoint();
+        let synchronized = (|| -> io::Result<()> {
+            // A full sync after this owner's last write already covers it.
+            if budget.synced == Synced::Durable {
+                crate::sync_trace::skipped();
+            } else {
+                self.0.disk.synchronized(|| file.sync_all())?;
+            }
             #[cfg(test)]
             if self
                 .0
@@ -3203,13 +3255,14 @@ impl NodeDiskFile {
             {
                 return Err(io::ErrorKind::Other.into());
             }
-            self.0.disk.synchronized(|| self.0.parent().sync_all())?;
-            self.0.verify(file)
+            self.0.disk.synchronized(|| self.0.parent().sync_all())
         })();
-        if let Err(error) = outcome {
+        let mut state = self.0.disk.lock_state();
+        if let Err(error) = synchronized.and_then(|()| self.0.verify(file)) {
             self.0.disk.fail_locked(&mut state);
             return Err(self.0.record_error(error));
         }
+        overlapped_failure(&state)?;
         budget.synced = Synced::Durable;
         drop(state);
         self.0.observe(&mut budget)

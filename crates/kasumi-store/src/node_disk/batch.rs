@@ -486,6 +486,14 @@ impl NodeDisk {
             }
             let parent_enrolled = state.accounted.values().find(|e| e.binding() == parent);
             match parent_enrolled {
+                // A parent charged beyond its extent policy refuses every new
+                // child. Refuse before any effect, not in the admitted create,
+                // whose failure fences the disk.
+                Some(AccountedInode::Directory(entry))
+                    if entry.settled && entry.bytes > self.config.directory_policy.extent_bytes =>
+                {
+                    return Err(io::ErrorKind::StorageFull.into());
+                }
                 Some(AccountedInode::Directory(entry)) if entry.settled => (),
                 None if record
                     .parts

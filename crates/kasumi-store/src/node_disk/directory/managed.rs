@@ -1165,16 +1165,21 @@ fn prepare_child(
     } else {
         state.directories
     };
-    let plan = if let Some(work) = work {
-        Some(ParentTransition::preflight(
+    let precharged = admitted.is_some();
+    let plan = match work {
+        Some(_) if precharged => Some(ParentTransition::preflight_admitted(
+            disk,
+            state,
+            (owner.identity, 1),
+        )?),
+        Some(work) => Some(ParentTransition::preflight(
             disk,
             state,
             (owner.identity, 1),
             None,
             Some(work),
-        )?)
-    } else {
-        None
+        )?),
+        None => None,
     };
     let mut ancestors = Vec::new();
     ancestors
@@ -1188,7 +1193,6 @@ fn prepare_child(
         return Err(io::ErrorKind::InvalidData.into());
     }
     let mut parent = RetainedParent::prepared(owner.identity, ancestors.into_boxed_slice());
-    let precharged = admitted.is_some();
     let allocation = admitted.unwrap_or_else(Arc::<DirectoryOwner>::new_uninit);
     let root = owner.root.clone();
     if let Some(work) = work

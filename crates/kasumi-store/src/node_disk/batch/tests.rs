@@ -152,6 +152,117 @@ fn permits_transfer_exactly_once_without_charging_extent_twice() {
     );
 }
 
+/// Admission pays the byte ceiling and the free floor once. Free space taken
+/// by another writer, or maintenance growth above the foreground ceiling,
+/// must not refuse the admitted creates afterwards: any refusal there fenced
+/// the whole disk.
+#[test]
+fn admitted_creates_spend_their_promise_after_the_floor_or_ceiling_moves() {
+    for ceiling in [false, true] {
+        let (directory, mut config, memory) = fixture();
+        config.max_bytes = 64 << 20;
+        config.maintenance_reserve_bytes = 16 << 20;
+        let disk = open(&config, &memory);
+        let root = disk.open_directory("fixture", Path::new("")).unwrap();
+        let mut admission = disk
+            .admit_namespace(&requests(), DiskWork::Foreground)
+            .unwrap();
+        let maintenance = if ceiling {
+            *disk.available_override.lock().unwrap() = Some(1 << 40);
+            let file = disk
+                .create_file("fixture", Path::new("maintenance"), DiskWork::Maintenance)
+                .unwrap();
+            let foreground = config.max_bytes - config.maintenance_reserve_bytes;
+            let requested = foreground - disk.snapshot().charged_bytes + 4096;
+            file.reserve_growth(0, requested, DiskWork::Maintenance)
+                .unwrap();
+            assert!(disk.snapshot().charged_bytes > foreground);
+            Some(file)
+        } else {
+            *disk.available_override.lock().unwrap() = Some(0);
+            None
+        };
+        let sessions = root
+            .create_admitted_child(c"sessions", &mut admission)
+            .unwrap();
+        let session = sessions
+            .create_admitted_child(c"session", &mut admission)
+            .unwrap();
+        let objects = session
+            .create_admitted_child(c"objects", &mut admission)
+            .unwrap();
+        for name in ["intent.reserve", "outcome.reserve"] {
+            let relative = format!("sessions/session/{name}");
+            let file = disk
+                .create_admitted_file(&mut admission, "fixture", Path::new(&relative))
+                .unwrap();
+            file.grow_reserved(4096).unwrap();
+            file.sync_all_and_parent().unwrap();
+        }
+        admission.finish().unwrap();
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+        assert!(directory.path().join("sessions/session/objects").is_dir());
+        // Unadmitted work still meets the moved floor or ceiling, unfenced.
+        assert_eq!(
+            disk.create_file("fixture", Path::new("unadmitted"), DiskWork::Foreground)
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::StorageFull
+        );
+        assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+        *disk.available_override.lock().unwrap() = None;
+        drop((maintenance, objects, session, sessions, root));
+    }
+}
+
+/// Census charges an existing directory's whole observed extent, which can
+/// exceed the policy, and such a parent refuses every new child. Admission
+/// refuses it before any effect instead of the admitted create, whose
+/// refusal fenced the whole disk.
+#[test]
+fn admission_refuses_a_parent_charged_beyond_its_extent_policy() {
+    let (directory, config, memory) = fixture();
+    let disk = open(&config, &memory);
+    let root = disk.open_directory("fixture", Path::new("")).unwrap();
+    let sessions = root
+        .create_child(c"sessions", DiskWork::Foreground)
+        .unwrap();
+    {
+        let (device, inode) = sessions.verified_identity().unwrap();
+        let mut state = disk.lock_state();
+        disk.reserve(&mut state, disk.unit, DiskWork::Foreground)
+            .unwrap();
+        let entry = state
+            .accounted
+            .get_mut(&super::super::Identity(device, inode))
+            .and_then(AccountedInode::directory_mut)
+            .unwrap();
+        entry.bytes += disk.unit;
+        entry.pending += disk.unit;
+    }
+    let before = disk.snapshot();
+    assert_eq!(
+        disk.admit_namespace(&requests()[1..], DiskWork::Foreground)
+            .err()
+            .unwrap()
+            .kind(),
+        io::ErrorKind::StorageFull
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().pending_bytes, before.pending_bytes);
+    assert!(disk.lock_state().namespace_batch.is_none());
+    assert!(!directory.path().join("sessions/session").exists());
+    assert_eq!(
+        sessions
+            .create_child(c"session", DiskWork::Foreground)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::StorageFull
+    );
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
+}
+
 #[test]
 fn pristine_cancel_retires_all_future_backing_and_returns_exact_credit() {
     let (_directory, config, memory) = fixture();

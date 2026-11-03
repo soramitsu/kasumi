@@ -537,6 +537,9 @@ pub struct NodeDisk {
     // Pauses the next file synchronization after it released State.
     #[cfg(test)]
     sync_pause: Mutex<Option<file::SyncPause>>,
+    // Bytes read through this disk's file owners.
+    #[cfg(test)]
+    read_bytes: std::sync::atomic::AtomicU64,
     // Every covered collection/path/descriptor owner is destroyed first.
     _memory_charge: Lease,
 }
@@ -937,6 +940,8 @@ impl NodeDisk {
             synchronizations: Default::default(),
             #[cfg(test)]
             sync_pause: Mutex::new(None),
+            #[cfg(test)]
+            read_bytes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             namespace_failure: std::sync::atomic::AtomicU8::new(0),
             _memory_charge: charge,
@@ -1407,6 +1412,12 @@ impl NodeDisk {
             self.synchronizations[0].load(Ordering::Relaxed),
             self.synchronizations[1].load(Ordering::Relaxed),
         )
+    }
+
+    /// Bytes read through this disk's file owners.
+    #[cfg(test)]
+    pub(crate) fn physical_read_bytes(&self) -> u64 {
+        self.read_bytes.load(Ordering::Relaxed)
     }
 
     #[cfg(test)]

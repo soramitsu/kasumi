@@ -334,18 +334,29 @@ impl NodeDiskDirectory {
         {
             return Err(io::ErrorKind::Other.into());
         }
-        let result = (|| {
-            self.verify(&state)?;
-            self.owner().disk.synchronized(|| {
-                self.owner()
-                    .file
-                    .as_ref()
-                    .expect("live directory descriptor")
-                    .sync_all()
-            })?;
-            self.verify(&state)
-        })();
-        result.inspect_err(|_| self.owner().disk.fail_locked(&mut state))
+        self.verify(&state)
+            .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
+        // The blocking sync runs without State, so other owners' reads,
+        // writes and syncs proceed. The retained descriptor names this exact
+        // inode, and its enrolled path is verified again under State.
+        drop(state);
+        #[cfg(test)]
+        self.owner().disk.sync_checkpoint();
+        let synchronized = self.owner().disk.synchronized(|| {
+            self.owner()
+                .file
+                .as_ref()
+                .expect("live directory descriptor")
+                .sync_all()
+        });
+        let mut state = self.owner().disk.lock_state();
+        synchronized
+            .and_then(|()| self.verify(&state))
+            .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
+        if state.phase == NodeDiskPhase::Failed {
+            return Err(io::ErrorKind::Other.into());
+        }
+        Ok(())
     }
 }
 

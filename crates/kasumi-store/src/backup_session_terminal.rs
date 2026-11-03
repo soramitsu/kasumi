@@ -115,34 +115,16 @@ fn read_header(
     result.inspect_err(|_| file.owner_failed())
 }
 
-/// Classification streams one admitted 4KiB buffer. It does not allocate a full
-/// terminal payload merely to decide whether the published record exists.
-pub(super) fn validate(
+/// Classification checks the exact full extent and the fixed header only.
+/// Publication synchronized the whole record before its name could appear,
+/// and every `read` still verifies the payload digest and zero tail; deciding
+/// that the record exists never re-reads its payload.
+pub(super) fn classify(
     file: &crate::NodeDiskFile,
     session: Uuid,
     slot: Terminal,
 ) -> io::Result<()> {
-    let (header, length) = read_header(file, session, slot)?;
-    let result = (|| {
-        let mut hash = Sha256::new();
-        let mut buffer = [0; IO_CHUNK_BYTES];
-        let mut offset = HEADER_BYTES;
-        while offset < FILE_BYTES {
-            let count = buffer.len().min(FILE_BYTES - offset);
-            file.read_exact_at(&mut buffer[..count], offset as u64)?;
-            let body = (HEADER_BYTES + length).saturating_sub(offset).min(count);
-            hash.update(&buffer[..body]);
-            if buffer[body..count].iter().any(|&byte| byte != 0) {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            offset += count;
-        }
-        if header[40..72] != hash.finalize()[..] {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
-        Ok(())
-    })();
-    result.inspect_err(|_| file.owner_failed())
+    read_header(file, session, slot).map(|_| ())
 }
 
 /// The returned allocation is the exact original ciphertext length, bounded by
@@ -203,7 +185,8 @@ pub(super) fn write(
         offset += length;
     }
     file.write_all_at(&header, 0)?;
-    file.sync_all_and_parent()
+    // The reserve's name is already durable; publication syncs the rename.
+    file.sync_all()
 }
 
 #[cfg(test)]

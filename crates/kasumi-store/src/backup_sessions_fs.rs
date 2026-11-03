@@ -106,8 +106,19 @@ impl Directory {
         };
         sessions.child(&id.to_string())
     }
+    /// Open `name` in this verified directory. A reader makes what it found
+    /// durable itself; an absence is synchronized before it is reported.
     fn open_leaf(&self, name: &str) -> Result<Option<crate::NodeDiskFile>> {
-        self.check()?;
+        let file = self.find_leaf(name)?;
+        if file.is_none() {
+            self.check()?;
+        }
+        Ok(file)
+    }
+    /// Open `name` after verifying this retained directory, without any
+    /// synchronization. The caller makes the observation durable.
+    fn find_leaf(&self, name: &str) -> Result<Option<crate::NodeDiskFile>> {
+        self.verified_identity()?;
         let path = self.2.join(name);
         let (root, relative) = self.1.binding(&path)?;
         match self.1.open_file(root, relative) {
@@ -115,7 +126,7 @@ impl Directory {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 // Only an unknown leaf is a healthy absence. An enrolled file
                 // disappearing fences NodeDisk even when the OS reports ENOENT.
-                self.check()
+                self.verified_identity()
                     .map_err(|failure| anyhow::Error::new(error).context(failure))?;
                 Ok(None)
             }
@@ -135,19 +146,19 @@ impl Directory {
         file.sync_all()?;
         #[cfg(test)]
         test_sync::check(self, name, test_sync::Point::ReadDirectory)?;
+        // The file's parent is this directory; its sync covers the name.
         file.sync_all_and_parent()?;
-        self.check()?;
+        self.verified_identity()?;
         Ok(Some(bytes))
     }
     fn unlink(&self, name: &str) -> Result<()> {
+        // A missing leaf's absence was synchronized by open_leaf.
         let Some(file) = self.open_leaf(name)? else {
-            self.0.sync_all().inspect_err(|_| {
-                self.1.fail();
-            })?;
-            return self.check();
+            return Ok(());
         };
+        // Deletion synchronized this parent directory.
         self.1.delete_file(file)?;
-        self.check()
+        self.verified_identity().map(drop)
     }
     fn read_terminal(
         &self,
@@ -164,30 +175,32 @@ impl Directory {
         file.sync_all()?;
         #[cfg(test)]
         test_sync::check(self, slot.published(), test_sync::Point::ReadDirectory)?;
+        // The file's parent is this directory; its sync covers the name.
         file.sync_all_and_parent()?;
-        self.check()?;
+        self.verified_identity()?;
         Ok(Some(bytes))
     }
-    // A published terminal is canonical; a reserve must be the exact admitted
-    // fixed length. Neither arbitrary names nor short reserve files are adopted.
+    // A published terminal has a canonical header and the exact full extent; a
+    // reserve must be the exact admitted fixed length. Neither arbitrary names
+    // nor short reserve files are adopted. The caller synchronizes this
+    // directory once after classifying both slots: every terminal and reserve
+    // was itself synchronized before its name could appear.
     fn terminal_state(&self, session: Uuid, slot: Terminal) -> Result<(bool, bool)> {
-        let published = match self.open_leaf(slot.published())? {
+        let published = match self.find_leaf(slot.published())? {
             Some(file) => {
-                terminal::validate(&file, session, slot)?;
-                file.sync_all_and_parent()?;
+                terminal::classify(&file, session, slot)?;
                 true
             }
             None => false,
         };
         #[cfg(test)]
         test_sync::check(self, slot.published(), test_sync::Point::TerminalClassified)?;
-        let reserve = self.open_leaf(slot.reserve())?;
-        if let Some(file) = &reserve {
-            if published || file.observed_len()? != terminal::FILE_BYTES as u64 {
-                self.1.fail();
-                anyhow::bail!("invalid backup terminal reservation");
-            }
-            file.sync_all_and_parent()?;
+        let reserve = self.find_leaf(slot.reserve())?;
+        if let Some(file) = &reserve
+            && (published || file.observed_len()? != terminal::FILE_BYTES as u64)
+        {
+            self.1.fail();
+            anyhow::bail!("invalid backup terminal reservation");
         }
         Ok((published, reserve.is_some()))
     }
@@ -233,7 +246,8 @@ impl Directory {
         let claim = self.claim_backup_namespace(id)?;
         let name = format!("{id}.kasumi");
         let pending_name = format!("{name}.pending");
-        if self.open_leaf(&name)?.is_some() || self.open_leaf(&pending_name)?.is_some() {
+        // Creating the pending name below synchronizes this same directory.
+        if self.find_leaf(&name)?.is_some() || self.find_leaf(&pending_name)?.is_some() {
             return Err(std::io::Error::from(std::io::ErrorKind::AlreadyExists).into());
         }
         #[cfg(test)]
@@ -258,13 +272,14 @@ impl Directory {
         test_sync::check(self, &name, test_sync::Point::BackupCreated)?;
         file.grow_reserved(length)?;
         file.write_all_at(bytes, 0)?;
-        file.sync_all_and_parent()?;
+        // Creation already synchronized the name with its parent.
+        file.sync_all()?;
         // The exact original name is durably complete before its reservation
         // is settled; rename then transfers the same owner into the final name.
         admission.finish()?;
         let (root, relative) = self.1.binding(&destination_path)?;
-        let published = self.1.publish_file(file, root, relative)?;
-        published.sync_all_and_parent()?;
+        // Publication synchronizes the durable contents' new name.
+        drop(self.1.publish_file(file, root, relative)?);
         Ok(())
     }
 
@@ -313,6 +328,9 @@ impl Directory {
                 self.1.fail();
                 anyhow::bail!("published backup session lost terminal capacity");
             }
+            // One durable readback of the session directory covers all four
+            // classified names; the claim keeps them unchanged until now.
+            session.check()?;
         }
         if let Some(terminal) = terminal_slot {
             let index = usize::from(terminal == Terminal::Outcome);
@@ -409,9 +427,12 @@ impl Directory {
                     relative,
                 )?;
                 file.grow_reserved(terminal::FILE_BYTES as u64)?;
-                file.sync_all_and_parent()?;
+                // Creation already synchronized the name with its parent.
+                file.sync_all()?;
             }
         }
+        // The upload temporary is complete and durable before its permit is
+        // settled, so one sync covers both the length and the contents.
         let object = if terminal_slot.is_none() {
             let (root, relative) = self.1.binding(&temporary_path)?;
             let file = self.1.create_admitted_file(
@@ -420,7 +441,8 @@ impl Directory {
                 relative,
             )?;
             file.grow_reserved(bytes.len() as u64)?;
-            file.sync_all_and_parent()?;
+            file.write_all_at(bytes, 0)?;
+            file.sync_all()?;
             Some(file)
         } else {
             None
@@ -440,19 +462,20 @@ impl Directory {
             let BackupSessionSlot::Object(id) = slot else {
                 unreachable!()
             };
-            let file = object.expect("admitted object owner");
-            file.write_all_at(bytes, 0)?;
-            file.sync_all_and_parent()?;
-            (file, &objects, format!("{id}.kasumi"))
+            (
+                object.expect("admitted object owner"),
+                &objects,
+                format!("{id}.kasumi"),
+            )
         };
-        destination.check()?;
+        destination.verified_identity()?;
         let destination_path = destination.2.join(&name);
         let (root, relative) = self.1.binding(&destination_path)?;
+        // Publication synchronizes the durable contents' new name.
         match self.1.publish_file(file, root, relative) {
-            Ok(published) => {
+            Ok(_published) => {
                 #[cfg(test)]
                 test_sync::check(destination, &name, test_sync::Point::PublishDirectory)?;
-                published.sync_all_and_parent()?;
                 Ok(())
             }
             Err(error) => {
@@ -699,8 +722,9 @@ pub(crate) mod test_sync {
         }
         Ok(Guard(keys))
     }
+    // Verify without synchronizing, so tests observe production sync counts.
     pub(super) fn check(directory: &Directory, name: &str, point: Point) -> Result<()> {
-        directory.check()?;
+        directory.verified_identity()?;
         let directory = std::fs::metadata(&directory.2)?;
         let key = (directory.dev(), directory.ino(), name.to_owned(), point);
         let pause = pauses().lock().unwrap().remove(&key);

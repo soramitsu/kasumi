@@ -387,6 +387,18 @@ struct Change {
     before: AccountedDirectory,
     children: u64,
 }
+/// What pays for the namespace change a preflight checks.
+#[derive(Clone, Copy)]
+enum Funding<'a> {
+    /// Cleanup: nothing grows, but a shared promise needs physical headroom.
+    Cleanup,
+    /// Growth spending census promises under the current work/floor policy.
+    Work(DiskWork),
+    /// A complete namespace admission already charged this exact child.
+    Admitted,
+    /// A transaction file permit funds this exact parent.
+    Transaction(&'a super::transaction::FileCreationPermit),
+}
 /// Inline plan: preparation and all fallible arithmetic precede the effect.
 /// The caller owns State serialization and actual descriptors until settlement.
 #[derive(Clone, Copy)]
@@ -417,7 +429,20 @@ impl ParentTransition {
         second: Option<(Identity, i8)>,
         growth_work: Option<DiskWork>,
     ) -> io::Result<Self> {
-        Self::preflight_inner(disk, state, first, second, growth_work, None)
+        let funding = growth_work.map_or(Funding::Cleanup, Funding::Work);
+        Self::preflight_inner(disk, state, first, second, funding)
+    }
+
+    /// Preflight one batch-admitted create. Admission already charged the
+    /// child and checked the byte ceiling, the free floor and this parent's
+    /// extent; a later concurrent change to either must not refuse, and so
+    /// fence, a create whose space is already promised.
+    pub(super) fn preflight_admitted(
+        disk: &NodeDisk,
+        state: &mut State,
+        first: (Identity, i8),
+    ) -> io::Result<Self> {
+        Self::preflight_inner(disk, state, first, None, Funding::Admitted)
     }
 
     pub(super) fn preflight_transaction(
@@ -427,7 +452,7 @@ impl ParentTransition {
         permit: &super::transaction::FileCreationPermit,
     ) -> io::Result<Self> {
         permit.check_parent(state, first.0)?;
-        Self::preflight_inner(disk, state, first, None, None, Some(permit))
+        Self::preflight_inner(disk, state, first, None, Funding::Transaction(permit))
     }
 
     fn preflight_inner(
@@ -435,8 +460,7 @@ impl ParentTransition {
         state: &mut State,
         first: (Identity, i8),
         second: Option<(Identity, i8)>,
-        growth_work: Option<DiskWork>,
-        admitted: Option<&super::transaction::FileCreationPermit>,
+        funding: Funding<'_>,
     ) -> io::Result<Self> {
         if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
             return Err(io::ErrorKind::Other.into());
@@ -450,21 +474,23 @@ impl ParentTransition {
         generation
             .checked_add(super::batch::reserved_entries(state) as u64)
             .ok_or(io::ErrorKind::StorageFull)?;
-        if let Some(permit) = admitted {
-            permit.check_parent(state, first.0)?;
-        } else if let Some(work) = growth_work {
+        match funding {
+            Funding::Transaction(permit) => permit.check_parent(state, first.0)?,
             // Full parent allowances were promised by census. This checks the
             // unchanged node/work/floor policy before consuming those promises.
-            disk.reserve(state, 0, work)?;
-        } else {
-            // Cleanup may proceed above the configured extent limit or paused,
-            // but it may not spend a shared promise without physical headroom.
-            let promises = disk.device.lock();
-            let needed = promises
-                .checked_add(promises.minimum_free_bytes())
-                .ok_or(io::ErrorKind::StorageFull)?;
-            if disk.available()? < needed {
-                return Err(io::ErrorKind::StorageFull.into());
+            Funding::Work(work) => disk.reserve(state, 0, work)?,
+            Funding::Admitted => {}
+            Funding::Cleanup => {
+                // Cleanup may proceed above the configured extent limit or
+                // paused, but it may not spend a shared promise without
+                // physical headroom.
+                let promises = disk.device.lock();
+                let needed = promises
+                    .checked_add(promises.minimum_free_bytes())
+                    .ok_or(io::ErrorKind::StorageFull)?;
+                if disk.available()? < needed {
+                    return Err(io::ErrorKind::StorageFull.into());
+                }
             }
         }
         let mut inputs = [Some(first), second];
