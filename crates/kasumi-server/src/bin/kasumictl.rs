@@ -28,15 +28,30 @@ fn read_json(path: &str) -> Result<Vec<u8>> {
     let _: serde_json::Value = serde_json::from_slice(&bytes).context("invalid operation JSON")?;
     Ok(bytes)
 }
+/// Deadline for observations and single catalog/policy writes.
+const ADMIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// Management commands (backup, key rotation and rewrap, membership) and
+/// schema activation run inside the RPC; an expired client deadline resets
+/// the stream and cancels that work on the server.
+const LONG_ADMIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3600);
+
 fn request<T>(
     message: T,
     authorization: &tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
+) -> tonic::Request<T> {
+    request_within(message, authorization, ADMIN_TIMEOUT)
+}
+
+fn request_within<T>(
+    message: T,
+    authorization: &tonic::metadata::MetadataValue<tonic::metadata::Ascii>,
+    timeout: std::time::Duration,
 ) -> tonic::Request<T> {
     let mut request = tonic::Request::new(message);
     request
         .metadata_mut()
         .insert("authorization", authorization.clone());
-    request.set_timeout(std::time::Duration::from_secs(15));
+    request.set_timeout(timeout);
     request
 }
 
@@ -228,11 +243,12 @@ async fn run(arguments: &[String]) -> Result<()> {
     }
     if operation == "manage" {
         let response = client
-            .manage(request(
+            .manage(request_within(
                 ManagementRequest {
                     command_json: payload.unwrap(),
                 },
                 &authorization,
+                LONG_ADMIN_TIMEOUT,
             ))
             .await
             .map_err(|status| {
@@ -251,11 +267,12 @@ async fn run(arguments: &[String]) -> Result<()> {
     let result = match operation.as_str() {
         "activate-schema" => {
             client
-                .activate_schema(request(
+                .activate_schema(request_within(
                     SchemaChangeSetRequest {
                         request_json: payload.unwrap(),
                     },
                     &authorization,
+                    LONG_ADMIN_TIMEOUT,
                 ))
                 .await
         }

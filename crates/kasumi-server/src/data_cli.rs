@@ -217,6 +217,11 @@ impl Failure {
 /// `UNKNOWN_OUTCOME`.
 fn classify(error: &ClientError, write: bool) -> ErrorClass {
     if let Some(code) = error.code() {
+        // A read sees CONFLICT only when policy, limits or schema changed while
+        // it ran: reading again is the remedy, not building a new batch.
+        if !write && code == ErrorCode::Conflict {
+            return ErrorClass::Unavailable;
+        }
         return database_class(code, write);
     }
     match error {
@@ -1791,7 +1796,7 @@ mod tests {
         for (error, read, write) in [
             (
                 database(ErrorCode::Conflict),
-                ErrorClass::Conflict,
+                ErrorClass::Unavailable,
                 ErrorClass::Conflict,
             ),
             (
