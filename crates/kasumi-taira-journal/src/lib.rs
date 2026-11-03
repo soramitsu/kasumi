@@ -53,6 +53,19 @@ fn invalid(message: impl Into<String>) -> JournalError {
     JournalError::Invalid(message.into())
 }
 
+/// One deadline bounds every backend call of a journal operation.
+fn deadline_after(timeout: Duration) -> Result<Instant> {
+    Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| invalid("invalid journal timeout"))
+}
+
+/// Time left before `deadline`; zero once it has passed, which the backend
+/// refuses as an elapsed deadline.
+fn left(deadline: Instant) -> Duration {
+    deadline.saturating_duration_since(Instant::now())
+}
+
 fn name(value: &str, field: &str) -> Result<()> {
     validate_name(value).map_err(|_| invalid(format!("invalid {field}")))
 }
@@ -674,7 +687,9 @@ impl<B: JournalBackend> Journal<B> {
         phase: PhaseKind,
         timeout: Duration,
     ) -> Result<Option<JournalEntry>> {
-        let view = self.recover(identity, timeout).await?;
+        let view = self
+            .recover_until(identity, deadline_after(timeout)?)
+            .await?;
         Ok(view.entries.get(phase.index()).cloned())
     }
 
@@ -682,7 +697,7 @@ impl<B: JournalBackend> Journal<B> {
         &mut self,
         manifest: &ChunkManifest,
         phase: PhaseKind,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<JournalEntry> {
         if manifest.format != 1
             || manifest.phase != phase.slug()
@@ -702,7 +717,7 @@ impl<B: JournalBackend> Journal<B> {
                 .collect::<Vec<_>>();
             let documents = self
                 .backend
-                .read_records(&self.collection, &ids, timeout)
+                .read_records(&self.collection, &ids, left(deadline))
                 .await?;
             if documents.len() != ids.len() {
                 return Err(JournalError::Inconsistent);
@@ -754,11 +769,11 @@ impl<B: JournalBackend> Journal<B> {
         &mut self,
         id: String,
         body: serde_json::Value,
-        timeout: Duration,
+        deadline: Instant,
     ) -> Result<()> {
         let existing = self
             .backend
-            .read_records(&self.collection, std::slice::from_ref(&id), timeout)
+            .read_records(&self.collection, std::slice::from_ref(&id), left(deadline))
             .await?;
         if let [Some(document)] = existing.as_slice() {
             return if document.id == id && document.version > 0 && document.body == body {
@@ -771,10 +786,10 @@ impl<B: JournalBackend> Journal<B> {
             return Err(JournalError::Inconsistent);
         }
         let batch = put_batch(&self.collection, id.clone(), body.clone());
-        let submission = self.backend.mutate(&batch, timeout).await;
+        let submission = self.backend.mutate(&batch, left(deadline)).await;
         let resolution = if submission.is_err() {
             self.backend
-                .resolve(&self.scope, &batch, timeout)
+                .resolve(&self.scope, &batch, left(deadline))
                 .await
                 .ok()
                 .flatten()
@@ -789,7 +804,7 @@ impl<B: JournalBackend> Journal<B> {
         }
         let after = self
             .backend
-            .read_records(&self.collection, std::slice::from_ref(&id), timeout)
+            .read_records(&self.collection, std::slice::from_ref(&id), left(deadline))
             .await
             .map_err(|_| JournalError::UnknownOutcome(id.clone()))?;
         if let Some(receipt) = resolution
@@ -814,6 +829,14 @@ impl<B: JournalBackend> Journal<B> {
         identity: &DeploymentIdentity,
         timeout: Duration,
     ) -> Result<JournalView> {
+        self.recover_until(identity, deadline_after(timeout)?).await
+    }
+
+    async fn recover_until(
+        &mut self,
+        identity: &DeploymentIdentity,
+        deadline: Instant,
+    ) -> Result<JournalView> {
         identity.validate()?;
         if identity.journal_scope != self.scope {
             return Err(JournalError::Conflict);
@@ -824,7 +847,7 @@ impl<B: JournalBackend> Journal<B> {
             .collect::<Vec<_>>();
         let documents = self
             .backend
-            .read_records(&self.collection, &ids, timeout)
+            .read_records(&self.collection, &ids, left(deadline))
             .await?;
         if documents.len() != ids.len() {
             return Err(JournalError::Inconsistent);
@@ -844,7 +867,7 @@ impl<B: JournalBackend> Journal<B> {
                         if manifest.identity != *identity {
                             return Err(JournalError::Conflict);
                         }
-                        self.read_chunked(&manifest, phase, timeout).await?
+                        self.read_chunked(&manifest, phase, deadline).await?
                     } else {
                         serde_json::from_value(document.body.clone())
                             .map_err(|_| JournalError::Inconsistent)?
@@ -873,8 +896,9 @@ impl<B: JournalBackend> Journal<B> {
         if entry.identity.journal_scope != self.scope {
             return Err(JournalError::Conflict);
         }
+        let deadline = deadline_after(timeout)?;
         let index = entry.phase.kind().index();
-        let view = self.recover(&entry.identity, timeout).await?;
+        let view = self.recover_until(&entry.identity, deadline).await?;
         if let Some(existing) = view.entries.get(index) {
             return if *existing == entry {
                 Ok(AppendOutcome::AlreadyPresent)
@@ -894,14 +918,14 @@ impl<B: JournalBackend> Journal<B> {
         } else {
             let (manifest, chunks) = chunked_storage(&entry, &self.collection, &payload)?;
             for (id, body) in chunks {
-                self.append_chunk(id, body, timeout).await?;
+                self.append_chunk(id, body, deadline).await?;
             }
             manifest
         };
-        let submission = self.backend.mutate(&batch, timeout).await;
+        let submission = self.backend.mutate(&batch, left(deadline)).await;
         let resolution = if submission.is_err() {
             self.backend
-                .resolve(&self.scope, &batch, timeout)
+                .resolve(&self.scope, &batch, left(deadline))
                 .await
                 .ok()
                 .flatten()
@@ -914,7 +938,7 @@ impl<B: JournalBackend> Journal<B> {
                 return Err(JournalError::Inconsistent);
             }
         }
-        let after = self.recover(&entry.identity, timeout);
+        let after = self.recover_until(&entry.identity, deadline);
         let after = match after.await {
             Ok(view) => view,
             Err(JournalError::Backend(_)) => {
@@ -1030,6 +1054,17 @@ mod tests {
         resolve_calls: usize,
         read_calls: usize,
         scope: Option<MutationReceiptScope>,
+        latency: Duration,
+    }
+
+    impl FakeBackend {
+        /// Each call takes `latency` and, like the real backend, fails once its
+        /// own timeout elapses first.
+        async fn call(&self, timeout: Duration) -> anyhow::Result<()> {
+            tokio::time::sleep(self.latency.min(timeout)).await;
+            ensure!(timeout >= self.latency, "journal backend deadline elapsed");
+            Ok(())
+        }
     }
 
     #[async_trait]
@@ -1037,8 +1072,9 @@ mod tests {
         async fn mutate(
             &mut self,
             batch: &MutationBatch,
-            _timeout: Duration,
+            timeout: Duration,
         ) -> anyhow::Result<WriteReceipt> {
+            self.call(timeout).await?;
             self.mutate_calls += 1;
             let digest = batch.digest()?;
             if let Some(receipt) = self.receipts.get(&batch.idempotency_key) {
@@ -1097,8 +1133,9 @@ mod tests {
             &mut self,
             _scope: &MutationReceiptScope,
             original: &MutationBatch,
-            _timeout: Duration,
+            timeout: Duration,
         ) -> anyhow::Result<Option<MutationReceipt>> {
+            self.call(timeout).await?;
             self.resolve_calls += 1;
             Ok(self.receipts.get(&original.idempotency_key).cloned())
         }
@@ -1107,8 +1144,9 @@ mod tests {
             &mut self,
             _collection: &str,
             ids: &[String],
-            _timeout: Duration,
+            timeout: Duration,
         ) -> anyhow::Result<Vec<Option<Document>>> {
+            self.call(timeout).await?;
             self.read_calls += 1;
             Ok(ids.iter().map(|id| self.records.get(id).cloned()).collect())
         }
@@ -1505,6 +1543,40 @@ mod tests {
             journal.recover(&identity, timeout).await,
             Err(JournalError::Inconsistent)
         ));
+    }
+
+    #[tokio::test]
+    async fn one_deadline_bounds_every_backend_call_of_an_append() {
+        let identity = identity();
+        let mut journal = journal(&identity);
+        journal
+            .append(
+                entry(&identity, DeploymentPhase::Intent),
+                Duration::from_secs(1),
+            )
+            .await
+            .unwrap();
+        let prepared = entry(
+            &identity,
+            DeploymentPhase::CatalogPrepared {
+                signed_transaction: transaction("large-catalog-tx", &vec![0x5a; 180 << 10]),
+            },
+        );
+        // The chunked append needs more than ten sequential calls. Each one
+        // fits the timeout alone, but together they exceed it.
+        journal.backend.latency = Duration::from_millis(40);
+        let timeout = Duration::from_millis(200);
+        let start = Instant::now();
+        assert!(journal.append(prepared.clone(), timeout).await.is_err());
+        assert!(start.elapsed() < Duration::from_secs(2));
+        assert_eq!(
+            journal
+                .append(prepared.clone(), Duration::from_secs(60))
+                .await
+                .unwrap(),
+            AppendOutcome::Committed
+        );
+        assert!(journal.backend.read_calls + journal.backend.mutate_calls > 10);
     }
 
     #[test]
