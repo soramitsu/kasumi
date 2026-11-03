@@ -3,22 +3,33 @@
 //!
 //! Beginning a cycle is one root publication that freezes the cutoffs below
 //! the newest confirmed segment and arena; nothing is rolled or created.
-//! Evacuation rewrites every leaf that still names a value at or below the
-//! segment cutoff or lives in an arena at or below the arena cutoff, with its
-//! path. A leaf in a newer arena was written with its whole path after it, so
-//! it and its ancestors are fresh; such a leaf without old values is skipped
-//! without a data commit. Exact worklist ordinal progress is persisted even
-//! for a skip, so restart cannot repeat a long-key prefix indefinitely.
-//! Reclaiming runs certified cohorts (`disk_reclaim.rs`), then one bounded
-//! density pass packs sparse pages (`disk_density.rs`). Each phase change is
-//! its own publication; reopen resumes from the record and never restarts a
-//! completed phase, so values are never re-copied by a reopen.
+//! Evacuation first surveys the live value bytes of every old segment in one
+//! read-only walk of the immutable cycle-start worklist, and selects the
+//! segments to empty (`MaintenancePolicy::retained_garbage_percent`); the
+//! rest keep their values in place. The selection depends only on that
+//! worklist, the cutoff and the policy, so a reopen surveys again and selects
+//! the same segments. Evacuation then rewrites every leaf that still names a
+//! value of a selected segment at or below the segment cutoff or lives in an
+//! arena at or below the arena cutoff, with its path. A leaf in a newer arena
+//! was written with its whole path after it, so it and its ancestors are
+//! fresh; such a leaf with nothing to relocate is skipped without a data
+//! commit. With no segment selected the cycle rewrites old arenas only.
+//! Exact worklist ordinal progress is persisted even for a skip, so restart
+//! cannot repeat a long-key prefix indefinitely. Reclaiming runs certified
+//! cohorts (`disk_reclaim.rs`), which prove reachability and so keep the
+//! segments left in place, then one bounded density pass packs sparse pages
+//! (`disk_density.rs`). Each phase change is its own publication; reopen
+//! resumes from the record and never restarts a completed phase, so values
+//! are never re-copied by a reopen.
 
 use super::maintenance::{Census, MaintenanceBudget, MaintenanceProgress, Measurement, can_mutate};
 use super::*;
-use crate::directory::{DirectoryCursor, DirectoryLeaf, MAX_DIRECTORY_LEAF_RECORDS};
+use crate::directory::{
+    DirectoryBackend, DirectoryCursor, DirectoryLeaf, DirectoryWalker, MAX_DIRECTORY_LEAF_RECORDS,
+};
+use crate::reclaim::WALK_WORK_PER_UNIT;
 use crate::root::{CompactionCursor, CompactionPhase, CompactionRecord};
-use crate::segment::{MaintenanceOp, maintenance_operation_bytes};
+use crate::segment::{MaintenanceOp, VALUE_RECORD_OVERHEAD_BYTES, maintenance_operation_bytes};
 
 #[path = "disk_density.rs"]
 mod density;
@@ -28,6 +39,18 @@ use density::Density;
 // Count and encoded transaction bounds are independently enforced by the log.
 const COMPACTION_BATCH_BYTES: usize = 1 << 20;
 const _: () = assert!(MAX_DIRECTORY_LEAF_RECORDS <= segment::MAX_MAINTENANCE_OPERATIONS);
+
+/// Refused survey admissions one evacuation takes before it relocates every
+/// old value instead, as the legacy policy does.
+pub(super) const SURVEY_ATTEMPTS: u32 = 3;
+/// The survey's first map capacity, in segments; it doubles as needed.
+const SURVEY_INITIAL_SEGMENTS: usize = 64;
+/// A survey of more segments than this relocates every old value.
+const SURVEY_MAX_SEGMENTS: usize = 1 << 20;
+/// Kept segments may span at most this many identifiers per surveyed
+/// segment. Older ones are emptied, so the reclaim floor, and with it every
+/// census and cohort probe range, keeps rising.
+const KEPT_SPAN_PER_SEGMENT: u64 = 8;
 
 #[derive(Clone, Copy)]
 struct Cutoff {
@@ -42,8 +65,259 @@ pub(super) struct Compaction {
     pub(super) requested: bool,
     census: Option<Census>,
     pub(super) measurement: Option<Measurement>,
+    /// The evacuating cycle's segment selection, once surveyed. Reopen
+    /// leaves it empty and the next evacuation step surveys again.
+    selection: Option<Selection>,
+    survey: Option<Survey>,
+    /// Refused survey admissions of one cycle: (cycle, count).
+    survey_denials: (u64, u32),
+    /// The latest selection's figures, for the status.
+    pub(super) evacuation: EvacuationStats,
     /// Statistics of the most recent step, for diagnostics and tests.
     pub(super) stats: CompactionProgress,
+}
+
+/// Figures of the latest evacuation selection, for the status.
+#[derive(Clone, Copy, Debug, Default)]
+pub(super) struct EvacuationStats {
+    pub(super) surveyed_segments: u64,
+    pub(super) kept_segments: u64,
+    pub(super) kept_garbage_bytes: u64,
+    /// Process-lifetime count of evacuations that fell back to relocating
+    /// every old value after refused survey admissions.
+    pub(super) survey_fallbacks: u64,
+}
+
+/// Sorted (segment, live bytes) pairs in exactly admitted capacity.
+struct LiveSegments {
+    entries: Vec<(u64, u64)>,
+    /// The entry the previous value matched: neighbouring values usually
+    /// share a segment.
+    last: usize,
+    admission: Arc<dyn StorageAdmission>,
+    _lease: NativeResidentLease,
+}
+
+impl LiveSegments {
+    fn with_capacity(
+        capacity: usize,
+        admission: &Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        if capacity > SURVEY_MAX_SEGMENTS {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        let bytes = capacity * std::mem::size_of::<(u64, u64)>()
+            + std::mem::size_of::<Self>()
+            + ALLOCATION_ALLOWANCE
+            + LEASE_ALLOWANCE;
+        let lease = admission
+            .reserve_workspace(bytes as u64)
+            .map(NativeResidentLease::new)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(capacity)
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if entries.capacity() != capacity {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        Ok(Self {
+            entries,
+            last: 0,
+            admission: admission.clone(),
+            _lease: lease,
+        })
+    }
+
+    fn add(&mut self, segment: u64, bytes: u64) -> Result<(), CoreError> {
+        let index = match self.entries.get(self.last) {
+            Some(&(id, _)) if id == segment => Ok(self.last),
+            _ => self.entries.binary_search_by_key(&segment, |&(id, _)| id),
+        };
+        match index {
+            Ok(index) => {
+                let live = &mut self.entries[index].1;
+                *live = live.saturating_add(bytes);
+                self.last = index;
+            }
+            Err(index) => {
+                if self.entries.len() == self.entries.capacity() {
+                    // Admit the doubled map before the old one is released.
+                    let mut grown = Self::with_capacity(
+                        self.entries.capacity().saturating_mul(2),
+                        &self.admission,
+                    )?;
+                    grown.entries.extend_from_slice(&self.entries);
+                    *self = grown;
+                }
+                self.entries.insert(index, (segment, bytes));
+                self.last = index;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// One read-only walk of the cycle-start worklist that sums the live value
+/// bytes of every segment at or below the cutoff. It publishes nothing; any
+/// error poisons the walker and the next attempt starts over.
+struct Survey {
+    cycle: u64,
+    cutoff: u64,
+    walker: DirectoryWalker,
+    live: LiveSegments,
+    complete: bool,
+}
+
+impl Survey {
+    fn new(
+        record: &CompactionRecord,
+        source: DirectoryRoot,
+        admission: &Arc<dyn StorageAdmission>,
+    ) -> Result<Self, CoreError> {
+        Ok(Self {
+            cycle: record.cycle(),
+            cutoff: record.cutoff_segment(),
+            live: LiveSegments::with_capacity(SURVEY_INITIAL_SEGMENTS, admission)?,
+            walker: DirectoryWalker::new(source, admission.clone())?,
+            complete: false,
+        })
+    }
+
+    /// Walk within `units`; returns the units charged.
+    fn step(&mut self, directory: &dyn DirectoryBackend, units: usize) -> Result<usize, CoreError> {
+        let Self {
+            cutoff,
+            walker,
+            live,
+            ..
+        } = self;
+        let walked = walker.step(
+            directory,
+            units.saturating_mul(WALK_WORK_PER_UNIT),
+            |_| Ok(()),
+            |value| {
+                if value.segment_id <= *cutoff {
+                    // Table and key bytes are not counted: a segment of small
+                    // values looks emptier and is emptied sooner, never later.
+                    live.add(
+                        value.segment_id,
+                        u64::from(value.len) + VALUE_RECORD_OVERHEAD_BYTES,
+                    )?;
+                }
+                Ok(())
+            },
+        )?;
+        if walked.complete {
+            self.complete = true;
+        } else if walked.work == 0 {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory walker made no progress",
+            )));
+        }
+        // Whole units only. An unfinished walk did at least its limit, so it
+        // costs at least one; a walk that finished within less than one unit
+        // costs nothing and its step goes on to evacuate, so a small worklist
+        // still advances under one-unit steps and a reopen after each.
+        Ok((walked.work / WALK_WORK_PER_UNIT).min(units))
+    }
+
+    fn select(self, capacity: u64, percent: u32) -> Selection {
+        let Self {
+            cycle,
+            cutoff,
+            mut live,
+            ..
+        } = self;
+        let (kept, kept_garbage) = keep_segments(&mut live.entries, capacity, percent, cutoff);
+        let surveyed = live.entries.len();
+        Selection {
+            cycle,
+            kept_from: surveyed - kept,
+            live: Some(live),
+            stats: EvacuationStats {
+                surveyed_segments: surveyed as u64,
+                kept_segments: kept as u64,
+                kept_garbage_bytes: kept_garbage,
+                survey_fallbacks: 0,
+            },
+        }
+    }
+}
+
+/// Choose the old segments one evacuation keeps in place from the live
+/// value bytes of each (identifiers at or below `cutoff`, in any order).
+///
+/// Every segment at most half live is emptied. Then, emptiest first and
+/// lowest identifier first among equals, more are emptied until the garbage
+/// left in the kept ones, `capacity` less their live bytes each, is at most
+/// `percent` of all the live bytes. Last, the oldest kept segments are
+/// emptied while the kept ones span more than `KEPT_SPAN_PER_SEGMENT`
+/// identifiers per surveyed segment. The result depends only on its inputs.
+///
+/// Returns how many segments it keeps, which are then the trailing entries
+/// in identifier order, and the garbage estimated to stay in them.
+pub(super) fn keep_segments(
+    live: &mut [(u64, u64)],
+    capacity: u64,
+    percent: u32,
+    cutoff: u64,
+) -> (usize, u64) {
+    let garbage = |bytes: u64| u128::from(capacity.saturating_sub(bytes));
+    // Unique identifiers make the unstable order exact.
+    live.sort_unstable_by_key(|&(id, bytes)| (bytes, id));
+    let total: u128 = live.iter().map(|&(_, bytes)| u128::from(bytes)).sum();
+    let allowance = total * u128::from(percent) / 100;
+    let mut start = live.partition_point(|&(_, bytes)| bytes.saturating_mul(2) <= capacity);
+    let mut kept_garbage: u128 = live[start..].iter().map(|&(_, bytes)| garbage(bytes)).sum();
+    while start < live.len() && kept_garbage > allowance {
+        kept_garbage -= garbage(live[start].1);
+        start += 1;
+    }
+    live[start..].sort_unstable_by_key(|&(id, _)| id);
+    let span = KEPT_SPAN_PER_SEGMENT.saturating_mul(live.len() as u64);
+    while let Some(&(oldest, bytes)) = live.get(start)
+        && cutoff.saturating_sub(oldest).saturating_add(1) > span
+    {
+        kept_garbage -= garbage(bytes);
+        start += 1;
+    }
+    (
+        live.len() - start,
+        u64::try_from(kept_garbage).unwrap_or(u64::MAX),
+    )
+}
+
+/// What one cycle's evacuation relocates: every value at or below the
+/// segment cutoff except those of the kept segments.
+struct Selection {
+    cycle: u64,
+    /// The surveyed segments; those from `kept_from` on are kept, in
+    /// identifier order. `None` relocates every old value.
+    live: Option<LiveSegments>,
+    kept_from: usize,
+    stats: EvacuationStats,
+}
+
+impl Selection {
+    /// The legacy policy, and the fallback when the survey cannot run.
+    fn relocate_all(cycle: u64) -> Self {
+        Self {
+            cycle,
+            live: None,
+            kept_from: 0,
+            stats: EvacuationStats::default(),
+        }
+    }
+
+    /// Whether evacuation relocates an old value of `segment_id`. A segment
+    /// the survey did not see is relocated, as by the legacy policy.
+    fn relocates(&self, segment_id: u64) -> bool {
+        self.live.as_ref().is_none_or(|live| {
+            live.entries[self.kept_from..]
+                .binary_search_by_key(&segment_id, |&(id, _)| id)
+                .is_err()
+        })
+    }
 }
 
 /// Internal statistics of one maintenance step; not a public contract.
@@ -90,6 +364,29 @@ impl Compaction {
     pub(super) fn remeasure(&mut self) {
         self.measurement = None;
         self.census = None;
+    }
+}
+
+#[cfg(test)]
+impl Compaction {
+    /// Observation hooks for the selection tests only: the selection's
+    /// cycle, its surveyed segments and the kept ones, both in identifier
+    /// order. No surveyed segments means every old value is relocated.
+    pub(super) fn selection_for_test(&self) -> Option<(u64, Vec<u64>, Vec<u64>)> {
+        let selection = self.selection.as_ref()?;
+        let Some(live) = selection.live.as_ref() else {
+            return Some((selection.cycle, Vec::new(), Vec::new()));
+        };
+        let kept = live.entries[selection.kept_from..]
+            .iter()
+            .map(|&(id, _)| id)
+            .collect();
+        let mut surveyed: Vec<u64> = live.entries.iter().map(|&(id, _)| id).collect();
+        surveyed.sort_unstable();
+        Some((selection.cycle, surveyed, kept))
+    }
+    pub(super) fn surveying_for_test(&self) -> bool {
+        self.survey.is_some()
     }
 }
 
@@ -227,6 +524,16 @@ impl DiskState {
             segment: record.cutoff_segment(),
             arena: record.cutoff_arena(),
         };
+        // Read-only, so it runs before the publication check: steps without
+        // a mutation allowance still advance it.
+        if self
+            .compact
+            .selection
+            .as_ref()
+            .is_none_or(|selection| selection.cycle != record.cycle())
+        {
+            return self.survey_step(record, budget, progress);
+        }
         if !can_mutate(budget, progress) {
             return Ok(false);
         }
@@ -259,14 +566,22 @@ impl DiskState {
                 return Ok(false);
             }
             self.publish_phase(Superblock::advance_to_reclaiming)?;
-            // This root and every later one reference nothing below the
-            // limits; only pins of older roots can still reach those files.
+            self.compact.selection = None;
+            // This root and every later one reference nothing in the selected
+            // segments or the old arenas; only pins of older roots can still
+            // reach those files. Kept segments stay referenced, and every
+            // cohort's walk keeps what any root references.
             self.reclaim.evacuated = self.selected.generation;
             progress.mutations += 1;
             progress.phase_changed = true;
             return Ok(true);
         };
-        let mut plan = LeafWork::new(&leaf, cutoff, &self.owner.admission)?;
+        let selection = self
+            .compact
+            .selection
+            .as_ref()
+            .expect("surveyed evacuation");
+        let mut plan = LeafWork::new(&leaf, cutoff, selection, &self.owner.admission)?;
         let next = DirectoryReader::new(self.arena.as_ref(), self.owner.admission.clone())
             .ordinal_after(source, plan.cursor.key())?;
         if next <= position || next > source.entries {
@@ -294,6 +609,73 @@ impl DiskState {
             self.compact.stats.skipped_leaves += 1;
         }
         self.compact.stats.entries += plan.visited;
+        Ok(true)
+    }
+
+    /// Survey the evacuating cycle's worklist within the unit budget and
+    /// select its segments once complete. The legacy policy and repeatedly
+    /// refused admission relocate every old value without a survey.
+    fn survey_step(
+        &mut self,
+        record: &CompactionRecord,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<bool, CoreError> {
+        let cycle = record.cycle();
+        let percent = self.maintenance.policy.retained_garbage_percent;
+        let refused = self.compact.survey_denials.0 == cycle
+            && self.compact.survey_denials.1 >= SURVEY_ATTEMPTS;
+        if percent == 0 || refused {
+            self.compact.survey = None;
+            let fallbacks = self.compact.evacuation.survey_fallbacks + u64::from(refused);
+            self.compact.evacuation = EvacuationStats {
+                survey_fallbacks: fallbacks,
+                ..EvacuationStats::default()
+            };
+            self.compact.selection = Some(Selection::relocate_all(cycle));
+            return Ok(true);
+        }
+        let result = self.survey_walk(record, budget, progress);
+        if let Err(error) = &result {
+            self.compact.survey = None;
+            if error.is_capacity_denied() {
+                let (denied, count) = self.compact.survey_denials;
+                self.compact.survey_denials = (cycle, if denied == cycle { count + 1 } else { 1 });
+            }
+        }
+        result
+    }
+
+    fn survey_walk(
+        &mut self,
+        record: &CompactionRecord,
+        budget: MaintenanceBudget,
+        progress: &mut MaintenanceProgress,
+    ) -> Result<bool, CoreError> {
+        if self
+            .compact
+            .survey
+            .as_ref()
+            .is_none_or(|survey| survey.cycle != record.cycle())
+        {
+            let source = record.evacuation_source().ok_or(CoreError::new(
+                crate::CoreErrorCause::Corrupt("evacuation worklist is absent"),
+            ))?;
+            self.compact.survey = Some(Survey::new(record, source, &self.owner.admission)?);
+        }
+        let survey = self.compact.survey.as_mut().expect("started survey");
+        progress.units += survey.step(self.arena.as_ref(), budget.units - progress.units)?;
+        if !survey.complete {
+            return Ok(true);
+        }
+        let survey = self.compact.survey.take().expect("complete survey");
+        let mut selection = survey.select(
+            self.writer.capacity(),
+            self.maintenance.policy.retained_garbage_percent,
+        );
+        selection.stats.survey_fallbacks = self.compact.evacuation.survey_fallbacks;
+        self.compact.evacuation = selection.stats;
+        self.compact.selection = Some(selection);
         Ok(true)
     }
 
@@ -558,6 +940,7 @@ impl<'a> LeafWork<'a> {
     fn new(
         leaf: &'a DirectoryLeaf,
         cutoff: Cutoff,
+        selection: &Selection,
         admission: &Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
         if leaf.len() == 0
@@ -604,6 +987,7 @@ impl<'a> LeafWork<'a> {
         for (index, (key, value)) in leaf.records().enumerate().skip(leaf.first_index()) {
             if let DirectoryValue::Row { batch_seq, value } = value
                 && value.segment_id <= cutoff.segment
+                && selection.relocates(value.segment_id)
             {
                 let operation = MaintenanceOp::Relocate {
                     table: key.table,
@@ -629,7 +1013,9 @@ impl<'a> LeafWork<'a> {
         }
         // A fresh leaf has fresh ancestors: creating its reference necessarily
         // copied the complete path after the frozen arena cutoff. Such a leaf
-        // with no old value addresses can be skipped without writing a root.
+        // with nothing to relocate can be skipped without writing a root,
+        // whatever kept segments its values are in. The arena cutoff stays a
+        // prefix for this argument.
         let cursor = leaf.owned_record(last)?;
         admission
             .check_owner()

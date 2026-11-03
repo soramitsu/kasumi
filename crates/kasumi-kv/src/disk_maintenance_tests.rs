@@ -24,10 +24,14 @@ fn policy() -> MaintenancePolicy {
 
 /// Small files: frequent segment and arena rolls.
 fn geometry(state: &mut DiskState) {
+    geometry_with(state, policy());
+}
+
+fn geometry_with(state: &mut DiskState, policy: MaintenancePolicy) {
     let writer = std::mem::replace(&mut state.writer, SegmentWriter::new(GROUP));
     state.writer = writer.with_capacity(SEGMENT_CAPACITY);
     replace_arena(state, Some(ARENA_PAGES));
-    state.configure_maintenance(policy()).unwrap();
+    state.configure_maintenance(policy).unwrap();
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -111,8 +115,13 @@ fn check_model(state: &mut DiskState, model: &BTreeMap<u32, Vec<u8>>) {
 }
 
 /// Inline-only driver: one policy-budget step before every commit, as
-/// `Database::begin_write` does. Returns the usage after each commit.
-fn steady_stream(pins_every: Option<usize>) {
+/// `Database::begin_write` does. Asserts that usage plateaus and returns the
+/// final status.
+fn steady_stream(
+    pins_every: Option<usize>,
+    policy: MaintenancePolicy,
+    commits: usize,
+) -> StorageMaintenanceStatus {
     let group = InMemoryGroup::new();
     let admission = Admission::new(64 << 20);
     // Without a value cache each commit skips publication proofs; the
@@ -122,11 +131,10 @@ fn steady_stream(pins_every: Option<usize>) {
         admission,
         CacheConfig { byte_limit: 0 },
     );
-    geometry(&mut state);
+    geometry_with(&mut state, policy);
     let mut model = BTreeMap::new();
     cold_rows(&mut state, &mut model, 2000);
     assert!(state.selected.height >= 2);
-    let commits = 20_000usize;
     let mut window = Usage::default();
     let mut tail = Usage::default();
     let mut live_pins: std::collections::VecDeque<(usize, SnapshotPin)> = Default::default();
@@ -173,9 +181,11 @@ fn steady_stream(pins_every: Option<usize>) {
     drop(live_pins);
     let status = state.maintenance_status().unwrap();
     eprintln!(
-        "steady_stream pins={pins_every:?} window={window:?} tail={tail:?} cycles={} reclaimed_files={} invalidations={} deferrals={}",
+        "steady_stream pins={pins_every:?} retained_garbage_percent={} window={window:?} tail={tail:?} cycles={} reclaimed_files={} relocated={} invalidations={} deferrals={}",
+        policy.retained_garbage_percent,
         status.cycles_completed,
         status.reclaimed_files_total,
+        status.relocated_bytes_total,
         status.reclaim_invalidations_total,
         status.capacity_deferrals_total + status.rejected_deferrals_total,
     );
@@ -190,6 +200,7 @@ fn steady_stream(pins_every: Option<usize>) {
         "bytes grew: window {window:?} tail {tail:?}"
     );
     check_model(&mut state, &model);
+    status
 }
 
 #[test]
@@ -235,12 +246,34 @@ fn writes_skip_their_inline_step_after_a_driver_step() {
 
 #[test]
 fn steady_commit_stream_plateaus() {
-    steady_stream(None);
+    steady_stream(None, policy(), 20_000);
 }
 
 #[test]
 fn steady_stream_with_bounded_lifetime_pins_plateaus() {
-    steady_stream(Some(97));
+    steady_stream(Some(97), policy(), 20_000);
+}
+
+#[test]
+fn selective_evacuation_relocates_a_fraction_of_legacy_under_steady_churn() {
+    // Overwrites concentrate on sixteen keys over two thousand cold rows.
+    // Both policies plateau; the legacy one copies every cold row each cycle,
+    // the selective one essentially only what churn left in sparse segments.
+    let [selective, legacy] = [25, 0].map(|percent| {
+        steady_stream(
+            None,
+            MaintenancePolicy {
+                retained_garbage_percent: percent,
+                ..policy()
+            },
+            6_000,
+        )
+    });
+    assert!(selective.relocated_bytes_total > 0, "{selective:?}");
+    assert!(
+        selective.relocated_bytes_total * 4 <= legacy.relocated_bytes_total,
+        "selective {selective:?} legacy {legacy:?}"
+    );
 }
 
 #[test]
@@ -476,12 +509,20 @@ impl Reachable {
 
 #[test]
 fn randomized_model_interleavings_preserve_reachability() {
-    for seed in [0x5eed_0001u64, 0x5eed_0002, 0x5eed_0003] {
+    // Under the selective default and the legacy full evacuation alike.
+    for (seed, percent) in [0x5eed_0001u64, 0x5eed_0002, 0x5eed_0003]
+        .into_iter()
+        .flat_map(|seed| [(seed, 25), (seed, 0)])
+    {
+        let policy = MaintenancePolicy {
+            retained_garbage_percent: percent,
+            ..policy()
+        };
         let mut rng = seed;
         let admission = Admission::new(64 << 20);
         let mut group = InMemoryGroup::new();
         let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
-        geometry(&mut state);
+        geometry_with(&mut state, policy);
         let mut model: BTreeMap<u32, Vec<u8>> = BTreeMap::new();
         state
             .commit(&[Operation::create_table("accounts")])
@@ -515,7 +556,7 @@ fn randomized_model_interleavings_preserve_reachability() {
                         state.request_compaction().unwrap();
                     }
                     let progress = state.maintenance_step(budget).unwrap();
-                    assert_eq!(progress.deferred, None, "{seed:x}/{iteration}");
+                    assert_eq!(progress.deferred, None, "{seed:x}/{percent}/{iteration}");
                 }
                 75..=84 => {
                     if pins.len() < 8 {
@@ -547,8 +588,8 @@ fn randomized_model_interleavings_preserve_reachability() {
                         GROUP,
                         LARGE_CACHE,
                     )
-                    .unwrap_or_else(|error| panic!("{seed:x}/{iteration}: {error:?}"));
-                    geometry(&mut state);
+                    .unwrap_or_else(|error| panic!("{seed:x}/{percent}/{iteration}: {error:?}"));
+                    geometry_with(&mut state, policy);
                 }
             }
             // Oracle: the current root, every live pin and the replay anchor
@@ -578,7 +619,7 @@ fn randomized_model_interleavings_preserve_reachability() {
                                 .map(|value| value.as_bytes().to_vec())
                                 .as_ref(),
                             Some(bytes),
-                            "{seed:x}/{iteration}"
+                            "{seed:x}/{percent}/{iteration}"
                         );
                     }
                 }
@@ -586,7 +627,7 @@ fn randomized_model_interleavings_preserve_reachability() {
             }
         }
         let status = state.maintenance_status().unwrap();
-        eprintln!("randomized seed={seed:x} status={status:?}");
+        eprintln!("randomized seed={seed:x} percent={percent} status={status:?}");
         assert_eq!(status.reclaim_invalidations_total, 0);
         pins.clear();
         drive_cycle(&mut state, STEP);

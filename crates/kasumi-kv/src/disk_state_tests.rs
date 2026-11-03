@@ -391,6 +391,26 @@ fn drive_cycle(state: &mut DiskState, budget: MaintenanceBudget) -> CycleTotals 
     panic!("bounded compaction did not finish");
 }
 
+/// Finish an evacuating cycle's read-only survey with steps that may not
+/// publish, so the next step plans a leaf. A survey restarts after reopen.
+fn finish_survey(state: &mut DiskState) {
+    for _ in 0..100_000 {
+        if state.compact.selection_for_test().is_some() {
+            return;
+        }
+        assert_eq!(phase(state), crate::root::CompactionPhase::Evacuating);
+        let progress = step(
+            state,
+            MaintenanceBudget {
+                units: 1,
+                mutations: 0,
+            },
+        );
+        assert_eq!(progress.mutations, 0, "{progress:?}");
+    }
+    panic!("bounded survey did not finish");
+}
+
 /// Request a cycle and step until it leaves `phase`.
 fn drive_through(
     state: &mut DiskState,
@@ -962,3 +982,6 @@ mod disk_compact;
 
 #[path = "disk_maintenance_tests.rs"]
 mod disk_maintenance;
+
+#[path = "disk_selection_tests.rs"]
+mod disk_selection;

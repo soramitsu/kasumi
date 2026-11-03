@@ -141,6 +141,8 @@ fn evacuation_cursor_survives_foreground_installs_and_reopen_without_recopy() {
     let mut reopens = 0;
     let mut extra = 0u32;
     loop {
+        // Each lifetime surveys the worklist again before it evacuates.
+        finish_survey(&mut state);
         for _ in 0..2 {
             relocated += step(&mut state, ONE).relocated_bytes;
         }

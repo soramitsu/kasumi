@@ -532,7 +532,9 @@ impl Cohort {
     }
 
     /// Candidates this cohort leaves in place: referenced ones, and
-    /// unreferenced ones the current root protects structurally.
+    /// unreferenced ones the current root protects structurally. Referenced
+    /// ones include the segments a selective evacuation kept in place; only
+    /// those no walked root but a pin references count as pin-retained.
     pub(crate) fn survivors(&self) -> CohortSurvivors {
         let mut survivors = CohortSurvivors {
             lowest_arena: self.skipped_root_arena,

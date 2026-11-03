@@ -622,6 +622,7 @@ fn foreground_changes_around_compaction_cursor_never_reintroduce_old_files() {
     let cutoff_segment = record(&state).cutoff_segment();
     let cutoff_arena = record(&state).cutoff_arena();
     assert!(cutoff_segment > 0 && cutoff_arena > 0);
+    finish_survey(&mut state);
     step(&mut state, ONE);
     let first = state.compact.stats;
     assert!(first.entries > 2 && first.entries < 500);
@@ -930,12 +931,26 @@ fn compaction_admission_denial_is_retryable_without_skipping_a_key() {
 
 #[test]
 fn evacuation_batches_write_one_path_per_leaf_and_density_packs_the_result() {
+    // Every old value is relocated: by the legacy full evacuation, and by
+    // the selective default, which empties a segment this sparse.
+    for percent in [0, 25] {
+        evacuation_batches_one_path_per_leaf(percent);
+    }
+}
+
+fn evacuation_batches_one_path_per_leaf(percent: u32) {
     let admission = Admission::new(8 << 20);
     let mut state = create(
         Arc::new(InMemoryGroup::new()),
         admission.clone(),
         LARGE_CACHE,
     );
+    state
+        .configure_maintenance(MaintenancePolicy {
+            retained_garbage_percent: percent,
+            ..MaintenancePolicy::default()
+        })
+        .unwrap();
     let mut operations = vec![Operation::create_table("accounts")];
     for key in 0..1200u32 {
         operations.push(Operation::put(

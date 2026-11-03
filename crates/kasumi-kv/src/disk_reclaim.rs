@@ -25,13 +25,22 @@
 //!   already recorded are then re-proved by a `RecordedGarbage` cohort, and
 //!   reopen re-proves recorded garbage before unlinking any of it.
 //!
+//! Evacuation may keep whole segments below the limits in place (see
+//! `disk_compact.rs`). Nothing here depends on it having emptied them: a
+//! cohort retires only files no walked root references, so a kept segment
+//! survives as referenced by the current root, holds the floor, and counts
+//! in the baseline as ordinary retained bytes.
+//!
 //! Files a cycle keeps only for pinned roots stay out of its baseline, and
 //! Idle reclaims them in a reclaim-only round: the same cohorts over the
 //! cycle's limits, with no evacuation and nothing persisted. The round starts
 //! once no pin holds a root older than the one that ended the evacuation.
-//! That root and every later one reference nothing below the limits, and
-//! acquisition only pins the current root, so the older pins, all captured
-//! by the cycle's cohorts, were the only roots that could reach those files.
+//! That root and every later one reference nothing in the segments the
+//! evacuation emptied or in the old arenas, and acquisition only pins the
+//! current root, so the older pins, all captured by the cycle's cohorts, were
+//! the only roots that could reach those files. A kept segment that only a
+//! newer pin still reaches is simply kept again: this only schedules the
+//! round, whose cohorts re-prove reachability like every other.
 //! Reopen holds no pins and arms one round over every file below the newest.
 //! An active round finishes before Idle may begin a cycle: its recorded
 //! garbage must drain first, and it frees what pins held more cheaply.
@@ -63,9 +72,10 @@ pub(super) struct Reclamation {
     cycle: Option<ReclaimCycle>,
     /// The round a completed cycle owes the files it kept for pinned roots.
     owed: Option<OwedRound>,
-    /// The oldest root generation that references nothing below the limits
-    /// of the current or last cycle: the root that ended its evacuation, or
-    /// the one selected at reopen.
+    /// The oldest root generation that references nothing the current or
+    /// last cycle's evacuation emptied (its selected segments and old
+    /// arenas): the root that ended its evacuation, or the one selected at
+    /// reopen. It only schedules the owed round.
     pub(super) evacuated: u64,
     pub(super) totals: ReclaimTotals,
 }

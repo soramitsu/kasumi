@@ -91,6 +91,12 @@ pub struct MaintenancePolicy {
     pub growth_percent: u32,
     pub slack_bytes: u64,
     pub slack_files: u64,
+    /// The old-segment garbage a cycle may keep in place, as a percentage of
+    /// the live value bytes at or below its segment cutoff. Evacuation then
+    /// relocates only the values of the segments it selects: every one at
+    /// most half live, then the emptiest others until the garbage left in
+    /// the rest is within this bound. Zero relocates every old value.
+    pub retained_garbage_percent: u32,
     /// Budget of the step `Database::begin_write` runs first, unless a
     /// driver's `Database::run_maintenance` step ran since the previous write.
     pub inline_units: usize,
@@ -105,6 +111,7 @@ impl Default for MaintenancePolicy {
             growth_percent: 200,
             slack_bytes: 256 << 20,
             slack_files: 16,
+            retained_garbage_percent: 25,
             inline_units: 32,
             inline_mutations: 1,
             capacity_backoff_steps: 256,
@@ -117,6 +124,7 @@ impl MaintenancePolicy {
     pub fn validate(&self) -> Result<(), CoreError> {
         if self.growth_percent <= 100
             || self.growth_percent > 100_000
+            || self.retained_garbage_percent > 100
             || self.capacity_backoff_steps == 0
             || self.rejected_backoff_steps == 0
             || (self.inline_units == 0) != (self.inline_mutations == 0)
@@ -177,6 +185,15 @@ pub struct StorageMaintenanceStatus {
     pub reclaimed_files_total: u64,
     pub reclaimed_bytes_total: u64,
     pub relocated_bytes_total: u64,
+    /// Of the current or last evacuation this process selected for: old
+    /// segments holding live values, those it keeps in place, and the
+    /// garbage estimated to stay in them.
+    pub evacuation_surveyed_segments: u64,
+    pub evacuation_kept_segments: u64,
+    pub evacuation_kept_garbage_bytes: u64,
+    /// Evacuations that relocated every old value because the survey
+    /// behind a selection was refused admission.
+    pub evacuation_survey_fallbacks_total: u64,
     pub reclaim_invalidations_total: u64,
     pub capacity_deferrals_total: u64,
     pub rejected_deferrals_total: u64,
@@ -433,6 +450,7 @@ impl DiskState {
         let measurement = self.compact.measurement;
         let policy = &self.maintenance.policy;
         let totals = &self.reclaim.totals;
+        let evacuation = &self.compact.evacuation;
         Ok(StorageMaintenanceStatus {
             phase: StorageCompactionPhase::from_phase(record.phase()),
             cycle: record.cycle(),
@@ -451,6 +469,10 @@ impl DiskState {
             reclaimed_files_total: totals.reclaimed_files,
             reclaimed_bytes_total: totals.reclaimed_bytes,
             relocated_bytes_total: self.maintenance.relocated_bytes,
+            evacuation_surveyed_segments: evacuation.surveyed_segments,
+            evacuation_kept_segments: evacuation.kept_segments,
+            evacuation_kept_garbage_bytes: evacuation.kept_garbage_bytes,
+            evacuation_survey_fallbacks_total: evacuation.survey_fallbacks,
             reclaim_invalidations_total: totals.invalidations,
             capacity_deferrals_total: self.maintenance.capacity_deferrals,
             rejected_deferrals_total: self.maintenance.rejected_deferrals,

@@ -71,6 +71,9 @@ pub const MAX_BATCH_OPERATIONS: usize = 65_536;
 pub(crate) const RECORD_HEADER_BYTES: usize = 36;
 const RECORD_MAGIC: [u8; 4] = *b"KVSR";
 const PUT_PREFIX_BYTES: usize = 16;
+/// A live value's segment bytes besides its own, table and key: the record
+/// header and put prefix. A relocated copy's prefix is 8 bytes longer.
+pub(crate) const VALUE_RECORD_OVERHEAD_BYTES: u64 = (RECORD_HEADER_BYTES + PUT_PREFIX_BYTES) as u64;
 const RELOCATE_PREFIX_BYTES: usize = PUT_PREFIX_BYTES + 8;
 const MAINTENANCE_BODY_BYTES: usize = 8;
 const DELETE_PREFIX_BYTES: usize = 4;
@@ -856,6 +859,12 @@ impl SegmentWriter {
         assert!(capacity <= SEGMENT_BYTES);
         self.capacity = capacity;
         self
+    }
+
+    /// The size every segment of this writer rolls at: `SEGMENT_BYTES`
+    /// outside test geometries.
+    pub(crate) fn capacity(&self) -> u64 {
+        self.capacity
     }
 
     pub(crate) fn is_fenced(&self) -> bool {
