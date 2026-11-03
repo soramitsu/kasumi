@@ -120,8 +120,6 @@ async fn prepared_points_reuse_real_encrypted_backing_with_exact_overlapping_cha
     let value = vec![42; 65_537];
     fixture.write(&value)?;
     let before = fixture.memory.snapshot();
-    let quote = fixture.stores.quote_read_memory()?;
-    let quoted = quote.prepared_point_peak_bytes(7, 8, value.len())?;
     let ((session, observed), _, _) = measure_requested(|| {
         crate::test_utils::source_quote_observer::measure(&fixture.memory, || {
             fixture.session(value.len())
@@ -130,7 +128,6 @@ async fn prepared_points_reuse_real_encrypted_backing_with_exact_overlapping_cha
     let mut session = session?;
     let retained = fixture.memory.snapshot();
     assert!(!observed.overflow);
-    assert!(observed.peak_bytes <= quoted);
     assert!(retained.used_bytes - before.used_bytes > (2 * value.len()) as u64);
     // Four registered-reader leases and four coexisting point-workspace leases:
     // Store plaintext/AAD, native shell, combined directory, and ciphertext output.
@@ -181,7 +178,6 @@ async fn prepared_points_reuse_real_encrypted_backing_with_exact_overlapping_cha
         fixture.memory.snapshot().live_reservations,
         before.live_reservations
     );
-    drop(quote);
     fixture.close().await
 }
 
@@ -551,7 +547,6 @@ async fn prepared_point_final_capacity_quotes_real_overlap_and_refusal_keeps_ori
         Some(b"secret".as_slice())
     );
     drop(blockers);
-    let quote = fixture.stores.quote_read_memory()?;
     let before = fixture.memory.snapshot();
     let (result, overlap) =
         crate::test_utils::source_quote_observer::measure(&fixture.memory, || {
@@ -560,7 +555,6 @@ async fn prepared_point_final_capacity_quotes_real_overlap_and_refusal_keeps_ori
     result?;
     assert_eq!(overlap.count, 4);
     assert_eq!(overlap.peak_slots, 4);
-    assert!(overlap.peak_bytes <= quote.prepared_point_backing_bytes(7, 8, 8193)?);
     // Old and replacement buffers genuinely coexist until the successful swap.
     assert_ne!(planning.workspace.backing.plaintext.as_ptr(), original);
     assert_eq!(
@@ -570,7 +564,6 @@ async fn prepared_point_final_capacity_quotes_real_overlap_and_refusal_keeps_ori
     assert!(fixture.memory.snapshot().used_bytes > before.used_bytes);
     let ((), points) = planning.finish_with_workspace(Ok(()))?;
     drop(points);
-    drop(quote);
     fixture.close().await
 }
 

@@ -25,11 +25,9 @@ pub mod test_utils;
 mod selected_application;
 pub use selected_application::{
     ApplicationBoundaryRef, ApplicationSelectionMode, PreparedOrdinarySourceEnvelope,
-    PreparedSelectionPlan, PreparedSourceCapacityEnvelope, SelectedApplicationPosition,
-    SelectedAppliedRef, SelectedSnapshotRef, SelectionFailure, SelectionReadIdentity,
-    SelectionWorkspace, selected_application_at, selected_application_at_planned,
-    selected_application_at_prepared, selected_application_at_source,
-    selected_application_at_source_loan,
+    PreparedSelectionPlan, SelectedApplicationPosition, SelectedAppliedRef, SelectedSnapshotRef,
+    SelectionFailure, SelectionReadIdentity, SelectionWorkspace, selected_application_at,
+    selected_application_at_planned, selected_application_at_prepared,
 };
 
 /// Fixed canonical cursor read specification for the test-only primary

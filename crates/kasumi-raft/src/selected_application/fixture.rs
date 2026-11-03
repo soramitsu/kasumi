@@ -54,10 +54,6 @@ impl Memory {
     pub fn snapshot(&self) -> Census {
         *self.state.lock().unwrap()
     }
-    pub fn reset_peak(&self) {
-        let mut state = self.state.lock().unwrap();
-        state.peak_bytes = state.bytes;
-    }
     fn take(self: &Arc<Self>, bytes: u64, proof: bool) -> io::Result<Grant> {
         let mut state = self.state.lock().unwrap();
         let next = state

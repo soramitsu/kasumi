@@ -227,6 +227,15 @@ fn selected(fixture: &Fixture, input: &CommandInput) -> Result<()> {
     );
     Ok(())
 }
+fn applied_cursor(fixture: &Fixture) -> Result<(usize, [u8; 32])> {
+    let cursor = fixture
+        .stores
+        .custody()
+        .store()
+        .get_bounded("raft.meta", b"applied", 2 << 20)?
+        .context("cursor absent")?;
+    Ok((cursor.len(), Sha256::digest(&cursor).into()))
+}
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
@@ -338,6 +347,7 @@ async fn ordered_command_real_sink_rejects_full_context_substitution_after_prepa
     let fixture = Fixture::new().await?;
     fixture.seed(1, false)?;
     let old = fixture.engine.generation()?;
+    let cursor = applied_cursor(&fixture)?;
     let input = fixture.command(puts(
         "context-mismatch",
         vec![("docs".into(), id(0, false), json!({"next":true}))],
@@ -379,25 +389,8 @@ async fn ordered_command_real_sink_rejects_full_context_substitution_after_prepa
         .expect("uncontended retained report");
     assert!(inspected.is_some(), "{failure:?}");
     assert!(Arc::ptr_eq(&old, &fixture.engine.generation()?));
-    let cursor = fixture
-        .stores
-        .custody()
-        .store()
-        .get_bounded("raft.meta", b"applied", 2 << 20)?
-        .context("cursor absent")?;
-    // Compare the actual old cursor bytes using the old captured native source,
-    // rather than treating the raw command digest as full-context authority.
-    let mut grant = fixture.storage.admission.reserve_document_source(4096)?;
-    let mut reader = old
-        .application_selection
-        .get()
-        .unwrap()
-        .open_primary_reader(&fixture.roots)?;
-    let fingerprint = reader.primary_applied_cursor_fingerprint(&mut grant, 4096)?;
-    assert_eq!(fingerprint, (cursor.len(), Sha256::digest(&cursor).into()));
-    reader.close()?;
-    drop(grant);
-    drop(cursor);
+    // The refused publication left the durable applied cursor untouched.
+    assert_eq!(applied_cursor(&fixture)?, cursor);
     drop(failure);
     drop(sink_position);
     drop(input);

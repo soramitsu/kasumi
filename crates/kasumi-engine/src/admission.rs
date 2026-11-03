@@ -2732,8 +2732,6 @@ mod tests {
     }
 }
 
-mod source_publication;
-
 #[cfg(test)]
 #[path = "admission/ordinary_protection_tests.rs"]
 mod ordinary_protection_tests;

@@ -16,9 +16,7 @@ pub use prepared_point_read::{
     PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
     SourceHistoryDisposition,
 };
-mod read_memory_quote;
 pub use prepared_read_view::PreparedTenantStorageReadView;
-pub use read_memory_quote::{PairedReadMemoryQuote, PointReadMemoryQuote};
 
 /// The paired native commit returned successfully. Its final access check alone
 /// prevented acknowledgment; the original fixed Store error owns no native work.

@@ -14,7 +14,6 @@ pub(crate) enum FixtureFailure {
     },
     Publication(kasumi_raft::TestPublicationFailure),
     Selection(kasumi_raft::SelectionFailure<crate::application_sources::Workspace>),
-    SourceCapacity(kasumi_store::SourceCapacityFailure),
     NodeStartup(kasumi_store::NodeStoreStartFailure),
     InitializerDrainObservation(kasumi_store::InitializerDrainObservation),
     Operation(anyhow::Error),
@@ -30,7 +29,6 @@ impl FixtureFailure {
             Self::Publication(original) => original.admission_refusal(),
             Self::Documents(_)
             | Self::Selection(_)
-            | Self::SourceCapacity(_)
             | Self::NodeStartup(_)
             | Self::InitializerDrainObservation(_)
             | Self::Operation(_) => None,
@@ -46,7 +44,6 @@ impl std::fmt::Display for FixtureFailure {
             Self::SnapshotContext { context, original } => write!(f, "{context}: {original}"),
             Self::Publication(original) => original.fmt(f),
             Self::Selection(original) => original.fmt(f),
-            Self::SourceCapacity(original) => original.fmt(f),
             Self::NodeStartup(original) => original.fmt(f),
             Self::InitializerDrainObservation(original) => original.fmt(f),
             Self::Operation(original) => original.fmt(f),
@@ -94,11 +91,6 @@ impl From<kasumi_raft::SelectionFailure<crate::application_sources::Workspace>> 
         original: kasumi_raft::SelectionFailure<crate::application_sources::Workspace>,
     ) -> Self {
         Self::Selection(original)
-    }
-}
-impl From<kasumi_store::SourceCapacityFailure> for FixtureFailure {
-    fn from(original: kasumi_store::SourceCapacityFailure) -> Self {
-        Self::SourceCapacity(original)
     }
 }
 impl From<anyhow::Error> for FixtureFailure {

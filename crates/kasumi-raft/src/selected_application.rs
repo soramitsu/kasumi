@@ -1,14 +1,14 @@
 //! Selection proof from one supplied paired native view. This binds existing
 //! canonical metadata; it neither rehashes bootstrap/snapshot body chunks nor
-//! grants authorization, document-pool provenance or a serving source.
+//! grants authorization or a serving source.
 use crate::control::{AppliedCursor, AppliedPosition};
 use crate::storage::{SnapshotCoverage, SnapshotKind, SnapshotManifest};
 use crate::{AppliedEntryContext, BasicNode, RaftLimits, SnapshotRestoreContext};
 use allocation::RetainedMetadata;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
-    ApplicationBootstrapManifest, PreparedTenantPointWorkspace, PreparedTenantSourcePointLoan,
-    PreparedTenantSourcePointReads, SnapshotImage, TenantStorageReadView,
+    ApplicationBootstrapManifest, PreparedTenantPointWorkspace, SnapshotImage,
+    TenantStorageReadView,
 };
 use openraft::{LogId, SnapshotMeta, StoredMembership};
 use serde::{Serialize, de::DeserializeOwned};
@@ -30,66 +30,37 @@ impl Deref for SelectedBytes<'_> {
 
 mod allocation;
 mod plan;
-pub use plan::{
-    PreparedOrdinarySourceEnvelope, PreparedSelectionPlan, PreparedSourceCapacityEnvelope,
-};
+pub use plan::{PreparedOrdinarySourceEnvelope, PreparedSelectionPlan};
 
 const META: &str = "raft.meta";
 const CONTROL_BYTES: usize = 2 << 20;
 const VALIDATION_WORKSPACE: u64 = 16 << 10;
 
-enum SelectedReads<'view, 'points> {
-    View {
-        view: &'view TenantStorageReadView,
-        points: Option<&'points mut PreparedTenantPointWorkspace>,
-    },
-    Prepared(&'points mut kasumi_store::PreparedTenantPointReads),
-    Source(&'points mut PreparedTenantSourcePointReads),
-    SourceLoan(&'points mut PreparedTenantSourcePointLoan<'view>),
+struct SelectedReads<'view, 'points> {
+    view: &'view TenantStorageReadView,
+    points: Option<&'points mut PreparedTenantPointWorkspace>,
 }
 
-/// Borrowed identity checks for the actual selected read. The protected variant
-/// exposes neither its native transaction nor ordinary begin/fork operations.
-pub struct SelectionReadIdentity<'a>(ReadIdentity<'a>);
-enum ReadIdentity<'a> {
-    View(&'a TenantStorageReadView),
-    Prepared(&'a kasumi_store::PreparedTenantPointReads),
-    Source(&'a PreparedTenantSourcePointReads),
-    SourceLoan(&'a PreparedTenantSourcePointLoan<'a>),
-}
+/// Borrowed identity checks for the actual selected read.
+pub struct SelectionReadIdentity<'a>(&'a TenantStorageReadView);
 impl SelectionReadIdentity<'_> {
     pub fn require_memory(
         &self,
         expected: &std::sync::Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     ) -> Result<()> {
-        match self.0 {
-            ReadIdentity::View(view) => view.require_memory(expected),
-            ReadIdentity::Prepared(reads) => reads.require_memory(expected),
-            ReadIdentity::Source(source) => source.require_memory(expected),
-            ReadIdentity::SourceLoan(source) => source.require_memory(expected),
-        }
+        self.0.require_memory(expected)
     }
     fn require_domains(
         &self,
         application: &std::sync::Arc<kasumi_store::TenantStore>,
         custody: &std::sync::Arc<kasumi_store::TenantStore>,
     ) -> Result<()> {
-        match self.0 {
-            ReadIdentity::View(view) => view.require_domains(application, custody),
-            ReadIdentity::Prepared(reads) => reads.require_domains(application, custody),
-            ReadIdentity::Source(source) => source.require_domains(application, custody),
-            ReadIdentity::SourceLoan(source) => source.require_domains(application, custody),
-        }
+        self.0.require_domains(application, custody)
     }
 }
 impl SelectedReads<'_, '_> {
     fn identity(&self) -> SelectionReadIdentity<'_> {
-        SelectionReadIdentity(match self {
-            Self::View { view, .. } => ReadIdentity::View(view),
-            Self::Prepared(reads) => ReadIdentity::Prepared(reads),
-            Self::Source(source) => ReadIdentity::Source(source),
-            Self::SourceLoan(source) => ReadIdentity::SourceLoan(source),
-        })
+        SelectionReadIdentity(self.view)
     }
 }
 
@@ -272,56 +243,28 @@ impl<W: SelectionWorkspace> SelectedApplicationPosition<W> {
             .map(|plan| plan.record(application, namespace, key))
             .transpose()?;
         let limit = planned.as_ref().map_or(limit, |record| record.limit());
-        let bytes: Option<SelectedBytes<'_>> = match reads {
-            SelectedReads::Prepared(reads) => if application {
-                reads.application_get(namespace, key, limit)?
+        let SelectedReads { view, points } = reads;
+        let bytes: Option<SelectedBytes<'_>> = match points.as_deref_mut() {
+            Some(points) => if application {
+                points.application_get(view, namespace, key, limit)?
             } else {
-                reads.custody_get(namespace, key, limit)?
+                points.custody_get(view, namespace, key, limit)?
             }
             .map(SelectedBytes::Borrowed),
-            SelectedReads::Source(source) => {
-                // The actual source owns a finite shape before capture. A
-                // larger format ceiling does not require a format-sized buffer;
-                // an actual row exceeding this owned ceiling is still refused.
-                let limit = limit.min(source.value_capacity());
+            None => {
+                let plaintext = if application {
+                    view.application_get_workspace_bytes(namespace.len(), key.len(), limit)?
+                } else {
+                    view.custody_get_workspace_bytes(namespace.len(), key.len(), limit)?
+                };
+                self.reserve(plaintext)?;
                 if application {
-                    source.application_get(namespace, key, limit)?
+                    view.application_get(namespace, key, limit)?
                 } else {
-                    source.custody_get(namespace, key, limit)?
+                    view.custody_get(namespace, key, limit)?
                 }
-                .map(SelectedBytes::Borrowed)
+                .map(SelectedBytes::Owned)
             }
-            SelectedReads::SourceLoan(source) => {
-                let limit = limit.min(source.value_capacity());
-                if application {
-                    source.application_get(namespace, key, limit)?
-                } else {
-                    source.custody_get(namespace, key, limit)?
-                }
-                .map(SelectedBytes::Borrowed)
-            }
-            SelectedReads::View { view, points } => match points.as_deref_mut() {
-                Some(points) => if application {
-                    points.application_get(view, namespace, key, limit)?
-                } else {
-                    points.custody_get(view, namespace, key, limit)?
-                }
-                .map(SelectedBytes::Borrowed),
-                None => {
-                    let plaintext = if application {
-                        view.application_get_workspace_bytes(namespace.len(), key.len(), limit)?
-                    } else {
-                        view.custody_get_workspace_bytes(namespace.len(), key.len(), limit)?
-                    };
-                    self.reserve(plaintext)?;
-                    if application {
-                        view.application_get(namespace, key, limit)?
-                    } else {
-                        view.custody_get(namespace, key, limit)?
-                    }
-                    .map(SelectedBytes::Owned)
-                }
-            },
         };
         if let Some(planned) = &planned {
             planned.verify(bytes.as_deref())?;
@@ -404,7 +347,7 @@ pub fn selected_application_at<W: SelectionWorkspace>(
     workspace: W,
 ) -> std::result::Result<SelectedApplicationPosition<W>, SelectionFailure<W>> {
     selected_application_at_inner(
-        SelectedReads::View { view, points: None },
+        SelectedReads { view, points: None },
         expected,
         mode,
         limits,
@@ -424,7 +367,7 @@ pub fn selected_application_at_planned<W: SelectionWorkspace>(
     plan: &PreparedSelectionPlan,
 ) -> std::result::Result<SelectedApplicationPosition<W>, SelectionFailure<W>> {
     selected_application_at_inner(
-        SelectedReads::View { view, points: None },
+        SelectedReads { view, points: None },
         expected,
         mode,
         limits,
@@ -445,7 +388,7 @@ pub fn selected_application_at_prepared<W: SelectionWorkspace>(
     points: &mut PreparedTenantPointWorkspace,
 ) -> std::result::Result<SelectedApplicationPosition<W>, SelectionFailure<W>> {
     selected_application_at_inner(
-        SelectedReads::View {
+        SelectedReads {
             view,
             points: Some(points),
         },
@@ -454,45 +397,6 @@ pub fn selected_application_at_prepared<W: SelectionWorkspace>(
         limits,
         workspace,
         Some(plan.clone()),
-    )
-}
-/// Validate the same canonical proof through a captured protected source. Its
-/// registered native owner and preowned encrypted backing remain in the caller;
-/// this path cannot reopen, fork, grow or extract that source's ordinary view.
-pub fn selected_application_at_source<W: SelectionWorkspace>(
-    source: &mut PreparedTenantSourcePointReads,
-    expected: ApplicationBoundaryRef<'_>,
-    mode: ApplicationSelectionMode,
-    limits: &RaftLimits,
-    workspace: W,
-    plan: Option<&PreparedSelectionPlan>,
-) -> std::result::Result<SelectedApplicationPosition<W>, SelectionFailure<W>> {
-    selected_application_at_inner(
-        SelectedReads::Source(source),
-        expected,
-        mode,
-        limits,
-        workspace,
-        plan.cloned(),
-    )
-}
-/// Canonical validation with a serialized borrow of the cohort's actual point
-/// backing. The immutable source and backing remain separately owned.
-pub fn selected_application_at_source_loan<W: SelectionWorkspace>(
-    source: &mut PreparedTenantSourcePointLoan<'_>,
-    expected: ApplicationBoundaryRef<'_>,
-    mode: ApplicationSelectionMode,
-    limits: &RaftLimits,
-    workspace: W,
-    plan: Option<&PreparedSelectionPlan>,
-) -> std::result::Result<SelectedApplicationPosition<W>, SelectionFailure<W>> {
-    selected_application_at_inner(
-        SelectedReads::SourceLoan(source),
-        expected,
-        mode,
-        limits,
-        workspace,
-        plan.cloned(),
     )
 }
 fn selected_application_at_inner<W: SelectionWorkspace>(

@@ -5,7 +5,6 @@ use kasumi_store::NodeDiskMemoryAdmission;
 
 struct Capture<'a> {
     fixture: &'a Fixture,
-    baseline: u64,
     plan: Option<PreparedSelectionPlan>,
     points: Option<PreparedTenantPointWorkspace>,
 }
@@ -16,22 +15,14 @@ impl SelectionPreparer for Capture<'_> {
         points: PreparedTenantPointWorkspace,
     ) -> Result<()> {
         assert_eq!(self.fixture.memory.storage_census().snapshot().readers, 0);
-        let quote = self.fixture.stores.quote_read_memory()?;
-        let peak = self.fixture.memory.snapshot().peak_bytes - self.baseline;
-        assert!(
-            peak <= plan.planning_read_peak_bytes(&quote)?,
-            "actual planning overlap exceeds quote"
-        );
         self.plan = Some(plan.clone());
         self.points = Some(points);
         Ok(())
     }
 }
 fn publish<'a>(fixture: &'a Fixture, position: &crate::AppliedEntryContext) -> Result<Capture<'a>> {
-    fixture.memory.reset_peak();
     let mut capture = Capture {
         fixture,
-        baseline: fixture.memory.snapshot().bytes,
         plan: None,
         points: None,
     };
@@ -195,18 +186,12 @@ async fn initial_planning_uses_actual_small_root_and_ignores_unused_snapshot_row
             b"current",
             vec![1; 512 << 10],
         )])?;
-    fixture.memory.reset_peak();
-    let before = fixture.memory.snapshot().bytes;
     let (plan, mut points) = PreparedSelectionPlan::for_current_root(&fixture.stores)?;
     let phases = plan.planning_phases();
     assert_eq!(phases[0].2, 0);
     assert!(phases[1].2 < 1024);
     assert_eq!(phases[1], phases[2]);
     assert!(plan.peak_bytes() < 256 << 10);
-    assert!(
-        fixture.memory.snapshot().peak_bytes - before
-            <= plan.planning_read_peak_bytes(&fixture.stores.quote_read_memory()?)?
-    );
     let view = fixture.stores.read_view()?;
     let requests = fixture.memory.installed_requests();
     fixture.memory.deny_installed(true);

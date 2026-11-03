@@ -1666,13 +1666,13 @@ async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
             .is_covered_reconstruction()
     );
     assert!(!covered_cell.state.lock().unwrap().closed);
-    // An already opened primary transport also loses reconstruction-only
+    // An already opened document reader also loses reconstruction-only
     // permission at the handoff; it cannot keep reading through its own pin.
     let covered_selected = fixture
         .roots
         .prepare()?
         .capture(ApplicationBoundaryRef::Bootstrap(&fixture.image), false)?;
-    let mut covered_reader = covered_selected.open_primary_reader(&fixture.roots)?;
+    let mut covered_reader = covered_selected.open_document_reader(&fixture.roots)?;
     let mut reader_workspace = fixture.storage.admission.reserve_document_source(4096)?;
     let mut exact = fixture.roots.prepare()?;
     exact.capture_position(ApplicationBoundaryRef::Entry(&position));
@@ -1694,7 +1694,7 @@ async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
         .with_record(
             &mut reader_workspace,
             4096,
-            "engine.primary.meta",
+            crate::document_store::BODIES,
             b"gc",
             64,
             |_| Ok(()),
@@ -1705,7 +1705,14 @@ async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
             .to_string()
             .contains("covered source cannot lend primary objects after serving")
     );
-    covered_reader.close()?;
+    // Close rechecks access through the same refused loan; the child reader
+    // is still released.
+    let close_error = covered_reader.close().unwrap_err();
+    assert!(
+        close_error
+            .to_string()
+            .contains("covered source cannot lend primary objects after serving")
+    );
     drop(covered_selected);
     drop(reader_workspace);
 
@@ -1756,9 +1763,6 @@ async fn selected_sources_covered_capture_cannot_settle_after_serving_handoff()
 
 #[path = "application_source_allocation_tests.rs"]
 pub(crate) mod allocation_tails;
-
-#[path = "application_source_quote_tests.rs"]
-mod quote_tests;
 
 #[path = "application_source_completion_tests.rs"]
 pub(super) mod completion_tests;

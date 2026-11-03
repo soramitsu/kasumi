@@ -8,9 +8,6 @@ use std::sync::Arc;
 #[path = "ordinary_envelope.rs"]
 mod ordinary_envelope;
 pub use ordinary_envelope::PreparedOrdinarySourceEnvelope;
-#[path = "constructor_envelope.rs"]
-mod constructor_envelope;
-pub use constructor_envelope::PreparedSourceCapacityEnvelope;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) struct RecordPlan {
@@ -46,8 +43,8 @@ pub struct PreparedSelectionPlan {
 }
 
 impl PreparedSelectionPlan {
-    /// The test-only primary publisher requires a new canonical Entry. This
-    /// checks the actual producer branch, not the selected source's later
+    /// Refuses a plan whose producer did not advance a new canonical Entry.
+    /// This checks the actual producer branch, not the selected source's later
     /// reconstruction status, and grants no publication or storage authority.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn require_advancing_entry(&self) -> Result<()> {
@@ -63,85 +60,6 @@ impl PreparedSelectionPlan {
         (crate::control::META, b"applied", CONTROL_BYTES)
     }
 
-    /// Conservative mandatory selected-read peak for this exact plan. The
-    /// metadata quote already includes plaintext/decode/re-encoding. Native
-    /// output overlaps plaintext decode, so add the maximum native record phase;
-    /// records and table checks are sequential. This acquires no capacity.
-    pub fn read_peak_bytes(&self, read: &kasumi_store::PairedReadMemoryQuote) -> Result<u64> {
-        read.require_domains(&self.application, &self.custody)?;
-        let mut native = 0;
-        for (index, record) in self.records.iter().enumerate() {
-            if let Some(record) = record {
-                let (application, namespace, key, _) = RECORDS[index];
-                let point = if application {
-                    read.application_get(namespace.len(), key.len(), record.bytes)?
-                } else {
-                    read.custody_get(namespace.len(), key.len(), record.bytes)?
-                };
-                native = native.max(point.native_peak_bytes());
-            }
-        }
-        Ok(read.begin_peak_bytes()?.max(
-            read.retained_bytes()
-                .checked_add(self.peak)
-                .and_then(|bytes| bytes.checked_add(native))
-                .context("complete selection read quote overflow")?,
-        ))
-    }
-    /// Prior-row reads use one registered root across control validation and
-    /// selection. Directory preflight records the actual allocation phases.
-    /// This quotes buffers/custody, not PreparedApplied/write DTO allocations.
-    pub fn planning_read_peak_bytes(
-        &self,
-        read: &kasumi_store::PairedReadMemoryQuote,
-    ) -> Result<u64> {
-        read.require_domains(&self.application, &self.custody)?;
-        let mut scratch = 0;
-        for (index, read_before_plan) in self.planning_records.iter().enumerate() {
-            if *read_before_plan {
-                let (application, namespace, key, maximum) = RECORDS[index];
-                let point = if application {
-                    read.application_get(
-                        namespace.len(),
-                        key.len(),
-                        maximum.min(self.point_phases[2].2),
-                    )?
-                } else {
-                    read.custody_get(
-                        namespace.len(),
-                        key.len(),
-                        maximum.min(self.point_phases[2].2),
-                    )?
-                };
-                scratch = scratch.max(point.peak_bytes()?);
-            }
-        }
-        // Preflight, ordinary control records, optional covered-snapshot
-        // records, then final prospective proof. Quote each actual replacement
-        // while its previous admitted backing is still owned.
-        let mut overlap = read.begin_peak_bytes()?;
-        let mut previous = None;
-        for bounds in self.point_phases.into_iter().chain([self.point_bounds()]) {
-            let backing = read.prepared_point_backing_bytes(bounds.0, bounds.1, bounds.2)?;
-            let phase = match previous {
-                Some((old_bounds, old_backing)) if old_bounds != bounds => {
-                    backing.checked_add(old_backing)
-                }
-                _ => Some(backing),
-            }
-            .and_then(|bytes| bytes.checked_add(read.retained_bytes()))
-            .context("selection point replacement quote overflow")?;
-            overlap = overlap.max(phase);
-            previous = Some((bounds, backing));
-        }
-        Ok(overlap.max(
-            read.begin_peak_bytes()?.max(
-                read.retained_bytes()
-                    .checked_add(scratch)
-                    .context("selection planning quote overflow")?,
-            ),
-        ))
-    }
     /// Plaintext, decode, canonical validation and retained DTO peak only.
     /// Native reader/snapshot ownership and enclosing shells are quoted separately.
     #[cfg(test)]
@@ -475,21 +393,6 @@ impl PreparedSelectionPlan {
             }
         }
         bounds
-    }
-
-    /// Prepaid point backing retained through queued begin and metadata decode.
-    /// The existing metadata envelope remains conservative for ordinary reads.
-    pub fn prepared_read_peak_bytes(
-        &self,
-        read: &kasumi_store::PairedReadMemoryQuote,
-    ) -> Result<u64> {
-        read.require_domains(&self.application, &self.custody)?;
-        let (namespace, key, value) = self.point_bounds();
-        let backing = read.prepared_point_backing_bytes(namespace, key, value)?;
-        read.begin_peak_bytes()?
-            .checked_add(backing)
-            .and_then(|bytes| bytes.checked_add(self.peak))
-            .context("prepared selection read quote overflow")
     }
 
     fn add(&mut self, index: usize, bytes: Option<&[u8]>) -> Result<()> {

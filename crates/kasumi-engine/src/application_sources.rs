@@ -30,10 +30,6 @@ pub(crate) use completion::CompletionLoan;
 #[cfg(test)]
 #[path = "application_source_capture_access_test_hook.rs"]
 mod capture_access_test_hook;
-// Quotation-only foundation; no current source acquisition uses it.
-#[cfg(test)]
-#[path = "application_source_memory_quote.rs"]
-mod memory_quote;
 
 pub(crate) type SourceRootsRef = ownership::Strong<SourceRoots>;
 type SourceRootsWeak = ownership::Weak<SourceRoots>;
@@ -1811,7 +1807,7 @@ impl SelectedApplication {
 #[path = "application_sources_tests.rs"]
 pub(crate) mod tests;
 
-// Immutable document reads, plus test-only custody readers.
+// Immutable document reads.
 #[path = "application_source_reader.rs"]
-mod primary_reader;
-pub(crate) use primary_reader::DocumentReader;
+mod reader;
+pub(crate) use reader::DocumentReader;

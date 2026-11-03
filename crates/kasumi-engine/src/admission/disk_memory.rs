@@ -144,6 +144,8 @@ impl MemoryCore {
             .ok_or_else(|| anyhow::anyhow!("installed reservation workspace overflow"))
     }
 }
+// MemoryCore funds no native source pools; an install refuses as Unsupported.
+impl kasumi_kv::SourceMemoryProvider for MemoryCore {}
 impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
     fn install_native_constructor(
         self: Arc<Self>,
@@ -389,6 +391,34 @@ mod tests {
         assert_eq!(after.live_reservations, before.live_reservations);
         assert_eq!(after.inflight_operations, 0);
         assert!(MemoryCore::required_installed_reservation_bytes(u64::MAX).is_err());
+    }
+    #[test]
+    fn installed_quote_is_pure_and_matches_the_reserved_lease() {
+        use crate::allocation_tests::measure_topology_input;
+        let node =
+            NodeAdmission::with_fixed_memory(AdmissionConfig::default(), 2 << 30, 0).unwrap();
+        let memory = node.memory();
+        let before = memory.snapshot();
+        let (quote, live, peak, allocations) =
+            measure_topology_input(|| memory.quote_installed(1234));
+        let quote = quote.unwrap();
+        assert_eq!((live, peak, allocations), (0, 0, 0));
+        assert_eq!(
+            quote,
+            MemoryCore::required_installed_reservation_bytes(1234).unwrap()
+        );
+        let (lease, live, peak, allocations) =
+            measure_topology_input(|| memory.clone().reserve_installed(1234));
+        let lease = lease.unwrap();
+        assert!(allocations > 0 && live > 0 && peak >= live);
+        assert!(peak as u64 <= quote - 1234);
+        assert_eq!(
+            memory.snapshot().reserved_bytes - before.reserved_bytes,
+            quote
+        );
+        drop(lease);
+        assert_eq!(memory.snapshot().reserved_bytes, before.reserved_bytes);
+        assert!(memory.quote_installed(u64::MAX).is_err());
     }
     #[test]
     fn installed_storage_census_is_fixed_precharged_and_matches_the_exact_core() {

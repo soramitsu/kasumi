@@ -604,16 +604,11 @@ mod deallocation {
             let owner = OWNER.before(pointer, layout);
             let wake = WAKE.before(pointer, layout);
             let watched = crate::allocation_tests::before_deallocate(pointer, layout);
-            let publication =
-                crate::admission::source_publication::allocation_tests::before_deallocate(
-                    pointer, layout,
-                );
             let sources = crate::application_sources::tests::allocation_tails::before_deallocate(
                 pointer, layout,
             );
             unsafe { System.dealloc(pointer, layout) };
             crate::application_sources::tests::allocation_tails::after_deallocate(sources);
-            crate::admission::source_publication::allocation_tests::after_deallocate(publication);
             crate::allocation_tests::deallocated(layout.size(), watched);
             if owner {
                 OWNER.finished.store(true, Ordering::Release);

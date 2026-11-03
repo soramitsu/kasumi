@@ -143,10 +143,9 @@ pub use keys::{
 };
 pub use storage_domains::{
     AdmittedDeploymentBinding, BindingInstallWriteFailure, BindingInstallWriteRetirement,
-    CommittedAccessDenied, CustodyStore, DomainPublicationOutcome, PairedReadMemoryQuote,
-    PointReadMemoryQuote, PreparedTenantPointBounds, PreparedTenantPointReads,
-    PreparedTenantPointWorkspace, PreparedTenantStorageReadView, StorageBinding,
-    TenantStorageReadView, TenantStorageSet,
+    CommittedAccessDenied, CustodyStore, DomainPublicationOutcome, PreparedTenantPointBounds,
+    PreparedTenantPointReads, PreparedTenantPointWorkspace, PreparedTenantStorageReadView,
+    StorageBinding, TenantStorageReadView, TenantStorageSet,
 };
 
 use std::{
