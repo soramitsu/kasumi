@@ -32,6 +32,12 @@ impl Clone for TlsIdentity {
     }
 }
 
+impl Drop for TlsIdentity {
+    fn drop(&mut self) {
+        zeroize::Zeroize::zeroize(&mut self.private_key);
+    }
+}
+
 impl TlsIdentity {
     pub fn from_pem(certificates: &[u8], private_key: &[u8]) -> Result<Self> {
         let certificates = certificates_from_pem(certificates)?;

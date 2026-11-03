@@ -65,21 +65,31 @@ impl CredentialSource for FileCredentialSource {
             before.len() > 0 && before.len() <= MAX_CREDENTIAL_BYTES as u64,
             "credential file is empty or too large"
         );
-        let mut bytes = Zeroizing::new(Vec::new());
-        (&file)
-            .take(MAX_CREDENTIAL_BYTES as u64 + 1)
-            .read_to_end(&mut bytes)?;
+        let bytes = read_observed(&file, before.len())?;
         let after = file.metadata()?;
-        ensure!(
-            bytes.len() <= MAX_CREDENTIAL_BYTES
-                && before.len() == after.len()
-                && before.modified()? == after.modified()?
-                && bytes.len() as u64 == after.len(),
-            "credential file changed during read; publish replacements with atomic rename"
-        );
+        let unchanged = before.len() == after.len() && before.modified()? == after.modified()?;
+        let bytes = bytes.filter(|_| unchanged).context(
+            "credential file changed during read; publish replacements with atomic rename",
+        )?;
         let value = std::str::from_utf8(&bytes).context("credential is not UTF-8")?;
         Ok(Zeroizing::new(value.to_owned()))
     }
+}
+
+/// Read exactly the observed `len` bytes of an open regular file into one
+/// zeroizing allocation. A growing read buffer would free unwiped copies of a
+/// secret prefix. `None` when the file is now shorter or longer than `len`.
+pub fn read_observed(file: &std::fs::File, len: u64) -> Result<Option<Zeroizing<Vec<u8>>>> {
+    let len = usize::try_from(len).context("file length exceeds address space")?;
+    let mut bytes = Zeroizing::new(vec![0; len]);
+    let mut reader = file;
+    match reader.read_exact(&mut bytes) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => return Ok(None),
+        Err(error) => return Err(error.into()),
+    }
+    let mut extra = Zeroizing::new([0; 1]);
+    Ok((reader.read(&mut *extra)? == 0).then_some(bytes))
 }
 
 /// Token files may end in a single Unix or Windows newline, as emitted by CLI

@@ -5,7 +5,7 @@ use crate::KasumiClientConfig;
 use anyhow::{Context, Result, ensure};
 use kasumi_transport::{
     CertificatePin, TlsIdentity,
-    credentials::{FileCredentialSource, token},
+    credentials::{FileCredentialSource, read_observed, token},
 };
 use kasumi_types::{CredentialResource, validate_name};
 use serde::{Deserialize, Serialize};
@@ -13,7 +13,6 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs::OpenOptions,
-    io::Read,
     path::{Path, PathBuf},
 };
 use uuid::Uuid;
@@ -269,17 +268,14 @@ fn read_file(path: &Path, maximum: usize, private: bool) -> Result<Vec<u8>> {
         before.len() > 0 && before.len() <= maximum as u64,
         "client profile input exceeds byte limit"
     );
-    let mut bytes = Vec::new();
-    (&file).take(maximum as u64 + 1).read_to_end(&mut bytes)?;
+    let bytes = read_observed(&file, before.len())?;
     let after = file.metadata()?;
-    ensure!(
-        bytes.len() <= maximum
-            && bytes.len() as u64 == after.len()
-            && before.len() == after.len()
-            && before.modified()? == after.modified()?,
-        "client profile input changed during read"
-    );
-    Ok(bytes)
+    let unchanged = before.len() == after.len() && before.modified()? == after.modified()?;
+    let mut bytes = bytes
+        .filter(|_| unchanged)
+        .context("client profile input changed during read")?;
+    // The exact-size buffer moves out without a copy; a refusal above wipes it.
+    Ok(std::mem::take(&mut *bytes))
 }
 
 #[cfg(test)]
