@@ -36,6 +36,10 @@ pub struct ListenerLimits {
     pub max_http2_streams: u32,
     pub handshake_timeout: Duration,
     pub drain_timeout: Duration,
+    /// A connection with no request in flight for this long, including before
+    /// its first request, is closed gracefully. A silent or vanished peer would
+    /// otherwise hold one of `max_connections` forever.
+    pub idle_timeout: Duration,
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -95,6 +99,7 @@ impl Default for ListenerLimits {
             max_http2_streams: 32,
             handshake_timeout: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(10),
+            idle_timeout: Duration::from_secs(60),
         }
     }
 }
@@ -222,6 +227,7 @@ async fn serve_tls_source(
             && limits.max_http2_streams > 0
             && !limits.handshake_timeout.is_zero()
             && !limits.drain_timeout.is_zero()
+            && !limits.idle_timeout.is_zero()
             && limits
                 .max_connections
                 .checked_mul(limits.max_http2_streams as usize)
@@ -231,6 +237,9 @@ async fn serve_tls_source(
     );
     let config = config.into();
     let connections = Arc::new(Semaphore::new(limits.max_connections));
+    // Bumped when a connection is refused for want of a slot, so idle
+    // connections close at once and a retry finds room.
+    let (pressure, pressure_signal) = watch::channel(0u64);
     let tasks = inventory.connections.clone();
     let connection_shutdown = inventory.stop.subscribe();
     let mut task_failure = tasks.failure();
@@ -253,7 +262,12 @@ async fn serve_tls_source(
                     Ok(connection) => connection,
                     Err(error) => { outcome = Err(error.into()); break; },
                 };
-                let Ok(permit) = connections.clone().try_acquire_owned() else { drop(socket); continue; };
+                let Ok(permit) = connections.clone().try_acquire_owned() else {
+                    drop(socket);
+                    pressure.send_modify(|refused| *refused = refused.wrapping_add(1));
+                    continue;
+                };
+                let pressure = pressure_signal.clone();
                 let mut generation_change = config.subscribe();
                 let (generation, current) = config.snapshot_generation()?;
                 let acceptor = TlsAcceptor::from(current);
@@ -286,7 +300,12 @@ async fn serve_tls_source(
                     if audit_handshake(audit.as_ref(), address, peer.certificate_pin, TlsHandshakeOutcome::Accepted, limits.handshake_timeout).await.is_err() {
                         return;
                     }
-                    let service = TowerToHyperService::new(router.layer(Extension(peer)));
+                    let (active, activity) = watch::channel(0usize);
+                    let service = TowerToHyperService::new(
+                        router
+                            .layer(Extension(peer))
+                            .layer(axum::middleware::from_fn_with_state(active, track_request)),
+                    );
                     let mut builder = Builder::new(executor);
                     builder.http1().max_buf_size(32 * 1024).timer(TokioTimer::new()).header_read_timeout(limits.handshake_timeout);
                     builder.http2().max_concurrent_streams(limits.max_http2_streams);
@@ -299,6 +318,10 @@ async fn serve_tls_source(
                             let _ = tokio::time::timeout(limits.drain_timeout, connection).await;
                         },
                         _ = shutdown.changed() => {
+                            connection.as_mut().graceful_shutdown();
+                            let _ = tokio::time::timeout(limits.drain_timeout, connection).await;
+                        }
+                        _ = idle(activity, pressure, limits.idle_timeout) => {
                             connection.as_mut().graceful_shutdown();
                             let _ = tokio::time::timeout(limits.drain_timeout, connection).await;
                         }
@@ -315,6 +338,56 @@ async fn serve_tls_source(
     drop(listener);
     let drain = inventory.drain().await.map_err(Into::into);
     crate::runtime_drain::combine(outcome, drain)
+}
+
+/// Counts a request as in flight until its response body is dropped, so a
+/// streamed response keeps its connection active.
+async fn track_request(
+    axum::extract::State(active): axum::extract::State<watch::Sender<usize>>,
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    struct InFlight(watch::Sender<usize>);
+    impl Drop for InFlight {
+        fn drop(&mut self) {
+            self.0.send_modify(|active| *active -= 1);
+        }
+    }
+    active.send_modify(|active| *active += 1);
+    let in_flight = InFlight(active);
+    next.run(request).await.map(|body| {
+        axum::body::Body::new(http_body_util::BodyExt::map_frame(body, move |frame| {
+            let _ = &in_flight;
+            frame
+        }))
+    })
+}
+
+/// Resolves once a connection has had no request in flight for `timeout`, or
+/// is idle when the listener refuses a connection for want of a slot.
+async fn idle(
+    mut active: watch::Receiver<usize>,
+    mut pressure: watch::Receiver<u64>,
+    timeout: Duration,
+) {
+    pressure.borrow_and_update();
+    loop {
+        if *active.borrow_and_update() != 0 {
+            if active.changed().await.is_err() {
+                return std::future::pending().await;
+            }
+            continue;
+        }
+        tokio::select! {
+            _ = tokio::time::sleep(timeout) => return,
+            _ = pressure.changed() => return,
+            changed = active.changed() => {
+                if changed.is_err() {
+                    return std::future::pending().await;
+                }
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -658,5 +731,92 @@ mod lifecycle_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn reset_queued_before_listener_start_is_audited_and_next_tls_request_succeeds() {
         rejected_setup_keeps_listener_available(true).await;
+    }
+
+    /// Completes TLS and then sends nothing, as a silent or vanished peer does.
+    async fn silent_peer(
+        address: std::net::SocketAddr,
+        certificate: &rcgen::Certificate,
+    ) -> tokio_rustls::client::TlsStream<tokio::net::TcpStream> {
+        let mut roots = rustls::RootCertStore::empty();
+        roots.add(certificate.der().clone()).unwrap();
+        let config = rustls::ClientConfig::builder_with_provider(Arc::new(
+            rustls::crypto::ring::default_provider(),
+        ))
+        .with_protocol_versions(&[&rustls::version::TLS13])
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+        let socket = tokio::net::TcpStream::connect(address).await.unwrap();
+        tokio_rustls::TlsConnector::from(Arc::new(config))
+            .connect(
+                rustls::pki_types::ServerName::try_from("localhost").unwrap(),
+                socket,
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn silent_connections_release_their_slots_when_idle_or_needed() {
+        use tokio::io::AsyncReadExt;
+
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let identity = TlsIdentity::from_pem(
+            cert.pem().as_bytes(),
+            signing_key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        // A short idle timeout frees the only slot on its own; a long one
+        // frees it as soon as the listener refuses a connection for want of it.
+        for (idle_timeout, refused) in [
+            (Duration::from_millis(300), false),
+            (Duration::from_secs(600), true),
+        ] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (events, _records) = tokio::sync::mpsc::unbounded_channel();
+            let (stop, shutdown) = watch::channel(false);
+            let server = tokio::spawn(serve_tls_source(
+                listener,
+                server_config(&identity, ClientAuthentication::OAuth).unwrap(),
+                Router::new().route("/request", post(|| async { "served" })),
+                Arc::new(RecordingAudit(events)),
+                shutdown,
+                |socket| socket.set_nodelay(true),
+                Arc::new(ListenerInventory::new(ListenerLimits {
+                    max_connections: 1,
+                    idle_timeout,
+                    ..ListenerLimits::default()
+                })),
+            ));
+            let mut silent = silent_peer(address, &cert).await;
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .http1_only()
+                .add_root_certificate(
+                    reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap(),
+                )
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap();
+            let url = format!("https://localhost:{}/request", address.port());
+            if refused {
+                assert!(client.post(&url).send().await.is_err());
+            }
+            let closed = tokio::time::timeout(Duration::from_secs(10), silent.read(&mut [0; 1]))
+                .await
+                .expect("the server closes a silent connection");
+            assert!(matches!(closed, Ok(0) | Err(_)));
+            let response = client.post(&url).send().await.unwrap();
+            assert_eq!(response.text().await.unwrap(), "served");
+            stop.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(10), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
     }
 }
