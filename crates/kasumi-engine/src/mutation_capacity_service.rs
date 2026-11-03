@@ -39,6 +39,7 @@ impl Database {
         // Validate complete future originals under the installed schema, without
         // executing them. The current precondition/late-bound Prepared revision
         // is still the effect owner's responsibility at actual atomic dispatch.
+        let mut validators = std::collections::BTreeMap::new();
         for operation in &request.batch.operations {
             let (name, id) = operation.target();
             let collection = generation.state.collections.get(name).ok_or_else(|| {
@@ -63,9 +64,15 @@ impl Database {
                 ));
             }
             if let Mutation::Put { body, .. } = operation {
-                generation
-                    .indexes
-                    .validate_document(&collection.definition, body)?;
+                if !validators.contains_key(name) {
+                    validators.insert(
+                        name,
+                        generation
+                            .indexes
+                            .schema_validator(&collection.definition)?,
+                    );
+                }
+                validators[name].validate_document(&collection.definition, body)?;
             }
         }
         for assertion in &request.batch.read_set {

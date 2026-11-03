@@ -473,7 +473,7 @@ impl ValidatedApplicationSnapshot {
             Ok(())
         })?;
         let mut bytes = 0u64;
-        let mut current: Option<(String, CollectionState, QueryIndexes)> = None;
+        let mut current: Option<(String, CollectionState, kasumi_query::SchemaValidator)> = None;
         self.index.visit(3, |record| {
             check()?;
             let Record::Document(name, document) = record else {
@@ -481,24 +481,25 @@ impl ValidatedApplicationSnapshot {
             };
             if current.as_ref().is_none_or(|(key, _, _)| key != &name) {
                 let collection = self.collection(&name)?;
-                // Only the current collection's empty indexes keep its compiled
-                // schema alive while documents are checked individually.
-                let validators = QueryIndexes::build([crate::index_source::StateCollection::new(
+                // Only the current collection's compiled schema stays alive,
+                // resolved once for all of its documents.
+                let validator = QueryIndexes::build([crate::index_source::StateCollection::new(
                     h,
                     &name,
                     &collection,
                 )])
-                .map_err(crate::index_source::into_anyhow)?;
-                current = Some((name.clone(), collection, validators));
+                .map_err(crate::index_source::into_anyhow)?
+                .schema_validator(&collection.definition)?;
+                current = Some((name.clone(), collection, validator));
             }
-            let (_, collection, validators) =
+            let (_, collection, validator) =
                 current.as_ref().context("snapshot collection missing")?;
             validate_name(&document.id)?;
             ensure!(
                 document.version <= collection.data_epoch,
                 "snapshot document version differs"
             );
-            validators.validate_document(&collection.definition, &document.body)?;
+            validator.validate_document(&collection.definition, &document.body)?;
             let size = encoded_len(&document.body)? as u64;
             ensure!(
                 size <= h.limits.max_document_bytes as u64,

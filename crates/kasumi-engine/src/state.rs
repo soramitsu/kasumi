@@ -3218,6 +3218,8 @@ fn apply_mutations(
     validate_merge_patch_expansion(state, operations, patch_expansion_limit, resolver)?;
     let mut targets = BTreeSet::new();
     let mut versions = BTreeMap::new();
+    // A batch cannot change a schema: resolve each collection's once.
+    let mut validators = BTreeMap::new();
     for &mutation in operations {
         let (name, id) = mutation.target();
         validate_name(id)?;
@@ -3294,7 +3296,10 @@ fn apply_mutations(
                     )
                     .into());
                 }
-                indexes.validate_document(&collection.definition, &body)?;
+                if !validators.contains_key(name) {
+                    validators.insert(name, indexes.schema_validator(&collection.definition)?);
+                }
+                validators[name].validate_document(&collection.definition, &body)?;
                 if old.is_none() {
                     state.document_count += 1;
                 }
