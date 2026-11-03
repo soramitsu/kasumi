@@ -2011,6 +2011,10 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
     async fn get_current_snapshot(
         &mut self,
     ) -> Result<Option<Snapshot<TypeConfig>>, StorageError<u64>> {
+        // OpenRaft runs builds concurrently with this read. A build publishes
+        // a new manifest and deletes its predecessor's chunks, so the manifest,
+        // its chunks and the control coverage are read under the same gate.
+        let _gate = self.snapshot_gate.clone().lock_owned().await;
         let store = self.store.clone();
         let domains = self.domains.clone();
         let limit = self.limits.max_snapshot_bytes;

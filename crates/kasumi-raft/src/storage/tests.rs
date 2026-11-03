@@ -391,6 +391,54 @@ async fn applied_metadata_does_not_block_runtime_while_snapshot_capture_holds_st
     Ok(())
 }
 
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn current_snapshot_reads_wait_for_an_in_progress_build() -> FixtureResult<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let fixture_scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let mut machine = StateMachine::open(
+        kasumi_store::test_utils::initialize_custody_fixture(
+            new_fault_store(FaultBackend::new(), fixture_scratch.clone()).await?,
+            Arc::new(LocalKeyProvider::new([241; 32])),
+        )
+        .await?,
+        Arc::new(BytesBackend::default()),
+        crate::SnapshotBufferOwner::fixture(),
+    )
+    .await?;
+    let installed = envelope(b"installed".to_vec(), fixture_scratch.clone());
+    machine
+        .install_snapshot(
+            &installed.meta,
+            Box::new(SnapshotBuffer::from_bytes(
+                &fixture_scratch.clone(),
+                installed.encode(64 << 20)?.read_bounded(64 << 20)?,
+                1024,
+                &crate::SnapshotBufferOwner::fixture(),
+            )?),
+        )
+        .await?;
+    // A build holds the gate while it publishes a new manifest and deletes
+    // its predecessor's chunks; a concurrent read must not observe that.
+    let build = machine.snapshot_gate.clone().lock_owned().await;
+    let mut reading = machine.clone();
+    let read = tokio::spawn(async move {
+        reading
+            .get_current_snapshot()
+            .await
+            .map(|snapshot| snapshot.map(|snapshot| snapshot.meta))
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    assert!(!read.is_finished(), "snapshot read raced the build");
+    drop(build);
+    assert_eq!(read.await??, Some(installed.meta));
+    Ok(())
+}
+
 fn envelope(bytes: Vec<u8>, fixture_scratch: Arc<kasumi_store::ScratchDisk>) -> SnapshotEnvelope {
     SnapshotEnvelope {
         version: 2,
