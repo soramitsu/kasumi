@@ -136,7 +136,7 @@ impl Kasumi {
             .clone()
             .collections(&self.bearer()?, &self.options()?)
             .await?;
-        Ok(Vec::clone(&response))
+        Ok(response.into_owned())
     }
 
     /// Read one document; `None` when it does not exist.
@@ -146,7 +146,7 @@ impl Kasumi {
             .clone()
             .get(&self.bearer()?, collection, id, &self.options()?)
             .await?;
-        Ok(response.map(|document| Document::clone(&document)))
+        Ok(response.map(AdmittedResponse::into_owned))
     }
 
     /// Read one document and deserialize its body.
@@ -168,7 +168,7 @@ impl Kasumi {
             .clone()
             .query(&self.bearer()?, query, &self.options()?)
             .await?;
-        Ok(QueryPage::new(query.clone(), &response))
+        Ok(QueryPage::new(query.clone(), response))
     }
 
     /// The page after `page`, or `None` at the end. Pages continue the
@@ -190,7 +190,7 @@ impl Kasumi {
             .clone()
             .query_prepared(&self.bearer()?, prepared, call)
             .await?;
-        Ok(Some(QueryPage::new(page.query.clone(), &response)))
+        Ok(Some(QueryPage::new(page.query.clone(), response)))
     }
 
     /// Every row of a row query, following cursors to the end of its snapshot.
@@ -385,10 +385,10 @@ fn typed<T: DeserializeOwned>(
 }
 
 impl QueryPage {
-    fn new(query: QueryRequest, response: &AdmittedResponse<QueryResponse>) -> Self {
+    fn new(query: QueryRequest, response: AdmittedResponse<QueryResponse>) -> Self {
         Self {
             query,
-            response: QueryResponse::clone(response),
+            response: response.into_owned(),
         }
     }
 

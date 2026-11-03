@@ -235,6 +235,17 @@ impl<T> AdmittedResponse<T> {
         }))
     }
 }
+impl<T: Clone> AdmittedResponse<T> {
+    /// Detach the value for the application, as copying it and dropping this
+    /// response would, but move it instead when no other clone shares it. The
+    /// reservation is released either way.
+    pub(crate) fn into_owned(self) -> T {
+        match Arc::try_unwrap(self.0) {
+            Ok(owned) => owned.value,
+            Err(shared) => shared.value.clone(),
+        }
+    }
+}
 impl kasumi_types::AdmittedDocumentOwner for Owned<kasumi_types::Document> {
     fn document(&self) -> &kasumi_types::Document {
         &self.value

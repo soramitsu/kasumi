@@ -185,7 +185,9 @@ impl KasumiClientPool {
                 let replay = resend != Resend::Never;
                 match result {
                     Ok(Ok(reply)) => {
-                        if Instant::now() >= end {
+                        // A write's reply is its committed outcome even when it
+                        // arrives at the deadline; only reads fail closed.
+                        if Instant::now() >= end && resend != Resend::Write {
                             return Err(settle(uncertain, deadline()));
                         }
                         self.preferred = *member;
