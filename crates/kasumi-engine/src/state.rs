@@ -3638,7 +3638,7 @@ pub(crate) fn read_audit_action(event: &AuditEvent) -> Result<Action> {
         "read" | "discovery" | "change_feed" | "archive_receipt" | "restore_lineage" => {
             Ok(Action::Read)
         }
-        "receipt" => Ok(Action::Write),
+        "receipt" | "mutation_capacity_admission" => Ok(Action::Write),
         "schema_activation_status" | "schema_read" | "policy_limits_read" => Ok(Action::Admin),
         _ => Err(Error::new(
             ErrorCode::InvalidArgument,

@@ -2455,3 +2455,57 @@ async fn undecodable_nesting_is_refused_before_proposal_and_the_tenant_keeps_ser
     db.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn tenant_wide_strict_audit_covers_lineage_and_capacity_admission() {
+    let (_dir, _physical, db, _key, _store, audit) = database(true).await;
+    let mut policy = policy(true);
+    policy.grants.push(Grant {
+        principal: "writer".into(),
+        collection: None,
+        actions: BTreeSet::from([Action::Write]),
+    });
+    db.administer(context("owner"), Operation::SetPolicy(policy))
+        .await
+        .unwrap();
+    let audited = |action: &str| {
+        db.engine()
+            .generation()
+            .unwrap()
+            .state
+            .audits
+            .iter()
+            .filter(|event| event.action == action)
+            .count()
+    };
+    // Only the tenant policy, not the collection, requires strict auditing.
+    let state = db.engine().generation().unwrap().state.clone();
+    assert!(!state.collections["people"].definition.strict_read_audit);
+    db.read_restore_lineage(
+        &context("owner"),
+        ReadRestoreLineage {
+            expected_incarnation: state.incarnation.clone(),
+            collection: "people".into(),
+        },
+    )
+    .await
+    .unwrap();
+    assert_eq!(audited("restore_lineage"), 1);
+    // Capacity admission needs Write, not Read, and its audit is accepted.
+    let request = AdmitMutationCapacity {
+        expected_incarnation: state.incarnation.clone(),
+        batch: MutationBatch::with_key("future-batch")
+            .read_set([ReadAssertion::Snapshot {
+                incarnation: state.incarnation.clone(),
+                policy_epoch: state.policy_epoch,
+                schema_epoch: state.schema_epoch,
+            }])
+            .insert("people", "future", json!({"email": "future", "age": 1})),
+    };
+    db.admit_mutation_capacity(&context("writer"), request)
+        .await
+        .unwrap();
+    assert_eq!(audited("mutation_capacity_admission"), 1);
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+}

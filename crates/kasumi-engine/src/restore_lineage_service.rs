@@ -40,7 +40,8 @@ impl Database {
             .collections
             .get(&request.collection)
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection does not exist"))?;
-        let strict = collection.definition.strict_read_audit;
+        let strict =
+            generation.state.policy.strict_read_audit || collection.definition.strict_read_audit;
         self.engine.authorize_release(
             context,
             Some(&request.collection),

@@ -2935,7 +2935,7 @@ impl Database {
         }
         self.access()?;
         let action = match kind {
-            "receipt" => Action::Write,
+            "receipt" | "mutation_capacity_admission" => Action::Write,
             "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
             _ => Action::Read,
         };
