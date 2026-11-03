@@ -23,9 +23,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
+use crate::cache::{CacheConfig, CacheLoadError, NativeCache};
 #[cfg(test)]
-use crate::cache::CachedBytes;
-use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
+use crate::cache::{CacheStats, CachedBytes};
 use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{
     DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
@@ -96,6 +96,7 @@ pub(crate) struct CachedDirectoryBackend<B: DirectoryBackend> {
 }
 
 impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
+    #[cfg(test)]
     pub(crate) fn new(
         backend: B,
         admission: Arc<dyn StorageAdmission>,
@@ -165,6 +166,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         self.check_owner()
     }
 
+    #[cfg(test)]
     pub(crate) fn stats(&self) -> Result<CacheStats, CoreError> {
         self.check_owner()?;
         Ok(self.lock()?.stats())
@@ -172,6 +174,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
 
     /// Release lookup ownership. Existing returned pages keep their original
     /// admission until their last reader drops them, including after shutdown.
+    #[cfg(test)]
     pub(crate) fn clear(&self) -> Result<(), CoreError> {
         self.lock()?.clear();
         Ok(())

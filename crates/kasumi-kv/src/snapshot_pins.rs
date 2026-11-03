@@ -363,6 +363,7 @@ impl SnapshotPins {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn validate_capture(&self, capture: &SnapshotRoots) -> Result<(), CoreError> {
         self.inner.check()?;
         if !RetiredArc::ptr_eq(&self.inner, &capture.registry) {
@@ -526,6 +527,7 @@ impl SnapshotPins {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn epoch(&self) -> Result<u64, CoreError> {
         self.inner.check()?;
         let state = self.inner.lock()?;
@@ -618,6 +620,7 @@ impl SnapshotPins {
 
     /// Callbacks run after releasing the registry lock. The returned epoch
     /// identifies the captured roots; visitation itself does not pin them.
+    #[cfg(test)]
     pub(crate) fn visit(
         &self,
         mut visitor: impl FnMut(DirectoryRoot) -> Result<(), CoreError>,
@@ -640,6 +643,7 @@ impl SnapshotRoots {
         &self.roots
     }
 
+    #[cfg(test)]
     pub(crate) fn epoch(&self) -> u64 {
         self.epoch
     }

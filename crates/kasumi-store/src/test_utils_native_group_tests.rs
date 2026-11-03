@@ -6,7 +6,7 @@ fn fixture_group(path: &Path) {
     for (name, content) in [
         (kasumi_kv::ROOT_FILE_NAME, b"root".as_slice()),
         ("0000000000000001.kvseg", b"segment".as_slice()),
-        ("0000000000000002.kvckpt", b"checkpoint".as_slice()),
+        ("0000000000000002.kvseg", b"second segment".as_slice()),
         ("0000000000000003.kvdir", b"directory".as_slice()),
     ] {
         std::fs::write(path.join(name), content).unwrap();
@@ -28,7 +28,7 @@ fn complete_native_group_copy_and_restore_preserve_installed_identity() {
     );
     std::fs::write(installed.join(kasumi_kv::ROOT_FILE_NAME), b"later root").unwrap();
     std::fs::write(installed.join("0000000000000001.kvseg"), b"later segment").unwrap();
-    std::fs::remove_file(installed.join("0000000000000002.kvckpt")).unwrap();
+    std::fs::remove_file(installed.join("0000000000000002.kvseg")).unwrap();
     std::fs::write(installed.join("0000000000000004.kvdir"), b"later directory").unwrap();
     assert_ne!(
         capture_native_group_image(&installed, memory.clone()).unwrap(),

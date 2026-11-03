@@ -522,14 +522,14 @@ fn rejected_commit_input_settles_and_releases_the_writer() {
     let effects = backend.effects();
 
     let mut writer = opening.database().unwrap().begin_write().unwrap().retain();
-    let oversized = vec![0x33; kasumi_kv::MAX_KEY_BYTES + 1];
-    writer
-        .transaction()
-        .unwrap()
-        .open_table(FRESH)
-        .unwrap()
-        .insert(oversized.as_slice(), b"value")
-        .unwrap();
+    {
+        // Staging admits every row; with its table creation the batch is one
+        // operation over the limit only commit enforces.
+        let mut table = writer.transaction().unwrap().open_table(FRESH).unwrap();
+        for index in 0..kasumi_kv::MAX_BATCH_OPERATIONS as u32 {
+            table.insert(&index.to_be_bytes(), b"value").unwrap();
+        }
+    }
     let report = writer.commit();
     assert_eq!(report.settlement(), WriteTerminalSettlement::Settled);
     assert!(

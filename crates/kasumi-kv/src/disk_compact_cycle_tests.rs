@@ -544,11 +544,10 @@ impl PlanChecked {
         })
     }
 
-    fn index(file: GroupFile) -> Option<usize> {
+    fn index(file: GroupFile) -> usize {
         match file.kind {
-            FileKind::Segment => Some(0),
-            FileKind::Directory => Some(1),
-            FileKind::Checkpoint => None,
+            FileKind::Segment => 0,
+            FileKind::Directory => 1,
         }
     }
 
@@ -579,12 +578,7 @@ impl PlanChecked {
             ));
             return;
         };
-        let Some(index) = Self::index(file) else {
-            state
-                .violations
-                .push(format!("{file:?} is not a planned kind"));
-            return;
-        };
+        let index = Self::index(file);
         if let Some(existing) = Self::existing(&plan, file) {
             if end > existing.maximum_len {
                 state.violations.push(format!(
@@ -660,8 +654,9 @@ impl SegmentGroupBackend for PlanChecked {
             let mut state = self.state.lock().unwrap();
             if state.armed {
                 state.effects += 1;
-                match (state.plan, Self::index(file)) {
-                    (Some(plan), Some(index)) => {
+                match state.plan {
+                    Some(plan) => {
+                        let index = Self::index(file);
                         let range = Self::range(&plan, index);
                         if range.first_id + state.created[index] == file.id
                             && state.created[index] < range.count
@@ -674,7 +669,7 @@ impl SegmentGroupBackend for PlanChecked {
                                 .push(format!("{file:?} created outside {range:?}"));
                         }
                     }
-                    _ => state
+                    None => state
                         .violations
                         .push(format!("{file:?} created outside a reserved transaction")),
                 }

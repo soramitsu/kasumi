@@ -13,7 +13,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use crate::arena::{DirectoryArenaBackend, DirectoryArenaRoll, recover_directory_intent};
-use crate::cache::{CacheConfig, CacheLoadError, CacheStats, CachedBytes, NativeCache};
+#[cfg(test)]
+use crate::cache::CachedBytes;
+use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
 use crate::checked_group::CheckedGroup;
 use crate::core::{
     CacheWarmup, CoreError, CorePanic, MAX_KEY_BYTES, MAX_TABLE_BYTES, NativeResidentLease,
@@ -329,6 +331,7 @@ impl DiskState {
         result
     }
 
+    #[cfg(test)]
     pub(crate) fn is_fenced(&self) -> bool {
         self.owner.failed.load(Ordering::Acquire)
     }
@@ -412,6 +415,7 @@ impl DiskState {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn get(
         &mut self,
         root: &SnapshotPin,
@@ -461,6 +465,7 @@ impl DiskState {
         })
     }
 
+    #[cfg(test)]
     fn value(
         &self,
         value: ValueLocation,

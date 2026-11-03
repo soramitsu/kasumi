@@ -1,7 +1,7 @@
 //! Multi-file ownership contract for the segmented log.
 //!
 //! A group is one root file with two superblock slots plus create-only segment
-//! and checkpoint files under one directory. Names are deterministic from a
+//! and directory arena files under one directory. Names are deterministic from a
 //! kind and a never-reused identifier. Creation and deletion each include the
 //! parent directory synchronization; a failed result after entry leaves the
 //! namespace effect unknown, and the caller must fence and reopen. A restart
@@ -18,7 +18,6 @@ use crate::root::{ROOT_SLOT_BYTES, RootSlot};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum FileKind {
     Segment,
-    Checkpoint,
     Directory,
 }
 
@@ -26,15 +25,14 @@ impl FileKind {
     fn suffix(self) -> &'static str {
         match self {
             Self::Segment => ".kvseg",
-            Self::Checkpoint => ".kvckpt",
             Self::Directory => ".kvdir",
         }
     }
 
+    /// Root garbage tag. Tag 2 named the retired checkpoint kind.
     pub(crate) fn tag(self) -> u8 {
         match self {
             Self::Segment => 1,
-            Self::Checkpoint => 2,
             Self::Directory => 3,
         }
     }
@@ -42,7 +40,6 @@ impl FileKind {
     pub(crate) fn from_tag(tag: u8) -> Option<Self> {
         match tag {
             1 => Some(Self::Segment),
-            2 => Some(Self::Checkpoint),
             3 => Some(Self::Directory),
             _ => None,
         }
@@ -64,13 +61,6 @@ impl GroupFile {
         }
     }
 
-    pub const fn checkpoint(id: u64) -> Self {
-        Self {
-            kind: FileKind::Checkpoint,
-            id,
-        }
-    }
-
     pub const fn directory(id: u64) -> Self {
         Self {
             kind: FileKind::Directory,
@@ -88,8 +78,6 @@ impl GroupFile {
     pub fn parse_name(name: &str) -> Option<Self> {
         let (digits, kind) = if let Some(digits) = name.strip_suffix(FileKind::Segment.suffix()) {
             (digits, FileKind::Segment)
-        } else if let Some(digits) = name.strip_suffix(FileKind::Checkpoint.suffix()) {
-            (digits, FileKind::Checkpoint)
         } else {
             (
                 name.strip_suffix(FileKind::Directory.suffix())?,
@@ -1119,13 +1107,15 @@ mod tests {
         let segment = GroupFile::segment(0x2a);
         assert_eq!(segment.file_name(), "000000000000002a.kvseg");
         assert_eq!(GroupFile::parse_name(&segment.file_name()), Some(segment));
-        let checkpoint = GroupFile::checkpoint(7);
+        let directory = GroupFile::directory(7);
+        assert_eq!(directory.file_name(), "0000000000000007.kvdir");
         assert_eq!(
-            GroupFile::parse_name(&checkpoint.file_name()),
-            Some(checkpoint)
+            GroupFile::parse_name(&directory.file_name()),
+            Some(directory)
         );
         for name in [
             "000000000000002A.kvseg",
+            "0000000000000007.kvckpt",
             "00000000000002a.kvseg",
             "0000000000000000.kvseg",
             "000000000000002a.kvseg.tmp",
@@ -1161,7 +1151,7 @@ mod tests {
     #[test]
     fn create_without_parent_sync_is_lost_on_restart() {
         let group = InMemoryGroup::new();
-        let file = GroupFile::checkpoint(3);
+        let file = GroupFile::directory(3);
         group.fail(GroupOp::Create, 1, FaultTiming::AfterEffect);
         group.create(file).unwrap_err();
         assert!(group.exists(file).unwrap());
@@ -1204,7 +1194,7 @@ mod tests {
     fn name_sync_settles_unknown_creates_and_unlinks() {
         let group = InMemoryGroup::new();
         let created = GroupFile::segment(1);
-        let removed = GroupFile::checkpoint(1);
+        let removed = GroupFile::directory(1);
         group.create(removed).unwrap();
         group.fail(GroupOp::Create, 1, FaultTiming::AfterEffect);
         group.create(created).unwrap_err();

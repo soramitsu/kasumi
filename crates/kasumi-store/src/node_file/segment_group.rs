@@ -1,7 +1,7 @@
 //! Multi-file NodeDisk owner for one segmented kv log.
 //!
 //! The store path of a group is one enrolled directory. It holds
-//! `root.kvroot` and create-only segment, checkpoint and directory-arena files
+//! `root.kvroot` and create-only segment and directory-arena files
 //! spelled exactly as the kv group contract names them. Every file begins with a 4 KiB
 //! envelope under `KASUMI-NODE-SEG1` that binds it to the installed store
 //! identity, its kind and its identifier; the kv bytes follow. The root
@@ -74,7 +74,7 @@ const PREPARED: u8 = 1;
 const READY: u8 = 2;
 const ROOT_KIND: u8 = 1;
 const SEGMENT_KIND: u8 = 2;
-const CHECKPOINT_KIND: u8 = 3;
+// Kind 3 named the retired checkpoint file; deployed arenas carry kind 4.
 const DIRECTORY_KIND: u8 = 4;
 const ROOT_FILE_BYTES: u64 = (HEADER_BYTES + 2 * ROOT_SLOT_BYTES) as u64;
 /// Bounds the fixed descriptor cache; NodeDisk still enforces its own budget.
@@ -122,15 +122,13 @@ impl EnvelopeFileKind for GroupFileKind {
     fn envelope_kind(self) -> u8 {
         match self {
             Self::Segment => SEGMENT_KIND,
-            Self::Checkpoint => CHECKPOINT_KIND,
             Self::Directory => DIRECTORY_KIND,
         }
     }
     fn index(self) -> usize {
         match self {
             Self::Segment => 0,
-            Self::Checkpoint => 1,
-            Self::Directory => 2,
+            Self::Directory => 1,
         }
     }
 }
@@ -159,7 +157,6 @@ fn sync_site(file: GroupFile) -> crate::sync_trace::Site {
     match file.kind {
         GroupFileKind::Segment => crate::sync_trace::Site::KvSegment,
         GroupFileKind::Directory => crate::sync_trace::Site::KvDirectory,
-        GroupFileKind::Checkpoint => crate::sync_trace::Site::KvCheckpoint,
     }
 }
 
@@ -268,7 +265,7 @@ struct Resources {
     entries: Vec<Entry>,
     // Admits the entry table's current capacity.
     charge: Option<DiskMemoryLease>,
-    high_water: [u64; 3],
+    high_water: [u64; 2],
     // A listing retains only this scalar while callbacks run without our lock.
     // Checked increments prevent a same-owner namespace mutation from making
     // an old cursor/count appear current again.
@@ -677,7 +674,7 @@ impl NodeSegmentGroup {
             root_failed: false,
             entries: Vec::new(),
             charge: None,
-            high_water: [0; 3],
+            high_water: [0; 2],
             namespace_epoch: 0,
             growth_target: None,
             transaction: None,
@@ -857,7 +854,7 @@ impl NodeSegmentGroup {
             // Retain the paid entry allocation, root and directory across the
             // bounded retry. No file was written during this opening census.
             resources.entries.clear();
-            resources.high_water = [0; 3];
+            resources.high_water = [0; 2];
         }
         unreachable!("census attempts either complete or return their last race")
     }
@@ -1720,9 +1717,22 @@ impl NodeSegmentGroup {
         if resources.growth_target == Some(file) {
             resources.growth_target = None;
         }
-        // NodeDisk consumes the sole verified owner. On failure it keeps the
-        // owner and every charge, and the recorded name stays until a census.
-        self.effect(self.disk.delete_file(handle))?;
+        // NodeDisk consumes the sole verified owner. A refused namespace
+        // preflight (no physical headroom, a busy parent) retires it without
+        // any effect and leaves the disk open: the file and its entry stay for
+        // a later attempt. On any other failure NodeDisk keeps the owner and
+        // every charge, and the recorded name stays until a census.
+        match self.disk.delete_file(handle) {
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::StorageFull | io::ErrorKind::WouldBlock
+                ) && self.disk.is_open() =>
+            {
+                return Err(error);
+            }
+            result => self.effect(result)?,
+        }
         resources.entries.remove(position);
         resources.namespace_epoch = next_epoch;
         #[cfg(test)]
@@ -2324,7 +2334,7 @@ mod directory_arena_tests {
             validate_envelope(&bytes, ID, file.kind.envelope_kind(), file.id).unwrap(),
             READY
         );
-        for kind in [ROOT_KIND, SEGMENT_KIND, CHECKPOINT_KIND] {
+        for kind in [ROOT_KIND, SEGMENT_KIND] {
             assert!(validate_envelope(&bytes, ID, kind, file.id).is_err());
         }
         assert!(validate_envelope(&bytes, ID, DIRECTORY_KIND, file.id + 1).is_err());
@@ -2344,11 +2354,10 @@ mod directory_arena_tests {
             .unwrap();
         group.sync_root().unwrap();
         group.publish_ready().unwrap();
-        // The three identifier domains are independent. Every lookup below
+        // The two identifier domains are independent. Every lookup below
         // also evicts a descriptor when its kind differs from the last one.
         let files = [
             (GroupFile::segment(1), b"first"),
-            (GroupFile::checkpoint(1), b"check"),
             (GroupFile::directory(1), b"arena"),
             (GroupFile::directory(2), b"newer"),
         ];

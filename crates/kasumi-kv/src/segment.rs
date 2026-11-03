@@ -67,7 +67,7 @@ pub(crate) const SEGMENT_MAGIC: [u8; 16] = *b"KASUMI-KVSEG0004";
 pub(crate) const LEGACY_MAGIC: [u8; 16] = *b"KASUMI-KV-000001";
 pub(crate) const FORMAT_VERSION: u32 = 4;
 pub(crate) const SEGMENT_HEADER_BYTES: u64 = 64;
-pub(crate) const MAX_BATCH_OPERATIONS: usize = 65_536;
+pub const MAX_BATCH_OPERATIONS: usize = 65_536;
 pub(crate) const RECORD_HEADER_BYTES: usize = 36;
 const RECORD_MAGIC: [u8; 4] = *b"KVSR";
 const PUT_PREFIX_BYTES: usize = 16;
@@ -280,6 +280,7 @@ impl ValueLocation {
 }
 
 /// Read and verify one value. Allocation failure is a capacity denial.
+#[cfg(test)]
 pub(crate) fn read_value(
     backend: &dyn SegmentGroupBackend,
     location: &ValueLocation,
@@ -861,10 +862,12 @@ impl SegmentWriter {
         self.fenced
     }
 
+    #[cfg(test)]
     pub(crate) fn last_batch_seq(&self) -> u64 {
         self.last_batch_seq
     }
 
+    #[cfg(test)]
     pub(crate) fn chain(&self) -> [u8; 32] {
         self.chain
     }
@@ -1188,6 +1191,28 @@ impl SegmentWriter {
     /// production roll path.
     #[cfg(test)]
     pub(crate) fn force_roll(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        roll: &mut dyn SegmentRoll,
+    ) -> Result<(), CoreError> {
+        self.fenced_roll(backend, roll)
+    }
+
+    /// Finish the roll an earlier owner left as a durable intent. Transaction
+    /// planning refuses an outstanding intent, so reopen settles it before
+    /// the first batch. Without an intent this does nothing.
+    pub(crate) fn settle_intent(
+        &mut self,
+        backend: &dyn SegmentGroupBackend,
+        roll: &mut dyn SegmentRoll,
+    ) -> Result<(), CoreError> {
+        if self.reserved.is_none() {
+            return Ok(());
+        }
+        self.fenced_roll(backend, roll)
+    }
+
+    fn fenced_roll(
         &mut self,
         backend: &dyn SegmentGroupBackend,
         roll: &mut dyn SegmentRoll,
@@ -1531,7 +1556,9 @@ enum Scanned {
 /// hold writes whose synchronization failed, and a restart without power loss
 /// still reads them. Replay synchronizes both before reading, so what it
 /// serves survives a later power loss; a failure is plain I/O and the owner
-/// fences.
+/// fences. Production reopen replays only directory roots; tests use this
+/// complete replay as the oracle for what the log holds.
+#[cfg(test)]
 pub(crate) fn replay(
     backend: &dyn SegmentGroupBackend,
     group_id: [u8; 16],

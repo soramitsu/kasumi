@@ -129,7 +129,6 @@ fn transaction_space_root_rejects_caller_supplied_truncated_native_minima() {
         let required = match kind {
             FileKind::Segment => crate::segment::SEGMENT_HEADER_BYTES,
             FileKind::Directory => crate::arena::HEADER_BYTES as u64,
-            FileKind::Checkpoint => unreachable!(),
         };
         let mut request = plan(&root);
         let range = FileSpaceRange {
@@ -143,14 +142,12 @@ fn transaction_space_root_rejects_caller_supplied_truncated_native_minima() {
         match kind {
             FileKind::Segment => request.new_segments = range,
             FileKind::Directory => request.new_directories = range,
-            FileKind::Checkpoint => unreachable!(),
         }
         request.validate().unwrap();
         assert!(verify(&request, &root).is_err());
         match kind {
             FileKind::Segment => request.new_segments.minimum_len = required,
             FileKind::Directory => request.new_directories.minimum_len = required,
-            FileKind::Checkpoint => unreachable!(),
         }
         verify(&request, &root).unwrap();
         let confirmed = match kind {
@@ -166,7 +163,6 @@ fn transaction_space_root_rejects_caller_supplied_truncated_native_minima() {
                 .0
                 .confirm_directory(1)
                 .unwrap(),
-            FileKind::Checkpoint => unreachable!(),
         };
         let mut existing = plan(&confirmed);
         let tail = ExistingFileSpace {
@@ -177,7 +173,6 @@ fn transaction_space_root_rejects_caller_supplied_truncated_native_minima() {
         match kind {
             FileKind::Segment => existing.segment = Some(tail),
             FileKind::Directory => existing.directory = Some(tail),
-            FileKind::Checkpoint => unreachable!(),
         }
         existing.validate().unwrap();
         assert!(verify(&existing, &confirmed).is_err());

@@ -166,14 +166,15 @@ fn names_have_exactly_the_kv_group_spelling() {
     let segment = GroupFile::segment(0x2a);
     assert_eq!(segment.file_name(), "000000000000002a.kvseg");
     assert_eq!(GroupFile::parse_name(&segment.file_name()), Some(segment));
-    let checkpoint = GroupFile::checkpoint(7);
-    assert_eq!(checkpoint.file_name(), "0000000000000007.kvckpt");
+    let directory = GroupFile::directory(7);
+    assert_eq!(directory.file_name(), "0000000000000007.kvdir");
     assert_eq!(
-        GroupFile::parse_name(&checkpoint.file_name()),
-        Some(checkpoint)
+        GroupFile::parse_name(&directory.file_name()),
+        Some(directory)
     );
     for name in [
         "000000000000002A.kvseg",
+        "0000000000000007.kvckpt",
         "00000000000002a.kvseg",
         "0000000000000000.kvseg",
         "000000000000002a.kvseg.tmp",
@@ -221,7 +222,7 @@ fn created_group_reopens_only_after_verifying_every_envelope() {
     let group = ready_group(&path, &disk, CACHE);
     put(&group, GroupFile::segment(1), b"first segment");
     put(&group, GroupFile::segment(2), b"second");
-    put(&group, GroupFile::checkpoint(1), b"checkpoint");
+    put(&group, GroupFile::directory(1), b"directory");
     // Create-only, and an identifier is never reused after its unlink.
     for file in [GroupFile::segment(2), GroupFile::segment(1)] {
         assert_eq!(
@@ -250,13 +251,13 @@ fn created_group_reopens_only_after_verifying_every_envelope() {
     assert_eq!(
         names,
         [
-            OsString::from("0000000000000001.kvckpt"),
+            OsString::from("0000000000000001.kvdir"),
             OsString::from("0000000000000002.kvseg"),
             OsString::from(ROOT_FILE_NAME),
         ]
     );
     assert_eq!(read_all(&group, GroupFile::segment(2)), b"second");
-    assert_eq!(read_all(&group, GroupFile::checkpoint(1)), b"checkpoint");
+    assert_eq!(read_all(&group, GroupFile::directory(1)), b"directory");
     let mut slot = [0; ROOT_SLOT_BYTES];
     group.read_root(RootSlot::A, &mut slot).unwrap();
     assert_eq!(slot, [0x5a; ROOT_SLOT_BYTES]);
@@ -844,18 +845,23 @@ fn previous_formats_and_foreign_files_are_rejected_before_any_mutation() {
             "names another file",
             Box::new(|| {
                 write(
-                    &path.join(GroupFile::checkpoint(1).file_name()),
+                    &path.join(GroupFile::directory(1).file_name()),
                     &original_segment,
                 )
             }),
             Box::new(|| {
-                std::fs::remove_file(path.join(GroupFile::checkpoint(1).file_name())).unwrap()
+                std::fs::remove_file(path.join(GroupFile::directory(1).file_name())).unwrap()
             }),
         ),
         (
             "not a group file",
             Box::new(|| write(&path.join("0000000000000001.kvseg.tmp"), b"")),
             Box::new(|| std::fs::remove_file(path.join("0000000000000001.kvseg.tmp")).unwrap()),
+        ),
+        (
+            "not a group file",
+            Box::new(|| write(&path.join("0000000000000001.kvckpt"), b"")),
+            Box::new(|| std::fs::remove_file(path.join("0000000000000001.kvckpt")).unwrap()),
         ),
         (
             "not a group file",
@@ -1118,7 +1124,7 @@ fn cleanup_claims_only_recognized_groups_and_resumes_after_an_interrupted_delete
     for id in 1..=3 {
         put(&group, GroupFile::segment(id), &[id as u8; 100]);
     }
-    put(&group, GroupFile::checkpoint(1), b"checkpoint");
+    put(&group, GroupFile::directory(1), b"directory");
     close(&group);
     // Another identity or a foreign entry is refused before any deletion.
     let before = tree(directory.path());
@@ -1144,7 +1150,7 @@ fn cleanup_claims_only_recognized_groups_and_resumes_after_an_interrupted_delete
     assert!(cleanup.delete().is_err());
     assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
     disk.reconcile(&CensusCancellation::default()).unwrap();
-    assert!(!path.join(GroupFile::checkpoint(1).file_name()).exists());
+    assert!(!path.join(GroupFile::directory(1).file_name()).exists());
     assert!(path.join(ROOT_FILE_NAME).exists());
     NodeSegmentGroup::claim_cleanup(&path, ID, disk.clone(), CACHE)
         .unwrap()
@@ -1260,7 +1266,7 @@ fn crash_child() {
     for id in 1..=12 {
         put(&group, GroupFile::segment(id), &child_payload(id));
     }
-    put(&group, GroupFile::checkpoint(1), &[9; 5000]);
+    put(&group, GroupFile::directory(1), &[9; 5000]);
     for id in [2, 5] {
         group.unlink(GroupFile::segment(id)).unwrap();
     }
@@ -1285,7 +1291,7 @@ fn census_equals_extents_after_crash_child_restart() {
         disk.snapshot().charged_bytes,
         expected_charge(directory.path())
     );
-    // Ten live segments, the checkpoint, the interrupted roll and the root.
+    // Ten live segments, the arena, the interrupted roll and the root.
     assert_eq!(disk.snapshot().persistent_files, 13);
     let group = reopen(&path, &disk, 4);
     for id in (1..=12).filter(|id| ![2, 5].contains(id)) {
@@ -1300,7 +1306,7 @@ fn census_equals_extents_after_crash_child_restart() {
         assert!(!group.exists(GroupFile::segment(id)).unwrap());
     }
     assert_eq!(group.len(GroupFile::segment(13)).unwrap(), 0);
-    assert_eq!(read_all(&group, GroupFile::checkpoint(1)), [9; 5000]);
+    assert_eq!(read_all(&group, GroupFile::directory(1)), [9; 5000]);
     let unit = crate::node_disk::filesystem(&File::open(directory.path()).unwrap())
         .unwrap()
         .1;
@@ -1338,11 +1344,7 @@ fn shared_native_backend_serves_every_file_kind_and_root_slot() {
     }
     backend.sync_root().unwrap();
     group.publish_ready().unwrap();
-    let files = [
-        GroupFile::segment(1),
-        GroupFile::checkpoint(1),
-        GroupFile::directory(1),
-    ];
+    let files = [GroupFile::segment(1), GroupFile::directory(1)];
     for (index, file) in files.into_iter().enumerate() {
         assert!(!backend.exists(file).unwrap());
         backend.create(file).unwrap();

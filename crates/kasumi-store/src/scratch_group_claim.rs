@@ -26,11 +26,10 @@ impl GroupTransaction {
     fn matches(&self, group: [u8; 16], batch: u64) -> bool {
         self.plan.group_id == group && self.plan.batch_seq == batch
     }
-    fn range(&self, file: GroupFile) -> io::Result<(usize, FileSpaceRange)> {
+    fn range(&self, file: GroupFile) -> (usize, FileSpaceRange) {
         match file.kind {
-            FileKind::Segment => Ok((0, self.plan.new_segments)),
-            FileKind::Directory => Ok((1, self.plan.new_directories)),
-            FileKind::Checkpoint => Err(io::ErrorKind::InvalidInput.into()),
+            FileKind::Segment => (0, self.plan.new_segments),
+            FileKind::Directory => (1, self.plan.new_directories),
         }
     }
     fn growth(&mut self, file: GroupFile, current: u64, end: u64) -> io::Result<()> {
@@ -45,7 +44,7 @@ impl GroupTransaction {
                 return Err(io::ErrorKind::InvalidData.into());
             }
         } else {
-            let (index, range) = self.range(file)?;
+            let (index, range) = self.range(file);
             let offset = file
                 .id
                 .checked_sub(range.first_id)
@@ -336,7 +335,7 @@ impl State {
             .checked_add(1)
             .ok_or(io::ErrorKind::Other)?;
         let transaction = self.transaction.as_mut().expect("active claim");
-        let (kind, range) = transaction.range(file)?;
+        let (kind, range) = transaction.range(file);
         if range.maximum_len(file.id).is_none()
             || range.first_id.checked_add(transaction.created[kind]) != Some(file.id)
         {
@@ -437,11 +436,10 @@ impl State {
                 .chain(plan.directory)
                 .find(|entry| entry.file == file);
             let range = match file.kind {
-                FileKind::Segment => Some((0, plan.new_segments)),
-                FileKind::Directory => Some((1, plan.new_directories)),
-                FileKind::Checkpoint => None,
+                FileKind::Segment => (0, plan.new_segments),
+                FileKind::Directory => (1, plan.new_directories),
             };
-            let fresh = range.filter(|(_, range)| range.maximum_len(file.id).is_some());
+            let fresh = Some(range).filter(|(_, range)| range.maximum_len(file.id).is_some());
             if existing.is_none() && fresh.is_none() {
                 continue;
             }

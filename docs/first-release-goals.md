@@ -91,8 +91,9 @@ wording.
      durably and deletes the victim only after pinned readers and snapshots
      drain. Space is credited only after a confirmed unlink and parent-directory
      sync. No step ever copies the whole database.
-   - Periodic index checkpoints bound restart replay. Reopen selects the
-     newest intact checkpoint or manifest and fails closed on corruption.
+   - Each commit publishes an immutable directory root that bounds restart
+     replay. Reopen selects the newest intact root and fails closed on
+     corruption.
    - A multi-file NodeDisk group owner provides create-only deterministic
      segment names, a durable next-segment intent, exact unlink custody,
      parent sync and census. Archive and journal directories reuse it where

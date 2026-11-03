@@ -9,18 +9,19 @@ embedded database library.
 One database is a file group under an owned directory. `root.kvroot` contains
 two checksummed 4 KiB superblock slots. Create-only files use never-reused
 identifiers and deterministic names: `0000000000000001.kvseg` for a value-log
-segment and `0000000000000001.kvdir` for a directory arena. The group contract
-also recognizes checkpoint files; the current Core rejects roots carrying a
-checkpoint reference from the retired storage path.
+segment and `0000000000000001.kvdir` for a directory arena. No other name is a
+group file.
 
 The current root magic is `KASUMI-KVROOT005`, the segment magic is
 `KASUMI-KVSEG0004`, and directory pages use `KASUMI-KVDIR0002` inside
-`KASUMI-KVARENA01` arenas. A `KASUMI-KVROOT005` slot carries the persisted
-compaction record (cycle, phase, frozen file cutoffs, baseline, immutable
-evacuation worklist, in-phase position and remaining Packing work budget) at bytes 2384..4080; the
-remainder before the checksum must be zero. Slots of the retired root formats
-001, 002, 003 and 004 are refused before their
-checksum is examined. There is no reader or migration for them: a group written
+`KASUMI-KVARENA01` arenas. A `KASUMI-KVROOT005` slot carries the segment
+intent, sealed segment and garbage list, the selected directory commit at
+bytes 2208..2384, and the persisted compaction record (cycle, phase, frozen
+file cutoffs, baseline, immutable evacuation worklist, in-phase position and
+remaining Packing work budget) at bytes 2384..4080; the remainder before the
+checksum must be zero. Bytes 64..128 keep the constant left by a retired
+index-checkpoint field. Slots of the retired root formats 001 through 004 are
+refused before their checksum is examined. There is no reader or migration for them: a group written
 by an earlier build does not open and must be recreated from a verified logical
 backup. Segment and arena files each have a 64 MiB bound.
 Segments have a 64-byte header; arenas have a 4 KiB header followed by immutable

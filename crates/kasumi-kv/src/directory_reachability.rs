@@ -22,6 +22,7 @@ impl DirectoryReader<'_> {
     /// publication lock before removing an identity. Output guards retain
     /// their original allocation. Use a policy-neutral backend for maintenance
     /// so proof reads neither fill the cache nor train demand policy.
+    #[cfg(test)]
     pub(crate) fn contains_page(
         &self,
         root: DirectoryRoot,

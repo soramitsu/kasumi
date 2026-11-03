@@ -1151,6 +1151,11 @@ impl NodeDisk {
         })
     }
 
+    /// Whether no uncertain effect has failed this disk.
+    pub(crate) fn is_open(&self) -> bool {
+        self.lock_state().phase == NodeDiskPhase::Open
+    }
+
     pub fn snapshot(&self) -> NodeDiskSnapshot {
         let state = self.lock_state();
         let promises = self.device.lock();

@@ -14,27 +14,15 @@ use crate as cache_types;
 mod cache_test;
 
 // Canonical segmented storage, immutable directories and bounded caches.
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod arena;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod checked_group;
-#[cfg_attr(not(test), allow(dead_code))]
-pub(crate) mod checkpoint;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod directory;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod disk_state;
-#[cfg_attr(not(test), allow(dead_code))]
 pub mod group;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod page_cache;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod reclaim;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod root;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod segment;
-#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) mod snapshot_pins;
 
 mod source_read_requests;
@@ -63,6 +51,7 @@ pub use retained::*;
 pub use root::{
     ROOT_SLOT_BYTES, RootSlot, TRANSACTION_SPACE_ROOTS_HEAP_BYTES, validate_transaction_space_roots,
 };
+pub use segment::MAX_BATCH_OPERATIONS;
 pub use tables::*;
 
 pub mod backends {

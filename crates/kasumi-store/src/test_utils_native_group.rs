@@ -23,8 +23,8 @@ use sha2::{Digest, Sha256};
 
 use crate::{DiskMemoryLease, NodeDiskMemoryAdmission, disk_memory};
 
-// Sixteen hexadecimal digits, the seven-byte checkpoint suffix, and a NUL.
-const NAME_BYTES: usize = 24;
+// Sixteen hexadecimal digits, the six-byte file suffix, and a NUL.
+const NAME_BYTES: usize = 23;
 
 #[derive(Debug, PartialEq, Eq)]
 struct MemberImage {
