@@ -21,8 +21,8 @@ enum Dispatch {
     Resolve,
 }
 
-pub(crate) trait RoutedClient: Clone + Send {
-    type Context: Clone + Send;
+pub(crate) trait RoutedClient: Clone + Send + 'static {
+    type Context: Clone + Send + 'static;
     fn connect(
         config: &KasumiClientConfig,
         context: Self::Context,
@@ -30,11 +30,94 @@ pub(crate) trait RoutedClient: Clone + Send {
     fn set_deadline(&mut self, deadline: Instant);
 }
 
+/// One attempt's share of the time left. The members not yet tried in this
+/// pass split it evenly, so time a fast failure leaves goes to the rest.
+pub(crate) fn attempt_slice(remaining: Duration, untried: usize) -> Duration {
+    (remaining / untried.max(1) as u32)
+        .max(Duration::from_millis(1))
+        .min(remaining)
+}
+
+/// Installed member clients, kept across attempts and invocations. A connect
+/// that outlives its attempt keeps running, so a handshake slower than one
+/// slice completes for a later attempt instead of restarting every time.
+pub(crate) struct Connections<C: RoutedClient> {
+    endpoints: BTreeMap<u64, KasumiClientConfig>,
+    context: C::Context,
+    clients: BTreeMap<u64, C>,
+    connecting: BTreeMap<u64, Connecting<C>>,
+}
+struct Connecting<C>(tokio::task::JoinHandle<Result<C, ClientError>>);
+impl<C> Drop for Connecting<C> {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+pub(crate) enum Connected<'a, C> {
+    Ready(&'a mut C),
+    /// Still connecting when the attempt ended; a later attempt resumes it.
+    Pending,
+    Failed,
+}
+impl<C: RoutedClient> Clone for Connections<C> {
+    /// The clone shares established clients but starts its own connects.
+    fn clone(&self) -> Self {
+        Self {
+            endpoints: self.endpoints.clone(),
+            context: self.context.clone(),
+            clients: self.clients.clone(),
+            connecting: BTreeMap::new(),
+        }
+    }
+}
+impl<C: RoutedClient> Connections<C> {
+    pub(crate) fn new(endpoints: BTreeMap<u64, KasumiClientConfig>, context: C::Context) -> Self {
+        Self {
+            endpoints,
+            context,
+            clients: BTreeMap::new(),
+            connecting: BTreeMap::new(),
+        }
+    }
+    pub(crate) fn members(&self) -> Vec<u64> {
+        self.endpoints.keys().copied().collect()
+    }
+    pub(crate) fn contains(&self, member: u64) -> bool {
+        self.endpoints.contains_key(&member)
+    }
+    /// The member's client, waiting for its connect until `end` at most.
+    pub(crate) async fn client(&mut self, member: u64, end: Instant) -> Connected<'_, C> {
+        if !self.clients.contains_key(&member) {
+            let connecting = self.connecting.entry(member).or_insert_with(|| {
+                let config = self.endpoints[&member].clone();
+                let context = self.context.clone();
+                Connecting(tokio::spawn(
+                    async move { C::connect(&config, context).await },
+                ))
+            });
+            let Ok(connected) = tokio::time::timeout_at(end, &mut connecting.0).await else {
+                return Connected::Pending;
+            };
+            self.connecting.remove(&member);
+            match connected {
+                Ok(Ok(client)) => {
+                    self.clients.insert(member, client);
+                }
+                Ok(Err(_)) | Err(_) => return Connected::Failed,
+            }
+        }
+        Connected::Ready(self.clients.get_mut(&member).unwrap())
+    }
+    /// Forget a client whose attempt got no answer in time. Its connection may
+    /// be stalled; a member that answered, even with an error, keeps its client.
+    pub(crate) fn discard(&mut self, member: u64) {
+        self.clients.remove(&member);
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct InstalledPool<C: RoutedClient> {
-    endpoints: BTreeMap<u64, KasumiClientConfig>,
-    clients: BTreeMap<u64, C>,
-    context: C::Context,
+    connections: Connections<C>,
     credential: Arc<dyn CredentialSource>,
     preferred: u64,
 }
@@ -75,9 +158,7 @@ impl<C: RoutedClient> InstalledPool<C> {
         }
         Ok(Self {
             preferred: *endpoints.keys().next().unwrap(),
-            endpoints,
-            clients: BTreeMap::new(),
-            context,
+            connections: Connections::new(endpoints, context),
             credential,
         })
     }
@@ -163,7 +244,7 @@ impl<C: RoutedClient> InstalledPool<C> {
         // Renewal is a new logical invocation, never a failover side effect.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
         budget.remaining()?;
-        let mut members: Vec<_> = self.endpoints.keys().copied().collect();
+        let mut members = self.connections.members();
         let preferred = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(preferred);
         let mut attempted = false;
@@ -171,74 +252,81 @@ impl<C: RoutedClient> InstalledPool<C> {
         // or dispatch refusal cannot rule it out.
         let mut uncertain = false;
         loop {
-            for member in &members {
+            for (tried, member) in members.iter().enumerate() {
                 let remaining = budget.remaining()?;
-                let slice =
-                    remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
-                let attempt_end = Instant::now().checked_add(slice).ok_or_else(deadline)?;
+                let attempt_end = Instant::now()
+                    .checked_add(attempt_slice(remaining, members.len() - tried))
+                    .ok_or_else(deadline)?;
                 let mut dispatched = false;
-                let result = async {
-                    if !self.clients.contains_key(member) {
-                        let client = tokio::time::timeout_at(
-                            attempt_end,
-                            C::connect(&self.endpoints[member], self.context.clone()),
-                        )
-                        .await
-                        .map_err(|_| deadline())?
-                        .map_err(|_| {
-                            ClientError::Transport(tonic::Status::unavailable(
-                                "installed recovery member connection failed",
-                            ))
-                        })?;
-                        budget.remaining()?;
-                        self.clients.insert(*member, client);
-                    }
-                    let probe_end = Instant::now()
-                        .checked_add(budget.remaining()?)
-                        .ok_or_else(deadline)?;
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(probe_end);
-                    let observation =
-                        tokio::time::timeout_at(attempt_end.min(probe_end), probe(client, &bearer))
+                // Only an attempt that ran out of time without an answer drops
+                // its client; a member that answered keeps its connection.
+                let mut elapsed = false;
+                let result = match self.connections.client(*member, attempt_end).await {
+                    Connected::Pending => Err(deadline()),
+                    Connected::Failed => Err(ClientError::Transport(tonic::Status::unavailable(
+                        "installed recovery member connection failed",
+                    ))),
+                    Connected::Ready(client) => {
+                        async {
+                            let probe_end = Instant::now()
+                                .checked_add(budget.remaining()?)
+                                .ok_or_else(deadline)?;
+                            client.set_deadline(probe_end);
+                            let Ok(observation) = tokio::time::timeout_at(
+                                attempt_end.min(probe_end),
+                                probe(client, &bearer),
+                            )
                             .await
-                            .map_err(|_| deadline())??;
-                    if let Some(reply) = observation {
-                        return Ok(reply);
-                    }
-                    if policy == Dispatch::Resolve && attempted {
-                        return Err(tonic::Status::unknown(
-                            "original mutation remains unresolved; no second effect was dispatched",
-                        )
-                        .into());
-                    }
-                    let remaining = budget.remaining()?;
-                    let operation_end =
-                        Instant::now().checked_add(remaining).ok_or_else(deadline)?;
-                    let dispatch_end = if policy == Dispatch::Retry {
-                        attempt_end.min(operation_end)
-                    } else {
-                        operation_end
-                    };
-                    if dispatch_end <= Instant::now() {
-                        return Err(deadline());
-                    }
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(operation_end);
-                    dispatched = true;
-                    attempted = true;
-                    tokio::time::timeout_at(dispatch_end, dispatch(client, &bearer))
+                            else {
+                                elapsed = true;
+                                return Err(deadline());
+                            };
+                            if let Some(reply) = observation? {
+                                return Ok(Some(reply));
+                            }
+                            // The original receipt is still absent here. Even a
+                            // fresh absence cannot authorize a second effect.
+                            if policy == Dispatch::Resolve && attempted {
+                                return Ok(None);
+                            }
+                            let remaining = budget.remaining()?;
+                            let operation_end =
+                                Instant::now().checked_add(remaining).ok_or_else(deadline)?;
+                            let dispatch_end = if policy == Dispatch::Retry {
+                                attempt_end.min(operation_end)
+                            } else {
+                                operation_end
+                            };
+                            if dispatch_end <= Instant::now() {
+                                return Err(deadline());
+                            }
+                            client.set_deadline(operation_end);
+                            dispatched = true;
+                            attempted = true;
+                            match tokio::time::timeout_at(dispatch_end, dispatch(client, &bearer))
+                                .await
+                            {
+                                Ok(reply) => reply.map(Some),
+                                Err(_) => {
+                                    elapsed = true;
+                                    Err(deadline())
+                                }
+                            }
+                        }
                         .await
-                        .map_err(|_| deadline())?
-                }
-                .await;
+                    }
+                };
                 budget.remaining()?;
                 match result {
-                    Ok(reply) => {
+                    Ok(Some(reply)) => {
                         self.preferred = *member;
                         return Ok(reply);
                     }
+                    Ok(None) => {}
                     Err(error) if retryable(&error) => {
-                        self.clients.remove(member);
+                        if elapsed {
+                            self.connections.discard(*member);
+                        }
                         // Resume has a work limit, not an invocation command ID.
                         // Ambiguity must return to its owner without a second dispatch.
                         if dispatched && policy == Dispatch::Once {
@@ -311,18 +399,41 @@ mod tests {
         member: u64,
         deadline: Option<Instant>,
     }
+    #[derive(Clone, Default)]
+    struct Members {
+        unavailable: BTreeSet<u64>,
+        /// Connect latency of slow members.
+        slow: BTreeMap<u64, Duration>,
+        connects: Arc<Mutex<Vec<u64>>>,
+    }
+    impl Members {
+        fn unavailable(members: impl IntoIterator<Item = u64>) -> Self {
+            Self {
+                unavailable: members.into_iter().collect(),
+                ..Self::default()
+            }
+        }
+        fn connects(&self, member: u64) -> usize {
+            let connects = self.connects.lock().unwrap();
+            connects.iter().filter(|id| **id == member).count()
+        }
+    }
     impl RoutedClient for Probe {
-        type Context = BTreeSet<u64>;
+        type Context = Members;
         async fn connect(
             config: &KasumiClientConfig,
-            unavailable: Self::Context,
+            members: Self::Context,
         ) -> Result<Self, ClientError> {
             let member: u64 = url::Url::parse(&config.endpoint)
                 .unwrap()
                 .port()
                 .unwrap()
                 .into();
-            if unavailable.contains(&member) {
+            members.connects.lock().unwrap().push(member);
+            if let Some(latency) = members.slow.get(&member) {
+                tokio::time::sleep(*latency).await;
+            }
+            if members.unavailable.contains(&member) {
                 return Err(tonic::Status::unavailable("offline").into());
             }
             Ok(Self {
@@ -355,10 +466,10 @@ mod tests {
             })
             .collect()
     }
-    fn pool(unavailable: BTreeSet<u64>, loads: Arc<AtomicU64>) -> InstalledPool<Probe> {
+    fn pool(members: Members, loads: Arc<AtomicU64>) -> InstalledPool<Probe> {
         InstalledPool::new(
             endpoints(),
-            unavailable,
+            members,
             Arc::new(move || {
                 let generation = loads.fetch_add(1, Ordering::SeqCst);
                 Ok(format!("opaque-{generation}").into())
@@ -369,7 +480,7 @@ mod tests {
     #[tokio::test]
     async fn failover_keeps_one_credential_and_original_request_until_the_next_invocation() {
         let loads = Arc::new(AtomicU64::new(0));
-        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let mut pool = pool(Members::default(), loads.clone());
         let calls = Arc::new(Mutex::new(Vec::new()));
         let operation = uuid::Uuid::new_v4();
         for generation in 0..2 {
@@ -410,7 +521,7 @@ mod tests {
     async fn ambiguous_resume_never_redispatches_but_connection_failure_can_select_another_member()
     {
         let loads = Arc::new(AtomicU64::new(0));
-        let mut pool = pool(BTreeSet::from([1]), loads.clone());
+        let mut pool = pool(Members::unavailable([1]), loads.clone());
         let dispatched = Arc::new(Mutex::new(Vec::new()));
         let seen = dispatched.clone();
         let result: Result<(), ClientError> = pool
@@ -429,7 +540,7 @@ mod tests {
     #[tokio::test]
     async fn leader_probe_fails_over_without_a_second_resume_or_a_new_credential() {
         let loads = Arc::new(AtomicU64::new(0));
-        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let mut pool = pool(Members::default(), loads.clone());
         let probes = Arc::new(Mutex::new(Vec::new()));
         let dispatches = Arc::new(Mutex::new(Vec::new()));
         let seen_probes = probes.clone();
@@ -472,7 +583,7 @@ mod tests {
     #[tokio::test]
     async fn stalled_dispatch_expires_without_credential_reload_or_second_resume() {
         let loads = Arc::new(AtomicU64::new(0));
-        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let mut pool = pool(Members::default(), loads.clone());
         let calls = Arc::new(AtomicU64::new(0));
         let seen = calls.clone();
         let result: Result<(), ClientError> = tokio::time::timeout(
@@ -493,7 +604,7 @@ mod tests {
     #[tokio::test]
     async fn receipt_resolution_selects_leader_then_resolves_without_redispatch_or_renewal() {
         let loads = Arc::new(AtomicU64::new(0));
-        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let mut pool = pool(Members::default(), loads.clone());
         let committed = Arc::new(AtomicU64::new(0));
         let calls = Arc::new(Mutex::new(Vec::new()));
         let observed = calls.clone();
@@ -540,7 +651,7 @@ mod tests {
     #[tokio::test]
     async fn absent_receipt_after_ambiguity_never_authorizes_another_effect() {
         let loads = Arc::new(AtomicU64::new(0));
-        let mut pool = pool(BTreeSet::new(), loads.clone());
+        let mut pool = pool(Members::default(), loads.clone());
         let effects = Arc::new(AtomicU64::new(0));
         let reads = Arc::new(AtomicU64::new(0));
         let result: Result<(), ClientError> = pool
@@ -563,6 +674,102 @@ mod tests {
         assert!(reads.load(Ordering::SeqCst) >= 3);
         assert_eq!(loads.load(Ordering::SeqCst), 1);
     }
+    #[tokio::test]
+    async fn absent_receipt_keeps_the_answering_members_connections() {
+        let members = Members::default();
+        let mut pool = pool(members.clone(), Arc::new(AtomicU64::new(0)));
+        let reads = Arc::new(AtomicU64::new(0));
+        let result: Result<(), ClientError> = pool
+            .request_with_resolution(
+                Duration::from_millis(300),
+                |_, _| {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    Box::pin(async { Ok(None) })
+                },
+                |_, _| Box::pin(async { Err(tonic::Status::unknown("outcome lost").into()) }),
+            )
+            .await;
+        assert!(
+            matches!(result, Err(ClientError::Transport(status)) if status.code() == tonic::Code::DeadlineExceeded)
+        );
+        // Every member reported the absence several times over one connection
+        // each, rather than reconnecting after every 25 ms pass.
+        assert!(reads.load(Ordering::SeqCst) >= 6);
+        assert_eq!(*members.connects.lock().unwrap(), vec![1, 2, 3]);
+    }
+    #[tokio::test]
+    async fn answering_member_keeps_its_connection_across_passes() {
+        let members = Members::unavailable([2, 3]);
+        let mut pool = pool(members.clone(), Arc::new(AtomicU64::new(0)));
+        let calls = Arc::new(AtomicU64::new(0));
+        let reply = pool
+            .request(Duration::from_secs(5), true, |client, _| {
+                let call = calls.fetch_add(1, Ordering::SeqCst);
+                let member = client.member;
+                Box::pin(async move {
+                    assert_eq!(member, 1);
+                    if call < 2 {
+                        return Err(tonic::Status::unavailable("election").into());
+                    }
+                    Ok(call)
+                })
+            })
+            .await
+            .unwrap();
+        assert_eq!(reply, 2);
+        assert_eq!(members.connects(1), 1);
+    }
+    #[tokio::test]
+    async fn stalled_attempt_reconnects_its_member() {
+        let members = Members::unavailable([2, 3]);
+        let mut pool = pool(members.clone(), Arc::new(AtomicU64::new(0)));
+        let calls = Arc::new(AtomicU64::new(0));
+        pool.request(Duration::from_secs(3), true, |_, _| {
+            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Box::pin(std::future::pending());
+            }
+            Box::pin(async { Ok(()) })
+        })
+        .await
+        .unwrap();
+        assert_eq!(members.connects(1), 2);
+    }
+    #[tokio::test]
+    async fn connect_slower_than_its_slice_completes_for_a_later_pass() {
+        // The first pass gives member 1 a third of the time, less than its
+        // handshake; a restarted connect would never finish within a slice.
+        let members = Members {
+            unavailable: BTreeSet::from([2, 3]),
+            slow: BTreeMap::from([(1, Duration::from_millis(1500))]),
+            ..Members::default()
+        };
+        let mut pool = pool(members.clone(), Arc::new(AtomicU64::new(0)));
+        let member = pool
+            .request(Duration::from_secs(3), true, |client, _| {
+                let member = client.member;
+                Box::pin(async move { Ok(member) })
+            })
+            .await
+            .unwrap();
+        assert_eq!(member, 1);
+        assert_eq!(members.connects(1), 1);
+    }
+    #[test]
+    fn attempt_slices_split_the_time_left_among_untried_members() {
+        let second = Duration::from_secs(1);
+        assert_eq!(attempt_slice(3 * second, 3), second);
+        // Time a fast failure left over goes to the members after it.
+        assert_eq!(attempt_slice(3 * second, 2), 3 * second / 2);
+        assert_eq!(attempt_slice(3 * second, 1), 3 * second);
+        assert_eq!(
+            attempt_slice(Duration::from_micros(10), 64),
+            Duration::from_micros(10)
+        );
+        assert_eq!(
+            attempt_slice(Duration::from_millis(30), 64),
+            Duration::from_millis(1)
+        );
+    }
     #[test]
     fn uninstalled_origins_and_missing_pins_are_rejected_before_credentials_are_loaded() {
         for change in 0..4 {
@@ -580,7 +787,7 @@ mod tests {
             }
             let result = InstalledPool::<Probe>::new(
                 members,
-                BTreeSet::new(),
+                Members::default(),
                 Arc::new(move || {
                     seen.fetch_add(1, Ordering::SeqCst);
                     Ok("opaque".to_owned().into())

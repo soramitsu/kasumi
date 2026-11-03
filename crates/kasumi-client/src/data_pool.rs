@@ -2,7 +2,9 @@
 //! member in an opaque SDK handle; retry cannot turn them into a fresh snapshot.
 use crate::{
     AdmittedResponse, ClientError, JsonReadOptions, KasumiClient, KasumiClientConfig,
-    SnapshotReadOptions, snapshot_decode,
+    SnapshotReadOptions,
+    installed_pool::{Connected, Connections, RoutedClient, attempt_slice},
+    snapshot_decode,
 };
 use kasumi_transport::credentials::{CredentialSource, token};
 use kasumi_types::*;
@@ -21,10 +23,21 @@ type NativeResult<T> = std::result::Result<T, ClientError>;
 #[derive(Clone)]
 pub struct KasumiClientPool {
     installation: uuid::Uuid,
-    endpoints: BTreeMap<u64, KasumiClientConfig>,
-    clients: BTreeMap<u64, KasumiClient>,
+    connections: Connections<KasumiClient>,
     credential: Arc<dyn CredentialSource>,
     preferred: u64,
+}
+impl RoutedClient for KasumiClient {
+    type Context = ();
+    async fn connect(
+        config: &KasumiClientConfig,
+        _context: Self::Context,
+    ) -> std::result::Result<Self, ClientError> {
+        KasumiClient::connect(config).await
+    }
+    fn set_deadline(&mut self, deadline: Instant) {
+        KasumiClient::set_deadline(self, deadline);
+    }
 }
 /// The returned cursor is valid only on this originating member. No Deserialize
 /// constructor exists, and moving a page to another pool is rejected.
@@ -92,8 +105,7 @@ impl KasumiClientPool {
         Ok(Self {
             installation: uuid::Uuid::new_v4(),
             preferred: *endpoints.keys().next().unwrap(),
-            endpoints,
-            clients: BTreeMap::new(),
+            connections: Connections::new(endpoints, ()),
             credential,
         })
     }
@@ -133,12 +145,12 @@ impl KasumiClientPool {
         // Renewal is observed by the next invocation, never by an endpoint retry.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
         let mut members = if let Some(member) = pinned {
-            if !self.endpoints.contains_key(&member) {
+            if !self.connections.contains(member) {
                 return Err(ClientError::Authorization);
             }
             vec![member]
         } else {
-            let mut members: Vec<_> = self.endpoints.keys().copied().collect();
+            let mut members = self.connections.members();
             let index = members.iter().position(|id| *id == self.preferred).unwrap();
             members.rotate_left(index);
             members
@@ -155,33 +167,20 @@ impl KasumiClientPool {
             }
         };
         loop {
-            for member in &members {
+            for (tried, member) in members.iter().enumerate() {
                 let remaining = end.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Err(settle(uncertain, deadline()));
                 }
-                let attempt_end = Instant::now()
-                    + remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
-                let mut dispatched = false;
-                let result = tokio::time::timeout_at(attempt_end, async {
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        self.clients.entry(*member)
-                    {
-                        let client = KasumiClient::connect(&self.endpoints[member])
-                            .await
-                            .map_err(|_| {
-                                ClientError::Transport(tonic::Status::unavailable(
-                                    "installed data member connection failed",
-                                ))
-                            })?;
-                        entry.insert(client);
-                    }
-                    dispatched = true;
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(end);
-                    dispatch(client, &bearer).await
-                })
-                .await;
+                let attempt_end = Instant::now() + attempt_slice(remaining, members.len() - tried);
+                // Nothing was dispatched, so any member may be tried next. A
+                // connect still running stays for a later attempt.
+                let Connected::Ready(client) = self.connections.client(*member, attempt_end).await
+                else {
+                    continue;
+                };
+                client.set_deadline(end);
+                let result = tokio::time::timeout_at(attempt_end, dispatch(client, &bearer)).await;
                 let replay = resend != Resend::Never;
                 match result {
                     Ok(Ok(reply)) => {
@@ -193,13 +192,13 @@ impl KasumiClientPool {
                         self.preferred = *member;
                         return Ok((*member, reply));
                     }
-                    Ok(Err(error)) if retryable(&error) && (!dispatched || replay) => {
-                        uncertain |= dispatched && resend == Resend::Write;
-                        self.clients.remove(member);
+                    // The member answered, so its connection stays.
+                    Ok(Err(error)) if retryable(&error) && replay => {
+                        uncertain |= resend == Resend::Write;
                     }
-                    Err(_) if !dispatched || replay => {
-                        uncertain |= dispatched && resend == Resend::Write;
-                        self.clients.remove(member);
+                    Err(_) if replay => {
+                        uncertain |= resend == Resend::Write;
+                        self.connections.discard(*member);
                     }
                     Err(_) => return Err(deadline()),
                     Ok(Err(error)) => return Err(settle(uncertain, error)),

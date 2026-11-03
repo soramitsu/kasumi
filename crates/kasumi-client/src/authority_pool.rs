@@ -1,7 +1,10 @@
 //! Bounded failover across operator-installed authority members. A peer response
 //! never supplies a new URL or trust root. Retries retain the original opaque
 //! lease attempt and each operation has one deadline across all connections.
-use crate::{ClientError, KasumiAuthorityClient, KasumiClientConfig};
+use crate::{
+    ClientError, KasumiAuthorityClient, KasumiClientConfig,
+    installed_pool::{Connected, Connections, RoutedClient, attempt_slice},
+};
 use kasumi_serving::{
     AuthorityCommand, AuthorityTrust, LeaseAttempt, LeaseDiscovery, ServingIdentity,
     SignedAuthorityReceipt, VerifiedLease,
@@ -20,11 +23,22 @@ type Reply<'a, T> = Pin<Box<dyn Future<Output = Result<T, ClientError>> + Send +
 
 #[derive(Clone)]
 pub struct KasumiAuthorityPool {
-    endpoints: BTreeMap<u64, KasumiClientConfig>,
-    clients: BTreeMap<u64, KasumiAuthorityClient>,
+    connections: Connections<KasumiAuthorityClient>,
     trust: AuthorityTrust,
     credential: Arc<dyn CredentialSource>,
     preferred: u64,
+}
+impl RoutedClient for KasumiAuthorityClient {
+    type Context = AuthorityTrust;
+    async fn connect(
+        config: &KasumiClientConfig,
+        trust: Self::Context,
+    ) -> Result<Self, ClientError> {
+        KasumiAuthorityClient::connect(config, trust).await
+    }
+    fn set_deadline(&mut self, deadline: Instant) {
+        KasumiAuthorityClient::set_deadline(self, deadline);
+    }
 }
 impl KasumiAuthorityPool {
     pub async fn observe_control_signer(
@@ -87,8 +101,7 @@ impl KasumiAuthorityPool {
         }
         Ok(Self {
             preferred: *endpoints.keys().next().unwrap(),
-            endpoints,
-            clients: BTreeMap::new(),
+            connections: Connections::new(endpoints, trust.clone()),
             trust,
             credential,
         })
@@ -113,50 +126,30 @@ impl KasumiAuthorityPool {
         // One atomic credential snapshot belongs to this entire finite operation.
         // Renewal is observed by the next invocation, never by an endpoint retry.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
-        let mut members: Vec<_> = self.endpoints.keys().copied().collect();
+        let mut members = self.connections.members();
         let index = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(index);
         loop {
-            for member in &members {
+            for (tried, member) in members.iter().enumerate() {
                 let remaining = deadline_at.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Err(deadline());
                 }
                 // An unreachable first member cannot monopolize the operation.
-                let attempt_end = Instant::now()
-                    + remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
-                let result = tokio::time::timeout_at(attempt_end, async {
-                    if let std::collections::btree_map::Entry::Vacant(entry) =
-                        self.clients.entry(*member)
-                    {
-                        let client = KasumiAuthorityClient::connect(
-                            &self.endpoints[member],
-                            self.trust.clone(),
-                        )
-                        .await
-                        .map_err(|_| {
-                            ClientError::Transport(tonic::Status::unavailable(
-                                "installed authority member connection failed",
-                            ))
-                        })?;
-                        entry.insert(client);
-                    }
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(deadline_at);
-                    dispatch(client, &bearer).await
-                })
-                .await;
-                match result {
+                let attempt_end = Instant::now() + attempt_slice(remaining, members.len() - tried);
+                let Connected::Ready(client) = self.connections.client(*member, attempt_end).await
+                else {
+                    continue;
+                };
+                client.set_deadline(deadline_at);
+                match tokio::time::timeout_at(attempt_end, dispatch(client, &bearer)).await {
                     Ok(Ok(reply)) => {
                         self.preferred = *member;
                         return Ok(reply);
                     }
-                    Ok(Err(error)) if retryable(&error) => {
-                        self.clients.remove(member);
-                    }
-                    Err(_) => {
-                        self.clients.remove(member);
-                    }
+                    // The member answered, so its connection stays.
+                    Ok(Err(error)) if retryable(&error) => {}
+                    Err(_) => self.connections.discard(*member),
                     Ok(Err(error)) => return Err(error),
                 }
             }
@@ -209,12 +202,12 @@ impl KasumiAuthorityPool {
         let request_sha256 = request.digest()?;
         let deadline_at = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
-        let mut members: Vec<_> = self.endpoints.keys().copied().collect();
+        let mut members = self.connections.members();
         let index = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(index);
         let mut dispatched = false;
         loop {
-            for member in &members {
+            for (tried, member) in members.iter().enumerate() {
                 let remaining = deadline_at.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Err(if dispatched {
@@ -223,32 +216,19 @@ impl KasumiAuthorityPool {
                         deadline()
                     });
                 }
-                let slice =
-                    remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
+                let slice = attempt_slice(remaining, members.len() - tried);
                 let attempt_end =
                     deadline_at.min(Instant::now().checked_add(slice).ok_or_else(deadline)?);
-                if !self.clients.contains_key(member) {
-                    let connection = tokio::time::timeout_at(
-                        attempt_end,
-                        KasumiAuthorityClient::connect(&self.endpoints[member], self.trust.clone()),
-                    )
-                    .await;
-                    match connection {
-                        Ok(Ok(client)) => {
-                            self.clients.insert(*member, client);
-                        }
-                        Ok(Err(_)) | Err(_) => continue,
-                    }
-                }
-                let observation = {
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(deadline_at);
-                    tokio::time::timeout_at(
-                        attempt_end,
-                        client.read_lifecycle_receipt(&bearer, &reference),
-                    )
-                    .await
+                let Connected::Ready(client) = self.connections.client(*member, attempt_end).await
+                else {
+                    continue;
                 };
+                client.set_deadline(deadline_at);
+                let observation = tokio::time::timeout_at(
+                    attempt_end,
+                    client.read_lifecycle_receipt(&bearer, &reference),
+                )
+                .await;
                 match observation {
                     Ok(Ok(Some(receipt))) => {
                         if receipt.receipt.request_sha256 != request_sha256 {
@@ -263,7 +243,6 @@ impl KasumiAuthorityPool {
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
-                        self.clients.remove(member);
                         if !retryable(&error) {
                             return Err(if dispatched {
                                 unresolved_lifecycle()
@@ -274,29 +253,29 @@ impl KasumiAuthorityPool {
                         continue;
                     }
                     Err(_) => {
-                        self.clients.remove(member);
+                        self.connections.discard(*member);
                         continue;
                     }
                 }
                 if dispatched || attempt_end <= Instant::now() {
                     continue;
                 }
-                let effect = {
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(deadline_at);
-                    // Cancellation can make a sent request's outcome unknowable.
-                    dispatched = true;
-                    tokio::time::timeout_at(attempt_end, client.execute_lifecycle(&bearer, request))
-                        .await
-                };
+                client.set_deadline(deadline_at);
+                // Cancellation can make a sent request's outcome unknowable.
+                dispatched = true;
+                let effect = tokio::time::timeout_at(
+                    attempt_end,
+                    client.execute_lifecycle(&bearer, request),
+                )
+                .await;
                 match effect {
                     Ok(Ok(receipt)) => {
                         self.preferred = *member;
                         return Ok(receipt);
                     }
-                    Ok(Err(_)) | Err(_) => {
-                        self.clients.remove(member);
-                    }
+                    // The member answered, so its connection stays.
+                    Ok(Err(_)) => {}
+                    Err(_) => self.connections.discard(*member),
                 }
             }
             let remaining = deadline_at.saturating_duration_since(Instant::now());
@@ -384,12 +363,12 @@ impl KasumiAuthorityPool {
         let deadline_at = Instant::now().checked_add(timeout).ok_or_else(deadline)?;
         // One credential and one installed member set belong to this invocation.
         let bearer = token(self.credential.as_ref()).map_err(|_| ClientError::Authorization)?;
-        let mut members: Vec<_> = self.endpoints.keys().copied().collect();
+        let mut members = self.connections.members();
         let index = members.iter().position(|id| *id == self.preferred).unwrap();
         members.rotate_left(index);
         let mut dispatched = false;
         loop {
-            for member in &members {
+            for (tried, member) in members.iter().enumerate() {
                 let remaining = deadline_at.saturating_duration_since(Instant::now());
                 if remaining.is_zero() {
                     return Err(if dispatched {
@@ -398,34 +377,19 @@ impl KasumiAuthorityPool {
                         deadline()
                     });
                 }
-                let slice =
-                    remaining.min((timeout / members.len() as u32).max(Duration::from_millis(1)));
+                let slice = attempt_slice(remaining, members.len() - tried);
                 let attempt_end =
                     deadline_at.min(Instant::now().checked_add(slice).ok_or_else(deadline)?);
-                if !self.clients.contains_key(member) {
-                    let connection = tokio::time::timeout_at(
-                        attempt_end,
-                        KasumiAuthorityClient::connect(&self.endpoints[member], self.trust.clone()),
-                    )
-                    .await;
-                    match connection {
-                        Ok(Ok(client)) => {
-                            self.clients.insert(*member, client);
-                        }
-                        Ok(Err(_)) | Err(_) => {
-                            continue;
-                        }
-                    }
-                }
-                let observation = {
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(deadline_at);
-                    tokio::time::timeout_at(
-                        attempt_end,
-                        client.receipt(&bearer, &command.tenant, command.command_id),
-                    )
-                    .await
+                let Connected::Ready(client) = self.connections.client(*member, attempt_end).await
+                else {
+                    continue;
                 };
+                client.set_deadline(deadline_at);
+                let observation = tokio::time::timeout_at(
+                    attempt_end,
+                    client.receipt(&bearer, &command.tenant, command.command_id),
+                )
+                .await;
                 match observation {
                     Ok(Ok(Some(receipt))) => {
                         if receipt.receipt.command != *command {
@@ -440,7 +404,6 @@ impl KasumiAuthorityPool {
                     }
                     Ok(Ok(None)) => {}
                     Ok(Err(error)) => {
-                        self.clients.remove(member);
                         if !retryable(&error) {
                             return Err(if dispatched {
                                 unresolved_command()
@@ -451,29 +414,27 @@ impl KasumiAuthorityPool {
                         continue;
                     }
                     Err(_) => {
-                        self.clients.remove(member);
+                        self.connections.discard(*member);
                         continue;
                     }
                 }
                 if dispatched || attempt_end <= Instant::now() {
                     continue;
                 }
-                let effect = {
-                    let client = self.clients.get_mut(member).unwrap();
-                    client.set_deadline(deadline_at);
-                    // Conservatively mark the effect before polling its future.
-                    // Cancellation can make a sent request's outcome unknowable.
-                    dispatched = true;
-                    tokio::time::timeout_at(attempt_end, client.execute(&bearer, command)).await
-                };
+                client.set_deadline(deadline_at);
+                // Conservatively mark the effect before polling its future.
+                // Cancellation can make a sent request's outcome unknowable.
+                dispatched = true;
+                let effect =
+                    tokio::time::timeout_at(attempt_end, client.execute(&bearer, command)).await;
                 match effect {
                     Ok(Ok(receipt)) => {
                         self.preferred = *member;
                         return Ok(receipt);
                     }
-                    Ok(Err(_)) | Err(_) => {
-                        self.clients.remove(member);
-                    }
+                    // The member answered, so its connection stays.
+                    Ok(Err(_)) => {}
+                    Err(_) => self.connections.discard(*member),
                 }
             }
             let remaining = deadline_at.saturating_duration_since(Instant::now());
