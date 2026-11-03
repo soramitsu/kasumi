@@ -191,8 +191,9 @@ pub struct StorageMaintenanceStatus {
     pub evacuation_surveyed_segments: u64,
     pub evacuation_kept_segments: u64,
     pub evacuation_kept_garbage_bytes: u64,
-    /// Evacuations that relocated every old value because the survey
-    /// behind a selection was refused admission.
+    /// Evacuations that kept every old segment in place, an arena-only
+    /// cycle, because their survey was refused admission or met more
+    /// segments than its bound. Their figures above are zero.
     pub evacuation_survey_fallbacks_total: u64,
     pub reclaim_invalidations_total: u64,
     pub capacity_deferrals_total: u64,

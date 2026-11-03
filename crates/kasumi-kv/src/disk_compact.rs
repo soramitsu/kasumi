@@ -13,7 +13,9 @@
 //! arena at or below the arena cutoff, with its path. A leaf in a newer arena
 //! was written with its whole path after it, so it and its ancestors are
 //! fresh; such a leaf with nothing to relocate is skipped without a data
-//! commit. With no segment selected the cycle rewrites old arenas only.
+//! commit. With no segment selected the cycle rewrites old arenas only, and
+//! so does a cycle whose survey was refused admission three times or met
+//! more segments than its bound: it keeps every old segment in place.
 //! Exact worklist ordinal progress is persisted even for a skip, so restart
 //! cannot repeat a long-key prefix indefinitely. Reclaiming runs certified
 //! cohorts (`disk_reclaim.rs`), which prove reachability and so keep the
@@ -40,12 +42,13 @@ use density::Density;
 const COMPACTION_BATCH_BYTES: usize = 1 << 20;
 const _: () = assert!(MAX_DIRECTORY_LEAF_RECORDS <= segment::MAX_MAINTENANCE_OPERATIONS);
 
-/// Refused survey admissions one evacuation takes before it relocates every
-/// old value instead, as the legacy policy does.
+/// Refused survey admissions one evacuation takes before it keeps every old
+/// segment in place instead: an arena-only cycle.
 pub(super) const SURVEY_ATTEMPTS: u32 = 3;
 /// The survey's first map capacity, in segments; it doubles as needed.
 const SURVEY_INITIAL_SEGMENTS: usize = 64;
-/// A survey of more segments than this relocates every old value.
+/// A survey that would track more segments than this keeps every old segment
+/// in place instead.
 const SURVEY_MAX_SEGMENTS: usize = 1 << 20;
 /// Kept segments may span at most this many identifiers per surveyed
 /// segment. Older ones are emptied, so the reclaim floor, and with it every
@@ -71,6 +74,9 @@ pub(super) struct Compaction {
     survey: Option<Survey>,
     /// Refused survey admissions of one cycle: (cycle, count).
     survey_denials: (u64, u32),
+    /// The most segments a survey tracks, `SURVEY_MAX_SEGMENTS` unless a
+    /// test lowers it.
+    survey_segment_bound: Option<usize>,
     /// The latest selection's figures, for the status.
     pub(super) evacuation: EvacuationStats,
     /// Statistics of the most recent step, for diagnostics and tests.
@@ -83,17 +89,20 @@ pub(super) struct EvacuationStats {
     pub(super) surveyed_segments: u64,
     pub(super) kept_segments: u64,
     pub(super) kept_garbage_bytes: u64,
-    /// Process-lifetime count of evacuations that fell back to relocating
-    /// every old value after refused survey admissions.
+    /// Process-lifetime count of evacuations that kept every old segment in
+    /// place, unsurveyed, because their survey was refused admission or met
+    /// more segments than its bound.
     pub(super) survey_fallbacks: u64,
 }
 
-/// Sorted (segment, live bytes) pairs in exactly admitted capacity.
+/// Sorted (segment, live bytes) pairs in exactly admitted capacity, at most
+/// `bound` of them.
 struct LiveSegments {
     entries: Vec<(u64, u64)>,
     /// The entry the previous value matched: neighbouring values usually
     /// share a segment.
     last: usize,
+    bound: usize,
     admission: Arc<dyn StorageAdmission>,
     _lease: NativeResidentLease,
 }
@@ -101,11 +110,9 @@ struct LiveSegments {
 impl LiveSegments {
     fn with_capacity(
         capacity: usize,
+        bound: usize,
         admission: &Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
-        if capacity > SURVEY_MAX_SEGMENTS {
-            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
-        }
         let bytes = capacity * std::mem::size_of::<(u64, u64)>()
             + std::mem::size_of::<Self>()
             + ALLOCATION_ALLOWANCE
@@ -123,12 +130,15 @@ impl LiveSegments {
         Ok(Self {
             entries,
             last: 0,
+            bound,
             admission: admission.clone(),
             _lease: lease,
         })
     }
 
-    fn add(&mut self, segment: u64, bytes: u64) -> Result<(), CoreError> {
+    /// Add one value's bytes to its segment; `false`, changing nothing, when
+    /// tracking one more segment would exceed the bound.
+    fn add(&mut self, segment: u64, bytes: u64) -> Result<bool, CoreError> {
         let index = match self.entries.get(self.last) {
             Some(&(id, _)) if id == segment => Ok(self.last),
             _ => self.entries.binary_search_by_key(&segment, |&(id, _)| id),
@@ -140,12 +150,13 @@ impl LiveSegments {
                 self.last = index;
             }
             Err(index) => {
+                if self.entries.len() >= self.bound {
+                    return Ok(false);
+                }
                 if self.entries.len() == self.entries.capacity() {
                     // Admit the doubled map before the old one is released.
-                    let mut grown = Self::with_capacity(
-                        self.entries.capacity().saturating_mul(2),
-                        &self.admission,
-                    )?;
+                    let capacity = self.entries.capacity().saturating_mul(2).min(self.bound);
+                    let mut grown = Self::with_capacity(capacity, self.bound, &self.admission)?;
                     grown.entries.extend_from_slice(&self.entries);
                     *self = grown;
                 }
@@ -153,7 +164,7 @@ impl LiveSegments {
                 self.last = index;
             }
         }
-        Ok(())
+        Ok(true)
     }
 }
 
@@ -166,20 +177,28 @@ struct Survey {
     walker: DirectoryWalker,
     live: LiveSegments,
     complete: bool,
+    /// The walk met more segments than the bound and stopped.
+    overflowed: bool,
 }
 
 impl Survey {
     fn new(
         record: &CompactionRecord,
         source: DirectoryRoot,
+        bound: usize,
         admission: &Arc<dyn StorageAdmission>,
     ) -> Result<Self, CoreError> {
         Ok(Self {
             cycle: record.cycle(),
             cutoff: record.cutoff_segment(),
-            live: LiveSegments::with_capacity(SURVEY_INITIAL_SEGMENTS, admission)?,
+            live: LiveSegments::with_capacity(
+                SURVEY_INITIAL_SEGMENTS.min(bound),
+                bound,
+                admission,
+            )?,
             walker: DirectoryWalker::new(source, admission.clone())?,
             complete: false,
+            overflowed: false,
         })
     }
 
@@ -191,22 +210,33 @@ impl Survey {
             live,
             ..
         } = self;
+        let mut overflowed = false;
         let walked = walker.step(
             directory,
             units.saturating_mul(WALK_WORK_PER_UNIT),
             |_| Ok(()),
             |value| {
-                if value.segment_id <= *cutoff {
-                    // Table and key bytes are not counted: a segment of small
-                    // values looks emptier and is emptied sooner, never later.
-                    live.add(
+                // Table and key bytes are not counted: a segment of small
+                // values looks emptier and is emptied sooner, never later.
+                if value.segment_id <= *cutoff
+                    && !live.add(
                         value.segment_id,
                         u64::from(value.len) + VALUE_RECORD_OVERHEAD_BYTES,
-                    )?;
+                    )?
+                {
+                    // Stop the walk: what it would add is no longer used.
+                    overflowed = true;
+                    return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
                 }
                 Ok(())
             },
-        )?;
+        );
+        if overflowed {
+            self.overflowed = true;
+            self.complete = true;
+            return Ok(units);
+        }
+        let walked = walked?;
         if walked.complete {
             self.complete = true;
         } else if walked.work == 0 {
@@ -232,8 +262,10 @@ impl Survey {
         let surveyed = live.entries.len();
         Selection {
             cycle,
-            kept_from: surveyed - kept,
-            live: Some(live),
+            kept: Kept::Surveyed {
+                live,
+                from: surveyed - kept,
+            },
             stats: EvacuationStats {
                 surveyed_segments: surveyed as u64,
                 kept_segments: kept as u64,
@@ -291,32 +323,46 @@ pub(super) fn keep_segments(
 /// segment cutoff except those of the kept segments.
 struct Selection {
     cycle: u64,
-    /// The surveyed segments; those from `kept_from` on are kept, in
-    /// identifier order. `None` relocates every old value.
-    live: Option<LiveSegments>,
-    kept_from: usize,
+    kept: Kept,
     stats: EvacuationStats,
 }
 
+enum Kept {
+    /// The legacy policy: every old value is relocated.
+    Nothing,
+    /// The surveyed segments; those from `from` on are kept, in identifier
+    /// order. A segment the survey did not see is relocated.
+    Surveyed { live: LiveSegments, from: usize },
+    /// No survey could select: every old segment stays, an arena-only cycle.
+    Everything,
+}
+
 impl Selection {
-    /// The legacy policy, and the fallback when the survey cannot run.
     fn relocate_all(cycle: u64) -> Self {
         Self {
             cycle,
-            live: None,
-            kept_from: 0,
+            kept: Kept::Nothing,
             stats: EvacuationStats::default(),
         }
     }
 
-    /// Whether evacuation relocates an old value of `segment_id`. A segment
-    /// the survey did not see is relocated, as by the legacy policy.
+    fn keep_all(cycle: u64) -> Self {
+        Self {
+            cycle,
+            kept: Kept::Everything,
+            stats: EvacuationStats::default(),
+        }
+    }
+
+    /// Whether evacuation relocates an old value of `segment_id`.
     fn relocates(&self, segment_id: u64) -> bool {
-        self.live.as_ref().is_none_or(|live| {
-            live.entries[self.kept_from..]
+        match &self.kept {
+            Kept::Nothing => true,
+            Kept::Surveyed { live, from } => live.entries[*from..]
                 .binary_search_by_key(&segment_id, |&(id, _)| id)
-                .is_err()
-        })
+                .is_err(),
+            Kept::Everything => false,
+        }
     }
 }
 
@@ -367,26 +413,46 @@ impl Compaction {
     }
 }
 
+/// A selection as the selection tests observe it.
+#[cfg(test)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum SelectionForTest {
+    RelocateAll,
+    KeepAll,
+    /// The surveyed and the kept segments, both in identifier order.
+    Surveyed {
+        surveyed: Vec<u64>,
+        kept: Vec<u64>,
+    },
+}
+
 #[cfg(test)]
 impl Compaction {
-    /// Observation hooks for the selection tests only: the selection's
-    /// cycle, its surveyed segments and the kept ones, both in identifier
-    /// order. No surveyed segments means every old value is relocated.
-    pub(super) fn selection_for_test(&self) -> Option<(u64, Vec<u64>, Vec<u64>)> {
+    /// Observation hooks for the selection tests only.
+    pub(super) fn selection_for_test(&self) -> Option<(u64, SelectionForTest)> {
         let selection = self.selection.as_ref()?;
-        let Some(live) = selection.live.as_ref() else {
-            return Some((selection.cycle, Vec::new(), Vec::new()));
+        let observed = match &selection.kept {
+            Kept::Nothing => SelectionForTest::RelocateAll,
+            Kept::Everything => SelectionForTest::KeepAll,
+            Kept::Surveyed { live, from } => {
+                let kept = live.entries[*from..].iter().map(|&(id, _)| id).collect();
+                let mut surveyed: Vec<u64> = live.entries.iter().map(|&(id, _)| id).collect();
+                surveyed.sort_unstable();
+                SelectionForTest::Surveyed { surveyed, kept }
+            }
         };
-        let kept = live.entries[selection.kept_from..]
-            .iter()
-            .map(|&(id, _)| id)
-            .collect();
-        let mut surveyed: Vec<u64> = live.entries.iter().map(|&(id, _)| id).collect();
-        surveyed.sort_unstable();
-        Some((selection.cycle, surveyed, kept))
+        Some((selection.cycle, observed))
     }
     pub(super) fn surveying_for_test(&self) -> bool {
         self.survey.is_some()
+    }
+    /// The segments the survey in progress tracks so far.
+    pub(super) fn survey_segments_for_test(&self) -> Option<usize> {
+        Some(self.survey.as_ref()?.live.entries.len())
+    }
+    pub(super) fn bound_survey_for_test(&mut self, segments: usize) {
+        assert!(segments > 0);
+        self.survey_segment_bound = Some(segments);
     }
 }
 
@@ -613,8 +679,9 @@ impl DiskState {
     }
 
     /// Survey the evacuating cycle's worklist within the unit budget and
-    /// select its segments once complete. The legacy policy and repeatedly
-    /// refused admission relocate every old value without a survey.
+    /// select its segments once complete. The legacy policy relocates every
+    /// old value without a survey; repeatedly refused admission, or more
+    /// segments than the bound, keeps every old segment in place.
     fn survey_step(
         &mut self,
         record: &CompactionRecord,
@@ -622,17 +689,16 @@ impl DiskState {
         progress: &mut MaintenanceProgress,
     ) -> Result<bool, CoreError> {
         let cycle = record.cycle();
-        let percent = self.maintenance.policy.retained_garbage_percent;
-        let refused = self.compact.survey_denials.0 == cycle
-            && self.compact.survey_denials.1 >= SURVEY_ATTEMPTS;
-        if percent == 0 || refused {
+        if self.maintenance.policy.retained_garbage_percent == 0 {
             self.compact.survey = None;
-            let fallbacks = self.compact.evacuation.survey_fallbacks + u64::from(refused);
-            self.compact.evacuation = EvacuationStats {
-                survey_fallbacks: fallbacks,
-                ..EvacuationStats::default()
-            };
-            self.compact.selection = Some(Selection::relocate_all(cycle));
+            self.set_selection(Selection::relocate_all(cycle), false);
+            return Ok(true);
+        }
+        if self.compact.survey_denials.0 == cycle
+            && self.compact.survey_denials.1 >= SURVEY_ATTEMPTS
+        {
+            self.compact.survey = None;
+            self.set_selection(Selection::keep_all(cycle), true);
             return Ok(true);
         }
         let result = self.survey_walk(record, budget, progress);
@@ -661,7 +727,11 @@ impl DiskState {
             let source = record.evacuation_source().ok_or(CoreError::new(
                 crate::CoreErrorCause::Corrupt("evacuation worklist is absent"),
             ))?;
-            self.compact.survey = Some(Survey::new(record, source, &self.owner.admission)?);
+            let bound = self
+                .compact
+                .survey_segment_bound
+                .unwrap_or(SURVEY_MAX_SEGMENTS);
+            self.compact.survey = Some(Survey::new(record, source, bound, &self.owner.admission)?);
         }
         let survey = self.compact.survey.as_mut().expect("started survey");
         progress.units += survey.step(self.arena.as_ref(), budget.units - progress.units)?;
@@ -669,14 +739,28 @@ impl DiskState {
             return Ok(true);
         }
         let survey = self.compact.survey.take().expect("complete survey");
-        let mut selection = survey.select(
-            self.writer.capacity(),
-            self.maintenance.policy.retained_garbage_percent,
-        );
-        selection.stats.survey_fallbacks = self.compact.evacuation.survey_fallbacks;
+        if survey.overflowed {
+            self.set_selection(Selection::keep_all(survey.cycle), true);
+        } else {
+            let selection = survey.select(
+                self.writer.capacity(),
+                self.maintenance.policy.retained_garbage_percent,
+            );
+            self.set_selection(selection, false);
+        }
+        Ok(true)
+    }
+
+    /// Install a cycle's selection and its status figures; `fallback` counts
+    /// an evacuation that keeps every old segment unsurveyed.
+    fn set_selection(&mut self, mut selection: Selection, fallback: bool) {
+        selection.stats.survey_fallbacks = self
+            .compact
+            .evacuation
+            .survey_fallbacks
+            .saturating_add(u64::from(fallback));
         self.compact.evacuation = selection.stats;
         self.compact.selection = Some(selection);
-        Ok(true)
     }
 
     /// Finish Packing: the next cycle is scheduled from the persisted

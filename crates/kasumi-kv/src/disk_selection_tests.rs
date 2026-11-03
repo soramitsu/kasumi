@@ -6,6 +6,7 @@ use super::*;
 use crate::directory::DirectoryWalker;
 use crate::group::FileKind;
 use crate::root::CompactionPhase;
+use compaction::SelectionForTest;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -23,11 +24,23 @@ const ONE: MaintenanceBudget = MaintenanceBudget {
     mutations: 1,
 };
 
-type Selected = Option<(u64, Vec<u64>, Vec<u64>)>;
+type Selected = Option<(u64, SelectionForTest)>;
+
+/// The cycle, surveyed and kept segments of a surveyed selection.
+fn surveyed(selected: Selected) -> (u64, Vec<u64>, Vec<u64>) {
+    match selected.expect("a selection") {
+        (cycle, SelectionForTest::Surveyed { surveyed, kept }) => (cycle, surveyed, kept),
+        other => panic!("not a surveyed selection: {other:?}"),
+    }
+}
 
 fn geometry(state: &mut DiskState, percent: u32) {
+    geometry_with_capacity(state, percent, CAPACITY);
+}
+
+fn geometry_with_capacity(state: &mut DiskState, percent: u32, capacity: u64) {
     let writer = std::mem::replace(&mut state.writer, SegmentWriter::new(GROUP));
-    state.writer = writer.with_capacity(CAPACITY);
+    state.writer = writer.with_capacity(capacity);
     replace_arena(state, Some(ARENA_PAGES));
     state
         .configure_maintenance(MaintenancePolicy {
@@ -365,7 +378,7 @@ fn mostly_live_store_relocates_only_the_sparse_segment() {
     );
     let (selected, totals) = run_cycle(&mut state, STEP);
     let kept: Vec<u64> = (1..=cutoff.0).filter(|&id| id != SPARSE).collect();
-    let (cycle, surveyed, kept_observed) = selected.expect("a surveyed selection");
+    let (cycle, surveyed, kept_observed) = self::surveyed(selected);
     assert_eq!(cycle, 1);
     // Ids above the cutoff are not surveyed.
     assert_eq!(surveyed, (1..=cutoff.0).collect::<Vec<_>>());
@@ -403,7 +416,7 @@ fn mostly_live_store_relocates_only_the_sparse_segment() {
     // only the old arenas.
     let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
     let (selected, totals) = run_cycle(&mut state, STEP);
-    let (_, surveyed, kept_observed) = selected.expect("a surveyed selection");
+    let (_, surveyed, kept_observed) = self::surveyed(selected);
     assert_eq!(surveyed, kept_observed);
     assert_eq!(totals.relocated, 0);
     assert!(totals.maintenance_commits > 0 && totals.directory_pages_written > 0);
@@ -420,7 +433,7 @@ fn reopen_after_every_publication_and_mid_survey_selects_the_same_segments() {
     let (expected, expected_relocated) = {
         let mut fixture = fixture(PERCENT);
         let (selected, totals) = run_cycle(&mut fixture.state, ONE);
-        (selected.expect("a surveyed selection"), totals.relocated)
+        (selected.expect("a selection"), totals.relocated)
     };
     assert!(expected_relocated > 0);
     let Fixture {
@@ -466,7 +479,8 @@ fn reopen_after_every_publication_and_mid_survey_selects_the_same_segments() {
     assert!(state.owner.lock().unwrap().garbage().is_empty());
     check_reclaimed(&state, &group, cutoff);
     assert!(!group.exists(GroupFile::segment(SPARSE)).unwrap());
-    for &id in &expected.2 {
+    let (_, _, kept) = surveyed(Some(expected));
+    for &id in &kept {
         assert!(group.exists(GroupFile::segment(id)).unwrap(), "{id}");
     }
     check_model(&mut state, &model);
@@ -514,21 +528,46 @@ fn legacy_policy_resumes_a_selective_evacuation() {
     // An older binary, or the legacy policy, relocates every old value from
     // the persisted ordinal on.
     let (selected, totals) = resume_with_other_policy(PERCENT, 0);
-    assert_eq!(selected, Some((1, Vec::new(), Vec::new())));
+    assert_eq!(selected, Some((1, SelectionForTest::RelocateAll)));
     assert!(totals.relocated > 0);
 }
 
 #[test]
 fn selective_policy_resumes_a_legacy_evacuation() {
     let (selected, _) = resume_with_other_policy(0, PERCENT);
-    let (cycle, surveyed, kept) = selected.expect("a surveyed selection");
+    let (cycle, surveyed, kept) = self::surveyed(selected);
     assert_eq!(cycle, 1);
     assert!(!surveyed.is_empty() && !kept.is_empty());
     assert!(!kept.contains(&SPARSE));
 }
 
+/// Every old segment survives an arena-only cycle with its values in place,
+/// and every old arena is gone.
+fn check_arena_only(
+    state: &DiskState,
+    group: &InMemoryGroup,
+    cutoff: (u64, u64),
+    before: &BTreeMap<u32, ValueLocation>,
+    model: &BTreeMap<u32, Vec<u8>>,
+) {
+    assert_eq!(&locations(state, model), before);
+    for location in before.values() {
+        assert!(
+            group
+                .exists(GroupFile::segment(location.segment_id))
+                .unwrap()
+        );
+    }
+    check_reclaimed(state, group, cutoff);
+    for file in present(group) {
+        if file.kind == FileKind::Directory {
+            assert!(file.id > cutoff.1, "{file:?} is an old arena");
+        }
+    }
+}
+
 #[test]
-fn refused_survey_admission_falls_back_to_relocating_every_old_value() {
+fn refused_survey_admission_falls_back_to_an_arena_only_cycle() {
     let Fixture {
         group,
         admission,
@@ -537,11 +576,7 @@ fn refused_survey_admission_falls_back_to_relocating_every_old_value() {
         ..
     } = fixture(PERCENT);
     let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
-    let old_bytes: u64 = locations(&state, &model)
-        .values()
-        .filter(|location| location.segment_id <= cutoff.0)
-        .map(|location| u64::from(location.len))
-        .sum();
+    let before = locations(&state, &model);
     state.request_compaction().unwrap();
     assert!(step(&mut state, ONE).phase_changed);
     for attempt in 0..compaction::SURVEY_ATTEMPTS {
@@ -557,16 +592,28 @@ fn refused_survey_admission_falls_back_to_relocating_every_old_value() {
         // A request clears the capacity backoff.
         state.request_compaction().unwrap();
     }
+    // The cycle keeps every old segment in place and rewrites old arenas.
     let (selected, totals) = run_cycle(&mut state, STEP);
-    assert_eq!(selected, Some((1, Vec::new(), Vec::new())));
-    assert_eq!(totals.relocated, old_bytes);
-    for id in 1..=cutoff.0 {
-        assert!(!group.exists(GroupFile::segment(id)).unwrap(), "{id}");
-    }
-    check_reclaimed(&state, &group, cutoff);
+    assert_eq!(selected, Some((1, SelectionForTest::KeepAll)));
+    assert_eq!(totals.relocated, 0);
+    assert!(totals.maintenance_commits > 0);
+    check_arena_only(&state, &group, cutoff, &before, &model);
     let status = state.maintenance_status().unwrap();
     assert_eq!(status.evacuation_survey_fallbacks_total, 1);
-    assert_eq!(status.evacuation_kept_segments, 0);
+    assert_eq!(
+        (
+            status.evacuation_surveyed_segments,
+            status.evacuation_kept_segments
+        ),
+        (0, 0)
+    );
+    check_model(&mut state, &model);
+    // The next cycle surveys again and empties the sparse segment.
+    let (selected, totals) = run_cycle(&mut state, STEP);
+    let (_, _, kept) = surveyed(selected);
+    assert!(!kept.contains(&SPARSE));
+    assert!(totals.relocated > 0);
+    assert!(!group.exists(GroupFile::segment(SPARSE)).unwrap());
     check_model(&mut state, &model);
 }
 
@@ -598,7 +645,7 @@ fn owed_round_keeps_segments_the_current_root_still_references() {
     // The overwrites go to the newest segment, above the cutoff, and do not
     // change what the next cycle keeps.
     let (selected, _) = run_cycle(&mut state, STEP);
-    let (_, _, kept) = selected.expect("a surveyed selection");
+    let (_, _, kept) = surveyed(selected);
     assert!(!kept.is_empty());
     assert!(!kept.contains(&SPARSE));
     // The sparse segment's evacuated rows are held only by the old pin.
@@ -646,4 +693,307 @@ fn owed_round_keeps_segments_the_current_root_still_references() {
             .reclaim_invalidations_total,
         0
     );
+}
+
+/// Segments of exactly three commits of ten rows: nearly full, 87% live as
+/// the survey counts, so many fit in a fast test.
+const DENSE_CAPACITY: u64 = crate::segment::SEGMENT_HEADER_BYTES + 3 * DENSE_BATCH + 100;
+/// One commit of ten rows: their put records and the commit record.
+const DENSE_BATCH: u64 = 10 * (36 + 16 + 8 + 4 + VALUE as u64) + 204;
+
+/// `segments` dense old segments, after a table-only first one. Of every
+/// tenth, four rows in five are overwritten; then fresh rows seal the
+/// segment holding the overwrites. Returns the sparse segments too.
+fn many_segments(segments: u64) -> (Fixture, Vec<u64>) {
+    let group = InMemoryGroup::new();
+    let admission = Admission::new(64 << 20);
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    geometry_with_capacity(&mut state, PERCENT, DENSE_CAPACITY);
+    let mut model = BTreeMap::new();
+    let mut next = 0;
+    state
+        .commit(&[Operation::create_table("accounts")])
+        .unwrap();
+    // Rolls the segment too; geometry is applied again for the new arena.
+    seal_files(&mut state);
+    geometry_with_capacity(&mut state, PERCENT, DENSE_CAPACITY);
+    while active_segment(&state) <= segments + 1 {
+        fill_segment(&mut state, &mut model, &mut next);
+    }
+    let sparse: Vec<u64> = (12..=segments + 1).step_by(10).collect();
+    let overwritten: Vec<u32> = model
+        .keys()
+        .copied()
+        .filter(|&key| sparse.contains(&located(&state, key).segment_id))
+        .filter(|key| key % 5 != 0)
+        .collect();
+    put_rows(&mut state, &mut model, &overwritten, 0x77);
+    fill_segment(&mut state, &mut model, &mut next);
+    (
+        Fixture {
+            group,
+            admission,
+            state,
+            model,
+        },
+        sparse,
+    )
+}
+
+/// The survey selection the rule makes for these premises: every segment
+/// more than half live but `sparse`, whose kept garbage is within the
+/// policy and whose span is within the rule.
+fn premises(
+    state: &DiskState,
+    model: &BTreeMap<u32, Vec<u8>>,
+    sparse: &[u64],
+) -> (BTreeMap<u64, u64>, u64) {
+    let cutoff = state.owner.lock().unwrap().compaction_cutoffs().0;
+    let mut live = BTreeMap::<u64, u64>::new();
+    let mut sparse_bytes = 0;
+    for location in locations(state, model).values() {
+        if location.segment_id <= cutoff {
+            *live.entry(location.segment_id).or_default() +=
+                u64::from(location.len) + segment::VALUE_RECORD_OVERHEAD_BYTES;
+            if sparse.contains(&location.segment_id) {
+                sparse_bytes += u64::from(location.len);
+            }
+        }
+    }
+    let total: u64 = live.values().sum();
+    let mut kept_garbage = 0;
+    for (&id, &bytes) in &live {
+        if sparse.contains(&id) {
+            assert!(2 * bytes <= DENSE_CAPACITY, "{id}: {bytes}");
+        } else {
+            assert!(2 * bytes > DENSE_CAPACITY, "{id}: {bytes}");
+            kept_garbage += DENSE_CAPACITY - bytes;
+        }
+    }
+    assert!(kept_garbage * 100 <= total * u64::from(PERCENT));
+    let oldest = live
+        .keys()
+        .find(|id| !sparse.contains(id))
+        .copied()
+        .unwrap();
+    assert!(cutoff - oldest < 8 * live.len() as u64);
+    (live, sparse_bytes)
+}
+
+#[test]
+fn survey_of_more_segments_than_its_first_map_grows_and_keeps_the_dense_ones() {
+    let (fixture, sparse) = many_segments(80);
+    let Fixture {
+        group,
+        admission: _admission,
+        mut state,
+        model,
+    } = fixture;
+    let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
+    let (live, sparse_bytes) = premises(&state, &model, &sparse);
+    assert!(live.len() > 64, "{}", live.len());
+    let before = locations(&state, &model);
+    let (selected, totals) = run_cycle(&mut state, STEP);
+    let (_, surveyed, kept) = surveyed(selected);
+    assert_eq!(surveyed, live.keys().copied().collect::<Vec<_>>());
+    let expected: Vec<u64> = live
+        .keys()
+        .copied()
+        .filter(|id| !sparse.contains(id))
+        .collect();
+    assert_eq!(kept, expected);
+    assert_eq!(totals.relocated, sparse_bytes);
+    for (key, location) in &before {
+        if !sparse.contains(&location.segment_id) {
+            assert_eq!(located(&state, *key), *location, "{key}");
+        }
+    }
+    for &id in &sparse {
+        assert!(!group.exists(GroupFile::segment(id)).unwrap(), "{id}");
+    }
+    check_reclaimed(&state, &group, cutoff);
+    check_model(&mut state, &model);
+}
+
+#[test]
+fn refusal_in_the_middle_of_a_survey_restarts_it() {
+    // Measure where the map grows past its first capacity, mid-walk, and
+    // which reservations that step makes.
+    let (dry, _) = many_segments(80);
+    let Fixture {
+        admission,
+        mut state,
+        ..
+    } = dry;
+    state.request_compaction().unwrap();
+    assert!(step(&mut state, ONE).phase_changed);
+    let mut growth = None;
+    let mut steps = 0;
+    let expected = loop {
+        let before = state.compact.survey_segments_for_test().unwrap_or(0);
+        let calls = admission.calls.load(Ordering::Acquire);
+        step(&mut state, ONE);
+        steps += 1;
+        let after = state.compact.survey_segments_for_test();
+        if before <= 64 && after.is_some_and(|after| after > 64) {
+            growth = Some((steps, admission.calls.load(Ordering::Acquire) - calls));
+        }
+        if let Some(selection) = state.compact.selection_for_test() {
+            break selection;
+        }
+    };
+    let (growth_step, reservations) = growth.expect("the map grew during the survey");
+    assert!(growth_step > 1, "the growth is not the survey's first step");
+    assert_eq!(
+        reservations, 1,
+        "only the doubled map is admitted in that step"
+    );
+    drop(state);
+
+    let (fixture, sparse) = many_segments(80);
+    let Fixture {
+        group,
+        admission,
+        mut state,
+        model,
+    } = fixture;
+    let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
+    state.request_compaction().unwrap();
+    assert!(step(&mut state, ONE).phase_changed);
+    for _ in 1..growth_step {
+        step(&mut state, ONE);
+    }
+    let walked = state.compact.survey_segments_for_test().unwrap();
+    assert!(walked > 0 && walked <= 64, "{walked}");
+    admission.deny_nth(1);
+    let progress = state.maintenance_step(ONE).unwrap();
+    assert_eq!(progress.deferred, Some(MaintenanceDeferral::Capacity));
+    assert_eq!(admission.refused_calls.load(Ordering::Acquire), 1);
+    assert!(!state.compact.surveying_for_test());
+    assert!(state.compact.selection_for_test().is_none());
+    // The retry walks again from the start and selects the same segments.
+    let (selected, _) = run_cycle(&mut state, STEP);
+    assert_eq!(selected, Some(expected));
+    let (_, _, kept) = surveyed(selected);
+    assert!(sparse.iter().all(|id| !kept.contains(id)));
+    assert_eq!(
+        state
+            .maintenance_status()
+            .unwrap()
+            .evacuation_survey_fallbacks_total,
+        0
+    );
+    for &id in &sparse {
+        assert!(!group.exists(GroupFile::segment(id)).unwrap(), "{id}");
+    }
+    check_reclaimed(&state, &group, cutoff);
+    check_model(&mut state, &model);
+}
+
+#[test]
+fn survey_beyond_its_segment_bound_keeps_every_old_segment() {
+    let (fixture, _) = many_segments(40);
+    let Fixture {
+        group,
+        admission: _admission,
+        mut state,
+        model,
+    } = fixture;
+    let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
+    let before = locations(&state, &model);
+    // A store with more old segments than the bound: the walk stops at the
+    // first segment past it, with no refusal and no retry.
+    state.compact.bound_survey_for_test(16);
+    let (selected, totals) = run_cycle(&mut state, ONE);
+    assert_eq!(selected, Some((1, SelectionForTest::KeepAll)));
+    assert_eq!(totals.relocated, 0);
+    let status = state.maintenance_status().unwrap();
+    assert_eq!(status.evacuation_survey_fallbacks_total, 1);
+    assert_eq!(status.capacity_deferrals_total, 0);
+    check_arena_only(&state, &group, cutoff, &before, &model);
+    check_model(&mut state, &model);
+}
+
+/// A dense old segment, then hot keys rewritten until the writer reaches
+/// segment `last`: the segments between hold no live value. Returns the dense
+/// segment and its live value bytes.
+fn dense_then_churn(last: u64) -> (Fixture, u64, u64) {
+    let group = InMemoryGroup::new();
+    let admission = Admission::new(64 << 20);
+    let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
+    geometry_with_capacity(&mut state, PERCENT, DENSE_CAPACITY);
+    let mut model = BTreeMap::new();
+    let mut next = 0;
+    state
+        .commit(&[Operation::create_table("accounts")])
+        .unwrap();
+    seal_files(&mut state);
+    geometry_with_capacity(&mut state, PERCENT, DENSE_CAPACITY);
+    let dense = active_segment(&state);
+    fill_segment(&mut state, &mut model, &mut next);
+    let dense_bytes = locations(&state, &model)
+        .values()
+        .filter(|location| location.segment_id == dense)
+        .map(|location| u64::from(location.len))
+        .sum();
+    let hot: Vec<u32> = (100_000..100_000 + ROWS_PER_COMMIT).collect();
+    let mut round = 0u8;
+    while active_segment(&state) < last {
+        put_rows(&mut state, &mut model, &hot, round);
+        round = round.wrapping_add(1);
+    }
+    fill_segment(&mut state, &mut model, &mut next);
+    (
+        Fixture {
+            group,
+            admission,
+            state,
+            model,
+        },
+        dense,
+        dense_bytes,
+    )
+}
+
+#[test]
+fn kept_segments_spanning_too_many_identifiers_are_emptied() {
+    // Few segments stay live over a wide identifier range: the span rule
+    // empties the dense old one that the garbage bound alone would keep.
+    let (fixture, dense, dense_bytes) = dense_then_churn(40);
+    let Fixture {
+        group,
+        admission: _admission,
+        mut state,
+        model,
+    } = fixture;
+    let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
+    let (selected, totals) = run_cycle(&mut state, STEP);
+    let (_, surveyed, kept) = surveyed(selected);
+    assert!(
+        surveyed.contains(&dense) && surveyed.len() <= 4,
+        "{surveyed:?}"
+    );
+    assert!(cutoff.0 - dense + 1 > 8 * surveyed.len() as u64);
+    assert!(!kept.is_empty() && !kept.contains(&dense), "{kept:?}");
+    assert!(totals.relocated >= dense_bytes);
+    assert!(!group.exists(GroupFile::segment(dense)).unwrap());
+    check_reclaimed(&state, &group, cutoff);
+    check_model(&mut state, &model);
+
+    // Within the span, the same dense segment is kept in place.
+    let (fixture, dense, _) = dense_then_churn(12);
+    let Fixture {
+        group,
+        admission: _admission,
+        mut state,
+        model,
+    } = fixture;
+    let cutoff = state.owner.lock().unwrap().compaction_cutoffs();
+    let (selected, _) = run_cycle(&mut state, STEP);
+    let (_, surveyed, kept) = self::surveyed(selected);
+    assert!(cutoff.0 - dense < 8 * surveyed.len() as u64);
+    assert!(kept.contains(&dense), "{kept:?}");
+    assert!(group.exists(GroupFile::segment(dense)).unwrap());
+    check_reclaimed(&state, &group, cutoff);
+    check_model(&mut state, &model);
 }

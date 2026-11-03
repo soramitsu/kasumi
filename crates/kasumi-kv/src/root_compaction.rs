@@ -341,8 +341,10 @@ impl Superblock {
         Ok(next)
     }
 
-    /// Evacuating -> Reclaiming once no reachable page or value remains at or
-    /// below the cutoffs.
+    /// Evacuating -> Reclaiming once no reachable page remains in an arena at
+    /// or below the arena cutoff and no reachable value in a segment the
+    /// evacuation selected. Segments it kept below the segment cutoff stay
+    /// referenced; reclamation proves reachability and leaves them.
     pub(crate) fn advance_to_reclaiming(&self) -> Result<Self, CoreError> {
         self.advance(CompactionPhase::Evacuating, CompactionPhase::Reclaiming)
     }
