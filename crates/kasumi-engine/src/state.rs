@@ -527,6 +527,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 engine: self,
                 generation,
                 selection,
+                reopen: context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
                 receipt_installation,
                 binding_installation,
                 installation,
@@ -546,6 +547,8 @@ struct PreparedTenantRestore<'a> {
     engine: &'a TenantEngine,
     generation: Generation,
     selection: Option<crate::application_sources::RestoreSelection>,
+    /// The snapshot is this replica's own: its objects are already published.
+    reopen: bool,
     receipt_installation: crate::mutation_receipt::Installation,
     binding_installation: crate::backup_binding::Installation,
     installation: crate::staged_terminal::Installation,
@@ -565,7 +568,11 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         replacements.extend(self.binding_installation.replacements());
         replacements.extend(self.installation.replacements());
         replacements.extend(self.target_installation.replacements());
-        if let Some(documents) = &self.generation.staged_documents {
+        // Reopen reconciles its already published objects in bounded batches
+        // during publish; one replacement would restage every object.
+        if let Some(documents) = &self.generation.staged_documents
+            && !self.reopen
+        {
             replacements.extend(documents.complete_snapshot_replacements());
         }
         replacements
@@ -578,15 +585,21 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             engine,
             mut generation,
             selection,
+            reopen,
             // Keep the owner in the partially moved box. On an error, moved
             // locals retire first, then installations/writes, then the owner.
             ..
         } = *self;
-        engine
+        let store = engine
             .snapshot_store
             .get()
-            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?
-            .check_access()?;
+            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+        store.check_access()?;
+        // Before any selection captures the store, so replay never finds a
+        // swept object present. A failure leaves the restart to redo it.
+        if reopen && let Some(documents) = &generation.staged_documents {
+            documents.reconcile_reopened(store)?;
+        }
         if let Some(selection) = selection {
             let selected = selection.capture(generation.state.retired)?;
             let roots = engine

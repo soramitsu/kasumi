@@ -2,13 +2,13 @@
 //! Scratch tables are unpublished and private until the complete snapshot is
 //! verified and its application/custody coordinator imports both namespaces.
 use crate::{
-    document_encoding::{self, BodyManifest},
+    document_encoding::{self, BLOB_CHUNK_BYTES, BodyManifest},
     document_store::{BLOBS, BODIES, Scope, limits},
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
     DiskMemoryLease, EncryptedTable, EncryptedTableBatch, NamespaceReplacement,
-    NodeDiskMemoryAdmission, ScratchDisk,
+    NodeDiskMemoryAdmission, ScratchDisk, TenantStore, WriteOp,
 };
 use kasumi_types::{
     AdmittedDocumentOwner, Document, DocumentResolver, SharedDocument, StoredDocument,
@@ -17,6 +17,16 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 const FLOOR: u64 = 64 << 10;
+/// Operations and copied object bytes in one Reopen correction batch: one
+/// ordinary store write, far below the native transaction staging cap.
+#[cfg(not(test))]
+const CORRECTION_ENTRIES: usize = 4096;
+#[cfg(test)]
+const CORRECTION_ENTRIES: usize = 3;
+const CORRECTION_BYTES: usize = 8 << 20;
+/// A published manifest never exceeds the staged table's own row cap; a chunk
+/// never exceeds `BLOB_CHUNK_BYTES`. Each visited row reserves its full bound.
+const MAX_OBJECT_BYTES: usize = 32 << 20;
 
 /// Only read-side decode admission constructs this error. Keep its original
 /// provider observation separate from native I/O and retirement failures.
@@ -326,6 +336,81 @@ impl Builder {
     }
 }
 
+/// One bounded correction batch of a published object namespace. Its
+/// operation buffer and copied objects are admitted before allocation.
+struct Correction<'a> {
+    store: &'a Arc<TenantStore>,
+    memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
+    namespace: &'static str,
+    operations: Vec<WriteOp>,
+    bytes: usize,
+    // LAST: the buffer and its copies retire before their credit.
+    _grant: DiskMemoryLease,
+}
+impl<'a> Correction<'a> {
+    fn new(
+        store: &'a Arc<TenantStore>,
+        memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
+        namespace: &'static str,
+    ) -> Result<Self> {
+        // Each operation owns its namespace and key copies besides its slot.
+        let entry = std::mem::size_of::<WriteOp>() + namespace.len() + 64 + 128;
+        let bytes = CORRECTION_ENTRIES
+            .checked_mul(entry)
+            .and_then(|bytes| bytes.checked_add(CORRECTION_BYTES))
+            .context("document correction workspace overflow")?;
+        let grant = memory.clone().reserve_installed(u64::try_from(bytes)?)?;
+        let mut operations = Vec::new();
+        operations.try_reserve_exact(CORRECTION_ENTRIES)?;
+        Ok(Self {
+            store,
+            memory,
+            namespace,
+            operations,
+            bytes: 0,
+            _grant: grant,
+        })
+    }
+    fn delete(&mut self, key: &[u8]) -> Result<()> {
+        if self.operations.len() == CORRECTION_ENTRIES {
+            self.flush()?;
+        }
+        self.operations.push(WriteOp::delete(self.namespace, key));
+        Ok(())
+    }
+    fn put(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        if value.len() > CORRECTION_BYTES {
+            // An object above the batch allowance is written alone.
+            self.flush()?;
+            let _copy = self.memory.clone().reserve_installed(
+                u64::try_from(value.len())?
+                    .checked_add(4096)
+                    .context("document correction workspace overflow")?,
+            )?;
+            return self
+                .store
+                .write_batch(&[WriteOp::put(self.namespace, key, value)]);
+        }
+        if self.operations.len() == CORRECTION_ENTRIES
+            || self.bytes + value.len() > CORRECTION_BYTES
+        {
+            self.flush()?;
+        }
+        self.operations
+            .push(WriteOp::put(self.namespace, key, value));
+        self.bytes += value.len();
+        Ok(())
+    }
+    fn flush(&mut self) -> Result<()> {
+        if !self.operations.is_empty() {
+            self.store.write_batch(&self.operations)?;
+            self.operations.clear();
+            self.bytes = 0;
+        }
+        Ok(())
+    }
+}
+
 impl StagedDocuments {
     fn read_grant(&self, bytes: u64) -> Result<DiskMemoryLease> {
         self.tables
@@ -428,11 +513,65 @@ impl StagedDocuments {
     /// collection. The coordinator must include every logical current/feed
     /// descriptor from the verified snapshot, retain older selected views, and
     /// jointly publish these rows with the exact snapshot/custody commitment.
+    /// Reopen uses `reconcile_reopened` instead.
     pub(crate) fn complete_snapshot_replacements(&self) -> [NamespaceReplacement<'_>; 2] {
         [
             NamespaceReplacement::from_table(BODIES, &self.tables.bodies),
             NamespaceReplacement::from_table(BLOBS, &self.tables.blobs),
         ]
+    }
+
+    /// Reopen restores this replica's own snapshot, whose objects are already
+    /// published: object rows are content-addressed and no apply deletes them,
+    /// so both namespaces hold every object the snapshot names, plus objects
+    /// that only later or superseded documents name. Bring each namespace to
+    /// the snapshot's exact object set in bounded batches instead of one
+    /// complete replacement, whose staging grows with every object the tenant
+    /// ever wrote until it exceeds the native transaction cap and no restart
+    /// can succeed. Rows the snapshot lacks are deleted (replay rewrites each
+    /// object a later entry names), then missing objects are written. This
+    /// must finish before any restore selection captures the store: replay
+    /// checks object presence against that selection.
+    pub(crate) fn reconcile_reopened(&self, store: &Arc<TenantStore>) -> Result<()> {
+        let memory = self.tables.disk.memory();
+        for (namespace, table, max_bytes) in [
+            (BODIES, &self.tables.bodies, MAX_OBJECT_BYTES),
+            (BLOBS, &self.tables.blobs, BLOB_CHUNK_BYTES),
+        ] {
+            let mut correction = Correction::new(store, memory, namespace)?;
+            let mut kept = 0u64;
+            // The view keeps its selected root while earlier batches commit.
+            let view = store.read_view()?;
+            view.visit(namespace, max_bytes, |key, value| {
+                let _lookup = self.read_grant(FLOOR)?;
+                if table
+                    .get(key)?
+                    .is_some_and(|staged| staged.as_bytes() == value)
+                {
+                    kept += 1;
+                    return Ok(());
+                }
+                correction.delete(key)
+            })?;
+            view.close()?;
+            correction.flush()?;
+            let mut staged = 0u64;
+            table.visit(|_, _| {
+                staged += 1;
+                Ok(())
+            })?;
+            // Every kept row is one distinct staged object.
+            if kept != staged {
+                table.visit(|key, value| {
+                    if store.get_bounded(namespace, key, value.len())?.is_none() {
+                        correction.put(key, value)?;
+                    }
+                    Ok(())
+                })?;
+                correction.flush()?;
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]

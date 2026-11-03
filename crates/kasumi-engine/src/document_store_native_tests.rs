@@ -552,6 +552,155 @@ async fn document_store_native_restore_stages_shared_objects_without_live_public
     fixture.close().await
 }
 
+/// Every published document object row, by namespace and key.
+type PublishedObjects = std::collections::BTreeMap<(&'static str, Vec<u8>), Vec<u8>>;
+
+/// Read through a view, which takes key state per row: like reconciliation, a
+/// long scan never holds off lease renewal.
+fn published_objects(store: &Arc<kasumi_store::TenantStore>) -> Result<PublishedObjects> {
+    let mut objects = PublishedObjects::new();
+    let view = store.read_view()?;
+    for namespace in [BODIES, BLOBS] {
+        view.visit(namespace, 32 << 20, |key, value| {
+            objects.insert((namespace, key.to_vec()), value.to_vec());
+            Ok(())
+        })?;
+    }
+    view.close()?;
+    Ok(objects)
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_reopen_reconciles_published_objects_in_bounded_batches()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    let first = document("reopen-hex", 1, hex::encode(proof()));
+    let second = document("reopen-base64", 2, STANDARD.encode(proof()));
+    let first_descriptor = builder.push(&first)?;
+    let second_descriptor = builder.push(&second)?;
+    let staged = builder.finish()?;
+    let store = fixture.stores.application();
+    assert!(published_objects(store)?.is_empty());
+    // Missing objects are written: the namespaces hold the snapshot's objects.
+    staged.reconcile_reopened(store)?;
+    let expected = published_objects(store)?;
+    let (bodies, blobs) = staged.object_counts()?;
+    assert_eq!(expected.len() as u64, bodies + blobs);
+
+    // What a reopening replica finds: a damaged copy, a missing object, and
+    // more than one batch of objects that only later documents name.
+    let mut snapshot_keys = expected.keys();
+    let (damaged_namespace, damaged) = snapshot_keys.next().unwrap().clone();
+    let (missing_namespace, missing) = snapshot_keys.next().unwrap().clone();
+    let scope = crate::document_store::Scope::new(TENANT, &incarnation())?;
+    let mut writes = vec![
+        WriteOp::put(damaged_namespace, damaged, b"damaged".to_vec()),
+        WriteOp::delete(missing_namespace, missing),
+    ];
+    for ordinal in 0..9u8 {
+        let later = vec![ordinal; 64];
+        let namespace = if ordinal < 2 { BODIES } else { BLOBS };
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&later).into();
+        writes.push(WriteOp::put(namespace, scope.key(digest), later));
+    }
+    store.write_batch(&writes)?;
+    assert_ne!(published_objects(store)?, expected);
+    staged.reconcile_reopened(store)?;
+    assert_eq!(published_objects(store)?, expected);
+
+    // A selection captured afterwards serves both documents from those rows.
+    let selected = fixture.select()?;
+    let resolver = resolver(&fixture, &selected)?;
+    assert_eq!(first_descriptor.load(&resolver)?.as_ref(), &first);
+    assert_eq!(second_descriptor.load(&resolver)?.as_ref(), &second);
+    staged.reconcile_reopened(store)?;
+    assert_eq!(published_objects(store)?, expected);
+    drop(resolver);
+    drop(selected);
+    drop(staged);
+    fixture.close().await
+}
+
+/// 512 KiB of per-document text that is neither hex nor base64, so each
+/// 48 KiB chunk is a distinct object.
+fn reopen_text(ordinal: u64) -> String {
+    let mut state = ordinal.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    (0..512 << 10)
+        .map(|_| {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            b"ghijklmnopqrstuvwxyz.,;:"[(state % 24) as usize] as char
+        })
+        .collect()
+}
+
+// Minutes of synchronous work: a worker keeps renewing the 60 s key lease, as
+// beside the blocking restore in production.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_reopen_reconciles_more_objects_than_one_transaction_stages()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    const DOCUMENTS: u64 = 200;
+    let fixture = Fixture::new().await?;
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        256 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    let mut descriptors = Vec::new();
+    for ordinal in 0..DOCUMENTS {
+        let document = document(&format!("reopen-{ordinal:03}"), 1, reopen_text(ordinal));
+        descriptors.push(builder.push(&document)?);
+    }
+    let staged = builder.finish()?;
+    let store = fixture.stores.application();
+    // One complete replacement stages every object at once and exceeds the
+    // native transaction cap: the restart failure reconciliation replaces.
+    let error = store
+        .replace_namespaces(&staged.complete_snapshot_replacements(), &[])
+        .expect_err("one transaction cannot stage every object");
+    assert!(
+        format!("{error:#}").contains("storage capacity denied"),
+        "{error:#}"
+    );
+    // The refused writer retires with its failure custody.
+    drop(error);
+    assert!(published_objects(store)?.is_empty());
+
+    staged.reconcile_reopened(store)?;
+    let published = published_objects(store)?;
+    let (bodies, blobs) = staged.object_counts()?;
+    assert_eq!(published.len() as u64, bodies + blobs);
+    assert!(published.values().map(Vec::len).sum::<usize>() > kasumi_kv::MAX_BATCH_BYTES);
+    drop(published);
+    let selected = fixture.select()?;
+    let resolver = resolver(&fixture, &selected)?;
+    for (ordinal, descriptor) in (0..DOCUMENTS).zip(&descriptors) {
+        let loaded = descriptor.load(&resolver)?;
+        assert_eq!(loaded.as_ref().id, format!("reopen-{ordinal:03}"));
+        assert_eq!(loaded.as_ref().body["proof"], reopen_text(ordinal));
+    }
+    drop(resolver);
+    drop(selected);
+    drop(staged);
+    fixture.close().await
+}
+
 #[tokio::test]
 #[allow(
     clippy::result_large_err,
