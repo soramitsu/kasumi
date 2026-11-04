@@ -957,12 +957,18 @@ async fn store_embedded_after_reference_reopen(
     }
     let group = database.raft_group();
     let tenant = engine.generation()?.state.tenant.clone();
-    let before = group
-        .local_snapshots_published()
-        .ok_or_else(|| anyhow::anyhow!("a by-reference snapshot reopened a replicated group"))?;
+    if !group.is_local() {
+        return Err(anyhow::anyhow!("a by-reference snapshot reopened a replicated group").into());
+    }
+    let stored = |group: &kasumi_raft::RaftGroup| group.metrics().snapshot.map(|id| id.index);
+    let before = stored(group);
+    // A snapshot at the stored snapshot's own position reuses that stored image
+    // instead of writing the new capture, so one Blank entry (applied as metadata,
+    // no command) gives the embedded capture a strictly newer position first.
+    group.local_append_blank().await.map_err(anyhow::Error::from)?;
     group.snapshot().await.map_err(anyhow::Error::from)?;
     group.local_snapshot_settled().await.map_err(anyhow::Error::from)?;
-    let after = group.local_snapshots_published().unwrap_or(before);
+    let after = stored(group);
     if after <= before {
         // This binary still reads the stored by-reference snapshot, so it serves.
         // An older binary refuses that snapshot's format and does not open.

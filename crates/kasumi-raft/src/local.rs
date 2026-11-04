@@ -32,7 +32,9 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     worker: Worker,
     snapshot_worker: Arc<Worker>,
     report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
-    /// Snapshots durably published since this writer opened.
+    /// Snapshot builds that ended published since this writer opened. A build at
+    /// the stored snapshot's own position re-serves that stored image and still
+    /// counts; a deferred or failed build never does.
     published: Arc<AtomicU64>,
     #[cfg(any(test, feature = "test-utils"))]
     before_apply: Mutex<Option<Box<dyn FnOnce() + Send>>>,
@@ -296,8 +298,9 @@ where
         self.snapshot_settled().await
     }
 
-    /// Snapshots durably published since this writer opened. A deferred or
-    /// failed build never counts.
+    /// Snapshot builds that ended published since this writer opened, including a
+    /// re-served stored image at an unchanged position. A deferred or failed build
+    /// never counts; compare stored positions to learn whether bytes changed.
     pub(crate) fn published_snapshots(&self) -> u64 {
         self.published.load(Ordering::Acquire)
     }
@@ -363,6 +366,16 @@ where
     }
 
     pub(crate) async fn write(&self, command: RaftCommand) -> Result<Vec<u8>> {
+        self.append_payload(EntryPayload::Normal(command)).await
+    }
+
+    /// Append one Blank entry: the state machine applies it as metadata, so the
+    /// journal and the applied position advance with no application command.
+    pub(crate) async fn append_blank(&self) -> Result<()> {
+        self.append_payload(EntryPayload::Blank).await.map(drop)
+    }
+
+    async fn append_payload(&self, payload: EntryPayload<TypeConfig>) -> Result<Vec<u8>> {
         self.check()?;
         let mut worker = self.worker.lock().await;
         self.finish_worker(&mut worker).await;
@@ -387,7 +400,7 @@ where
             if let Some(hook) = before_apply {
                 tokio::task::spawn_blocking(hook).await?;
             }
-            let (data, applied) = match state.append(EntryPayload::Normal(command)).await? {
+            let (data, applied) = match state.append(payload).await? {
                 Appended::Applied(data, applied) => (data, applied),
                 // Nothing reached the journal, so this command is rejected
                 // and the writer, its position and its applied state go on.

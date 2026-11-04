@@ -880,8 +880,21 @@ impl RaftGroup {
             .await
     }
 
-    /// Snapshots the standalone writer has durably published since it opened;
-    /// `None` for a replicated group.
+    /// Append one Blank entry to a standalone journal. It carries no command: the
+    /// state machine applies it as metadata, advancing only the applied position.
+    pub async fn local_append_blank(&self) -> Result<()> {
+        self.check_proposal()?;
+        self.local
+            .as_ref()
+            .context("a blank append requires standalone mode")?
+            .append_blank()
+            .await?;
+        self.check_access()
+    }
+
+    /// Snapshot builds the standalone writer ended as published since it opened,
+    /// including a re-served stored image at an unchanged position; `None` for a
+    /// replicated group.
     pub fn local_snapshots_published(&self) -> Option<u64> {
         self.local.as_ref().map(|local| local.published_snapshots())
     }

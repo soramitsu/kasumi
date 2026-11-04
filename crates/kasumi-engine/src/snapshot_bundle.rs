@@ -863,9 +863,12 @@ mod tests {
         clippy::result_large_err,
         reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
     )]
+    /// A by-reference (KASUMIL1) capture: this engine alone opts in, as `serve
+    /// --local-snapshot-archive reference` would for the whole process.
     async fn capture_local(
         engine: Arc<TenantEngine>,
     ) -> crate::test_fixture_failure::FixtureResult<Vec<u8>> {
+        engine.fixture_reference_local_snapshots(true);
         let captured = engine.capture_local_snapshot()?;
         tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
             let mut bytes = Vec::new();
