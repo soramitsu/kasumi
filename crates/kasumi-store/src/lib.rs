@@ -37,7 +37,7 @@ mod cached_rows;
 pub use cached_rows::NamespaceEpoch;
 use catalog_read_budget::AdmittedKeyCatalog;
 pub use kasumi_kv::{
-    MaintenanceBudget, MaintenanceDeferral, MaintenanceProgress, MaintenanceStep,
+    MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress, MaintenanceStep,
     StorageCompactionPhase, StorageMaintenanceStatus,
 };
 pub use key_access_denied::KeyAccessDenied;
@@ -1638,6 +1638,15 @@ impl NodeStore {
         &self,
     ) -> Result<StorageMaintenanceStatus, kasumi_kv::StorageError> {
         self.body().db.maintenance_status()
+    }
+
+    /// Select this exact node's maintenance scheduling policy. This changes no
+    /// quota, on-disk format, or other node's policy; callers reapply it on open.
+    pub fn configure_storage_maintenance(
+        &self,
+        policy: MaintenancePolicy,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        self.body().db.configure_maintenance(policy)
     }
 
     /// Ask the node's database to begin a compaction cycle at its next

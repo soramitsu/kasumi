@@ -1099,6 +1099,22 @@ impl RegisteredNodeOpening {
             .maintenance_status()
     }
 
+    /// Configure only the currently admitted, open owner. This is in-memory
+    /// scheduling policy; the persisted cycle and its reachability proof are unchanged.
+    pub fn configure_maintenance(
+        &self,
+        policy: kasumi_kv::MaintenancePolicy,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state.engine.database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .configure_maintenance(policy)
+    }
+
     /// Begin a compaction cycle at the next maintenance step regardless of
     /// the growth thresholds, unless nothing older than the newest files
     /// exists yet.

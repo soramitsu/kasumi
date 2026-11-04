@@ -336,6 +336,16 @@ impl NodeDatabase {
         }
     }
 
+    pub(crate) fn configure_maintenance(
+        &self,
+        policy: kasumi_kv::MaintenancePolicy,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => database.configure_maintenance(policy),
+            Accepted::Registered(opening) => opening.configure_maintenance(policy),
+        }
+    }
+
     pub(crate) fn request_compaction(&self) -> Result<(), kasumi_kv::StorageError> {
         match self.accepted().map_err(|error| error.0)? {
             Accepted::Direct(database) => database.request_compaction(),

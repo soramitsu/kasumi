@@ -278,10 +278,19 @@ fn selective_evacuation_relocates_a_fraction_of_legacy_under_steady_churn() {
 
 #[test]
 fn crash_loop_reopen_stays_bounded() {
+    crash_loop_with_policy(policy());
+}
+
+#[test]
+fn earlier_compaction_150_crash_reopen_preserves_values_and_bounded_growth() {
+    crash_loop_with_policy(MaintenancePolicy { growth_percent: 150, ..policy() });
+}
+
+fn crash_loop_with_policy(selected_policy: MaintenancePolicy) {
     let admission = Admission::new(64 << 20);
     let mut group = InMemoryGroup::new();
     let mut state = create(Arc::new(group.clone()), admission.clone(), LARGE_CACHE);
-    geometry(&mut state);
+    geometry_with(&mut state, selected_policy);
     let mut model = BTreeMap::new();
     cold_rows(&mut state, &mut model, 400);
     let live_value_bytes = 400 * 32;
@@ -329,7 +338,7 @@ fn crash_loop_reopen_stays_bounded() {
             LARGE_CACHE,
         )
         .unwrap();
-        geometry(&mut state);
+        geometry_with(&mut state, selected_policy);
     }
     let cycles = record(&state).cycle();
     eprintln!(
@@ -634,4 +643,18 @@ fn randomized_model_interleavings_preserve_reachability() {
         check_model(&mut state, &model);
         assert!(record(&state).cycle() >= 1);
     }
+}
+
+/// The production geometry is scaled down, but real copy-on-write pages, pins,
+/// selected evacuation and authenticated reads are exercised across several cycles.
+#[test]
+fn earlier_compaction_150_with_pinned_snapshot_churn_plateaus() {
+    let status = steady_stream(
+        Some(97),
+        MaintenancePolicy { growth_percent: 150, ..policy() },
+        8_000,
+    );
+    assert_eq!(status.evacuation_survey_fallbacks_total, 0);
+    assert_eq!(status.capacity_deferrals_total, 0);
+    assert_eq!(status.rejected_deferrals_total, 0);
 }

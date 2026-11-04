@@ -692,6 +692,7 @@ async fn node_cache_workers_wait_for_runtime_handoff_impl() -> Result<()> {
                 Arc::new(crate::runtime::file_secret),
                 storage.clone(),
                 None,
+                None,
             ),
         )
         .await
