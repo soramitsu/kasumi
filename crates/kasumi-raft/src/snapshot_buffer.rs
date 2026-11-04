@@ -1477,9 +1477,12 @@ impl AsyncSeek for SnapshotBuffer {
         let mut state = self.cell.state.lock().unwrap_or_else(|p| p.into_inner());
         check_open(&state)?;
         self.owner.check()?;
-        if state.pending.is_some() || state.completion.is_some() {
+        if state.pending.is_some() {
             return Err(io::Error::other("snapshot operation still pending"));
         }
+        // A joined write already moved the position, and unread bytes of a
+        // joined read belong to the old position.
+        state.completion.take();
         let position = match position {
             SeekFrom::Start(value) => i128::from(value),
             SeekFrom::Current(value) => i128::from(state.position) + i128::from(value),
@@ -1491,13 +1494,15 @@ impl AsyncSeek for SnapshotBuffer {
         state.position = position as u64;
         Ok(())
     }
-    fn poll_complete(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
-        Poll::Ready(Ok(self
-            .cell
-            .state
-            .lock()
-            .unwrap_or_else(|p| p.into_inner())
-            .position))
+    fn poll_complete(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<u64>> {
+        // A dropped snapshot RPC abandons its read or write child here. Seeking
+        // joins that child, so the retried chunk can reposition the stream.
+        let mut state = self.cell.state.lock().unwrap_or_else(|p| p.into_inner());
+        if self.cell.join(&mut state, cx, 0).is_pending() {
+            return Poll::Pending;
+        }
+        state.report.complete().map_err(io::Error::other)?;
+        Poll::Ready(Ok(state.position))
     }
 }
 

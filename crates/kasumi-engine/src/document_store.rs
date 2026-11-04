@@ -41,6 +41,85 @@ pub(crate) fn limits(bytes: usize) -> Result<BodyLimits> {
     })
 }
 
+/// Measurements borrow the admitted input through encoding. One canonical
+/// body pass supplies its size, work and independent hash; one document pass
+/// supplies its complete size and work. Neither retains another payload copy.
+pub(crate) struct DocumentMeasurement<'a> {
+    document: &'a Document,
+    limits: BodyLimits,
+    body_bytes: u64,
+    body_work: u64,
+    body_sha256: [u8; 32],
+    document_bytes: u64,
+    document_work: u64,
+}
+impl<'a> DocumentMeasurement<'a> {
+    pub(crate) fn new(document: &'a Document) -> Result<Self> {
+        let mut digest = Sha256::new();
+        let (body_bytes, body_work) = crate::snapshot_codec::measure_typed_json(
+            &kasumi_types::CanonicalJsonValue(&document.body),
+            |bytes| digest.update(bytes),
+        )?;
+        let limits = limits(usize::try_from(body_bytes)?)?;
+        let (document_bytes, document_work) =
+            crate::snapshot_codec::measure_typed_json(document, |_| {})?;
+        Ok(Self {
+            document,
+            limits,
+            body_bytes,
+            body_work,
+            body_sha256: digest.finalize().into(),
+            document_bytes,
+            document_work,
+        })
+    }
+
+    pub(crate) fn limits(&self) -> BodyLimits {
+        self.limits
+    }
+
+    pub(crate) fn workspace(&self) -> Result<u64> {
+        self.document_work
+            .checked_add(
+                self.body_bytes
+                    .checked_mul(8)
+                    .context("document preparation overflow")?,
+            )
+            .and_then(|bytes| bytes.checked_add(1 << 20))
+            .context("document preparation overflow")
+    }
+
+    pub(crate) fn descriptor(
+        &self,
+        manifest: &BodyManifest,
+        wire: &[u8],
+    ) -> Result<StoredDocument> {
+        // encode_body independently hashes its emitted canonical spelling.
+        // Never substitute a manifest's declared identity for input validation.
+        ensure!(
+            self.body_bytes == manifest.canonical_bytes
+                && self.body_sha256 == manifest.canonical_sha256,
+            "document encoding differs from canonical body"
+        );
+        let descriptor = StoredDocument {
+            id: self.document.id.clone(),
+            version: self.document.version,
+            body_bytes: self.body_bytes,
+            document_bytes: self.document_bytes,
+            body_sha256: self.body_sha256,
+            body_object: Sha256::digest(wire).into(),
+            body_object_bytes: wire.len() as u64,
+            body_decode_work: self.body_work,
+            body_manifest_work: crate::snapshot_codec::inspect_external_json_work(
+                wire,
+                &mut || Ok(()),
+            )?,
+        };
+        descriptor.validate()?;
+        Ok(descriptor)
+    }
+}
+
 pub(crate) fn source_workspace(slot: &kasumi_types::DocumentSlot) -> Result<u64> {
     match slot {
         kasumi_types::DocumentSlot::Pending(document) => {
@@ -135,17 +214,9 @@ impl PreparedDocuments {
         })
     }
     pub(crate) fn stage(&mut self, document: &Document) -> Result<StoredDocument> {
-        let bytes =
-            crate::accounting::encoded_len(&kasumi_types::CanonicalJsonValue(&document.body))?;
-        let limits = limits(bytes)?;
-        let work = crate::snapshot_codec::inspect_typed_json_work(document)?
-            .checked_add(
-                (bytes as u64)
-                    .checked_mul(8)
-                    .context("document preparation overflow")?,
-            )
-            .and_then(|v| v.checked_add(1 << 20))
-            .context("document preparation overflow")?;
+        let measured = DocumentMeasurement::new(document)?;
+        let limits = measured.limits();
+        let work = measured.workspace()?;
         self.reservation.ensure_peak(
             self.retained
                 .checked_add(work)
@@ -156,22 +227,8 @@ impl PreparedDocuments {
                 self.put(false, reference.sha256, bytes, work)
             })?;
         let wire = manifest.to_bytes(limits)?;
-        let object = Sha256::digest(&wire).into();
-        self.put(true, object, &wire, work)?;
-        let descriptor = StoredDocument::from_document(
-            document,
-            object,
-            wire.len() as u64,
-            crate::snapshot_codec::inspect_typed_json_work(&kasumi_types::CanonicalJsonValue(
-                &document.body,
-            ))?,
-            crate::snapshot_codec::inspect_external_json_work(&wire, &mut || Ok(()))?,
-        )?;
-        ensure!(
-            descriptor.body_bytes == manifest.canonical_bytes
-                && descriptor.body_sha256 == manifest.canonical_sha256,
-            "document encoding differs from canonical body"
-        );
+        let descriptor = measured.descriptor(&manifest, &wire)?;
+        self.put(true, descriptor.body_object, &wire, work)?;
         drop(wire);
         drop(manifest);
         self.reservation.retain(self.retained);

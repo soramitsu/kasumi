@@ -2805,11 +2805,22 @@ impl Fixture {
             let (packet, routes) = inspection_routes
                 .get(&signed.observation.status_intent.request.command_id)
                 .expect("retained exact inspection routing evidence");
-            assert_eq!(
-                routes,
-                &BTreeSet::from([observer_node]),
+            assert!(
+                routes.contains(&observer_node),
                 "inspection must reach current leader while original target is unavailable"
             );
+            // A surviving follower may be tried during an election. Every
+            // route must preserve the exact read-only packet (checked above),
+            // and none may use the unavailable original or an uninstalled node.
+            assert!(routes.iter().all(|route| {
+                *route != node_id
+                    && self
+                        .request
+                        .as_ref()
+                        .unwrap()
+                        .target_nodes
+                        .contains_key(route)
+            }));
             assert_eq!(
                 packet.command_id,
                 signed.observation.status_intent.request.command_id

@@ -425,7 +425,18 @@ pub(super) fn read(
     reader: &mut dyn Read,
     expected: Option<crate::snapshot_codec::StreamSummary>,
 ) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
+    read_checked(engine, baseline, reader, expected, &|| Ok(()))
+}
+
+pub(super) fn read_checked(
+    engine: &TenantEngine,
+    baseline: &ValidationBaseline<'_>,
+    reader: &mut dyn Read,
+    expected: Option<crate::snapshot_codec::StreamSummary>,
+    check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
+) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
     let (store, mut decoder, source) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        check()?;
         baseline.current_for(engine)?;
         let store = engine
             .snapshot_store
@@ -462,7 +473,13 @@ pub(super) fn read(
         ended: false,
     };
     let generation = engine
-        .prepare_snapshot_reader(baseline, store.scratch_disk(), &mut logical, expected)
+        .prepare_snapshot_reader_checked(
+            baseline,
+            store.scratch_disk(),
+            &mut logical,
+            expected,
+            check,
+        )
         .map_err(crate::SnapshotFailure::into_scratch_failure)?;
     let logical_ended = logical.ended;
     drop(logical);
@@ -541,8 +558,9 @@ mod tests {
     ) -> (tempfile::TempDir, Arc<TenantEngine>, Arc<TenantStore>) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         // Bundle validation overlaps the current six immutable tables with
-        // its replacement; keep the same byte bound and fund their slots.
-        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 128);
+        // its replacement, and an install then reconciles published objects
+        // through one full-bound object row read beside a correction batch.
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
         kasumi_store::private_files::create_directory(&directory.path().join("persistent"))
             .unwrap();
         let disk =
@@ -756,6 +774,7 @@ mod tests {
                 },
             };
             let prepared = engine.prepare_restore(&context, &mut image.reader())?;
+            prepared.stage_application()?;
             store.replace_namespaces(
                 &prepared.application_replacements(),
                 prepared.application_writes(),

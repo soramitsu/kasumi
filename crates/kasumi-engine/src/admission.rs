@@ -15,6 +15,14 @@ use std::{
     time::Duration,
 };
 
+/// Structural workspace for decoding bounded JSON before constructing its
+/// DTO. Encoded transport buffers need their own reservation. This uses the
+/// same conservative transient model as authenticated snapshot records.
+pub fn json_decode_workspace(bytes: &[u8]) -> Result<u64> {
+    crate::snapshot_codec::inspect_external_json_work(bytes, &mut || Ok(()))
+        .map_err(|_| Error::new(ErrorCode::InvalidArgument, "invalid request JSON structure"))
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AdmissionConfig {

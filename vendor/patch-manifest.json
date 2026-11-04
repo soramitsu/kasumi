@@ -3380,9 +3380,9 @@
           "sha256": "db48bfcd5fbf25cc1073162ff37bc9ee5ec81e477c52329c5a0fb608499374a9"
         },
         "openraft/src/network/snapshot_transport.rs": {
-          "bytes": 52466,
+          "bytes": 52714,
           "mode": "0o644",
-          "sha256": "d55bd8eea3833f64b144a60d5722873cf1d452cbb5e74de46609b2a40c73c375"
+          "sha256": "b609e3b9d9f3bff21190b3438bbce2961202b1381a98c96a0ca1036d35e4fa84"
         },
         "openraft/src/node.rs": {
           "bytes": 3715,
@@ -4512,28 +4512,28 @@
       "path": "vendor/openraft-0.9.25",
       "review": {
         "inventory_path": "vendor/reviews/openraft-0.9.25/source-inventory.json",
-        "inventory_sha256": "ba4dc0bcf1282deea19e7620c29995a8eefa5a3e63bede116e5508b2f77c5cef",
+        "inventory_sha256": "0b818a9ea8452e7ad4accedabaa2089fcf52da7162451a4823921d37dcd43a97",
         "kind": "openraft-checkpoint",
         "path": "vendor/reviews/openraft-0.9.25/custody-checkpoint.json",
-        "sha256": "107bc549b9294d2d297d6997f855f3d692f7b98c152dff2a602af5fe1e2a4387"
+        "sha256": "a998f0de571c48885cb4b3543f82b2e957f83581699bc8fd304d79be7aa5adef"
       }
     }
   ],
   "support_files": {
     "README.md": {
-      "bytes": 8005,
+      "bytes": 8227,
       "mode": "0o644",
-      "sha256": "8618648c50904cc4d2a1d9e7ec4547b9fa03246e8877445f893147d924d90a92"
+      "sha256": "ecb29a3f0dacb0b93e4af314c91200c809aec1082ccbd7b5d885402d98dd5b36"
     },
     "reviews/openraft-0.9.25/custody-checkpoint.json": {
-      "bytes": 6974,
+      "bytes": 7380,
       "mode": "0o644",
-      "sha256": "107bc549b9294d2d297d6997f855f3d692f7b98c152dff2a602af5fe1e2a4387"
+      "sha256": "a998f0de571c48885cb4b3543f82b2e957f83581699bc8fd304d79be7aa5adef"
     },
     "reviews/openraft-0.9.25/source-inventory.json": {
       "bytes": 111767,
       "mode": "0o644",
-      "sha256": "ba4dc0bcf1282deea19e7620c29995a8eefa5a3e63bede116e5508b2f77c5cef"
+      "sha256": "0b818a9ea8452e7ad4accedabaa2089fcf52da7162451a4823921d37dcd43a97"
     },
     "rmcp-terminal-ownership.md": {
       "bytes": 5241,

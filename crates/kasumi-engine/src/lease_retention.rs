@@ -518,6 +518,10 @@ impl LeaseManager {
             .handle
             .clone())
     }
+    /// Inserts lease `id` unless `cancellation` fired first, both under the
+    /// entries lock. A caller that stops waiting cancels and then closes `id`,
+    /// so a late worker either never inserts or is closed after it does.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn open(
         &self,
         engine: &TenantEngine,
@@ -526,6 +530,8 @@ impl LeaseManager {
         clock: Arc<dyn LeaseClock>,
         term: u64,
         node: &Arc<NodeAdmission>,
+        id: String,
+        cancellation: &kasumi_query::QueryCancellation,
     ) -> Result<Arc<LeaseHandle>> {
         let mut entries = self.entries.lock().unwrap_or_else(|p| p.into_inner());
         let current = engine.generation()?;
@@ -552,7 +558,6 @@ impl LeaseManager {
         reservation.retain_workspace();
         let mut header_reservation = node.reserve(LEASE_HANDLE_BYTES as u64, None)?;
         header_reservation.retain_workspace();
-        let id = uuid::Uuid::new_v4().to_string();
         let handle = Arc::new(LeaseHandle {
             header: SnapshotLease {
                 lease_id: id.clone(),
@@ -572,6 +577,7 @@ impl LeaseManager {
             _reservation: header_reservation,
         });
         context.authorization.check_live()?;
+        cancellation.check()?;
         entries.insert(
             id,
             Roots {

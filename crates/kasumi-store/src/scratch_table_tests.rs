@@ -94,6 +94,27 @@ fn dropping_a_table_observes_native_close_before_returning_scratch_credit() {
 }
 
 #[test]
+fn scratch_table_commit_orders_intermediate_writes_and_finishes_with_full_sync() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
+    let table = EncryptedTable::new(&disk, 8 << 20, CACHE).unwrap();
+    table.insert(b"warmup", b"first").unwrap();
+    let full = disk.physical_synchronizations();
+    let ordered = disk.ordered_synchronizations();
+    table.insert(b"identity", b"second").unwrap();
+    // Data, directory pages, directory and commit records, and the first
+    // root copy are ordered. Publication and extent settlement still fully
+    // synchronize before the real table commit reports success.
+    assert!(disk.ordered_synchronizations() - ordered >= 5);
+    assert!(disk.physical_synchronizations() > full);
+    assert_eq!(table.get(b"identity").unwrap().unwrap().as_ref(), b"second");
+    drop(table);
+    assert_eq!(disk.snapshot().live_files, 0);
+    assert_eq!(disk.snapshot().charged_bytes, 0);
+}
+
+#[test]
 fn batch_outliving_table_observes_close_after_its_transaction_ends() {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();

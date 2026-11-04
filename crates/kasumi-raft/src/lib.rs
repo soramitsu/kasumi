@@ -148,6 +148,8 @@ use std::{
     },
     time::Duration,
 };
+#[cfg(any(test, feature = "test-utils"))]
+pub use storage::received_application_snapshot_for_test;
 pub use storage::{LogStore, StateMachine, recovery_snapshot_bytes};
 pub use timing::server_config;
 pub use write_errors::{
@@ -292,6 +294,13 @@ impl SnapshotRestoreContext {
 
 pub trait PreparedStateMachineRestore {
     fn retirement(&self) -> Option<RetiredSnapshotState>;
+    /// Durably write, in bounded batches before durable publication, rows the
+    /// restored state names that one publication transaction cannot stage. No
+    /// published state may name such a row first, so a failure here or before
+    /// publication leaves the previous snapshot intact.
+    fn stage_application(&self) -> Result<()> {
+        Ok(())
+    }
     fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>>;
     fn application_writes(&self) -> &[kasumi_store::WriteOp];
     /// Called only after durable publication succeeds. A release failure seals
@@ -1122,6 +1131,34 @@ impl RaftGroup {
         let receipt = crate::custody_tables::receipt(self.store.custody().store(), command_id)?;
         self.check_access()?;
         Ok(receipt)
+    }
+
+    /// The term under which ordered admission may read applied state. A new
+    /// leader's applied state can omit entries an earlier leader committed,
+    /// such as a permanent retirement, until it applies its own term's first
+    /// entry; `None` means it has not done so within `within`. Other nodes and
+    /// a stopped core proceed to the ordinary redirect or failure. Compare the
+    /// term with `current_term` again just before proposing.
+    pub async fn admission_term(&self, within: Duration) -> Option<u64> {
+        let Some(raft) = self.try_raft() else {
+            return Some(self.current_term());
+        };
+        let mut metrics = raft.metrics();
+        let observed = tokio::time::timeout(
+            within,
+            metrics.wait_for(|metrics| {
+                metrics.state != openraft::ServerState::Leader
+                    || metrics
+                        .last_applied
+                        .is_some_and(|applied| applied.leader_id.term == metrics.current_term)
+            }),
+        )
+        .await;
+        match observed {
+            Ok(Ok(ready)) => Some(ready.current_term),
+            Ok(Err(_)) => Some(self.current_term()),
+            Err(_) => None,
+        }
     }
 
     pub async fn write_custody(&self, command: CustodyCommand) -> Result<Vec<u8>> {

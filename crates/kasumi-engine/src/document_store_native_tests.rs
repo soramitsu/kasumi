@@ -1,10 +1,11 @@
 //! Real encrypted native rows and paired application/custody publication.
 //! These tests exercise the production document store, not a replacement cache.
+use super::completion_tests::{OrdinaryFixture, definition};
 use super::*;
 use crate::document_store::{BLOBS, BODIES, PreparedDocuments, SelectedDocuments};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kasumi_store::WriteOp;
-use kasumi_types::Document;
+use kasumi_types::{Document, Mutation, MutationBatch, Operation, Precondition, WriteReceipt};
 
 const TENANT: &str = "selected-sources";
 
@@ -171,6 +172,25 @@ fn blob_count(writes: &[WriteOp]) -> usize {
         .iter()
         .filter(|write| matches!(write, WriteOp::Put { namespace, .. } if namespace == BLOBS))
         .count()
+}
+
+fn assert_canonical_descriptor(
+    document: &Document,
+    descriptor: &kasumi_types::StoredDocument,
+) -> Result<()> {
+    let canonical = serde_json::to_vec(&kasumi_types::CanonicalJsonValue(&document.body))?;
+    let body_work = crate::snapshot_codec::inspect_external_json_work(&canonical, &mut || Ok(()))?;
+    assert_eq!(
+        descriptor,
+        &kasumi_types::StoredDocument::from_document(
+            document,
+            descriptor.body_object,
+            descriptor.body_object_bytes,
+            body_work,
+            descriptor.body_manifest_work,
+        )?
+    );
+    Ok(())
 }
 
 #[tokio::test]
@@ -358,9 +378,14 @@ async fn document_store_native_joint_publication_deduplicates_hex_and_base64()
 -> crate::test_fixture_failure::FixtureResult<()> {
     let fixture = Fixture::new().await?;
     let bootstrap = fixture.select()?;
-    let input = document("old-action", 1, hex::encode(proof()));
+    let mut input = document("old-action", 1, hex::encode(proof()));
+    input.body["metadata"] = serde_json::json!({
+        "quoted\"key": "雪\\\n\t",
+        "nested": [null, true, -17, 1.25, {"empty": []}],
+    });
     let mut first = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
     let old = first.stage(&input)?;
+    assert_canonical_descriptor(&input, &old)?;
     assert_eq!(blob_count(first.writes()), 2);
     assert!(old.load(&resolver(&fixture, &bootstrap)?).is_err());
     let (position, selected) = publish(&fixture, None, first.writes())?;
@@ -372,6 +397,7 @@ async fn document_store_native_joint_publication_deduplicates_hex_and_base64()
     let second_input = document("new-action", 2, STANDARD.encode(proof()));
     let mut second = PreparedDocuments::new(&fixture.roots, &selected, TENANT, &incarnation())?;
     let new = second.stage(&second_input)?;
+    assert_canonical_descriptor(&second_input, &new)?;
     assert_eq!(blob_count(second.writes()), 0);
     assert_eq!(second.writes().len(), 1);
     assert!(matches!(&second.writes()[0], WriteOp::Put { namespace, .. } if namespace == BODIES));
@@ -544,30 +570,37 @@ async fn document_store_native_restore_stages_shared_objects_without_live_public
             Ok(())
         })?;
     assert_eq!(live_objects, 0);
-    // Finishing scratch alone gives no serving authority or live namespace write.
-    // Production publication must use the full snapshot's actual joint callback.
-    assert_eq!(staged.complete_snapshot_replacements().len(), 2);
+    // Finishing scratch alone gives no serving authority or live namespace
+    // write; only the coordinator installing the snapshot writes its objects.
     drop(staged);
     drop(selected);
     fixture.close().await
 }
 
 /// Every published document object row, by namespace and key.
-type PublishedObjects = std::collections::BTreeMap<(&'static str, Vec<u8>), Vec<u8>>;
+type Published<T> = std::collections::BTreeMap<(&'static str, Vec<u8>), T>;
+type PublishedObjects = Published<Vec<u8>>;
 
 /// Read through a view, which takes key state per row: like reconciliation, a
 /// long scan never holds off lease renewal.
-fn published_objects(store: &Arc<kasumi_store::TenantStore>) -> Result<PublishedObjects> {
-    let mut objects = PublishedObjects::new();
+fn published<T>(
+    store: &Arc<kasumi_store::TenantStore>,
+    value: impl Fn(&[u8]) -> T,
+) -> Result<Published<T>> {
+    let mut objects = Published::new();
     let view = store.read_view()?;
     for namespace in [BODIES, BLOBS] {
-        view.visit(namespace, 32 << 20, |key, value| {
-            objects.insert((namespace, key.to_vec()), value.to_vec());
+        view.visit(namespace, 32 << 20, |key, row| {
+            objects.insert((namespace, key.to_vec()), value(row));
             Ok(())
         })?;
     }
     view.close()?;
     Ok(objects)
+}
+
+fn published_objects(store: &Arc<kasumi_store::TenantStore>) -> Result<PublishedObjects> {
+    published(store, <[u8]>::to_vec)
 }
 
 #[tokio::test]
@@ -592,7 +625,7 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     let store = fixture.stores.application();
     assert!(published_objects(store)?.is_empty());
     // Missing objects are written: the namespaces hold the snapshot's objects.
-    staged.reconcile_reopened(store)?;
+    staged.reconcile(store)?;
     let expected = published_objects(store)?;
     let (bodies, blobs) = staged.object_counts()?;
     assert_eq!(expected.len() as u64, bodies + blobs);
@@ -615,7 +648,7 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     }
     store.write_batch(&writes)?;
     assert_ne!(published_objects(store)?, expected);
-    staged.reconcile_reopened(store)?;
+    staged.reconcile(store)?;
     assert_eq!(published_objects(store)?, expected);
 
     // A selection captured afterwards serves both documents from those rows.
@@ -623,7 +656,7 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     let resolver = resolver(&fixture, &selected)?;
     assert_eq!(first_descriptor.load(&resolver)?.as_ref(), &first);
     assert_eq!(second_descriptor.load(&resolver)?.as_ref(), &second);
-    staged.reconcile_reopened(store)?;
+    staged.reconcile(store)?;
     assert_eq!(published_objects(store)?, expected);
     drop(resolver);
     drop(selected);
@@ -682,7 +715,7 @@ async fn document_store_native_reopen_reconciles_more_objects_than_one_transacti
     drop(error);
     assert!(published_objects(store)?.is_empty());
 
-    staged.reconcile_reopened(store)?;
+    staged.reconcile(store)?;
     let published = published_objects(store)?;
     let (bodies, blobs) = staged.object_counts()?;
     assert_eq!(published.len() as u64, bodies + blobs);
@@ -699,6 +732,233 @@ async fn document_store_native_reopen_reconciles_more_objects_than_one_transacti
     drop(selected);
     drop(staged);
     fixture.close().await
+}
+
+/// Commit `operation` as the replica's next entry; it must succeed.
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+fn commit(
+    replica: &OrdinaryFixture,
+    operation: Operation,
+) -> crate::test_fixture_failure::FixtureResult<()> {
+    let response = replica.apply(&replica.input(operation)?, || {})?;
+    serde_json::from_slice::<kasumi_types::Result<WriteReceipt>>(&response.data)??;
+    Ok(())
+}
+
+/// The proof `generation` serves for document `id`.
+fn served(generation: &crate::Generation, id: &str) -> Result<serde_json::Value> {
+    Ok(crate::test_utils::fixture_document(generation, "docs", id)?.body["proof"].clone())
+}
+
+fn put(key: &str, id: &str, proof: String) -> Operation {
+    put_all(key, [(id.to_owned(), proof)])
+}
+
+fn put_all(key: &str, documents: impl IntoIterator<Item = (String, String)>) -> Operation {
+    Operation::Mutate(MutationBatch {
+        idempotency_key: key.into(),
+        read_set: vec![],
+        operations: documents
+            .into_iter()
+            .map(|(id, proof)| Mutation::Put {
+                collection: "docs".into(),
+                id,
+                body: serde_json::json!({"proof": proof}),
+                expected: Precondition::Any,
+            })
+            .collect(),
+    })
+}
+
+/// Default limits, except that the change feed keeps only its latest `events`.
+fn feed_events(events: usize) -> Limits {
+    Limits {
+        history: kasumi_types::HistoryLimits {
+            max_feed_events: events,
+            ..Default::default()
+        },
+        ..Limits::default()
+    }
+}
+
+/// The application snapshot a build on `leader` sends at its last entry.
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+fn leader_snapshot(
+    leader: &OrdinaryFixture,
+) -> crate::test_fixture_failure::FixtureResult<(
+    kasumi_raft::SnapshotMeta<u64, kasumi_raft::BasicNode>,
+    SnapshotImage,
+)> {
+    let generation = leader.engine.generation()?;
+    let index = generation.state.revision - generation.state.revision_base;
+    drop(generation);
+    let captured = kasumi_raft::StateMachineBackend::capture_snapshot(leader.engine.as_ref())?;
+    let mut spool = kasumi_store::EncryptedSpool::new(
+        leader.fixture.stores.application().scratch_disk(),
+        1 << 30,
+    )?;
+    captured.write(&mut spool)?;
+    let meta = kasumi_raft::SnapshotMeta {
+        last_log_id: Some(openraft::LogId::new(
+            openraft::CommittedLeaderId::new(1, 1),
+            index,
+        )),
+        last_membership: Default::default(),
+        snapshot_id: uuid::Uuid::new_v4().to_string(),
+    };
+    Ok((meta, SnapshotImage::freeze(spool)?))
+}
+
+/// Install the leader's snapshot through the follower's actual state machine,
+/// as openraft does once it has arrived.
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn install(
+    follower: &OrdinaryFixture,
+    meta: &kasumi_raft::SnapshotMeta<u64, kasumi_raft::BasicNode>,
+    image: SnapshotImage,
+) -> crate::test_fixture_failure::FixtureResult<()> {
+    use openraft::storage::RaftStateMachine as _;
+    let buffers = &follower.fixture._buffers;
+    let mut machine = kasumi_raft::StateMachine::open(
+        follower.fixture.stores.clone(),
+        follower.engine.clone(),
+        buffers.clone(),
+    )
+    .await?;
+    let received = kasumi_raft::received_application_snapshot_for_test(
+        meta,
+        image,
+        kasumi_raft::RaftLimits::default().max_snapshot_bytes,
+        buffers,
+    )?;
+    machine
+        .install_snapshot(meta, Box::new(received))
+        .await
+        .map_err(|error| anyhow::anyhow!("{error}"))?;
+    Ok(())
+}
+
+// Minutes of synchronous work, as beside the Reopen fixture above.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_install_publishes_more_objects_than_one_transaction_stages()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    const DOCUMENTS: u64 = 200;
+    // Documents per commit, within one 8 MiB mutation batch.
+    const BATCH: usize = 14;
+    let leader = OrdinaryFixture::new().await?;
+    // The feed keeps one commit's events, so the snapshot carries most bodies
+    // once; the same objects back the feed either way.
+    commit(&leader, Operation::SetLimits(feed_events(BATCH)))?;
+    commit(&leader, Operation::CreateCollection(definition()))?;
+    let ordinals = (0..DOCUMENTS).collect::<Vec<_>>();
+    for batch in ordinals.chunks(BATCH) {
+        let key = format!("install-{}", batch[0]);
+        let documents = batch
+            .iter()
+            .map(|ordinal| (format!("install-{ordinal:03}"), reopen_text(*ordinal)));
+        commit(&leader, put_all(&key, documents))?;
+    }
+    let (meta, image) = leader_snapshot(&leader)?;
+    // A new follower. Publishing every object in one transaction was refused,
+    // so such a tenant could never gain or replace a replica.
+    let follower = OrdinaryFixture::replica(&leader).await?;
+    install(&follower, &meta, image).await?;
+    let objects = published(follower.fixture.stores.application(), <[u8]>::len)?;
+    assert!(objects.values().sum::<usize>() > kasumi_kv::MAX_BATCH_BYTES);
+    let installed = follower.engine.generation()?;
+    for ordinal in 0..DOCUMENTS {
+        let id = format!("install-{ordinal:03}");
+        assert_eq!(served(&installed, &id)?, reopen_text(ordinal));
+    }
+    drop(installed);
+    follower.close().await?;
+    leader.close().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_install_keeps_previous_generation_objects_until_it_retires()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let leader = OrdinaryFixture::new().await?;
+    let follower = OrdinaryFixture::replica(&leader).await?;
+    let (first, second, third) = (reopen_text(0), reopen_text(1), reopen_text(2));
+    for operation in [
+        // One retained feed event: a snapshot names only current versions.
+        Operation::SetLimits(feed_events(1)),
+        Operation::CreateCollection(definition()),
+        put("first", "superseded", first.clone()),
+    ] {
+        commit(&leader, operation.clone())?;
+        commit(&follower, operation)?;
+    }
+    // The follower falls behind while the leader replaces that version.
+    commit(&leader, put("second", "superseded", second.clone()))?;
+    commit(&leader, put("third", "added", third.clone()))?;
+    let previous = follower.engine.generation()?;
+    let previous_cell = previous
+        .application_selection
+        .get()
+        .context("previous selection absent")?
+        .cell
+        .id;
+    let store = follower.fixture.stores.application();
+    let replaced = published(store, <[u8]>::len)?;
+    let (meta, image) = leader_snapshot(&leader)?;
+    install(&follower, &meta, image).await?;
+
+    // The install leaves exactly the snapshot's objects: the leader's, less
+    // the superseded version's, which only the previous generation names.
+    let mut expected = published(leader.fixture.stores.application(), <[u8]>::len)?;
+    expected.retain(|key, _| !replaced.contains_key(key));
+    assert_eq!(published(store, <[u8]>::len)?, expected);
+    let installed = follower.engine.generation()?;
+    assert_eq!(served(&installed, "superseded")?, second);
+    assert_eq!(served(&installed, "added")?, third);
+    // A reader of the previous generation keeps the root it selected.
+    assert_eq!(served(&previous, "superseded")?, first);
+
+    // No selection captured the store before the sweep: an entry naming the
+    // swept objects again writes them instead of finding them present.
+    commit(&follower, put("fourth", "superseded", first.clone()))?;
+    let reapplied = follower.engine.generation()?;
+    assert_eq!(served(&reapplied, "superseded")?, first);
+    let republished = published(store, <[u8]>::len)?;
+    assert!(replaced.keys().all(|key| republished.contains_key(key)));
+    assert_eq!(served(&previous, "superseded")?, first);
+    // Until it retires: its last handle closes the selected root.
+    let registered = |id| {
+        follower
+            .fixture
+            .roots
+            .gate
+            .lock()
+            .unwrap()
+            .cells
+            .contains_key(&id)
+    };
+    assert!(registered(previous_cell));
+    drop(previous);
+    assert!(!registered(previous_cell));
+    drop(installed);
+    drop(reapplied);
+    follower.close().await?;
+    leader.close().await
 }
 
 #[tokio::test]
@@ -906,6 +1166,24 @@ async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corru
     assert_eq!(new_descriptor.load(&current_owner)?.as_ref(), &new);
     let native = resolver(&fixture, &selected)?;
     assert_eq!(old_descriptor.load(&native)?.as_ref(), &old);
+    let empty = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?
+    .finish()?;
+    assert!(!empty.contains(&old_descriptor)?);
+    let empty_owner = crate::document_restore::BootstrapDocuments::new(
+        empty,
+        fixture.roots.clone(),
+        selected.clone(),
+        TENANT,
+        &incarnation(),
+    )?;
+    assert_eq!(old_descriptor.load(&empty_owner)?.as_ref(), &old);
+    assert_eq!(new_descriptor.load(&empty_owner)?.as_ref(), &new);
+    drop(empty_owner);
     staged.corrupt_first_blob_for_test()?;
     assert!(staged.rebind_scope(TENANT, &target_incarnation).is_err());
     assert!(staged.contains(&old_descriptor)?);

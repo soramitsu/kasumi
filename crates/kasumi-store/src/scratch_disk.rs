@@ -110,6 +110,8 @@ pub struct ScratchDisk {
     after_file_open_error: Mutex<Option<io::Error>>,
     #[cfg(test)]
     synchronizations: std::sync::atomic::AtomicU64,
+    #[cfg(test)]
+    ordered_synchronizations: std::sync::atomic::AtomicU64,
     _memory_charge: Lease,
 }
 impl std::fmt::Debug for ScratchDisk {
@@ -233,6 +235,8 @@ impl ScratchDisk {
             after_file_open_error: Mutex::new(None),
             #[cfg(test)]
             synchronizations: std::sync::atomic::AtomicU64::new(0),
+            #[cfg(test)]
+            ordered_synchronizations: std::sync::atomic::AtomicU64::new(0),
             _memory_charge: charge,
         });
         drop(disk.state.lock().expect("unpublished scratch state"));
@@ -347,7 +351,7 @@ impl ScratchDisk {
             filesystem_admission_ready: pending.admission_ready(),
         }
     }
-    /// Every physical synchronization of an anonymous extent of this governor.
+    /// Fully synchronize an anonymous extent of this governor.
     pub(crate) fn synchronized(&self, file: &File) -> io::Result<()> {
         crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
             crate::sync_trace::sync(|| file.sync_all())
@@ -357,10 +361,26 @@ impl ScratchDisk {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-    /// Successful physical synchronizations issued through this governor.
+    /// Order intermediate KV writes before a later full publication flush.
+    /// This never settles an extent or releases any pending byte promise.
+    pub(crate) fn synchronized_ordered(&self, file: &File) -> io::Result<()> {
+        crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
+            crate::sync_trace::sync(|| crate::node_disk::sync_ordered_native(file))
+        })?;
+        #[cfg(test)]
+        self.ordered_synchronizations
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        Ok(())
+    }
+    /// Successful full synchronization requests issued through this governor.
     #[cfg(test)]
     pub(crate) fn physical_synchronizations(&self) -> u64 {
         self.synchronizations
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(test)]
+    pub(crate) fn ordered_synchronizations(&self) -> u64 {
+        self.ordered_synchronizations
             .load(std::sync::atomic::Ordering::Relaxed)
     }
     fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {

@@ -279,7 +279,7 @@ impl KasumiClient {
         let wire = tokio::time::timeout_at(
             call.deadline,
             transport::receive(
-                self.snapshot_channel.clone(),
+                self.read_channel.clone(),
                 request,
                 prepared.path,
                 transport::Format::JsonEnvelope,

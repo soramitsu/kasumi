@@ -107,7 +107,14 @@
     "storage_custody": 4,
     "ticker": 3
   },
-  "pending_development_cases": [],
+  "pending_development_cases": [
+    {
+      "change": "Streaming::receive forgets its offset while a chunk is in flight, so the chunk retried after a dropped RPC seeks to its own offset",
+      "path": "openraft/src/network/snapshot_transport.rs",
+      "regression": "kasumi-raft snapshot_buffer::tests::retried_chunk_after_a_dropped_rpc_rewrites_its_own_offset",
+      "status": "development test only; focused review pending"
+    }
+  ],
   "qualification": "focused independent graceful-drain review and recorded development tests only; complete fork review and final qualification pending",
   "release_qualified": false,
   "remaining": [
@@ -119,7 +126,7 @@
     "24-hour soak"
   ],
   "review_status": "focused graceful-drain delta reviewed and focused regressions passed; complete current fork review and conformance pending",
-  "source_bytes": 2713329,
+  "source_bytes": 2713577,
   "source_change_hash_method": "SHA256 of canonical JSON inventory records for source_change_paths; sorted keys, compact separators",
   "source_change_paths": [
     "openraft/src/core/mod.rs",
@@ -146,5 +153,5 @@
   "source_change_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
   "source_files": 605,
   "source_inventory": "source-inventory.json",
-  "source_inventory_sha256": "ba4dc0bcf1282deea19e7620c29995a8eefa5a3e63bede116e5508b2f77c5cef"
+  "source_inventory_sha256": "0b818a9ea8452e7ad4accedabaa2089fcf52da7162451a4823921d37dcd43a97"
 }

@@ -49,6 +49,109 @@ async fn retirement_input(
 }
 
 #[tokio::test]
+async fn target_proposal_admission_refuses_committed_retirement_without_appending() {
+    let fixture = CredentialFixture::new().await;
+    let admitted = {
+        let _gate = fixture.db.proposal_gate.lock().await;
+        fixture.db.target_proposal_admission().await.unwrap()
+    };
+    let prepared = retirement_input(&fixture, "target-admission-retirement", u64::MAX).await;
+    fixture
+        .db
+        .submit(fixture.context.clone(), Operation::RetireSource(prepared))
+        .await
+        .unwrap();
+    let retired = fixture.db.engine.generation().unwrap();
+    assert!(retired.state.retired);
+    let retired_metrics = fixture.db.group.metrics();
+    let _gate = fixture.db.proposal_gate.lock().await;
+    // Even an admission from the same term cannot authorize an application
+    // command after retirement. The pre-write check and fresh admission both
+    // refuse, without using Raft's fatal retired-log append rejection.
+    assert_eq!(fixture.db.group.current_term(), admitted);
+    assert_eq!(
+        fixture
+            .db
+            .check_target_proposal_term(admitted)
+            .unwrap_err()
+            .code,
+        ErrorCode::Sealed
+    );
+    assert_eq!(
+        fixture
+            .db
+            .target_proposal_admission()
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Sealed
+    );
+    assert!(Arc::ptr_eq(
+        &retired,
+        &fixture.db.engine.generation().unwrap()
+    ));
+    let refused_metrics = fixture.db.group.metrics();
+    assert_eq!(refused_metrics.last_applied, retired_metrics.last_applied);
+    assert_eq!(
+        refused_metrics.last_log_index,
+        retired_metrics.last_log_index
+    );
+    fixture.db.group.check_access().unwrap();
+    drop(_gate);
+    drop(retired);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn target_proposal_admission_must_still_match_the_actual_raft_term() {
+    let fixture = CredentialFixture::new_replicated().await;
+    let raft = fixture.db.group.raft();
+    raft.runtime_config().elect(false);
+    let _gate = fixture.db.proposal_gate.lock().await;
+    let admitted = fixture.db.target_proposal_admission().await.unwrap();
+    fixture.db.check_target_proposal_term(admitted).unwrap();
+    let before = fixture.db.engine.generation().unwrap();
+    let metrics = raft.metrics().borrow().clone();
+    raft.append_entries(openraft::raft::AppendEntriesRequest {
+        vote: openraft::Vote::new_committed(admitted + 1, 2),
+        prev_log_id: metrics.last_applied,
+        entries: vec![],
+        leader_commit: metrics.last_applied,
+    })
+    .await
+    .unwrap();
+    raft.wait(Some(Duration::from_secs(5)))
+        .current_leader(2, "target admission observed a new term")
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture
+            .db
+            .check_target_proposal_term(admitted)
+            .unwrap_err()
+            .code,
+        ErrorCode::Unavailable
+    );
+    assert!(Arc::ptr_eq(
+        &before,
+        &fixture.db.engine.generation().unwrap()
+    ));
+    fixture.db.group.check_access().unwrap();
+    // The same database remains usable when its new leader catches up.
+    raft.trigger().elect().await.unwrap();
+    raft.wait(Some(Duration::from_secs(5)))
+        .current_leader(1, "target admission regained leadership")
+        .await
+        .unwrap();
+    let fresh = fixture.db.target_proposal_admission().await.unwrap();
+    assert!(fresh > admitted);
+    fixture.db.check_target_proposal_term(fresh).unwrap();
+    drop(_gate);
+    drop(before);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn queued_retirement_uses_trusted_admission_deadline_and_cancellation_keeps_exact_outcome() {
     for (cancel, expired) in [(false, true), (true, true), (true, false)] {
         let fixture = CredentialFixture::new().await;

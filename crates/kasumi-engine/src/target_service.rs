@@ -33,6 +33,47 @@ impl VerifiedTargetCompletion {
     }
 }
 impl Database {
+    /// Called under the proposal gate, before any target preparation reads
+    /// applied state. A new leader may still need to apply a predecessor's
+    /// committed retirement before it can admit another application command.
+    pub(super) async fn target_proposal_admission(&self) -> Result<u64> {
+        let term = self
+            .group
+            .admission_term(APPLIED_TERM_DEADLINE)
+            .await
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "leader has not applied its term's first entry; nothing was proposed",
+                )
+            })?;
+        self.check_target_proposal_term(term)?;
+        Ok(term)
+    }
+
+    /// Recheck immediately before each proposal, including completion after
+    /// its preparation was committed. The caller maps a refusal after that
+    /// first commitment to its existing unknown-outcome response.
+    pub(super) fn check_target_proposal_term(&self, term: u64) -> Result<()> {
+        if self.group.current_term() != term {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "leadership changed during target admission; nothing was proposed",
+            ));
+        }
+        self.check_target_not_retired()
+    }
+
+    pub(super) fn check_target_not_retired(&self) -> Result<()> {
+        if self.engine.generation()?.state.retired {
+            return Err(Error::new(
+                ErrorCode::Sealed,
+                "target application commands are frozen after retirement",
+            ));
+        }
+        Ok(())
+    }
+
     fn target_access(&self, operation: &TargetOperation) -> Result<()> {
         self.target_phase_access(operation, LifecyclePhase::Complete)
     }
@@ -43,6 +84,7 @@ impl Database {
     ) -> Result<()> {
         operation.check().map_err(denied)?;
         self.materialization_access()?;
+        self.check_target_not_retired()?;
         operation.invocation().check_target(&self.store, phase)?;
         let generation = self.engine.generation()?;
         let entry = generation
@@ -196,6 +238,14 @@ impl TargetProposal {
                 Ok::<_, anyhow::Error>(self.database.proposal_gate.clone().lock_owned().await)
             })
             .await?;
+        let admission_term = match self
+            .operation
+            .run(async { Ok::<_, anyhow::Error>(self.database.target_proposal_admission().await) })
+            .await?
+        {
+            Ok(term) => term,
+            Err(error) => return Ok(Err(error)),
+        };
         if let Err(error) = self.database.target_access(&self.operation) {
             return Ok(Err(error));
         }
@@ -215,6 +265,9 @@ impl TargetProposal {
         let encoded = prepared.encode()?;
         // Nothing is proposed unless the committed publication's capacity is.
         if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
+        if let Err(error) = self.database.check_target_proposal_term(admission_term) {
             return Ok(Err(error));
         }
         let bytes = self
@@ -247,6 +300,9 @@ impl TargetProposal {
         let encoded = command.encode()?;
         // The prepared phase is already durable; recover it if this refuses.
         if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(unknown(error)));
+        }
+        if let Err(error) = self.database.check_target_proposal_term(admission_term) {
             return Ok(Err(unknown(error)));
         }
         // Ownership of the serialized gate, original work and byte reservation

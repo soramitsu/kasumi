@@ -219,6 +219,13 @@ impl Fixture {
         index: u64,
         prepared: PreparedMaintenance,
     ) -> AuthorityMaintenanceStatus {
+        self.try_publish_maintenance(index, prepared).unwrap()
+    }
+    fn try_publish_maintenance(
+        &self,
+        index: u64,
+        prepared: PreparedMaintenance,
+    ) -> kasumi_types::Result<AuthorityMaintenanceStatus> {
         let bytes =
             serde_json::to_vec(&PreparedOperation::Maintenance(Box::new(prepared))).unwrap();
         let mut publisher = LocalPublisher::new(&self.backend, false);
@@ -228,9 +235,7 @@ impl Fixture {
             &mut publisher,
         );
         let response = publisher.finish(result).unwrap();
-        serde_json::from_slice::<kasumi_types::Result<AuthorityMaintenanceStatus>>(&response.data)
-            .unwrap()
-            .unwrap()
+        serde_json::from_slice(&response.data).unwrap()
     }
     fn enroll_signer_verifiers(&self, first_index: u64) {
         for (offset, member) in self
@@ -775,6 +780,56 @@ async fn signer_stage_keeps_prepared_roster_private_and_replays_exact_publicatio
             .validate_snapshot(&mut snapshot.as_slice())
             .unwrap()
             .is_none()
+    );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn maintenance_blocked_by_a_pending_operation_keeps_its_identity_retryable() {
+    let fixture = Fixture::new().await;
+    let voters = fixture
+        .backend
+        .meta()
+        .unwrap()
+        .operational
+        .membership
+        .voters
+        .clone();
+    let pending = fixture.publish_maintenance(
+        1,
+        fixture.maintenance(AuthorityMaintenanceAction::ReplaceVoters { voters }),
+    );
+    assert_eq!(pending.phase, AuthorityMaintenancePhase::Prepared);
+    let action = AuthorityMaintenanceAction::SetCapacity {
+        capacity: AuthorityCapacity {
+            max_tenants: 100,
+            max_state_bytes: 16 << 20,
+            maintenance_reserve_bytes: 1 << 20,
+        },
+    };
+    let blocked = fixture.maintenance(action.clone());
+    let id = blocked.transition.operation_id();
+    let error = fixture.try_publish_maintenance(2, blocked).unwrap_err();
+    assert_eq!(error.code, ErrorCode::Conflict);
+    assert!(fixture.backend.maintenance_status(id).unwrap().is_none());
+    let mut stop = fixture.maintenance(action.clone());
+    stop.transition = maintenance_state::MaintenanceTransition::Stop {
+        operation_id: pending.command.operation_id,
+    };
+    assert_eq!(
+        fixture.publish_maintenance(3, stop).phase,
+        AuthorityMaintenancePhase::Stopped
+    );
+    // Signer coverage retries the same identity against the current revision.
+    let mut retried = fixture.maintenance(action);
+    let maintenance_state::MaintenanceTransition::Begin { command } = &mut retried.transition
+    else {
+        unreachable!()
+    };
+    command.operation_id = id;
+    assert_eq!(
+        fixture.publish_maintenance(4, retried).phase,
+        AuthorityMaintenancePhase::Completed
     );
     fixture.close().await;
 }

@@ -1,9 +1,9 @@
 //! Admission of client request bodies before they are buffered. Tonic and the
 //! MCP SDK hold a whole message before its handler runs, and decoding its JSON
-//! then multiplies its size. Each request on a client listener charges its
-//! declared size times that expansion to the node's admission before a body
-//! byte reaches the decoder, keeps the charge until its handler returns, and
-//! must finish sending its body before a read deadline.
+//! then multiplies its size. Mutation bodies first reserve bounded encoded
+//! storage, then their JSON structure is inspected before the decoder runs.
+//! Other requests reserve the conservative expansion from their declared size.
+//! Charges remain through the handler, and every body has a read deadline.
 use crate::{api::MAX_REQUEST_BYTES, auth::Authenticator};
 use axum::{
     Json,
@@ -47,6 +47,70 @@ pub(crate) fn quote(bytes: u64) -> u64 {
     bytes
         .saturating_mul(DECODE_EXPANSION)
         .saturating_add(REQUEST_OVERHEAD_BYTES)
+}
+
+/// Encoded frame collection, its last growth allocation, Tonic's message
+/// buffer and the protobuf bytes field, including capacity/allocator slack.
+pub(crate) fn wire_quote(bytes: u64) -> u64 {
+    bytes
+        .saturating_mul(8)
+        .saturating_add(REQUEST_OVERHEAD_BYTES)
+}
+
+/// Only the exact single-field, single-message encoding takes the structural
+/// path. Legal alternatives (unknown/duplicate fields or nonminimal varints)
+/// keep the conservative quote before Tonic interprets them.
+fn mutation_json(bytes: &[u8]) -> Option<&[u8]> {
+    if bytes.first() != Some(&0) {
+        return None;
+    }
+    let length = u32::from_be_bytes(bytes.get(1..5)?.try_into().ok()?) as usize;
+    let message = bytes.get(GRPC_PREFIX_BYTES..)?;
+    if length != message.len() || message.first() != Some(&10) {
+        return None;
+    }
+    let mut length = 0usize;
+    for (index, &byte) in message.get(1..)?.iter().take(5).enumerate() {
+        if index == 4 && byte > 15 {
+            return None;
+        }
+        length |= usize::from(byte & 127) << (7 * index);
+        if byte < 128 {
+            if index > 0 && byte == 0 {
+                return None;
+            }
+            let start = index + 2;
+            return (start.checked_add(length)? == message.len()).then(|| &message[start..]);
+        }
+    }
+    None
+}
+
+fn mutation_quote(bytes: &[u8]) -> Result<u64, Error> {
+    let Some(json) = mutation_json(bytes) else {
+        return Ok(quote(bytes.len() as u64));
+    };
+    wire_quote(bytes.len() as u64)
+        .checked_add(kasumi_engine::admission::json_decode_workspace(json)?)
+        .ok_or_else(|| Error::new(ErrorCode::ResourceExhausted, "request workspace overflow"))
+}
+
+struct InspectedMutation {
+    // Retire the allocation before its last reservation, including an unclaimed
+    // blocking-task result after the HTTP future has been cancelled.
+    bytes: Bytes,
+    workspace: Arc<Mutex<Reservation>>,
+}
+impl InspectedMutation {
+    fn inspect(self) -> Result<Self, Error> {
+        let required = mutation_quote(&self.bytes)?;
+        self.workspace
+            .lock()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "request admission unavailable"))?
+            .ensure_peak(required)
+            .map_err(exhausted)?;
+        Ok(self)
+    }
 }
 
 #[derive(Clone)]
@@ -104,6 +168,7 @@ pub(crate) async fn admit(
         .get(CONTENT_TYPE)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|value| value.starts_with("application/grpc"));
+    let mutation = grpc && request.uri().path() == "/kasumi.v1.KasumiData/Mutate";
     if let Some(auth) = &state.auth {
         let values = request.headers().get_all("authorization");
         let mut values = values.iter();
@@ -136,12 +201,16 @@ pub(crate) async fn admit(
     if declared.is_some_and(|bytes| bytes > limit) {
         return refused(grpc, too_large());
     }
-    let charged = quote(declared.unwrap_or(0));
+    let charged = if mutation {
+        wire_quote(declared.unwrap_or(0))
+    } else {
+        quote(declared.unwrap_or(0))
+    };
     let workspace = match state.admission.reserve_waiting(charged, None) {
         Ok(reservation) => Arc::new(Mutex::new(reservation)),
         Err(error) => return refused(grpc, exhausted(error)),
     };
-    let request = request.map(|body| {
+    let mut request = request.map(|body| {
         Body::new(AdmittedBody {
             inner: body,
             workspace: workspace.clone(),
@@ -150,14 +219,59 @@ pub(crate) async fn admit(
             declared,
             limit,
             prefix: grpc.then_some(([0; GRPC_PREFIX_BYTES], 0)),
+            raw_only: mutation,
             deadline: Box::pin(tokio::time::sleep(state.read_timeout)),
             ended: false,
         })
     });
+    if mutation {
+        let (parts, body) = request.into_parts();
+        let bytes = match axum::body::to_bytes(body, limit as usize).await {
+            Ok(bytes) => bytes,
+            Err(error) => return body_failure(error),
+        };
+        // The blocking inspector owns both the encoded allocation and its
+        // charge even if the HTTP caller disappears. No DTO is constructed
+        // until its complete structural workspace has been admitted.
+        let inspecting = InspectedMutation {
+            bytes,
+            workspace: workspace.clone(),
+        };
+        let inspected = tokio::task::spawn_blocking(move || inspecting.inspect()).await;
+        let bytes = match inspected {
+            Ok(Ok(inspected)) => inspected.bytes,
+            Ok(Err(error)) => return refused(grpc, error),
+            Err(_) => {
+                return refused(
+                    grpc,
+                    Error::new(ErrorCode::Unavailable, "request inspection failed"),
+                );
+            }
+        };
+        request = Request::from_parts(parts, Body::from(bytes));
+    }
     let response = next.run(request).await;
     // The handler has returned, and with it every value decoded from the body.
     drop(workspace);
     response
+}
+
+fn body_failure(error: axum::Error) -> Response {
+    let mut cause: &(dyn std::error::Error + 'static) = &error;
+    loop {
+        if let Some(status) = cause.downcast_ref::<tonic::Status>() {
+            return status.clone().into_http();
+        }
+        match cause.source() {
+            Some(source) => cause = source,
+            None => {
+                return refused(
+                    true,
+                    Error::new(ErrorCode::Unavailable, "request body read failed"),
+                );
+            }
+        }
+    }
 }
 
 fn too_large() -> Error {
@@ -197,6 +311,7 @@ struct AdmittedBody {
     limit: u64,
     /// The gRPC length prefix and how much of it has arrived.
     prefix: Option<([u8; GRPC_PREFIX_BYTES], usize)>,
+    raw_only: bool,
     deadline: Pin<Box<tokio::time::Sleep>>,
     ended: bool,
 }
@@ -218,7 +333,11 @@ impl AdmittedBody {
         if bytes > self.limit {
             return Err(too_large());
         }
-        let quote = quote(bytes);
+        let quote = if self.raw_only {
+            wire_quote(bytes)
+        } else {
+            quote(bytes)
+        };
         if quote > self.charged {
             self.workspace
                 .lock()
@@ -279,5 +398,87 @@ impl hyper::body::Body for AdmittedBody {
     }
     fn size_hint(&self) -> SizeHint {
         self.inner.size_hint()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use prost::Message;
+
+    fn frame(message: &[u8]) -> Vec<u8> {
+        let mut bytes = vec![0];
+        bytes.extend_from_slice(&(message.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(message);
+        bytes
+    }
+
+    #[tokio::test]
+    async fn completed_mutation_inspection_keeps_its_charge_until_output_retirement() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let baseline = admission.snapshot().reserved_bytes;
+        let bytes: Bytes = frame(
+            &crate::rpc::proto::MutateRequest {
+                batch_json: br#"{"proof":"retained"}"#.to_vec(),
+            }
+            .encode_to_vec(),
+        )
+        .into();
+        let required = mutation_quote(&bytes).unwrap();
+        let inspecting = InspectedMutation {
+            workspace: Arc::new(Mutex::new(
+                admission
+                    .reserve_waiting(wire_quote(bytes.len() as u64), None)
+                    .unwrap(),
+            )),
+            bytes,
+        };
+        // No HTTP owner remains. A completed but unclaimed result still owns
+        // the encoded body and must retain its reservation until retirement.
+        let worker = tokio::task::spawn_blocking(move || inspecting.inspect());
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while !worker.is_finished() {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(admission.snapshot().reserved_bytes, baseline + required);
+        drop(worker);
+        assert_eq!(admission.snapshot().reserved_bytes, baseline);
+    }
+
+    #[test]
+    fn mutation_structure_path_requires_one_canonical_uncompressed_message() {
+        let message = crate::rpc::proto::MutateRequest {
+            batch_json: b"{}".to_vec(),
+        }
+        .encode_to_vec();
+        let encoded = frame(&message);
+        assert_eq!(mutation_json(&encoded), Some(b"{}".as_slice()));
+        let mut compressed = encoded.clone();
+        compressed[0] = 1;
+        let mut duplicate = message.clone();
+        duplicate.extend_from_slice(&message);
+        let mut unknown = message.clone();
+        unknown.extend_from_slice(&[16, 1]);
+        let mut trailing = encoded.clone();
+        trailing.extend_from_slice(&encoded);
+        for alternative in [
+            compressed,
+            frame(&duplicate),
+            frame(&unknown),
+            frame(&[10, 130, 0, b'{', b'}']),
+            frame(&[10, 255, 255, 255, 255, 16]),
+            frame(&[10, 3, b'{', b'}']),
+            trailing,
+            encoded[..encoded.len() - 1].to_vec(),
+        ] {
+            assert!(mutation_json(&alternative).is_none(), "{alternative:?}");
+            assert_eq!(
+                mutation_quote(&alternative).unwrap(),
+                quote(alternative.len() as u64)
+            );
+        }
     }
 }

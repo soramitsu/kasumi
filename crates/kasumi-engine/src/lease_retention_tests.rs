@@ -162,10 +162,24 @@ fn put(id: &str, body_bytes: usize) -> Mutation {
 }
 fn open(engine: &TenantEngine, node: &Arc<NodeAdmission>, clock: &Arc<Clock>) -> Arc<LeaseHandle> {
     clock.0.fetch_add(1, Ordering::AcqRel);
-    engine
-        .leases
-        .open(engine, &context(), 60_000, clock.clone(), 1, node)
-        .unwrap()
+    open_as(engine, node, clock, &QueryCancellation::default()).unwrap()
+}
+fn open_as(
+    engine: &TenantEngine,
+    node: &Arc<NodeAdmission>,
+    clock: &Arc<Clock>,
+    cancellation: &QueryCancellation,
+) -> Result<Arc<LeaseHandle>> {
+    engine.leases.open(
+        engine,
+        &context(),
+        60_000,
+        clock.clone(),
+        1,
+        node,
+        uuid::Uuid::new_v4().to_string(),
+        cancellation,
+    )
 }
 fn select(
     engine: &TenantEngine,
@@ -493,10 +507,36 @@ fn metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidate
     Arc::make_mut(&mut state.collections.get_mut("docs").unwrap().definition).schema =
         json!({"type":"object","description":"large schema".repeat(5000)});
     install(&engine, state);
-    let result = engine
-        .leases
-        .open(&engine, &context(), 60_000, clock, 1, &node);
+    let result = open_as(&engine, &node, &clock, &QueryCancellation::default());
     assert_eq!(result.err().unwrap().code, ErrorCode::ResourceExhausted);
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
+}
+
+#[test]
+fn cancelled_open_inserts_nothing_and_a_late_insert_closes_by_its_id() {
+    let engine = fixture(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 32),
+        1,
+        0,
+        32 << 10,
+    );
+    let node = node();
+    let clock = Arc::new(Clock::default());
+    // The caller stopped waiting before the worker reached the entries lock.
+    let abandoned = QueryCancellation::default();
+    abandoned.cancel();
+    assert!(open_as(&engine, &node, &clock, &abandoned).is_err());
+    assert!(engine.leases.entries.lock().unwrap().is_empty());
+    assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
+    // The worker inserted first; the caller's close of that exact id frees
+    // the slot and its charge instead of holding them until the TTL.
+    let lease = open(&engine, &node, &clock);
+    engine
+        .leases
+        .close(&context(), &lease.header.lease_id)
+        .unwrap();
+    assert!(engine.leases.entries.lock().unwrap().is_empty());
+    drop(lease);
     assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
 }
 

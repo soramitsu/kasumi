@@ -43,6 +43,7 @@ impl Database {
     fn target_activation_access(&self, operation: &TargetOperation) -> Result<()> {
         operation.check().map_err(denied)?;
         self.materialization_access()?;
+        self.check_target_not_retired()?;
         operation
             .invocation()
             .check_target(&self.store, LifecyclePhase::Activate)?;
@@ -218,6 +219,14 @@ impl ActivationProposal {
                 Ok::<_, anyhow::Error>(self.database.proposal_gate.clone().lock_owned().await)
             })
             .await?;
+        let admission_term = match self
+            .operation
+            .run(async { Ok::<_, anyhow::Error>(self.database.target_proposal_admission().await) })
+            .await?
+        {
+            Ok(term) => term,
+            Err(error) => return Ok(Err(error)),
+        };
         if let Err(error) = self.database.target_activation_access(&self.operation) {
             return Ok(Err(error));
         }
@@ -237,6 +246,9 @@ impl ActivationProposal {
         let encoded = command.encode()?;
         // Nothing is proposed unless the committed publication's capacity is.
         if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
+        if let Err(error) = self.database.check_target_proposal_term(admission_term) {
             return Ok(Err(error));
         }
         let bytes = self

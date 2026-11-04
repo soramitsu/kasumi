@@ -34,19 +34,36 @@ pub(crate) fn inspect_external_json_work(
 /// Count owned typed metadata through the same structural model without a JSON
 /// buffer. Callers borrow the input until this check admits its later clones.
 pub(crate) fn inspect_typed_json_work(value: &impl Serialize) -> anyhow::Result<u64> {
-    struct Writer(record_work::Meter);
-    impl Write for Writer {
+    Ok(measure_typed_json(value, |_| {})?.1)
+}
+
+/// Measure exact canonical byte length and structural work in one streaming
+/// pass. An observer can hash the same bytes without serializing the input again.
+pub(crate) fn measure_typed_json(
+    value: &impl Serialize,
+    observe: impl FnMut(&[u8]),
+) -> anyhow::Result<(u64, u64)> {
+    struct Writer<F> {
+        meter: record_work::Meter,
+        observe: F,
+    }
+    impl<F: FnMut(&[u8])> Write for Writer<F> {
         fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-            self.0.consume(bytes).map_err(std::io::Error::other)?;
+            self.meter.consume(bytes).map_err(std::io::Error::other)?;
+            (self.observe)(bytes);
             Ok(bytes.len())
         }
         fn flush(&mut self) -> std::io::Result<()> {
             Ok(())
         }
     }
-    let mut writer = Writer(record_work::Meter::default());
+    let mut writer = Writer {
+        meter: record_work::Meter::default(),
+        observe,
+    };
     serde_json::to_writer(&mut writer, value)?;
-    writer.0.finish()
+    let bytes = writer.meter.wire_bytes();
+    Ok((bytes, writer.meter.finish()?))
 }
 
 pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {

@@ -526,6 +526,17 @@ impl Proposal {
                 })
                 .await
         );
+        let admission_term = match stage!(
+            "applied_term",
+            self.operation
+                .run(async {
+                    Ok::<_, anyhow::Error>(self.database.target_proposal_admission().await)
+                })
+                .await
+        ) {
+            Ok(term) => term,
+            Err(error) => return Ok(Err(error)),
+        };
         stage!(
             "phase_access",
             self.database
@@ -544,6 +555,9 @@ impl Proposal {
         let encoded = stage!("encode", command.encode());
         // Nothing is proposed unless the committed publication's capacity is.
         if let Err(error) = self.database.engine.admit_publication() {
+            return Ok(Err(error));
+        }
+        if let Err(error) = self.database.check_target_proposal_term(admission_term) {
             return Ok(Err(error));
         }
         let bytes = stage!(

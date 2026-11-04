@@ -2498,3 +2498,119 @@ fn linked_completion_history_roundtrips_in_native_stream_and_incremental_byte_ac
     assert!(smaller.bytes(&removed).unwrap() < accounting.bytes(&state).unwrap());
     assert!(super::super::validate_successor(&state, &removed).is_err());
 }
+
+#[test]
+fn first_membership_dispatch_requires_the_intent_principal_after_acceptance() {
+    let (mut state, mut operation, _) = fixture_state();
+    let original_id = operation.initialization.take().unwrap();
+    let original = state
+        .recovery_control
+        .phases
+        .remove(&original_id.to_string())
+        .unwrap();
+    let RecoveryDispatch::Target { request, .. } = original.input else {
+        unreachable!()
+    };
+    let TargetRuntimeStep::Initialize(quorum) = request.step.clone() else {
+        unreachable!()
+    };
+    // The fixture's Initialize intent was accepted at 150 for "operator".
+    operation.phase = RecoveryPhase::Initialize;
+    operation.current_intent = Some(request.command_id);
+    operation.pending_phase = None;
+    operation.completion_intent = None;
+    operation.completion_preparation_attempt = None;
+    let start = |state: &mut TenantState, operation: &mut RecoveryRecord, node: u64| {
+        let started = retained(
+            state,
+            operation,
+            Uuid::from_u128(2000 + u128::from(node)),
+            RecoveryDispatch::Target {
+                node_id: node,
+                request: Box::new(TargetRuntimeRequest {
+                    step: TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone())),
+                    ..(*request).clone()
+                }),
+            },
+            Some(RecoveryDispatchOutcome::Target(Box::new(
+                TargetRuntimeResponse {
+                    node_id: node,
+                    command_id: request.command_id,
+                    outcome: TargetRuntimeOutcome::Started {
+                        origin_sha256: quorum.origin_sha256.clone(),
+                    },
+                },
+            ))),
+            20 + node,
+        );
+        let voter = operation.voters.get_mut(&node).unwrap();
+        voter.started = Some(started.phase_id);
+        voter.start_attempt = Some(started.phase_id);
+    };
+    start(&mut state, &mut operation, 2);
+    start(&mut state, &mut operation, 3);
+    state.revision = 101;
+    let prepare = |state: &TenantState,
+                   operation: &RecoveryRecord,
+                   step: TargetRuntimeStep,
+                   principal: &str,
+                   admitted_at_ms: u64| {
+        let mut candidate = state.clone();
+        candidate.recovery_control.operations.insert(
+            operation.request.operation_id.to_string(),
+            operation.clone(),
+        );
+        let before = candidate.recovery_control.clone();
+        let command = super::super::RecoveryCommand {
+            authorization: super::super::RecoveryAuthorization {
+                context: RequestContext {
+                    tenant: state.tenant.clone(),
+                    principal: principal.into(),
+                    scopes: BTreeSet::from([Action::Admin]),
+                    request_id: "first-membership".into(),
+                    authorization: RequestAuthorization::service_identity(),
+                },
+                policy_epoch: state.policy_epoch,
+                admitted_at_ms,
+                expires_at_ms: 900,
+            },
+            mutation: super::super::RecoveryMutation::Prepare {
+                operation_id: operation.request.operation_id,
+                phase_id: Uuid::new_v4(),
+                expected_sequence: operation.next_phase_sequence,
+                expected_pending: None,
+                input: Box::new(RecoveryDispatch::Target {
+                    node_id: 1,
+                    request: Box::new(TargetRuntimeRequest {
+                        step,
+                        ..(*request).clone()
+                    }),
+                }),
+            },
+        };
+        let applied = super::super::apply(&mut candidate, &command, None).map(drop);
+        (applied, before == candidate.recovery_control)
+    };
+    // A second administrator, or the original one before the intent was
+    // accepted, would commit a marker the target never accepts.
+    for step in [
+        TargetRuntimeStep::Start(TargetReplicaInput::Quorum(quorum.clone())),
+        TargetRuntimeStep::Initialize(quorum.clone()),
+    ] {
+        if matches!(step, TargetRuntimeStep::Initialize(_)) {
+            start(&mut state, &mut operation, 1);
+        }
+        for (principal, admitted_at_ms) in [("second-admin", 200), ("operator", 149)] {
+            let (applied, unchanged) =
+                prepare(&state, &operation, step.clone(), principal, admitted_at_ms);
+            let error = match applied {
+                Err(kasumi_query::ReadFailure::Query(error)) => error,
+                other => panic!("expected a deterministic principal rejection: {other:?}"),
+            };
+            assert_eq!(error.code, ErrorCode::Conflict);
+            assert!(unchanged);
+        }
+        let (applied, _) = prepare(&state, &operation, step, "operator", 200);
+        assert!(applied.is_ok(), "{applied:?}");
+    }
+}

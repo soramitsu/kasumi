@@ -286,6 +286,10 @@ fn document_load_error(error: anyhow::Error) -> Error {
     }
 }
 
+/// How long ordered admission waits for a new leader to apply its own term's
+/// first entry, the quorum read barrier's bound.
+const APPLIED_TERM_DEADLINE: Duration = Duration::from_secs(5);
+
 struct ProposalWork {
     // Drop storage ownership before notifying shutdown that this job drained.
     group: RaftGroup,
@@ -448,6 +452,16 @@ impl ProposalWork {
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
         let _guard = self.admission_gate.clone().lock_owned().await;
+        phase!("applied_term");
+        // Every check below reads applied state. A new leader admits nothing
+        // until that state covers what earlier leaders committed: a proposal
+        // after a committed but unapplied retirement would stop its followers.
+        let Some(admission_term) = self.group.admission_term(APPLIED_TERM_DEADLINE).await else {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                ErrorCode::Unavailable,
+                "leader has not applied its term's first entry; nothing was proposed",
+            )))?);
+        };
         if let Err(error) = command.context.authorization.check_live() {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
@@ -562,6 +576,14 @@ impl ProposalWork {
             // Nothing was proposed. The committed entry's own source capacity is
             // admitted here, so local pressure can only reject this request.
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
+        }
+        // A leadership change during admission can leave the checks above
+        // reading applied state another term's leader has not caught up with.
+        if self.group.current_term() != admission_term {
+            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                ErrorCode::Unavailable,
+                "leadership changed during admission; nothing was proposed",
+            )))?);
         }
         let response = if matches!(&command.operation, Operation::RetireSource(prepared) if prepared.observation.is_some())
         {

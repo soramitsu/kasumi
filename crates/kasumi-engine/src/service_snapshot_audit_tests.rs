@@ -1,3 +1,23 @@
+#[test]
+fn collection_release_futures_remain_send_for_server_adapters() {
+    fn assert_send(_: impl std::future::Future + Send) {}
+
+    // Type-check independent caller lifetimes without opening a database or
+    // polling a future. Server adapters require these futures to be Send even
+    // when a strict collection audit suspends their release.
+    fn check(
+        database: &Database,
+        context: &RequestContext,
+        feed: ReadChangeFeed,
+        schema: &ReadSchemaActivation,
+    ) {
+        assert_send(database.collections(context));
+        assert_send(database.read_change_feed(context, feed));
+        assert_send(database.schema_activation_status(context, schema));
+    }
+    let _ = check;
+}
+
 async fn snapshot_audit_fixture() -> CredentialFixture {
     let fixture = CredentialFixture::new().await;
     for name in ["first", "second"] {

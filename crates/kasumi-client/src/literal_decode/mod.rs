@@ -276,7 +276,7 @@ impl KasumiClient {
         let wire = tokio::time::timeout_at(
             call.deadline,
             transport::receive(
-                self.snapshot_channel.clone(),
+                self.read_channel.clone(),
                 request,
                 "/kasumi.v1.KasumiData/Get",
                 transport::Format::Protobuf,
@@ -314,7 +314,7 @@ impl KasumiClient {
         let wire = tokio::time::timeout_at(
             call.deadline,
             transport::receive(
-                self.snapshot_channel.clone(),
+                self.read_channel.clone(),
                 request,
                 "/kasumi.v1.KasumiData/Collections",
                 transport::Format::Protobuf,
@@ -357,7 +357,7 @@ impl KasumiClient {
         prepared: Arc<Prepared>,
         call: Call,
     ) -> Result<AdmittedResponse<QueryResponse>, ClientError> {
-        execute(self.snapshot_channel.clone(), bearer, prepared, call).await
+        execute(self.read_channel.clone(), bearer, prepared, call).await
     }
     pub async fn read_change_feed(
         &mut self,
@@ -376,7 +376,7 @@ impl KasumiClient {
             path: "/kasumi.v1.KasumiData/ReadChangeFeed",
             _owner: call.clone(),
         });
-        execute(self.snapshot_channel.clone(), bearer, prepared, call).await
+        execute(self.read_channel.clone(), bearer, prepared, call).await
     }
 }
 impl KasumiAdminClient {

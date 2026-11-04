@@ -279,6 +279,108 @@ struct CountedReader<'a> {
     inner: kasumi_store::SnapshotReader,
     reads: &'a Cell<usize>,
 }
+
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture preserves whole native failure custody."
+)]
+fn restore_final_index_build_rejects_schema_unique_and_corrupt_staged_bodies()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let scratch = scratch()?;
+    let engine = seeded(&scratch.disk)?;
+    engine.apply_command(
+        &scratch.disk,
+        3,
+        command(
+            &engine,
+            3,
+            Operation::Mutate(MutationBatch::with_key("duplicate-value").insert(
+                "docs",
+                "second",
+                serde_json::json!({"id":"first", "proof":"a7".repeat(8192)}),
+            )),
+        ),
+    )??;
+    let image = engine.fixture_snapshot(&scratch.disk)?;
+    let decoded = crate::snapshot_codec::read(&scratch.disk, &mut image.reader())?;
+    let candidate = Candidate {
+        state: decoded.state,
+        receipts: decoded.receipts,
+        bindings: decoded.backup_bindings,
+        terminals: decoded.terminals,
+        targets: decoded.target_resolutions,
+        documents: Some(decoded.documents),
+        resolver: None,
+    };
+    let owner = UninitializedEngine::new(&candidate.state)?;
+    drop(candidate.prepare(owner.engine(), &owner.baseline())?);
+
+    let mut invalid = candidate.clone();
+    let definition = Arc::make_mut(
+        &mut invalid
+            .state
+            .collections
+            .get_mut("docs")
+            .unwrap()
+            .definition,
+    );
+    assert!(definition.indexes.is_empty());
+    definition.schema = serde_json::json!({"type":"object", "required":["missing"]});
+    let error = invalid
+        .prepare(owner.engine(), &owner.baseline())
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.downcast_ref::<Error>().unwrap().code,
+        ErrorCode::SchemaViolation
+    );
+
+    let mut duplicate = candidate.clone();
+    Arc::make_mut(
+        &mut duplicate
+            .state
+            .collections
+            .get_mut("docs")
+            .unwrap()
+            .definition,
+    )
+    .indexes
+    .push(IndexDefinition {
+        name: "unique-id".into(),
+        fields: vec![IndexField {
+            path: "/id".into(),
+            kind: ScalarType::String,
+        }],
+        unique: true,
+        text: None,
+    });
+    let error = duplicate
+        .prepare(owner.engine(), &owner.baseline())
+        .err()
+        .unwrap();
+    assert_eq!(
+        error.downcast_ref::<Error>().unwrap().code,
+        ErrorCode::Conflict
+    );
+    assert!(
+        error
+            .to_string()
+            .contains("unique index unique-id conflicts")
+    );
+
+    candidate
+        .documents
+        .as_ref()
+        .unwrap()
+        .corrupt_first_blob_for_test()?;
+    let error = candidate
+        .prepare(owner.engine(), &owner.baseline())
+        .err()
+        .unwrap();
+    assert!(error.to_string().contains("digest"), "{error:#}");
+    Ok(())
+}
 impl Read for CountedReader<'_> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
         self.reads.set(self.reads.get() + 1);

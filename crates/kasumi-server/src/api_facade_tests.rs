@@ -317,7 +317,7 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
     assert_eq!(missing["error"]["code"], json!("NOT_FOUND"));
 
     // A `session` answers each request line with the status and document the
-    // same command reports alone, over one kept connection.
+    // same command reports alone, over shared read/write connections.
     let kept = session().shared();
     let answer = |line: &str| {
         let kept = &kept;
@@ -350,7 +350,7 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
         got["result"]["document"]["body"],
         json!({"n": 7, "m": true})
     );
-    // Snapshot reads reuse the session's connection too: each new TLS session
+    // Snapshot reads reuse the session's read connection too: each new TLS session
     // costs a durable security-audit record before it can serve a request.
     let snapshot =
         json!({"documents": [{"collection": "docs", "id": "s"}], "queries": [], "time_bounds": null})

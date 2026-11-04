@@ -252,6 +252,13 @@ impl CompletionMachine<'_> {
         if proposed.input.expected_bytes != self.maximum_bytes {
             return Err(conflict("target metadata budget compare-and-set changed"));
         }
+        // Snapshot decode stages target rows in scratch sized from this budget.
+        if proposed.input.maximum_bytes > crate::state::MAX_TABLE_BUDGET_BYTES {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "target budget exceeds the restorable snapshot bound",
+            ));
+        }
         let encoded_record =
             serde_json::to_vec(&TargetResolutionRecord::Budget(Box::new(proposed.clone())))
                 .map_err(|_| conflict("target budget record encoding failed"))?;

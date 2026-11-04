@@ -10,13 +10,16 @@ pub(super) struct ChildControl {
 }
 impl ChildControl {
     fn paused(buffer: &SnapshotBuffer, outcome: u8) -> (Arc<Self>, std::sync::mpsc::Sender<()>) {
+        Self::paused_cell(&buffer.cell, outcome)
+    }
+    fn paused_cell(cell: &Cell, outcome: u8) -> (Arc<Self>, std::sync::mpsc::Sender<()>) {
         let (release, receiver) = std::sync::mpsc::channel();
         let control = Arc::new(Self {
             entered: Default::default(),
             release: Mutex::new(Some(receiver)),
             outcome,
         });
-        *buffer.cell.next_child.lock().unwrap() = Some(control.clone());
+        *cell.next_child.lock().unwrap() = Some(control.clone());
         (control, release)
     }
     pub(super) fn run(&self) -> io::Result<()> {
@@ -377,6 +380,66 @@ async fn failed_startup_keeps_original_error_while_actual_child_drains() -> anyh
         73
     );
     assert_eq!(disk.snapshot().live_files, 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn retried_chunk_after_a_dropped_rpc_rewrites_its_own_offset() -> anyhow::Result<()> {
+    let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let disk = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+    let owner = SnapshotBufferOwner::fixture();
+    let buffer = SnapshotBuffer::new(&disk, 1 << 20, &owner)?;
+    let cell = buffer.cell.clone();
+    let mut streaming = openraft::network::snapshot_transport::Streaming::<crate::TypeConfig>::new(
+        "snapshot".into(),
+        Box::new(buffer),
+    );
+    // The chunk spans three workspace pieces. Its RPC is dropped while the
+    // second piece is held, and the leader retries the same chunk.
+    let data: Vec<u8> = (0..2 * WORKSPACE + 7).map(|i| (i % 251) as u8).collect();
+    let request = openraft::raft::InstallSnapshotRequest::<crate::TypeConfig> {
+        vote: openraft::Vote::new(1, 1),
+        meta: openraft::SnapshotMeta {
+            snapshot_id: "snapshot".into(),
+            last_log_id: None,
+            last_membership: openraft::StoredMembership::default(),
+        },
+        offset: 0,
+        data: data.clone(),
+        done: false,
+    };
+    let (first, release_first) = ChildControl::paused_cell(&cell, 0);
+    let mut dropped = Box::pin(streaming.receive(request.clone()));
+    std::future::poll_fn(|cx| {
+        assert!(dropped.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    tokio::time::timeout(std::time::Duration::from_secs(5), first.entered.notified()).await?;
+    let (second, release_second) = ChildControl::paused_cell(&cell, 0);
+    release_first.send(())?;
+    tokio::select! {
+        _ = dropped.as_mut() => panic!("chunk completed while its second piece is held"),
+        _ = second.entered.notified() => {}
+    }
+    drop(dropped);
+    release_second.send(())?;
+    assert!(!streaming.receive(request).await?);
+    assert_eq!(cell.length.load(Ordering::Acquire), data.len() as u64);
+    let written = {
+        let mut backing = cell.backing.lock().unwrap();
+        let Some(Backing::Receiving(spool)) = backing.as_mut() else {
+            unreachable!("receiving snapshot backing")
+        };
+        let mut written = Vec::new();
+        spool.seek(SeekFrom::Start(0))?;
+        spool.read_to_end(&mut written)?;
+        written
+    };
+    assert_eq!(written, data);
+    drop(streaming);
+    owner.drain().await?;
     Ok(())
 }
 

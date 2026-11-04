@@ -215,6 +215,17 @@ impl EncryptedSpool {
             .inspect_err(|_| self.owner_failed())
     }
 
+    /// Flush encrypted blocks and order them before the next publication.
+    /// Growth settlement and native closure still require a full sync.
+    pub(crate) fn sync_ordered(&mut self) -> io::Result<()> {
+        self.check_owner()?;
+        self.flush_block()?;
+        self.charge
+            .disk()
+            .synchronized_ordered(&self.file)
+            .inspect_err(|_| self.owner_failed())
+    }
+
     /// Enter sync and native closure once without consuming the exact spool.
     /// The caller may dispose it only after Drained is positively observed.
     #[cfg(test)]

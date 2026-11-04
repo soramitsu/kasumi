@@ -1,5 +1,7 @@
 //! Real native transaction/fork custody tests. The backend is the existing
 //! segmented in-memory disk implementation, not a substitute snapshot model.
+#[path = "read_fork_commit_tests.rs"]
+mod commit_progress;
 #[path = "source_read_tests.rs"]
 mod source_reads;
 use super::*;
@@ -397,8 +399,14 @@ impl crate::cache_test::Provider for CountedAdmission {
     }
 }
 fn opening(admission: &Arc<CountedAdmission>) -> RetainedDatabaseOpening {
+    opening_with_backend(admission, Box::new(InMemoryGroup::new()))
+}
+fn opening_with_backend(
+    admission: &Arc<CountedAdmission>,
+    backend: Box<dyn SegmentGroupBackend>,
+) -> RetainedDatabaseOpening {
     let mut opening = Database::builder(admission.clone(), [73; 16], CacheConfig::default())
-        .retain_backend(Box::new(InMemoryGroup::new()), DatabaseOpenMode::Create);
+        .retain_backend(backend, DatabaseOpenMode::Create);
     assert_eq!(opening.open().settlement(), DatabaseOpenSettlement::Ready);
     let writer = opening.database().unwrap().begin_write().unwrap();
     {

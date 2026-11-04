@@ -11,22 +11,33 @@ use kasumi_types::{
 use serde_json::json;
 use sha2::{Digest, Sha256};
 
-struct OrdinaryFixture {
-    fixture: Fixture,
-    engine: Arc<TenantEngine>,
+pub(super) struct OrdinaryFixture {
+    pub(super) fixture: Fixture,
+    pub(super) engine: Arc<TenantEngine>,
 }
-struct Input {
+pub(super) struct Input {
     bytes: Vec<u8>,
     position: AppliedEntryContext,
 }
 impl OrdinaryFixture {
-    async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
+    pub(super) async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
         Self::with_memory(None).await
     }
     async fn with_memory(
         memory: Option<Arc<dyn crate::admission::MemorySource>>,
     ) -> crate::test_fixture_failure::FixtureResult<Self> {
-        let fixture = Fixture::with_memory(1, None, memory).await?;
+        Self::over(Fixture::with_memory(1, None, memory).await?)
+    }
+    /// Another voter of `leader`'s group, on its own node from the same
+    /// authenticated bootstrap.
+    pub(super) async fn replica(leader: &Self) -> crate::test_fixture_failure::FixtureResult<Self> {
+        Self::over(Fixture::with_bootstrap(2, Some(&leader.fixture.image)).await?)
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    fn over(fixture: Fixture) -> crate::test_fixture_failure::FixtureResult<Self> {
         crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
         let engine = Arc::new(TenantEngine::from_bootstrap(
             "selected-sources",
@@ -36,7 +47,7 @@ impl OrdinaryFixture {
         engine.install_application_sources(fixture.roots.clone(), &fixture.image)?;
         Ok(Self { fixture, engine })
     }
-    fn input(&self, operation: Operation) -> Result<Input> {
+    pub(super) fn input(&self, operation: Operation) -> Result<Input> {
         let current = self.engine.generation()?;
         let revision = current
             .state
@@ -72,7 +83,11 @@ impl OrdinaryFixture {
             bytes,
         })
     }
-    fn apply(&self, input: &Input, after_backend: impl FnOnce()) -> Result<AppliedResponse> {
+    pub(super) fn apply(
+        &self,
+        input: &Input,
+        after_backend: impl FnOnce(),
+    ) -> Result<AppliedResponse> {
         kasumi_raft::with_application_publisher_bound_observed_for_test(
             &self.fixture._buffers,
             &self.fixture.stores,
@@ -87,13 +102,13 @@ impl OrdinaryFixture {
             after_backend,
         )
     }
-    async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
+    pub(super) async fn close(self) -> crate::test_fixture_failure::FixtureResult<()> {
         self.engine.seal();
         drop(self.engine);
         self.fixture.close().await
     }
 }
-fn definition() -> CollectionDefinition {
+pub(super) fn definition() -> CollectionDefinition {
     CollectionDefinition {
         name: "docs".into(),
         schema: json!({"type":"object"}),

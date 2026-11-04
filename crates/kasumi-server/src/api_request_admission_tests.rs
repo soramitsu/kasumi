@@ -132,7 +132,7 @@ async fn native_message_is_charged_from_its_prefix_before_its_body_arrives() {
     let baseline = admission.snapshot().reserved_bytes;
     // Only the prefix of a 1 MiB message arrives.
     let declared = 1 << 20;
-    let charge = crate::request_admission::quote(declared + 5);
+    let charge = crate::request_admission::wire_quote(declared + 5);
     let (body, _) = StalledBody::body(Some(grpc_prefix(declared)));
     let pending = tokio::spawn(
         router
@@ -145,7 +145,7 @@ async fn native_message_is_charged_from_its_prefix_before_its_body_arrives() {
         }
     })
     .await
-    .expect("the whole decoded message is charged once its prefix arrives");
+    .expect("encoded storage is charged from the prefix before collecting the mutation");
     // A cancelled request releases its charge.
     pending.abort();
     assert!(pending.await.unwrap_err().is_cancelled());
@@ -170,7 +170,7 @@ async fn native_message_beyond_the_budget_is_refused_before_buffering() {
         std::time::Duration::from_secs(10),
         router
             .clone()
-            .oneshot(grpc_request("Mutate", Some(&token), body)),
+            .oneshot(grpc_request("Query", Some(&token), body)),
     )
     .await
     .expect("refused from its prefix, without waiting for the message")
@@ -198,6 +198,69 @@ async fn native_message_beyond_the_budget_is_refused_before_buffering() {
             .document
             .is_none()
     );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn native_mutation_admits_flat_strings_but_refuses_dense_trees_before_decoding() {
+    let fixture = small_budget_fixture().await;
+    let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handler_entered = entered.clone();
+    let router = Router::new()
+        .route(
+            "/kasumi.v1.KasumiData/Mutate",
+            axum::routing::post(move |body: Body| {
+                let entered = handler_entered.clone();
+                async move {
+                    entered.store(true, std::sync::atomic::Ordering::SeqCst);
+                    let bytes = axum::body::to_bytes(body, MAX_REQUEST_BYTES + 5)
+                        .await
+                        .unwrap();
+                    let request = proto::MutateRequest::decode(&bytes[5..]).unwrap();
+                    let batch: kasumi_types::MutationBatch =
+                        decode_json(&request.batch_json).unwrap();
+                    assert_eq!(batch.operations.len(), 1);
+                    StatusCode::NO_CONTENT
+                }
+            }),
+        )
+        .layer(axum::middleware::from_fn_with_state(
+            crate::request_admission::RequestAdmission::native(
+                fixture.physical.admission.clone(),
+                fixture.auth.clone(),
+            ),
+            crate::request_admission::admit,
+        ));
+    let token = fixture.token("person", "tenant-a", "kasumi:write");
+    for (dense, body) in [
+        (false, json!({"proof":"a".repeat(1 << 20)})),
+        (true, json!({"values":vec![0u8; 1 << 19]})),
+    ] {
+        entered.store(false, std::sync::atomic::Ordering::SeqCst);
+        let message = proto::MutateRequest {
+            batch_json: serde_json::to_vec(&json!({
+                "idempotency_key":"shape", "read_set":[],
+                "operations":[{"op":"put", "collection":"docs", "id":"shape",
+                    "body":body, "expected":"absent"}],
+            }))
+            .unwrap(),
+        }
+        .encode_to_vec();
+        let mut framed = grpc_prefix(message.len() as u64);
+        framed.extend_from_slice(&message);
+        let response = router
+            .clone()
+            .oneshot(grpc_request("Mutate", Some(&token), Body::from(framed)))
+            .await
+            .unwrap();
+        if dense {
+            assert_eq!(grpc_code(&response), Some(Code::ResourceExhausted));
+            assert!(!entered.load(std::sync::atomic::Ordering::SeqCst));
+        } else {
+            assert_eq!(response.status(), StatusCode::NO_CONTENT);
+            assert!(entered.load(std::sync::atomic::Ordering::SeqCst));
+        }
+    }
     fixture.close().await;
 }
 

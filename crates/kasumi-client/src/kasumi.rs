@@ -44,7 +44,8 @@ use tokio::time::Instant;
 /// Calls that may decode concurrently through one handle and its clones.
 const CONCURRENT_CALLS: u64 = 256;
 
-/// A connected data client. Clones share one connection and decode budget.
+/// A connected data client. Clones share two connections, one for reads and one
+/// for writes, and a decode budget.
 #[derive(Clone)]
 pub struct Kasumi {
     client: KasumiClient,

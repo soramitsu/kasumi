@@ -61,16 +61,36 @@ impl Default for Meter {
     }
 }
 impl Meter {
+    pub(super) fn wire_bytes(&self) -> u64 {
+        self.wire_bytes
+    }
+
     fn site(&mut self) -> Result<()> {
         self.sites = self.sites.checked_add(1).ok_or_else(overflow)?;
         Ok(())
     }
-    pub(super) fn consume(&mut self, bytes: &[u8]) -> Result<()> {
+    pub(super) fn consume(&mut self, mut bytes: &[u8]) -> Result<()> {
         self.wire_bytes = self
             .wire_bytes
             .checked_add(bytes.len() as u64)
             .ok_or_else(overflow)?;
-        for &byte in bytes {
+        while !bytes.is_empty() {
+            if self.quoted && !self.escaped {
+                // Large proof strings contain long runs with no JSON syntax.
+                // Count those bytes together; only quotes and backslashes can
+                // change the string state, including across input chunks.
+                let run = memchr::memchr2(b'"', b'\\', bytes).unwrap_or(bytes.len());
+                self.scalar_bytes = self
+                    .scalar_bytes
+                    .checked_add(run as u64)
+                    .ok_or_else(overflow)?;
+                bytes = &bytes[run..];
+                if bytes.is_empty() {
+                    break;
+                }
+            }
+            let byte = bytes[0];
+            bytes = &bytes[1..];
             if self.quoted {
                 if self.escaped {
                     self.escaped = false;
@@ -146,6 +166,45 @@ pub(super) fn measure(bytes: &[u8]) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_strings_preserve_exact_work_across_escape_and_chunk_boundaries() {
+        let escaped = r#"\"\\\u0061"#;
+        let content = format!("{}{}安全{}", "ab".repeat(4096), escaped, "cd".repeat(4096));
+        let input = format!(r#"{{"proof":"{content}"}}"#);
+        serde_json::from_str::<serde_json::Value>(&input).unwrap();
+        // The object, key and value are three sites. All five key bytes and
+        // every byte inside the value's quotes count, including escape bytes.
+        let expected =
+            (3 * site_bytes() + 5 + content.len() as u64) * REPRESENTATIONS * CAPACITY_FACTOR
+                + input.len() as u64;
+        assert_eq!(measure(input.as_bytes()).unwrap(), expected);
+        for width in [1, 2, 3, 7, 63, 64, 65, 1024, 16384] {
+            let mut meter = Meter::default();
+            for chunk in input.as_bytes().chunks(width) {
+                meter.consume(chunk).unwrap();
+            }
+            assert_eq!(meter.finish().unwrap(), expected, "chunk width {width}");
+        }
+        // Split before/after every quote and escape, including an escaped quote
+        // and the slash in a doubled backslash. Pending escape state survives.
+        for (offset, byte) in input.bytes().enumerate() {
+            if matches!(byte, b'"' | b'\\') {
+                for split in [offset, offset + 1] {
+                    let (left, right) = input.as_bytes().split_at(split);
+                    let mut meter = Meter::default();
+                    meter.consume(left).unwrap();
+                    meter.consume(right).unwrap();
+                    assert_eq!(meter.finish().unwrap(), expected, "split {split}");
+                }
+            }
+        }
+        let mut incomplete = input.into_bytes();
+        incomplete.truncate(incomplete.len() - 2);
+        assert!(measure(&incomplete).is_err());
+        incomplete.push(b'\\');
+        assert!(measure(&incomplete).is_err());
+    }
 
     #[test]
     fn dense_numeric_sites_are_charged_before_serde_and_independent_of_token_width() {

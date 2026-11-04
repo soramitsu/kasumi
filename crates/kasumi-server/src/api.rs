@@ -472,6 +472,7 @@ mod tests {
     include!("api_tls_reload_tests.rs");
     include!("api_sdk_literal_tests.rs");
     include!("api_facade_tests.rs");
+    include!("api_client_transport_tests.rs");
     include!("api_data_cli_tests.rs");
     include!("rpc_seek_paging_tests.rs");
     include!("api_request_admission_tests.rs");

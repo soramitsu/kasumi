@@ -422,8 +422,9 @@ pub struct Streaming<C>
 where
     C: RaftTypeConfig,
 {
-    /// The offset of the last byte written to the snapshot.
-    offset: u64,
+    /// The offset of the last byte written to the snapshot. `None` while a
+    /// chunk is in flight: a cancelled chunk leaves the position unknown.
+    offset: Option<u64>,
 
     /// The ID of the snapshot being written.
     snapshot_id: SnapshotId,
@@ -449,7 +450,7 @@ where
         C::SnapshotData: tokio::io::AsyncWrite + Unpin,
     {
         Self {
-            offset: 0,
+            offset: Some(0),
             snapshot_id,
             snapshot_data,
             close_fn: |data, cx| tokio::io::AsyncWrite::poll_shutdown(Pin::new(data), cx),
@@ -575,8 +576,10 @@ where
         }
         // TODO: check id?
 
-        // Always seek to the target offset if not an exact match.
-        if req.offset != self.offset {
+        // Always seek to the target offset if not an exact match. A dropped
+        // RPC can leave part of its chunk written, so the position stays
+        // unknown until this chunk completes and its retry seeks.
+        if self.offset.take() != Some(req.offset) {
             let result = tracked_poll(
                 self.snapshot_data
                     .as_mut()
@@ -591,7 +594,6 @@ where
                     ErrorVerb::Seek,
                 ));
             }
-            self.offset = req.offset;
         }
 
         // Write the next segment & update offset.
@@ -607,7 +609,7 @@ where
                 ErrorVerb::Write,
             ));
         }
-        self.offset += req.data.len() as u64;
+        self.offset = Some(req.offset + req.data.len() as u64);
         Ok(req.done)
     }
 }

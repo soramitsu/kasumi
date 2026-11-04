@@ -2292,10 +2292,10 @@
     "sha256": "db48bfcd5fbf25cc1073162ff37bc9ee5ec81e477c52329c5a0fb608499374a9"
   },
   {
-    "bytes": 52466,
+    "bytes": 52714,
     "mode": "0o644",
     "path": "openraft/src/network/snapshot_transport.rs",
-    "sha256": "d55bd8eea3833f64b144a60d5722873cf1d452cbb5e74de46609b2a40c73c375"
+    "sha256": "b609e3b9d9f3bff21190b3438bbce2961202b1381a98c96a0ca1036d35e4fa84"
   },
   {
     "bytes": 3715,

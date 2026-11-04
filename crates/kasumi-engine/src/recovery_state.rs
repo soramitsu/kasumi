@@ -317,8 +317,24 @@ impl TenantEngine {
         next.revision = revision;
         let mut outcome = match authorize(&next, &command.authorization)
             .map_err(ReadFailure::Query)
-            .and_then(|()| apply(&mut next, &command, previous.document_resolver()))
-        {
+            .and_then(|()| {
+                if let Some(record) = replayed_start(&next, &command)? {
+                    // The immutable graph was validated when published. This
+                    // read-only branch changes only the monotonic revision;
+                    // rechecking every historical signature would make an
+                    // exact retry grow with the entire recovery history.
+                    // Authorization above and fresh audit/publication below
+                    // still apply to this invocation.
+                    return Ok(record);
+                }
+                let record = apply(&mut next, &command, previous.document_resolver())?;
+                // Commit only a successor the Control snapshot validator
+                // accepts: an admitted phase must never wedge a later reload.
+                validate(&next)
+                    .and_then(|()| validate_successor(&previous.state, &next))
+                    .map(|()| record)
+                    .map_err(ReadFailure::Query)
+            }) {
             Ok(record) => Ok(record),
             Err(ReadFailure::Query(error)) => Err(error),
             Err(ReadFailure::Source(error)) => return Err(error.0),
@@ -446,23 +462,38 @@ impl TenantEngine {
         )
     }
 }
+
+/// Resolve only an exact Start replay, without mutable access to any history.
+fn replayed_start(
+    state: &TenantState,
+    command: &RecoveryCommand,
+) -> Result<Option<RecoveryRecord>> {
+    let RecoveryMutation::Start(request) = &command.mutation else {
+        return Ok(None);
+    };
+    request.validate()?;
+    let Some(existing) = state
+        .recovery_control
+        .operations
+        .get(&request.operation_id.to_string())
+    else {
+        return Ok(None);
+    };
+    if existing.request != **request {
+        return Err(conflict("permanent recovery operation identity differs"));
+    }
+    Ok(Some(existing.clone()))
+}
+
 pub(crate) fn apply(
     state: &mut TenantState,
     command: &RecoveryCommand,
     resolver: Option<&dyn DocumentResolver>,
 ) -> SourceResult<RecoveryRecord> {
+    if let Some(existing) = replayed_start(state, command)? {
+        return Ok(existing);
+    }
     if let RecoveryMutation::Start(request) = &command.mutation {
-        request.validate()?;
-        if let Some(existing) = state
-            .recovery_control
-            .operations
-            .get(&request.operation_id.to_string())
-        {
-            if existing.request != **request {
-                return Err(conflict("permanent recovery operation identity differs").into());
-            }
-            return Ok(existing.clone());
-        }
         let installation = &state
             .lifecycle_control
             .as_ref()
@@ -1208,6 +1239,21 @@ fn validate_input(
                 RecoveryPhase::StopActivation => activation::stop_action(state, operation)?,
                 _ => issuer_action(operation, operation.phase)?,
             };
+            // Snapshot validation re-derives an activation against its intent's
+            // original credential window, which opens at the intent's acceptance.
+            let outside_activation_intent = || -> Result<bool> {
+                let current = intent(
+                    state,
+                    operation,
+                    operation
+                        .current_intent
+                        .ok_or_else(|| conflict("activation intent absent"))?,
+                )?;
+                Ok(
+                    command.not_after_ms > current.original_credential_expires_at_ms
+                        || authorization.admitted_at_ms < current.accepted_at_ms,
+                )
+            };
             command
                 .validate()
                 .map_err(|_| conflict("invalid recovery issuer command"))?;
@@ -1222,16 +1268,7 @@ fn validate_input(
                         .ok_or_else(|| conflict("phase deadline overflow"))?
                 || command.not_after_ms <= authorization.admitted_at_ms
                 || command.action != action
-                || (operation.phase == RecoveryPhase::Activate
-                    && command.not_after_ms
-                        > intent(
-                            state,
-                            operation,
-                            operation
-                                .current_intent
-                                .ok_or_else(|| conflict("activation intent absent"))?,
-                        )?
-                        .original_credential_expires_at_ms)
+                || (operation.phase == RecoveryPhase::Activate && outside_activation_intent()?)
             {
                 return Err(conflict(
                     "recovery issuer command differs from frozen input or original deadline",
@@ -1382,6 +1419,11 @@ fn validate_input(
                 || authorization.admitted_at_ms >= current.original_credential_expires_at_ms
                 || request.command_id != current.request.command_id
                 || request.tenant != operation.request.tenant
+                // The target accepts its phase only from the intent's original
+                // principal after acceptance. A first-membership marker for any
+                // other dispatch would stay permanent and unusable.
+                || authorization.context.principal != current.original_principal
+                || authorization.admitted_at_ms < current.accepted_at_ms
             {
                 return Err(
                     conflict("native target dispatch differs from current original phase").into(),

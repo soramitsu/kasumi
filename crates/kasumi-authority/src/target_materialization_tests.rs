@@ -1931,12 +1931,9 @@ async fn exercise_target_activation(maintenance: bool) {
     let complete = f.commit_phase(LifecyclePhase::Complete, &input).await;
     let targets = f.open_targets(&complete, &input, &router).await;
     let index = current_target(&targets).await;
-    let proof = targets[index]
-        .owner
-        .database()
-        .complete_target(&targets[index].operation, initial_complete(&input))
-        .await
-        .unwrap();
+    // Leadership may change after selection. Resolve the same original phase
+    // through the existing helper before using its proof for activation.
+    let proof = exact_target_completion(&targets[index], &initial_complete(&input)).await;
     let signed = f.signers[&targets[index].id]
         .sign_completed(&proof, &targets[index].operation)
         .await

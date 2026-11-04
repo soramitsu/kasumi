@@ -219,6 +219,14 @@ impl Backend {
                         "maintenance admission deadline or policy epoch changed",
                     )));
                 }
+                // Another operation only blocks this one until it resolves.
+                // Recording a rejection would permanently consume an identity
+                // that signer coverage retries, blocking that verifier.
+                if meta.operational.pending_operation.is_some() {
+                    return Ok(Err(conflict(
+                        "another authority maintenance remains pending",
+                    )));
+                }
                 let mut status = AuthorityMaintenanceStatus {
                     command: command.clone(),
                     command_sha256: command.digest()?,
@@ -448,13 +456,8 @@ impl Backend {
         meta: &Meta,
         command: &'a AuthorityMaintenanceCommand,
     ) -> ScratchResult<PreparedMaintenanceStart<'a>> {
-        if meta.operational.revision != command.expected_operational_revision
-            || meta.operational.pending_operation.is_some()
-        {
-            return Err(reject_conflict(
-                "authority operational revision changed or maintenance remains pending",
-            )
-            .into());
+        if meta.operational.revision != command.expected_operational_revision {
+            return Err(reject_conflict("authority operational revision changed").into());
         }
         let mut next = meta.operational.membership.clone();
         match &command.action {

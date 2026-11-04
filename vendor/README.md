@@ -94,7 +94,10 @@ stop and failure behavior. Graceful shutdown closes actor and snapshot-offer
 admission, freezes new protocol transitions, and drains actual accepted work
 through a terminal worker boundary covering the coalesced pending range.
 Cancelling a shutdown waiter leaves the chosen policy and original task owners
-installed; failures are retained by the same shutdown census.
+installed; failures are retained by the same shutdown census. An incoming
+snapshot chunk dropped mid-write leaves the stream position unknown, so its
+retried chunk seeks to its own offset first; the checkpoint lists this change
+under `pending_development_cases` until it is reviewed.
 
 The current source inventory records exact bytes and permissions, with focused
 review and new tests explicitly pending in the checkpoint. Refreshing these

@@ -205,7 +205,7 @@ impl KasumiClient {
         )?;
         request.set_timeout(remaining);
         let result = tokio::time::timeout_at(end, async {
-            let response = self.inner.receipt(request).await?.into_inner();
+            let response = self.read_client().receipt(request).await?.into_inner();
             verify_mutation_receipt(expected_scope, original, response)
         })
         .await

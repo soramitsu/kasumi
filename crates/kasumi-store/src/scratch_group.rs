@@ -753,6 +753,18 @@ impl SegmentGroupBackend for Backend {
                 .sync_all()
         })
     }
+    fn sync_root_ordered(&self) -> io::Result<()> {
+        self.0.with(|state| {
+            state
+                .root
+                .as_mut()
+                .unwrap()
+                .spool
+                .spool()
+                .ok_or(io::ErrorKind::BrokenPipe)?
+                .sync_ordered()
+        })
+    }
     fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
         let epoch = self.0.with(|state| Ok(state.namespace_epoch))?;
         let mut visit = |name: &OsStr| {
@@ -880,6 +892,9 @@ impl SegmentGroupBackend for Backend {
     fn sync(&self, file: GroupFile) -> io::Result<()> {
         self.0.with(|state| state.spool(file)?.sync_all())
     }
+    fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
+        self.0.with(|state| state.spool(file)?.sync_ordered())
+    }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         self.0.with(|state| {
             if state.transaction.is_some() {
@@ -904,7 +919,9 @@ impl SegmentGroupBackend for Backend {
         })
     }
     fn sync_names(&self) -> io::Result<()> {
-        self.0.with(|_| Ok(()))
+        // Names are in memory, but the backend contract also allows this call
+        // to complete a preceding ordered write. All spools share one device.
+        self.sync_root()
     }
     fn close(&self) -> BackendCloseOutcome {
         self.0.close()

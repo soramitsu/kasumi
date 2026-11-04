@@ -150,6 +150,54 @@ fn scratch_claim_finish_synchronizes_each_settled_extent_once() {
     assert_eq!(bytes, [7; 65_537]);
     close(database, &disk);
 }
+
+#[test]
+fn scratch_ordered_sync_keeps_unused_promises_until_full_settlement() {
+    let (_directory, disk, _memory, owner, backend, database) = fixture();
+    backend.reserve_transaction(&plan()).unwrap();
+    backend.create(GroupFile::segment(1)).unwrap();
+    backend
+        .write(GroupFile::segment(1), 0, &[7; 65_537])
+        .unwrap();
+    // Materialize the final encrypted block without synchronizing it. The
+    // remaining promise covers unused reserved growth, not buffered bytes.
+    owner
+        .with(|state| state.spool(GroupFile::segment(1))?.flush())
+        .unwrap();
+    let before = disk.snapshot();
+    assert!(before.filesystem_pending_bytes > 0);
+    let full = disk.physical_synchronizations();
+    let ordered = disk.ordered_synchronizations();
+    backend.sync_ordered(GroupFile::segment(1)).unwrap();
+    backend.sync_root_ordered().unwrap();
+    assert_eq!(disk.ordered_synchronizations() - ordered, 2);
+    assert_eq!(disk.physical_synchronizations(), full);
+    let after = disk.snapshot();
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert_eq!(
+        after.filesystem_pending_bytes,
+        before.filesystem_pending_bytes
+    );
+    assert_eq!(after.live_files, before.live_files);
+
+    // Anonymous names need no filesystem operation, but this API must still
+    // provide the full synchronization promised after preceding barriers.
+    backend.sync_names().unwrap();
+    assert_eq!(disk.physical_synchronizations() - full, 1);
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(
+        disk.snapshot().filesystem_pending_bytes,
+        before.filesystem_pending_bytes
+    );
+    backend.finish_transaction(GROUP, 1).unwrap();
+    assert!(disk.snapshot().charged_bytes < before.charged_bytes);
+    assert!(disk.snapshot().filesystem_pending_bytes < before.filesystem_pending_bytes);
+    let mut bytes = [0; 65_537];
+    backend.read(GroupFile::segment(1), 0, &mut bytes).unwrap();
+    assert_eq!(bytes, [7; 65_537]);
+    close(database, &disk);
+}
+
 #[test]
 fn scratch_claim_capacity_denial_is_before_namespace_or_root_mutation() {
     let (_directory, disk, memory, owner, backend, database) = fixture();

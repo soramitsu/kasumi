@@ -73,8 +73,11 @@ impl Database {
         let clock = self.clock.clone();
         let term = self.group.current_term();
         let node = self.admission().clone();
-        let lease = self
-            .snapshot_retention_work(cancellation, move |engine| {
+        let lease_id = uuid::Uuid::new_v4().to_string();
+        let opening = (lease_id.clone(), cancellation.clone());
+        let opened = self
+            .snapshot_retention_work(cancellation.clone(), move |engine| {
+                let (id, cancellation) = opening;
                 engine.leases.open(
                     &engine,
                     &admitted_context,
@@ -82,9 +85,22 @@ impl Database {
                     clock,
                     term,
                     &node,
+                    id,
+                    &cancellation,
                 )
             })
-            .await?;
+            .await;
+        let lease = match opened {
+            Ok(lease) => lease,
+            Err(error) => {
+                // A timed-out or cancelled wait leaves the worker running. It
+                // inserts nothing once cancelled, and an earlier insert is
+                // removed by closing the exact id under the same lock.
+                cancellation.cancel();
+                self.discard_snapshot_lease(context, &lease_id).await;
+                return Err(error);
+            }
+        };
         let header = lease.header.clone();
         let release = self
             .release_event(
@@ -97,16 +113,26 @@ impl Database {
             )
             .await;
         if let Err(error) = release {
-            // Closing is also owned blocking work; cancellation may detach it,
-            // but it retains the engine and registration until actual completion.
-            let _ = self
-                .close_snapshot_lease_inner(context, &header.lease_id)
-                .await;
+            self.discard_snapshot_lease(context, &header.lease_id).await;
             return Err(error);
         }
         self.checked_snapshot_lease(context, &header.lease_id)
             .await?;
         Ok(header)
+    }
+
+    /// Removes a lease this request opened but never returned, whatever its
+    /// credential's state. Closing is also owned blocking work; cancellation
+    /// may detach it, but it retains the engine and registration until actual
+    /// completion.
+    async fn discard_snapshot_lease(&self, context: &RequestContext, lease_id: &str) {
+        let context = context.clone();
+        let lease_id = lease_id.to_owned();
+        let _ = self
+            .snapshot_retention_work(QueryCancellation::default(), move |engine| {
+                engine.leases.close(&context, &lease_id)
+            })
+            .await;
     }
 
     pub(super) async fn checked_snapshot_lease(

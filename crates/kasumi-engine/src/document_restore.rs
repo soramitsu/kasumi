@@ -1,14 +1,15 @@
 //! One-row-at-a-time logical snapshot materialization into encrypted bodies.
 //! Scratch tables are unpublished and private until the complete snapshot is
-//! verified and its application/custody coordinator imports both namespaces.
+//! verified; its restore then brings both published object namespaces to the
+//! snapshot's objects in bounded batches.
 use crate::{
     document_encoding::{self, BLOB_CHUNK_BYTES, BodyManifest},
-    document_store::{BLOBS, BODIES, Scope, limits},
+    document_store::{BLOBS, BODIES, DocumentMeasurement, Scope, limits},
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
-    DiskMemoryLease, EncryptedTable, EncryptedTableBatch, NamespaceReplacement,
-    NodeDiskMemoryAdmission, ScratchDisk, TenantStore, WriteOp,
+    DiskMemoryLease, EncryptedTable, EncryptedTableBatch, NodeDiskMemoryAdmission, ScratchDisk,
+    TenantStore, WriteOp,
 };
 use kasumi_types::{
     AdmittedDocumentOwner, Document, DocumentResolver, SharedDocument, StoredDocument,
@@ -17,7 +18,7 @@ use sha2::{Digest, Sha256};
 use std::sync::Arc;
 
 const FLOOR: u64 = 64 << 10;
-/// Operations and copied object bytes in one Reopen correction batch: one
+/// Operations and copied object bytes in one restore correction batch: one
 /// ordinary store write, far below the native transaction staging cap.
 #[cfg(not(test))]
 const CORRECTION_ENTRIES: usize = 4096;
@@ -123,33 +124,38 @@ struct Tables {
 #[derive(Clone)]
 pub(crate) struct StagedDocuments {
     tables: Arc<Tables>,
+    // Established by the consumed builder; these private tables never gain
+    // objects after finish. Empty bootstraps need no membership point reads.
+    has_bodies: bool,
 }
 
 pub(crate) struct Builder {
     bodies: ObjectBatch,
     blobs: ObjectBatch,
     documents_since_flush: usize,
+    has_bodies: bool,
     tables: Arc<Tables>,
     failed: bool,
 }
 
-struct PendingObject {
+struct KnownObject {
     key: [u8; 64],
     value: Vec<u8>,
     _memory: DiskMemoryLease,
 }
 struct ObjectBatch {
     batch: Option<EncryptedTableBatch>,
-    // At most 16 exact pending originals, totaling at most 4 MiB per table.
-    // Their copies have separate real charges through commit/abort retirement.
-    pending: Vec<PendingObject>,
+    // At most 16 exact originals, totaling at most 4 MiB per table. Keep them
+    // across commits so repeated proof chunks need no encrypted point read.
+    // The same grants cover their copies through commit/abort retirement.
+    known: Vec<KnownObject>,
     bytes: usize,
 }
 impl ObjectBatch {
     fn new() -> Self {
         Self {
             batch: None,
-            pending: Vec::with_capacity(EncryptedTableBatch::MAX_ENTRIES),
+            known: Vec::with_capacity(EncryptedTableBatch::MAX_ENTRIES),
             bytes: 0,
         }
     }
@@ -160,10 +166,10 @@ impl ObjectBatch {
         key: [u8; 64],
         bytes: &[u8],
     ) -> Result<()> {
-        if let Some(previous) = self.pending.iter().find(|row| row.key == key) {
+        if let Some(previous) = self.known.iter().find(|row| row.key == key) {
             ensure!(
                 previous.value.as_slice() == bytes,
-                "pending document content-address collision"
+                "known document content-address collision"
             );
             return Ok(());
         }
@@ -178,13 +184,17 @@ impl ObjectBatch {
             .len()
             .checked_add(bytes.len())
             .context("document staging batch overflow")?;
-        if self.pending.len() == EncryptedTableBatch::MAX_ENTRIES
+        if self.known.len() == EncryptedTableBatch::MAX_ENTRIES
             || self
                 .bytes
                 .checked_add(row_bytes)
                 .is_none_or(|total| total > EncryptedTableBatch::MAX_BYTES)
         {
             self.flush()?;
+            // A cache eviction may include uncommitted originals. Publish the
+            // complete native batch before releasing any of their backing.
+            self.known.clear();
+            self.bytes = 0;
         }
         // The existing native single-row corridor accepts large manifests up
         // to its 32 MiB row cap; do not increase the bounded batch cap for one.
@@ -203,7 +213,7 @@ impl ObjectBatch {
             .as_mut()
             .expect("opened object batch")
             .insert(&key, bytes)?;
-        self.pending.push(PendingObject {
+        self.known.push(KnownObject {
             key,
             value: bytes.to_vec(),
             _memory: grant,
@@ -215,8 +225,6 @@ impl ObjectBatch {
         if let Some(batch) = self.batch.take() {
             batch.commit()?;
         }
-        self.pending.clear();
-        self.bytes = 0;
         Ok(())
     }
 }
@@ -244,6 +252,7 @@ impl Builder {
             bodies: ObjectBatch::new(),
             blobs: ObjectBatch::new(),
             documents_since_flush: 0,
+            has_bodies: false,
             tables: Arc::new(Tables {
                 bodies,
                 blobs,
@@ -261,17 +270,9 @@ impl Builder {
     pub(crate) fn push(&mut self, document: &Document) -> Result<StoredDocument> {
         ensure!(!self.failed, "document restore builder previously failed");
         self.failed = true;
-        let bytes =
-            crate::accounting::encoded_len(&kasumi_types::CanonicalJsonValue(&document.body))?;
-        let limits = limits(bytes)?;
-        let work = crate::snapshot_codec::inspect_typed_json_work(document)?
-            .checked_add(
-                (bytes as u64)
-                    .checked_mul(8)
-                    .context("document restore workspace overflow")?,
-            )
-            .and_then(|bytes| bytes.checked_add(1 << 20))
-            .context("document restore workspace overflow")?;
+        let measured = DocumentMeasurement::new(document)?;
+        let limits = measured.limits();
+        let work = measured.workspace()?;
         let _workspace = self
             .tables
             .disk
@@ -283,22 +284,8 @@ impl Builder {
                 self.put(false, reference.sha256, bytes)
             })?;
         let wire = manifest.to_bytes(limits)?;
-        let object = Sha256::digest(&wire).into();
-        self.put(true, object, &wire)?;
-        let descriptor = StoredDocument::from_document(
-            document,
-            object,
-            wire.len() as u64,
-            crate::snapshot_codec::inspect_typed_json_work(&kasumi_types::CanonicalJsonValue(
-                &document.body,
-            ))?,
-            crate::snapshot_codec::inspect_external_json_work(&wire, &mut || Ok(()))?,
-        )?;
-        ensure!(
-            descriptor.body_bytes == manifest.canonical_bytes
-                && descriptor.body_sha256 == manifest.canonical_sha256,
-            "document restore canonical identity differs"
-        );
+        let descriptor = measured.descriptor(&manifest, &wire)?;
+        self.put(true, descriptor.body_object, &wire)?;
         self.documents_since_flush += 1;
         if self.documents_since_flush == EncryptedTableBatch::MAX_ENTRIES / 2 {
             self.bodies.flush()?;
@@ -320,7 +307,9 @@ impl Builder {
             (&self.tables.blobs, &mut self.blobs)
         };
         let key = self.tables.scope.key(digest);
-        batch.put(table, self.tables.disk.memory(), key, bytes)
+        batch.put(table, self.tables.disk.memory(), key, bytes)?;
+        self.has_bodies |= body;
+        Ok(())
     }
 
     /// Call only after the enclosing authenticated snapshot stream has passed
@@ -332,6 +321,7 @@ impl Builder {
         self.blobs.flush()?;
         Ok(StagedDocuments {
             tables: self.tables,
+            has_bodies: self.has_bodies,
         })
     }
 }
@@ -409,6 +399,22 @@ impl<'a> Correction<'a> {
         }
         Ok(())
     }
+    /// Write each object of `table` this namespace lacks or holds with other
+    /// bytes: no reader names another row under an object's content address.
+    /// Each lookup is bounded by the object's own length.
+    fn write_missing(&mut self, table: &EncryptedTable) -> Result<()> {
+        table.visit(|key, value| {
+            if self
+                .store
+                .get_bounded(self.namespace, key, value.len())?
+                .is_none_or(|published| published.as_bytes() != value)
+            {
+                self.put(key, value)?;
+            }
+            Ok(())
+        })?;
+        self.flush()
+    }
 }
 
 impl StagedDocuments {
@@ -480,6 +486,9 @@ impl StagedDocuments {
             expected > 0 && expected <= limits.manifest_bytes,
             "staged document manifest exceeds bound"
         );
+        if !self.has_bodies {
+            return Ok(false);
+        }
         let _lookup = self.read_grant(FLOOR)?;
         let Some(wire) = self
             .tables
@@ -509,35 +518,54 @@ impl StagedDocuments {
         Ok(true)
     }
 
-    /// COMPLETE namespace replacements, never partial merge or garbage
-    /// collection. The coordinator must include every logical current/feed
-    /// descriptor from the verified snapshot, retain older selected views, and
-    /// jointly publish these rows with the exact snapshot/custody commitment.
-    /// Reopen uses `reconcile_reopened` instead.
-    pub(crate) fn complete_snapshot_replacements(&self) -> [NamespaceReplacement<'_>; 2] {
+    /// The one complete replacement of both namespaces that a restore once
+    /// published with its snapshot commitment. Its staging grows with every
+    /// object the tenant holds; tests show it exceeding the native cap.
+    #[cfg(test)]
+    pub(crate) fn complete_snapshot_replacements(
+        &self,
+    ) -> [kasumi_store::NamespaceReplacement<'_>; 2] {
         [
-            NamespaceReplacement::from_table(BODIES, &self.tables.bodies),
-            NamespaceReplacement::from_table(BLOBS, &self.tables.blobs),
+            kasumi_store::NamespaceReplacement::from_table(BODIES, &self.tables.bodies),
+            kasumi_store::NamespaceReplacement::from_table(BLOBS, &self.tables.blobs),
         ]
     }
 
-    /// Reopen restores this replica's own snapshot, whose objects are already
-    /// published: object rows are content-addressed and no apply deletes them,
-    /// so both namespaces hold every object the snapshot names, plus objects
-    /// that only later or superseded documents name. Bring each namespace to
-    /// the snapshot's exact object set in bounded batches instead of one
-    /// complete replacement, whose staging grows with every object the tenant
-    /// ever wrote until it exceeds the native transaction cap and no restart
-    /// can succeed. Rows the snapshot lacks are deleted (replay rewrites each
-    /// object a later entry names), then missing objects are written. This
-    /// must finish before any restore selection captures the store: replay
-    /// checks object presence against that selection.
-    pub(crate) fn reconcile_reopened(&self, store: &Arc<TenantStore>) -> Result<()> {
-        let memory = self.tables.disk.memory();
-        for (namespace, table, max_bytes) in [
+    /// Each published object namespace, its staged table and its row bound.
+    fn namespaces(&self) -> [(&'static str, &EncryptedTable, usize); 2] {
+        [
             (BODIES, &self.tables.bodies, MAX_OBJECT_BYTES),
             (BLOBS, &self.tables.blobs, BLOB_CHUNK_BYTES),
-        ] {
+        ]
+    }
+
+    /// Before an install publishes its snapshot, write each snapshot object
+    /// the store lacks, in bounded batches, deleting nothing. Object rows are
+    /// content-addressed: the generation still serving names none of the new
+    /// rows and keeps every row it does name, so a failure before publication
+    /// leaves the previous snapshot whole.
+    pub(crate) fn write_missing(&self, store: &Arc<TenantStore>) -> Result<()> {
+        for (namespace, table, _) in self.namespaces() {
+            Correction::new(store, self.tables.disk.memory(), namespace)?.write_missing(table)?;
+        }
+        Ok(())
+    }
+
+    /// Bring each published namespace to the snapshot's exact object set in
+    /// bounded batches, never in one complete replacement, whose staging grows
+    /// with every object the tenant ever wrote until it exceeds the native
+    /// transaction cap. Object rows are content-addressed and no apply deletes
+    /// them: a reopening replica holds every object its own snapshot names,
+    /// plus objects that only later or superseded documents name; an
+    /// installing one holds the snapshot's objects `write_missing` wrote and
+    /// every object of the state it replaced. Rows the snapshot lacks are
+    /// deleted (replay rewrites each object a later entry names), then missing
+    /// objects are written. This must finish before any restore selection
+    /// captures the store: replay and later applies check object presence
+    /// against that selection.
+    pub(crate) fn reconcile(&self, store: &Arc<TenantStore>) -> Result<()> {
+        let memory = self.tables.disk.memory();
+        for (namespace, table, max_bytes) in self.namespaces() {
             let mut correction = Correction::new(store, memory, namespace)?;
             let mut kept = 0u64;
             // The view keeps its selected root while earlier batches commit.
@@ -562,13 +590,7 @@ impl StagedDocuments {
             })?;
             // Every kept row is one distinct staged object.
             if kept != staged {
-                table.visit(|key, value| {
-                    if store.get_bounded(namespace, key, value.len())?.is_none() {
-                        correction.put(key, value)?;
-                    }
-                    Ok(())
-                })?;
-                correction.flush()?;
+                correction.write_missing(table)?;
             }
         }
         Ok(())
@@ -662,6 +684,12 @@ impl BootstrapDocuments {
 }
 impl DocumentResolver for BootstrapDocuments {
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+        if !self.bootstrap.has_bodies {
+            // The selected resolver already retains and checks its exact
+            // source. An empty bootstrap contributes neither a body lookup
+            // nor a second reader around that native load.
+            return self.selected.load(descriptor);
+        }
         self.selected.with_source(|| {
             if self.bootstrap.contains(descriptor)? {
                 self.bootstrap.load(descriptor)
@@ -684,6 +712,38 @@ impl AdmittedDocumentOwner for DecodedOwner {
 
 impl DocumentResolver for StagedDocuments {
     fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+        self.load_checked(descriptor, &|| Ok(()))
+    }
+}
+
+/// Borrowed only by an unpublished verification pass. The callback never
+/// becomes part of the installed generation or its committed apply path.
+pub(crate) struct CheckedDocuments<'a> {
+    documents: &'a StagedDocuments,
+    check: &'a (dyn Fn() -> Result<()> + Send + Sync),
+}
+impl DocumentResolver for CheckedDocuments<'_> {
+    fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+        self.documents.load_checked(descriptor, self.check)
+    }
+}
+impl StagedDocuments {
+    pub(crate) fn checked<'a>(
+        &'a self,
+        check: &'a (dyn Fn() -> Result<()> + Send + Sync),
+    ) -> CheckedDocuments<'a> {
+        CheckedDocuments {
+            documents: self,
+            check,
+        }
+    }
+
+    fn load_checked(
+        &self,
+        descriptor: &StoredDocument,
+        check: &(dyn Fn() -> Result<()> + Send + Sync),
+    ) -> Result<SharedDocument> {
+        check()?;
         descriptor.validate()?;
         let limits = limits(usize::try_from(descriptor.body_bytes)?)?;
         let manifest_bytes = usize::try_from(descriptor.body_object_bytes)?;
@@ -711,7 +771,7 @@ impl DocumentResolver for StagedDocuments {
         );
         let manifest_work = crate::snapshot_codec::inspect_external_json_work(
             manifest_wire.as_bytes(),
-            &mut || Ok(()),
+            &mut || check(),
         )?;
         ensure!(
             manifest_work == descriptor.body_manifest_work,
@@ -725,13 +785,17 @@ impl DocumentResolver for StagedDocuments {
             "staged document logical identity differs"
         );
         let canonical = document_encoding::reconstruct_body(&manifest, limits, |reference| {
-            self.tables
+            check()?;
+            let blob = self
+                .tables
                 .blobs
                 .get(&self.tables.scope.key(reference.sha256))?
-                .context("staged document proof chunk missing")
+                .context("staged document proof chunk missing")?;
+            check()?;
+            Ok(blob)
         })?;
         let body_work =
-            crate::snapshot_codec::inspect_external_json_work(&canonical, &mut || Ok(()))?;
+            crate::snapshot_codec::inspect_external_json_work(&canonical, &mut || check())?;
         ensure!(
             body_work == descriptor.body_decode_work,
             "staged document body workspace differs"
@@ -750,6 +814,7 @@ impl DocumentResolver for StagedDocuments {
             version: descriptor.version,
             body: serde_json::from_slice(&canonical)?,
         };
+        check()?;
         drop(canonical);
         drop(manifest);
         drop(manifest_wire);
@@ -767,6 +832,182 @@ impl DocumentResolver for StagedDocuments {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn restore_measurements_match_independent_descriptors_and_roundtrip_all_encodings() {
+        use base64::Engine as _;
+
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory).unwrap();
+        let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+        let bodies = [
+            serde_json::Value::Null,
+            serde_json::json!({
+                "z": [null, true, false, -17, 1.25, {"quote\"": "雪\\\n\t"}],
+                "a": {"nested": []},
+            }),
+            serde_json::json!({"proof": "a7".repeat(BLOB_CHUNK_BYTES + 1)}),
+            serde_json::json!({"proof": "A7".repeat(BLOB_CHUNK_BYTES + 1)}),
+            serde_json::json!({"proof": base64::engine::general_purpose::STANDARD.encode(
+                (0..BLOB_CHUNK_BYTES + 1).map(|n| n as u8).collect::<Vec<_>>()
+            )}),
+            serde_json::json!({"text": "雪\"\\\n".repeat(16_384)}),
+        ];
+        let mut expected = Vec::new();
+        for (ordinal, body) in bodies.into_iter().enumerate() {
+            let document = Document {
+                id: format!("identity-{ordinal}"),
+                version: ordinal as u64 + 1,
+                body,
+            };
+            let descriptor = builder.push(&document).unwrap();
+            let canonical =
+                serde_json::to_vec(&kasumi_types::CanonicalJsonValue(&document.body)).unwrap();
+            let body_work =
+                crate::snapshot_codec::inspect_external_json_work(&canonical, &mut || Ok(()))
+                    .unwrap();
+            let independent = StoredDocument::from_document(
+                &document,
+                descriptor.body_object,
+                descriptor.body_object_bytes,
+                body_work,
+                descriptor.body_manifest_work,
+            )
+            .unwrap();
+            assert_eq!(descriptor, independent, "body encoding {ordinal}");
+            expected.push((descriptor, document));
+        }
+        let staged = builder.finish().unwrap();
+        for (descriptor, document) in expected {
+            assert_eq!(staged.load(&descriptor).unwrap().as_ref(), &document);
+        }
+        drop(staged);
+        assert_eq!(scratch.disk.snapshot().live_files, 0);
+    }
+
+    #[test]
+    fn empty_staged_membership_needs_no_table_read_or_workspace() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
+        let empty = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation")
+            .unwrap()
+            .finish()
+            .unwrap();
+        let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+        let document = Document {
+            id: "native-only".into(),
+            version: 1,
+            body: serde_json::json!({"value": 7}),
+        };
+        let descriptor = builder.push(&document).unwrap();
+        let populated = builder.finish().unwrap();
+        assert!(populated.has_bodies);
+        assert!(populated.contains(&descriptor).unwrap());
+        assert!(!empty.has_bodies);
+        let before = memory.snapshot();
+        for _ in 0..1000 {
+            assert!(!empty.contains(&descriptor).unwrap());
+        }
+        assert_eq!(memory.snapshot(), before, "not even a transient read grant");
+        let rebound = populated.rebind_scope("tenant", "rebound").unwrap();
+        assert!(rebound.has_bodies);
+        assert!(rebound.contains(&descriptor).unwrap());
+        drop(rebound);
+        drop(populated);
+        drop(empty);
+        assert_eq!(scratch.disk.snapshot().live_files, 0);
+    }
+
+    #[test]
+    fn cancelled_staged_load_stops_between_blob_reads_and_releases_its_work() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
+        let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+        let document = Document {
+            id: "proof".into(),
+            version: 1,
+            body: serde_json::json!({"proof": "a7".repeat(4 * BLOB_CHUNK_BYTES)}),
+        };
+        let descriptor = builder.push(&document).unwrap();
+        let staged = builder.finish().unwrap();
+        assert_eq!(staged.load(&descriptor).unwrap().as_ref(), &document);
+        let before = memory.snapshot();
+        let token = kasumi_query::QueryCancellation::default();
+        let checks = AtomicUsize::new(0);
+        let check = || {
+            // This small manifest occupies one meter slice: entry, manifest
+            // slice/end, first blob before/after. Cancel with its actual read
+            // loan still live, before reading any subsequent proof chunks.
+            if checks.fetch_add(1, Ordering::Relaxed) == 4 {
+                token.cancel();
+            }
+            token.check().map_err(Into::into)
+        };
+        let error = staged.checked(&check).load(&descriptor).err().unwrap();
+        assert_eq!(checks.load(Ordering::Relaxed), 5);
+        assert_eq!(
+            error.downcast_ref::<kasumi_types::Error>().unwrap().code,
+            kasumi_types::ErrorCode::ResourceExhausted
+        );
+        let after = memory.snapshot();
+        assert_eq!(after.used_bytes, before.used_bytes);
+        assert_eq!(after.live_reservations, before.live_reservations);
+        assert_eq!(staged.load(&descriptor).unwrap().as_ref(), &document);
+        drop(staged);
+        assert_eq!(scratch.disk.snapshot().live_files, 0);
+    }
+
+    #[test]
+    fn committed_object_dedup_keeps_exact_bytes_without_reopening_or_growing() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
+        let disk = ScratchDisk::fixture(directory.path().join("scratch"), memory.clone());
+        let table = EncryptedTable::new(&disk, 64 << 20, disk.native_cache_config()).unwrap();
+        let mut batch = ObjectBatch::new();
+        let first = [1; 64];
+        let value = vec![41; BLOB_CHUNK_BYTES];
+        batch.put(&table, disk.memory(), first, &value).unwrap();
+        batch.flush().unwrap();
+        assert_eq!(table.get(&first).unwrap().unwrap().as_bytes(), value);
+        let before = memory.snapshot();
+        for _ in 0..64 {
+            batch.put(&table, disk.memory(), first, &value).unwrap();
+            batch.flush().unwrap();
+        }
+        // Native point reads take their own memory leases, even when native
+        // pages are cached. A repeated committed chunk takes neither a read
+        // lease nor another retained copy; its first exact copy stays admitted.
+        assert_eq!(memory.snapshot(), before);
+        let mut collision = value.clone();
+        collision[0] ^= 1;
+        assert!(batch.put(&table, disk.memory(), first, &collision).is_err());
+        assert_eq!(memory.snapshot(), before);
+
+        for ordinal in 2..=EncryptedTableBatch::MAX_ENTRIES {
+            batch
+                .put(&table, disk.memory(), [ordinal as u8; 64], &value)
+                .unwrap();
+        }
+        assert_eq!(batch.known.len(), EncryptedTableBatch::MAX_ENTRIES);
+        assert!(batch.bytes <= EncryptedTableBatch::MAX_BYTES);
+        // The next row evicts the cache while the previous fifteen writes are
+        // still pending. Every one must become durable before its copy drops.
+        batch.put(&table, disk.memory(), [99; 64], &value).unwrap();
+        assert_eq!(batch.known.len(), 1);
+        assert_eq!(batch.bytes, value.len() + first.len());
+        for ordinal in 1..=EncryptedTableBatch::MAX_ENTRIES {
+            assert_eq!(
+                table.get(&[ordinal as u8; 64]).unwrap().unwrap().as_bytes(),
+                value
+            );
+        }
+        batch.flush().unwrap();
+        drop(batch);
+        table.close().unwrap();
+        assert_eq!(disk.snapshot().live_files, 0);
+    }
 
     #[test]
     fn read_admission_failure_keeps_original_io_owner_and_exact_capacity_kind() {

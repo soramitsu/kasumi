@@ -1,5 +1,5 @@
 use super::*;
-use std::cell::Cell;
+use std::{cell::Cell, rc::Rc};
 
 #[derive(Debug)]
 struct SourceError(Arc<()>);
@@ -162,7 +162,7 @@ struct Changes<'a> {
     new: &'a Rows,
     ids: Vec<String>,
     indexes: &'a QueryIndexes,
-    pass: Cell<usize>,
+    pass: Rc<Cell<usize>>,
     fail_pass: usize,
     failure: Arc<()>,
     wrong_owner: bool,
@@ -175,7 +175,7 @@ impl<'a> Changes<'a> {
             new,
             ids: ids.iter().map(|id| (*id).to_owned()).collect(),
             indexes,
-            pass: Cell::new(0),
+            pass: Rc::new(Cell::new(0)),
             fail_pass: usize::MAX,
             failure: Arc::new(()),
             wrong_owner: false,
@@ -341,6 +341,87 @@ fn second_unique_pass_preserves_original_source_failure_and_published_indexes() 
     assert!(Arc::ptr_eq(&error, &original));
     update(&indexes, Changes::new(&old, &new, &indexes, &["a"])).unwrap();
     assert_eq!(unique_entries(&indexes, "docs")[0].1, "a");
+}
+
+#[test]
+fn absent_unique_constraints_skip_body_replays_but_keep_schema_ids_and_field_checks() {
+    for indexed in [false, true] {
+        let mut old = Rows::new(
+            "docs",
+            &[
+                ("a", serde_json::json!({"key":1})),
+                ("gone", serde_json::json!({"key":3})),
+            ],
+            false,
+            false,
+        );
+        let mut new = Rows::new(
+            "docs",
+            &[
+                ("a", serde_json::json!({"key":2})),
+                ("b", serde_json::json!({"key":2})),
+            ],
+            false,
+            false,
+        );
+        if indexed {
+            let index = IndexDefinition {
+                name: "key".into(),
+                fields: vec![IndexField {
+                    path: "/key".into(),
+                    kind: ScalarType::Number,
+                }],
+                unique: false,
+                text: None,
+            };
+            old.definition.indexes.push(index.clone());
+            new.definition.indexes.push(index);
+        }
+        let indexes = QueryIndexes::build([&old]).unwrap();
+        let changes = Changes::new(&old, &new, &indexes, &["a", "b", "gone"]);
+        let passes = changes.pass.clone();
+        indexes.validate_unique_changes([changes]).unwrap();
+        assert_eq!(passes.get(), 0);
+
+        let changes = Changes::new(&old, &new, &indexes, &["a", "b", "gone"]);
+        let passes = changes.pass.clone();
+        let next = update(&indexes, changes).unwrap();
+        assert_eq!(
+            passes.get(),
+            2,
+            "schema and structured updates still replay"
+        );
+        assert_eq!(
+            next.collections["docs"]
+                .structured
+                .ids
+                .iter()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["a", "b"]
+        );
+        if indexed {
+            assert_eq!(
+                next.collections["docs"].structured.fields["/key"]
+                    .entries
+                    .values()
+                    .next()
+                    .unwrap()
+                    .len(),
+                2
+            );
+        }
+        let mut changed_replay = Changes::new(&old, &new, &indexes, &["a", "b", "gone"]);
+        changed_replay.change_replayed_version = true;
+        assert!(
+            matches!(update(&indexes, changed_replay), Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption)
+        );
+        let mut invalid = Rows::new("docs", &[("a", Value::Null)], false, false);
+        invalid.definition = new.definition.clone();
+        assert!(
+            matches!(update(&indexes, Changes::new(&old, &invalid, &indexes, &["a", "gone"])), Err(ReadFailure::Query(error)) if error.code == ErrorCode::SchemaViolation)
+        );
+    }
 }
 
 #[test]

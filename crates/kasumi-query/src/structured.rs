@@ -110,6 +110,11 @@ impl Structured {
         changes: &D,
     ) -> ReadResult<BTreeMap<String, UniqueIndex>, D::Failure> {
         let mut unique = self.unique.clone();
+        if unique.is_empty() {
+            // No constraint consumes these bodies. Schema/ID/field updates
+            // retain their checked passes; avoid two otherwise empty replays.
+            return Ok(unique);
+        }
         // Remove every old mapping across the batch before adding any new one.
         // Private COW roots are discarded on rejection; published roots stay intact.
         changes.visit_changes(|delta| {
@@ -169,6 +174,9 @@ impl Structured {
         source: &R,
     ) -> ReadResult<BTreeMap<String, UniqueIndex>, R::Failure> {
         let mut unique = Self::empty_unique(source.definition());
+        if unique.is_empty() {
+            return Ok(unique);
+        }
         source.visit_records(|id, record| {
             for (name, index) in &mut unique {
                 index.insert(name, id, record)?;

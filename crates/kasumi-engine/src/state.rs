@@ -558,18 +558,29 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         self.retirement.clone()
     }
+    fn stage_application(&self) -> anyhow::Result<()> {
+        // Reopen's objects are already published; publish repairs the rest.
+        if self.reopen {
+            return Ok(());
+        }
+        let Some(documents) = &self.generation.staged_documents else {
+            return Ok(());
+        };
+        let store = self
+            .engine
+            .snapshot_store
+            .get()
+            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+        store.check_access()?;
+        documents.write_missing(store)
+    }
     fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
+        // Document objects never join this one transaction: replacing them
+        // would restage every object the tenant holds.
         let mut replacements = self.receipt_installation.replacements();
         replacements.extend(self.binding_installation.replacements());
         replacements.extend(self.installation.replacements());
         replacements.extend(self.target_installation.replacements());
-        // Reopen reconciles its already published objects in bounded batches
-        // during publish; one replacement would restage every object.
-        if let Some(documents) = &self.generation.staged_documents
-            && !self.reopen
-        {
-            replacements.extend(documents.complete_snapshot_replacements());
-        }
         replacements
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
@@ -580,7 +591,6 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             engine,
             mut generation,
             selection,
-            reopen,
             // Keep the owner in the partially moved box. On an error, moved
             // locals retire first, then installations/writes, then the owner.
             ..
@@ -590,10 +600,13 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             .get()
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         store.check_access()?;
-        // Before any selection captures the store, so replay never finds a
-        // swept object present. A failure leaves the restart to redo it.
-        if reopen && let Some(documents) = &generation.staged_documents {
-            documents.reconcile_reopened(store)?;
+        // Before any selection captures the store, so neither replay nor the
+        // first apply after an install finds a swept object present. Readers
+        // of the previous generation keep the root they selected, and the
+        // held apply owner admits no other capture. A failure leaves the
+        // restart to redo it.
+        if let Some(documents) = &generation.staged_documents {
+            documents.reconcile(store)?;
         }
         if let Some(selection) = selection {
             let selected = selection.capture(generation.state.retired)?;
@@ -807,7 +820,22 @@ impl TenantEngine {
             let generation = self.generation()?;
             let state = &generation.state;
             let mut bytes = crate::accounting::encoded_len(command)? as u64;
-            let mut typed = crate::snapshot_codec::inspect_typed_json_work(command)?;
+            fn document_work<'a>(
+                mut mutations: impl Iterator<Item = &'a Mutation>,
+            ) -> anyhow::Result<u64> {
+                mutations.try_fold(0_u64, |maximum, mutation| {
+                    Ok(maximum.max(crate::snapshot_codec::inspect_typed_json_work(mutation)?))
+                })
+            }
+            // The proposal/apply owner already retains the complete input.
+            // Native document preparation releases each document's transient
+            // workspace before staging the next; only encoded writes accumulate.
+            // Charging every decoded input here reserves the whole batch twice
+            // and can refuse small records that the actual publication fits.
+            let mut typed = match &command.operation {
+                Operation::Mutate(batch) => document_work(batch.operations.iter())?,
+                _ => crate::snapshot_codec::inspect_typed_json_work(command)?,
+            };
             let staged = if let Operation::FinalizeStaged(reference) = &command.operation {
                 let key = staging::identity(&command.context.principal, &reference.transaction_id)?;
                 state.staged_transactions.get(&key)
@@ -822,13 +850,8 @@ impl TenantEngine {
                 // but releases each document's transient work before staging
                 // the next. Candidate Pending bodies remain in the separate
                 // proposal/apply model; this escrow funds native publication.
-                let document_work = stage
-                    .chunks
-                    .values()
-                    .flat_map(|chunk| &chunk.operations)
-                    .try_fold(0_u64, |maximum, mutation| -> anyhow::Result<u64> {
-                        Ok(maximum.max(crate::snapshot_codec::inspect_typed_json_work(mutation)?))
-                    })?;
+                let document_work =
+                    document_work(stage.chunks.values().flat_map(|chunk| &chunk.operations))?;
                 typed = typed
                     .checked_add(document_work)
                     .context("staged document quote overflow")?;
@@ -2334,6 +2357,18 @@ impl TenantEngine {
         reader: &mut dyn std::io::Read,
         expected: Option<crate::snapshot_codec::StreamSummary>,
     ) -> std::result::Result<Generation, SnapshotFailure> {
+        self.prepare_snapshot_reader_checked(baseline, disk, reader, expected, &|| Ok(()))
+    }
+
+    fn prepare_snapshot_reader_checked(
+        &self,
+        baseline: &ValidationBaseline<'_>,
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        reader: &mut dyn std::io::Read,
+        expected: Option<crate::snapshot_codec::StreamSummary>,
+        check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
+    ) -> std::result::Result<Generation, SnapshotFailure> {
+        check()?;
         baseline.current_for(self)?;
         let crate::snapshot_codec::Decoded {
             state,
@@ -2351,7 +2386,7 @@ impl TenantEngine {
             )
             .into());
         }
-        self.prepare_state(
+        self.prepare_state_checked(
             baseline,
             state,
             receipts,
@@ -2359,6 +2394,7 @@ impl TenantEngine {
             terminals,
             target_resolutions,
             Some(documents),
+            check,
         )
         .map_err(Into::into)
     }
@@ -2377,8 +2413,37 @@ impl TenantEngine {
         target_resolutions: crate::target_resolution::View,
         documents: Option<crate::document_restore::StagedDocuments>,
     ) -> anyhow::Result<Generation> {
+        self.prepare_state_checked(
+            baseline,
+            state,
+            receipts,
+            backup_bindings,
+            terminals,
+            target_resolutions,
+            documents,
+            &|| Ok(()),
+        )
+    }
+
+    #[allow(
+        clippy::too_many_arguments,
+        reason = "keep authenticated snapshot owners and the scoped verification check explicit"
+    )]
+    fn prepare_state_checked(
+        &self,
+        baseline: &ValidationBaseline<'_>,
+        state: TenantState,
+        receipts: crate::mutation_receipt::View,
+        backup_bindings: crate::backup_binding::View,
+        terminals: crate::staged_terminal::View,
+        target_resolutions: crate::target_resolution::View,
+        documents: Option<crate::document_restore::StagedDocuments>,
+        check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
+    ) -> anyhow::Result<Generation> {
+        check()?;
         let prior = baseline.current_for(self)?;
-        let resolver = documents
+        let checked_documents = documents.as_ref().map(|documents| documents.checked(check));
+        let resolver = checked_documents
             .as_ref()
             .map(|documents| documents as &dyn DocumentResolver)
             .or_else(|| prior.and_then(Generation::document_resolver));
@@ -2522,6 +2587,7 @@ impl TenantEngine {
         let mut count = 0u64;
         let mut logical_bytes = 0u64;
         for (name, collection) in &state.collections {
+            check()?;
             count = count
                 .checked_add(collection.archived_documents.len() as u64)
                 .ok_or_else(|| {
@@ -2541,11 +2607,6 @@ impl TenantEngine {
                 )
                 .into());
             }
-            let source = crate::index_source::StateCollection::with_resolver(
-                &state, name, collection, resolver,
-            );
-            validate_collection(&source).map_err(crate::index_source::into_anyhow)?;
-            check_unique(&source).map_err(crate::index_source::into_anyhow)?;
             for (id, document) in &collection.documents {
                 validate_name(id)?;
                 if id != document.id() || document.version() > collection.data_epoch {
@@ -2729,6 +2790,7 @@ impl TenantEngine {
         }
         receipts.validate_state(&state).map_err(terminal_error)?;
         for row in receipts.records() {
+            check()?;
             row.map_err(terminal_error)?
                 .validate(&state)
                 .map_err(terminal_error)?;
@@ -2783,10 +2845,15 @@ impl TenantEngine {
             )
             .into());
         }
+        // The final index build validates every definition and body, including
+        // schema-only collections, and enforces unique indexes. Repeating those
+        // passes above would decrypt and decode each staged body three times.
+        check()?;
         let indexes = Arc::new(
             crate::index_source::build_with_resolver(&state, resolver)
                 .map_err(crate::index_source::into_anyhow)?,
         );
+        check()?;
         Ok(Generation {
             receipts,
             backup_bindings,
@@ -2973,6 +3040,7 @@ fn apply_operation(
                 .into());
             }
             validate_limits(limits)?;
+            validate_limit_budgets(limits, &state.limits)?;
             staging::validate_new_limits(state, limits)?;
             if state.schema_activation_bytes > limits.max_schema_activation_bytes
                 || state.retirement_bytes > limits.max_retirement_bytes
@@ -3566,6 +3634,35 @@ pub(super) fn validate_limits(limits: &Limits) -> Result<()> {
         return Err(Error::new(
             ErrorCode::InvalidArgument,
             "invalid resource limits",
+        ));
+    }
+    Ok(())
+}
+
+/// Largest table budget a command may set. Snapshot decode stages each
+/// permanent table in scratch of up to 16 times its budget, so a larger limit
+/// lets a backup verify and then fail to restore. Snapshot load still accepts
+/// a larger limit a state already retains.
+pub(crate) const MAX_TABLE_BUDGET_BYTES: u64 = 1 << 50;
+
+/// Refuses raising a table budget above `MAX_TABLE_BUDGET_BYTES`. A retained
+/// larger value may stay while other limits change. Only Control maintenance
+/// changes the target resolution budget; see `CompletionMachine`.
+pub(super) fn validate_limit_budgets(limits: &Limits, current: &Limits) -> Result<()> {
+    let raised = |new: u64, old: u64| new > MAX_TABLE_BUDGET_BYTES && new != old;
+    if raised(limits.max_snapshot_bytes, current.max_snapshot_bytes)
+        || raised(
+            limits.max_mutation_receipt_bytes,
+            current.max_mutation_receipt_bytes,
+        )
+        || raised(
+            limits.max_backup_binding_bytes,
+            current.max_backup_binding_bytes,
+        )
+    {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "table budget exceeds the restorable snapshot bound",
         ));
     }
     Ok(())

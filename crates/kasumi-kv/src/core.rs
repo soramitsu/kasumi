@@ -548,6 +548,48 @@ impl Shared {
         self.check_owner()
     }
 
+    fn check_state_poison(&self) -> Result<(), CoreError> {
+        if self
+            .state
+            .as_ref()
+            .expect("live native state")
+            .is_poisoned()
+        {
+            self.fence();
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        Ok(())
+    }
+
+    fn check_admission_open(&self) -> Result<(), CoreError> {
+        // Only close sets State::closed, after publishing stopped. Admission
+        // and an existing immutable snapshot pin need no mutable disk state.
+        if self.stopped.load(Ordering::Acquire) {
+            return Err(CoreError::new(crate::CoreErrorCause::Closed));
+        }
+        self.check_owner()
+    }
+
+    /// Provider-only operations must not wait for a commit's disk I/O. Keep
+    /// the same poison and panic fence as run, including rollback of a grant
+    /// if a concurrent state holder poisoned the owner during admission.
+    fn run_admission<T>(
+        &self,
+        work: impl FnOnce() -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            self.check_state_poison()?;
+            let value = work()?;
+            self.check_state_poison()?;
+            Ok(value)
+        }))
+        .unwrap_or_else(|payload| Err(CoreError::panicked(CorePanic::new(payload))));
+        if result.as_ref().is_err_and(CoreError::fences_owner) {
+            self.fence();
+        }
+        result
+    }
+
     /// Run one installed operation under the state lock. An owner-failure
     /// error or an unwind from a backend or admission callback fences before
     /// the lock is released, so no later caller can act on an uncertain
@@ -834,7 +876,7 @@ impl Core {
     }
     pub(crate) fn check_read_owner(&self) -> Result<(), CoreError> {
         self.shared
-            .run(CoreError::panicked, |state| self.shared.check_open(state))
+            .run_admission(|| self.shared.check_admission_open())
     }
     pub fn is_fenced(&self) -> bool {
         self.shared.fenced.load(Ordering::Acquire)
@@ -846,17 +888,19 @@ impl Core {
         self.shared.fence();
     }
     pub(crate) fn check_owner(&self) -> Result<(), CoreError> {
-        self.shared
-            .run(CoreError::panicked, |_| self.shared.check_owner())
+        self.shared.run_admission(|| self.shared.check_owner())
     }
     pub(crate) fn reserve_workspace(&self, bytes: u64) -> Result<NativeResidentLease, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
-            self.shared.check_open(state)?;
-            self.shared
+        self.shared.run_admission(|| {
+            self.shared.check_admission_open()?;
+            let lease = self
+                .shared
                 .admission
                 .reserve_workspace(bytes)
                 .map(NativeResidentLease::new)
-                .map_err(Into::into)
+                .map_err(CoreError::from)?;
+            self.shared.check_admission_open()?;
+            Ok(lease)
         })
     }
     pub fn generation(&self) -> Result<u64, CoreError> {

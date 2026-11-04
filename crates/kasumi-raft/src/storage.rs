@@ -896,6 +896,28 @@ pub(crate) struct SnapshotEnvelope {
         Option<crate::initialization_association::AssociationState>,
 }
 
+/// What a follower holds once a leader's application snapshot of `backend` at
+/// `meta` has arrived, for a group with no retirement or first applied
+/// membership. Install it through the actual `install_snapshot`.
+#[cfg(any(test, feature = "test-utils"))]
+pub fn received_application_snapshot_for_test(
+    meta: &SnapshotMeta<u64, BasicNode>,
+    backend: SnapshotImage,
+    limit: u64,
+    owner: &Arc<SnapshotBufferOwner>,
+) -> Result<SnapshotBuffer> {
+    let envelope = SnapshotEnvelope {
+        version: 2,
+        kind: SnapshotKind::Application,
+        meta: meta.clone(),
+        backend,
+        retirement: None,
+        first_membership: None,
+        initialization_association: None,
+    };
+    Ok(SnapshotBuffer::from_image(envelope.encode(limit)?, owner)?)
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct SnapshotManifest {
@@ -1363,6 +1385,7 @@ impl StateMachine {
                             snapshot.retirement.as_ref(),
                             prepared.retirement(),
                         )?;
+                        prepared.stage_application()?;
                         captured_domains.write_batch_replacing(
                             prepared.application_writes(),
                             &[],
@@ -1982,6 +2005,9 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     machine.limits.max_snapshot_bytes,
                     &envelope,
                 )?;
+                // Rows too large for that one publication are written first.
+                // Until it commits no published state names them.
+                prepared.stage_application()?;
                 {
                     let _control = machine
                         .control_gate

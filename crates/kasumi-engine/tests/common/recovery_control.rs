@@ -500,13 +500,16 @@ async fn prepare_completion(
         .unwrap();
     assert_eq!(started.record().phase, RecoveryPhase::Prepare);
     let created = started.record().created_revision;
+    let original_record = started.record().clone();
     drop(started);
+    let before_replay = db.engine().generation().unwrap();
     let duplicate = db
         .recovery_control(
             f.context("owner"),
             RecoveryControlCommand::Start(Box::new(request.clone())),
         )
         .await;
+    let acknowledged = duplicate.is_ok();
     let replay = match duplicate {
         Ok(status) => status,
         Err(error)
@@ -541,7 +544,34 @@ async fn prepare_completion(
         Err(error) => panic!("duplicate Start rejected: {error:?}"),
     };
     assert_eq!(replay.record().created_revision, created);
+    assert_eq!(replay.record(), &original_record);
+    if acknowledged {
+        let after = db.engine().generation().unwrap();
+        assert_eq!(
+            after.state.recovery_control,
+            before_replay.state.recovery_control
+        );
+        assert!(after.state.revision > before_replay.state.revision);
+        assert!(after.state.audits.iter().any(|event| {
+            event.action == "recovery_start"
+                && event.principal == "owner"
+                && event.outcome == "committed"
+                && event
+                    .data_revision
+                    .is_some_and(|revision| revision > before_replay.state.revision)
+        }));
+    }
+    drop(before_replay);
     drop(replay);
+    assert!(
+        db.recovery_control(
+            f.context("intruder"),
+            RecoveryControlCommand::Start(Box::new(request.clone())),
+        )
+        .await
+        .is_err(),
+        "an exact replay still requires current Control authorization"
+    );
     let mut alias = request.clone();
     alias.operation_id = Uuid::new_v4();
     alias.dispatch_configuration_sha256 = "92".repeat(32);

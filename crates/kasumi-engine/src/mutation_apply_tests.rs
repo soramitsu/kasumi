@@ -251,6 +251,33 @@ fn limits_change_invalidates_prior_data_capacity_epoch() {
     assert_eq!(after.state.schema_epoch, before.state.schema_epoch);
 }
 
+#[test]
+fn limits_change_cannot_raise_a_table_budget_past_restorable_scratch() {
+    let engine = engine(fixture_memory(), 2 << 20);
+    let before = engine.generation().unwrap();
+    let raises: [fn(&mut Limits, u64); 3] = [
+        |limits, bytes| limits.max_snapshot_bytes = bytes,
+        |limits, bytes| limits.max_mutation_receipt_bytes = bytes,
+        |limits, bytes| limits.max_backup_binding_bytes = bytes,
+    ];
+    // 2^61 bytes overflows each table's scratch multiplier at snapshot decode.
+    assert!(crate::mutation_receipt::scratch_limit(1 << 61).is_err());
+    assert!(crate::staged_terminal::scratch_limit(1 << 61).is_err());
+    for (revision, raise) in (2..).zip(raises) {
+        let mut limits = before.state.limits.clone();
+        raise(&mut limits, 1 << 61);
+        let error = apply(&engine, revision, Operation::SetLimits(limits)).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert!(
+            error.message.contains("restorable snapshot bound"),
+            "{error}"
+        );
+    }
+    let after = engine.generation().unwrap();
+    assert_eq!(after.state.limits.max_snapshot_bytes, 2 << 20);
+    assert_eq!(after.state.policy_epoch, before.state.policy_epoch);
+}
+
 fn patch_expansion_fixture() -> (CodecFixture, usize) {
     let engine = engine(fixture_memory(), 2 << 20);
     for (revision, id) in [(2, "a"), (3, "b")] {

@@ -213,7 +213,7 @@ impl TenantEngine {
                             .map_err(Into::into)
                     })?;
                     let phase = VerificationPhase::start("public_restore.decode", Some(deadline));
-                    let generation = snapshot_bundle::read(
+                    let generation = snapshot_bundle::read_checked(
                         prior.engine(),
                         &prior.baseline(),
                         &mut CheckedIo {
@@ -221,6 +221,7 @@ impl TenantEngine {
                             work: &work,
                         },
                         Some(layout),
+                        &|| work.check(),
                     )?;
                     phase.complete();
                     kasumi_store::ScratchOperationFailure::ordinary(|| {

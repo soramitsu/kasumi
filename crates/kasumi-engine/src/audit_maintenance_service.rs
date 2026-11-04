@@ -90,6 +90,13 @@ impl Database {
                         }
                         Ok(false) => {}
                         Err(error) => {
+                            #[cfg(test)]
+                            if database.audit_worker_failures.load(Ordering::Relaxed) == 0 {
+                                eprintln!(
+                                    "kasumi-engine audit maintenance error: {error:#}; Raft: {:?}",
+                                    database.group.metrics().running_state
+                                );
+                            }
                             database
                                 .audit_worker_failures
                                 .fetch_add(1, Ordering::Relaxed);
@@ -146,6 +153,16 @@ impl Database {
         if self.closing.load(Ordering::Acquire) {
             return Ok(false);
         }
+        // The new leader must apply any previously committed retirement
+        // before preparation reads its state or publishes an archive segment.
+        let admission_term = tokio::select! {
+            biased;
+            _ = stop.changed() => return Ok(false),
+            term = self.group.admission_term(APPLIED_TERM_DEADLINE) => term,
+        };
+        let Some(admission_term) = admission_term else {
+            return Ok(false);
+        };
         self.access()?;
         let engine = self.engine.clone();
         #[cfg(test)]
@@ -176,6 +193,9 @@ impl Database {
         let Some(bytes) = prepared.bytes.take() else {
             return Ok(false);
         };
+        if self.group.current_term() != admission_term {
+            return Ok(false);
+        }
         // Shutdown drains this task and the separately owned Raft materializer;
         // it never aborts a proposal just because an API request disappeared.
         let bytes = self
@@ -395,15 +415,20 @@ mod tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn encrypted_worker_drains_hot_history_when_ordinary_capacity_is_full() {
-        worker_drains_hot_history(false).await;
+        worker_drains_hot_history(false, false).await;
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn external_archive_outage_before_proposal_preserves_hot_history_and_raft_availability() {
-        worker_drains_hot_history(true).await;
+        worker_drains_hot_history(true, false).await;
     }
 
-    async fn worker_drains_hot_history(outage: bool) {
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn audit_term_change_during_preparation_refuses_append_and_retries() {
+        worker_drains_hot_history(false, true).await;
+    }
+
+    async fn worker_drains_hot_history(outage: bool, change_term: bool) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
@@ -509,12 +534,43 @@ mod tests {
         let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &image).unwrap());
         engine.install_storage_access(&store).unwrap();
         engine.install_audit_maintenance(&admission).unwrap();
-        let database =
-            crate::service::construction::DatabaseConstruction::new(stores, audit.clone())
-                .unwrap()
-                .start_local(engine.clone(), &image, 1, format!("tenant/{incarnation}"))
+        let construction =
+            crate::service::construction::DatabaseConstruction::new(stores, audit.clone()).unwrap();
+        let database = if change_term {
+            let database = construction
+                .start_replicated(
+                    engine.clone(),
+                    &image,
+                    1,
+                    format!("tenant/{incarnation}"),
+                    Arc::new(kasumi_raft::InProcessRouter::default()),
+                    Default::default(),
+                )
                 .await
                 .unwrap();
+            database
+                .group
+                .initialize(BTreeMap::from([(
+                    1,
+                    kasumi_raft::BasicNode::new("fixture"),
+                )]))
+                .await
+                .unwrap();
+            database
+                .group
+                .raft()
+                .wait(Some(Duration::from_secs(5)))
+                .current_leader(1, "audit preparation fixture leader")
+                .await
+                .unwrap();
+            database.group.raft().runtime_config().elect(false);
+            database
+        } else {
+            construction
+                .start_local(engine.clone(), &image, 1, format!("tenant/{incarnation}"))
+                .await
+                .unwrap()
+        };
         let group = database.raft_group().clone();
         for number in 0..50 {
             let command = Command {
@@ -548,17 +604,80 @@ mod tests {
                 .unwrap();
         }
         assert!(engine.generation().unwrap().state.audit_retention.hot_bytes >= 96 << 10);
-        let ordinary = admission
-            .reserve(
-                (512 << 20) + metadata_bytes
-                    - crate::test_utils::reserved_payload_bytes(&admission)
-                    - crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
-                None,
-            )
-            .unwrap();
-        assert!(admission.reserve(1, None).is_err());
+        // The local cases exercise the separate maintenance reserve. The
+        // replicated case isolates a leadership change and leaves room for
+        // the new term's consensus work and its retry.
+        let ordinary = (!change_term).then(|| {
+            let reservation = admission
+                .reserve(
+                    (512 << 20) + metadata_bytes
+                        - crate::test_utils::reserved_payload_bytes(&admission)
+                        - crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
+                    None,
+                )
+                .unwrap();
+            assert!(admission.reserve(1, None).is_err());
+            reservation
+        });
         let before = engine.generation().unwrap();
+        let paused_preparation = change_term.then(|| {
+            let (entered, entry) = tokio::sync::oneshot::channel();
+            let (release, released) = std::sync::mpsc::channel();
+            *database.worker_test_hooks.audit.lock().unwrap() = Some(Box::new(move || {
+                let _ = entered.send(());
+                released.recv_timeout(Duration::from_secs(10)).unwrap();
+            }));
+            (entry, release)
+        });
         drop(pause);
+        if let Some((entered, release)) = paused_preparation {
+            tokio::time::timeout(Duration::from_secs(10), entered)
+                .await
+                .unwrap()
+                .unwrap();
+            let raft = group.raft();
+            let admitted = group.metrics();
+            raft.append_entries(openraft::raft::AppendEntriesRequest {
+                vote: openraft::Vote::new_committed(admitted.current_term + 1, 2),
+                prev_log_id: admitted.last_applied,
+                entries: vec![],
+                leader_commit: admitted.last_applied,
+            })
+            .await
+            .unwrap();
+            raft.wait(Some(Duration::from_secs(5)))
+                .current_leader(2, "audit preparation observed a higher term")
+                .await
+                .unwrap();
+            release.send(()).unwrap();
+            // Acquiring the gate joins the actual maintenance call, including
+            // its external archive publication and pre-append refusal.
+            let finished =
+                tokio::time::timeout(Duration::from_secs(10), database.proposal_gate.lock())
+                    .await
+                    .unwrap();
+            let current = engine.generation().unwrap();
+            assert!(Arc::ptr_eq(&before, &current));
+            assert_eq!(group.metrics().last_log_index, admitted.last_log_index);
+            assert_eq!(group.metrics().last_applied, admitted.last_applied);
+            assert_eq!(
+                database
+                    .audit_maintenance_status()
+                    .unwrap()
+                    .committed_segments,
+                0
+            );
+            assert_eq!(database.audit_maintenance_status().unwrap().failures, 0);
+            group.check_access().unwrap();
+            drop(current);
+            drop(finished);
+            raft.trigger().elect().await.unwrap();
+            raft.wait(Some(Duration::from_secs(5)))
+                .current_leader(1, "audit maintenance can retry under a new leader")
+                .await
+                .unwrap();
+            database.audit_worker_wake.notify_one();
+        }
         if outage {
             tokio::time::timeout(Duration::from_secs(10), async {
                 while database.audit_maintenance_status().unwrap().failures == 0 {

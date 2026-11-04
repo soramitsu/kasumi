@@ -74,7 +74,7 @@ struct Budget {
 /// exclusive, so only its own physical mutations change the file; each one
 /// lowers this to `No` before its effect. Unknown history is `No`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(super) enum Synced {
+pub(crate) enum Synced {
     /// A mutation since the last synchronization may still be volatile.
     No,
     /// Written to the device, with allocation materialized, and ordered
@@ -90,7 +90,7 @@ pub(super) enum Synced {
 /// `F_BARRIERFSYNC` on Apple platforms. Returns the level reached. A
 /// filesystem without barrier support, and every other platform, gets the
 /// full sync, which orders too.
-fn sync_ordered_native(file: &File) -> io::Result<Synced> {
+pub(crate) fn sync_ordered_native(file: &File) -> io::Result<Synced> {
     #[cfg(target_vendor = "apple")]
     loop {
         // SAFETY: the borrowed descriptor stays open for this call, and the

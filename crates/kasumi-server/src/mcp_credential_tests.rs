@@ -103,6 +103,11 @@ async fn mutation_gate_entered(
 #[derive(Clone)]
 pub(crate) struct BodyChargeGate(pub(crate) Arc<ReleaseGate>);
 
+/// Runs after the native source and encoded output are retained, immediately
+/// before admitting the decoded tree. It cannot affect source read admission.
+#[derive(Clone)]
+pub(crate) struct TreeChargeHook(pub(crate) Arc<dyn Fn(u64) + Send + Sync>);
+
 struct ManualClock {
     base_ms: u64,
     elapsed_ms: AtomicU64,
@@ -1204,29 +1209,24 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
     assert!(tree > 24 * encoded.len() as u64);
 
     let baseline = fixture.admission.snapshot();
-    let workspace = fixture.response_workspace();
-    // Measure the actual immutable source charge, including full-result/page
-    // overlap. Allow all claims before decoding, then miss only the decoded
-    // tree by 1 MiB. This leaves ample room for its bounded error envelope.
-    let pre_decode = [
-        source_charge,
-        workspace,
-        response_owner::owner_bytes::<kasumi_engine::AdmittedOutput<kasumi_types::QueryResponse>>()
-            .unwrap(),
-        response_owner::allocation_bytes(encoded.len()).unwrap(),
-    ]
-    .into_iter()
-    .try_fold(0u64, u64::checked_add)
-    .expect("fixture pre-decode claims fit u64");
     let shortage = 1u64 << 20;
     assert!(tree > shortage);
-    let through_decode = pre_decode
-        .checked_add(tree)
-        .expect("fixture complete decode charge fits u64");
-    let headroom = through_decode.checked_sub(shortage).unwrap();
-    assert!(headroom > pre_decode);
-    assert!(headroom < through_decode);
-    let filler = fixture.reserve_all_but(headroom);
+    // Native source reads must retain their real transient workspace and
+    // protected cache-work margin. Take the filler only after those reads
+    // finish and their result/encoding is owned, then miss this tree by 1 MiB.
+    let filler = Arc::new(Mutex::new(None));
+    let retained_filler = filler.clone();
+    let admission = fixture.admission.clone();
+    let budget = fixture.budget;
+    let hook = TreeChargeHook(Arc::new(move |actual_tree| {
+        assert_eq!(actual_tree, tree);
+        let mut retained = retained_filler.lock().unwrap();
+        assert!(retained.is_none(), "one result tree per invocation");
+        let available = budget - admission.snapshot().reserved_bytes;
+        let headroom = tree - shortage;
+        let bytes = available.checked_sub(headroom).unwrap();
+        *retained = Some((admission.reserve_resident(bytes).unwrap(), bytes));
+    }));
     let call = || {
         request(
             &issued.token,
@@ -1234,7 +1234,9 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
             json!({"name":"kasumi_query", "arguments":query}),
         )
     };
-    let (status, body) = decoded(fixture.router().oneshot(call()).await.unwrap()).await;
+    let mut refused_call = call();
+    refused_call.extensions_mut().insert(hook);
+    let (status, body) = decoded(fixture.router().oneshot(refused_call).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"]["isError"], json!(true));
     assert_eq!(
@@ -1246,12 +1248,16 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
     );
     let refused = fixture.admission.snapshot();
     assert!(refused.reserved_bytes <= fixture.budget);
-    assert_eq!(refused.reserved_bytes, fixture.budget - headroom);
+    let filler_bytes = filler.lock().unwrap().as_ref().unwrap().1;
+    assert_eq!(
+        refused.reserved_bytes,
+        baseline.reserved_bytes + filler_bytes
+    );
     assert_eq!(refused.inflight_operations, baseline.inflight_operations);
 
     // The refusal is the tree charge alone: with the headroom back, the same
     // call releases the whole result and then returns every charge.
-    drop(filler);
+    drop(filler.lock().unwrap().take());
     let (status, body) = decoded(fixture.router().oneshot(call()).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["result"]["isError"], json!(false));

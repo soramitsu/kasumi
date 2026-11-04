@@ -47,7 +47,9 @@ pub use directory::{
 #[cfg(test)]
 pub(crate) use file::FailedFileWitness;
 pub use file::NodeDiskFile;
-pub(crate) use file::{FailedCloseReport, FailedFileTransfer, NodeDiskCloseOutcome};
+pub(crate) use file::{
+    FailedCloseReport, FailedFileTransfer, NodeDiskCloseOutcome, sync_ordered_native,
+};
 use ledger::AccountedInode;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

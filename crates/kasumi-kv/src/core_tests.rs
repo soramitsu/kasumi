@@ -7,6 +7,7 @@ const GROUP: [u8; 16] = [0x63; 16];
 struct Admission {
     failed: AtomicBool,
     panic_check: AtomicBool,
+    panic_reserve: AtomicBool,
     notifications: AtomicUsize,
     limit: AtomicU64,
     deny_cache_growth: AtomicBool,
@@ -17,6 +18,7 @@ impl Admission {
         Arc::new(Self {
             failed: AtomicBool::new(false),
             panic_check: AtomicBool::new(false),
+            panic_reserve: AtomicBool::new(false),
             notifications: AtomicUsize::new(0),
             limit: AtomicU64::new(u64::MAX),
             deny_cache_growth: AtomicBool::new(false),
@@ -37,6 +39,10 @@ impl StorageAdmission for Admission {
         }
     }
     fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
+        assert!(
+            !self.panic_reserve.load(Ordering::Acquire),
+            "workspace admission payload"
+        );
         self.check_owner()
             .map_err(|_| AdmissionError::OwnerFailed)?;
         if bytes > self.limit.load(Ordering::Acquire) {
@@ -316,6 +322,16 @@ fn poisoned_state_fences_once_and_still_drains_exact_backend() {
         let _guard = c.shared.state.as_ref().unwrap().lock().unwrap();
         panic!("state holder");
     }));
+    for result in [
+        c.check_owner(),
+        c.check_read_owner(),
+        c.reserve_workspace(1).map(drop),
+    ] {
+        assert!(matches!(
+            result.unwrap_err().rejected_cause(),
+            Some(crate::CoreErrorCause::OwnerFailed)
+        ));
+    }
     assert!(
         matches!(&(c.generation()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
     );
@@ -328,6 +344,73 @@ fn poisoned_state_fences_once_and_still_drains_exact_backend() {
         BackendNativeDisposition::Drained
     );
     assert_eq!(group.close_attempts(), 1);
+}
+
+#[test]
+fn provider_only_panics_keep_the_original_payload_and_fence_without_poisoning_state() {
+    type Operation = fn(&Core) -> Result<(), CoreError>;
+    let reserve: Operation = |core| core.reserve_workspace(1).map(drop);
+    for (operation, in_reservation) in [
+        (Core::check_owner as Operation, false),
+        (Core::check_read_owner as Operation, false),
+        (reserve, false),
+        (reserve, true),
+    ] {
+        let admission = Admission::new();
+        let group = InMemoryGroup::new();
+        let c = core(group.clone(), admission.clone());
+        if in_reservation {
+            admission.panic_reserve.store(true, Ordering::Release);
+        } else {
+            admission.panic_check.store(true, Ordering::Release);
+        }
+        let error = operation(&c).unwrap_err();
+        let Some(crate::CoreErrorCause::Panicked(original)) = error.rejected_cause() else {
+            panic!("provider panic was not retained: {error:?}");
+        };
+        original.with_payload(|payload| {
+            assert_eq!(
+                payload.downcast_ref::<&str>().copied(),
+                Some(if in_reservation {
+                    "workspace admission payload"
+                } else {
+                    "owner check payload"
+                })
+            );
+        });
+        assert!(!c.shared.state.as_ref().unwrap().is_poisoned());
+        assert!(c.is_fenced());
+        assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
+        admission.panic_check.store(false, Ordering::Release);
+        admission.panic_reserve.store(false, Ordering::Release);
+        assert!(matches!(
+            c.check_owner().unwrap_err().rejected_cause(),
+            Some(crate::CoreErrorCause::OwnerFailed)
+        ));
+        assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
+        c.close().into_result().unwrap();
+        assert_eq!(group.close_attempts(), 1);
+    }
+}
+
+#[test]
+fn provider_only_cleanup_checks_still_allow_a_closed_healthy_owner() {
+    let admission = Admission::new();
+    let c = core(InMemoryGroup::new(), admission.clone());
+    c.close().into_result().unwrap();
+    c.check_owner().unwrap();
+    for result in [c.check_read_owner(), c.reserve_workspace(1).map(drop)] {
+        assert!(matches!(
+            result.unwrap_err().rejected_cause(),
+            Some(crate::CoreErrorCause::Closed)
+        ));
+    }
+    admission.failed.store(true, Ordering::Release);
+    assert!(matches!(
+        c.check_owner().unwrap_err().rejected_cause(),
+        Some(crate::CoreErrorCause::OwnerFailed)
+    ));
+    assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
 }
 
 #[test]
@@ -616,6 +699,18 @@ fn closed_snapshot_result_does_not_reenter_a_poisoned_state() {
     assert!(
         matches!(&(c.snapshot()), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Closed)))
     );
+    // Unlike snapshot's explicit stopped fast path, these provider operations
+    // have always observed a poisoned owner before checking closed state.
+    for result in [
+        c.check_owner(),
+        c.check_read_owner(),
+        c.reserve_workspace(1).map(drop),
+    ] {
+        assert!(matches!(
+            result.unwrap_err().rejected_cause(),
+            Some(crate::CoreErrorCause::OwnerFailed)
+        ));
+    }
     assert_eq!(admission.notifications.load(Ordering::Acquire), 1);
     assert_eq!(group.close_attempts(), 1);
 }

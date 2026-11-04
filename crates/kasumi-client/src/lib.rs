@@ -157,7 +157,7 @@ pub struct KasumiClientConfig {
 pub struct KasumiClient {
     inner: proto::kasumi_data_client::KasumiDataClient<Channel>,
     deadline: Option<tokio::time::Instant>,
-    snapshot_channel: Channel,
+    read_channel: Channel,
 }
 
 impl KasumiClient {
@@ -187,7 +187,7 @@ impl KasumiClient {
         request: &kasumi_types::ReadRestoreLineage,
     ) -> Result<VerifiedRestoreLineage, ClientError> {
         let response = self
-            .inner
+            .read_client()
             .read_restore_lineage(self.authorized(
                 bearer,
                 proto::ReadRestoreLineageRequest {
@@ -210,20 +210,32 @@ impl KasumiClient {
     }
 
     pub async fn connect(config: &KasumiClientConfig) -> Result<Self, ClientError> {
-        let channel = kasumi_transport::grpc_channel(
-            &config.endpoint,
-            &config.identity,
-            &config.trusted_ca_pem,
-            config.server_certificate_pins.clone(),
-        )
-        .await?;
+        // HTTP/2 stream admission is per connection. Keep reads independent of
+        // queued mutations, while clones share this bounded connection pair.
+        let connect = || {
+            kasumi_transport::grpc_channel(
+                &config.endpoint,
+                &config.identity,
+                &config.trusted_ca_pem,
+                config.server_certificate_pins.clone(),
+            )
+        };
+        let (channel, read_channel) = tokio::try_join!(connect(), connect())?;
         Ok(Self {
             deadline: None,
-            snapshot_channel: channel.clone(),
-            inner: proto::kasumi_data_client::KasumiDataClient::new(channel)
-                .max_encoding_message_size((8 << 20) + (64 << 10))
-                .max_decoding_message_size(16 << 20),
+            read_channel,
+            inner: Self::configured_client(channel),
         })
+    }
+
+    fn configured_client(channel: Channel) -> proto::kasumi_data_client::KasumiDataClient<Channel> {
+        proto::kasumi_data_client::KasumiDataClient::new(channel)
+            .max_encoding_message_size((8 << 20) + (64 << 10))
+            .max_decoding_message_size(16 << 20)
+    }
+
+    fn read_client(&self) -> proto::kasumi_data_client::KasumiDataClient<Channel> {
+        Self::configured_client(self.read_channel.clone())
     }
 
     pub async fn begin_staged_transaction(
@@ -308,7 +320,7 @@ impl KasumiClient {
         request: &kasumi_types::StagedTransactionRef,
     ) -> Result<kasumi_types::StagedTransactionStatus, ClientError> {
         let response = self
-            .inner
+            .read_client()
             .staged_transaction_status(self.authorized(
                 bearer,
                 proto::StagedTransactionReference {

@@ -46,7 +46,7 @@ use std::{
 #[path = "mcp_credential_tests.rs"]
 mod credential_tests;
 #[cfg(test)]
-pub(crate) use credential_tests::{BodyChargeGate, ReleaseGate};
+pub(crate) use credential_tests::{BodyChargeGate, ReleaseGate, TreeChargeHook};
 
 #[cfg(test)]
 fn release_gate_slot() -> Arc<Mutex<Option<Arc<ReleaseGate>>>> {
@@ -135,6 +135,8 @@ struct Verified {
     // A tool reply that could not be charged. The HTTP boundary replaces the
     // SDK body with a fixed-size rejection carrying this error.
     withheld: Arc<Mutex<Option<Error>>>,
+    #[cfg(test)]
+    tree_charge_hook: Option<TreeChargeHook>,
 }
 impl Verified {
     fn new(context: RequestContext) -> Self {
@@ -144,6 +146,8 @@ impl Verified {
             source_output: Arc::new(Mutex::new(None)),
             response_fence: Arc::new(Mutex::new(None)),
             withheld: Arc::new(Mutex::new(None)),
+            #[cfg(test)]
+            tree_charge_hook: None,
         }
     }
     fn release_error(&self, error: Error) -> Error {
@@ -675,8 +679,13 @@ fn output(invocation: &Verified, value: &impl Serialize) -> kasumi_types::Result
     let bytes = invocation.encode_output(value)?;
     // Small scalars take far more memory as a Value tree than as JSON text.
     // Charge the whole tree before decoding any of it.
+    let tree_bytes = value_tree_bytes(&bytes)?;
+    #[cfg(test)]
+    if let Some(hook) = &invocation.tree_charge_hook {
+        (hook.0)(tree_bytes);
+    }
     invocation.retain_response_bytes(
-        value_tree_bytes(&bytes)?,
+        tree_bytes,
         "MCP tool result tree exceeds the response workspace budget",
     )?;
     decode_output(&bytes)
@@ -1042,6 +1051,16 @@ impl ServerHandler for KasumiMcp {
         }
         let response_id = context.id.clone();
         let invocation = verified(&context)?;
+        #[cfg(test)]
+        let invocation = {
+            let mut invocation = invocation;
+            invocation.tree_charge_hook = context
+                .extensions
+                .get::<axum::http::request::Parts>()
+                .and_then(|parts| parts.extensions.get::<TreeChargeHook>())
+                .cloned();
+            invocation
+        };
         let identity = invocation.context.clone();
         let args = Value::Object(request.arguments.unwrap_or_default());
         #[cfg(test)]

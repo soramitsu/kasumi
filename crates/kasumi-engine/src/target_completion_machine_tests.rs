@@ -497,6 +497,19 @@ fn target_budget_changes_preserve_reserves_and_replay_the_first_outcome() {
             .code,
         ErrorCode::ResourceExhausted
     );
+    let mut unrestorable = proposed.clone();
+    // Snapshot decode could never stage target rows under this budget.
+    unrestorable.input.maximum_bytes = 1 << 61;
+    assert!(crate::target_resolution::scratch_limit(1 << 61).is_err());
+    unrestorable.intent.request.phase_input_sha256 = unrestorable.input.digest().unwrap();
+    unrestorable.intent.request_sha256 = staged_digest(&unrestorable.intent.request).unwrap().0;
+    assert_eq!(
+        value
+            .maintain_budget(unrestorable, TARGET_COMPLETION_RESERVE_BYTES, None)
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
     let mut stale = proposed.clone();
     stale.input.expected_bytes += 1;
     stale.intent.request.phase_input_sha256 = stale.input.digest().unwrap();
