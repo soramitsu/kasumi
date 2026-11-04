@@ -173,7 +173,7 @@ impl Database {
                             .collections
                             .get(name)
                             .map(|collection| SchemaCollection {
-                                definition: collection.definition.clone(),
+                                definition: CollectionDefinition::clone(&collection.definition),
                                 data_epoch: collection.data_epoch,
                                 archived_document_count: collection.archived_documents.len() as u64,
                             }),
@@ -287,18 +287,18 @@ impl Database {
         reservation.retain_workspace();
         // Administrative activation outcomes always have durable release audits,
         // including failed requests for collections that were never created.
-        for collection in collections {
-            self.release_event(
-                context,
-                Some(&collection),
-                revision,
-                true,
-                epoch,
-                "schema_activation_status",
-            )
-            .await?;
-        }
-        self.access()?;
+        let releases = collections
+            .iter()
+            .map(|collection| (collection.as_str(), true))
+            .collect::<Vec<_>>();
+        self.release_collections(
+            context,
+            &releases,
+            revision,
+            epoch,
+            "schema_activation_status",
+        )
+        .await?;
         crate::state::schema::lookup(
             &self.engine.generation()?.state,
             context,

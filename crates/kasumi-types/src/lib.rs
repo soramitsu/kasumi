@@ -199,7 +199,23 @@ impl RequestContext {
             request_id: uuid::Uuid::new_v4().to_string(),
         }
     }
+
+    /// Every replicated audit event copies the request ID. Admission refuses a
+    /// longer one: its event could not fit MAX_AUDIT_EVENT_BYTES, and an audit
+    /// that cannot be appended fails the ordered apply instead of the request.
+    pub fn validate_request_id(&self) -> Result<()> {
+        if self.request_id.len() > MAX_REQUEST_ID_BYTES {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "request ID exceeds 256 bytes",
+            ));
+        }
+        Ok(())
+    }
 }
+
+/// Largest admitted RequestContext::request_id, in UTF-8 bytes.
+pub const MAX_REQUEST_ID_BYTES: usize = 256;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -363,7 +379,9 @@ pub enum CollectionWriteMode {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CollectionState {
-    pub definition: CollectionDefinition,
+    /// Shared by every generation until a schema change replaces it: a
+    /// definition's schema can reach 8 MiB. Serialized as the definition.
+    pub definition: std::sync::Arc<CollectionDefinition>,
     /// Last committed document-change revision; reads, denials and replays do
     /// not change it. Schema changes are fenced separately by schema_epoch.
     pub data_epoch: u64,
@@ -896,14 +914,16 @@ pub struct TenantState {
     pub retired: bool,
     pub pending_restore: Option<PendingRestore>,
     pub restored_from: Option<FullBackupCheckpoint>,
-    pub restore_lineage: Vec<RestoreLineageLink>,
+    // Generations share these until a command changes them; every write
+    // clones its state several times. Each serializes as its contents.
+    pub restore_lineage: std::sync::Arc<Vec<RestoreLineageLink>>,
     #[serde(deserialize_with = "require_explicit_option")]
-    pub lifecycle_control: Option<LifecycleControlState>,
+    pub lifecycle_control: Option<std::sync::Arc<LifecycleControlState>>,
     pub target_lifecycle: imbl::OrdMap<String, TargetExecutionState>,
     pub recovery_control: RecoveryControlState,
     pub document_count: u64,
     pub logical_bytes: u64,
-    pub policy: Policy,
+    pub policy: std::sync::Arc<Policy>,
     pub limits: Limits,
     pub collections: BTreeMap<String, CollectionState>,
     pub mutation_receipt_head: MutationReceiptHead,
@@ -1081,6 +1101,19 @@ mod tests {
         }))
         .unwrap();
         assert!(!injected.denial_audit_attempted());
+    }
+    #[test]
+    fn request_id_bound_counts_utf8_bytes() {
+        let mut context = RequestContext::trusted("tenant", "principal", [Action::Read]);
+        context.validate_request_id().unwrap();
+        context.request_id = "x".repeat(MAX_REQUEST_ID_BYTES);
+        context.validate_request_id().unwrap();
+        context.request_id.push('x');
+        let error = context.validate_request_id().unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        // 86 three-byte characters are 258 bytes.
+        context.request_id = "猫".repeat(86);
+        assert!(context.validate_request_id().is_err());
     }
     #[test]
     fn error_messages_bound_utf8_and_recovered_receipt_allocations() {

@@ -324,7 +324,7 @@ pub(super) fn selected_topology(
                 .collections
                 .get("topology")
                 .ok_or_else(|| corrupt("installed Control topology schema is missing"))?;
-            if collection.definition != super::ControlPlane::topology_definition() {
+            if *collection.definition != super::ControlPlane::topology_definition() {
                 return Err(corrupt("installed Control topology schema differs"));
             }
             if generation.lifecycle_installation().is_some()
@@ -333,7 +333,7 @@ pub(super) fn selected_topology(
                     .collections
                     .get("tenant_enrollments")
                     .is_none_or(|collection| {
-                        collection.definition != super::ControlPlane::enrollment_definition()
+                        *collection.definition != super::ControlPlane::enrollment_definition()
                     })
             {
                 return Err(corrupt(

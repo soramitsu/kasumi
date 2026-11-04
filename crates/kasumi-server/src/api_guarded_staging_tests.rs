@@ -252,6 +252,7 @@ async fn native_staged_original_scope_cannot_be_reinterpreted_by_another_authori
         .unwrap()
         .state
         .policy
+        .as_ref()
         .clone();
     policy.grants.push(Grant {
         principal: "replacement".into(),

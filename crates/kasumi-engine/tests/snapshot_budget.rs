@@ -123,6 +123,7 @@ fn exact_incremental_accounting_covers_documents_permanent_receipts_schemas_poli
     apply(&db, 31, 86_400_101, delete).unwrap();
     let mut definition = db.generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.schema = json!({"type":"object","properties":{"payload":{"type":"string"}},"description":"schema metadata"});
     apply(
@@ -132,7 +133,7 @@ fn exact_incremental_accounting_covers_documents_permanent_receipts_schemas_poli
         Operation::ReplaceCollection(definition),
     )
     .unwrap();
-    let mut policy = db.generation().unwrap().state.policy.clone();
+    let mut policy = Policy::clone(&db.generation().unwrap().state.policy);
     policy.strict_read_audit = true;
     apply(&db, 33, 86_400_103, Operation::SetPolicy(policy)).unwrap();
     apply(&db, 34, 86_400_104, Operation::Suspend(true)).unwrap();

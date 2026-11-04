@@ -354,7 +354,38 @@ pub(crate) fn records_with_resolver<'a>(
     ))
 }
 
+/// The header's copy of the Control state; intents and changes are records.
+pub(crate) fn control_header(control: &LifecycleControlState) -> LifecycleControlState {
+    LifecycleControlState {
+        installation: control.installation.clone(),
+        installation_command_id: control.installation_command_id,
+        installation_revision: control.installation_revision,
+        installation_policy_epoch: control.installation_policy_epoch,
+        installation_policy: control.installation_policy.clone(),
+        retired: control.retired,
+        pending_change: control.pending_change,
+        intents: Default::default(),
+        changes: Default::default(),
+    }
+}
 pub(crate) fn metadata(state: &TenantState) -> TenantState {
+    metadata_with_shared(
+        state,
+        state.policy.clone(),
+        state
+            .lifecycle_control
+            .as_ref()
+            .map(|c| Arc::new(control_header(c))),
+    )
+}
+
+/// Accounting substitutes small placeholders for independently cached values.
+/// Keeping the projection shared with the writer prevents format drift.
+pub(crate) fn metadata_with_shared(
+    state: &TenantState,
+    policy: Arc<Policy>,
+    lifecycle_control: Option<Arc<LifecycleControlState>>,
+) -> TenantState {
     TenantState {
         tenant: state.tenant.clone(),
         incarnation: state.incarnation.clone(),
@@ -366,26 +397,13 @@ pub(crate) fn metadata(state: &TenantState) -> TenantState {
         retired: state.retired,
         pending_restore: state.pending_restore.clone(),
         restored_from: state.restored_from.clone(),
-        restore_lineage: Vec::new(),
-        lifecycle_control: state
-            .lifecycle_control
-            .as_ref()
-            .map(|c| LifecycleControlState {
-                installation: c.installation.clone(),
-                installation_command_id: c.installation_command_id,
-                installation_revision: c.installation_revision,
-                installation_policy_epoch: c.installation_policy_epoch,
-                installation_policy: c.installation_policy.clone(),
-                retired: c.retired,
-                pending_change: c.pending_change,
-                intents: Default::default(),
-                changes: Default::default(),
-            }),
+        restore_lineage: Default::default(),
+        lifecycle_control,
         target_lifecycle: Default::default(),
         recovery_control: Default::default(),
         document_count: state.document_count,
         logical_bytes: state.logical_bytes,
-        policy: state.policy.clone(),
+        policy,
         limits: state.limits.clone(),
         collections: Default::default(),
         mutation_receipt_head: state.mutation_receipt_head.clone(),
@@ -1048,7 +1066,7 @@ pub(crate) fn read(
                         i == state.restore_lineage.len() as u64,
                         "lineage sequence differs"
                     );
-                    state.restore_lineage.push(link);
+                    Arc::make_mut(&mut state.restore_lineage).push(link);
                 }
                 Record::Collection(k, collection) => {
                     anyhow::ensure!(
@@ -1171,6 +1189,7 @@ pub(crate) fn read(
                     state
                         .lifecycle_control
                         .as_mut()
+                        .map(Arc::make_mut)
                         .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
                         .intents
                         .insert(id, intent);
@@ -1239,6 +1258,7 @@ pub(crate) fn read(
                     state
                         .lifecycle_control
                         .as_mut()
+                        .map(Arc::make_mut)
                         .ok_or_else(|| anyhow::anyhow!("control installation missing"))?
                         .changes
                         .insert(id, change);

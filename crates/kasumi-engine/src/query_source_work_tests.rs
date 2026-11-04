@@ -116,14 +116,14 @@ impl Fixture {
         )
         .unwrap();
         let collection = CollectionState {
-            definition: CollectionDefinition {
+            definition: std::sync::Arc::new(CollectionDefinition {
                 name: "docs".into(),
                 write_mode: CollectionWriteMode::Mutable,
                 retention_class: CollectionRetentionClass::Operational,
                 schema: json!({"type": "object"}),
                 indexes: vec![],
                 strict_read_audit: false,
-            },
+            }),
             data_epoch: 7,
             documents: [(
                 "a".to_owned(),

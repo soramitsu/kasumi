@@ -124,6 +124,7 @@ fn control(state: &mut TenantState, operation: &RecoveryRecord, intent: Lifecycl
     state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .insert(intent.request.command_id, intent.clone());
@@ -167,7 +168,7 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
         maximum_lifetime_ms: 1000,
         drain_ms: 1000,
     };
-    state.lifecycle_control = Some(LifecycleControlState {
+    state.lifecycle_control = Some(std::sync::Arc::new(LifecycleControlState {
         installation: LifecycleInstallation {
             root: ControlSigningRoot {
                 control_incarnation: origin.materialization.control_incarnation,
@@ -185,12 +186,12 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
         installation_command_id: Uuid::from_u128(902),
         installation_revision: 1,
         installation_policy_epoch: 1,
-        installation_policy: state.policy.clone(),
+        installation_policy: state.policy.as_ref().clone(),
         retired: false,
         pending_change: None,
         intents: Default::default(),
         changes: Default::default(),
-    });
+    }));
     let r = &origin.materialization.request;
     let request = RecoveryStart {
         operation_id: Uuid::from_u128(600),
@@ -1965,6 +1966,7 @@ fn linked_birth(
     state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .insert(intent.request.command_id, intent.clone());
@@ -2380,6 +2382,7 @@ fn pending_linked_birth_retains_exact_input_when_stop_clears_pending_without_com
     state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .insert(intent.request.command_id, intent.clone());
@@ -2395,6 +2398,7 @@ fn pending_linked_birth_retains_exact_input_when_stop_clears_pending_without_com
     state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .remove(&intent.request.command_id);

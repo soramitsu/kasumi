@@ -56,7 +56,7 @@ impl LoanSource {
             .map(|(id, doc)| (id.clone(), serde_json::to_string(doc).unwrap()))
             .collect();
         let collection = CollectionState {
-            definition: definition.clone(),
+            definition: definition.clone().into(),
             data_epoch: 7,
             documents,
             archived_documents: Default::default(),
@@ -738,7 +738,7 @@ fn fixture_headers_are_exclusive_and_deduplicate_verified_hydration() {
         indexed_fields: BTreeMap::new(),
     });
     let collection = CollectionState {
-        definition: fixture.definition.clone(),
+        definition: fixture.definition.clone().into(),
         data_epoch: 7,
         archived_document_bytes: 0,
         documents: [(
@@ -814,4 +814,56 @@ fn source_identity_includes_owner_type_and_all_scope_fields() {
         identity,
         SourceIdentity::new(&first, "tenant", "incarnation", "other")
     );
+}
+
+#[test]
+fn scan_boolean_subtree_borrows_each_body_once_and_prepares_constants_once() {
+    let source = LoanSource::new();
+    let filter = Filter::or([Filter::new().eq("/n", 0), !Filter::new().lt("/n", 2)]);
+    let node = crate::structured::plan(&filter).unwrap();
+    let structured = &source.indexes.collections["docs"].structured;
+    structured.validate(&node, true).unwrap();
+    let before = crate::structured::prepared_leaves_for_test();
+    let ids = structured
+        .candidates(
+            &source,
+            &node,
+            &structured.ids,
+            true,
+            true,
+            100,
+            &QueryCancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        ids.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["d0", "d2"]
+    );
+    assert_eq!(source.calls.get(), 3);
+    assert_eq!(crate::structured::prepared_leaves_for_test() - before, 2);
+}
+
+#[test]
+fn prepared_filter_constants_are_admitted_before_any_body_loan() {
+    let source = LoanSource::new();
+    let query = source
+        .query()
+        .filter(Filter::new().is_in("/group", ["g".repeat(256 << 10)]));
+    let limits = Limits {
+        max_query_candidates: 4,
+        ..Limits::default()
+    };
+    let mut memory = QueryMemory::new(LimitedWorkspace(8192), 0).unwrap();
+    let failure = source
+        .indexes
+        .execute(&source, &query, &limits, &mut memory)
+        .unwrap_err();
+    assert!(matches!(
+        failure,
+        ReadFailure::Query(Error {
+            code: ErrorCode::ResourceExhausted,
+            ..
+        })
+    ));
+    assert_eq!(source.calls.get(), 0);
 }

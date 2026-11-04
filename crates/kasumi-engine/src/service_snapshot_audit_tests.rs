@@ -127,7 +127,7 @@ async fn snapshot_audit_includes_tenant_strict_collections_and_leaves_unrestrict
         fixture.db.engine.generation().unwrap().state.revision,
         revision
     );
-    let mut policy = fixture.db.engine.generation().unwrap().state.policy.clone();
+    let mut policy = Policy::clone(&fixture.db.engine.generation().unwrap().state.policy);
     policy.strict_read_audit = true;
     fixture
         .db
@@ -212,7 +212,7 @@ async fn snapshot_audit_rejects_any_unauthorized_collection_before_auditing_or_r
     let fixture = snapshot_audit_fixture().await;
     let mut context = fixture.context.clone();
     context.principal = "partial-reader".into();
-    let mut policy = fixture.db.engine.generation().unwrap().state.policy.clone();
+    let mut policy = Policy::clone(&fixture.db.engine.generation().unwrap().state.policy);
     policy
         .grants
         .extend(["first", "docs"].into_iter().map(|name| Grant {

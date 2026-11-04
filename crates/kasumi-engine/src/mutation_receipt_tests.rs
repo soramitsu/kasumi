@@ -596,7 +596,10 @@ fn commit(
             "original permanent failure",
         )),
     };
-    let pending = Pending::prepare(view, &next, Some(receipt), applied).unwrap();
+    let Lookup::Absent(absent) = view.lookup(&identity("owner", key).unwrap()).unwrap() else {
+        panic!("committed receipt identity");
+    };
+    let pending = Pending::prepare(view, &next, Some((receipt, &absent)), applied).unwrap();
     next.mutation_receipt_head = pending.head().clone();
     (next, pending)
 }
@@ -973,4 +976,67 @@ async fn point_decode_admission_precedes_even_future_row_allocation() {
     assert!(error.to_string().contains("injected admission denial"));
     assert_eq!(old.head().count, 0);
     store.shutdown().await.unwrap();
+}
+
+#[test]
+fn receipt_measurement_borrows_the_row_and_validation_returns_it() {
+    let (state, mut rows) = staging_rows(1);
+    let mut row = rows.pop().unwrap();
+    // Every write measured its receipt row about six times, cloning all 256
+    // collection names on each measurement.
+    row.receipt.collections = (0..256)
+        .map(|index| format!("{index:03}{}", "c".repeat(200)))
+        .collect();
+    let framed = crate::accounting::encoded_len(&crate::snapshot_codec::Record::Receipt(Box::new(
+        row.clone(),
+    )))
+    .unwrap() as u64
+        + crate::snapshot_codec::FRAME_HEADER_BYTES as u64;
+    let counting = crate::allocation_tests::AllocationGuard::begin();
+    let measured = row.framed_bytes().unwrap();
+    assert_eq!(counting.finish(), 0);
+    assert_eq!(measured, framed);
+    assert_eq!(row.validate(&state).unwrap(), framed);
+}
+
+#[test]
+fn receipt_append_requires_absence_from_its_own_head() {
+    let state = state();
+    let empty = View::empty(&state.tenant, &state.incarnation).unwrap();
+    let (next, pending) = commit(&state, &empty, "first", &applied(1));
+    let Lookup::Absent(other_key) = empty.lookup(&identity("owner", "other").unwrap()).unwrap()
+    else {
+        panic!("empty view has no rows");
+    };
+    let receipt = pending.rows[0].receipt.clone();
+    let refused = |result: Result<Pending>| {
+        let error = result.err().expect("append without its own absence proof");
+        assert!(
+            error
+                .to_string()
+                .contains("cannot rewrite permanent receipt")
+        );
+    };
+    refused(Pending::prepare(
+        &empty,
+        &state,
+        Some((receipt.clone(), &other_key)),
+        &applied(1),
+    ));
+    // A proof from before the first append does not cover the advanced head.
+    let advanced = View {
+        source: None,
+        head: next.mutation_receipt_head.clone(),
+    };
+    let Lookup::Absent(stale) = empty.lookup(&identity("owner", "first").unwrap()).unwrap() else {
+        panic!("empty view has no rows");
+    };
+    let mut later = receipt;
+    later.idempotency_key = "first".into();
+    refused(Pending::prepare(
+        &advanced,
+        &next,
+        Some((later, &stale)),
+        &applied(2),
+    ));
 }

@@ -267,31 +267,45 @@ async fn stored_and_generated_forms_preserve_one_canonical_wire_and_decode_as_in
     );
     let command_wire = postcard::to_allocvec(&command)?;
     assert_eq!(command_wire, postcard::to_allocvec(&previous)?);
-    for (previous, current) in [
+    // Custody and retirement bytes travel the same way, so a peer RPC never
+    // spells one number per byte.
+    let (application, seed, custody) = (vec![1; 300], vec![2, 255, 0], vec![3; 64 << 10]);
+    for (previous, current, json) in [
         (
             PreviousCommand::Retirement {
-                application: vec![1],
-                seed: vec![2],
+                application: application.clone(),
+                seed: seed.clone(),
             },
             crate::RaftCommand::Retirement {
-                application: vec![1],
-                seed: vec![2],
+                application: application.clone(),
+                seed: seed.clone(),
             },
+            serde_json::json!({ "Retirement": {
+                "application": BASE64.encode(&application),
+                "seed": BASE64.encode(&seed),
+            }}),
         ),
         (
-            PreviousCommand::Custody(vec![3]),
-            crate::RaftCommand::Custody(vec![3]),
+            PreviousCommand::Custody(custody.clone()),
+            crate::RaftCommand::Custody(custody.clone()),
+            serde_json::json!({ "Custody": BASE64.encode(&custody) }),
         ),
     ] {
+        let text = serde_json::to_vec(&current)?;
+        assert_eq!(text, serde_json::to_vec(&json)?);
+        assert!(text.len() < serde_json::to_vec(&previous)?.len());
         assert_eq!(
-            serde_json::to_vec(&current)?,
-            serde_json::to_vec(&previous)?
+            serde_json::from_slice::<crate::RaftCommand>(&text)?,
+            current
         );
-        assert_eq!(
-            postcard::to_allocvec(&current)?,
-            postcard::to_allocvec(&previous)?
-        );
+        let wire = postcard::to_allocvec(&current)?;
+        assert_eq!(wire, postcard::to_allocvec(&previous)?);
+        assert_eq!(postcard::from_bytes::<crate::RaftCommand>(&wire)?, current);
     }
+    assert!(
+        serde_json::from_value::<crate::RaftCommand>(serde_json::json!({ "Custody": [3] }))
+            .is_err()
+    );
     let (round_trip, _, allocations) = allocation_tests::observe_last_allocation(|| {
         postcard::from_bytes::<crate::RaftCommand>(&command_wire)
     });

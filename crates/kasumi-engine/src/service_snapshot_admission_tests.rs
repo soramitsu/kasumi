@@ -75,7 +75,7 @@ async fn snapshot_admission_rechecks_policy_and_original_credential_after_wait()
         if expire_credential {
             clock.0.store(1000, Ordering::SeqCst);
         } else {
-            let mut policy = fixture.db.engine.generation().unwrap().state.policy.clone();
+            let mut policy = Policy::clone(&fixture.db.engine.generation().unwrap().state.policy);
             for grant in &mut policy.grants {
                 grant.actions.remove(&Action::Read);
             }

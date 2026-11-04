@@ -521,6 +521,7 @@ fn control_state() -> TenantState {
     state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .installation_revision = 1;
     state
@@ -561,10 +562,10 @@ fn target_candidate(
     let origin = state.target_lifecycle[&state.incarnation].origin.clone();
     let checkpoint = origin.materialization.request.checkpoint.clone();
     state.restored_from = Some(checkpoint.clone());
-    state.restore_lineage = vec![RestoreLineageLink {
+    state.restore_lineage = std::sync::Arc::new(vec![RestoreLineageLink {
         checkpoint: checkpoint.clone(),
         target_incarnation: state.incarnation.clone(),
-    }];
+    }]);
     state.suspended = true;
     state.pending_restore = Some(PendingRestore {
         backup_id: checkpoint.backup_id.to_string(),
@@ -823,7 +824,11 @@ fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback()
     // An actual fully validated original lifecycle intent, under that install.
     let mut state = control_state();
     state.revision = 3;
-    let control = state.lifecycle_control.as_mut().unwrap();
+    let control = state
+        .lifecycle_control
+        .as_mut()
+        .map(std::sync::Arc::make_mut)
+        .unwrap();
     let mut intent = crate::target_completion_machine::tests::origin().materialization;
     intent.control_incarnation = control.installation.root.control_incarnation;
     intent.installation_generation = control.installation.generation;
@@ -845,6 +850,7 @@ fn validation_baseline_lifecycle_intent_continuity_refuses_valid_rollback()
         .state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .clear();

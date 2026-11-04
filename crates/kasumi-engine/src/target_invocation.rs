@@ -107,6 +107,7 @@ impl TargetLifecycleInvocation {
     }
     fn check_request_context(&self, context: &RequestContext) -> Result<()> {
         self.check()?;
+        context.validate_request_id()?;
         context.authorization.check_live()?;
         let lease = self.gate.current().map_err(unauthorized)?;
         let intent = &lease.commitment().intent;

@@ -99,7 +99,7 @@ fn fixture(
     state.collections.insert(
         "docs".into(),
         CollectionState {
-            definition,
+            definition: definition.into(),
             data_epoch: 1,
             documents: documents
                 .into_iter()
@@ -490,7 +490,7 @@ fn metadata_allocation_is_charged_before_opening_and_snapshot_replace_invalidate
     drop(lease);
     assert_eq!(crate::test_utils::reserved_payload_bytes(&node), 0);
     let mut state = engine.generation().unwrap().state.clone();
-    state.collections.get_mut("docs").unwrap().definition.schema =
+    Arc::make_mut(&mut state.collections.get_mut("docs").unwrap().definition).schema =
         json!({"type":"object","description":"large schema".repeat(5000)});
     install(&engine, state);
     let result = engine

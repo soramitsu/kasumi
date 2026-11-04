@@ -125,14 +125,14 @@ mod proof_documents {
         state.change_feed.next_sequence = ROWS + 1;
         state.change_feed.event_count = ROWS as usize;
         let collection = CollectionState {
-            definition: CollectionDefinition {
+            definition: std::sync::Arc::new(CollectionDefinition {
                 name: "proofs".into(),
                 write_mode: CollectionWriteMode::Mutable,
                 retention_class: CollectionRetentionClass::Operational,
                 schema: serde_json::json!({"type":"object"}),
                 indexes: vec![],
                 strict_read_audit: false,
-            },
+            }),
             data_epoch: ROWS,
             documents: Default::default(),
             archived_documents: Default::default(),

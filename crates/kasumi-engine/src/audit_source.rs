@@ -240,7 +240,7 @@ mod tests {
         };
         state.revision = 6;
         state.restored_from = Some(checkpoint.clone());
-        state.restore_lineage.push(RestoreLineageLink {
+        std::sync::Arc::make_mut(&mut state.restore_lineage).push(RestoreLineageLink {
             checkpoint: checkpoint.clone(),
             target_incarnation: target.to_string(),
         });
@@ -264,7 +264,7 @@ mod tests {
             *recovery_checkpoint = Some(Box::new(checkpoint));
         }
         assert!(authorize_audit_source(&state, &root, &incorrect).is_err());
-        state.restore_lineage.clear();
+        std::sync::Arc::make_mut(&mut state.restore_lineage).clear();
         assert!(authorize_audit_source(&state, &root, &incorrect).is_err());
     }
 }

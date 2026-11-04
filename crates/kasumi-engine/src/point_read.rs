@@ -256,10 +256,13 @@ impl Database {
             read.read_native(slot, permit, &cancellation, select)
                 .await?
         } else {
+            // The archive fetch holds one of the four query permits, so it
+            // gets the same bound as a native read of the selected source.
+            let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
             let document = tokio::select! {
-                result = self.history_document(
+                result = tokio::time::timeout_at(deadline, self.history_document(
                     generation, collection, id, &cancellation, &mut read.history,
-                ) => result?,
+                )) => result.map_err(|_| point_deadline_error())??,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
             let Some(document) = document else {

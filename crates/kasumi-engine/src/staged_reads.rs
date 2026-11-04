@@ -294,11 +294,13 @@ mod tests {
         )
         .unwrap();
         let mut reservation = node.reserve(POINT_READ_BYTES, None).unwrap();
-        state.policy.grants.extend((0..1024).map(|i| Grant {
-            principal: format!("{i:04}{}", "p".repeat(252)),
-            collection: Some("c".repeat(256)),
-            actions: BTreeSet::from([Action::Read, Action::Write]),
-        }));
+        std::sync::Arc::make_mut(&mut state.policy)
+            .grants
+            .extend((0..1024).map(|i| Grant {
+                principal: format!("{i:04}{}", "p".repeat(252)),
+                collection: Some("c".repeat(256)),
+                actions: BTreeSet::from([Action::Read, Action::Write]),
+            }));
         let required = metadata_workspace(&state, &context, &scope, None).unwrap();
         assert!(required > POINT_READ_BYTES);
         assert_eq!(

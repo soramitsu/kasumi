@@ -146,11 +146,7 @@ fn applied_control_requires_exact_schema_and_document_without_resetting_current_
         .clear();
     assert!(ControlPlane::applied_topology(&state, None).is_err());
     let mut state = original_state.clone();
-    state
-        .collections
-        .get_mut("topology")
-        .unwrap()
-        .definition
+    std::sync::Arc::make_mut(&mut state.collections.get_mut("topology").unwrap().definition)
         .strict_read_audit = false;
     assert!(ControlPlane::applied_topology(&state, None).is_err());
     let mut state = original_state;

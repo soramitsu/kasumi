@@ -47,7 +47,7 @@ fn setup() -> (BTreeMap<String, CollectionState>, QueryIndexes) {
     let collections = BTreeMap::from([(
         "ordered".into(),
         CollectionState {
-            definition,
+            definition: definition.into(),
             documents,
             archived_documents: Default::default(),
             archived_document_bytes: 0,
@@ -307,7 +307,8 @@ fn small_fixture(
             write_mode: CollectionWriteMode::Mutable,
             retention_class: CollectionRetentionClass::Operational,
             strict_read_audit: false,
-        },
+        }
+        .into(),
         documents: bodies
             .into_iter()
             .enumerate()

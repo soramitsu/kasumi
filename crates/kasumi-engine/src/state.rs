@@ -230,13 +230,13 @@ fn genesis_metadata(
         retired: false,
         pending_restore: None,
         restored_from: None,
-        restore_lineage: Vec::new(),
+        restore_lineage: Default::default(),
         lifecycle_control: None,
         target_lifecycle: Default::default(),
         recovery_control: Default::default(),
         document_count: 0,
         logical_bytes: 0,
-        policy,
+        policy: Arc::new(policy),
         limits,
         collections: BTreeMap::new(),
         mutation_receipt_head: MutationReceiptHead::empty(tenant, incarnation)?,
@@ -1482,7 +1482,7 @@ impl TenantEngine {
                 "restored origin differs from verified snapshot",
             ));
         }
-        state.restore_lineage.push(RestoreLineageLink {
+        Arc::make_mut(&mut state.restore_lineage).push(RestoreLineageLink {
             checkpoint: checkpoint.clone(),
             target_incarnation: incarnation.clone(),
         });
@@ -1750,6 +1750,7 @@ impl TenantEngine {
         collection: Option<&str>,
         action: Action,
     ) -> Result<()> {
+        context.validate_request_id()?;
         context.authorization.check_live()?;
         authorize_state(&self.generation()?.state, context, collection, action)
     }
@@ -1760,6 +1761,7 @@ impl TenantEngine {
         action: Action,
         epoch: Option<u64>,
     ) -> Result<()> {
+        context.validate_request_id()?;
         context.authorization.check_live()?;
         let generation = self.generation()?;
         authorize_discovery_state(&generation.state, context, action)?;
@@ -2084,7 +2086,8 @@ impl TenantEngine {
         if !snapshot_accounting
             .fits(&next)
             .map_err(anyhow::Error::from)?
-            || !lifecycle::completion_fits(&next).map_err(anyhow::Error::from)?
+            || !lifecycle::completion_fits(&next, &snapshot_accounting)
+                .map_err(anyhow::Error::from)?
         {
             return self.prepare_resource_rejection(previous, next, command, None, &terminals);
         }
@@ -2197,7 +2200,8 @@ impl TenantEngine {
                 .map_err(anyhow::Error::from)?;
             if rejected.audit_retention.hot_bytes <= rejected.limits.audit_retention.hot_bytes
                 && accounting.fits(&rejected).map_err(anyhow::Error::from)?
-                && lifecycle::completion_fits(&rejected).map_err(anyhow::Error::from)?
+                && lifecycle::completion_fits(&rejected, &accounting)
+                    .map_err(anyhow::Error::from)?
             {
                 let terminals = terminals
                     .scope
@@ -2955,7 +2959,7 @@ fn apply_operation(
             authorize_state(state, &command.context, None, Action::Admin)?;
             validate_policy(policy, &state.limits)?;
             let epoch = next_policy_epoch(state.policy_epoch)?;
-            state.policy = policy.clone();
+            state.policy = Arc::new(policy.clone());
             state.policy_epoch = epoch;
             Ok((Ok(receipt()), false))
         }

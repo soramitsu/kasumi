@@ -506,10 +506,10 @@ fn terminal_applied_provenance_cannot_be_relabelled_across_two_restore_geneses()
     restored.incarnation = "current".into();
     restored.revision_base = 21;
     restored.revision = 25;
-    restored.restore_lineage = vec![
+    restored.restore_lineage = std::sync::Arc::new(vec![
         link("incarnation", "middle", 10),
         link("middle", "current", 20),
-    ];
+    ]);
     restored.restored_from = Some(restored.restore_lineage[1].checkpoint.clone());
     validate_restore_lineage(
         &restored.tenant,

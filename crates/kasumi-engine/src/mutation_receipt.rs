@@ -39,9 +39,14 @@ impl Row {
         Ok(staged_digest(&("kasumi.mutation-receipt-row.v1", self))?.0)
     }
     pub(crate) fn framed_bytes(&self) -> Result<u64> {
-        let bytes = crate::accounting::encoded_len(&crate::snapshot_codec::Record::Receipt(
-            Box::new(self.clone()),
-        ))?;
+        // Record::Receipt's exact encoding, borrowed: measuring a row never
+        // copies its collection and version lists.
+        #[derive(Serialize)]
+        #[serde(tag = "type", content = "value")]
+        enum Framing<'a> {
+            Receipt(&'a Row),
+        }
+        let bytes = crate::accounting::encoded_len(&Framing::Receipt(self))?;
         ensure!(
             bytes <= MAX_ROW_BYTES,
             "receipt exceeds canonical per-record budget"
@@ -50,7 +55,8 @@ impl Row {
             .checked_add(crate::snapshot_codec::FRAME_HEADER_BYTES as u64)
             .context("receipt canonical length overflow")
     }
-    pub(crate) fn validate(&self, state: &TenantState) -> Result<()> {
+    /// Returns the row's framed snapshot bytes, which validation measures.
+    pub(crate) fn validate(&self, state: &TenantState) -> Result<u64> {
         ensure!(
             self.ordinal > 0 && digest(&self.key) && digest(&self.previous_sha256),
             "receipt chain identity differs"
@@ -103,8 +109,7 @@ impl Row {
             );
         }
 
-        self.framed_bytes()?;
-        Ok(())
+        self.framed_bytes()
     }
 }
 fn decode_path_segment(segment: &str) -> Result<String> {
@@ -184,6 +189,17 @@ impl Source {
         Ok(result)
     }
 }
+pub(crate) enum Lookup {
+    Found(Box<Row>),
+    Absent(Absent),
+}
+/// One view found no row for `key` at `head`. A view at the same head shows
+/// the same rows, so an append there needs no second point read.
+pub(crate) struct Absent {
+    key: String,
+    head: MutationReceiptHead,
+}
+
 /// This owner retains immutable rows, not an open KV read transaction. The
 /// selected count/root remain unchanged while new rows append to the namespace.
 #[derive(Clone)]
@@ -266,6 +282,16 @@ impl View {
     }
     pub(crate) fn get(&self, key: &str) -> Result<Option<Row>> {
         self.get_charged(key, |_| Ok(()))
+    }
+    /// A miss also proves the identity is free to append at this exact head.
+    pub(crate) fn lookup(&self, key: &str) -> Result<Lookup> {
+        Ok(match self.get(key)? {
+            Some(row) => Lookup::Found(Box::new(row)),
+            None => Lookup::Absent(Absent {
+                key: key.to_owned(),
+                head: self.head.clone(),
+            }),
+        })
     }
     pub(crate) fn get_charged(
         &self,
@@ -394,8 +420,8 @@ impl Builder {
         self.failed = true;
         #[cfg(any(test, feature = "test-utils"))]
         observe_staging("row_entered", Some(row.ordinal), None);
-        row.validate(state)?;
-        advance(&mut self.head, row)?;
+        let framed_bytes = row.validate(state)?;
+        advance_framed(&mut self.head, row, framed_bytes)?;
         let index = Ordinal {
             key: row.key.clone(),
             sha256: row.sha256()?,
@@ -473,6 +499,9 @@ impl Builder {
     }
 }
 pub(crate) fn advance(head: &mut MutationReceiptHead, row: &Row) -> Result<()> {
+    advance_framed(head, row, row.framed_bytes()?)
+}
+fn advance_framed(head: &mut MutationReceiptHead, row: &Row, framed_bytes: u64) -> Result<()> {
     ensure!(
         row.ordinal
             == head
@@ -485,7 +514,7 @@ pub(crate) fn advance(head: &mut MutationReceiptHead, row: &Row) -> Result<()> {
     );
     head.encoded_bytes = head
         .encoded_bytes
-        .checked_add(row.framed_bytes()?)
+        .checked_add(framed_bytes)
         .context("receipt permanent byte overflow")?;
     head.count = row.ordinal;
     head.last_applied_revision = row.applied.revision;
@@ -655,7 +684,7 @@ impl Pending {
     pub(crate) fn prepare(
         previous: &View,
         state: &TenantState,
-        receipt: Option<StoredReceipt>,
+        receipt: Option<(StoredReceipt, &Absent)>,
         applied: &AppliedIdentity,
     ) -> Result<Self> {
         ensure!(
@@ -664,10 +693,10 @@ impl Pending {
         );
         let mut head = previous.head.clone();
         let mut rows = Vec::new();
-        if let Some(receipt) = receipt {
+        if let Some((receipt, absent)) = receipt {
             let key = staged_digest(&(&receipt.scope.principal, &receipt.idempotency_key))?.0;
             ensure!(
-                previous.get(&key)?.is_none(),
+                absent.key == key && absent.head == previous.head,
                 "cannot rewrite permanent receipt"
             );
             let row = Row {
@@ -680,8 +709,8 @@ impl Pending {
                 applied: applied.clone(),
                 receipt,
             };
-            row.validate(state)?;
-            advance(&mut head, &row)?;
+            let framed_bytes = row.validate(state)?;
+            advance_framed(&mut head, &row, framed_bytes)?;
             ensure!(
                 head.encoded_bytes <= state.limits.max_mutation_receipt_bytes,
                 "receipt byte admission was not reserved"

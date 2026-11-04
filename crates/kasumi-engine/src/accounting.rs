@@ -1,13 +1,17 @@
 //! Exact canonical resident semantic-record sizes. Only changed document/stage
 //! records are remeasured during ordinary writes; permanent receipt and Control backup binding rows have
 //! their own checked byte budgets and only fixed heads are resident.
-use crate::snapshot_codec::{Record, metadata};
+use crate::snapshot_codec::{Record, metadata_with_shared};
 use kasumi_types::*;
 use serde::Serialize;
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 #[derive(Clone, Default)]
 pub(crate) struct SnapshotAccounting {
+    shared: Option<SharedAccounting>,
     documents: usize,
     archived: usize,
     audits: usize,
@@ -21,6 +25,175 @@ pub(crate) struct SnapshotAccounting {
     recovery_targets: usize,
     recovery_completion_history: usize,
 }
+/// Metadata totals are inline numbers, not another retained metadata tree or
+/// map. Like document/audit accounting, they belong to the paired generation:
+/// `updated` compares still-live previous/next owners before remeasuring changes.
+#[derive(Clone, Copy, Default)]
+struct SharedAccounting {
+    policy: usize,
+    lineage: usize,
+    control_header: Option<usize>,
+    control_records: usize,
+    collections: usize,
+    completion: Option<CompletionSizes>,
+}
+#[derive(Clone, Copy)]
+struct CompletionSizes {
+    policy: usize,
+    control_header: usize,
+    control_records: usize,
+    control: usize,
+}
+#[cfg(test)]
+thread_local! { static SHARED_MEASUREMENTS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+fn measured<T>(measure: impl FnOnce() -> Result<T>) -> Result<T> {
+    #[cfg(test)]
+    SHARED_MEASUREMENTS.with(|count| count.set(count.get() + 1));
+    measure()
+}
+fn lineage_bytes(links: &[RestoreLineageLink]) -> Result<usize> {
+    measured(|| {
+        let mut total = 0;
+        for (i, link) in links.iter().enumerate() {
+            change(
+                &mut total,
+                0,
+                record(&Record::Lineage(i as u64, link.clone()))?,
+            )?;
+        }
+        Ok(total)
+    })
+}
+fn control_record_bytes(control: &LifecycleControlState) -> Result<usize> {
+    measured(|| {
+        let mut total = 0;
+        for (id, intent) in &control.intents {
+            change(&mut total, 0, record(&Record::Intent(*id, intent.clone()))?)?;
+        }
+        for (id, value) in &control.changes {
+            change(
+                &mut total,
+                0,
+                record(&Record::ControlChange(*id, value.clone()))?,
+            )?;
+        }
+        Ok(total)
+    })
+}
+fn collection_header_bytes(name: &str, collection: &CollectionState) -> Result<usize> {
+    measured(|| {
+        record(&Record::Collection(
+            name.to_owned(),
+            CollectionState {
+                definition: collection.definition.clone(),
+                data_epoch: collection.data_epoch,
+                documents: Default::default(),
+                archived_documents: Default::default(),
+                archived_document_bytes: collection.archived_document_bytes,
+            },
+        ))
+    })
+}
+impl SharedAccounting {
+    fn control(&mut self, control: Option<&Arc<LifecycleControlState>>) -> Result<()> {
+        self.control_header = control
+            .map(|control| {
+                measured(|| encoded_len(&crate::snapshot_codec::control_header(control)))
+            })
+            .transpose()?;
+        self.control_records = control
+            .map(|control| control_record_bytes(control))
+            .transpose()?
+            .unwrap_or(0);
+        self.completion = control
+            .and_then(|control| control.pending_change.map(|id| (control, id)))
+            .map(|(control, id)| {
+                // The synthetic completed tree is transient, just as it was in
+                // completion_fits. Only these four sizes survive publication.
+                let (policy, completed) = crate::state::lifecycle::completed_metadata(control, id)?;
+                Ok(CompletionSizes {
+                    policy: encoded_len(&policy)?,
+                    control_header: encoded_len(&crate::snapshot_codec::control_header(
+                        &completed,
+                    ))?,
+                    control_records: control_record_bytes(&completed)?,
+                    control: encoded_len(&completed)?,
+                })
+            })
+            .transpose()?;
+        Ok(())
+    }
+    fn rebuild(state: &TenantState) -> Result<Self> {
+        let mut result = Self {
+            policy: measured(|| encoded_len(&state.policy))?,
+            lineage: lineage_bytes(&state.restore_lineage)?,
+            ..Self::default()
+        };
+        result.control(state.lifecycle_control.as_ref())?;
+        for (name, collection) in &state.collections {
+            change(
+                &mut result.collections,
+                0,
+                collection_header_bytes(name, collection)?,
+            )?;
+        }
+        Ok(result)
+    }
+    fn updated(&self, previous: &TenantState, next: &TenantState) -> Result<Self> {
+        let mut result = *self;
+        if !Arc::ptr_eq(&previous.policy, &next.policy) {
+            result.policy = measured(|| encoded_len(&next.policy))?;
+        }
+        if !Arc::ptr_eq(&previous.restore_lineage, &next.restore_lineage) {
+            result.lineage = lineage_bytes(&next.restore_lineage)?;
+        }
+        let same_control = match (&previous.lifecycle_control, &next.lifecycle_control) {
+            (Some(old), Some(new)) => Arc::ptr_eq(old, new),
+            (None, None) => true,
+            _ => false,
+        };
+        if !same_control {
+            result.control(next.lifecycle_control.as_ref())?;
+        }
+        for (name, old) in &previous.collections {
+            match next.collections.get(name) {
+                Some(new) if Arc::ptr_eq(&old.definition, &new.definition) => {
+                    let counters = |collection: &CollectionState| {
+                        (collection.data_epoch.max(1).ilog10()
+                            + collection.archived_document_bytes.max(1).ilog10()
+                            + 2) as usize
+                    };
+                    let before = counters(old);
+                    let after = counters(new);
+                    // Only decimal widths change when the schema owner is the
+                    // same. At a widening boundary also recheck the row cap.
+                    if after > before {
+                        collection_header_bytes(name, new)?;
+                    }
+                    change(&mut result.collections, before, after)?;
+                }
+                new => change(
+                    &mut result.collections,
+                    collection_header_bytes(name, old)?,
+                    new.map(|new| collection_header_bytes(name, new))
+                        .transpose()?
+                        .unwrap_or(0),
+                )?,
+            }
+        }
+        for (name, new) in &next.collections {
+            if !previous.collections.contains_key(name) {
+                change(
+                    &mut result.collections,
+                    0,
+                    collection_header_bytes(name, new)?,
+                )?;
+            }
+        }
+        Ok(result)
+    }
+}
+
 pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
     struct Counter(usize);
     impl std::io::Write for Counter {
@@ -41,7 +214,9 @@ pub(crate) fn encoded_len(value: &impl Serialize) -> Result<usize> {
     Ok(counter.0)
 }
 fn record(record: &Record) -> Result<usize> {
-    let size = encoded_len(record)?;
+    framed_record_bytes(encoded_len(record)?)
+}
+fn framed_record_bytes(size: usize) -> Result<usize> {
     if size > (32 << 20) {
         return Err(Error::new(
             ErrorCode::QuotaExceeded,
@@ -270,6 +445,39 @@ fn recovery_target(key: &str, value: &uuid::Uuid) -> Result<usize> {
     record(&Record::RecoveryTarget(key.into(), *value))
 }
 impl SnapshotAccounting {
+    /// Finish the bounded audit/header simulation using cached completion
+    /// sizes. Neither this cache nor its clones retain a policy/lifecycle tree.
+    pub(crate) fn fits_completion(
+        &self,
+        state: &TenantState,
+        completed: &TenantState,
+    ) -> Result<bool> {
+        let shared = match self.shared {
+            Some(shared) => shared,
+            None => SharedAccounting::rebuild(state)?,
+        };
+        let projection = shared.completion.ok_or_else(|| {
+            Error::new(
+                ErrorCode::Corruption,
+                "pending completion accounting absent",
+            )
+        })?;
+        let control = state
+            .lifecycle_control
+            .as_ref()
+            .expect("pending completion");
+        if projection.control > control.installation.max_state_bytes {
+            return Ok(false);
+        }
+        let mut accounting = self.updated(state, completed, &BTreeMap::new(), &BTreeSet::new())?;
+        let metadata = accounting.shared.as_mut().expect("updated metadata");
+        metadata.policy = projection.policy;
+        metadata.control_header = Some(projection.control_header);
+        metadata.control_records = projection.control_records;
+        // Reconstruct and validate the projected header through bytes(), so
+        // its individual record cap remains independent of the total budget.
+        accounting.fits(completed)
+    }
     pub fn rebuild(state: &TenantState) -> Result<Self> {
         let mut result = Self::default();
         for (name, collection) in &state.collections {
@@ -311,6 +519,7 @@ impl SnapshotAccounting {
             change(&mut result.feed, 0, feed(*i, commit)?)?;
         }
         result.other(state)?;
+        result.shared = Some(SharedAccounting::rebuild(state)?);
         map_changes(
             &mut result.recovery_operations,
             &Default::default(),
@@ -372,6 +581,10 @@ impl SnapshotAccounting {
         changed_stages: &BTreeSet<String>,
     ) -> Result<Self> {
         let mut result = self.clone();
+        result.shared = Some(match self.shared {
+            Some(shared) => shared.updated(previous, next)?,
+            None => SharedAccounting::rebuild(next)?,
+        });
         for (name, ids) in changed_documents {
             let old = previous
                 .collections
@@ -514,47 +727,31 @@ impl SnapshotAccounting {
                 Error::new(ErrorCode::Corruption, "terminal snapshot byte overflow")
             })?,
         )?;
+        let shared = match self.shared {
+            Some(shared) => shared,
+            None => SharedAccounting::rebuild(state)?,
+        };
+        let empty_policy = Arc::new(Policy::default());
+        let mut header = encoded_len(&Record::Header(Box::new(metadata_with_shared(
+            state,
+            empty_policy.clone(),
+            None,
+        ))))?;
         change(
-            &mut total,
-            0,
-            record(&Record::Header(Box::new(metadata(state))))?,
+            &mut header,
+            encoded_len(empty_policy.as_ref())?,
+            shared.policy,
         )?;
-        for (i, link) in state.restore_lineage.iter().enumerate() {
-            change(
-                &mut total,
-                0,
-                record(&Record::Lineage(i as u64, link.clone()))?,
-            )?;
+        if let Some(control) = shared.control_header {
+            change(&mut header, 4, control)?; // JSON null becomes the header.
         }
-        for (name, collection) in &state.collections {
-            let header = CollectionState {
-                definition: collection.definition.clone(),
-                data_epoch: collection.data_epoch,
-                documents: Default::default(),
-                archived_documents: Default::default(),
-                archived_document_bytes: collection.archived_document_bytes,
-            };
-            change(
-                &mut total,
-                0,
-                record(&Record::Collection(name.clone(), header))?,
-            )?;
-        }
+        change(&mut total, 0, framed_record_bytes(header)?)?;
+        change(&mut total, 0, shared.lineage)?;
+        change(&mut total, 0, shared.collections)?;
         for key in &state.active_staged_transactions {
             change(&mut total, 0, record(&Record::ActiveStage(key.clone()))?)?;
         }
-        if let Some(control) = &state.lifecycle_control {
-            for (id, intent) in &control.intents {
-                change(&mut total, 0, record(&Record::Intent(*id, intent.clone()))?)?;
-            }
-            for (id, value) in &control.changes {
-                change(
-                    &mut total,
-                    0,
-                    record(&Record::ControlChange(*id, value.clone()))?,
-                )?;
-            }
-        }
+        change(&mut total, 0, shared.control_records)?;
         for (key, target) in &state.target_lifecycle {
             change(
                 &mut total,
@@ -581,8 +778,11 @@ impl SnapshotAccounting {
         Ok(total)
     }
     pub fn fits(&self, state: &TenantState) -> Result<bool> {
+        self.fits_bytes(state, self.bytes(state)?)
+    }
+    fn fits_bytes(&self, state: &TenantState, bytes: usize) -> Result<bool> {
         let headroom = snapshot_headroom(state)?;
-        Ok((self.bytes(state)? as u64)
+        Ok((bytes as u64)
             .checked_add(20 - state.revision.to_string().len() as u64)
             .and_then(|n| n.checked_add(headroom))
             .is_some_and(|n| n <= state.limits.max_snapshot_bytes))
@@ -646,5 +846,127 @@ mod cold_document_accounting_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shared_accounting_tests {
+    use super::*;
+
+    fn canonical_bytes(state: &TenantState) -> usize {
+        let mut bytes = 64;
+        for kind in 0..crate::snapshot_codec::RECORD_KINDS {
+            // These external point tables are empty in this metadata fixture.
+            if matches!(kind, 21 | 22 | 24) {
+                continue;
+            }
+            for row in crate::snapshot_codec::records(state, kind, None).unwrap() {
+                bytes += record(&row.unwrap()).unwrap();
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn completion_checks_the_projected_header_record_cap_before_the_total() {
+        let mut state = crate::snapshot_codec::recovery_tests::coordinator();
+        state.limits.max_snapshot_bytes = 1 << 30;
+        let mut accounting = SnapshotAccounting::rebuild(&state).unwrap();
+        let metadata = accounting.shared.as_mut().unwrap();
+        // Model a cached completion whose policy makes the header exceed one
+        // record while the whole tenant would still fit its 1 GiB budget.
+        metadata.completion = Some(CompletionSizes {
+            policy: 32 << 20,
+            control_header: metadata.control_header.unwrap(),
+            control_records: metadata.control_records,
+            control: 0,
+        });
+        assert_eq!(
+            accounting.fits_completion(&state, &state).unwrap_err().code,
+            ErrorCode::QuotaExceeded
+        );
+    }
+
+    #[test]
+    fn unchanged_large_metadata_is_shared_and_measured_only_once() {
+        let mut state = crate::snapshot_codec::recovery_tests::coordinator();
+        state.collections.insert(
+            "docs".into(),
+            CollectionState {
+                definition: Arc::new(CollectionDefinition {
+                    name: "docs".into(),
+                    schema: serde_json::json!({"type":"object", "description":"x".repeat(1 << 20)}),
+                    indexes: vec![],
+                    retention_class: CollectionRetentionClass::Operational,
+                    write_mode: CollectionWriteMode::Mutable,
+                    strict_read_audit: false,
+                }),
+                data_epoch: 9,
+                documents: Default::default(),
+                archived_documents: Default::default(),
+                archived_document_bytes: 0,
+            },
+        );
+        // The cache itself owns no allocation, including for Control's future
+        // completion. Publishing it cannot retain an uncharged metadata clone.
+        assert!(!std::mem::needs_drop::<SnapshotAccounting>());
+        let owners = (
+            Arc::strong_count(&state.policy),
+            Arc::strong_count(state.lifecycle_control.as_ref().unwrap()),
+        );
+        let accounting = SnapshotAccounting::rebuild(&state).unwrap();
+        assert_eq!(
+            owners,
+            (
+                Arc::strong_count(&state.policy),
+                Arc::strong_count(state.lifecycle_control.as_ref().unwrap())
+            )
+        );
+        let mut next = state.clone();
+        assert!(Arc::ptr_eq(&state.policy, &next.policy));
+        assert!(Arc::ptr_eq(&state.restore_lineage, &next.restore_lineage));
+        assert!(Arc::ptr_eq(
+            state.lifecycle_control.as_ref().unwrap(),
+            next.lifecycle_control.as_ref().unwrap()
+        ));
+        assert!(Arc::ptr_eq(
+            &state.collections["docs"].definition,
+            &next.collections["docs"].definition
+        ));
+        next.revision = 12345;
+        next.collections.get_mut("docs").unwrap().data_epoch = 8;
+        let measured = SHARED_MEASUREMENTS.with(|count| count.get());
+        let updated = accounting
+            .updated(&state, &next, &BTreeMap::new(), &BTreeSet::new())
+            .unwrap();
+        assert_eq!(updated.bytes(&next).unwrap(), canonical_bytes(&next));
+        updated.fits(&next).unwrap();
+        assert_eq!(SHARED_MEASUREMENTS.with(|count| count.get()), measured);
+
+        let before = next.clone();
+        Arc::make_mut(&mut next.policy).strict_read_audit = true;
+        Arc::make_mut(&mut next.collections.get_mut("docs").unwrap().definition).schema =
+            serde_json::json!({"type":"object","title":"changed"});
+        Arc::make_mut(next.lifecycle_control.as_mut().unwrap()).retired = true;
+        let changed = updated
+            .updated(&before, &next, &BTreeMap::new(), &BTreeSet::new())
+            .unwrap();
+        assert_eq!(changed.bytes(&next).unwrap(), canonical_bytes(&next));
+        assert_ne!(
+            updated.bytes(&before).unwrap(),
+            changed.bytes(&next).unwrap()
+        );
+        assert!(!state.policy.strict_read_audit);
+        assert_eq!(
+            state.collections["docs"].definition.schema["description"]
+                .as_str()
+                .unwrap()
+                .len(),
+            1 << 20
+        );
+        // Arc serialization still emits the original value, with no wrapper.
+        let encoded = serde_json::to_vec(&next).unwrap();
+        let decoded: TenantState = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), encoded);
     }
 }

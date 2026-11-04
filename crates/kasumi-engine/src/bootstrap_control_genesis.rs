@@ -174,7 +174,7 @@ impl ControlGenesis {
         state.collections.insert(
             "topology".into(),
             CollectionState {
-                definition: ControlPlane::topology_definition(),
+                definition: ControlPlane::topology_definition().into(),
                 data_epoch: 1,
                 documents: imbl::OrdMap::from_iter([(
                     "current".to_owned(),
@@ -206,17 +206,17 @@ impl ControlGenesis {
             installation,
         } = &self.lifecycle
         {
-            state.lifecycle_control = Some(LifecycleControlState {
+            state.lifecycle_control = Some(std::sync::Arc::new(LifecycleControlState {
                 installation: installation.clone(),
                 installation_command_id: *command_id,
                 installation_revision: 1,
                 installation_policy_epoch: state.policy_epoch,
-                installation_policy: state.policy.clone(),
+                installation_policy: Policy::clone(&state.policy),
                 retired: false,
                 pending_change: None,
                 intents: BTreeMap::new(),
                 changes: BTreeMap::new(),
-            });
+            }));
         }
         Ok(())
     }

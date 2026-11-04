@@ -424,6 +424,7 @@ fn text_engine(max_snapshot_bytes: u64) -> CodecFixture {
     let engine = engine(fixture_memory(), max_snapshot_bytes);
     let mut definition = engine.generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.indexes = vec![
         IndexDefinition {
@@ -697,7 +698,10 @@ fn revision_only_audit_exhaustion_waits_for_publication() {
         document_sources: std::sync::OnceLock::new(),
         _read_reservations: vec![],
     })));
-    let input = command(Operation::SetPolicy(previous.state.policy.clone()), 2);
+    let input = command(
+        Operation::SetPolicy(previous.state.policy.as_ref().clone()),
+        2,
+    );
     let mut failed = ObservingPublisher::new(&engine, true);
     fixture_publish(&engine, 2, &input, &mut failed).unwrap_err();
     let outcome: Result<WriteReceipt> =

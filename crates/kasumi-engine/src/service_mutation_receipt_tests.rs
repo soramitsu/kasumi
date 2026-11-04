@@ -212,7 +212,7 @@ async fn receipt_audit_preserves_unrestricted_and_missing_receipt_behavior() {
         revision
     );
 
-    let mut policy = fixture.db.engine.generation().unwrap().state.policy.clone();
+    let mut policy = Policy::clone(&fixture.db.engine.generation().unwrap().state.policy);
     policy.strict_read_audit = true;
     fixture
         .db
@@ -335,7 +335,7 @@ async fn receipt_audit_long_original_names_survive_lowered_command_bytes() {
     let fixture = CredentialFixture::new().await;
     let mut context = fixture.context.clone();
     context.principal = "p".repeat(256);
-    let mut policy = fixture.db.engine.generation().unwrap().state.policy.clone();
+    let mut policy = Policy::clone(&fixture.db.engine.generation().unwrap().state.policy);
     policy.grants.push(Grant {
         principal: context.principal.clone(),
         collection: None,

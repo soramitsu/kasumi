@@ -378,8 +378,13 @@ impl RetirementLogSeed {
 #[serde(deny_unknown_fields)]
 pub enum RaftCommand {
     Application(crate::ApplicationPayload),
-    Retirement { application: Vec<u8>, seed: Vec<u8> },
-    Custody(Vec<u8>),
+    Retirement {
+        #[serde(with = "crate::application_payload::peer_bytes")]
+        application: Vec<u8>,
+        #[serde(with = "crate::application_payload::peer_bytes")]
+        seed: Vec<u8>,
+    },
+    Custody(#[serde(with = "crate::application_payload::peer_bytes")] Vec<u8>),
 }
 impl RaftCommand {
     pub fn application(bytes: Vec<u8>) -> Self {

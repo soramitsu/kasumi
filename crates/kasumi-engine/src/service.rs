@@ -1204,6 +1204,14 @@ impl std::ops::Deref for ResponseDatabase<'_> {
 /// definite, retryable `ResourceExhausted`. As `AuditUnavailable`, which the
 /// transport reports as UNAVAILABLE, clients resent the read until their
 /// deadline and reported DeadlineExceeded instead.
+fn release_action(kind: &str) -> Action {
+    match kind {
+        "receipt" | "mutation_capacity_admission" => Action::Write,
+        "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
+        _ => Action::Read,
+    }
+}
+
 fn read_audit_failure(error: Error) -> Error {
     if matches!(
         error.code,
@@ -2304,6 +2312,7 @@ impl Database {
         let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_WRITE_TIMEOUT;
         input.check_admission(self.admission())?;
         let operation = &input.operation;
+        context.validate_request_id()?;
         context.authorization.check_live()?;
         self.materialization_access()?;
         self.engine.check_operation_access(operation)?;
@@ -2934,11 +2943,7 @@ impl Database {
             .map_err(read_audit_failure)?;
         }
         self.access()?;
-        let action = match kind {
-            "receipt" | "mutation_capacity_admission" => Action::Write,
-            "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
-            _ => Action::Read,
-        };
+        let action = release_action(kind);
         if collection.is_none() {
             self.engine
                 .authorize_discovery(context, action, Some(policy_epoch))
@@ -2946,6 +2951,114 @@ impl Database {
             self.engine
                 .authorize_release(context, collection, action, policy_epoch)
         }
+    }
+
+    /// `release_event` for many collections, each paired with whether its
+    /// release is strict. Strict events share as few durable audit commands as
+    /// a batch admits: at most MAX_SCHEMA_CHANGESET_COLLECTIONS events within
+    /// the tenant's current command envelope. Every collection is rechecked
+    /// after the last command, so a policy change while one was queued cannot
+    /// release it.
+    async fn release_collections(
+        &self,
+        context: &RequestContext,
+        collections: &[(&str, bool)],
+        revision: u64,
+        policy_epoch: u64,
+        kind: &str,
+    ) -> Result<()> {
+        // Keep the tuple borrow independent of the collection lifetime: this
+        // iterator is retained across audit submission awaits in Send futures.
+        fn strict_collection<'a>((collection, strict): &(&'a str, bool)) -> Option<&'a str> {
+            strict.then_some(*collection)
+        }
+        let mut strict = collections.iter().filter_map(strict_collection).peekable();
+        while strict.peek().is_some() {
+            let max_bytes = self
+                .engine
+                .generation()?
+                .state
+                .limits
+                .max_batch_bytes
+                .saturating_add(64 << 10);
+            let command_failure =
+                |_| Error::new(ErrorCode::InvalidArgument, "command encoding failed");
+            // The batch's JSON array grows by each event plus one comma.
+            let mut bytes = preflight_command_len(context, &Operation::AuditBatch(Vec::new()))
+                .map_err(command_failure)?;
+            // Charge the owned event array and its strings before allocation.
+            // The command submission acquires its own charge before retaining
+            // any copies beyond this release future.
+            let count = strict
+                .clone()
+                .take(MAX_SCHEMA_CHANGESET_COLLECTIONS)
+                .count();
+            let fixed = std::mem::size_of::<AuditEvent>()
+                .saturating_add(context.principal.len())
+                .saturating_add(context.request_id.len())
+                .saturating_add(kind.len())
+                .saturating_add(36 + "authorized_release".len());
+            let event_bytes = strict
+                .clone()
+                .take(count)
+                .try_fold(4096u64, |total, collection| {
+                    let bytes = fixed.saturating_add(collection.len()) as u64;
+                    // Double backing sizes and per-allocation slack, including all
+                    // six String allocations and the event array.
+                    total.checked_add(bytes.saturating_mul(2).saturating_add(7 * 64))
+                })
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "release audit allocation overflow",
+                    )
+                })?;
+            let _events_workspace = self.admission().reserve_resident(event_bytes)?;
+            let mut events = Vec::with_capacity(count);
+            while events.len() < MAX_SCHEMA_CHANGESET_COLLECTIONS
+                && let Some(collection) = strict.peek()
+            {
+                let event = AuditEvent {
+                    event_id: uuid::Uuid::new_v4().to_string(),
+                    principal: context.principal.clone(),
+                    action: kind.into(),
+                    request_id: context.request_id.clone(),
+                    timestamp_ms: now_ms()?,
+                    data_revision: Some(revision),
+                    outcome: "authorized_release".into(),
+                    collection: Some((*collection).into()),
+                };
+                let grown = encoded_len(&event)
+                    .map_err(command_failure)?
+                    .checked_add(usize::from(!events.is_empty()))
+                    .and_then(|event| bytes.checked_add(event))
+                    .filter(|grown| *grown <= max_bytes);
+                let Some(grown) = grown else {
+                    if events.is_empty() {
+                        return Err(Error::new(
+                            ErrorCode::ResourceExhausted,
+                            "release audit event exceeds command budget",
+                        ));
+                    }
+                    break;
+                };
+                bytes = grown;
+                events.push(event);
+                strict.next();
+            }
+            admitted_release_future(self.admission(), || {
+                self.submit(context.clone(), Operation::AuditBatch(events))
+            })
+            .await
+            .map_err(read_audit_failure)?;
+        }
+        self.access()?;
+        let action = release_action(kind);
+        for (collection, _) in collections {
+            self.engine
+                .authorize_release(context, Some(collection), action, policy_epoch)?;
+        }
+        Ok(())
     }
 
     pub async fn collections(&self, context: &RequestContext) -> Result<Vec<CollectionDefinition>> {
@@ -2985,7 +3098,7 @@ impl Database {
                     .policy
                     .allows(context, Some(&c.definition.name), Action::Read)
             })
-            .map(|c| c.definition.clone())
+            .map(|c| CollectionDefinition::clone(&c.definition))
             .collect();
         if crate::accounting::encoded_len(&definitions)? > generation.state.limits.max_result_bytes
         {
@@ -3003,17 +3116,17 @@ impl Database {
             self.release_event(context, None, revision, strict, epoch, "discovery")
                 .await?;
         }
-        for definition in &definitions {
-            self.release(
-                context,
-                &definition.name,
-                revision,
-                strict || definition.strict_read_audit,
-                epoch,
-            )
+        let releases = definitions
+            .iter()
+            .map(|definition| {
+                (
+                    definition.name.as_str(),
+                    strict || definition.strict_read_audit,
+                )
+            })
+            .collect::<Vec<_>>();
+        self.release_collections(context, &releases, revision, epoch, "read")
             .await?;
-        }
-        self.access()?;
         Ok(definitions)
     }
 

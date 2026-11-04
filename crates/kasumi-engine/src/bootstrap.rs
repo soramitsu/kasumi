@@ -180,7 +180,7 @@ pub async fn prepare_replicated_restore(
     let bootstrap = ReplicatedBootstrap {
         genesis: ReplicatedGenesis::Application,
         incarnation: replica.incarnation.to_string(),
-        initial_policy: original.policy.clone(),
+        initial_policy: Policy::clone(&original.policy),
         initial_limits: original.limits.clone(),
         voters: replica.voters,
     };

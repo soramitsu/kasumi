@@ -164,7 +164,8 @@ async fn point_memory_public_hot_outputs_release_strict_slots_and_outlive_shutdo
     assert_eq!(earlier.id, stored.id);
     assert_eq!(earlier.version, stored.version);
     assert_eq!(earlier.body, json!({"value": 7}));
-    let mut definition = generation.state.collections["docs"].definition.clone();
+    let mut definition =
+        CollectionDefinition::clone(&generation.state.collections["docs"].definition);
     definition.strict_read_audit = true;
     drop(generation);
     fixture
@@ -386,6 +387,7 @@ async fn point_memory_cancelled_public_outputs_retain_admitted_audit_until_compl
         let fixture = CredentialFixture::new().await;
         let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
             .definition
+            .as_ref()
             .clone();
         definition.strict_read_audit = true;
         fixture

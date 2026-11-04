@@ -476,64 +476,232 @@ fn scanned_scalar(value: Option<&Value>, kind: Option<ScalarType>) -> Option<Sca
     scalar(value, kind).ok()
 }
 
-pub(crate) fn evaluate(
-    test: &Test<'_>,
-    actual: Option<&Value>,
-    kind: Option<ScalarType>,
-    cancellation: &QueryCancellation,
-) -> Result<bool> {
-    if let Test::Exists(exists) = test {
-        return Ok(actual.is_some() == *exists);
+/// Constants belong to the plan, so decimal parsing and string allocation
+/// happen once per leaf rather than once per visited document.
+#[derive(Debug)]
+enum PreparedTest {
+    Eq(Scalar),
+    In(BTreeSet<Scalar>),
+    Range {
+        lower: Bound<Scalar>,
+        upper: Bound<Scalar>,
+    },
+    Exists(bool),
+    Contains(Scalar),
+}
+impl PreparedTest {
+    fn new(test: &Test<'_>, kind: Option<ScalarType>) -> Result<Self> {
+        #[cfg(test)]
+        PREPARED_LEAVES.with(|count| count.set(count.get() + 1));
+        Ok(match test {
+            Test::Eq(value) => Self::Eq(scalar(Some(value), kind)?),
+            Test::Contains(value) => Self::Contains(scalar(Some(value), kind)?),
+            Test::In(values) => Self::In(
+                values
+                    .iter()
+                    .map(|v| scalar(Some(v), kind))
+                    .collect::<Result<_>>()?,
+            ),
+            Test::Range { lower, upper } => Self::Range {
+                lower: scalar_bound(*lower, kind)?,
+                upper: scalar_bound(*upper, kind)?,
+            },
+            Test::Exists(value) => Self::Exists(*value),
+        })
     }
-    if let Test::Contains(value) = test {
-        let Some(Value::Array(elements)) = actual else {
-            return Ok(false);
-        };
-        let expected = scalar(Some(value), kind)?;
-        for element in elements {
-            cancellation.check()?;
-            if scanned_scalar(Some(element), kind).as_ref() == Some(&expected) {
-                return Ok(true);
-            }
+    fn evaluate(
+        &self,
+        actual: Option<&Value>,
+        kind: Option<ScalarType>,
+        cancellation: &QueryCancellation,
+    ) -> Result<bool> {
+        cancellation.check()?;
+        if let Self::Exists(exists) = self {
+            return Ok(actual.is_some() == *exists);
         }
-        return Ok(false);
-    }
-    if actual.is_none() {
-        return Ok(false);
-    }
-    let Some(actual) = scanned_scalar(actual, kind) else {
-        return Ok(false);
-    };
-    match test {
-        Test::Eq(value) => Ok(actual == scalar(Some(value), kind)?),
-        Test::In(values) => {
-            for value in *values {
+        if let Self::Contains(expected) = self {
+            let Some(Value::Array(elements)) = actual else {
+                return Ok(false);
+            };
+            for element in elements {
                 cancellation.check()?;
-                if actual == scalar(Some(value), kind)? {
+                if scanned_scalar(Some(element), kind).as_ref() == Some(expected) {
                     return Ok(true);
                 }
             }
-            Ok(false)
+            return Ok(false);
         }
-        Test::Range { lower, upper } => {
-            if matches!(actual, Scalar::Missing | Scalar::Null) {
-                return Ok(false);
-            }
-            let (lower, upper) = (scalar_bound(*lower, kind)?, scalar_bound(*upper, kind)?);
-            for bound in [&lower, &upper] {
-                if let Bound::Included(key) | Bound::Excluded(key) = bound
-                    && std::mem::discriminant(key) != std::mem::discriminant(&actual)
-                {
+        if actual.is_none() {
+            return Ok(false);
+        }
+        let Some(actual) = scanned_scalar(actual, kind) else {
+            return Ok(false);
+        };
+        Ok(match self {
+            Self::Eq(expected) => actual == *expected,
+            Self::In(expected) => expected.contains(&actual),
+            Self::Range { lower, upper } => {
+                if matches!(actual, Scalar::Missing | Scalar::Null) {
                     return Ok(false);
                 }
+                for bound in [lower, upper] {
+                    if let Bound::Included(key) | Bound::Excluded(key) = bound
+                        && std::mem::discriminant(key) != std::mem::discriminant(&actual)
+                    {
+                        return Ok(false);
+                    }
+                }
+                (lower.as_ref(), upper.as_ref()).contains(&actual)
             }
-            Ok((lower, upper).contains(&actual))
+            Self::Exists(_) | Self::Contains(_) => unreachable!("handled above"),
+        })
+    }
+}
+#[cfg(test)]
+thread_local! { static PREPARED_LEAVES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(crate) fn prepared_leaves_for_test() -> usize {
+    PREPARED_LEAVES.with(|count| count.get())
+}
+
+/// A subtree containing only scanned fields can borrow each body once even
+/// when several OR/NOT leaves inspect it. Indexed conjuncts still narrow the
+/// input before this plan runs, retaining the existing candidate budget.
+enum Scan<'a> {
+    All,
+    Leaf(&'a str, PreparedTest),
+    And(Vec<Self>),
+    Or(Vec<Self>),
+    Not(Box<Self>),
+}
+impl<'a> Scan<'a> {
+    fn prepare(node: &Node<'a>, fields: &BTreeMap<String, FieldIndex>) -> Result<Option<Self>> {
+        Ok(match node {
+            Node::All => Some(Self::All),
+            Node::Leaf { path, test } if !fields.contains_key(*path) => {
+                Some(Self::Leaf(path, PreparedTest::new(test, None)?))
+            }
+            Node::Leaf { .. } => None,
+            Node::Not(child) => {
+                Self::prepare(child, fields)?.map(|child| Self::Not(Box::new(child)))
+            }
+            Node::And(children) | Node::Or(children) => {
+                let mut prepared = Vec::with_capacity(children.len());
+                for child in children {
+                    let Some(child) = Self::prepare(child, fields)? else {
+                        return Ok(None);
+                    };
+                    prepared.push(child);
+                }
+                Some(if matches!(node, Node::And(_)) {
+                    Self::And(prepared)
+                } else {
+                    Self::Or(prepared)
+                })
+            }
+        })
+    }
+    fn has_leaf(&self) -> bool {
+        match self {
+            Self::All => false,
+            Self::Leaf(..) => true,
+            Self::Not(child) => child.has_leaf(),
+            Self::And(children) | Self::Or(children) => children.iter().any(Self::has_leaf),
         }
-        Test::Exists(_) | Test::Contains(_) => unreachable!("handled above"),
+    }
+    fn evaluate(&self, document: &Value, cancellation: &QueryCancellation) -> Result<bool> {
+        cancellation.check()?;
+        match self {
+            Self::All => Ok(true),
+            Self::Leaf(path, test) => test.evaluate(
+                crate::allocation::pointer(document, path),
+                None,
+                cancellation,
+            ),
+            Self::Not(child) => Ok(!child.evaluate(document, cancellation)?),
+            Self::And(children) => {
+                for child in children {
+                    if !child.evaluate(document, cancellation)? {
+                        return Ok(false);
+                    }
+                }
+                Ok(true)
+            }
+            Self::Or(children) => {
+                for child in children {
+                    if child.evaluate(document, cancellation)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+        }
     }
 }
 
 impl Structured {
+    /// Extra owned constants and plan nodes retained by prepared scans. This
+    /// is admitted before preparing them; decimal internals keep the existing
+    /// explicit provisional allowance used by sorted query scalars.
+    pub(crate) fn prepared_bytes(&self, node: &Node<'_>) -> Result<u64> {
+        use crate::allocation::{add, object_entry_bytes, string_clone_bytes, vec_bytes};
+        let value_bytes = |value: &Value, kind: Option<ScalarType>| -> Result<u64> {
+            match value {
+                Value::Number(_) => Ok(crate::scalar::PROVISIONAL_DECIMAL_KEY_BYTES),
+                Value::String(_) if kind == Some(ScalarType::Decimal) => {
+                    Ok(crate::scalar::PROVISIONAL_DECIMAL_KEY_BYTES)
+                }
+                Value::String(text) => string_clone_bytes(text),
+                _ => Ok(0),
+            }
+        };
+        match node {
+            Node::All => Ok(0),
+            Node::And(children) | Node::Or(children) => {
+                let mut bytes = vec_bytes::<Scan<'_>>(children.len())?;
+                for child in children {
+                    bytes = add(bytes, self.prepared_bytes(child)?)?;
+                }
+                Ok(bytes)
+            }
+            Node::Not(child) => add(vec_bytes::<Scan<'_>>(1)?, self.prepared_bytes(child)?),
+            Node::Leaf { path, test } => {
+                let kind = self.fields.get(*path).map(|index| index.kind);
+                if kind.is_some() && !matches!(test, Test::Range { .. }) {
+                    return Ok(0);
+                }
+                let bytes = match test {
+                    Test::Eq(value) | Test::Contains(value) => value_bytes(value, kind)?,
+                    Test::In(values) => {
+                        let mut bytes = 0;
+                        for value in *values {
+                            // One complete BTree node per value bounds unused
+                            // slots as in the JSON object allocation policy.
+                            bytes = add(
+                                bytes,
+                                add(object_entry_bytes()?, value_bytes(value, kind)?)?,
+                            )?;
+                        }
+                        bytes
+                    }
+                    Test::Range { lower, upper } => {
+                        let mut bytes = 0;
+                        for value in [bound_value(lower), bound_value(upper)]
+                            .into_iter()
+                            .flatten()
+                        {
+                            bytes = add(bytes, value_bytes(value, kind)?)?;
+                        }
+                        bytes
+                    }
+                    Test::Exists(_) => 0,
+                };
+                add(bytes, crate::scalar::PROVISIONAL_DECIMAL_SCRATCH_BYTES)
+            }
+        }
+    }
+
     /// Type-check every leaf against declared indexes before any evaluation.
     pub(crate) fn validate(&self, node: &Node<'_>, allow_scan: bool) -> Result<()> {
         match node {
@@ -647,16 +815,36 @@ impl Structured {
             .collect())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn candidates<S: DocumentSource + ?Sized>(
         &self,
         source: &S,
         node: &Node<'_>,
         universe: &IdSet,
         allow_scan: bool,
+        allow_index_reads: bool,
         cap: usize,
         cancellation: &QueryCancellation,
     ) -> ReadResult<IdSet, S::Failure> {
         cancellation.check()?;
+        if allow_scan
+            && matches!(node, Node::And(_) | Node::Or(_) | Node::Not(_))
+            && let Some(scan) = Scan::prepare(node, &self.fields)?
+            && scan.has_leaf()
+        {
+            check_size(universe.len(), cap)?;
+            let mut selected = IdSet::new();
+            for id in universe {
+                let matched =
+                    document_source::with_live(source, id, None, cancellation, |document| {
+                        scan.evaluate(&document.body, cancellation)
+                    })?;
+                if matched {
+                    selected.insert(id.clone());
+                }
+            }
+            return Ok(selected);
+        }
         match node {
             Node::All => {
                 check_size(universe.len(), cap)?;
@@ -671,6 +859,7 @@ impl Structured {
                         &children[position],
                         input,
                         allow_scan,
+                        allow_index_reads,
                         cap,
                         cancellation,
                     )?;
@@ -685,9 +874,15 @@ impl Structured {
             Node::Or(children) => {
                 let mut candidates = IdSet::new();
                 for child in children {
-                    for id in
-                        self.candidates(source, child, universe, allow_scan, cap, cancellation)?
-                    {
+                    for id in self.candidates(
+                        source,
+                        child,
+                        universe,
+                        allow_scan,
+                        allow_index_reads,
+                        cap,
+                        cancellation,
+                    )? {
                         cancellation.check()?;
                         candidates.insert(id);
                     }
@@ -703,13 +898,58 @@ impl Structured {
                 // The child bounds its own candidates and any documents it
                 // scans. Excluded IDs are a subset of the universe, so the
                 // complement's size is known before it is built.
-                let excluded =
-                    self.candidates(source, child, universe, allow_scan, cap, cancellation)?;
+                let excluded = self.candidates(
+                    source,
+                    child,
+                    universe,
+                    allow_scan,
+                    allow_index_reads,
+                    cap,
+                    cancellation,
+                )?;
                 check_size(universe.len().saturating_sub(excluded.len()), cap)?;
                 Ok(complement(universe, &excluded, cancellation)?)
             }
             Node::Leaf { path, test } => {
                 let kind = self.field_kind(path, allow_scan)?;
+                // A selective preceding conjunct is cheaper to test directly
+                // than walking a broad range's every posting. Archived rows
+                // already retain their indexed scalar, so no archive fetch is
+                // introduced. The outer BoundSource verifies each loan.
+                if allow_index_reads
+                    && kind.is_some()
+                    && matches!(test, Test::Range { .. })
+                    && !universe.ptr_eq(&self.ids)
+                    && universe.len().saturating_mul(8) < self.ids.len()
+                    && self
+                        .estimate(node, self.ids.len(), universe.len())?
+                        .is_some_and(|size| size > universe.len())
+                {
+                    let prepared = PreparedTest::new(test, kind)?;
+                    let mut selected = IdSet::new();
+                    for id in universe {
+                        let matched = source.with_record(id, None, cancellation, |record| {
+                            cancellation.check()?;
+                            let record = record.ok_or_else(|| {
+                                Error::new(
+                                    ErrorCode::Corruption,
+                                    "index/document generation mismatch",
+                                )
+                            })?;
+                            if matches!(record, Record::Live(document) if document.id != *id) {
+                                return Err(Error::new(
+                                    ErrorCode::Corruption,
+                                    "source document identity/version differs",
+                                ));
+                            }
+                            prepared.evaluate(record_value(record, path), kind, cancellation)
+                        })?;
+                        if matched {
+                            selected.insert(id.clone());
+                        }
+                    }
+                    return Ok(selected);
+                }
                 match self.fields.get(*path) {
                     Some(index) => Ok(index.candidates(
                         test,
@@ -720,6 +960,7 @@ impl Structured {
                     )?),
                     None => {
                         check_size(universe.len(), cap)?;
+                        let prepared = PreparedTest::new(test, kind)?;
                         let mut selected = IdSet::new();
                         for id in universe {
                             let matched = document_source::with_live(
@@ -728,8 +969,7 @@ impl Structured {
                                 None,
                                 cancellation,
                                 |document| {
-                                    evaluate(
-                                        test,
+                                    prepared.evaluate(
                                         crate::allocation::pointer(&document.body, path),
                                         kind,
                                         cancellation,

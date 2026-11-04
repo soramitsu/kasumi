@@ -58,7 +58,7 @@ impl Database {
             revision: generation.state.revision,
             policy_epoch: generation.state.policy_epoch,
             schema_epoch: generation.state.schema_epoch,
-            policy: generation.state.policy.clone(),
+            policy: Policy::clone(&generation.state.policy),
             limits: generation.state.limits.clone(),
         };
         if crate::accounting::encoded_len(&snapshot)? > MAX_POLICY_LIMITS_SNAPSHOT_BYTES {

@@ -258,7 +258,7 @@ pub(crate) fn validate_collection_fixture(
     documents: &imbl::OrdMap<String, Arc<DocumentSlot>>,
 ) -> Result<()> {
     let collection = CollectionState {
-        definition: definition.clone(),
+        definition: definition.clone().into(),
         data_epoch: 0,
         documents: documents.clone(),
         archived_documents: Default::default(),

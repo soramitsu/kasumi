@@ -718,6 +718,7 @@ async fn lineage_read_keeps_original_expiry_and_current_collection_policy_at_rel
     let fixture = CredentialFixture::new().await;
     let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.strict_read_audit = true;
     fixture
@@ -802,5 +803,66 @@ async fn lineage_read_keeps_original_expiry_and_current_collection_policy_at_rel
             .await
             .is_err()
     );
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn oversized_request_ids_are_refused_before_any_proposal() {
+    let fixture = CredentialFixture::new().await;
+    // A 64 KiB request ID alone overfills its audit event. Before admission
+    // bounded it, the ordered apply failed and no later write could apply.
+    for length in [MAX_REQUEST_ID_BYTES + 1, MAX_AUDIT_EVENT_BYTES] {
+        let context = RequestContext {
+            request_id: "r".repeat(length),
+            ..fixture.context.clone()
+        };
+        let refused = fixture
+            .db
+            .mutate(context.clone(), credential_batch("oversized"))
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+        // Internal proposals such as strict release audits reuse the
+        // caller's context without passing the API's authorization again.
+        let refused = fixture
+            .db
+            .submit(
+                context.clone(),
+                Operation::Mutate(credential_batch("oversized")),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+        let refused = fixture
+            .db
+            .get(&context, "docs", "oversized")
+            .await
+            .unwrap_err();
+        assert_eq!(refused.code, ErrorCode::InvalidArgument);
+    }
+    assert!(
+        fixture
+            .db
+            .operation_receipt(&fixture.context, "oversized")
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let bounded = RequestContext {
+        request_id: "r".repeat(MAX_REQUEST_ID_BYTES),
+        ..fixture.context.clone()
+    };
+    fixture
+        .db
+        .mutate(bounded.clone(), credential_batch("bounded"))
+        .await
+        .unwrap();
+    let generation = fixture.db.engine().generation().unwrap();
+    let audit = generation.state.audits.back().unwrap();
+    assert_eq!(
+        (audit.action.as_str(), audit.request_id.as_str()),
+        ("mutation", bounded.request_id.as_str())
+    );
+    drop(generation);
     fixture.close().await;
 }

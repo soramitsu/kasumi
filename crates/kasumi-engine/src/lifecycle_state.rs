@@ -121,17 +121,17 @@ fn apply_candidate(
                 }
                 return Err(conflict("control installation is immutable"));
             }
-            state.lifecycle_control = Some(LifecycleControlState {
+            state.lifecycle_control = Some(Arc::new(LifecycleControlState {
                 installation: installation.clone(),
                 installation_command_id: *command_id,
                 installation_revision: revision,
                 installation_policy_epoch: state.policy_epoch,
-                installation_policy: state.policy.clone(),
+                installation_policy: Policy::clone(&state.policy),
                 retired: false,
                 pending_change: None,
                 intents: BTreeMap::new(),
                 changes: BTreeMap::new(),
-            });
+            }));
         }
         LifecycleControlCommand::CommitIntent(request) => {
             request.validate()?;
@@ -139,6 +139,7 @@ fn apply_candidate(
             let control = state
                 .lifecycle_control
                 .as_mut()
+                .map(Arc::make_mut)
                 .ok_or_else(|| conflict("lifecycle control is not installed"))?;
             if let Some(retained) = control.intents.get(&request.command_id) {
                 if retained.request_sha256 != request_sha256 {
@@ -225,6 +226,7 @@ fn apply_candidate(
             let control = state
                 .lifecycle_control
                 .as_mut()
+                .map(Arc::make_mut)
                 .ok_or_else(|| conflict("lifecycle control is not installed"))?;
             if let Some(retained) = control.changes.get(&request.command_id) {
                 if retained.request_sha256 != request_sha256 {
@@ -304,11 +306,12 @@ fn apply_candidate(
             kasumi_serving::verify_control_epoch_stops(&change, &request.stops).map_err(|_| {
                 conflict("complete exact installed authority stop proofs are required")
             })?;
-            state.policy = change.request.candidate.policy.clone();
+            state.policy = Arc::new(change.request.candidate.policy.clone());
             state.policy_epoch = next_policy_epoch(state.policy_epoch)?;
             let control = state
                 .lifecycle_control
                 .as_mut()
+                .map(Arc::make_mut)
                 .expect("checked closed control");
             control.retired = change.request.candidate.retire_control;
             control.pending_change = None;
@@ -326,21 +329,55 @@ fn apply_candidate(
 
 /// Preserve exact completion headroom before acknowledging Begin and after
 /// every later audit. This reservation cannot be spent by unrelated commands.
-pub(crate) fn completion_fits(state: &TenantState) -> Result<bool> {
+pub(crate) fn completion_fits(
+    state: &TenantState,
+    accounting: &SnapshotAccounting,
+) -> Result<bool> {
     let Some(control) = &state.lifecycle_control else {
         return Ok(true);
     };
-    let Some(id) = control.pending_change else {
+    let Some(_) = control.pending_change else {
         return Ok(true);
     };
+    // Policy and lifecycle records are represented by cached size deltas;
+    // the transient state only simulates counters and the required audit.
+    let mut completed = state.clone();
+    completed.policy_epoch = next_policy_epoch(state.policy_epoch)?;
+    // Conservative full-width future administrative record, not caller capacity.
+    super::append_audit(
+        &mut completed,
+        AuditEvent {
+            // The event ID retains this exact incarnation and adds a future
+            // revision; JSON escaping of the prefix must be counted as well.
+            event_id: format!("{}:{}", state.incarnation, u64::MAX),
+            // Names allow quotes/backslashes but no controls: at most two
+            // encoded bytes per admitted byte. Request IDs allow controls,
+            // whose JSON escapes consume six bytes per admitted byte.
+            principal: "\"".repeat(256),
+            action: "lifecycle_control".into(),
+            request_id: "\0".repeat(MAX_REQUEST_ID_BYTES),
+            timestamp_ms: u64::MAX,
+            data_revision: Some(u64::MAX),
+            outcome: "committed".into(),
+            collection: None,
+        },
+    )?;
+    if completed.audit_retention.hot_bytes > completed.limits.audit_retention.hot_bytes {
+        return Ok(false);
+    }
+    accounting.fits_completion(state, &completed)
+}
+
+pub(crate) fn completed_metadata(
+    control: &LifecycleControlState,
+    id: uuid::Uuid,
+) -> Result<(Policy, LifecycleControlState)> {
     let change = control
         .changes
         .get(&id)
         .ok_or_else(|| conflict("pending control change absent"))?;
-    let mut completed = state.clone();
-    completed.policy = change.request.candidate.policy.clone();
-    completed.policy_epoch = next_policy_epoch(state.policy_epoch)?;
-    let closed = completed.lifecycle_control.as_mut().expect("checked");
+    let policy = change.request.candidate.policy.clone();
+    let mut closed = control.clone();
     closed.pending_change = None;
     closed.retired = change.request.candidate.retire_control;
     let future_stops = change
@@ -385,27 +422,7 @@ pub(crate) fn completion_fits(state: &TenantState) -> Result<bool> {
     let finished = closed.changes.get_mut(&id).expect("checked");
     finished.completed_revision = Some(u64::MAX);
     finished.completion_stops = Some(future_stops);
-    // Conservative full-width future administrative record, not caller capacity.
-    super::append_audit(
-        &mut completed,
-        AuditEvent {
-            event_id: "x".repeat(256),
-            principal: "x".repeat(256),
-            action: "lifecycle_control".into(),
-            request_id: "x".repeat(256),
-            timestamp_ms: u64::MAX,
-            data_revision: Some(u64::MAX),
-            outcome: "committed".into(),
-            collection: None,
-        },
-    )?;
-    if completed.audit_retention.hot_bytes > completed.limits.audit_retention.hot_bytes
-        || encoded_len(completed.lifecycle_control.as_ref().expect("checked"))?
-            > control.installation.max_state_bytes
-    {
-        return Ok(false);
-    }
-    SnapshotAccounting::rebuild(&completed)?.fits(&completed)
+    Ok((policy, closed))
 }
 
 pub(crate) fn validate(state: &TenantState) -> Result<()> {
@@ -486,7 +503,7 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
     if control.pending_change != pending
         || control.retired != retired
         || state.policy_epoch != epoch
-        || !same(&state.policy, policy)?
+        || !same(state.policy.as_ref(), policy)?
     {
         return Err(conflict(
             "current control policy is outside the closed transition history",

@@ -240,7 +240,7 @@ async fn materialize_origin(
     let bootstrap = ReplicatedBootstrap {
         genesis: crate::ReplicatedGenesis::Application,
         incarnation: replica.incarnation.to_string(),
-        initial_policy: verified.state.metadata().policy.clone(),
+        initial_policy: Policy::clone(&verified.state.metadata().policy),
         initial_limits: verified.state.metadata().limits.clone(),
         voters,
     };

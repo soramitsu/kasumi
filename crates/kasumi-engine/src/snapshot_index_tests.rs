@@ -142,14 +142,14 @@ fn collection(name: &str) -> Record {
     Record::Collection(
         name.into(),
         CollectionState {
-            definition: CollectionDefinition {
+            definition: std::sync::Arc::new(CollectionDefinition {
                 name: name.into(),
                 schema: json!({"type":"object"}),
                 indexes: vec![],
                 strict_read_audit: false,
                 retention_class: CollectionRetentionClass::Operational,
                 write_mode: CollectionWriteMode::Mutable,
-            },
+            }),
             documents: Default::default(),
             archived_documents: Default::default(),
             archived_document_bytes: 0,

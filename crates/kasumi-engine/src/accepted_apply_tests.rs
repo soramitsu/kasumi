@@ -268,7 +268,8 @@ fn accepted_apply_definition_change_retains_actual_old_and_new_owners() {
     let fixture = Fixture::new();
     fixture.create(false);
     let owner = fixture.lock();
-    let mut definition = owner.current().state.collections["docs"].definition.clone();
+    let mut definition =
+        CollectionDefinition::clone(&owner.current().state.collections["docs"].definition);
     definition.strict_read_audit = true;
     let prepared = fixture.prepare(&owner, 2, Operation::ReplaceCollection(definition));
     assert!(prepared.outcome.is_ok());

@@ -20,7 +20,7 @@ pub(crate) fn coordinator() -> TenantState {
     let mut state = crate::TenantEngine::new(
         crate::control::CONTROL_TENANT.into(),
         Uuid::new_v4().to_string(),
-        template.policy,
+        template.policy.as_ref().clone(),
         template.limits,
     )
     .unwrap()
@@ -50,17 +50,17 @@ pub(crate) fn coordinator() -> TenantState {
         max_state_bytes: 8 << 20,
     };
     installation.validate().unwrap();
-    state.lifecycle_control = Some(LifecycleControlState {
+    state.lifecycle_control = Some(std::sync::Arc::new(LifecycleControlState {
         installation: installation.clone(),
         installation_command_id: Uuid::new_v4(),
         installation_revision: 1,
         installation_policy_epoch: 1,
-        installation_policy: state.policy.clone(),
+        installation_policy: state.policy.as_ref().clone(),
         retired: false,
         pending_change: None,
         intents: Default::default(),
         changes: Default::default(),
-    });
+    }));
     let source = Uuid::new_v4();
     let target = Uuid::new_v4();
     let checkpoint = FullBackupCheckpoint {
@@ -899,7 +899,12 @@ fn signed_activation_acceptance_fixture() -> (
     installation.root = root.clone();
     installation.partitions = BTreeMap::from([(partition.key(), partition.clone())]);
     installation.validate().unwrap();
-    state.lifecycle_control.as_mut().unwrap().installation = installation.clone();
+    state
+        .lifecycle_control
+        .as_mut()
+        .map(std::sync::Arc::make_mut)
+        .unwrap()
+        .installation = installation.clone();
     let signing_generation = SigningGeneration {
         domain: SigningDomain {
             authority_id: partition.authority_id,
@@ -970,6 +975,7 @@ fn signed_activation_acceptance_fixture() -> (
     state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .insert(control_id, control_intent.clone());

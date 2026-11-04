@@ -51,7 +51,7 @@ fn state() -> TenantState {
     let mut state = engine.generation().unwrap().state.clone();
     state.revision = 3;
     state.collections.insert("docs".into(), CollectionState {
-        definition: CollectionDefinition {
+        definition: std::sync::Arc::new(CollectionDefinition {
             name: "docs".into(),
             write_mode: CollectionWriteMode::Mutable,
             retention_class: CollectionRetentionClass::Operational,
@@ -61,7 +61,7 @@ fn state() -> TenantState {
                 unique: true, text: None,
             }],
             strict_read_audit: false,
-        },
+        }),
         data_epoch: 3,
         documents: [
             ("a".to_owned(), document("a", 1, "alpha")),
@@ -305,7 +305,7 @@ fn explicit_schema_rebuild_and_removal_do_not_require_document_journals() {
     let indexes = build(&old).unwrap();
     let mut new = old.clone();
     let mut replacement = new.collections.remove("docs").unwrap();
-    replacement.definition.name = "new".into();
+    std::sync::Arc::make_mut(&mut replacement.definition).name = "new".into();
     new.collections.insert("new".into(), replacement);
     let updated = update(&indexes, &old, &new, &BTreeMap::new()).unwrap();
     assert_eq!(
@@ -320,11 +320,7 @@ fn explicit_schema_rebuild_and_removal_do_not_require_document_journals() {
         ["a", "c"]
     );
     let mut replacement = old.clone();
-    replacement
-        .collections
-        .get_mut("docs")
-        .unwrap()
-        .definition
+    std::sync::Arc::make_mut(&mut replacement.collections.get_mut("docs").unwrap().definition)
         .indexes
         .clear();
     update(&indexes, &old, &replacement, &BTreeMap::new()).unwrap();

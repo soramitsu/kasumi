@@ -394,7 +394,7 @@ impl TenantEngine {
         )?;
         if !crate::accounting::audit_fits(&next)
             || !accounting.fits(&next)?
-            || !lifecycle::completion_fits(&next)?
+            || !lifecycle::completion_fits(&next, &accounting)?
         {
             next = previous.state.clone();
             next.revision = revision;

@@ -277,7 +277,7 @@ pub(crate) fn prepare_collection(
         .map(|collection| collection.documents.clone())
         .unwrap_or_default();
     let collection = CollectionState {
-        definition: definition.clone(),
+        definition: Arc::new(definition.clone()),
         data_epoch: current.map_or(0, |collection| collection.data_epoch),
         documents,
         archived_documents: Default::default(),

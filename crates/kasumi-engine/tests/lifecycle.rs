@@ -1383,9 +1383,14 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
         change_sha256: digest(&change).unwrap(),
         stops: f.stop_fixtures(&pending.observation().change),
     };
+    // The full admitted raw request ID can expand sixfold in the JSON audit.
+    // Completion must still fit after ordered denials exhaust unreserved room.
+    let mut completion_context = f.context("owner");
+    completion_context.request_id = "\0".repeat(MAX_REQUEST_ID_BYTES);
+    completion_context.validate_request_id().unwrap();
     assert_eq!(
         db.lifecycle_control(
-            f.context("owner"),
+            completion_context.clone(),
             LifecycleControlCommand::CompletePolicyChange(complete)
         )
         .await
@@ -1394,6 +1399,19 @@ async fn control_completion_audit_reservation_survives_denials_and_current_admin
         ErrorCode::UnknownOutcome
     );
     assert_eq!(audit_sequence(f.leader().await.as_ref()), retained + 1);
+    assert_eq!(
+        f.leader()
+            .await
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .audits
+            .back()
+            .unwrap()
+            .request_id,
+        completion_context.request_id
+    );
     let request = ReadLifecycleStatus {
         command_id: change.command_id,
         expected_incarnation: f.installation.root.control_incarnation,
@@ -1475,6 +1493,7 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
     let retained = state
         .lifecycle_control
         .as_mut()
+        .map(std::sync::Arc::make_mut)
         .unwrap()
         .intents
         .get_mut(&intent.command_id)

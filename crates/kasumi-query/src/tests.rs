@@ -51,7 +51,7 @@ fn collection(
             archived_documents: Default::default(),
             archived_document_bytes: 0,
             data_epoch: 0,
-            definition,
+            definition: definition.into(),
             documents,
         },
     )])
@@ -983,7 +983,7 @@ fn generation_validator_preserves_document_shape_typed_index_and_text_limits() {
             .code,
         ErrorCode::InvalidArgument
     );
-    let mut changed_index = definition.clone();
+    let mut changed_index = (**definition).clone();
     changed_index.indexes[0].fields[0].kind = ScalarType::Number;
     assert_eq!(
         indexes
@@ -1004,7 +1004,7 @@ fn incremental_postings_match_rebuild_and_share_unchanged_roots() {
         (0..10_000).map(|i| json!({"n":i,"tag":"common"})).collect(),
     );
     let mut unrelated = previous["docs"].clone();
-    unrelated.definition.name = "untouched".into();
+    std::sync::Arc::make_mut(&mut unrelated.definition).name = "untouched".into();
     previous.insert("untouched".into(), unrelated);
     let old = QueryIndexes::build_fixture(&previous).unwrap();
     let mut next = previous.clone();
@@ -1190,7 +1190,7 @@ fn unrelated_document_fields_reuse_text_reader_and_definition_change_rebuilds() 
         updated.collections["docs"].text.as_ref().unwrap()
     ));
     let mut replacement = next.clone();
-    replacement.get_mut("docs").unwrap().definition.indexes[0]
+    std::sync::Arc::make_mut(&mut replacement.get_mut("docs").unwrap().definition).indexes[0]
         .text
         .as_mut()
         .unwrap()
@@ -1771,7 +1771,7 @@ fn one_schema_resolution_validates_a_run_of_documents() {
     // One schema digest for the whole run, reusing the generation's validator.
     assert_eq!(validation::schema_digest_count(), digests + 1);
     assert_eq!(validation::compilation_count(), compiled);
-    let mut foreign = definition.clone();
+    let mut foreign = (**definition).clone();
     foreign.name = "foreign".into();
     assert_eq!(
         validator
@@ -1780,4 +1780,100 @@ fn one_schema_resolution_validates_a_run_of_documents() {
             .code,
         ErrorCode::Corruption
     );
+}
+
+#[test]
+fn selective_equality_checks_range_survivors_and_preserves_index_only_planning() {
+    use crate::source_test_utils::{ResidentSource, query_memory};
+    let collections = collection(
+        definition(&[("/n", ScalarType::Number), ("/tag", ScalarType::String)]),
+        (0..1000)
+            .map(|i| json!({"n":i,"tag":if i == 500 { "selected" } else { "other" }}))
+            .collect(),
+    );
+    let indexes = QueryIndexes::build_fixture(&collections).unwrap();
+    let source = ResidentSource {
+        collection: &collections["docs"],
+        indexes: &indexes,
+    };
+    let query = request().filter(
+        Filter::new()
+            .eq("/tag", "selected")
+            .gte("/n", 0)
+            .lt("/n", 999),
+    );
+    let filter = structured::plan(&query.filter).unwrap();
+    let tree = &indexes.collections["docs"].structured;
+    let before = structured::prepared_leaves_for_test();
+    let matched = tree
+        .candidates(
+            &source,
+            &filter,
+            &tree.ids,
+            false,
+            true,
+            10,
+            &QueryCancellation::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        matched.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["500"]
+    );
+    // The one prepared range is evaluated on the one equality survivor.
+    assert_eq!(structured::prepared_leaves_for_test() - before, 1);
+    let before = structured::prepared_leaves_for_test();
+    let mut memory = query_memory();
+    let indexed = indexes
+        .indexed_candidate_ids(
+            &source,
+            &query,
+            &Limits::default(),
+            &QueryCancellation::default(),
+            &mut memory,
+        )
+        .unwrap();
+    assert_eq!(indexed, ["500"]);
+    assert_eq!(structured::prepared_leaves_for_test(), before);
+    // A source loan must carry the requested live ID even when it would be
+    // filtered out before the output stage's defensive identity check.
+    let mut corrupt = collections["docs"].clone();
+    let document =
+        crate::source_test_utils::pending_document_mut(corrupt.documents.get_mut("500").unwrap());
+    document.id = "foreign".into();
+    document.body = json!({"n":-1,"tag":"selected"});
+    let corrupt_source = ResidentSource {
+        collection: &corrupt,
+        indexes: &indexes,
+    };
+    assert_eq!(
+        tree.candidates(
+            &corrupt_source,
+            &filter,
+            &tree.ids,
+            false,
+            true,
+            10,
+            &QueryCancellation::default(),
+        )
+        .unwrap_err()
+        .into_query_error()
+        .code,
+        ErrorCode::Corruption
+    );
+    for field in ["/n", "/tag"] {
+        let mut scanned = query.clone();
+        scanned.allow_scan = true;
+        scanned.filter = Filter::or([
+            Filter::new().eq(field, serde_json::Value::Null),
+            !Filter::new().exists(field),
+        ]);
+        assert!(
+            indexes
+                .execute_fixture(&collections, &scanned, &Limits::default())
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+    }
 }

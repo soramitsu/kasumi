@@ -352,3 +352,110 @@ async fn queued_schema_before_expiry_rejects_all_definitions_and_retains_origina
     );
     fixture.close().await;
 }
+
+#[tokio::test]
+async fn strict_release_audits_share_one_durable_command() {
+    let fixture = CredentialFixture::new_for_tenant("strict-release").await;
+    let names = ["alpha", "beta", "gamma"];
+    let request = SchemaChangeSet {
+        activation_id: "strict-release".into(),
+        expected_incarnation: fixture
+            .db
+            .engine
+            .generation()
+            .unwrap()
+            .state
+            .incarnation
+            .clone(),
+        expected_schema_epoch: fixture.db.engine.generation().unwrap().state.schema_epoch,
+        read_set: vec![],
+        changes: names
+            .map(|name| SchemaChange::Create {
+                definition: CollectionDefinition {
+                    name: name.into(),
+                    write_mode: CollectionWriteMode::Mutable,
+                    retention_class: CollectionRetentionClass::Operational,
+                    schema: json!({"type":"object"}),
+                    indexes: vec![],
+                    strict_read_audit: true,
+                },
+            })
+            .into(),
+    };
+    fixture
+        .db
+        .activate_schema(fixture.context.clone(), request.clone())
+        .await
+        .unwrap();
+    // Each release below used to propose one audit per collection.
+    let audited = |action: &str| {
+        let generation = fixture.db.engine.generation().unwrap();
+        let events = generation
+            .state
+            .audits
+            .iter()
+            .filter(|event| event.action == action)
+            .filter_map(|event| event.collection.clone())
+            .collect::<BTreeSet<_>>();
+        (generation.state.revision, events)
+    };
+    let (before, _) = audited("schema_activation_status");
+    fixture
+        .db
+        .schema_activation_status(
+            &fixture.context,
+            &ReadSchemaActivation {
+                reference: request.reference().unwrap(),
+                read_set: vec![],
+            },
+        )
+        .await
+        .unwrap()
+        .outcome
+        .unwrap();
+    let (after, events) = audited("schema_activation_status");
+    assert_eq!(after, before + 1);
+    assert_eq!(events, names.map(String::from).into());
+    for name in names {
+        fixture
+            .db
+            .mutate(
+                fixture.context.clone(),
+                MutationBatch::new().upsert(name, "row", json!({"name": name})),
+            )
+            .await
+            .unwrap();
+    }
+    let (before, _) = audited("change_feed");
+    fixture
+        .db
+        .read_change_feed(
+            &fixture.context,
+            ReadChangeFeed {
+                collections: names.map(String::from).into(),
+                start: ChangeFeedStart::Beginning,
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    let (after, events) = audited("change_feed");
+    assert_eq!(after, before + 1);
+    assert_eq!(events, names.map(String::from).into());
+    let (before, _) = audited("read");
+    let catalog = fixture.db.collections(&fixture.context).await.unwrap();
+    assert_eq!(catalog.len(), names.len() + 1);
+    let (after, events) = audited("read");
+    assert_eq!(after, before + 1);
+    assert_eq!(events, names.map(String::from).into());
+    fixture.close().await;
+}
+
+#[test]
+fn collection_release_future_is_send() {
+    fn require_send<T: Send>(_: T) {}
+    fn check(database: &Database, context: &RequestContext) {
+        require_send(database.collections(context));
+    }
+    let _: fn(&Database, &RequestContext) = check;
+}

@@ -43,14 +43,14 @@ fn fixture() -> Arc<Generation> {
     )
     .unwrap();
     let collection = CollectionState {
-        definition: CollectionDefinition {
+        definition: std::sync::Arc::new(CollectionDefinition {
             name: "docs".into(),
             write_mode: CollectionWriteMode::Mutable,
             retention_class: CollectionRetentionClass::Operational,
             schema: json!({"type": "object"}),
             indexes: vec![],
             strict_read_audit: false,
-        },
+        }),
         data_epoch: 7,
         documents: [("a", 1), ("c", 3), ("z", 7)]
             .into_iter()
@@ -63,7 +63,7 @@ fn fixture() -> Arc<Generation> {
         archived_document_bytes: 256,
     };
     let mut other = collection.clone();
-    other.definition.name = "other".into();
+    Arc::make_mut(&mut other.definition).name = "other".into();
     let collections = BTreeMap::from([("docs".into(), collection), ("other".into(), other)]);
     let mut generation = engine.generation().unwrap().read_view(collections, vec![]);
     generation.state.revision = 7;
@@ -325,7 +325,7 @@ fn absent_records_require_presence_only_when_a_version_is_expected() {
         ErrorCode::NotFound
     );
     let mut collections = generation.state.collections.clone();
-    collections.get_mut("docs").unwrap().definition.name = "wrong".into();
+    Arc::make_mut(&mut collections.get_mut("docs").unwrap().definition).name = "wrong".into();
     let corrupted = Arc::new(generation.read_view(collections, vec![]));
     assert_eq!(
         corrupted.document_source("docs").err().unwrap().code,

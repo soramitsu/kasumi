@@ -2,7 +2,7 @@
 //! This path cannot enter generic quota rejection, which may publish only a
 //! revision cursor. An admitted identity always selects one immutable point row.
 use super::*;
-use crate::mutation_receipt::{Pending, Row, View};
+use crate::mutation_receipt::{Absent, Lookup, Pending, Row, View};
 
 fn audit(command: &Command, state: &TenantState, outcome: &str) -> AuditEvent {
     AuditEvent {
@@ -70,8 +70,7 @@ impl Permit {
             applied: applied.clone(),
             receipt: template.clone(),
         };
-        row.validate(state).map_err(terminal_error)?;
-        let rejected_bytes = row.framed_bytes().map_err(terminal_error)?;
+        let rejected_bytes = row.validate(state).map_err(terminal_error)?;
         row.receipt.outcome = Ok(WriteReceipt {
             revision: state.revision,
             versions: batch
@@ -83,8 +82,7 @@ impl Permit {
                 })
                 .collect(),
         });
-        row.validate(state).map_err(terminal_error)?;
-        let maximum_row_bytes = rejected_bytes.max(row.framed_bytes().map_err(terminal_error)?);
+        let maximum_row_bytes = rejected_bytes.max(row.validate(state).map_err(terminal_error)?);
         let mut maximum_head = state.mutation_receipt_head.clone();
         maximum_head.count = ordinal;
         maximum_head.last_applied_revision = state.revision;
@@ -112,13 +110,14 @@ impl Permit {
     fn finalize(
         &self,
         owner: &View,
+        absent: &Absent,
         state: &mut TenantState,
         outcome: &Result<WriteReceipt>,
         applied: &crate::staged_terminal::AppliedIdentity,
     ) -> anyhow::Result<Pending> {
         let mut receipt = self.template.clone();
         receipt.outcome = outcome.clone();
-        let pending = Pending::prepare(owner, state, Some(receipt), applied)?;
+        let pending = Pending::prepare(owner, state, Some((receipt, absent)), applied)?;
         let bytes = pending
             .head()
             .encoded_bytes
@@ -198,37 +197,40 @@ impl TenantEngine {
                 .prepare_mutation_observation(previous, command, revision, Err(error))
                 .map_err(Into::into);
         }
-        let (digest, replay) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        let (digest, lookup) = kasumi_store::ScratchOperationFailure::ordinary(|| {
             let key = staged_digest(&(&command.context.principal, &batch.idempotency_key))?.0;
             let digest = batch.digest()?;
-            let replay = previous.receipts.get(&key)?;
-            if let Some(row) = &replay {
+            let lookup = previous.receipts.lookup(&key)?;
+            if let Lookup::Found(row) = &lookup {
                 row.validate(state)?;
             }
-            Ok((digest, replay))
+            Ok((digest, lookup))
         })?;
-        if let Some(row) = replay {
-            let result = if row.receipt.request_digest == digest {
-                row.receipt.outcome
-            } else {
-                Err(Error::new(
-                    ErrorCode::Conflict,
-                    "idempotency key reused for different input",
-                ))
-            };
-            return self
-                .prepare_mutation_observation(previous, command, revision, result)
-                .map_err(Into::into);
-        }
+        let absent = match lookup {
+            Lookup::Absent(absent) => absent,
+            Lookup::Found(row) => {
+                let result = if row.receipt.request_digest == digest {
+                    row.receipt.outcome
+                } else {
+                    Err(Error::new(
+                        ErrorCode::Conflict,
+                        "idempotency key reused for different input",
+                    ))
+                };
+                return self
+                    .prepare_mutation_observation(previous, command, revision, result)
+                    .map_err(Into::into);
+            }
+        };
         let owner = match scope {
             ApplyScope::Committed => previous.receipts.clone(),
             #[cfg(any(test, feature = "test-utils"))]
             ApplyScope::Fixture(disk) => previous.receipts.fixture_owner(disk, state)?,
         };
         kasumi_store::ScratchOperationFailure::ordinary(|| {
-            let mut baseline = state.clone();
-            baseline.revision = revision;
-            let permit = match Permit::prepare(&baseline, command, batch, applied, digest) {
+            let mut reserved = state.clone();
+            reserved.revision = revision;
+            let permit = match Permit::prepare(&reserved, command, batch, applied, digest) {
                 Ok(permit) => permit,
                 Err(error) if error.code == ErrorCode::QuotaExceeded => {
                     return self.prepare_mutation_observation(
@@ -243,9 +245,9 @@ impl TenantEngine {
             // Prove the entire rejection can publish BEFORE document changes. Use
             // the longer audit outcome plus maximum head decimal widths. Unrelated
             // staged/target/control completion reservations are included by fits.
-            let mut reserved = baseline.clone();
             reserved.mutation_receipt_head = permit.maximum_head.clone();
-            append_audit(&mut reserved, audit(command, &baseline, "committed"))?;
+            let committed_audit = audit(command, &reserved, "committed");
+            append_audit(&mut reserved, committed_audit.clone())?;
             let accounting = previous.snapshot_accounting.updated(
                 state,
                 &reserved,
@@ -254,7 +256,7 @@ impl TenantEngine {
             )?;
             if !crate::accounting::audit_fits(&reserved)
                 || !accounting.fits(&reserved)?
-                || !lifecycle::completion_fits(&reserved)?
+                || !lifecycle::completion_fits(&reserved, &accounting)?
             {
                 return self.prepare_mutation_observation(
                     previous,
@@ -269,7 +271,8 @@ impl TenantEngine {
             drop(reserved);
             // From this point every deterministic outcome selects exactly one row.
             // A storage/invariant failure is outer failure: no Generation publishes.
-            let mut next = baseline.clone();
+            let mut next = state.clone();
+            next.revision = revision;
             apply.begin_mutation_change_tree(batch)?;
             let changed = batch_changes(batch);
             let attempt = (|| -> SourceResult<WriteReceipt> {
@@ -304,8 +307,8 @@ impl TenantEngine {
             };
             if let Ok(receipt) = attempt.as_ref() {
                 let outcome = Ok(receipt.clone());
-                let pending = permit.finalize(&owner, &mut next, &outcome, applied)?;
-                append_audit(&mut next, audit(command, &baseline, "committed"))?;
+                let pending = permit.finalize(&owner, &absent, &mut next, &outcome, applied)?;
+                append_audit(&mut next, committed_audit)?;
                 let accounting = previous.snapshot_accounting.updated(
                     state,
                     &next,
@@ -314,7 +317,7 @@ impl TenantEngine {
                 )?;
                 if crate::accounting::audit_fits(&next)
                     && accounting.fits(&next)?
-                    && lifecycle::completion_fits(&next)?
+                    && lifecycle::completion_fits(&next, &accounting)?
                 {
                     // Deterministic document/index validation and every acceptance
                     // budget check have finished. Text materialization advances a
@@ -361,9 +364,10 @@ impl TenantEngine {
                 ),
             };
             drop(next);
-            let mut rejected = baseline;
+            let mut rejected = state.clone();
+            rejected.revision = revision;
             let outcome = Err(error);
-            let pending = permit.finalize(&owner, &mut rejected, &outcome, applied)?;
+            let pending = permit.finalize(&owner, &absent, &mut rejected, &outcome, applied)?;
             let event = audit(command, &rejected, "rejected");
             append_audit(&mut rejected, event)?;
             let accounting = previous.snapshot_accounting.updated(
@@ -374,7 +378,7 @@ impl TenantEngine {
             )?;
             if !crate::accounting::audit_fits(&rejected)
                 || !accounting.fits(&rejected)?
-                || !lifecycle::completion_fits(&rejected)?
+                || !lifecycle::completion_fits(&rejected, &accounting)?
             {
                 return Err(Error::new(
                     ErrorCode::Corruption,
@@ -433,7 +437,7 @@ impl TenantEngine {
         )?;
         let accounting = if crate::accounting::audit_fits(&next)
             && accounting.fits(&next)?
-            && lifecycle::completion_fits(&next)?
+            && lifecycle::completion_fits(&next, &accounting)?
         {
             accounting
         } else {
@@ -453,7 +457,7 @@ impl TenantEngine {
             )?;
             if crate::accounting::audit_fits(&next)
                 && rejected.fits(&next)?
-                && lifecycle::completion_fits(&next)?
+                && lifecycle::completion_fits(&next, &rejected)?
             {
                 rejected
             } else {

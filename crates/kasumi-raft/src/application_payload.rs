@@ -173,34 +173,51 @@ impl fmt::Debug for ApplicationPayload {
             .finish_non_exhaustive()
     }
 }
-/// Peer RPC JSON carries one base64 string rather than a number per byte,
-/// 1.33x instead of ~3.5x the payload and far cheaper to parse. The binary log
-/// encoding keeps the exact byte-sequence layout that replay borrows.
 impl Serialize for ApplicationPayload {
     fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
-        if serializer.is_human_readable() {
-            serializer.serialize_str(&BASE64.encode(self.as_bytes()))
-        } else {
-            self.as_bytes().serialize(serializer)
-        }
+        peer_bytes::serialize(self.as_bytes(), serializer)
     }
 }
 impl<'de> Deserialize<'de> for ApplicationPayload {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> std::result::Result<Self, D::Error> {
+        peer_bytes::deserialize(deserializer).map(Self::ingress)
+    }
+}
+
+/// Command bytes for `#[serde(with)]`. Peer RPC JSON carries one base64
+/// string rather than a number per byte, 1.33x instead of ~3.5x the payload
+/// and far cheaper to parse. The binary log encoding keeps the exact
+/// byte-sequence layout that replay borrows.
+pub(crate) mod peer_bytes {
+    use super::*;
+
+    pub(crate) fn serialize<S: Serializer>(
+        bytes: &[u8],
+        serializer: S,
+    ) -> std::result::Result<S::Ok, S::Error> {
+        if serializer.is_human_readable() {
+            serializer.serialize_str(&BASE64.encode(bytes))
+        } else {
+            bytes.serialize(serializer)
+        }
+    }
+    pub(crate) fn deserialize<'de, D: Deserializer<'de>>(
+        deserializer: D,
+    ) -> std::result::Result<Vec<u8>, D::Error> {
         if !deserializer.is_human_readable() {
-            return Vec::<u8>::deserialize(deserializer).map(Self::ingress);
+            return Vec::<u8>::deserialize(deserializer);
         }
         struct Text;
         impl Visitor<'_> for Text {
             type Value = Vec<u8>;
             fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
-                f.write_str("base64 application bytes")
+                f.write_str("base64 command bytes")
             }
             fn visit_str<E: serde::de::Error>(self, text: &str) -> std::result::Result<Vec<u8>, E> {
                 BASE64.decode(text).map_err(E::custom)
             }
         }
-        deserializer.deserialize_str(Text).map(Self::ingress)
+        deserializer.deserialize_str(Text)
     }
 }
 

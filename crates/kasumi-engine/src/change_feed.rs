@@ -139,18 +139,24 @@ impl Database {
         // completed operation slot while its immutable output retains the bytes.
         read.prepare_release()?;
         let state = &read.generation.state;
-        for collection in &read.request.collections {
-            self.release_event(
-                context,
-                Some(collection),
-                state.revision,
-                state.policy.strict_read_audit
-                    || state.collections[collection].definition.strict_read_audit,
-                state.policy_epoch,
-                "change_feed",
-            )
-            .await?;
-        }
+        let releases = read
+            .request
+            .collections
+            .iter()
+            .map(|collection| {
+                let strict = state.policy.strict_read_audit
+                    || state.collections[collection].definition.strict_read_audit;
+                (collection.as_str(), strict)
+            })
+            .collect::<Vec<_>>();
+        self.release_collections(
+            context,
+            &releases,
+            state.revision,
+            state.policy_epoch,
+            "change_feed",
+        )
+        .await?;
         cancellation.check()?;
         self.admission().check_release(&cancellation)?;
         for collection in &read.request.collections {

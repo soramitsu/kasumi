@@ -1322,3 +1322,141 @@ async fn shutdown_cancels_pending_archive_upload_and_keeps_source_rows_on_restar
     audit.shutdown().await.unwrap();
     node.shutdown().await.unwrap();
 }
+
+/// Archived objects that stop answering once `stalled` is set.
+struct StallingReads {
+    inner: Arc<kasumi_store::FilesystemBackupDestination>,
+    stalled: std::sync::atomic::AtomicBool,
+}
+impl StallingReads {
+    async fn stall(&self) {
+        if self.stalled.load(std::sync::atomic::Ordering::SeqCst) {
+            std::future::pending::<()>().await;
+        }
+    }
+}
+#[async_trait::async_trait]
+impl BackupDestination for StallingReads {
+    fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        self.inner.namespace_binding()
+    }
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
+        self.inner.put(id, bytes).await
+    }
+    async fn get(&self, id: uuid::Uuid, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        self.stall().await;
+        self.inner.get(id, max_bytes).await
+    }
+    async fn session_put(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        bytes: kasumi_store::BackupUpload,
+    ) -> anyhow::Result<()> {
+        self.inner.session_put(session, slot, bytes).await
+    }
+    async fn session_get(
+        &self,
+        session: uuid::Uuid,
+        slot: kasumi_store::BackupSessionSlot,
+        max_bytes: usize,
+    ) -> anyhow::Result<Option<Vec<u8>>> {
+        self.stall().await;
+        self.inner.session_get(session, slot, max_bytes).await
+    }
+    async fn session_objects(
+        &self,
+        aborted: &kasumi_store::VerifiedBackupAbort,
+        limit: usize,
+    ) -> anyhow::Result<kasumi_store::BackupSessionObjectPage> {
+        self.inner.session_objects(aborted, limit).await
+    }
+    async fn session_delete(
+        &self,
+        aborted: &kasumi_store::VerifiedBackupAbort,
+        objects: &[kasumi_store::BackupSessionObject],
+    ) -> anyhow::Result<()> {
+        self.inner.session_delete(aborted, objects).await
+    }
+}
+
+#[tokio::test]
+async fn stalled_archive_point_reads_expire_and_release_their_query_workers() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
+    let destination = Arc::new(StallingReads {
+        inner: Arc::new(
+            kasumi_store::FilesystemBackupDestination::new_fixture(
+                root.path().join("history-objects"),
+                16 << 20,
+                physical.storage.admission.memory().clone(),
+            )
+            .unwrap(),
+        ),
+        stalled: false.into(),
+    });
+    let (db, audit, node) = open(
+        &physical,
+        &root.path().join("node.kv"),
+        Limits::default(),
+        true,
+    )
+    .await;
+    db.install_archive_destination("cold".into(), destination.clone())
+        .unwrap();
+    collection(&db, "docs", CollectionRetentionClass::ArchivableHistory).await;
+    let cutoff = db
+        .mutate(context(), batch("seed", 0, 8))
+        .await
+        .unwrap()
+        .revision;
+    db.archive_history(
+        context(),
+        ArchiveHistory {
+            archive_id: "stalled".into(),
+            collection: "docs".into(),
+            cutoff_revision: cutoff,
+            destination: "cold".into(),
+        },
+    )
+    .await
+    .unwrap();
+    destination
+        .stalled
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    // More stalled reads than the four query workers: each one expires and
+    // returns its worker instead of holding it for as long as the archive.
+    let reads = (0..6)
+        .map(|n| {
+            let db = db.clone();
+            tokio::spawn(async move {
+                db.get(&context(), "docs", &format!("r{n:04}"))
+                    .await
+                    .map(|_| ())
+            })
+        })
+        .collect::<Vec<_>>();
+    tokio::time::timeout(kasumi_store::NATIVE_READ_TIMEOUT * 6, async {
+        for read in reads {
+            let error = read.await.unwrap().expect_err("stalled archive read");
+            assert_eq!(error.code, ErrorCode::ResourceExhausted);
+            assert_eq!(error.message, "point read deadline exceeded");
+        }
+    })
+    .await
+    .expect("archived point reads have a deadline");
+    destination
+        .stalled
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    assert_eq!(
+        db.get(&context(), "docs", "r0007")
+            .await
+            .unwrap()
+            .expect("archived document exists")
+            .body["n"],
+        7
+    );
+    db.shutdown().await.unwrap();
+    audit.shutdown().await.unwrap();
+    node.shutdown().await.unwrap();
+}

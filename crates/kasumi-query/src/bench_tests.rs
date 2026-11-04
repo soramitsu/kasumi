@@ -58,7 +58,7 @@ fn collections(filler: usize) -> BTreeMap<String, CollectionState> {
             archived_documents: Default::default(),
             archived_document_bytes: 0,
             data_epoch: 1,
-            definition,
+            definition: definition.into(),
             documents,
         },
     )])

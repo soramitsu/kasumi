@@ -148,14 +148,14 @@ impl ControlPlane {
             .collections
             .get(COLLECTION)
             .ok_or_else(|| corrupt("installed Control topology schema is missing"))?;
-        if collection.definition != Self::topology_definition() {
+        if *collection.definition != Self::topology_definition() {
             return Err(corrupt("installed Control topology schema differs"));
         }
         if state.lifecycle_control.is_some()
             && state
                 .collections
                 .get("tenant_enrollments")
-                .is_none_or(|collection| collection.definition != Self::enrollment_definition())
+                .is_none_or(|collection| *collection.definition != Self::enrollment_definition())
         {
             return Err(corrupt(
                 "installed Control enrollment schema is missing or differs",

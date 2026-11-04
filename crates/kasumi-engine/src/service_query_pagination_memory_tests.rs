@@ -509,6 +509,7 @@ async fn pagination_memory_strict_pages_release_the_completed_operation_slot() {
     let fixture = CredentialFixture::new().await;
     let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.strict_read_audit = true;
     fixture

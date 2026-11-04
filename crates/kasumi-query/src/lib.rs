@@ -200,6 +200,7 @@ impl QueryIndexes {
             &filter,
             &indexes.structured.ids,
             false,
+            false,
             limits.max_query_candidates,
             cancellation,
         )?;
@@ -542,6 +543,7 @@ impl QueryIndexes {
         // metadata, selected rows and output copies below have separate claims.
         memory.reserve(query_workspace_estimate(limits, request)?)?;
         structured.validate(&filter, request.allow_scan)?;
+        memory.reserve(structured.prepared_bytes(&filter)?)?;
         let scalar_kind = |path: &str| -> Result<Option<ScalarType>> {
             let kind = structured.field_kind(path, request.allow_scan)?;
             if matches!(
@@ -644,6 +646,7 @@ impl QueryIndexes {
             &filter,
             universe,
             request.allow_scan,
+            true,
             limits.max_query_candidates,
             cancellation,
         )?;

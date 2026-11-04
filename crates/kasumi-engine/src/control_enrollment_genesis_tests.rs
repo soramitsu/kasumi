@@ -66,7 +66,7 @@ fn installed_genesis_allows_enrollment_approval_without_reopening_schema() {
     let state = &engine.generation().unwrap().state;
     assert!(state.lifecycle_control.is_some());
     assert_eq!(
-        state.collections["tenant_enrollments"].definition,
+        *state.collections["tenant_enrollments"].definition,
         ControlPlane::enrollment_definition()
     );
     ControlPlane::applied_topology(state, None).unwrap();
@@ -79,12 +79,14 @@ fn installed_genesis_allows_enrollment_approval_without_reopening_schema() {
         ErrorCode::Corruption
     );
     let mut changed = state.clone();
-    changed
-        .collections
-        .get_mut("tenant_enrollments")
-        .unwrap()
-        .definition
-        .strict_read_audit = false;
+    std::sync::Arc::make_mut(
+        &mut changed
+            .collections
+            .get_mut("tenant_enrollments")
+            .unwrap()
+            .definition,
+    )
+    .strict_read_audit = false;
     assert_eq!(
         ControlPlane::applied_topology(&changed, None)
             .unwrap_err()

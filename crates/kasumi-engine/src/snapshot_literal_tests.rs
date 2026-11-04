@@ -32,7 +32,7 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
     state.collections.insert(
         "docs".into(),
         CollectionState {
-            definition: definition.clone(),
+            definition: definition.clone().into(),
             data_epoch: 1,
             documents: [(
                 document.id.clone(),
@@ -64,7 +64,7 @@ fn literal_marker_documents_schema_and_staged_records_survive_canonical_snapshot
     })
     .unwrap();
     let restored = read(image.disk(), &mut image.reader()).unwrap();
-    assert_eq!(restored.state.collections["docs"].definition, definition);
+    assert_eq!(*restored.state.collections["docs"].definition, definition);
     assert_eq!(
         restored.state.collections["docs"].documents["first"]
             .load(&restored.documents)

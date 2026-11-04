@@ -45,17 +45,17 @@ pub(crate) fn state() -> TenantState {
         max_state_bytes: 8 << 20,
     };
     installation.validate().unwrap();
-    state.lifecycle_control = Some(kasumi_types::LifecycleControlState {
+    state.lifecycle_control = Some(std::sync::Arc::new(kasumi_types::LifecycleControlState {
         installation,
         installation_command_id: uuid::Uuid::from_u128(8),
         installation_revision: 0,
         installation_policy_epoch: 0,
-        installation_policy: state.policy.clone(),
+        installation_policy: Policy::clone(&state.policy),
         retired: false,
         pending_change: None,
         intents: Default::default(),
         changes: Default::default(),
-    });
+    }));
     state
 }
 pub(crate) fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> Row {
@@ -827,7 +827,7 @@ fn application_snapshot_validator_rejects_nonempty_control_binding_head_and_row(
     let application = crate::TenantEngine::new(
         "application".into(),
         control.incarnation.clone(),
-        control.policy.clone(),
+        Policy::clone(&control.policy),
         control.limits.clone(),
     )
     .unwrap()

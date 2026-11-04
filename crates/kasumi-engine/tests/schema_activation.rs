@@ -760,7 +760,7 @@ fn atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations() {
     );
     let old = db.generation().unwrap();
     let changes = ["journal", "balances"].map(|name| SchemaChange::Replace {
-        definition: unique(old.state.collections[name].definition.clone()),
+        definition: unique(old.state.collections[name].definition.as_ref().clone()),
         expected_data_epoch: old.state.collections[name].data_epoch,
     });
     let upgrade = request(&db, "upgrade", changes.into());
@@ -834,7 +834,7 @@ fn rejection_is_permanent_and_never_publishes_an_earlier_valid_change() {
         "upgrade",
         ["a", "b"]
             .map(|name| SchemaChange::Replace {
-                definition: unique(before.state.collections[name].definition.clone()),
+                definition: unique(before.state.collections[name].definition.as_ref().clone()),
                 expected_data_epoch: before.state.collections[name].data_epoch,
             })
             .into(),

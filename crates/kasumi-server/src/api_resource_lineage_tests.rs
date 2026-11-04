@@ -14,6 +14,7 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
         .unwrap();
     let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.write_mode = CollectionWriteMode::AppendOnly;
     fixture
@@ -177,7 +178,9 @@ async fn native_resources_and_two_restore_hops_preserve_immutable_issuer_facts()
             .unwrap();
         let mut substituted =
             kasumi_engine::test_utils::decode_snapshot_candidate(&snapshot).unwrap();
-        substituted.restore_lineage[0].checkpoint.resident_sha256 =
+        std::sync::Arc::make_mut(&mut substituted.restore_lineage)[0]
+            .checkpoint
+            .resident_sha256 =
             if substituted.restore_lineage[0].checkpoint.resident_sha256 == "0".repeat(64) {
                 "1".repeat(64)
             } else {

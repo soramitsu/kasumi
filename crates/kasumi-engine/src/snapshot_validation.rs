@@ -653,7 +653,7 @@ impl ValidatedApplicationSnapshot {
                     .iter()
                     .any(|link| link.checkpoint.source_incarnation == incarnation)
             {
-                state.restore_lineage.push(
+                Arc::make_mut(&mut state.restore_lineage).push(
                     self.lineage_source(incarnation)?
                         .context("staged incarnation is outside verified lineage")?,
                 );
@@ -666,7 +666,7 @@ impl ValidatedApplicationSnapshot {
                 .iter()
                 .any(|link| link.target_incarnation == applied)
         {
-            state.restore_lineage.push(genesis);
+            Arc::make_mut(&mut state.restore_lineage).push(genesis);
         }
         Ok(state)
     }
@@ -1276,7 +1276,7 @@ mod tests {
         state.collections.insert(
             "rows".into(),
             CollectionState {
-                definition: CollectionDefinition {
+                definition: std::sync::Arc::new(CollectionDefinition {
                     name: "rows".into(),
                     write_mode: CollectionWriteMode::Mutable,
                     retention_class: CollectionRetentionClass::Operational,
@@ -1291,7 +1291,7 @@ mod tests {
                         unique: true,
                         text: None,
                     }],
-                },
+                }),
                 data_epoch: 3,
                 documents,
                 archived_documents: Default::default(),
@@ -1445,10 +1445,10 @@ mod tests {
         state.incarnation = "current".into();
         state.revision_base = 21;
         state.revision = 25;
-        state.restore_lineage = vec![
+        state.restore_lineage = std::sync::Arc::new(vec![
             link("generation", "middle", 10),
             link("middle", "current", 20),
-        ];
+        ]);
         state.restored_from = Some(state.restore_lineage[1].checkpoint.clone());
         let row = Row {
             ordinal: 1,

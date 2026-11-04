@@ -95,9 +95,12 @@ fn generation_metadata_is_borrowed_and_keeps_the_selected_generation() {
     assert_eq!(collection.archived_documents, 0);
     assert!(std::ptr::eq(
         collection.definition,
-        &current.state.collections["docs"].definition
+        current.state.collections["docs"].definition.as_ref()
     ));
-    assert!(std::ptr::eq(current.policy(), &current.state.policy));
+    assert!(std::ptr::eq(
+        current.policy(),
+        current.state.policy.as_ref()
+    ));
     assert!(std::ptr::eq(current.limits(), &current.state.limits));
     assert!(std::ptr::eq(
         current.audit_retention(),

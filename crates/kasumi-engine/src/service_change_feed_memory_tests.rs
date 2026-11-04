@@ -141,6 +141,7 @@ async fn feed_memory_public_strict_page_releases_slot_and_outlives_shutdown() {
     let fixture = CredentialFixture::new().await;
     let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.strict_read_audit = true;
     fixture
@@ -229,6 +230,7 @@ async fn feed_memory_cancelled_public_read_retains_admitted_audit_until_completi
     let fixture = CredentialFixture::new().await;
     let mut definition = fixture.db.engine().generation().unwrap().state.collections["docs"]
         .definition
+        .as_ref()
         .clone();
     definition.strict_read_audit = true;
     fixture
@@ -299,9 +301,9 @@ async fn feed_memory_cancelled_public_read_retains_admitted_audit_until_completi
     assert_eq!(cancelled.inflight_operations, 1);
     assert_eq!(operation_bytes(&cancelled), audit_bytes);
     assert_eq!(
-        cancelled.live_reservations.checked_add(2).unwrap(),
+        cancelled.live_reservations.checked_add(3).unwrap(),
         held.live_reservations,
-        "cancelled feed source and its boxed release future retire; audit child does not"
+        "cancelled feed source, boxed release future and event workspace retire; audit child does not"
     );
     assert_eq!(without_cache(&fixture).1, baseline_bytes.1);
     assert_eq!(
