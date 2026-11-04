@@ -221,6 +221,8 @@ impl TenantEngine {
                             work: &work,
                         },
                         Some(layout),
+                        // A public restore installs a transported bundle.
+                        false,
                         &|| work.check(),
                     )?;
                     phase.complete();

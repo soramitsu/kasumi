@@ -350,6 +350,48 @@ fn decode_committed_command(bytes: &[u8]) -> anyhow::Result<Command> {
     decode_canonical_json(bytes)
 }
 
+/// Capture the current generation for a snapshot written by `write`: the
+/// transportable bundle, or a standalone group's own local one.
+fn capture_tenant_snapshot(
+    engine: &TenantEngine,
+    write: fn(&Generation, &kasumi_store::TenantStore, &mut dyn std::io::Write) -> anyhow::Result<()>,
+) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
+    kasumi_store::ScratchOperationFailure::ordinary(|| {
+        let generation = engine.generation()?;
+        let retirement = custody_snapshot::retired(&generation.state)?;
+        let store = engine
+            .snapshot_store
+            .get()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+        let checkpoint_generation = generation.clone();
+        Ok(
+            kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
+                write(&generation, &store, writer).map_err(Into::into)
+            })
+            .with_checkpoint_writes(move |context| {
+                let mut writes = checkpoint_generation.receipts.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?;
+                writes.extend(checkpoint_generation.backup_bindings.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?);
+                writes.extend(checkpoint_generation.terminals.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?);
+                writes.extend(checkpoint_generation.target_resolutions.checkpoint_writes(
+                    &checkpoint_generation.state,
+                    &context.checkpoint_sha256()?,
+                )?);
+                Ok(writes)
+            }),
+        )
+    })
+}
+
 impl kasumi_raft::StateMachineBackend for TenantEngine {
     fn close_application(&self) {
         self.seal();
@@ -398,40 +440,15 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         &self,
     ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
     {
-        kasumi_store::ScratchOperationFailure::ordinary(|| {
-            let generation = self.generation()?;
-            let retirement = custody_snapshot::retired(&generation.state)?;
-            let store = self
-                .snapshot_store
-                .get()
-                .cloned()
-                .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
-            let checkpoint_generation = generation.clone();
-            Ok(
-                kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
-                    snapshot_bundle::write(&generation, &store, writer).map_err(Into::into)
-                })
-                .with_checkpoint_writes(move |context| {
-                    let mut writes = checkpoint_generation.receipts.checkpoint_writes(
-                        &checkpoint_generation.state,
-                        &context.checkpoint_sha256()?,
-                    )?;
-                    writes.extend(checkpoint_generation.backup_bindings.checkpoint_writes(
-                        &checkpoint_generation.state,
-                        &context.checkpoint_sha256()?,
-                    )?);
-                    writes.extend(checkpoint_generation.terminals.checkpoint_writes(
-                        &checkpoint_generation.state,
-                        &context.checkpoint_sha256()?,
-                    )?);
-                    writes.extend(checkpoint_generation.target_resolutions.checkpoint_writes(
-                        &checkpoint_generation.state,
-                        &context.checkpoint_sha256()?,
-                    )?);
-                    Ok(writes)
-                }),
-            )
-        })
+        capture_tenant_snapshot(self, snapshot_bundle::write)
+    }
+    /// A standalone group's own snapshot: its archive chain stays in this node's
+    /// cache and each reopen verifies it there (see [`snapshot_bundle::write_local`]).
+    fn capture_local_snapshot(
+        &self,
+    ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
+    {
+        capture_tenant_snapshot(self, snapshot_bundle::write_local)
     }
     fn validate_snapshot(
         &self,
@@ -443,7 +460,8 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         let prior = kasumi_store::ScratchOperationFailure::ordinary(|| {
             CapturedValidation::capture(self).map_err(Into::into)
         })?;
-        let generation = snapshot_bundle::read(self, &prior.baseline(), bytes, None)?;
+        // Validation precedes installing a transported snapshot: never a local one.
+        let generation = snapshot_bundle::read(self, &prior.baseline(), bytes, None, false)?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             custody_snapshot::retired(&generation.state).map_err(Into::into)
         })
@@ -469,7 +487,13 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             Ok((apply, selection))
         })?;
         let mut generation =
-            snapshot_bundle::read(self, &ValidationBaseline::from_apply(&apply), bytes, None)?;
+            snapshot_bundle::read(
+                self,
+                &ValidationBaseline::from_apply(&apply),
+                bytes,
+                None,
+                context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+            )?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let expected_revision = self
                 .revision_base

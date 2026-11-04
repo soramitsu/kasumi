@@ -763,6 +763,147 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
     Ok(())
 }
 
+/// One audited read event, as a serving tenant records it.
+fn audit_command(number: u64, revision: u64) -> Vec<u8> {
+    serde_json::to_vec(&Command {
+        context: RequestContext {
+            authorization: RequestAuthorization::service_identity(),
+            tenant: "tenant".into(),
+            principal: "owner".into(),
+            scopes: BTreeSet::from([Action::Read]),
+            request_id: "read".into(),
+        },
+        timestamp_ms: 1_000,
+        operation: Operation::Audit(AuditEvent {
+            event_id: format!("{number}:{}", "x".repeat(2_000)),
+            principal: "owner".into(),
+            action: "read".into(),
+            request_id: "read".into(),
+            timestamp_ms: 1_000,
+            data_revision: Some(revision),
+            outcome: "authorized_release".into(),
+            collection: None,
+        }),
+    })
+    .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn standalone_snapshot_over_an_archived_history_reopens_without_copying_the_archive()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use anyhow::Context as _;
+    let fixture = Installation::new().await?;
+    let limits = Limits {
+        audit_retention: AuditRetentionBudget {
+            hot_bytes: 128 << 10,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let database = open_local_with_incarnation(
+        fixture.stores.clone(),
+        policy(),
+        limits,
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    let group = database.raft_group().clone();
+    assert!(group.is_local());
+    let write = |number: u64| {
+        let group = group.clone();
+        let revision = database.engine().generation().unwrap().state.revision;
+        async move {
+            let response = group
+                .write(kasumi_raft::ApplicationProposal::generated(audit_command(
+                    number, revision,
+                )))
+                .await
+                .unwrap();
+            serde_json::from_slice::<kasumi_types::Result<WriteReceipt>>(&response)
+                .unwrap()
+                .unwrap();
+        }
+    };
+    for number in 0..50 {
+        write(number).await;
+    }
+    // The tenant audit worker drains hot history into this node's archive.
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        while database
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .audit_retention
+            .archive_segments
+            == 0
+        {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("audit history never reached the archive")?;
+    // A periodic standalone snapshot now covers the archived history, and the
+    // journal before it is purged: a reopen must start from that snapshot.
+    group.fixture_local_snapshot_interval(2).await?;
+    let before = group.metrics().snapshot;
+    for number in 50..60 {
+        write(number).await;
+        group.fixture_local_snapshot_settled().await?;
+    }
+    let metrics = group.metrics();
+    assert!(metrics.snapshot > before, "no periodic snapshot was published");
+    assert_eq!(metrics.purged, metrics.snapshot);
+    let generation = database.engine().generation()?;
+    let retention = generation.state.audit_retention.clone();
+    let revision = generation.state.revision;
+    drop(generation);
+    assert!(retention.archive_segments > 0);
+    assert!(retention.archive_head.is_some());
+    database.shutdown().await?;
+    drop(group);
+    drop(database);
+    let fixture = fixture.reopen().await?;
+    let reopened = open_existing_local(
+        fixture.stores.clone(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await
+    .map_err(
+        |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+            context: "archived standalone reopen",
+            original,
+        },
+    )?;
+    let generation = reopened.engine().generation()?;
+    assert_eq!(generation.state.revision, revision);
+    assert_eq!(generation.state.audit_retention, retention);
+    drop(generation);
+    // The reopened tenant serves and keeps auditing on the same chain.
+    let response = reopened
+        .raft_group()
+        .write(kasumi_raft::ApplicationProposal::generated(audit_command(
+            60, revision,
+        )))
+        .await?;
+    serde_json::from_slice::<kasumi_types::Result<WriteReceipt>>(&response)?
+        .map_err(|error| anyhow::anyhow!("{error:?}"))?;
+    assert_eq!(
+        reopened.engine().generation()?.state.audit_retention.archive_head,
+        retention.archive_head
+    );
+    reopened.shutdown().await?;
+    drop(reopened);
+    fixture.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test]
 #[allow(
     clippy::result_large_err,

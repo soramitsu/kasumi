@@ -1108,7 +1108,7 @@ fn validation_baseline_foreign_same_identity_owner_refuses_before_read()
         )
     );
     assert_eq!(reads.get(), 0);
-    let error = match snapshot_bundle::read(&second, &captured.baseline(), &mut reader, None) {
+    let error = match snapshot_bundle::read(&second, &captured.baseline(), &mut reader, None, false) {
         Ok(_) => panic!("foreign baseline reached bundle input/storage"),
         Err(error) => error,
     };

@@ -1306,6 +1306,11 @@ pub struct StateMachine {
     control_gate: Arc<Mutex<()>>,
     failed: Arc<AtomicBool>,
     limits: RaftLimits,
+    /// A standalone (`local-v1`) group's machine stores snapshots for its own reopen
+    /// only, so they may reference immutable dependencies this node retains
+    /// ([`StateMachineBackend::capture_local_snapshot`]). Never set for a machine
+    /// whose snapshots can be sent to another replica.
+    local_snapshots: bool,
 }
 
 impl StateMachine {
@@ -1415,7 +1420,15 @@ impl StateMachine {
             control_gate,
             failed: Arc::new(AtomicBool::new(false)),
             limits,
+            local_snapshots: false,
         })
+    }
+
+    /// Store snapshots for this standalone group's own reopen only (see
+    /// `local_snapshots`). Its snapshots are never installed on another replica.
+    pub(crate) fn with_local_snapshots(mut self) -> Self {
+        self.local_snapshots = true;
+        self
     }
 
     pub fn failed(&self) -> bool {
@@ -1871,7 +1884,11 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                         last_membership: state.membership.clone(),
                         snapshot_id: uuid::Uuid::new_v4().to_string(),
                     };
-                    let captured = machine.backend.capture_snapshot()?;
+                    let captured = if machine.local_snapshots {
+                        machine.backend.capture_local_snapshot()?
+                    } else {
+                        machine.backend.capture_snapshot()?
+                    };
                     let retirement = crate::snapshot_custody::capture(
                         machine.domains.custody(),
                         &meta,

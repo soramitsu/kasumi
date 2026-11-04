@@ -285,6 +285,7 @@ mod proof_documents {
             &baseline.baseline(),
             &mut image.reader(),
             Some(layout),
+            false,
         )
         .unwrap();
         assert_eq!(generation.state.logical_bytes, state.logical_bytes);

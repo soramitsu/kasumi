@@ -321,6 +321,15 @@ pub trait StateMachineBackend: Send + Sync + 'static {
         publisher: &mut dyn ApplyPublisher,
     ) -> std::result::Result<(), ScratchOperationFailure>;
     fn capture_snapshot(&self) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure>;
+    /// The snapshot a standalone (`local-v1`) group stores for its own reopen only.
+    /// It may reference immutable dependencies this node already retains instead of
+    /// embedding them, so it must never be installed on another replica. Defaults to
+    /// the transportable snapshot.
+    fn capture_local_snapshot(
+        &self,
+    ) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure> {
+        self.capture_snapshot()
+    }
     fn snapshot(
         &self,
         writer: &mut dyn std::io::Write,
@@ -408,6 +417,11 @@ impl StateMachineBackend for OwnedBackend {
     }
     fn capture_snapshot(&self) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure> {
         self.inner.capture_snapshot()
+    }
+    fn capture_local_snapshot(
+        &self,
+    ) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure> {
+        self.inner.capture_local_snapshot()
     }
     fn validate_snapshot(
         &self,
@@ -727,7 +741,9 @@ impl RaftGroup {
                 lease.clone(),
                 snapshot_buffers.clone(),
             )
-            .await?;
+            .await?
+            // Standalone storage never sends a snapshot to another replica.
+            .with_local_snapshots();
             let machine_failed = machine.failure_flag();
             #[cfg(any(test, feature = "test-utils"))]
             {

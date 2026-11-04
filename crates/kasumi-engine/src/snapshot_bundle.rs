@@ -1,6 +1,14 @@
 //! Raft snapshots transport their immutable audit dependencies with the logical
 //! state. Only a complete verified bundle can publish a new engine generation.
 //! Frame and segment buffers are bounded independently of retained history.
+//!
+//! A standalone group's own snapshot ([`write_local`]) is the one exception: it is
+//! never transported, and the immutable audit archive chain it depends on already
+//! lives in this node's tenant archive cache, which never deletes a segment. It
+//! carries the logical state only, and every reopen verifies that exact chain in
+//! place, as [`verify_local_checked`] does. Re-embedding the whole chain in every
+//! periodic snapshot rewrote the entire archive each time (7.7 GB for one tenant on
+//! 2026-11-04) and made each superseded copy compaction garbage.
 #[cfg(test)]
 use super::CapturedValidation;
 use super::{Generation, TenantEngine, ValidationBaseline};
@@ -11,6 +19,9 @@ use sha2::{Digest, Sha256};
 use std::io::{self, Read, Write};
 
 const MAGIC: &[u8; 8] = b"KASUMID1";
+/// A standalone group's own snapshot: the logical state, with its archive chain
+/// verified in this node's cache instead of embedded. Accepted only on reopen.
+const LOCAL_MAGIC: &[u8; 8] = b"KASUMIL1";
 const CHUNK: usize = 64 << 10;
 const SOURCE_LIMIT: usize = 64 << 10;
 const LOGICAL: u8 = 1;
@@ -140,10 +151,40 @@ fn authorize_root(
     crate::authorize_audit_source(state, source, source)
 }
 
+/// How a bundle carries the audit archive chain its logical state depends on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchiveForm {
+    /// Every segment, so any installation of the same resource can restore it.
+    Embedded,
+    /// None: this node's own cache holds the chain and each reopen verifies it.
+    LocalReference,
+}
+
+/// A transportable snapshot: the logical state with its whole archive chain.
 pub(super) fn write(
     generation: &Generation,
     store: &TenantStore,
     writer: &mut dyn Write,
+) -> Result<()> {
+    write_bundle(generation, store, writer, ArchiveForm::Embedded)
+}
+
+/// A standalone group's own snapshot for its reopen only. The archive chain is
+/// verified in this node's cache now, exactly as an embedded write verifies it,
+/// but no segment is copied into the snapshot.
+pub(super) fn write_local(
+    generation: &Generation,
+    store: &TenantStore,
+    writer: &mut dyn Write,
+) -> Result<()> {
+    write_bundle(generation, store, writer, ArchiveForm::LocalReference)
+}
+
+fn write_bundle(
+    generation: &Generation,
+    store: &TenantStore,
+    writer: &mut dyn Write,
+    form: ArchiveForm,
 ) -> Result<()> {
     store.check_access()?;
     let source = store.storage_access().purpose();
@@ -158,7 +199,10 @@ pub(super) fn write(
         digest: Sha256::new(),
         counts: Counts::default(),
     };
-    encoder.bytes(MAGIC)?;
+    encoder.bytes(match form {
+        ArchiveForm::Embedded => MAGIC,
+        ArchiveForm::LocalReference => LOCAL_MAGIC,
+    })?;
     encoder.bytes(&(encoded.len() as u64).to_be_bytes())?;
     encoder.bytes(&encoded)?;
     let mut logical = LogicalWriter {
@@ -168,6 +212,15 @@ pub(super) fn write(
     TenantEngine::write_generation(generation, &mut logical)?;
     logical.finish()?;
     let retention = &generation.state.audit_retention;
+    if form == ArchiveForm::LocalReference {
+        verify_local_chain(generation, store)?;
+        encoder.bytes(&[END])?;
+        encoder.bytes(&encoder.counts.encode())?;
+        let digest = encoder.digest.finalize();
+        encoder.writer.write_all(&digest)?;
+        store.check_access()?;
+        return Ok(());
+    }
     let mut expected = retention
         .archive_head
         .as_ref()
@@ -204,6 +257,20 @@ pub(super) fn write(
     encoder.writer.write_all(&digest)?;
     store.check_access()?;
     Ok(())
+}
+
+/// The archive chain `generation` names, verified in this node's own cache. A
+/// tenant without an archive has nothing to verify and must account for none.
+fn verify_local_chain(generation: &Generation, store: &TenantStore) -> Result<()> {
+    let retention = &generation.state.audit_retention;
+    if retention.archive_head.is_none() {
+        ensure!(
+            retention.archive_bytes == 0 && retention.archive_segments == 0,
+            "local audit archive accounting differs"
+        );
+        return Ok(());
+    }
+    verify_local_checked(generation, store, || Ok(()))
 }
 
 /// Logical candidates are never sufficient evidence to publish a pruned state.
@@ -419,13 +486,18 @@ impl Read for LogicalReader<'_, '_> {
     }
 }
 
+/// Read and verify a bundle. `reopen` is true only when a standalone group reopens
+/// its own stored snapshot: only then is a [`LOCAL_MAGIC`] bundle accepted, and its
+/// archive chain must already be in this node's cache. Every installed, transported
+/// or API-provided bundle must embed its chain.
 pub(super) fn read(
     engine: &TenantEngine,
     baseline: &ValidationBaseline<'_>,
     reader: &mut dyn Read,
     expected: Option<crate::snapshot_codec::StreamSummary>,
+    reopen: bool,
 ) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
-    read_checked(engine, baseline, reader, expected, &|| Ok(()))
+    read_checked(engine, baseline, reader, expected, reopen, &|| Ok(()))
 }
 
 pub(super) fn read_checked(
@@ -433,9 +505,10 @@ pub(super) fn read_checked(
     baseline: &ValidationBaseline<'_>,
     reader: &mut dyn Read,
     expected: Option<crate::snapshot_codec::StreamSummary>,
+    reopen: bool,
     check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
 ) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
-    let (store, mut decoder, source) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+    let (store, mut decoder, source, form) = kasumi_store::ScratchOperationFailure::ordinary(|| {
         check()?;
         baseline.current_for(engine)?;
         let store = engine
@@ -450,7 +523,17 @@ pub(super) fn read_checked(
         };
         let mut magic = [0; 8];
         decoder.bytes(&mut magic)?;
-        ensure!(&magic == MAGIC, "unsupported tenant snapshot bundle format");
+        let form = if &magic == MAGIC {
+            ArchiveForm::Embedded
+        } else if &magic == LOCAL_MAGIC {
+            ensure!(
+                reopen,
+                "a local snapshot is accepted only when its own group reopens"
+            );
+            ArchiveForm::LocalReference
+        } else {
+            anyhow::bail!("unsupported tenant snapshot bundle format");
+        };
         let length = decoder.length(SOURCE_LIMIT)?;
         let mut encoded = vec![0; length];
         decoder.bytes(&mut encoded)?;
@@ -463,7 +546,7 @@ pub(super) fn read_checked(
             same_snapshot_resource(&source, store.storage_access().purpose()),
             "snapshot source installation differs"
         );
-        Ok((store, decoder, source))
+        Ok((store, decoder, source, form))
     })?;
     let mut logical = LogicalReader {
         decoder: &mut decoder,
@@ -487,6 +570,17 @@ pub(super) fn read_checked(
         ensure!(logical_ended, "logical snapshot end missing");
         authorize_root(&generation.state, &source, store.storage_access().purpose())?;
         let retention = &generation.state.audit_retention;
+        if form == ArchiveForm::LocalReference {
+            // Nothing is copied: the exact chain must already be in this cache.
+            verify_local_chain(&generation, store)?;
+            ensure!(
+                decoder.tag()? == END,
+                "a local snapshot carries no archive record"
+            );
+            decoder.finish()?;
+            store.check_access()?;
+            return Ok(generation);
+        }
         let mut expected = retention
             .archive_head
             .as_ref()
@@ -755,6 +849,66 @@ mod tests {
         engine: Arc<TenantEngine>,
         bytes: Vec<u8>,
     ) -> crate::test_fixture_failure::FixtureResult<()> {
+        restore_as(engine, bytes, kasumi_raft::SnapshotRestoreMode::Install).await
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    async fn capture_local(
+        engine: Arc<TenantEngine>,
+    ) -> crate::test_fixture_failure::FixtureResult<Vec<u8>> {
+        let captured = engine.capture_local_snapshot()?;
+        tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
+            let mut bytes = Vec::new();
+            captured.write(&mut bytes)?;
+            Ok(bytes)
+        })
+        .await?
+    }
+    /// Read and verify a bundle as the engine does, with or without the reopen of
+    /// this group's own stored snapshot; the read generation's audit retention.
+    /// (Installing a reopened snapshot also needs the receipt bindings its durable
+    /// publication wrote; the standalone reopen test in `bootstrap` covers that.)
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    async fn read_bundle(
+        engine: Arc<TenantEngine>,
+        bytes: Vec<u8>,
+        reopen: bool,
+    ) -> crate::test_fixture_failure::FixtureResult<kasumi_types::AuditRetentionState> {
+        tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
+            let prior = CapturedValidation::capture(&engine)?;
+            let generation = read(&engine, &prior.baseline(), &mut bytes.as_slice(), None, reopen)?;
+            Ok(generation.state.audit_retention.clone())
+        })
+        .await?
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    async fn validate(
+        engine: Arc<TenantEngine>,
+        bytes: Vec<u8>,
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
+        tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
+            engine.validate_snapshot(&mut bytes.as_slice())?;
+            Ok(())
+        })
+        .await?
+    }
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    async fn restore_as(
+        engine: Arc<TenantEngine>,
+        bytes: Vec<u8>,
+        mode: kasumi_raft::SnapshotRestoreMode,
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
         tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
             // These bundle fixtures remain at genesis (no applied Raft entry).
             // Exercise prepared validation and atomic namespace publication;
@@ -765,7 +919,7 @@ mod tests {
                 .context("fixture snapshot storage absent")?;
             let image = kasumi_store::SnapshotImage::from_bytes(store.scratch_disk(), &bytes)?;
             let context = kasumi_raft::SnapshotRestoreContext {
-                mode: kasumi_raft::SnapshotRestoreMode::Install,
+                mode,
                 backend_sha256: image.sha256().into(),
                 meta: kasumi_raft::SnapshotMeta {
                     last_log_id: None,
@@ -853,6 +1007,87 @@ mod tests {
             .unwrap()
             .unwrap();
         target_store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_snapshot_references_this_nodes_chain_and_is_accepted_only_on_reopen() {
+        use kasumi_raft::SnapshotRestoreMode::Install;
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (_source_dir, source, source_store) = fixture(&incarnation).await;
+        let (_target_dir, target, target_store) = fixture(&incarnation).await;
+        let references = install_chain(&source, &source_store);
+        let embedded = capture(source.clone()).await.unwrap();
+        let local = capture_local(source.clone()).await.unwrap();
+        assert_eq!(&local[..8], LOCAL_MAGIC);
+        // Exactly the archive records are left out: each tag, length and segment.
+        let archived: u64 = references
+            .iter()
+            .map(|reference| 9 + reference.ciphertext_bytes)
+            .sum();
+        assert_eq!(embedded.len() as u64 - local.len() as u64, archived);
+        // It is never installed: not as a Raft install, not as a transported
+        // snapshot's validation, and not on a node whose cache lacks the chain.
+        let before = target.generation().unwrap().state.audit_retention.clone();
+        assert!(restore_as(target.clone(), local.clone(), Install).await.is_err());
+        assert!(validate(source.clone(), local.clone()).await.is_err());
+        assert!(read_bundle(target.clone(), local.clone(), true).await.is_err());
+        assert_eq!(target.generation().unwrap().state.audit_retention, before);
+        for reference in &references {
+            assert!(
+                target_store
+                    .tenant_audit_archive()
+                    .unwrap()
+                    .cache()
+                    .read_blocking(&reference.object)
+                    .is_err(),
+                "a local snapshot copies no archive segment anywhere"
+            );
+        }
+        // The group that wrote it reads it on reopen, verifying its own chain in
+        // place; an embedded (pre-upgrade) snapshot still reopens too.
+        let retention = source.generation().unwrap().state.audit_retention.clone();
+        assert_eq!(read_bundle(source.clone(), local.clone(), true).await.unwrap(), retention);
+        assert_eq!(read_bundle(source.clone(), embedded.clone(), true).await.unwrap(), retention);
+        assert!(read_bundle(source.clone(), local.clone(), false).await.is_err());
+        // Corruption of the stream itself is refused like an embedded bundle's.
+        let mut corrupt = local.clone();
+        *corrupt.last_mut().unwrap() ^= 1;
+        assert!(read_bundle(source.clone(), corrupt, true).await.is_err());
+        assert!(
+            read_bundle(source.clone(), local[..local.len() - 1].to_vec(), true)
+                .await
+                .is_err()
+        );
+        // The transportable bundle is unchanged and still installs elsewhere.
+        restore(target.clone(), embedded).await.unwrap();
+        assert_eq!(target.generation().unwrap().state.audit_retention, retention);
+        // A segment missing from this node's cache refuses both a new local
+        // snapshot and the reopen of an existing one.
+        let cache = source_store
+            .durable_directory()
+            .unwrap()
+            .join("tenant-audit-archives");
+        std::fs::remove_file(cache.join(format!("{}.audit", references[1].object.object_id)))
+            .unwrap();
+        assert!(capture_local(source.clone()).await.is_err());
+        assert!(read_bundle(source.clone(), local, true).await.is_err());
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn local_snapshot_of_a_tenant_without_archive_reopens() {
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (_dir, engine, store) = fixture(&incarnation).await;
+        assert!(engine.generation().unwrap().state.audit_retention.archive_head.is_none());
+        let local = capture_local(engine.clone()).await.unwrap();
+        let embedded = capture(engine.clone()).await.unwrap();
+        // Without an archive both forms differ only in their magic and trailer.
+        assert_eq!(local.len(), embedded.len());
+        let retention = engine.generation().unwrap().state.audit_retention.clone();
+        assert_eq!(read_bundle(engine.clone(), local.clone(), true).await.unwrap(), retention);
+        assert!(read_bundle(engine.clone(), local, false).await.is_err());
+        store.shutdown().await.unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
