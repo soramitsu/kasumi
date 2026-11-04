@@ -31,6 +31,48 @@ impl Fixture {
             _ => panic!("expected operation status"),
         }
     }
+    async fn exact_maintenance_transition(
+        &self,
+        command: &AuthorityMaintenanceCommand,
+        transition: MaintenanceTransition,
+    ) -> AuthorityMaintenanceStatus {
+        assert_eq!(transition.operation_id(), command.operation_id);
+        let context = self.context("operator");
+        let digest = command.digest().unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut last_failure = None;
+        loop {
+            let current = self.leader().await;
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "exact maintenance phase has no receipt before the setup deadline: {last_failure:?}"
+            );
+            // Begin compares the entire permanent command before replay, and
+            // Dispatch resolves the same operation_id without repeating its
+            // phase effect. Keep the context, command and deadline unchanged.
+            match current
+                .maintenance_write(&context, current.term(), transition.clone())
+                .await
+            {
+                Ok(status) => {
+                    assert_eq!(status.command, *command);
+                    assert_eq!(status.command_sha256, digest);
+                    assert_eq!(status.admitted_principal, context.principal);
+                    return status;
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    last_failure = Some(error)
+                }
+                Err(error) => panic!("exact maintenance phase rejected: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     async fn resume_maintenance_to_exact_completion(
         &self,
         command: &AuthorityMaintenanceCommand,
@@ -317,17 +359,14 @@ async fn maintenance_prepared_stop_and_dispatched_restart_are_exact() {
             member: fixture.settings.installed_members[&4].clone(),
         })
         .await;
-    let leader = fixture.leader().await;
-    let prepared = leader
-        .maintenance_write(
-            &fixture.context("operator"),
-            leader.term(),
+    let prepared = fixture
+        .exact_maintenance_transition(
+            &command,
             MaintenanceTransition::Begin {
                 command: command.clone(),
             },
         )
-        .await
-        .unwrap();
+        .await;
     assert_eq!(prepared.phase, AuthorityMaintenancePhase::Prepared);
     let stopped = fixture
         .maintenance(AuthorityMaintenanceRequest::Stop {
@@ -344,7 +383,9 @@ async fn maintenance_prepared_stop_and_dispatched_restart_are_exact() {
         stopped
     );
     assert!(
-        !leader
+        !fixture
+            .leader()
+            .await
             .group
             .raft()
             .metrics()
@@ -359,26 +400,24 @@ async fn maintenance_prepared_stop_and_dispatched_restart_are_exact() {
             member: fixture.settings.installed_members[&4].clone(),
         })
         .await;
-    leader
-        .maintenance_write(
-            &fixture.context("operator"),
-            leader.term(),
+    let prepared = fixture
+        .exact_maintenance_transition(
+            &command,
             MaintenanceTransition::Begin {
                 command: command.clone(),
             },
         )
-        .await
-        .unwrap();
-    leader
-        .maintenance_write(
-            &fixture.context("operator"),
-            leader.term(),
+        .await;
+    assert_eq!(prepared.phase, AuthorityMaintenancePhase::Prepared);
+    let dispatched = fixture
+        .exact_maintenance_transition(
+            &command,
             MaintenanceTransition::Dispatch {
                 operation_id: command.operation_id,
             },
         )
-        .await
-        .unwrap();
+        .await;
+    assert_eq!(dispatched.phase, AuthorityMaintenancePhase::Dispatched);
     assert_eq!(
         fixture
             .maintenance(AuthorityMaintenanceRequest::Stop {
@@ -390,7 +429,6 @@ async fn maintenance_prepared_stop_and_dispatched_restart_are_exact() {
             .code,
         ErrorCode::Conflict
     );
-    drop(leader);
     fixture.reopen().await;
     let observed = fixture
         .maintenance(AuthorityMaintenanceRequest::Status {

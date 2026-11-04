@@ -261,6 +261,72 @@ fn context() -> RequestContext {
     }
 }
 
+async fn set_suspension(targets: &BTreeMap<u64, Serving>, suspended: bool) -> u64 {
+    let initial = leader(targets).await;
+    let database = targets[&initial].owner.database().unwrap();
+    let generation = database.engine().generation().unwrap();
+    assert_ne!(generation.state.suspended, suspended);
+    let previous_epoch = generation.state.policy_epoch;
+    let expected_epoch = previous_epoch.checked_add(1).unwrap();
+    drop(generation);
+    drop(database);
+    let context = context();
+    let operation = Operation::Suspend(suspended);
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut last_failure = None;
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "suspension did not settle before the setup deadline: {last_failure:?}"
+        );
+        // Suspend has no permanent receipt and advances policy_epoch even when
+        // its value matches. Settle any original background proposal before a
+        // fresh barrier can establish whether another dispatch is necessary.
+        if targets
+            .values()
+            .any(|target| target.owner.database().unwrap().fixture_running_proposals() != 0)
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            continue;
+        }
+        let current = leader(targets).await;
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "suspension observation exceeded the original setup deadline: {last_failure:?}"
+        );
+        let database = targets[&current].owner.database().unwrap();
+        let generation = database.engine().generation().unwrap();
+        if generation.state.suspended == suspended {
+            assert_eq!(generation.state.policy_epoch, expected_epoch);
+            return current;
+        }
+        assert_eq!(generation.state.policy_epoch, previous_epoch);
+        drop(generation);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "suspension has no observed effect before the setup deadline: {last_failure:?}"
+        );
+        match database
+            .administer(context.clone(), operation.clone())
+            .await
+        {
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.code,
+                    ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                ) =>
+            {
+                last_failure = Some(error);
+            }
+            Err(error) => panic!("target suspension rejected: {error:?}"),
+        }
+        // Success and uncertainty both resolve through the same current-state
+        // observation; a changed leader never silently becomes a fresh effect.
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 async fn assert_operational(
     targets: &BTreeMap<u64, Serving>,
     fact: &kasumi_types::TargetActivationFact,
@@ -353,12 +419,8 @@ pub(super) async fn exercise_serving(
         );
     }
     if maintenance {
-        let id = leader(&targets).await;
+        let id = set_suspension(&targets, true).await;
         let database = targets[&id].owner.database().unwrap();
-        database
-            .administer(context(), Operation::Suspend(true))
-            .await
-            .unwrap();
         // Commit the learner metadata without claiming catch-up or issuing a
         // serving capability to node 4. Three original voters remain a quorum.
         database
@@ -394,12 +456,8 @@ pub(super) async fn exercise_serving(
             targets.insert(node_id, Serving::open(f, node_id, selected, router).await);
         }
         assert_operational(&targets, fact, true, true, id).await;
-        let new_leader = leader(&targets).await;
+        let new_leader = set_suspension(&targets, false).await;
         let database = targets[&new_leader].owner.database().unwrap();
-        database
-            .administer(context(), Operation::Suspend(false))
-            .await
-            .unwrap();
         database.raft_group().remove_learner(4).await.unwrap();
         assert_operational(&targets, fact, false, false, id).await;
     }
