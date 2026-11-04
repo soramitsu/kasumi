@@ -11,7 +11,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
 };
 
@@ -32,6 +32,8 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     worker: Worker,
     snapshot_worker: Arc<Worker>,
     report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
+    /// Snapshots durably published since this writer opened.
+    published: Arc<AtomicU64>,
     #[cfg(any(test, feature = "test-utils"))]
     before_apply: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(any(test, feature = "test-utils"))]
@@ -54,6 +56,7 @@ struct SnapshotWork {
     worker: Arc<Worker>,
     failed: Arc<AtomicBool>,
     report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
+    published: Arc<AtomicU64>,
     #[cfg(any(test, feature = "test-utils"))]
     before_build: FixtureHook,
 }
@@ -226,6 +229,7 @@ where
             worker: Default::default(),
             snapshot_worker: Default::default(),
             report: Default::default(),
+            published: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
             before_apply: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
@@ -289,6 +293,18 @@ where
     /// the next snapshot would: a failed task has already fenced the writer.
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) async fn fixture_snapshot_settled(&self) -> Result<()> {
+        self.snapshot_settled().await
+    }
+
+    /// Snapshots durably published since this writer opened. A deferred or
+    /// failed build never counts.
+    pub(crate) fn published_snapshots(&self) -> u64 {
+        self.published.load(Ordering::Acquire)
+    }
+
+    /// Join the write worker and then the current snapshot task, exactly as
+    /// the next snapshot would: a failed task has already fenced the writer.
+    pub(crate) async fn snapshot_settled(&self) -> Result<()> {
         let mut worker = self.worker.lock().await;
         self.finish_worker(&mut worker).await;
         let mut snapshot = self.snapshot_worker.lock().await;
@@ -310,6 +326,7 @@ where
             worker: self.snapshot_worker.clone(),
             failed: self.failed.clone(),
             report: self.report.clone(),
+            published: self.published.clone(),
             #[cfg(any(test, feature = "test-utils"))]
             before_build: self.before_snapshot.clone(),
         }
@@ -536,6 +553,7 @@ where
         let mut log = self.log.clone();
         let metrics = work.metrics.clone();
         let failed = work.failed.clone();
+        let published = work.published.clone();
         #[cfg(any(test, feature = "test-utils"))]
         let before_build = work.before_build.clone();
         *worker = Some(tokio::spawn(async move {
@@ -566,6 +584,8 @@ where
                     if purged {
                         metrics.purged = position;
                     }
+                    drop(metrics);
+                    published.fetch_add(1, Ordering::AcqRel);
                 }
                 // The journal keeps every entry until a later snapshot covers it.
                 LocalSnapshot::Deferred => {

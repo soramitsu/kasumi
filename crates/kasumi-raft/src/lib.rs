@@ -880,6 +880,22 @@ impl RaftGroup {
             .await
     }
 
+    /// Snapshots the standalone writer has durably published since it opened;
+    /// `None` for a replicated group.
+    pub fn local_snapshots_published(&self) -> Option<u64> {
+        self.local.as_ref().map(|local| local.published_snapshots())
+    }
+
+    /// Wait for the standalone writer's current snapshot task. An error means
+    /// the task failed and fenced the writer, as the next snapshot would find.
+    pub async fn local_snapshot_settled(&self) -> Result<()> {
+        self.local
+            .as_ref()
+            .context("standalone snapshot wait requires standalone mode")?
+            .snapshot_settled()
+            .await
+    }
+
     /// Wait for the standalone writer's current snapshot task. An error means
     /// the task failed and fenced the writer, as the next snapshot would find.
     #[cfg(any(test, feature = "test-utils"))]

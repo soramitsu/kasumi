@@ -83,7 +83,10 @@ pub use security_audit::{
 pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
 };
-pub use state::{Generation, PreparedSnapshotRestore, TenantEngine, validate_genesis_inputs};
+pub use state::{
+    Generation, PreparedSnapshotRestore, TenantEngine, reference_local_snapshots,
+    set_reference_local_snapshots, validate_genesis_inputs,
+};
 mod snapshot_failure;
 pub use snapshot_failure::SnapshotFailure;
 #[cfg(test)]

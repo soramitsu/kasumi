@@ -297,6 +297,30 @@ pub struct TenantEngine {
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
     pub(crate) audit_maintenance:
         Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
+    /// Whether this group's own standalone snapshots are stored by reference
+    /// (KASUMIL1). Taken from [`reference_local_snapshots`] at construction.
+    reference_local_snapshots: std::sync::atomic::AtomicBool,
+    /// Whether this group's last reopen read a by-reference (KASUMIL1) snapshot.
+    reopened_local_reference: std::sync::atomic::AtomicBool,
+}
+
+/// The process default for a standalone group's own snapshot form. Off keeps the
+/// transportable KASUMID1 bundle, which every earlier Kasumi binary reopens. On
+/// stores KASUMIL1 (archive by reference), which binaries before it refuse, so it
+/// is an explicit opt-in: `kasumid serve <config> --local-snapshot-archive reference`.
+static REFERENCE_LOCAL_SNAPSHOTS: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Select the process default before any tenant opens. Engines read it once,
+/// when constructed; a reopen in the embedded form converts a group's stored
+/// by-reference snapshot before it serves (see `open_existing_local`).
+pub fn set_reference_local_snapshots(enabled: bool) {
+    REFERENCE_LOCAL_SNAPSHOTS.store(enabled, std::sync::atomic::Ordering::Release);
+}
+
+/// The process default (see [`set_reference_local_snapshots`]).
+pub fn reference_local_snapshots() -> bool {
+    REFERENCE_LOCAL_SNAPSHOTS.load(std::sync::atomic::Ordering::Acquire)
 }
 
 enum ApplyScope {
@@ -442,13 +466,19 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
     {
         capture_tenant_snapshot(self, snapshot_bundle::write)
     }
-    /// A standalone group's own snapshot: its archive chain stays in this node's
-    /// cache and each reopen verifies it there (see [`snapshot_bundle::write_local`]).
+    /// A standalone group's own snapshot. By reference, its archive chain stays in
+    /// this node's cache and each reopen verifies it there (see
+    /// [`snapshot_bundle::write_local`]). Otherwise it is the transportable bundle,
+    /// which a binary that cannot read KASUMIL1 still reopens.
     fn capture_local_snapshot(
         &self,
     ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
     {
-        capture_tenant_snapshot(self, snapshot_bundle::write_local)
+        if self.stores_reference_local_snapshots() {
+            capture_tenant_snapshot(self, snapshot_bundle::write_local)
+        } else {
+            capture_tenant_snapshot(self, snapshot_bundle::write)
+        }
     }
     fn validate_snapshot(
         &self,
@@ -661,6 +691,22 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
 }
 
 impl TenantEngine {
+    /// Whether this group's next own snapshots are stored by reference (KASUMIL1).
+    pub fn stores_reference_local_snapshots(&self) -> bool {
+        self.reference_local_snapshots
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Whether this group's last reopen read a by-reference (KASUMIL1) snapshot.
+    pub fn reopened_from_reference_snapshot(&self) -> bool {
+        self.reopened_local_reference
+            .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// Choose this one engine's own snapshot form, without the process default.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_reference_local_snapshots(&self, enabled: bool) {
+        self.reference_local_snapshots
+            .store(enabled, std::sync::atomic::Ordering::Release);
+    }
     pub(crate) fn install_application_sources(
         &self,
         sources: crate::application_sources::SourceRootsRef,
@@ -1386,6 +1432,10 @@ impl TenantEngine {
         let restoration_identity =
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
+            reference_local_snapshots: std::sync::atomic::AtomicBool::new(
+                reference_local_snapshots(),
+            ),
+            reopened_local_reference: std::sync::atomic::AtomicBool::new(false),
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),
             application_sources: std::sync::OnceLock::new(),

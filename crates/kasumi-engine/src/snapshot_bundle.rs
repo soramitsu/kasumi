@@ -579,6 +579,9 @@ pub(super) fn read_checked(
             );
             decoder.finish()?;
             store.check_access()?;
+            engine
+                .reopened_local_reference
+                .store(true, std::sync::atomic::Ordering::Release);
             return Ok(generation);
         }
         let mut expected = retention
@@ -628,6 +631,11 @@ pub(super) fn read_checked(
         );
         decoder.finish()?;
         store.check_access()?;
+        if reopen {
+            engine
+                .reopened_local_reference
+                .store(false, std::sync::atomic::Ordering::Release);
+        }
         Ok(generation)
     })
 }

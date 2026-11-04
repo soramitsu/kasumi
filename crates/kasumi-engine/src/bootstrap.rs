@@ -932,13 +932,50 @@ pub async fn open_existing_local(
     require_deployment(&stores, b"local-v1")?;
     let bytes = load(stores.application())?
         .ok_or_else(|| anyhow::anyhow!("local bootstrap is not initialized"))?;
-    start(
+    let database = start(
         construction,
         &bytes,
         LocalRuntime::Production,
         Some(expected_incarnation),
     )
-    .await
+    .await?;
+    store_embedded_after_reference_reopen(&database).await?;
+    Ok(database)
+}
+
+/// A group reopened from its by-reference (KASUMIL1) snapshot by a process that
+/// stores the embedded form durably publishes one embedded snapshot before it
+/// serves. Afterwards a binary that cannot read KASUMIL1 reopens this group too,
+/// so rolling back is: start once without `--local-snapshot-archive reference`,
+/// wait for every tenant to serve, then install the older binary.
+async fn store_embedded_after_reference_reopen(
+    database: &Database,
+) -> std::result::Result<(), crate::SnapshotFailure> {
+    let engine = database.engine();
+    if !engine.reopened_from_reference_snapshot() || engine.stores_reference_local_snapshots() {
+        return Ok(());
+    }
+    let group = database.raft_group();
+    let tenant = engine.generation()?.state.tenant.clone();
+    let before = group
+        .local_snapshots_published()
+        .ok_or_else(|| anyhow::anyhow!("a by-reference snapshot reopened a replicated group"))?;
+    group.snapshot().await.map_err(anyhow::Error::from)?;
+    group.local_snapshot_settled().await.map_err(anyhow::Error::from)?;
+    let after = group.local_snapshots_published().unwrap_or(before);
+    if after <= before {
+        // This binary still reads the stored by-reference snapshot, so it serves.
+        // An older binary refuses that snapshot's format and does not open.
+        eprintln!(
+            "Kasumi tenant {tenant}: WARNING the embedded snapshot replacing its by-reference \
+             snapshot was not published; do not install a binary that cannot read KASUMIL1"
+        );
+        return Ok(());
+    }
+    eprintln!(
+        "Kasumi tenant {tenant}: stored an embedded snapshot in place of its by-reference snapshot"
+    );
+    Ok(())
 }
 
 /// Explicit genesis identity for local control storage and local test fixtures.

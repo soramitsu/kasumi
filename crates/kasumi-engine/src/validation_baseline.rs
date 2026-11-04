@@ -85,6 +85,10 @@ impl UninitializedEngine {
     pub(super) fn new(state: &TenantState) -> Result<Self> {
         Ok(Self {
             engine: TenantEngine {
+                reference_local_snapshots: std::sync::atomic::AtomicBool::new(
+                    super::reference_local_snapshots(),
+                ),
+                reopened_local_reference: std::sync::atomic::AtomicBool::new(false),
                 access: std::sync::OnceLock::new(),
                 snapshot_store: std::sync::OnceLock::new(),
                 audit_maintenance: Mutex::new(None),
