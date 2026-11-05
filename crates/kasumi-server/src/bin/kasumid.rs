@@ -33,6 +33,11 @@ Credentials and keys:
   verify-operator-keys <private-directory>
   maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json>
 
+Storage:
+  maintenance move-tenant-audit-cache <configuration.json> <current-cache-directory>
+                                             move the audit archive cache to the configured
+                                             tenant_audit_cache (daemon stopped; resumable)
+
 Backups, audit and recovery:
   backup create <database-profile> <destination> <checkpoint.json>
   backup status|verify <database-profile> <destination> <session-uuid>

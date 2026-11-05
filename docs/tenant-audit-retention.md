@@ -13,7 +13,11 @@ including dormant staged tenants. Every row explicitly chooses
 `{"kind":"local_replica_only"}` or a nested external destination. Missing, empty,
 incomplete, duplicate or extra rows and obsolete `tenant_audit_archives` fields
 are rejected. Local replica only keeps encrypted history beneath the store's
-durable data directory in `tenant-audit-archives`. External placement selects an
+durable data directory in `tenant-audit-archives`, or for the stores in the
+installation's own node in the configured `tenant_audit_cache`, which may be on
+another filesystem. Moving an installed cache needs
+[`kasumid maintenance move-tenant-audit-cache`](operations.md#moving-the-tenant-audit-archive-cache).
+External placement selects an
 additional filesystem or S3 destination; every replica still preserves the exact
 required ciphertext in its own installed cache before applying pruning.
 The preparing leader publishes and reads back its installed destination before

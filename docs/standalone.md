@@ -60,8 +60,9 @@ opens use the same derivation. The UUID envelope does not replace encrypted
 tenant catalog authentication or permanent recovery fencing.
 
 The generated configuration requires `persistent_disk`. Its explicit `roots` map
-contains the installation's `data` and `backups` directories. These private roots
-share one filesystem and cannot overlap each other or `scratch`. The initial
+contains the installation's `data` and `backups` directories. Private roots
+cannot overlap each other or `scratch`. An installed node may add roots on other
+filesystems; see [more than one filesystem](operations.md#persistent-storage-on-more-than-one-filesystem). The initial
 limits are `max_bytes: 137438953472` (128 GiB),
 `maintenance_reserve_bytes: 1073741824` (1 GiB),
 `min_free_bytes: 268435456` (256 MiB), `max_open_files: 4096`,
@@ -106,9 +107,9 @@ per-operation format and request bounds still apply. These are resource settings
 not a fixed aggregate backup-format ceiling. Reopening the same live scratch
 directory with different budgets is rejected.
 
-Persistent and scratch owners share the filesystem's outstanding-growth
+Persistent and scratch owners on one filesystem share its outstanding-growth
 accounting and fresh free-space checks, while maintaining separate installed
-capacity limits. The persistent maintenance reserve remains unavailable to
+capacity limits. Each filesystem holding a persistent root keeps its own accounting and checks. The persistent maintenance reserve remains unavailable to
 foreground growth. External processes can consume disk after a check, so storage
 failures remain possible.
 Protected health and metrics expose the scratch charges and filesystem sample.
@@ -152,12 +153,18 @@ Stop the standalone server and drain clients before the following commands. They
 kasumid maintenance rotate-wrapping-keys /var/lib/kasumi/kasumi.json
 kasumid maintenance rotate-signer /var/lib/kasumi/kasumi.json
 kasumid maintenance rotate-certificates /var/lib/kasumi/kasumi.json
+kasumid maintenance move-tenant-audit-cache /var/lib/kasumi/kasumi.json /var/lib/kasumi/data/tenant-audit-archives
 kasumid backup-operator-keys /var/lib/kasumi/kasumi.json /secure/offline/kasumi-keys
 kasumid verify-operator-keys /secure/offline/kasumi-keys
 kasumid recover-administrator /var/lib/kasumi/kasumi.json /var/lib/kasumi/recovered
 ```
 
 Wrapping-key rotation retains previous generations and rewraps installed catalogs. Signer rotation retains previous verification keys. Certificate rotation retains the CA, replaces server and generated client keys and certificates, commits the new local Control certificate pin, and updates profiles inside the installation's `profiles` directory. Update any copied/external profiles using the returned pins before reconnecting. A failed rotation leaves a durable started event and can be rerun while the server remains stopped.
+
+The tenant audit cache move copies the installed cache to the configured
+`tenant_audit_cache`, verifies every local archive chain in the copy, switches
+the stored placements and only then removes the old directory. Its procedure,
+resume and rollback are in [operations](operations.md#moving-the-tenant-audit-archive-cache).
 
 Administrator recovery issues new private profiles for administrators in the current policies. It does not silently replace policy or change existing credential-family outcomes. It requires the installed encryption and signing keys. Run the renewal watcher for recovered profiles before their one-hour lifetime expires.
 

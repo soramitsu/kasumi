@@ -229,6 +229,24 @@ fn verify_prefix(
 }
 
 impl TenantEngine {
+    /// Verify that `cache` holds the whole audit archive chain of the current
+    /// generation, as a reopen verifies the installed cache: every object from
+    /// the head back to the stream's first segment authenticates and matches
+    /// its link, and the totals equal the generation's archive accounting.
+    /// Returns the number of verified objects. Call from a blocking worker.
+    pub fn verify_audit_archive_copy(
+        &self,
+        cache: &kasumi_store::FilesystemAuditArchive,
+    ) -> anyhow::Result<u64> {
+        let store = self
+            .snapshot_store
+            .get()
+            .context("audit storage not installed")?;
+        let generation = self.generation()?;
+        super::snapshot_bundle::verify_chain_in(&generation, store, cache, || Ok(()))?;
+        Ok(generation.state.audit_retention.archive_segments)
+    }
+
     /// Install the shared node reservation before opening or replaying Raft.
     /// This does not start maintenance; Database construction starts the worker
     /// only when its backend has this explicit installation.

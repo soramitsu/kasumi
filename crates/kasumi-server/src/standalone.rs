@@ -296,6 +296,9 @@ pub struct InitializedInstallation {
 #[path = "standalone_operator.rs"]
 mod operator;
 pub(crate) use operator::OperatorState;
+#[path = "standalone_audit_cache.rs"]
+mod audit_cache;
+pub use audit_cache::{TenantAuditCacheMove, move_tenant_audit_cache};
 
 /// Join local initialization, recovery and key-maintenance operations after
 /// admission has stopped. Completed replies contain no storage owners.

@@ -265,6 +265,13 @@ pub struct RuntimeConfig {
     #[serde(deserialize_with = "crate::audit_destination::deserialize_tenant_audit_placements")]
     pub tenant_audit_placements:
         BTreeMap<String, crate::audit_destination::TenantAuditPlacementConfig>,
+    /// Installed directory of the private tenant audit archive cache of
+    /// Control and every tenant stored in `database_path`'s node, beneath a
+    /// persistent root that may be on another filesystem. Absent, the cache
+    /// is `tenant-audit-archives` beside the node file. An existing cache moves
+    /// only with `kasumid maintenance move-tenant-audit-cache`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tenant_audit_cache: Option<PathBuf>,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub target_recovery: Option<crate::target_runtime_config::TargetRecoveryConfig>,
     pub serving_authorities: BTreeMap<String, crate::serving_runtime::ServingAuthorityConfig>,
@@ -2725,6 +2732,7 @@ pub fn example_config(
                 crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly,
             ),
         ]),
+        tenant_audit_cache: None,
         signer_verifier: Some(crate::signer_runtime::SignerVerifierConfig {
             max_background_workers: 64,
             identity: kasumi_serving::TrustVerifierIdentity {

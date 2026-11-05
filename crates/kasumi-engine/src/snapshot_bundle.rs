@@ -285,12 +285,25 @@ pub(super) fn verify_local_checked(
     store: &TenantStore,
     check: impl Fn() -> Result<()>,
 ) -> Result<()> {
+    let placement = store.tenant_audit_archive()?;
+    verify_chain_in(generation, store, placement.cache(), check)
+}
+
+/// Verify the whole archive chain `generation` names in `cache`, which need
+/// not be the installed placement's: every object from the head back to the
+/// stream's first segment authenticates under its original source, and the
+/// totals equal the generation's archive accounting.
+pub(super) fn verify_chain_in(
+    generation: &Generation,
+    store: &TenantStore,
+    cache: &kasumi_store::FilesystemAuditArchive,
+    check: impl Fn() -> Result<()>,
+) -> Result<()> {
     check()?;
     store.check_access()?;
     let source = store.storage_access().purpose();
     authorize_root(&generation.state, source, store.storage_access().purpose())?;
     let retention = &generation.state.audit_retention;
-    let placement = store.tenant_audit_archive()?;
     let mut expected = retention
         .archive_head
         .as_ref()
@@ -298,7 +311,7 @@ pub(super) fn verify_local_checked(
     let mut counts = Counts::default();
     while let Some(link) = expected {
         check()?;
-        let ciphertext = placement.cache().read_blocking(&link)?;
+        let ciphertext = cache.read_blocking(&link)?;
         let reference = verify_dependency(&generation.state, source, store, &ciphertext, &link)?;
         if counts.archive_records == 0 {
             ensure!(
@@ -1622,5 +1635,50 @@ mod tests {
         );
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();
+    }
+
+    /// A moved cache is accepted only when it holds the generation's whole
+    /// chain: every segment back to the stream's first authenticates.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_moved_cache_must_hold_the_whole_archive_chain() {
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (_directory, engine, store) = fixture(&incarnation).await;
+        let references = install_chain(&engine, &store);
+        let cache = store.tenant_audit_archive().unwrap().cache().clone();
+        let moved = Arc::new(
+            kasumi_store::FilesystemAuditArchive::open(
+                store.durable_directory().unwrap().join("moved-cache"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
+        );
+        let verify = |moved: &Arc<kasumi_store::FilesystemAuditArchive>| {
+            let (engine, moved) = (engine.clone(), moved.clone());
+            tokio::task::spawn_blocking(move || engine.verify_audit_archive_copy(&moved))
+        };
+        // An incomplete copy fails closed, whichever segment it lacks.
+        cache
+            .copy_object(&store, references[2].object.object_id, &moved)
+            .unwrap();
+        assert!(verify(&moved).await.unwrap().is_err());
+        for reference in &references {
+            let copied = cache
+                .copy_object(&store, reference.object.object_id, &moved)
+                .unwrap();
+            assert_eq!(&copied, reference);
+        }
+        assert_eq!(verify(&moved).await.unwrap().unwrap(), 3);
+        assert_eq!(verify(&cache).await.unwrap().unwrap(), 3);
+        moved.delete_object(&references[0].object).unwrap();
+        let error = verify(&moved).await.unwrap().unwrap_err();
+        assert!(
+            moved.read_blocking(&references[0].object).is_err(),
+            "{error:#}"
+        );
+        // The installed cache itself was never touched.
+        for reference in &references {
+            cache.read_blocking(&reference.object).unwrap();
+        }
+        store.shutdown().await.unwrap();
     }
 }

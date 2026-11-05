@@ -1,5 +1,6 @@
 //! Explicit installed persistent roots. Configuration validation is read-only;
 //! opening never invents a root from a database path or scratch directory.
+//! Roots may be on different filesystems; each root is one filesystem.
 use anyhow::{Result, ensure};
 use kasumi_store::{
     DiskWork, NodeDisk, NodeDiskConfig, NodeDiskDirectory, NodeDiskPhase, ScratchDiskConfig,
@@ -27,21 +28,33 @@ pub(crate) fn validate<'a>(
     };
     ensure!(
         installed_path(&scratch.directory),
-        "scratch path contains parent traversal"
+        "scratch path {} contains parent traversal",
+        scratch.directory.display()
     );
     for (name, root) in &config.roots {
         ensure!(
             installed_path(root),
-            "persistent root contains parent traversal"
+            "persistent root {name} ({}) contains parent traversal",
+            root.display()
         );
         ensure!(
             !root.starts_with(&scratch.directory) && !scratch.directory.starts_with(root),
-            "persistent and scratch roots overlap"
+            "persistent root {name} ({}) and the scratch directory {} overlap; give scratch its \
+             own directory outside every persistent root",
+            root.display(),
+            scratch.directory.display()
         );
         for (other_name, other) in &config.roots {
-            if name != other_name {
-                ensure!(!root.starts_with(other), "persistent roots overlap");
-            }
+            ensure!(
+                name == other_name || !root.starts_with(other),
+                "persistent root {name} ({}) is inside persistent root {other_name} ({}). Roots \
+                 may not nest, even when the inner directory is a mount point of another \
+                 filesystem. Mount the other filesystem outside every persistent root, install \
+                 that directory as its own root, and place tenant_audit_cache or backup \
+                 destination directories beneath it",
+                root.display(),
+                other.display()
+            );
         }
     }
     for path in paths {
@@ -50,11 +63,14 @@ pub(crate) fn validate<'a>(
                 && !path
                     .components()
                     .any(|part| matches!(part, std::path::Component::ParentDir)),
-            "persistent path must be an absolute installed path without parent traversal"
+            "persistent path {} must be an absolute installed path without parent traversal",
+            path.display()
         );
         ensure!(
             config.roots.values().any(|root| path.starts_with(root)),
-            "persistent path is outside the explicitly installed roots"
+            "persistent path {} is outside the explicitly installed roots; install a root that \
+             contains it",
+            path.display()
         );
     }
     Ok(())
@@ -196,7 +212,66 @@ impl crate::runtime::RuntimeConfig {
                 paths.push(directory);
             }
         }
+        if let Some(cache) = &self.tenant_audit_cache {
+            self.validate_tenant_audit_cache(cache, &paths)?;
+            paths.push(cache);
+        }
         validate(&self.persistent_disk, &self.scratch_disk, paths)
+    }
+
+    /// The configured cache is its own directory: normalized, outside every
+    /// generation deletion root, and apart from every other installed
+    /// destination, database and archive path.
+    fn validate_tenant_audit_cache(&self, cache: &Path, others: &[&Path]) -> Result<()> {
+        ensure!(
+            cache.is_absolute()
+                && cache.as_os_str() == cache.components().collect::<PathBuf>().as_os_str()
+                && cache.components().all(|part| matches!(
+                    part,
+                    std::path::Component::RootDir | std::path::Component::Normal(_)
+                )),
+            "tenant_audit_cache {} must be a normalized absolute path",
+            cache.display()
+        );
+        let data = self
+            .database_path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("installed data directory missing"))?;
+        let mut deletion_roots = vec![data.join("generations")];
+        if let Some(target) = &self.target_recovery {
+            deletion_roots.push(target.generation_root.clone());
+        }
+        for root in &deletion_roots {
+            ensure!(
+                !cache.starts_with(root),
+                "tenant_audit_cache {} is inside the generation deletion root {}",
+                cache.display(),
+                root.display()
+            );
+        }
+        ensure!(
+            cache != data.join(crate::audit_destination::TENANT_AUDIT_CACHE),
+            "tenant_audit_cache {} is the default location; omit it instead",
+            cache.display()
+        );
+        ensure!(
+            !self
+                .persistent_disk
+                .roots
+                .values()
+                .any(|root| root == cache),
+            "tenant_audit_cache {} must be a directory inside a persistent root, not the root",
+            cache.display()
+        );
+        for other in others {
+            ensure!(
+                !cache.starts_with(other) && !other.starts_with(cache),
+                "tenant_audit_cache {} overlaps the installed path {}",
+                cache.display(),
+                other.display()
+            );
+        }
+        Ok(())
     }
 }
 
@@ -461,6 +536,117 @@ mod tests {
             },
         );
         config.validate_persistent_disk().unwrap();
+    }
+
+    #[test]
+    fn nested_roots_name_both_roots_and_the_supported_layout() {
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
+        // The bind mount the operators tried: a second filesystem mounted
+        // inside the data root, installed as its own root.
+        config.persistent_disk.roots.insert(
+            "audit".into(),
+            "/var/lib/kasumi/data/tenant-audit-archives".into(),
+        );
+        let error = config.validate_persistent_disk().unwrap_err().to_string();
+        for expected in [
+            "persistent root audit (/var/lib/kasumi/data/tenant-audit-archives)",
+            "inside persistent root data (/var/lib/kasumi/data)",
+            "may not nest",
+            "install that directory as its own root",
+            "tenant_audit_cache",
+        ] {
+            assert!(error.contains(expected), "{error}");
+        }
+        // The supported layout: the other filesystem is its own root, and the
+        // cache and backups are directories beneath it.
+        config.persistent_disk.roots.remove("audit");
+        config
+            .persistent_disk
+            .roots
+            .insert("volume".into(), "/data/kasumi".into());
+        config.tenant_audit_cache = Some("/data/kasumi/tenant-audit-archives".into());
+        config.validate_persistent_disk().unwrap();
+        let outside = "/mnt/elsewhere/backups";
+        config.backup_destinations.insert(
+            "outside".into(),
+            crate::administration::DestinationConfig::Filesystem {
+                directory: outside.into(),
+                max_bytes: 1 << 20,
+                // Shape-only negative fixture; never an enrolled namespace.
+                namespace_binding: kasumi_types::BackupNamespaceBinding::Filesystem {
+                    installation_id: uuid::Uuid::nil(),
+                    origin_node_id: 0,
+                    namespace_id: uuid::Uuid::nil(),
+                    device: 0,
+                    inode: 0,
+                },
+            },
+        );
+        let error = config.validate_persistent_disk().unwrap_err().to_string();
+        assert!(error.contains(outside), "{error}");
+        assert!(error.contains("install a root that contains it"), "{error}");
+    }
+
+    #[test]
+    fn tenant_audit_cache_is_its_own_directory_inside_an_installed_root() {
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )
+        .unwrap();
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert!(encoded.get("tenant_audit_cache").is_none());
+        let cache = std::path::PathBuf::from("/var/lib/kasumi/archives/tenant-audit-cache");
+        config.tenant_audit_cache = Some(cache.clone());
+        config.validate_persistent_disk().unwrap();
+        let encoded = serde_json::to_value(&config).unwrap();
+        assert_eq!(encoded["tenant_audit_cache"], cache.display().to_string());
+        let decoded: crate::runtime::RuntimeConfig = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.tenant_audit_cache, Some(cache));
+        for (cache, reason) in [
+            (
+                "/mnt/data/tenant-audit-cache",
+                "outside the explicitly installed roots",
+            ),
+            (
+                "/var/lib/kasumi/data/tenant-audit-archives",
+                "default location",
+            ),
+            ("/var/lib/kasumi/archives", "not the root"),
+            (
+                "/var/lib/kasumi/data/generations/cache",
+                "generation deletion root",
+            ),
+            (
+                "/var/lib/kasumi/archives/cache/",
+                "normalized absolute path",
+            ),
+            (
+                "/var/lib/kasumi/archives/./cache",
+                "normalized absolute path",
+            ),
+            ("relative/cache", "normalized absolute path"),
+            ("/var/lib/kasumi/verifier/trust.kv/cache", "overlaps"),
+        ] {
+            config.tenant_audit_cache = Some(cache.into());
+            let error = config.validate_persistent_disk().unwrap_err().to_string();
+            assert!(error.contains(reason), "{cache}: {error}");
+        }
+        config.tenant_audit_cache = Some("/var/lib/kasumi/archives/acme/cache".into());
+        config.tenant_audit_placements.insert(
+            "acme".into(),
+            crate::audit_destination::TenantAuditPlacementConfig::External {
+                destination: crate::audit_destination::AuditDestinationConfig::Filesystem {
+                    directory: "/var/lib/kasumi/archives/acme".into(),
+                },
+            },
+        );
+        let error = config.validate_persistent_disk().unwrap_err().to_string();
+        assert!(error.contains("overlaps"), "{error}");
     }
 
     #[test]

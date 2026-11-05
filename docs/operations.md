@@ -245,6 +245,140 @@ audit growth. There is currently no automatic audit deletion or export-and-prune
 policy; preserve records and increase an authorized quota within the overall
 state/RAM budget before exhaustion. Do not delete storage records manually.
 
+## Persistent storage on more than one filesystem
+
+`persistent_disk.roots` may name directories on different filesystems. Each
+root is one filesystem: startup refuses a root whose tree reaches into another
+filesystem, and roots may not nest, not even when the inner directory is a
+mount point. Mount the other filesystem outside every root and install it as
+its own root. Kasumi keeps separate accounts for every filesystem that holds a
+root:
+
+- outstanding promises (reserved growth not yet allocated);
+- the `min_free_bytes` floor, checked against a fresh free-space sample of that
+  filesystem;
+- the free space a reservation must find.
+
+A reservation is charged to the filesystem of the root it writes in. A full `/`
+then no longer refuses growth on a second volume, and the reverse holds too.
+`max_bytes`, `maintenance_reserve_bytes` and the namespace limits stay one total
+for the node. A file is never renamed from one filesystem to another; such a
+publication is refused before it has any effect. One node's roots can span at
+most eight filesystems. Each extra filesystem adds one device registration of a
+few KiB to the installed metadata, so `admission` needs no change.
+
+Kasumi identifies a filesystem by its device number, as it already does for
+scratch. Filesystems that share one free-space pool behind different device
+numbers, such as btrfs subvolumes of one pool, are accounted as separate
+filesystems, each against the whole pool's free space. Their promises are then
+not summed. Put such roots in one subvolume, or on filesystems with separate
+space.
+
+With several filesystems, protected health JSON lists them in
+`persistent_disk.filesystems`: device, root labels, pending bytes (all owners
+and this owner), floor, available, total, used and admission readiness. The
+scalar `filesystem_*` fields, and their Prometheus gauges, then describe the
+filesystem with the least headroom, so readiness covers every filesystem.
+
+These can live on the second filesystem:
+
+- The tenant audit archive cache, through `tenant_audit_cache`. It holds the
+  immutable encrypted segments that the audit chains and by-reference
+  snapshots depend on. Move an existing cache only with the procedure below.
+- New filesystem backup destinations and external filesystem audit
+  destinations, in directories beneath the new root. An existing backup
+  destination is bound to its directory's device and inode. Enroll a new
+  destination on the new filesystem (`kasumid enroll-backup-destination`)
+  instead of moving its files.
+
+`database_path`, `data/generations` and the scratch directory keep their
+locations. A minimal configuration fragment:
+
+```json
+"persistent_disk": {
+  "roots": {
+    "backups": "/var/lib/kasumi/backups",
+    "data": "/var/lib/kasumi/data",
+    "volume": "/data/kasumi"
+  }
+},
+"tenant_audit_cache": "/data/kasumi/tenant-audit-archives"
+```
+
+Only the changed keys are shown; every other `persistent_disk` field stays as
+installed. Create each root before startup as a directory owned by the service
+account with mode 0700. The systemd template confines writes to
+`/var/lib/kasumi`, so add the new root to its `ReadWritePaths`.
+`tenant_audit_cache` must be a normalized absolute path strictly inside an
+installed root, outside `data/generations`, and apart from every other
+configured database, archive and backup directory. Omit it for the default
+location, which is `tenant-audit-archives` beside `node.kv`. It applies to
+Control and to the tenants stored in `database_path`'s node. Tenants restored
+into local generations keep their caches inside their generation directories.
+
+### Moving the tenant audit archive cache
+
+Each tenant store records which cache directory holds its archive. A
+configuration that names another directory fails startup before creating that
+directory. The error names both directories and the command below. Never copy,
+move or delete the cache by hand: every reopen depends on it. The command needs
+a standalone installation. For a replicated member, set `tenant_audit_cache` on
+a new member before it first starts, and replace the old member through the
+membership workflow. For a standalone node:
+
+1. Stop `kasumid`.
+2. Mount the second filesystem outside `/var/lib/kasumi/data`, and create its
+   root with `install -d -m 0700 -o kasumi -g kasumi /data/kasumi`.
+3. In `kasumi.json`, add the root (`"volume": "/data/kasumi"`) and
+   `"tenant_audit_cache": "/data/kasumi/tenant-audit-archives"`. Keep every
+   existing root. Run `kasumid check-config /var/lib/kasumi/kasumi.json`.
+4. Run the move. Its second argument is the directory that holds the cache now;
+   for a default installation that is the one beside `node.kv`:
+
+   ```sh
+   kasumid maintenance move-tenant-audit-cache /var/lib/kasumi/kasumi.json /var/lib/kasumi/data/tenant-audit-archives
+   ```
+
+5. Start `kasumid`.
+
+The command needs the stopped installation's exclusive operator ownership. It
+works in two steps and prints a JSON report:
+
+1. It copies every object into the new directory through the same exact
+   publication as a new segment: a staging name, file and directory sync, a
+   create-only rename, and a full readback compared with the source digest.
+   Every placement still names the old directory during this step. Then
+   Control and every local tenant open as at startup. Each authenticates its
+   whole archive chain in the new copy, from the head back to the stream's
+   first segment, decrypting every segment. Only then does the command record
+   the verified move in security storage. Opening a tenant here writes nothing:
+   a by-reference snapshot stays by reference, as with
+   `serve --local-snapshot-archive reference`, instead of being rewritten in
+   the embedded form that would copy the archive into `node.kv`.
+2. It confirms that every source object still equals its copy. It then
+   rewrites each store's placement to the new directory and deletes each source
+   object while it still equals its copy. It also deletes the staging names of
+   interrupted publications; their records are still in the hot audit set.
+   Finally it removes the old directory and clears the record.
+
+If the command is interrupted, run it again with the same arguments; it
+resumes. If it reports that the source changed after verification, run it
+again: it copies and verifies once more. After a completed move, the same
+command reports `already_installed` and changes nothing. The new filesystem
+needs room for a full copy, because the old directory is freed only at the end.
+The node file's filesystem still needs its ordinary floor and a little more:
+the command records its progress and audit events in the node's security
+storage.
+The command reads every object several times and opens every local tenant as
+startup does, so plan for longer than one restart.
+
+Before step 2 begins, reverting the configuration restores the original
+installation. The unused copies stay in the new directory; a later move to it
+reuses them, and a later move anywhere else discards the stale record. To move the cache back after a completed move, configure the old
+location again (omit `tenant_audit_cache` for the default), make sure its parent
+is still inside an installed root, and run the command with the new directory as
+the source.
+
 ## Recovery procedures
 
 After one replica crashes, restart it with the same path, identity, deployment

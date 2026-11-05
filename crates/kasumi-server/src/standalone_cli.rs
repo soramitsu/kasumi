@@ -128,6 +128,20 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 ))?)?
             );
         }
+        [command, action, configuration, source]
+            if command == "maintenance" && action == "move-tenant-audit-cache" =>
+        {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &crate::standalone::move_tenant_audit_cache(
+                        Path::new(configuration),
+                        Path::new(source)
+                    )
+                    .await?
+                )?
+            );
+        }
         [command, action, configuration] if command == "maintenance" => match action.as_str() {
             "rotate-wrapping-keys" => {
                 crate::standalone::rotate_wrapping_keys(Path::new(configuration)).await?;

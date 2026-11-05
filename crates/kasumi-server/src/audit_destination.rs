@@ -3,7 +3,13 @@
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{AuditArchiveDestination, FilesystemAuditArchive, S3AuditArchive};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::Arc};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
+
+/// The private cache directory name beside a store's node file.
+pub(crate) const TENANT_AUDIT_CACHE: &str = "tenant-audit-archives";
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
@@ -169,7 +175,7 @@ impl TenantAuditPlacementConfig {
         let cache = match cache {
             Some(cache) => cache,
             None => Arc::new(FilesystemAuditArchive::open(
-                store.durable_directory()?.join("tenant-audit-archives"),
+                store.durable_directory()?.join(TENANT_AUDIT_CACHE),
                 store.persistent_disk().clone(),
             )?),
         };
@@ -214,8 +220,42 @@ impl crate::runtime::RuntimeConfig {
         cache: Option<Arc<FilesystemAuditArchive>>,
     ) -> Result<()> {
         // Resolve before creating even the local cache or reading a credential.
-        self.tenant_audit_placement(store.tenant())?
-            .install(store, cache)
+        let placement = self.tenant_audit_placement(store.tenant())?;
+        let cache = match cache {
+            Some(cache) => cache,
+            None => {
+                let directory = self.tenant_audit_cache_directory(store)?;
+                // A cache configured somewhere else is refused before the new
+                // directory exists: it would not hold the installed history.
+                if let Some((installed, _)) = store.installed_tenant_audit_placement()? {
+                    let configured = kasumi_store::filesystem_archive_identity(&directory);
+                    if installed != configured {
+                        return Err(cache_moved(store.tenant(), &installed, &directory));
+                    }
+                }
+                Arc::new(
+                    FilesystemAuditArchive::open(&directory, store.persistent_disk().clone())
+                        .with_context(|| {
+                            format!("opening the tenant audit cache {}", directory.display())
+                        })?,
+                )
+            }
+        };
+        placement.install(store, Some(cache))
+    }
+
+    /// The private tenant audit cache directory of `store`: the configured
+    /// `tenant_audit_cache` for stores in the installation's own node, else
+    /// `tenant-audit-archives` beside the store's node file.
+    pub(crate) fn tenant_audit_cache_directory(
+        &self,
+        store: &kasumi_store::TenantStore,
+    ) -> Result<PathBuf> {
+        let durable = store.durable_directory()?;
+        Ok(match &self.tenant_audit_cache {
+            Some(directory) if Some(durable) == self.database_path.parent() => directory.clone(),
+            _ => durable.join(TENANT_AUDIT_CACHE),
+        })
     }
 
     pub(crate) fn tenant_audit_placement(
@@ -248,6 +288,20 @@ impl crate::runtime::RuntimeConfig {
         }
         Ok(())
     }
+}
+
+/// The installed cache differs from the configured one: say where each is and
+/// how to move it, since its history is a reopen dependency.
+fn cache_moved(tenant: &str, installed: &str, configured: &Path) -> anyhow::Error {
+    let installed = kasumi_store::filesystem_archive_directory(installed)
+        .map_or_else(|| installed.to_owned(), |path| path.display().to_string());
+    anyhow::anyhow!(
+        "the tenant audit cache of {tenant} is installed at {installed}, but the configuration \
+         names {}. Its history is still in {installed}: stop kasumid and run `kasumid \
+         maintenance move-tenant-audit-cache <configuration.json> {installed}` to move it, or \
+         configure tenant_audit_cache to {installed} again",
+        configured.display()
+    )
 }
 
 #[cfg(test)]
@@ -420,6 +474,80 @@ mod tests {
                 .is_err()
             );
         }
+    }
+
+    #[tokio::test]
+    async fn a_configured_cache_reopens_there_and_any_other_location_fails_closed() -> Result<()> {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let physical =
+            crate::runtime_storage_fixtures::physical(directory.path(), Default::default())?;
+        let path = directory.path().join("persistent/node.kv");
+        let provider = Arc::new(LocalKeyProvider::new([76; 32]));
+        let node = physical
+            .create_new(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .expect("configured cache fixture must create its installed native node");
+        let store = TenantStore::initialize_catalog_fixture(
+            node.clone(),
+            "tenant".into(),
+            provider.clone(),
+        )
+        .await?;
+        let mut config = crate::runtime::example_config(
+            kasumi_store::DirectoryPolicy::fixture(),
+            kasumi_store::FileAllocationPolicy::fixture(),
+        )?;
+        config.database_path = path.clone();
+        config.tenant_audit_placements.insert(
+            "tenant".into(),
+            TenantAuditPlacementConfig::LocalReplicaOnly,
+        );
+        let default = directory.path().join("persistent").join(TENANT_AUDIT_CACHE);
+        let configured = directory.path().join("persistent/moved-audit-cache");
+        config.tenant_audit_cache = Some(configured.clone());
+        assert_eq!(config.tenant_audit_cache_directory(&store)?, configured);
+        config.install_tenant_audit_archive(&store, None)?;
+        assert!(configured.is_dir() && !default.exists());
+        assert_eq!(
+            store.tenant_audit_archive()?.cache().directory(),
+            configured.as_path()
+        );
+        let identity = kasumi_store::filesystem_archive_identity(&configured);
+        assert_eq!(
+            store.installed_tenant_audit_placement()?,
+            Some((identity.clone(), identity))
+        );
+        store.shutdown().await?;
+        drop(store);
+        node.shutdown().await?;
+        drop(node);
+
+        let node = physical
+            .open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
+            .expect("configured cache fixture must reopen its installed native node");
+        let reopened =
+            TenantStore::open_existing_fixture(node.clone(), "tenant".into(), provider).await?;
+        // Without the setting the default location is refused before it exists.
+        let mut unset = config.clone();
+        unset.tenant_audit_cache = None;
+        let error = format!(
+            "{:#}",
+            unset
+                .install_tenant_audit_archive(&reopened, None)
+                .unwrap_err()
+        );
+        assert!(error.contains("move-tenant-audit-cache"), "{error}");
+        assert!(error.contains(&configured.display().to_string()), "{error}");
+        assert!(!default.exists());
+        assert!(reopened.tenant_audit_archive().is_err());
+        // The configured location reopens.
+        config.install_tenant_audit_archive(&reopened, None)?;
+        assert_eq!(
+            reopened.tenant_audit_archive()?.cache().directory(),
+            configured.as_path()
+        );
+        reopened.shutdown().await?;
+        node.shutdown().await?;
+        Ok(())
     }
 
     #[tokio::test]

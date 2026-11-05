@@ -21,6 +21,12 @@ use zeroize::Zeroizing;
 #[path = "audit_archive_owned.rs"]
 mod owned;
 pub use owned::AuditArchivePublicationObserver;
+#[path = "audit_archive_relocation.rs"]
+mod relocation;
+pub use relocation::{
+    AuditCacheEntry, TenantAuditPlacementDiffers, filesystem_archive_directory,
+    filesystem_archive_identity, inspect_audit_object,
+};
 mod ciphertext;
 mod generated;
 pub use ciphertext::AuditCiphertext;
@@ -160,27 +166,10 @@ impl<'a> InspectedAuditDependency<'a> {
             hex::encode(Sha256::digest(bytes)) == expected.ciphertext_sha256,
             "audit archive link digest differs"
         );
-        let length = u32::from_be_bytes(bytes[8..12].try_into()?) as usize;
-        ensure!(
-            length <= HEADER_LIMIT && length <= bytes.len() - 12,
-            "invalid audit archive header length"
-        );
-        let encoded = &bytes[12..12 + length];
-        let header: Header = serde_json::from_slice(encoded)?;
-        ensure!(header.format == 1, "unsupported audit archive version");
-        ensure!(
-            serde_json::to_vec(&header)? == encoded,
-            "noncanonical audit archive header"
-        );
-        let reference = reference(&header, bytes)?;
-        reference.validate()?;
+        let (header, reference) = decode_object(bytes)?;
         ensure!(
             reference.object == *expected,
             "audit archive link identity differs"
-        );
-        ensure!(
-            header.plaintext_bytes <= PAYLOAD_LIMIT as u64,
-            "audit plaintext exceeds limit"
         );
         Ok(Self {
             bytes,
@@ -463,6 +452,34 @@ impl AuditDecoder<'_> {
     }
 }
 
+/// The canonical header of a complete object and the reference its bytes
+/// bind. This authenticates nothing: decryption still has to verify it.
+fn decode_object(bytes: &[u8]) -> Result<(Header, AuditArchiveReference)> {
+    ensure!(
+        bytes.len() <= MAX_AUDIT_SEGMENT_BYTES && bytes.len() >= 12 && &bytes[..8] == MAGIC,
+        "unsupported audit archive format"
+    );
+    let length = u32::from_be_bytes(bytes[8..12].try_into()?) as usize;
+    ensure!(
+        length <= HEADER_LIMIT && length <= bytes.len() - 12,
+        "invalid audit archive header length"
+    );
+    let encoded = &bytes[12..12 + length];
+    let header: Header = serde_json::from_slice(encoded)?;
+    ensure!(header.format == 1, "unsupported audit archive version");
+    ensure!(
+        serde_json::to_vec(&header)? == encoded,
+        "noncanonical audit archive header"
+    );
+    let reference = reference(&header, bytes)?;
+    reference.validate()?;
+    ensure!(
+        header.plaintext_bytes <= PAYLOAD_LIMIT as u64,
+        "audit plaintext exceeds limit"
+    );
+    Ok((header, reference))
+}
+
 fn reference(header: &Header, ciphertext: &[u8]) -> Result<AuditArchiveReference> {
     Ok(AuditArchiveReference {
         stream_id: header.stream_id,
@@ -536,6 +553,16 @@ fn placement_identity(cache: &str, destination: &str) -> Result<Vec<u8>> {
     Ok(identity)
 }
 
+/// The stored `(cache, destination)` identities, exactly as they were written.
+fn decode_placement(stored: &[u8]) -> Result<(String, String)> {
+    let (cache, destination): (String, String) = serde_json::from_slice(stored)?;
+    ensure!(
+        placement_identity(&cache, &destination)? == stored,
+        "noncanonical installed tenant audit placement"
+    );
+    Ok((cache, destination))
+}
+
 impl TenantStore {
     /// Call before engine replay to install the configured placement: an
     /// external destination, or an explicit local-replica-only cache. A
@@ -558,10 +585,17 @@ impl TenantStore {
             return Ok(existing.clone());
         }
         match self.get(PLACEMENT, b"identity")? {
-            Some(stored) => ensure!(
-                stored == identity,
-                "installed tenant audit placement differs"
-            ),
+            Some(stored) if stored != identity => {
+                let (installed_cache, installed_destination) = decode_placement(&stored)?;
+                return Err(TenantAuditPlacementDiffers {
+                    installed_cache,
+                    installed_destination,
+                    configured_cache: cache.identity(),
+                    configured_destination: destination.identity(),
+                }
+                .into());
+            }
+            Some(_) => {}
             None => self.write_batch(&[crate::WriteOp::put(
                 PLACEMENT,
                 b"identity",
@@ -1845,5 +1879,154 @@ mod tests {
         let alias = directory.path().join("alias");
         std::os::unix::fs::symlink(directory.path(), &alias).unwrap();
         assert!(FilesystemAuditArchive::open_fixture(&alias, fixture_memory.clone()).is_err());
+    }
+
+    #[tokio::test]
+    async fn relocation_rewrites_only_the_installed_source_and_keeps_the_destination() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let store = tenant_store(
+            directory.path(),
+            "tenant",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let open = |store: &TenantStore, name: &str| {
+            Arc::new(
+                FilesystemAuditArchive::open(
+                    directory.path().join(name),
+                    store.persistent_disk().clone(),
+                )
+                .unwrap(),
+            )
+        };
+        let (old, moved) = (open(&store, "tenant-audit-archives"), open(&store, "moved"));
+        assert!(
+            store
+                .relocate_tenant_audit_cache(&old.identity(), &moved)
+                .is_err(),
+            "nothing installed, nothing to relocate"
+        );
+        let s3 = s3_destination("audit-bucket");
+        store
+            .install_tenant_audit_archive(old.clone(), s3.clone())
+            .unwrap();
+        assert!(
+            store
+                .relocate_tenant_audit_cache(&old.identity(), &moved)
+                .is_err(),
+            "a live placement is never rewritten under its users"
+        );
+        drop((old, moved));
+        let store = restart(
+            store,
+            directory.path(),
+            "tenant",
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let (old, moved, other) = (
+            open(&store, "tenant-audit-archives"),
+            open(&store, "moved"),
+            open(&store, "other"),
+        );
+        assert!(
+            store
+                .relocate_tenant_audit_cache(&other.identity(), &moved)
+                .is_err(),
+            "only the installed source moves"
+        );
+        assert!(
+            store
+                .relocate_tenant_audit_cache(&old.identity(), &moved)
+                .unwrap()
+        );
+        assert!(
+            !store
+                .relocate_tenant_audit_cache(&old.identity(), &moved)
+                .unwrap()
+        );
+        // The external destination stays; only the cache moved.
+        assert_eq!(
+            store.installed_tenant_audit_placement().unwrap(),
+            Some((moved.identity(), s3.identity()))
+        );
+        let error = store
+            .install_tenant_audit_archive(old.clone(), s3.clone())
+            .err()
+            .unwrap();
+        let differs = error.downcast_ref::<TenantAuditPlacementDiffers>().unwrap();
+        assert_eq!(differs.installed_cache, moved.identity());
+        assert_eq!(differs.configured_cache, old.identity());
+        assert_placement_unavailable(&store);
+        store
+            .install_tenant_audit_archive(moved.clone(), s3.clone())
+            .unwrap();
+        assert_eq!(
+            store.tenant_audit_archive().unwrap().cache().directory(),
+            directory.path().join("moved")
+        );
+        store.shutdown().await.unwrap();
+        store.node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_local_replica_only_placement_moves_with_its_cache() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let store = tenant_store(
+            directory.path(),
+            "tenant",
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let old = Arc::new(
+            FilesystemAuditArchive::open(
+                directory.path().join("tenant-audit-archives"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
+        );
+        store
+            .install_tenant_audit_archive(old.clone(), old.clone())
+            .unwrap();
+        drop(old);
+        let store = restart(
+            store,
+            directory.path(),
+            "tenant",
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let moved = Arc::new(
+            FilesystemAuditArchive::open(
+                directory.path().join("moved"),
+                store.persistent_disk().clone(),
+            )
+            .unwrap(),
+        );
+        let old = filesystem_identity(&directory.path().join("tenant-audit-archives"));
+        assert!(store.relocate_tenant_audit_cache(&old, &moved).unwrap());
+        assert_eq!(
+            store.installed_tenant_audit_placement().unwrap(),
+            Some((moved.identity(), moved.identity()))
+        );
+        store
+            .install_tenant_audit_archive(moved.clone(), moved.clone())
+            .unwrap();
+        store.shutdown().await.unwrap();
+        store.node.shutdown().await.unwrap();
     }
 }
