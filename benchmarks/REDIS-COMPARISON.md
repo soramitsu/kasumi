@@ -183,6 +183,8 @@ threads over 8 seconds; they rank costs, they are not exact shares.
    waited 5,247 samples and batch reads 5,195. Background maintenance held the
    same mutex for 760 samples during reads. During a 100,000-document load
    one 100-document batch did not complete within 60 seconds.
+   Since 89e011ed a commit releases that mutex while it writes and flushes its
+   root; see [changes](#changes-measured-here).
 3. **Writes are serialized through two durable commits.** Besides its audit
    commit, each write needs a journal append and an application publication,
    each a durable commit, and the engine admits one proposal at a time
@@ -215,6 +217,7 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 | Unknown token key IDs no longer re-read the private signer file (security fix, same file) | committed, caf0d2a9 | every request naming an unknown `kid` re-parsed every signing key | at most one reload per replacement of the signer file |
 | Closing readers sleep on the database owner's lock instead of spinning on `yield_now` (`kasumi-store/src/storage_opening/reads.rs`) | committed, 1f375877 | server CPU per point read 2,318 µs, per range scan 32.9 ms (16 clients, release build without LTO, two alternating rounds) | 1,908 µs (−18%), 21.0 ms (−36%); throughput unchanged within noise |
 | Record a bearer token's success once per connection and count the later ones in one record when the connection changes token or closes; refusals are still recorded one by one (`kasumi-server/src/auth.rs`, `authenticate_on`) | committed, 1a0f7bc5 | 1-client point reads 20/s, p50 44 ms, 7.3 ms server CPU per read; 16 clients 117/s, p50 172 ms; range scans 7.3/s (1 client) and 15/s (16); mixed 90/10 16/s and 30/s | 2,015/s, p50 0.31 ms, 0.30 ms CPU per read; 6,900/s, p50 1.9 ms; 77/s and 56/s; 71/s and 58/s; writes unchanged within noise |
+| A commit releases the kv state mutex while it writes and flushes its root, so reads continue on the previous root. It records the cache identities it supersedes outside the cache and reconciles them once the root is durable; maintenance, warm-up, configuration and close wait on a separate commit gate (`kasumi-kv/src/core.rs`, `disk_state.rs`) | committed, 89e011ed | mixed 90/10: 189/s with 1 client (p99 47–138 ms) and 252/s with 16; point reads 4,431/s (1 client) and 9,569/s (16); profiled under 16-client mixed load, 93% of kv point-read samples waited for the mutex | 240/s (p99 34–60 ms) and 211/s, with two of five 16-client runs at 107–146/s while compaction ran; 4,809/s and 9,546/s; 64% |
 
 The per-connection row comes from a separate A/B run of two builds without
 LTO at 51f47f27 (10,000 documents of 1 KiB, 15 s per case, two alternating
@@ -228,6 +231,15 @@ six device syncs on this host (three segment-log syncs, one directory sync,
 two root syncs), which the `sync-trace` build of `kasumi-store` counts
 directly. In some rounds of both builds, 16-client writes stalled for 16 to
 111 seconds.
+
+The lock-split row compares two builds without LTO at 47a37475 (10,000
+documents of 1 KiB, 20 s per case, three to five alternating rounds per
+build, host load average 19–122, medians), plus a 15 s `sample` profile of
+each build under the 16-client mixed workload; the 89e011ed commit message
+has the ranges and the profile. The 16-client mixed case is bound by the serialized
+writes, and its slow runs coincided with an active compaction cycle. It is
+not settled whether the change lets the store's maintenance worker compete
+harder with foreground writes.
 
 ## Summary: where Kasumi stands against Redis
 
@@ -269,17 +281,19 @@ authentication once per connection made 16-client reads 59 times faster
 than its own baseline, yet its 6,900 reads/s trail the 75,944 that Redis
 served in the same run.
 
-Splitting the storage mutex so that reads run during a commit's flushes was
-designed here and not landed. While a commit's cache publication scope is
-active, the shared value cache refuses loads, so a reader that missed the
-cache mid-flush would fail; the commit would first have to record superseded
-identities outside the cache. On Linux all six of a commit's syncs are
-`fdatasync` calls (on macOS only the last is a full flush), so fewer syncs
-per commit is the larger lever there.
+Since 89e011ed reads run while a commit publishes its root: the commit records
+the cache identities it supersedes outside the cache, writes and flushes both
+root slots without the storage mutex, then recaptures pins and reconciles the
+cache under it. Readers still wait for a commit's three segment-log syncs and
+its directory sync, which stay under the mutex, and for maintenance and
+warm-up steps, which hold it through their I/O; in a profile of the mixed
+workload those are now what readers wait for. On Linux all six of a commit's
+syncs are `fdatasync` calls (on macOS only the last is a full flush), so
+fewer syncs per commit is the larger lever there.
 
 To approach Redis on throughput Kasumi would still need, in order of
-measured effect: stop holding the storage mutex across commit flushes so
-reads proceed during commits; group concurrent proposals into one journal
-append and one publication; reduce the syncs per commit; and batch journal
-replay. Each is described in [where Kasumi's time
-goes](#where-kasumis-time-goes).
+measured effect: stop holding the storage mutex across a commit's log and
+directory flushes and maintenance I/O, so reads proceed during them; group
+concurrent proposals into one journal append and one publication; reduce
+the syncs per commit; and batch journal replay. Each is described in [where
+Kasumi's time goes](#where-kasumis-time-goes).
