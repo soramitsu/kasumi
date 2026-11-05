@@ -3,6 +3,7 @@ use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jw
 use kasumi_clock::EpochClock;
 use kasumi_types::{Action, Error, ErrorCode, RequestAuthorization, RequestContext, Result};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeSet,
     sync::{
@@ -67,7 +68,7 @@ pub enum AuthKeySource {
     },
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 struct Claims {
     sub: String,
     tenant: String,
@@ -82,9 +83,108 @@ struct Claims {
     kasumi_family: Option<uuid::Uuid>,
 }
 
+/// Tokens whose signed claims one key set has verified, at most this many.
+/// A full cache is emptied; its tokens are verified again on their next use.
+const MAX_VERIFIED_TOKENS: usize = 1024;
+
+type TokenDigest = [u8; 32];
+
 struct CachedKeys {
     keys: JwkSet,
     fetched: Duration,
+    /// Claims of tokens these exact keys verified, by token SHA-256. Owned by
+    /// the key set, so every reload or JWKS refresh starts empty. Only
+    /// successfully verified tokens enter; failures are never remembered.
+    verified: std::sync::Mutex<std::collections::HashMap<TokenDigest, Claims>>,
+}
+
+impl CachedKeys {
+    fn new(keys: JwkSet, fetched: Duration) -> Self {
+        Self {
+            keys,
+            fetched,
+            verified: Default::default(),
+        }
+    }
+
+    fn verified(&self, digest: &TokenDigest) -> Option<Claims> {
+        self.verified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(digest)
+            .cloned()
+    }
+
+    fn remember(&self, digest: TokenDigest, claims: &Claims) {
+        let mut verified = self
+            .verified
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if verified.len() >= MAX_VERIFIED_TOKENS {
+            verified.clear();
+        }
+        verified.insert(digest, claims.clone());
+    }
+}
+
+/// The physical identity of the local signer file a reload read. Rotation
+/// atomically replaces the file, so an unchanged identity has the same keys.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct SignerFileIdentity {
+    device: u64,
+    inode: u64,
+    length: u64,
+    modified: Option<std::time::SystemTime>,
+}
+
+impl SignerFileIdentity {
+    fn observe(path: &std::path::Path) -> Option<Self> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::symlink_metadata(path).ok()?;
+        Some(Self {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            length: metadata.len(),
+            modified: metadata.modified().ok(),
+        })
+    }
+}
+
+/// Whether a reload of the local signer could ever trust `kid`. Its kids are
+/// `{signer}.{generation}`, and rotation only appends a higher generation to
+/// the same signer, so a malformed kid or an older generation of a cached
+/// signer stays unknown however often the file is reloaded. A kid of another
+/// signer may appear only if the file is replaced; the caller's file-identity
+/// gate bounds those reloads. With no cached keys yet, every kid may appear.
+fn local_kid_may_appear(cached: Option<&JwkSet>, kid: &str) -> bool {
+    let split = |kid: &str| -> Option<(String, u64)> {
+        let (signer, generation) = kid.rsplit_once('.')?;
+        Some((signer.to_owned(), generation.parse().ok()?))
+    };
+    let Some(cached) = cached.filter(|keys| !keys.keys.is_empty()) else {
+        return true;
+    };
+    let Some((signer, generation)) = split(kid) else {
+        return false;
+    };
+    cached
+        .keys
+        .iter()
+        .filter_map(|key| key.common.key_id.as_deref().and_then(split))
+        .filter(|(cached_signer, _)| *cached_signer == signer)
+        .map(|(_, cached_generation)| cached_generation)
+        .max()
+        .is_none_or(|highest| generation > highest)
+}
+
+/// What the last refresh established, held while refreshing.
+#[derive(Default)]
+struct RefreshState {
+    /// Number of the local signer reload that produced the cache.
+    loaded: u64,
+    /// The signer file that reload read, successfully or not. A kid that may
+    /// still appear is reloaded only after this identity changes.
+    signer: Option<SignerFileIdentity>,
 }
 
 pub struct Authenticator {
@@ -92,9 +192,8 @@ pub struct Authenticator {
     clock: Arc<EpochClock>,
     client: reqwest::Client,
     cache: RwLock<Option<CachedKeys>>,
-    /// Serializes refreshes. Holds the number of the local signer reload that
-    /// produced the cache; requests whose key is cached never wait on it.
-    refresh: tokio::sync::Mutex<u64>,
+    /// Serializes refreshes; requests whose key is cached never wait on it.
+    refresh: tokio::sync::Mutex<RefreshState>,
     /// Local signer reloads begun, numbered while holding `refresh`.
     reloads: AtomicU64,
     audit: std::sync::OnceLock<Arc<dyn RequestAuditSink>>,
@@ -181,7 +280,7 @@ impl Authenticator {
             clock,
             client,
             cache: RwLock::new(None),
-            refresh: tokio::sync::Mutex::new(0),
+            refresh: tokio::sync::Mutex::new(RefreshState::default()),
             reloads: AtomicU64::new(0),
             audit: std::sync::OnceLock::new(),
             local_credentials: std::sync::OnceLock::new(),
@@ -294,10 +393,10 @@ impl Authenticator {
     #[cfg(test)]
     pub(crate) async fn with_test_keys(config: AuthConfig, keys: JwkSet) -> Arc<Self> {
         let authenticator = Self::new(config).expect("valid test authenticator config");
-        *authenticator.cache.write().await = Some(CachedKeys {
+        *authenticator.cache.write().await = Some(CachedKeys::new(
             keys,
-            fetched: authenticator.clock.elapsed_clock().now(),
-        });
+            authenticator.clock.elapsed_clock().now(),
+        ));
         authenticator
     }
 
@@ -331,7 +430,7 @@ impl Authenticator {
             return Ok(());
         }
         let begun = self.reloads.load(Ordering::Acquire);
-        let mut loaded = self.refresh.lock().await;
+        let mut state = self.refresh.lock().await;
         if self.cached(requested_kid).await? {
             return Ok(());
         }
@@ -340,10 +439,25 @@ impl Authenticator {
                 // Rotation only appends generations, and a kid is issued only
                 // after its generation is written. A reload begun while this
                 // request waited has read it, so the kid is unknown.
-                if *loaded > begun {
+                if state.loaded > begun {
                     return Err(unauthorized());
                 }
+                // Unauthenticated headers choose the kid. Read the private
+                // signer file only for a kid that could still appear, and
+                // only once per replacement of that file, so a flood of
+                // unknown kids neither rereads it nor drops verified tokens.
+                let identity = SignerFileIdentity::observe(signer_file);
+                {
+                    let cache = self.cache.read().await;
+                    let cached = cache.as_ref().map(|cached| &cached.keys);
+                    if !local_kid_may_appear(cached, requested_kid)
+                        || (cached.is_some() && identity.is_some() && state.signer == identity)
+                    {
+                        return Err(unauthorized());
+                    }
+                }
                 let reload = self.reloads.fetch_add(1, Ordering::AcqRel) + 1;
+                state.signer = identity;
                 let signer_file = signer_file.clone();
                 let keys = tokio::task::spawn_blocking(move || {
                     crate::local_auth::trusted_keys(&signer_file)
@@ -351,11 +465,14 @@ impl Authenticator {
                 .await
                 .map_err(|_| unavailable())?
                 .map_err(|_| unavailable())?;
-                *self.cache.write().await = Some(CachedKeys {
-                    keys,
-                    fetched: self.clock.elapsed_clock().now(),
-                });
-                *loaded = reload;
+                let mut cache = self.cache.write().await;
+                let now = self.clock.elapsed_clock().now();
+                match cache.as_mut() {
+                    // The same keys keep the tokens they already verified.
+                    Some(current) if current.keys == keys => current.fetched = now,
+                    _ => *cache = Some(CachedKeys::new(keys, now)),
+                }
+                state.loaded = reload;
                 return Ok(());
             }
             AuthKeySource::ExternalOAuth { jwks_uri, .. } => jwks_uri,
@@ -406,10 +523,7 @@ impl Authenticator {
                 return Err(unavailable());
             }
         }
-        *self.cache.write().await = Some(CachedKeys {
-            keys,
-            fetched: self.clock.elapsed_clock().now(),
-        });
+        *self.cache.write().await = Some(CachedKeys::new(keys, self.clock.elapsed_clock().now()));
         Ok(())
     }
 
@@ -441,35 +555,14 @@ impl Authenticator {
         }
     }
 
-    async fn verify(&self, authorization: &str) -> Result<RequestContext> {
-        // Capture before JWKS/signature work. Delayed verification cannot renew
-        // the absolute token lifetime or ignore time spent suspended.
-        let observation = self.clock.observe().map_err(|_| unauthorized())?;
-        let token = authorization
-            .strip_prefix("Bearer ")
-            .filter(|value| {
-                !value.is_empty()
-                    && value.len() <= MAX_TOKEN_BYTES
-                    && !value.contains(char::is_whitespace)
-            })
-            .ok_or_else(unauthorized)?;
-        let header = decode_header(token).map_err(|_| unauthorized())?;
-        if !self.config.algorithms.contains(&header.alg)
-            || header
-                .typ
-                .as_ref()
-                .is_none_or(|typ| !self.config.access_token_types.contains(typ))
-        {
-            return Err(unauthorized());
-        }
-        let kid = header
-            .kid
-            .as_deref()
-            .filter(|kid| !kid.is_empty() && kid.len() <= 256)
-            .ok_or_else(unauthorized)?;
-        self.refresh_keys(kid).await?;
-        let cache = self.cache.read().await;
-        let keys = &cache.as_ref().ok_or_else(unavailable)?.keys;
+    /// The signed claims of `token` under `keys`, without any time check.
+    fn verify_signature(
+        &self,
+        keys: &JwkSet,
+        token: &str,
+        header: &jsonwebtoken::Header,
+        kid: &str,
+    ) -> Result<Claims> {
         let jwk = keys.find(kid).ok_or_else(unauthorized)?;
         if jwk
             .common
@@ -504,9 +597,56 @@ impl Authenticator {
         validation.set_issuer(&[&self.config.issuer]);
         validation.set_audience(&[&self.config.audience]);
         validation.set_required_spec_claims(&["exp", "iss", "aud", "sub"]);
-        let claims = decode::<Claims>(token, &key, &validation)
+        Ok(decode::<Claims>(token, &key, &validation)
             .map_err(|_| unauthorized())?
-            .claims;
+            .claims)
+    }
+
+    async fn verify(&self, authorization: &str) -> Result<RequestContext> {
+        // Capture before JWKS/signature work. Delayed verification cannot renew
+        // the absolute token lifetime or ignore time spent suspended.
+        let observation = self.clock.observe().map_err(|_| unauthorized())?;
+        let token = authorization
+            .strip_prefix("Bearer ")
+            .filter(|value| {
+                !value.is_empty()
+                    && value.len() <= MAX_TOKEN_BYTES
+                    && !value.contains(char::is_whitespace)
+            })
+            .ok_or_else(unauthorized)?;
+        let header = decode_header(token).map_err(|_| unauthorized())?;
+        if !self.config.algorithms.contains(&header.alg)
+            || header
+                .typ
+                .as_ref()
+                .is_none_or(|typ| !self.config.access_token_types.contains(typ))
+        {
+            return Err(unauthorized());
+        }
+        let kid = header
+            .kid
+            .as_deref()
+            .filter(|kid| !kid.is_empty() && kid.len() <= 256)
+            .ok_or_else(unauthorized)?;
+        self.refresh_keys(kid).await?;
+        let claims = {
+            let cache = self.cache.read().await;
+            let cached = cache.as_ref().ok_or_else(unavailable)?;
+            // Signature, issuer, audience and required-claim checks depend
+            // only on these exact token bytes and this key set, so a token
+            // this key set already verified skips them. Everything below
+            // (signed times against the trusted epoch, token use, scopes,
+            // credential liveness and the audit record) runs every request.
+            let digest: TokenDigest = Sha256::digest(token.as_bytes()).into();
+            match cached.verified(&digest) {
+                Some(claims) => claims,
+                None => {
+                    let claims = self.verify_signature(&cached.keys, token, &header, kid)?;
+                    cached.remember(digest, &claims);
+                    claims
+                }
+            }
+        };
         if let Some(not_before) = claims.nbf {
             let not_before_ms = not_before.checked_mul(1000).ok_or_else(unauthorized)?;
             if observation.utc_ms() < not_before_ms {
@@ -635,10 +775,7 @@ mod tests {
         let keys: JwkSet = serde_json::from_value(serde_json::json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"key-1","x":URL_SAFE_NO_PAD.encode(key.public_key_raw())}]})).unwrap();
         let auth = Authenticator::new_with_clock(config(), clock).unwrap();
         auth.install_audit(Arc::new(TestAudit::default())).unwrap();
-        *auth.cache.write().await = Some(CachedKeys {
-            keys,
-            fetched: auth.clock.elapsed_clock().now(),
-        });
+        *auth.cache.write().await = Some(CachedKeys::new(keys, auth.clock.elapsed_clock().now()));
         (
             auth,
             EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap(),
@@ -680,10 +817,10 @@ mod tests {
         let (source, key) = fixture().await;
         let auth = Authenticator::new(config()).unwrap();
         let cache = source.cache.read().await;
-        *auth.cache.write().await = Some(CachedKeys {
-            keys: cache.as_ref().unwrap().keys.clone(),
-            fetched: auth.clock.elapsed_clock().now(),
-        });
+        *auth.cache.write().await = Some(CachedKeys::new(
+            cache.as_ref().unwrap().keys.clone(),
+            auth.clock.elapsed_clock().now(),
+        ));
         assert_eq!(
             auth.authenticate(&bearer(&key, &claims(), "at+jwt"))
                 .await
@@ -900,6 +1037,99 @@ mod tests {
         }
     }
 
+    async fn verified_tokens(auth: &Authenticator) -> usize {
+        auth.cache
+            .read()
+            .await
+            .as_ref()
+            .map_or(0, |cached| cached.verified.lock().unwrap().len())
+    }
+
+    #[tokio::test]
+    async fn verified_tokens_skip_only_signature_work_and_end_with_their_key_set() {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let base = 2_000_000_000;
+        let elapsed = Arc::new(ManualElapsed(AtomicU64::new(0)));
+        let wall = Arc::new(ManualWall(AtomicU64::new(base * 1000)));
+        let clock = Arc::new(EpochClock::new(elapsed.clone(), wall).unwrap());
+        let (auth, key) = fixture_with_clock(clock).await;
+        let mut value = claims();
+        value["nbf"] = serde_json::json!(base);
+        value["exp"] = serde_json::json!(base + 4);
+        let token = bearer(&key, &value, "at+jwt");
+        auth.authenticate(&token).await.unwrap();
+        assert_eq!(verified_tokens(&auth).await, 1);
+        // A repeat uses the verified claims and yields the same identity, a
+        // fresh request ID and the same absolute expiry.
+        let first = auth.authenticate(&token).await.unwrap();
+        let second = auth.authenticate(&token).await.unwrap();
+        assert_eq!(verified_tokens(&auth).await, 1);
+        assert_eq!(
+            (&first.principal, &first.tenant),
+            (&second.principal, &second.tenant)
+        );
+        assert_ne!(first.request_id, second.request_id);
+        assert_eq!(
+            second.authorization.expires_at_ms(),
+            Some((base + 4) * 1000)
+        );
+        // Changed signature bytes and another key's signature over identical
+        // claims are separate tokens, verified on their own and refused.
+        let signature_at = token.rfind('.').unwrap() + 10;
+        let mut forged = token.clone().into_bytes();
+        forged[signature_at] = if forged[signature_at] == b'A' {
+            b'B'
+        } else {
+            b'A'
+        };
+        let forged = String::from_utf8(forged).unwrap();
+        assert_eq!(
+            auth.authenticate(&forged).await.unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        let (_, other) = fixture().await;
+        assert_eq!(
+            auth.authenticate(&bearer(&other, &value, "at+jwt"))
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(verified_tokens(&auth).await, 1);
+        // A replaced key set starts without verified tokens; one without the
+        // token's key refuses it even though it was verified before.
+        let keys = auth.cache.read().await.as_ref().unwrap().keys.clone();
+        let empty: JwkSet = serde_json::from_value(serde_json::json!({"keys": []})).unwrap();
+        *auth.cache.write().await = Some(CachedKeys::new(empty, Duration::ZERO));
+        assert_eq!(verified_tokens(&auth).await, 0);
+        // An unknown kid is refreshed for external issuers; the fixture's JWKS
+        // endpoint is unreachable, so the token cannot be accepted.
+        assert!(auth.authenticate(&token).await.is_err());
+        *auth.cache.write().await = Some(CachedKeys::new(keys, auth.clock.elapsed_clock().now()));
+        auth.authenticate(&token).await.unwrap();
+        assert_eq!(verified_tokens(&auth).await, 1);
+        // Signed times still apply to a verified token on every request.
+        elapsed.0.store(4000, Ordering::SeqCst);
+        assert_eq!(
+            auth.authenticate(&token).await.unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+    }
+
+    #[test]
+    fn verified_token_cache_is_bounded() {
+        let empty: JwkSet = serde_json::from_value(serde_json::json!({"keys": []})).unwrap();
+        let cached = CachedKeys::new(empty, Duration::ZERO);
+        let claims: Claims = serde_json::from_value(claims()).unwrap();
+        for index in 0..=MAX_VERIFIED_TOKENS {
+            let mut digest = [0; 32];
+            digest[..8].copy_from_slice(&(index as u64).to_be_bytes());
+            cached.remember(digest, &claims);
+            assert!(cached.verified.lock().unwrap().len() <= MAX_VERIFIED_TOKENS);
+        }
+        assert!(cached.verified(&[0; 32]).is_none());
+    }
+
     struct ExpiringAudit {
         clock: Arc<ManualElapsed>,
         events: std::sync::Mutex<Vec<RequestAuditKind>>,
@@ -933,10 +1163,10 @@ mod tests {
         let (source, key) = fixture().await;
         let auth = Authenticator::new_with_clock(config(), clock).unwrap();
         let cache = source.cache.read().await;
-        *auth.cache.write().await = Some(CachedKeys {
-            keys: cache.as_ref().unwrap().keys.clone(),
-            fetched: Duration::ZERO,
-        });
+        *auth.cache.write().await = Some(CachedKeys::new(
+            cache.as_ref().unwrap().keys.clone(),
+            Duration::ZERO,
+        ));
         let audit = Arc::new(ExpiringAudit {
             clock: elapsed,
             events: std::sync::Mutex::new(vec![]),
@@ -1003,6 +1233,35 @@ mod tests {
         let begun = |auth: &Authenticator| auth.reloads.load(Ordering::Acquire);
         auth.refresh_keys(&first).await.unwrap();
         assert_eq!(begun(&auth), 1);
+        // Only the next generation of the same signer could be added later.
+        let (signer_id, _) = first.rsplit_once('.').unwrap();
+        let next = format!("{signer_id}.2");
+
+        // Kids that no rotation can add are refused without a reload: other
+        // text and generations below the cached one of this signer.
+        assert_eq!(first, format!("{signer_id}.1"));
+        for impossible in [
+            "unknown".to_owned(),
+            format!("{signer_id}.0"),
+            format!("{signer_id}.x"),
+        ] {
+            assert_eq!(
+                auth.refresh_keys(&impossible).await.unwrap_err().code,
+                ErrorCode::Unauthorized,
+                "{impossible}"
+            );
+        }
+        assert_eq!(begun(&auth), 1);
+        // A kid a rotation or a replaced signer file could add is not reread
+        // while the signer file is unchanged.
+        for possible in [next.clone(), format!("{}.9", uuid::Uuid::new_v4())] {
+            assert_eq!(
+                auth.refresh_keys(&possible).await.unwrap_err().code,
+                ErrorCode::Unauthorized,
+                "{possible}"
+            );
+        }
+        assert_eq!(begun(&auth), 1);
 
         // A known kid neither reads the signer file nor waits on a reload.
         let installed = private_files::read(&signer, 1 << 20).unwrap();
@@ -1014,20 +1273,35 @@ mod tests {
             .unwrap();
         drop(reloading);
         assert_eq!(begun(&auth), 1);
-        // An unknown kid reloads; a failed reload keeps the trusted keys.
+        // A replaced file is reloaded for a possible kid; a failed reload
+        // keeps the trusted keys and is not retried for the same file.
         assert_eq!(
-            auth.refresh_keys("unknown").await.unwrap_err().code,
+            auth.refresh_keys(&next).await.unwrap_err().code,
             ErrorCode::Unavailable
+        );
+        assert_eq!(begun(&auth), 2);
+        assert_eq!(
+            auth.refresh_keys(&next).await.unwrap_err().code,
+            ErrorCode::Unauthorized
         );
         assert_eq!(begun(&auth), 2);
         auth.refresh_keys(&first).await.unwrap();
         private_files::replace(&signer, &installed).unwrap();
+        // Verified tokens survive a reload that finds the same keys.
+        let verified: Claims = serde_json::from_value(claims()).unwrap();
+        auth.cache
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .remember([7; 32], &verified);
 
         // Requests that waited behind one reload share it instead of rereading.
         let reloading = auth.refresh.lock().await;
         let waiting = [(); 2].map(|()| {
             let auth = auth.clone();
-            tokio::spawn(async move { auth.refresh_keys("unknown").await })
+            let next = next.clone();
+            tokio::spawn(async move { auth.refresh_keys(&next).await })
         });
         for _ in 0..8 {
             tokio::task::yield_now().await;
@@ -1039,10 +1313,25 @@ mod tests {
         }
         assert_eq!(outcomes, [Ok(()), Err(ErrorCode::Unauthorized)]);
         assert_eq!(begun(&auth), 3);
+        assert!(
+            auth.cache
+                .read()
+                .await
+                .as_ref()
+                .unwrap()
+                .verified(&[7; 32])
+                .is_some()
+        );
+        assert_eq!(
+            auth.refresh_keys(&next).await.unwrap_err().code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(begun(&auth), 3);
 
         // A rotated generation is trusted on its first use.
         crate::local_auth::rotate_signer(&signer).unwrap();
         let second = kid(1);
+        assert_eq!(second, next);
         auth.refresh_keys(&second).await.unwrap();
         assert_eq!(begun(&auth), 4);
         assert!(auth.cached(&first).await.unwrap() && auth.cached(&second).await.unwrap());
