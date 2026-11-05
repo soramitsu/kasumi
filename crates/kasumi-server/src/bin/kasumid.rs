@@ -52,6 +52,12 @@ async fn main() -> std::process::ExitCode {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;
     }
+    // Every command stores a standalone group's snapshots by reference unless
+    // `serve --local-snapshot-archive embedded` says otherwise. An offline
+    // command (credential or administrator recovery, key rotation) that opened
+    // its tenants with the library's embedded default would rewrite each
+    // by-reference snapshot embedded: the whole audit archive into node.kv.
+    kasumi_engine::set_reference_local_snapshots(true);
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {
         None => {
