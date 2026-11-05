@@ -999,6 +999,21 @@ impl NodeSegmentGroup {
         Ok(())
     }
 
+    /// Owner state for memory admission: not failed, and still open with its
+    /// root. Reserving memory performs no I/O. The root descriptor is still
+    /// verified around every kv operation (`check_owner` from `DiskState::run`)
+    /// and every backend effect (`CheckedGroup`); verifying it per reservation
+    /// cost a directory scan an fstatat and an fstat for every page it loaded.
+    fn check_live(&self) -> std::result::Result<(), OwnerFailed> {
+        self.require_healthy().map_err(|_| OwnerFailed)?;
+        let guard = self.state.read();
+        guard
+            .open()
+            .and_then(|resources| resources.root())
+            .map_err(|_| OwnerFailed)?;
+        Ok(())
+    }
+
     fn binding(&self) -> io::Result<(&str, &Path)> {
         self.disk
             .binding(&self.path)
@@ -2149,8 +2164,7 @@ impl StorageAdmission for NodeSegmentGroup {
         &self,
         bytes: u64,
     ) -> std::result::Result<Box<dyn kasumi_kv::ResidentLease>, AdmissionError> {
-        self.check_owner()
-            .map_err(|_| AdmissionError::OwnerFailed)?;
+        self.check_live().map_err(|_| AdmissionError::OwnerFailed)?;
         // The provider accounts for its own reservation token. This addition
         // admits the returned trait-object box before constructing it.
         let bytes =
@@ -2191,8 +2205,7 @@ impl StorageAdmission for NodeSegmentGroup {
         self: Arc<Self>,
         credit_bytes: u64,
     ) -> Result<kasumi_kv::CacheMemoryLease, AdmissionError> {
-        self.check_owner()
-            .map_err(|_| AdmissionError::OwnerFailed)?;
+        self.check_live().map_err(|_| AdmissionError::OwnerFailed)?;
         let lease = self
             .disk
             .memory()
@@ -2206,8 +2219,7 @@ impl StorageAdmission for NodeSegmentGroup {
                     AdmissionError::OwnerFailed
                 }
             })?;
-        self.check_owner()
-            .map_err(|_| AdmissionError::OwnerFailed)?;
+        self.check_live().map_err(|_| AdmissionError::OwnerFailed)?;
         Ok(lease)
     }
 
