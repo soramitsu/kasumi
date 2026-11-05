@@ -90,11 +90,21 @@ struct RootOwner {
 
 impl RootOwner {
     fn check(&self) -> Result<(), CoreError> {
-        if self.failed.load(Ordering::Acquire) {
-            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
-        }
+        self.check_live()?;
         if self.admission.check_owner().is_err() {
             self.failed.store(true, Ordering::Release);
+            return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+        }
+        Ok(())
+    }
+
+    /// The in-memory failure latch only. Steps inside one `DiskState::run`
+    /// use this: `run` verifies the owner before the operation and again
+    /// before any result leaves it, and every physical segment read verifies
+    /// its own descriptor. Re-verifying the root between steps of one read
+    /// cost a scan up to ten owner checks per record.
+    fn check_live(&self) -> Result<(), CoreError> {
+        if self.failed.load(Ordering::Acquire) {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
         Ok(())
@@ -452,21 +462,30 @@ impl DiskState {
         prefix: &[u8],
         after: Option<&[u8]>,
     ) -> Result<Option<DirectoryRecord>, CoreError> {
-        self.run(|state| {
-            let root = state.check_snapshot(root)?;
-            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
-            if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
-            }
-            let (lower, exclusive) = after
-                .filter(|after| *after >= prefix)
-                .map_or((prefix, false), |after| (after, true));
-            let record = reader.next(root, DirectoryKey::row(table, lower), exclusive)?;
-            Ok(record.filter(|record| {
-                record.key().table == table
-                    && record.key().row.is_some_and(|key| key.starts_with(prefix))
-            }))
-        })
+        self.run(|state| state.next_record(root, table, prefix, after))
+    }
+
+    /// The successor step of `next`, for callers already inside `run`.
+    pub(crate) fn next_record(
+        &self,
+        root: &SnapshotPin,
+        table: &str,
+        prefix: &[u8],
+        after: Option<&[u8]>,
+    ) -> Result<Option<DirectoryRecord>, CoreError> {
+        let root = self.check_snapshot(root)?;
+        let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
+        if reader.get(root, DirectoryKey::table(table))?.is_none() {
+            return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
+        }
+        let (lower, exclusive) = after
+            .filter(|after| *after >= prefix)
+            .map_or((prefix, false), |after| (after, true));
+        let record = reader.next(root, DirectoryKey::row(table, lower), exclusive)?;
+        Ok(record.filter(|record| {
+            record.key().table == table
+                && record.key().row.is_some_and(|key| key.starts_with(prefix))
+        }))
     }
 
     #[cfg(test)]

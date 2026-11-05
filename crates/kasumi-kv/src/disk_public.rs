@@ -194,9 +194,8 @@ impl DiskState {
         after: Option<&[u8]>,
         max_value_bytes: usize,
     ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
-        let record = self.next(pin, table, prefix, after)?;
         self.run(|state| {
-            let Some(record) = record else {
+            let Some(record) = state.next_record(pin, table, prefix, after)? else {
                 return Ok(None);
             };
             let key = record.key();
@@ -211,6 +210,7 @@ impl DiskState {
         })
     }
 
+    // Called only inside `run`, which verifies the owner around the whole read.
     fn value_admitted(
         &self,
         value: ValueLocation,
@@ -218,7 +218,7 @@ impl DiskState {
         key: &[u8],
         max_value_bytes: usize,
     ) -> Result<AdmittedValue, CoreError> {
-        self.owner.check()?;
+        self.owner.check_live()?;
         value.validate()?;
         if value.len as usize > max_value_bytes {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -234,6 +234,8 @@ impl DiskState {
 
     // Shared authenticated/cached physical read for owned outputs and prepared
     // loans. Optional retention retains its normal-demand full-fit policy.
+    // Called only inside `run`, like `value_admitted`. A cold value is read
+    // through the segment's own verified descriptor and checked by CRC.
     fn value_into(
         &self,
         value: ValueLocation,
@@ -241,7 +243,7 @@ impl DiskState {
         key: &[u8],
         output: &mut [u8],
     ) -> Result<(), CoreError> {
-        self.owner.check()?;
+        self.owner.check_live()?;
         value.validate()?;
         if output.len() != value.len as usize {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -254,11 +256,11 @@ impl DiskState {
             .lock()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
             .load_or_read_into(identity, output, |out| {
-                self.owner.check()?;
+                self.owner.check_live()?;
                 self.owner
                     .backend
                     .read(GroupFile::segment(value.segment_id), value.offset, out)?;
-                self.owner.check()?;
+                self.owner.check_live()?;
                 if crc32c(out) != value.crc {
                     return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                         "value checksum differs",
@@ -270,7 +272,7 @@ impl DiskState {
                 CacheLoadError::Admission(error) => error.into(),
                 CacheLoadError::Load(error) => error,
             })?;
-        self.owner.check()?;
+        self.owner.check_live()?;
         if let Some(cached) = cached {
             if cached.as_bytes().len() != value.len as usize
                 || crc32c(cached.as_bytes()) != value.crc
@@ -281,7 +283,7 @@ impl DiskState {
             }
             output.copy_from_slice(cached.as_bytes());
         }
-        self.owner.check()?;
+        self.owner.check_live()?;
         Ok(())
     }
 }
