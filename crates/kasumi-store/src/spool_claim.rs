@@ -66,6 +66,8 @@ impl PreparedSpool {
             key,
             id,
             length: 0,
+            // Acquisition verified the new descriptor's EOF is zero.
+            physical_len: 0,
             position: 0,
             limit: self.limit,
             layout: SpoolLayout::Native,

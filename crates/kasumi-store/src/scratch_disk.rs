@@ -125,8 +125,6 @@ pub struct ScratchDisk {
     after_file_open_error: Mutex<Option<io::Error>>,
     #[cfg(test)]
     synchronizations: std::sync::atomic::AtomicU64,
-    #[cfg(test)]
-    ordered_synchronizations: std::sync::atomic::AtomicU64,
     _memory_charge: Lease,
 }
 impl std::fmt::Debug for ScratchDisk {
@@ -250,8 +248,6 @@ impl ScratchDisk {
             after_file_open_error: Mutex::new(None),
             #[cfg(test)]
             synchronizations: std::sync::atomic::AtomicU64::new(0),
-            #[cfg(test)]
-            ordered_synchronizations: std::sync::atomic::AtomicU64::new(0),
             _memory_charge: charge,
         });
         drop(disk.state.lock().expect("unpublished scratch state"));
@@ -398,8 +394,10 @@ impl ScratchDisk {
             },
         )
     }
-    /// Fully synchronize an anonymous extent of this governor.
-    pub(crate) fn synchronized(&self, file: &File) -> io::Result<()> {
+    /// Fully synchronize an anonymous extent of this governor. Only extent
+    /// settlement needs this, and only when the filesystem over-reports the
+    /// extent's allocation before it (see `Charge::shrink`).
+    fn synchronized(&self, file: &File) -> io::Result<()> {
         crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
             crate::sync_trace::sync(|| file.sync_all())
         })?;
@@ -408,26 +406,10 @@ impl ScratchDisk {
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
-    /// Order intermediate KV writes before a later full publication flush.
-    /// This never settles an extent or releases any pending byte promise.
-    pub(crate) fn synchronized_ordered(&self, file: &File) -> io::Result<()> {
-        crate::sync_trace::site(crate::sync_trace::Site::Scratch, || {
-            crate::sync_trace::sync(|| crate::node_disk::sync_ordered_native(file))
-        })?;
-        #[cfg(test)]
-        self.ordered_synchronizations
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Ok(())
-    }
     /// Successful full synchronization requests issued through this governor.
     #[cfg(test)]
     pub(crate) fn physical_synchronizations(&self) -> u64 {
         self.synchronizations
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-    #[cfg(test)]
-    pub(crate) fn ordered_synchronizations(&self) -> u64 {
-        self.ordered_synchronizations
             .load(std::sync::atomic::Ordering::Relaxed)
     }
     fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {
@@ -646,13 +628,24 @@ impl Charge {
         self.release_on_drop = true;
     }
 
-    pub(crate) fn check_owner(&self, file: &File) -> io::Result<()> {
-        // Locking the retained owner observes a poisoned accounting state before
-        // any physical operation. No pathname or newly allocated error is needed.
+    /// Per-operation check: the shared accounting is not poisoned and still
+    /// admits work. Locking the retained owner observes a poisoned state
+    /// before any physical operation; no pathname or allocated error is needed.
+    /// The owned descriptor was verified at creation and cannot change inode,
+    /// so its identity is re-verified where allocation is observed, not here.
+    pub(crate) fn check_admission(&self) -> io::Result<()> {
         let _state = self.disk.lock_state();
         if !self.disk.device.lock().admission_ready() {
             return Err(io::Error::from(io::ErrorKind::Other));
         }
+        Ok(())
+    }
+
+    /// The admission check plus one fstat verifying that the descriptor is
+    /// still the unlinked, private extent created for this charge. Returns
+    /// that observation, so allocation accounting needs no second fstat.
+    fn verified_metadata(&self, file: &File) -> io::Result<std::fs::Metadata> {
+        self.check_admission()?;
         let metadata = file.metadata().inspect_err(|_| self.fail_owner())?;
         if !metadata.is_file()
             || metadata.nlink() != 0
@@ -663,7 +656,7 @@ impl Charge {
             self.fail_owner();
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
-        Ok(())
+        Ok(metadata)
     }
 
     pub(crate) fn grow(&mut self, ciphertext_len: u64) -> io::Result<()> {
@@ -717,8 +710,7 @@ impl Charge {
         Ok(())
     }
     pub(crate) fn observe(&mut self, file: &File) -> io::Result<()> {
-        self.check_owner(file)?;
-        let metadata = file.metadata().inspect_err(|_| self.fail_owner())?;
+        let metadata = self.verified_metadata(file)?;
         let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
             self.fail_owner();
             io::Error::from(io::ErrorKind::InvalidData)
@@ -743,19 +735,30 @@ impl Charge {
         Ok(())
     }
 
-    // Only an exact synchronized anonymous extent can return unused promises.
-    // This also settles a reservation whose capacity was never physically used.
+    // Settle an anonymous extent at its exact length, returning the unused
+    // promises. This also settles a reservation whose capacity was never
+    // physically used. An allocation the filesystem has not counted yet keeps
+    // its promise until a later observation, so an unsynchronized observation
+    // within the paid ceiling settles as is. Only an over-report, such as
+    // speculative allocation past EOF, waits for a full synchronization and is
+    // observed again; scratch data itself never needs one (`flush_extent`).
     pub(crate) fn shrink(&mut self, file: &File, ciphertext_len: u64) -> io::Result<()> {
-        self.check_owner(file)?;
-        self.disk
-            .synchronized(file)
-            .inspect_err(|_| self.fail_owner())?;
-        let metadata = file.metadata().inspect_err(|_| self.fail_owner())?;
         let bytes = self.disk.file_ceiling(ciphertext_len)?;
-        let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
-            self.fail_owner();
-            io::Error::from(io::ErrorKind::InvalidData)
-        })?;
+        let observe = |charge: &Self| {
+            let metadata = charge.verified_metadata(file)?;
+            let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
+                charge.fail_owner();
+                io::Error::from(io::ErrorKind::InvalidData)
+            })?;
+            Ok::<_, io::Error>((metadata, allocated))
+        };
+        let (mut metadata, mut allocated) = observe(self)?;
+        if allocated > bytes {
+            self.disk
+                .synchronized(file)
+                .inspect_err(|_| self.fail_owner())?;
+            (metadata, allocated) = observe(self)?;
+        }
         if ciphertext_len > self.reserved_len
             || metadata.len() != ciphertext_len
             || bytes > self.bytes

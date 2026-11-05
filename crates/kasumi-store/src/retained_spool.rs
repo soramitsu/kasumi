@@ -80,13 +80,13 @@ impl RetainedSpool {
     /// fence; consult the aggregate's original outcome, never that retry error.
     /// Complete retries succeed without performing any physical operation.
     pub fn close(&mut self) -> BackendCloseOutcome {
-        self.close_with(EncryptedSpool::sync_all)
+        self.close_with(EncryptedSpool::flush_extent)
     }
-    // Crate-internal aggregate owners may supply their root synchronization
-    // callback while preserving this spool's one-shot close state machine.
+    // Crate-internal aggregate owners may supply their root flush callback
+    // while preserving this spool's one-shot close state machine.
     pub(crate) fn close_with(
         &mut self,
-        sync: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
+        flush: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
     ) -> BackendCloseOutcome {
         match self.phase {
             SpoolClosePhase::Complete => return BackendCloseOutcome::drained(Ok(())),
@@ -96,7 +96,7 @@ impl RetainedSpool {
         self.phase = SpoolClosePhase::SyncEntered;
         let attempt = SyncAttempt(&mut self.phase);
         let spool = self.spool.as_mut().expect("open spool retained");
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync(spool))) {
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flush(spool))) {
             Ok(result) => result,
             Err(payload) => {
                 spool.owner_failed();
@@ -112,7 +112,7 @@ impl RetainedSpool {
                 // Native closure is independently observed before the charge
                 // may become available. Unknown closure keeps the actual spool.
                 *attempt.0 = SpoolClosePhase::DisposalEntered;
-                let outcome = spool.close_native_after_sync();
+                let outcome = spool.close_native_after_flush();
                 if outcome.native_disposition() == BackendNativeDisposition::Drained {
                     drop(self.spool.take());
                     *attempt.0 = SpoolClosePhase::Complete;

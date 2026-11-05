@@ -22,7 +22,7 @@ fn dispose(mut spool: EncryptedSpool) {
 fn native_layout_bounds_actual_crypto_reads_for_alternating_header_and_page() {
     fn read_workload(spool: &mut EncryptedSpool) -> u64 {
         spool.resize(2 * BLOCK as u64).unwrap();
-        spool.sync_all().unwrap();
+        spool.flush_extent().unwrap();
         spool.cached_index = None;
         let before = spool.authenticated_bytes_read;
         let mut header = [0; NATIVE_BLOCK];
@@ -81,7 +81,7 @@ fn native_layout_overwrite_truncate_and_regrow_preserves_prefix_and_zeroes_suffi
     assert_eq!(spool.file.metadata().unwrap().len(), 2 * NATIVE_SLOT);
     expected[retained..].fill(0);
     spool.resize(expected.len() as u64).unwrap();
-    spool.sync_all().unwrap();
+    spool.flush_extent().unwrap();
     assert_eq!(spool.file.metadata().unwrap().len(), 4 * NATIVE_SLOT);
     spool.cached_index = None;
     spool.rewind().unwrap();
@@ -99,7 +99,7 @@ fn native_layout_authenticates_ciphertext_and_block_position() {
         let (_directory, disk) = fixture();
         let mut spool = EncryptedSpool::new_native(&disk, 2 * NATIVE_BLOCK as u64).unwrap();
         spool.write_all(&vec![7; 2 * NATIVE_BLOCK]).unwrap();
-        spool.sync_all().unwrap();
+        spool.flush_extent().unwrap();
         let mut first = vec![0; NATIVE_SLOT as usize];
         spool.file.read_exact_at(&mut first, 0).unwrap();
         if reorder {
@@ -154,7 +154,7 @@ fn prepared_native_layout_transfers_exact_buffers_and_claim_without_readmission(
     spool.reserve_claimed_growth(&mut space, limit).unwrap();
     assert_eq!(spool.transaction_charged_bytes(), rounded);
     spool.resize(limit).unwrap();
-    spool.sync_all().unwrap();
+    spool.flush_extent().unwrap();
     assert_eq!(disk.snapshot().charged_bytes, promised);
     assert_eq!(spool.file.metadata().unwrap().len(), physical);
     space.finish().unwrap();

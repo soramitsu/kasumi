@@ -132,7 +132,7 @@ fn scratch_claim_consumes_real_quota_without_readmission_and_finishes_complete_p
     close(database, &disk);
 }
 #[test]
-fn scratch_claim_finish_synchronizes_each_settled_extent_once() {
+fn scratch_claim_finish_settles_observed_extents_without_synchronizing() {
     let (_directory, disk, _memory, _owner, backend, database) = fixture();
     backend.reserve_transaction(&plan()).unwrap();
     backend.create(GroupFile::segment(1)).unwrap();
@@ -141,10 +141,13 @@ fn scratch_claim_finish_synchronizes_each_settled_extent_once() {
         .unwrap();
     backend.sync(GroupFile::segment(1)).unwrap();
     let before = disk.physical_synchronizations();
+    let charged = disk.snapshot().charged_bytes;
     backend.finish_transaction(GROUP, 1).unwrap();
-    // The created segment and the root each settle once: settlement flushes
-    // and synchronizes the exact extent it observes.
-    assert_eq!(disk.physical_synchronizations() - before, 2);
+    // The created segment and the root each settle at their exact flushed
+    // extent. Allocation within the paid ceiling needs no synchronization;
+    // unused reserved growth is still returned.
+    assert_eq!(disk.physical_synchronizations(), before);
+    assert!(disk.snapshot().charged_bytes < charged);
     let mut bytes = [0; 65_537];
     backend.read(GroupFile::segment(1), 0, &mut bytes).unwrap();
     assert_eq!(bytes, [7; 65_537]);
@@ -152,7 +155,7 @@ fn scratch_claim_finish_synchronizes_each_settled_extent_once() {
 }
 
 #[test]
-fn scratch_ordered_sync_keeps_unused_promises_until_full_settlement() {
+fn scratch_syncs_keep_unused_promises_until_settlement() {
     let (_directory, disk, _memory, owner, backend, database) = fixture();
     backend.reserve_transaction(&plan()).unwrap();
     backend.create(GroupFile::segment(1)).unwrap();
@@ -167,10 +170,8 @@ fn scratch_ordered_sync_keeps_unused_promises_until_full_settlement() {
     let before = disk.snapshot();
     assert!(before.filesystem_pending_bytes > 0);
     let full = disk.physical_synchronizations();
-    let ordered = disk.ordered_synchronizations();
     backend.sync_ordered(GroupFile::segment(1)).unwrap();
     backend.sync_root_ordered().unwrap();
-    assert_eq!(disk.ordered_synchronizations() - ordered, 2);
     assert_eq!(disk.physical_synchronizations(), full);
     let after = disk.snapshot();
     assert_eq!(after.charged_bytes, before.charged_bytes);
@@ -180,10 +181,10 @@ fn scratch_ordered_sync_keeps_unused_promises_until_full_settlement() {
     );
     assert_eq!(after.live_files, before.live_files);
 
-    // Anonymous names need no filesystem operation, but this API must still
-    // provide the full synchronization promised after preceding barriers.
+    // Anonymous names need no filesystem operation, and a scratch extent
+    // never needs the device: name synchronization only flushes the root.
     backend.sync_names().unwrap();
-    assert_eq!(disk.physical_synchronizations() - full, 1);
+    assert_eq!(disk.physical_synchronizations(), full);
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
     assert_eq!(
         disk.snapshot().filesystem_pending_bytes,

@@ -7,6 +7,7 @@ use sha2::{Digest, Sha256};
 use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::ops::{Deref, DerefMut};
 use std::os::fd::IntoRawFd;
+use std::os::unix::fs::FileExt;
 use std::sync::{Arc, Mutex};
 use zeroize::Zeroizing;
 
@@ -86,6 +87,9 @@ pub struct EncryptedSpool {
     key: SecretKey,
     id: [u8; 16],
     length: u64,
+    // Ciphertext EOF of the owned descriptor. Only this spool resizes or
+    // extends it, so block flushes need no fstat to find EOF.
+    physical_len: u64,
     position: u64,
     limit: u64,
     layout: SpoolLayout,
@@ -142,6 +146,7 @@ impl EncryptedSpool {
             key,
             id,
             length: 0,
+            physical_len: 0,
             position: 0,
             limit,
             layout,
@@ -167,11 +172,14 @@ impl EncryptedSpool {
         self.limit
     }
 
+    /// Per-operation check without a syscall: the descriptor is still owned
+    /// and the shared accounting still admits work. Identity is re-verified
+    /// whenever this extent's allocation is observed (`Charge::observe`).
     pub(crate) fn check_owner(&self) -> io::Result<()> {
-        let Some(file) = self.file.0.as_ref() else {
+        if self.file.0.is_none() {
             return Err(io::ErrorKind::BrokenPipe.into());
-        };
-        self.charge.check_owner(file)
+        }
+        self.charge.check_admission()
     }
 
     pub(crate) fn owner_failed(&self) {
@@ -206,43 +214,34 @@ impl EncryptedSpool {
             .shrink(&self.file, self.layout.ciphertext_len(actual)?)
     }
 
-    pub(crate) fn sync_all(&mut self) -> io::Result<()> {
+    /// Write the cached block into the anonymous extent, without device
+    /// synchronization. The extent is unlinked before its first write, private
+    /// to this process and authenticated block by block, so a crash discards
+    /// it and a lost or damaged write fails its read. Synchronizing it would
+    /// add no safety; only extent settlement may still need one
+    /// (`Charge::shrink`), when the filesystem over-reports allocation.
+    pub(crate) fn flush_extent(&mut self) -> io::Result<()> {
         self.check_owner()?;
-        self.flush_block()?;
-        self.charge
-            .disk()
-            .synchronized(&self.file)
-            .inspect_err(|_| self.owner_failed())
+        self.flush_block()
     }
 
-    /// Flush encrypted blocks and order them before the next publication.
-    /// Growth settlement and native closure still require a full sync.
-    pub(crate) fn sync_ordered(&mut self) -> io::Result<()> {
-        self.check_owner()?;
-        self.flush_block()?;
-        self.charge
-            .disk()
-            .synchronized_ordered(&self.file)
-            .inspect_err(|_| self.owner_failed())
-    }
-
-    /// Enter sync and native closure once without consuming the exact spool.
+    /// Enter flush and native closure once without consuming the exact spool.
     /// The caller may dispose it only after Drained is positively observed.
     #[cfg(test)]
     pub(crate) fn close_once(&mut self) -> BackendCloseOutcome {
-        self.close_once_with(Self::sync_all)
+        self.close_once_with(Self::flush_extent)
     }
 
     #[cfg(test)]
     fn close_once_with(
         &mut self,
-        sync: impl FnOnce(&mut Self) -> io::Result<()>,
+        flush: impl FnOnce(&mut Self) -> io::Result<()>,
     ) -> BackendCloseOutcome {
         if self.close_entered {
             return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into());
         }
         self.close_entered = true;
-        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| sync(self))) {
+        let result = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| flush(self))) {
             Ok(result) => result,
             Err(payload) => {
                 self.owner_failed();
@@ -250,15 +249,15 @@ impl EncryptedSpool {
             }
         };
         match result {
-            Ok(()) => self.close_native_after_sync(),
+            Ok(()) => self.close_native_after_flush(),
             Err(error) => BackendCloseOutcome::retained(error),
         }
     }
 
-    /// The authenticated ciphertext has already synchronized. Consume the
+    /// The authenticated ciphertext has already been flushed. Consume the
     /// actual descriptor before calling close; a failed syscall is uncertain
     /// and its numeric descriptor must never be retried or rewrapped as File.
-    fn close_native_after_sync(&mut self) -> BackendCloseOutcome {
+    fn close_native_after_flush(&mut self) -> BackendCloseOutcome {
         self.close_native_with(|descriptor| {
             // SAFETY: the File owner is consumed by close_native_with.
             if unsafe { libc::close(descriptor) } == 0 {
@@ -316,6 +315,7 @@ impl EncryptedSpool {
             self.file
                 .set_len(physical)
                 .inspect_err(|_| self.owner_failed())?;
+            self.physical_len = physical;
             self.length = length;
             if !length.is_multiple_of(block_bytes as u64) {
                 self.block(length / block_bytes as u64)?;
@@ -363,8 +363,7 @@ impl EncryptedSpool {
             let end = offset
                 .checked_add(self.layout.slot_bytes())
                 .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
-            let physical = self.file.metadata().inspect_err(|_| self.owner_failed())?;
-            if physical.len() < end {
+            if self.physical_len < end {
                 // Writing across EOF can trigger speculative filesystem allocation
                 // beyond the admitted ciphertext extent. Extend only this slot,
                 // validate its allocation, then write entirely within the new EOF.
@@ -373,13 +372,11 @@ impl EncryptedSpool {
                 self.file
                     .set_len(end)
                     .inspect_err(|_| self.owner_failed())?;
+                self.physical_len = end;
                 self.charge.observe(&self.file)?;
             }
             self.file
-                .seek(SeekFrom::Start(offset))
-                .inspect_err(|_| self.owner_failed())?;
-            self.file
-                .write_all(&self.ciphertext)
+                .write_all_at(&self.ciphertext, offset)
                 .inspect_err(|_| self.owner_failed())?;
             self.charge.observe(&self.file)?;
             self.dirty = false;
@@ -397,10 +394,7 @@ impl EncryptedSpool {
         self.cached.fill(0);
         if index < self.length.div_ceil(block_bytes as u64) {
             self.file
-                .seek(SeekFrom::Start(self.layout.offset(index)?))
-                .inspect_err(|_| self.owner_failed())?;
-            self.file
-                .read_exact(&mut self.ciphertext)
+                .read_exact_at(&mut self.ciphertext, self.layout.offset(index)?)
                 .inspect_err(|_| self.owner_failed())?;
             let nonce: [u8; 24] = self.ciphertext[..24].try_into().expect("fixed nonce");
             let tag: [u8; 16] = self.ciphertext[24 + block_bytes..]
@@ -661,7 +655,7 @@ mod tests {
         );
         let mut spool = EncryptedSpool::new(&disk, 4 << 20).unwrap();
         spool.write_all(b"original").unwrap();
-        spool.sync_all().unwrap();
+        spool.flush_extent().unwrap();
         let before_len = spool.file.metadata().unwrap().len();
         let before_charge = disk.snapshot().charged_bytes;
         let mut before = vec![0; before_len as usize];

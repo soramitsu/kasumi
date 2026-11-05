@@ -53,7 +53,7 @@ fn retained_spool_retires_actual_descriptor_before_releasing_its_charge() {
 #[test]
 fn uncertain_native_close_retains_one_attempt_and_fences_scratch_owner() {
     let (_directory, disk, mut spool) = fixture();
-    spool.sync_all().unwrap();
+    spool.flush_extent().unwrap();
     let original_descriptor = spool.file.as_raw_fd();
     let outcome = spool.close_native_with(|descriptor| {
         assert_eq!(descriptor, original_descriptor);
@@ -101,7 +101,7 @@ fn native_close_unwind_retains_original_payload_and_never_retries_number() {
     spool
         .write_all(b"panic path holds an allocated extent")
         .unwrap();
-    spool.sync_all().unwrap();
+    spool.flush_extent().unwrap();
     spool.reserve_growth(spool.len(), 2 * BLOCK as u64).unwrap();
     let before = disk.snapshot();
     assert!(before.charged_bytes > 0);
@@ -192,7 +192,7 @@ fn original_sync_error_retains_open_spool_without_claiming_native_drain() {
 fn unknown_native_close_keeps_charge_after_aggregate_owner_drop() {
     let (_directory, disk, mut spool) = fixture();
     spool.write_all(b"charged ciphertext").unwrap();
-    spool.sync_all().unwrap();
+    spool.flush_extent().unwrap();
     spool.reserve_growth(spool.len(), 2 * BLOCK as u64).unwrap();
     let before = disk.snapshot();
     assert!(before.charged_bytes > 0);

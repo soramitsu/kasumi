@@ -94,21 +94,26 @@ fn dropping_a_table_observes_native_close_before_returning_scratch_credit() {
 }
 
 #[test]
-fn scratch_table_commit_orders_intermediate_writes_and_finishes_with_full_sync() {
+fn scratch_table_commits_never_synchronize_their_anonymous_extents() {
     let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
     let directory = crate::test_utils::private_tempdir().unwrap();
     let disk = ScratchDisk::isolated_fixture(directory.path(), 16 << 20, memory);
     let table = EncryptedTable::new(&disk, 8 << 20, CACHE).unwrap();
     table.insert(b"warmup", b"first").unwrap();
-    let full = disk.physical_synchronizations();
-    let ordered = disk.ordered_synchronizations();
-    table.insert(b"identity", b"second").unwrap();
-    // Data, directory pages, directory and commit records, and the first
-    // root copy are ordered. Publication and extent settlement still fully
-    // synchronize before the real table commit reports success.
-    assert!(disk.ordered_synchronizations() - ordered >= 5);
-    assert!(disk.physical_synchronizations() > full);
-    assert_eq!(table.get(b"identity").unwrap().unwrap().as_ref(), b"second");
+    let before = disk.physical_synchronizations();
+    // Restores stage whole snapshots through many small scratch commits.
+    // Their unlinked, authenticated extents are discarded by any crash, so
+    // no commit, flush or settlement waits for the device.
+    for index in 0..32u32 {
+        table.insert(&index.to_be_bytes(), b"second").unwrap();
+    }
+    assert_eq!(disk.physical_synchronizations(), before);
+    for index in 0..32u32 {
+        assert_eq!(
+            table.get(&index.to_be_bytes()).unwrap().unwrap().as_ref(),
+            b"second"
+        );
+    }
     drop(table);
     assert_eq!(disk.snapshot().live_files, 0);
     assert_eq!(disk.snapshot().charged_bytes, 0);

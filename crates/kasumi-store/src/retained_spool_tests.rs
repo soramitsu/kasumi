@@ -141,7 +141,7 @@ impl SegmentGroupBackend for Backend {
         self.0.closes.fetch_add(1, Ordering::SeqCst);
         self.0.owner.close_with_root(|spool| {
             self.0.terminal_syncs.fetch_add(1, Ordering::SeqCst);
-            spool.sync_all()?;
+            spool.flush_extent()?;
             match self.0.fault.lock().unwrap().take() {
                 Some(CloseFault::Error(error)) => Err(error),
                 Some(CloseFault::Panic(payload)) => std::panic::resume_unwind(payload),

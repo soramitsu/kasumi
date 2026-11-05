@@ -141,7 +141,7 @@ impl State {
 
     fn close(
         &mut self,
-        root_sync: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
+        root_flush: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
     ) -> BackendCloseOutcome {
         if self.close_entered {
             return BackendCloseOutcome::retained(io::ErrorKind::BrokenPipe.into());
@@ -161,7 +161,7 @@ impl State {
         }
         self.close_entered = true;
         if let Some(root) = self.root.as_mut() {
-            let outcome = root.spool.close_with(root_sync);
+            let outcome = root.spool.close_with(root_flush);
             if outcome.native_disposition() != BackendNativeDisposition::Drained {
                 return outcome;
             }
@@ -477,12 +477,12 @@ impl Owner {
     }
 
     pub(super) fn close(&self) -> BackendCloseOutcome {
-        self.close_with_root(EncryptedSpool::sync_all)
+        self.close_with_root(EncryptedSpool::flush_extent)
     }
 
     pub(crate) fn close_with_root(
         &self,
-        sync: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
+        flush: impl FnOnce(&mut EncryptedSpool) -> io::Result<()>,
     ) -> BackendCloseOutcome {
         let mut guard = self.state.lock().unwrap_or_else(|poisoned| {
             let mut guard = poisoned.into_inner();
@@ -494,7 +494,7 @@ impl Owner {
         let Some(state) = guard.as_mut() else {
             return BackendCloseOutcome::drained(Ok(()));
         };
-        let outcome = state.close(sync);
+        let outcome = state.close(flush);
         if outcome.native_disposition() == BackendNativeDisposition::Drained {
             drop(guard.take());
         }
@@ -533,7 +533,7 @@ impl Drop for Owner {
         let state = self.state.get_mut().unwrap_or_else(|p| p.into_inner());
         if let Some(mut retained) = state.take()
             && retained
-                .close(EncryptedSpool::sync_all)
+                .close(EncryptedSpool::flush_extent)
                 .native_disposition()
                 != BackendNativeDisposition::Drained
         {
@@ -741,6 +741,8 @@ impl SegmentGroupBackend for Backend {
             spool.write_all(bytes)
         })
     }
+    // Scratch groups never survive their process: every sync below only
+    // flushes the anonymous extent (see `EncryptedSpool::flush_extent`).
     fn sync_root(&self) -> io::Result<()> {
         self.0.with(|state| {
             state
@@ -750,20 +752,11 @@ impl SegmentGroupBackend for Backend {
                 .spool
                 .spool()
                 .ok_or(io::ErrorKind::BrokenPipe)?
-                .sync_all()
+                .flush_extent()
         })
     }
     fn sync_root_ordered(&self) -> io::Result<()> {
-        self.0.with(|state| {
-            state
-                .root
-                .as_mut()
-                .unwrap()
-                .spool
-                .spool()
-                .ok_or(io::ErrorKind::BrokenPipe)?
-                .sync_ordered()
-        })
+        self.sync_root()
     }
     fn visit_entries(&self, visitor: &mut dyn FnMut(&OsStr) -> io::Result<()>) -> io::Result<()> {
         let epoch = self.0.with(|state| Ok(state.namespace_epoch))?;
@@ -890,10 +883,10 @@ impl SegmentGroupBackend for Backend {
         })
     }
     fn sync(&self, file: GroupFile) -> io::Result<()> {
-        self.0.with(|state| state.spool(file)?.sync_all())
+        self.0.with(|state| state.spool(file)?.flush_extent())
     }
     fn sync_ordered(&self, file: GroupFile) -> io::Result<()> {
-        self.0.with(|state| state.spool(file)?.sync_ordered())
+        self.sync(file)
     }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         self.0.with(|state| {
@@ -920,7 +913,7 @@ impl SegmentGroupBackend for Backend {
     }
     fn sync_names(&self) -> io::Result<()> {
         // Names are in memory, but the backend contract also allows this call
-        // to complete a preceding ordered write. All spools share one device.
+        // to complete a preceding ordered write: flush the root like a sync.
         self.sync_root()
     }
     fn close(&self) -> BackendCloseOutcome {
