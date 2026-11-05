@@ -1675,10 +1675,14 @@ async fn committed_log_replay_survives_every_append_and_commit_io_failure() -> F
         Ok(())
     }
     let directory = kasumi_store::test_utils::private_tempdir()?;
-    let persistent = kasumi_store::NodeDisk::fixture_for_path(
-        directory.path().join("replay.kv"),
-        fixture_scratch.memory().clone(),
-    )?;
+    // The installed-disk registry is process-wide: a concurrent test's open
+    // holds it, so fixture setup retries its typed contention.
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            directory.path().join("replay.kv"),
+            fixture_scratch.memory().clone(),
+        )
+    })?;
     let seed = FaultBackend::new();
     let mut initial = LogStore::open(
         open(

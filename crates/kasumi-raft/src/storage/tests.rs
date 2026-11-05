@@ -1295,10 +1295,14 @@ async fn local_journal_and_commit_cursor_share_one_crash_atomic_transaction() ->
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let scratch = kasumi_store::ScratchDisk::fixture(directory.path(), memory);
     let persistent_directory = kasumi_store::test_utils::private_tempdir()?;
-    let persistent = kasumi_store::NodeDisk::fixture_for_path(
-        persistent_directory.path().join("local-wal.kv"),
-        scratch.memory().clone(),
-    )?;
+    // The installed-disk registry is process-wide: a concurrent test's open
+    // holds it, so fixture setup retries its typed contention.
+    let persistent = kasumi_store::test_utils::retry_disk_registry(|| {
+        kasumi_store::NodeDisk::fixture_for_path(
+            persistent_directory.path().join("local-wal.kv"),
+            scratch.memory().clone(),
+        )
+    })?;
     async fn reopen(
         disk: FaultBackend,
         scratch: Arc<kasumi_store::ScratchDisk>,
