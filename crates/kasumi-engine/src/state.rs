@@ -520,13 +520,33 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 .transpose()?;
             Ok((apply, selection))
         })?;
-        let mut generation = snapshot_bundle::read(
-            self,
-            &ValidationBaseline::from_apply(&apply),
-            bytes,
-            None,
-            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
-        )?;
+        let mut generation = if context.mode == kasumi_raft::SnapshotRestoreMode::Reopen {
+            let (store, checkpoint_sha256) =
+                kasumi_store::ScratchOperationFailure::ordinary(|| {
+                    let store = self
+                        .snapshot_store
+                        .get()
+                        .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+                    Ok((store, context.checkpoint_sha256()?))
+                })?;
+            snapshot_bundle::read_reopening(
+                self,
+                &ValidationBaseline::from_apply(&apply),
+                bytes,
+                &crate::snapshot_codec::ReopenRows {
+                    store,
+                    checkpoint_sha256: &checkpoint_sha256,
+                },
+            )?
+        } else {
+            snapshot_bundle::read(
+                self,
+                &ValidationBaseline::from_apply(&apply),
+                bytes,
+                None,
+                false,
+            )?
+        };
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let expected_revision = self
                 .revision_base
@@ -2453,15 +2473,19 @@ impl TenantEngine {
         reader: &mut dyn std::io::Read,
         expected: Option<crate::snapshot_codec::StreamSummary>,
     ) -> std::result::Result<Generation, SnapshotFailure> {
-        self.prepare_snapshot_reader_checked(baseline, disk, reader, expected, &|| Ok(()))
+        self.prepare_snapshot_reader_checked(baseline, disk, reader, expected, None, &|| Ok(()))
     }
 
+    /// `reopen` is this replica's own checkpoint when its group reopens:
+    /// decoding then compares receipt rows with the durable rows in place of
+    /// staging them (`snapshot_codec::read_reopening`).
     fn prepare_snapshot_reader_checked(
         &self,
         baseline: &ValidationBaseline<'_>,
         disk: &Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn std::io::Read,
         expected: Option<crate::snapshot_codec::StreamSummary>,
+        reopen: Option<&crate::snapshot_codec::ReopenRows<'_>>,
         check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> std::result::Result<Generation, SnapshotFailure> {
         check()?;
@@ -2474,7 +2498,9 @@ impl TenantEngine {
             target_resolutions,
             summary,
             documents,
-        } = crate::snapshot_codec::read(disk, reader).map_err(SnapshotFailure::from)?;
+            receipts_verified,
+        } = crate::snapshot_codec::read_reopening(disk, reader, reopen)
+            .map_err(SnapshotFailure::from)?;
         if expected.is_some_and(|expected| expected != summary) {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -2490,6 +2516,7 @@ impl TenantEngine {
             terminals,
             target_resolutions,
             Some(documents),
+            receipts_verified,
             check,
         )
         .map_err(Into::into)
@@ -2517,6 +2544,7 @@ impl TenantEngine {
             terminals,
             target_resolutions,
             documents,
+            false,
             &|| Ok(()),
         )
     }
@@ -2534,6 +2562,7 @@ impl TenantEngine {
         terminals: crate::staged_terminal::View,
         target_resolutions: crate::target_resolution::View,
         documents: Option<crate::document_restore::StagedDocuments>,
+        receipts_verified: bool,
         check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> anyhow::Result<Generation> {
         check()?;
@@ -2885,11 +2914,15 @@ impl TenantEngine {
             }
         }
         receipts.validate_state(&state).map_err(terminal_error)?;
-        for row in receipts.records() {
-            check()?;
-            row.map_err(terminal_error)?
-                .validate(&state)
-                .map_err(terminal_error)?;
+        // A reopen decode already validated each row against these same
+        // header and lineage facts, which precede receipts in the stream.
+        if !receipts_verified {
+            for row in receipts.records() {
+                check()?;
+                row.map_err(terminal_error)?
+                    .validate(&state)
+                    .map_err(terminal_error)?;
+            }
         }
         if let Some(current) = prior {
             let old = current.receipts.head();

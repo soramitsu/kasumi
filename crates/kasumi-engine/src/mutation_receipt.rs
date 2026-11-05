@@ -530,6 +530,143 @@ fn advance_framed(head: &mut MutationReceiptHead, row: &Row, framed_bytes: u64) 
     Ok(())
 }
 
+fn checkpoint_binding(
+    store: &TenantStore,
+    checkpoint_sha256: &str,
+) -> Result<Option<NamespaceBinding>> {
+    store
+        .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
+        .map(|bytes| {
+            let binding: NamespaceBinding = serde_json::from_slice(&bytes)?;
+            ensure!(
+                serde_json::to_vec(&binding)? == bytes,
+                "noncanonical receipt checkpoint binding"
+            );
+            Ok::<NamespaceBinding, anyhow::Error>(binding)
+        })
+        .transpose()
+}
+
+/// A reopening replica decodes its own snapshot, whose receipt rows are
+/// already durable under the snapshot's checkpoint binding. Each decoded row
+/// is validated, chained, and compared with its durable point and ordinal rows
+/// through one read view. Staging every row in scratch, re-reading it for
+/// validation and comparing it again at installation took minutes on a
+/// standalone node's reopen.
+pub(crate) struct DurableReopen {
+    store: Arc<TenantStore>,
+    binding: NamespaceBinding,
+    namespace: String,
+    reader: kasumi_store::TenantReadView,
+    head: MutationReceiptHead,
+    failed: bool,
+}
+impl DurableReopen {
+    /// `None` when the store holds no binding for this checkpoint: the caller
+    /// stages instead, and installation reports the missing binding.
+    pub(crate) fn open(
+        store: &Arc<TenantStore>,
+        checkpoint_sha256: &str,
+        tenant: &str,
+        incarnation: &str,
+        origin: &str,
+    ) -> Result<Option<Self>> {
+        ensure!(
+            digest(checkpoint_sha256) && store.tenant() == tenant,
+            "receipt reopen identity differs"
+        );
+        let Some(binding) = checkpoint_binding(store, checkpoint_sha256)? else {
+            return Ok(None);
+        };
+        ensure!(
+            binding.tenant == tenant
+                && binding.incarnation == incarnation
+                && binding.checkpoint_sha256 == checkpoint_sha256
+                && binding.checkpoint_head.origin_incarnation == origin
+                && !binding.namespace.is_nil(),
+            "receipt checkpoint binding differs"
+        );
+        Ok(Some(Self {
+            namespace: binding.namespace(),
+            reader: store.read_view()?,
+            store: store.clone(),
+            binding,
+            head: MutationReceiptHead::empty(tenant, origin)?,
+            failed: false,
+        }))
+    }
+    /// The checks `Builder::push` makes, then the durable point row must be
+    /// this exact row and its ordinal commitment must name it. The parent
+    /// link follows from the decoded chain and the previous ordinal checked
+    /// here; `finish` checks the selected root.
+    pub(crate) fn push(&mut self, row: &Row, state: &TenantState) -> Result<()> {
+        ensure!(
+            !self.failed,
+            "receipt reopen verification previously failed"
+        );
+        self.failed = true;
+        let framed_bytes = row.validate(state)?;
+        advance_framed(&mut self.head, row, framed_bytes)?;
+        let point = self
+            .reader
+            .get(&self.namespace, &id_key(&row.key), MAX_ROW_BYTES)?
+            .context("checkpoint receipt row missing")?;
+        let durable: Row = serde_json::from_slice(point.as_bytes())?;
+        crate::current_json::require_current_writer_bytes(
+            point.as_bytes(),
+            &durable,
+            "receipt point",
+        )?;
+        ensure!(
+            durable.key == row.key && durable.sha256()? == self.head.sha256,
+            "checkpoint receipt physical row differs"
+        );
+        let ordinal = self
+            .reader
+            .get(&self.namespace, &ordinal_key(row.ordinal), MAX_ROW_BYTES)?
+            .context("checkpoint receipt ordinal missing")?;
+        let entry: Ordinal = serde_json::from_slice(ordinal.as_bytes())?;
+        crate::current_json::require_current_writer_bytes(
+            ordinal.as_bytes(),
+            &entry,
+            "receipt ordinal",
+        )?;
+        ensure!(
+            entry.key == row.key && entry.sha256 == self.head.sha256,
+            "checkpoint receipt ordinal differs"
+        );
+        self.failed = false;
+        Ok(())
+    }
+    /// The durable view at the checkpoint, exactly as reopen installation
+    /// selects it, once the stream's final head matches the binding.
+    pub(crate) fn finish(self, expected: &MutationReceiptHead) -> Result<View> {
+        ensure!(
+            !self.failed,
+            "receipt reopen verification previously failed"
+        );
+        ensure!(
+            &self.head == expected,
+            "receipt stream final root/count/bytes differ"
+        );
+        ensure!(
+            self.binding.checkpoint_head == self.head,
+            "receipt checkpoint binding differs"
+        );
+        self.reader.close()?;
+        let tenant = self.binding.tenant.clone();
+        let view = View {
+            source: Some(Arc::new(Source::Durable(DurableRows {
+                store: self.store,
+                binding: self.binding,
+            }))),
+            head: self.head,
+        };
+        view.check_head(&tenant)?;
+        Ok(view)
+    }
+}
+
 /// Prepared namespace activation. The coordinator commits replacements and
 /// catalog writes with the enclosing checkpoint/applied cursor before publishing
 /// `view`. Dropping this object leaves only encrypted temporary staging.
@@ -551,6 +688,11 @@ impl Installation {
     }
 }
 impl View {
+    /// Whether this view reads exactly `binding`'s rows in `store`.
+    fn is_durable(&self, store: &Arc<TenantStore>, binding: &NamespaceBinding) -> bool {
+        matches!(self.source.as_deref(), Some(Source::Durable(rows))
+            if Arc::ptr_eq(&rows.store, store) && &rows.binding == binding)
+    }
     pub(crate) fn checkpoint_exists(store: &TenantStore, checkpoint_sha256: &str) -> Result<bool> {
         ensure!(
             digest(checkpoint_sha256),
@@ -574,17 +716,7 @@ impl View {
             "receipt installation identity differs"
         );
         self.check_head(&state.tenant)?;
-        let selected = store
-            .get_bounded(CATALOG, checkpoint_sha256.as_bytes(), 64 << 10)?
-            .map(|bytes| {
-                let binding: NamespaceBinding = serde_json::from_slice(&bytes)?;
-                ensure!(
-                    serde_json::to_vec(&binding)? == bytes,
-                    "noncanonical receipt checkpoint binding"
-                );
-                Ok::<NamespaceBinding, anyhow::Error>(binding)
-            })
-            .transpose()?;
+        let selected = checkpoint_binding(store, checkpoint_sha256)?;
         if reopen {
             let binding = selected.context("authoritative receipt checkpoint binding missing")?;
             ensure!(
@@ -605,15 +737,19 @@ impl View {
             view.check_head(&state.tenant)?;
             // Validate against the authenticated snapshot prefix, while leaving
             // rows from later applications invisible for exact ordered replay.
-            for row in self.records() {
-                let row = row?;
-                let actual = view
-                    .get(&row.key)?
-                    .context("checkpoint receipt row missing")?;
-                ensure!(
-                    actual.sha256()? == row.sha256()?,
-                    "checkpoint receipt physical row differs"
-                );
+            // A view decoded by `DurableReopen` already compared every row
+            // with exactly these durable rows.
+            if !self.is_durable(store, &binding) {
+                for row in self.records() {
+                    let row = row?;
+                    let actual = view
+                        .get(&row.key)?
+                        .context("checkpoint receipt row missing")?;
+                    ensure!(
+                        actual.sha256()? == row.sha256()?,
+                        "checkpoint receipt physical row differs"
+                    );
+                }
             }
             return Ok(Installation {
                 replacement: None,

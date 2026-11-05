@@ -956,6 +956,118 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
 }
 
 #[tokio::test]
+async fn reopen_decode_compares_rows_with_their_checkpoint_instead_of_staging() {
+    let (_directory, store, initial, old) = durable().await;
+    let (first_state, first) = commit(&initial, &old, "first", &applied(1));
+    let first = first.stage().unwrap();
+    let (second_state, second) = commit(&first_state, &first, "second", &applied(2));
+    let second = second.stage().unwrap();
+    let checkpoint = "20".repeat(32);
+    store
+        .write_batch(
+            &second
+                .checkpoint_writes(&second_state, &checkpoint)
+                .unwrap(),
+        )
+        .unwrap();
+    // Applied after the checkpoint: replay owns it, so reopen must not see it.
+    let (_, third) = commit(&second_state, &second, "third", &applied(3));
+    let third = third.stage().unwrap();
+    let open = || {
+        DurableReopen::open(&store, &checkpoint, "tenant", "incarnation", "incarnation")
+            .unwrap()
+            .expect("checkpoint binding")
+    };
+    let rows = [second.row(1).unwrap(), second.row(2).unwrap()];
+
+    // Without a binding for its checkpoint the decoder stages as before.
+    assert!(
+        DurableReopen::open(
+            &store,
+            &"50".repeat(32),
+            "tenant",
+            "incarnation",
+            "incarnation"
+        )
+        .unwrap()
+        .is_none()
+    );
+
+    let mut reopen = open();
+    for row in &rows {
+        reopen.push(row, &second_state).unwrap();
+    }
+    let view = reopen.finish(second.head()).unwrap();
+    assert_eq!(view.head(), second.head());
+    // Installation recognizes exactly its own durable rows and selects them
+    // without a staged replacement or another comparison pass.
+    let installed = view
+        .prepare_install(&store, &second_state, &checkpoint, true)
+        .unwrap();
+    assert!(installed.replacements().is_empty() && installed.writes().is_empty());
+    assert_eq!(installed.view.head(), second.head());
+    assert_eq!(
+        installed
+            .view
+            .get(&self::identity("owner", "second").unwrap())
+            .unwrap()
+            .unwrap()
+            .receipt
+            .idempotency_key,
+        "second"
+    );
+    assert!(
+        installed
+            .view
+            .get(&self::identity("owner", "third").unwrap())
+            .unwrap()
+            .is_none()
+    );
+
+    // A substituted row in a valid chain position differs from its durable row,
+    // and the failed decoder accepts nothing further.
+    let mut substituted = rows[0].clone();
+    substituted.receipt.request_digest = "aa".repeat(32);
+    let mut refused = open();
+    let error = refused.push(&substituted, &second_state).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("checkpoint receipt physical row differs"),
+        "{error:#}"
+    );
+    assert!(refused.push(&rows[0], &second_state).is_err());
+
+    // A stream ending before the checkpoint's head is refused.
+    let mut short = open();
+    short.push(&rows[0], &second_state).unwrap();
+    assert!(short.finish(second.head()).is_err());
+
+    // The ordinal commitment is checked too, not only the point row.
+    let namespace = checkpoint_binding(&store, &checkpoint)
+        .unwrap()
+        .unwrap()
+        .namespace();
+    let redirected = serde_json::to_vec(&Ordinal {
+        key: rows[1].key.clone(),
+        sha256: rows[1].sha256().unwrap(),
+    })
+    .unwrap();
+    kasumi_store::test_utils::write_plaintext_copy_for_fixture(
+        &store,
+        &namespace,
+        &ordinal_key(1),
+        &redirected,
+    )
+    .unwrap();
+    let error = open().push(&rows[0], &second_state).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("checkpoint receipt ordinal differs"),
+        "{error:#}"
+    );
+    drop(third);
+    store.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn point_decode_admission_precedes_even_future_row_allocation() {
     let (_directory, store, initial, old) = durable().await;
     let (_, pending) = commit(&initial, &old, "future", &applied(1));

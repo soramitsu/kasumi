@@ -1003,13 +1003,33 @@ pub(crate) struct Decoded {
     pub(crate) terminals: crate::staged_terminal::View,
     pub(crate) target_resolutions: crate::target_resolution::View,
     pub(crate) documents: crate::document_restore::StagedDocuments,
+    /// Every receipt row was compared with the reopening replica's durable
+    /// checkpoint rows while decoding, so `receipts` already is those rows.
+    pub(crate) receipts_verified: bool,
+}
+/// A reopening replica's own checkpoint: decoding compares rows with what it
+/// already published under `checkpoint_sha256` instead of staging them.
+pub(crate) struct ReopenRows<'a> {
+    pub(crate) store: &'a Arc<kasumi_store::TenantStore>,
+    pub(crate) checkpoint_sha256: &'a str,
+}
+enum ReceiptSink {
+    Staged(crate::mutation_receipt::Builder),
+    Durable(crate::mutation_receipt::DurableReopen),
 }
 pub(crate) fn read(
     disk: &Arc<kasumi_store::ScratchDisk>,
     reader: &mut dyn Read,
 ) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    read_reopening(disk, reader, None)
+}
+pub(crate) fn read_reopening(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    reader: &mut dyn Read,
+    reopen: Option<&ReopenRows<'_>>,
+) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
     let mut state: Option<TenantState> = None;
-    let mut receipts: Option<crate::mutation_receipt::Builder> = None;
+    let mut receipts: Option<ReceiptSink> = None;
     let mut backup_bindings: Option<crate::backup_binding::Builder> = None;
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
@@ -1032,14 +1052,31 @@ pub(crate) fn read(
                 )?);
             }
             if header.mutation_receipt_head.count > 0 {
-                receipts = Some(crate::mutation_receipt::Builder::new(
-                    disk,
-                    crate::mutation_receipt::scratch_limit(
-                        header.limits.max_mutation_receipt_bytes,
-                    )?,
-                    &header.tenant,
-                    &header.mutation_receipt_head.origin_incarnation,
-                )?);
+                let durable = reopen
+                    .map(|rows| {
+                        kasumi_store::ScratchOperationFailure::ordinary(|| {
+                            crate::mutation_receipt::DurableReopen::open(
+                                rows.store,
+                                rows.checkpoint_sha256,
+                                &header.tenant,
+                                &header.incarnation,
+                                &header.mutation_receipt_head.origin_incarnation,
+                            )
+                        })
+                    })
+                    .transpose()?
+                    .flatten();
+                receipts = Some(match durable {
+                    Some(durable) => ReceiptSink::Durable(durable),
+                    None => ReceiptSink::Staged(crate::mutation_receipt::Builder::new(
+                        disk,
+                        crate::mutation_receipt::scratch_limit(
+                            header.limits.max_mutation_receipt_bytes,
+                        )?,
+                        &header.tenant,
+                        &header.mutation_receipt_head.origin_incarnation,
+                    )?),
+                });
             }
             if header.target_resolution_head.count > 0 {
                 target_resolutions = Some(crate::target_resolution::Builder::new(
@@ -1142,10 +1179,12 @@ pub(crate) fn read(
                         .push(&row, state)?;
                 }
                 Record::Receipt(row) => {
-                    receipts
-                        .as_mut()
-                        .ok_or_else(|| anyhow::anyhow!("receipt row without authenticated prefix"))?
-                        .push(&row, state)?;
+                    match receipts.as_mut().ok_or_else(|| {
+                        anyhow::anyhow!("receipt row without authenticated prefix")
+                    })? {
+                        ReceiptSink::Staged(builder) => builder.push(&row, state)?,
+                        ReceiptSink::Durable(durable) => durable.push(&row, state)?,
+                    }
                 }
                 Record::Stage(k, stage) => {
                     anyhow::ensure!(
@@ -1317,8 +1356,10 @@ pub(crate) fn read(
                 empty
             }
         };
+        let receipts_verified = matches!(receipts, Some(ReceiptSink::Durable(_)));
         let receipts = match receipts {
-            Some(builder) => builder.finish(&state.mutation_receipt_head)?,
+            Some(ReceiptSink::Staged(builder)) => builder.finish(&state.mutation_receipt_head)?,
+            Some(ReceiptSink::Durable(durable)) => durable.finish(&state.mutation_receipt_head)?,
             None => {
                 let empty = crate::mutation_receipt::View::empty(
                     &state.tenant,
@@ -1377,6 +1418,7 @@ pub(crate) fn read(
             terminals,
             target_resolutions,
             documents,
+            receipts_verified,
         })
     })
 }

@@ -513,12 +513,35 @@ pub(super) fn read(
     read_checked(engine, baseline, reader, expected, reopen, &|| Ok(()))
 }
 
+/// Reopen this replica's own snapshot. Its receipt rows are compared with the
+/// durable checkpoint rows while decoding instead of being staged.
+pub(super) fn read_reopening(
+    engine: &TenantEngine,
+    baseline: &ValidationBaseline<'_>,
+    reader: &mut dyn Read,
+    rows: &crate::snapshot_codec::ReopenRows<'_>,
+) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
+    read_inner(engine, baseline, reader, None, true, Some(rows), &|| Ok(()))
+}
+
 pub(super) fn read_checked(
     engine: &TenantEngine,
     baseline: &ValidationBaseline<'_>,
     reader: &mut dyn Read,
     expected: Option<crate::snapshot_codec::StreamSummary>,
     reopen: bool,
+    check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
+) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
+    read_inner(engine, baseline, reader, expected, reopen, None, check)
+}
+
+fn read_inner(
+    engine: &TenantEngine,
+    baseline: &ValidationBaseline<'_>,
+    reader: &mut dyn Read,
+    expected: Option<crate::snapshot_codec::StreamSummary>,
+    reopen: bool,
+    rows: Option<&crate::snapshot_codec::ReopenRows<'_>>,
     check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
 ) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
     let (store, mut decoder, source, form) =
@@ -575,6 +598,7 @@ pub(super) fn read_checked(
             store.scratch_disk(),
             &mut logical,
             expected,
+            rows,
             check,
         )
         .map_err(crate::SnapshotFailure::into_scratch_failure)?;
