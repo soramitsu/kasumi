@@ -429,12 +429,12 @@ async fn sealed_tenant_recovery_reuses_drained_snapshot_startup_slot_impl() {
                 {
                     assert_eq!(snapshot.status.expected_groups, Some(2));
                     assert_eq!(snapshot.status.examined_groups, 2);
-                    assert_eq!(snapshot.details.len(), 2);
+                    assert_eq!(snapshot.probes.len(), 2);
                     assert_eq!(
                         snapshot
-                            .details
-                            .iter()
-                            .filter(|sample| sample.quorum)
+                            .probes
+                            .values()
+                            .filter(|probe| probe.quorum)
                             .count(),
                         healthy_groups
                     );

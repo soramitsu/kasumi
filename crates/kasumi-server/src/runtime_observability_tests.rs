@@ -157,13 +157,138 @@ async fn ready_response(
     .await
     .unwrap_or_else(|_| panic!("readiness wait timed out: phase={phase} last_503={last_503}"))
 }
-async fn withheld(request: tokio::task::JoinHandle<reqwest::Response>, status: u16) {
+/// A withheld result: the generic body for an unauthenticated caller or a
+/// 401 other than expiry, else the coarse reason class.
+async fn withheld(
+    request: tokio::task::JoinHandle<reqwest::Response>,
+    status: u16,
+    reason: Option<&str>,
+) {
     let response = request.await.unwrap();
     assert_eq!(response.status().as_u16(), status);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    assert!(response.headers().get("www-authenticate").is_none());
+    let body = response.text().await.unwrap();
+    match reason {
+        None => assert_eq!(body, "protected node observation unavailable\n"),
+        Some(reason) => assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&body).unwrap()["reason"],
+            reason,
+            "{body}"
+        ),
+    }
+}
+/// A 401 caused by the bearer credential's own expiry names it.
+async fn expired(response: reqwest::Response) {
+    assert_eq!(response.status().as_u16(), 401);
     assert_eq!(
-        response.text().await.unwrap(),
-        "protected node observation unavailable\n"
+        response.headers()["www-authenticate"],
+        "Bearer error=\"invalid_token\", error_description=\"the access token expired\""
     );
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(body["error"], "credential_expired");
+}
+
+/// The first ready observation whose node database status was published.
+async fn published_storage(
+    client: &reqwest::Client,
+    endpoint: &str,
+    token: &str,
+) -> serde_json::Value {
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let response = client
+                .get(endpoint)
+                .bearer_auth(token)
+                .send()
+                .await
+                .unwrap();
+            let status = response.status().as_u16();
+            let body = response.text().await.unwrap();
+            if status == 200
+                && let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+                && !value["storage"].is_null()
+            {
+                return value;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .expect("the node worker publishes its database status")
+}
+fn gauge(text: &str, name: &str) -> f64 {
+    text.lines()
+        .find_map(|line| line.strip_prefix(name)?.strip_prefix(' '))
+        .unwrap_or_else(|| panic!("missing {name}"))
+        .parse()
+        .unwrap()
+}
+/// Every headroom gauge is exactly the floor margin the reservation checks
+/// compare requests with, from the same sample as its inputs: the tightest
+/// persistent filesystem, each persistent filesystem, and scratch.
+fn assert_floor_headroom(text: &str) {
+    for disk in ["persistent_disk", "scratch_disk"] {
+        let available = gauge(text, &format!("kasumi_{disk}_filesystem_available_bytes"));
+        let pending = gauge(text, &format!("kasumi_{disk}_filesystem_pending_bytes"));
+        let min_free = gauge(text, &format!("kasumi_{disk}_filesystem_min_free_bytes"));
+        assert_eq!(
+            gauge(text, &format!("kasumi_{disk}_headroom_bytes")),
+            available - pending - min_free,
+            "{disk}"
+        );
+    }
+    let devices: Vec<&str> = text
+        .lines()
+        .filter_map(|line| {
+            line.strip_prefix("kasumi_persistent_filesystem_headroom_bytes{filesystem=\"")?
+                .split_once('"')
+                .map(|(device, _)| device)
+        })
+        .collect();
+    assert!(!devices.is_empty());
+    for device in devices {
+        let value = |name: &str| {
+            gauge(
+                text,
+                &format!("kasumi_persistent_filesystem_{name}{{filesystem=\"{device}\"}}"),
+            )
+        };
+        assert_eq!(
+            value("headroom_bytes"),
+            value("available_bytes") - value("pending_bytes") - value("min_free_bytes"),
+            "filesystem {device}"
+        );
+    }
+    // The unlabelled gauges describe the tightest filesystem.
+    let tightest = gauge(text, "kasumi_persistent_disk_filesystem_device");
+    assert_eq!(
+        gauge(
+            text,
+            &format!("kasumi_persistent_filesystem_headroom_bytes{{filesystem=\"{tightest}\"}}")
+        ),
+        gauge(text, "kasumi_persistent_disk_headroom_bytes")
+    );
+}
+/// One successful metrics scrape.
+async fn scrape(client: &reqwest::Client, endpoint: &str, token: &str) -> String {
+    let response = client
+        .get(endpoint)
+        .bearer_auth(token)
+        .send()
+        .await
+        .unwrap();
+    let status = response.status().as_u16();
+    let body = response.text().await.unwrap();
+    assert_eq!(status, 200, "{body}");
+    body
+}
+/// Every series a Prometheus body carries, without values.
+fn families(text: &str) -> BTreeSet<String> {
+    text.lines()
+        .filter(|line| !line.starts_with('#'))
+        .map(|line| line.rsplit_once(' ').unwrap().0.to_owned())
+        .collect()
 }
 
 async fn unavailable_tenant_ready(
@@ -206,7 +331,6 @@ async fn unavailable_tenant_ready(
                 }
             } else {
                 assert_eq!(status, 503);
-                assert_eq!(body, "protected node observation unavailable\n");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -257,7 +381,6 @@ async fn unavailable_tenant_metrics(
                 }
             } else {
                 assert_eq!(status, 503);
-                assert_eq!(body, "protected node observation unavailable\n");
             }
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
@@ -449,8 +572,8 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert_eq!(unavailable.status().as_u16(), 503);
     assert_eq!(unavailable.headers()["cache-control"], "no-store");
     assert_eq!(
-        unavailable.text().await.unwrap(),
-        "protected node observation unavailable\n"
+        unavailable.json::<serde_json::Value>().await.unwrap()["reason"],
+        "control_quorum"
     );
     assert_eq!(value["readiness_coverage"]["expected_groups"], 2);
     assert_eq!(value["readiness_coverage"]["examined_groups"], 2);
@@ -473,8 +596,10 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert_eq!(tenant_group["retention"]["archive_backlog_bytes"], 0);
     assert_eq!(tenant_group["audit_maintenance"]["failures"], 0);
     assert_eq!(tenant_group["audit_maintenance"]["committed_segments"], 0);
-    // The tenant store's retained files and persisted compaction cycle.
-    let storage = &tenant_group["storage"];
+    // The node's shared database is reported once; groups that share it
+    // carry no copy of their own.
+    let value = published_storage(&client, &ready, &operator).await;
+    let storage = &value["storage"];
     let expected = application.storage_maintenance_status().unwrap();
     assert!(storage["measured"].is_boolean(), "{storage}");
     assert_eq!(storage["compaction_cycle"], expected.cycle);
@@ -487,29 +612,35 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert_eq!(storage["garbage_files"], 0);
     assert_eq!(storage["reclaim_invalidations_total"], 0);
     assert_eq!(storage["rejected_deferrals_total"], 0);
-    if storage["measured"] == true {
+    assert!(storage["status_age_seconds"].as_f64().unwrap() >= 0.0);
+    if storage["census_age_seconds"].is_number() {
         assert!(storage["segment_files"].as_u64().unwrap() >= 1, "{storage}");
         assert!(storage["arena_bytes"].as_u64().is_some(), "{storage}");
     } else {
         assert!(storage["segment_files"].is_null(), "{storage}");
+    }
+    for field in [
+        "evacuation_surveyed_segments",
+        "evacuation_kept_segments",
+        "evacuation_kept_garbage_bytes",
+        "evacuation_survey_fallbacks_total",
+    ] {
+        assert!(storage[field].is_u64(), "{storage}");
     }
     assert!(
         value["groups"]
             .as_array()
             .unwrap()
             .iter()
-            .all(|group| group["storage"]["compaction_phase"].is_string())
+            .all(|group| { group["storage_dedicated"] == false && group["storage"].is_null() })
     );
-    assert!(value["groups"].as_array().unwrap().iter().all(|group| {
-        [
-            "evacuation_surveyed_segments",
-            "evacuation_kept_segments",
-            "evacuation_kept_garbage_bytes",
-            "evacuation_survey_fallbacks_total",
-        ]
+    let tenant_group = value["groups"]
+        .as_array()
+        .unwrap()
         .iter()
-        .all(|field| group["storage"][field].is_u64())
-    }));
+        .find(|group| group["tenant"] == "tenant-a")
+        .unwrap();
+    assert_eq!(tenant_group["figures_age_seconds"], 0.0);
     assert!(
         value["groups"]
             .as_array()
@@ -548,37 +679,44 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         "kasumi_local_group_audit_maintenance_committed_segments_total{tenant=\"tenant-a\"} 0\n"
     ));
     for line in [
-        "kasumi_local_group_storage_measured{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_garbage_files{tenant=\"tenant-a\"} 0\n",
-        "kasumi_local_group_storage_compaction_cycle{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_compaction_baseline_bytes{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_compaction_trigger_bytes{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_snapshot_retained_bytes{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_reclaimed_files_total{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_reclaimed_bytes_total{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_relocated_bytes_total{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_evacuation_surveyed_segments{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_evacuation_kept_segments{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_evacuation_kept_garbage_bytes{tenant=\"tenant-a\"} ",
-        "kasumi_local_group_storage_evacuation_survey_fallbacks_total{tenant=\"tenant-a\"} 0\n",
-        "# TYPE kasumi_local_group_storage_evacuation_survey_fallbacks_total counter\n",
-        "kasumi_local_group_storage_reclaim_invalidations_total{tenant=\"tenant-a\"} 0\n",
-        "kasumi_local_group_storage_maintenance_deferrals_total{tenant=\"tenant-a\",class=\"capacity\"} ",
-        "kasumi_local_group_storage_maintenance_deferrals_total{tenant=\"tenant-a\",class=\"rejected\"} 0\n",
-        "# TYPE kasumi_local_group_storage_reclaimed_files_total counter\n",
+        "kasumi_storage_measured ",
+        "kasumi_storage_garbage_files 0\n",
+        "kasumi_storage_compaction_cycle ",
+        "kasumi_storage_compaction_baseline_bytes ",
+        "kasumi_storage_compaction_trigger_bytes ",
+        "kasumi_storage_snapshot_retained_bytes ",
+        "kasumi_storage_status_age_seconds ",
+        "kasumi_storage_census_age_seconds ",
+        "kasumi_storage_reclaimed_files_total ",
+        "kasumi_storage_reclaimed_bytes_total ",
+        "kasumi_storage_relocated_bytes_total ",
+        "kasumi_storage_evacuation_surveyed_segments ",
+        "kasumi_storage_evacuation_kept_segments ",
+        "kasumi_storage_evacuation_kept_garbage_bytes ",
+        "kasumi_storage_evacuation_survey_fallbacks_total 0\n",
+        "# TYPE kasumi_storage_evacuation_survey_fallbacks_total counter\n",
+        "kasumi_storage_reclaim_invalidations_total 0\n",
+        "kasumi_storage_maintenance_deferrals_total{class=\"capacity\"} ",
+        "kasumi_storage_maintenance_deferrals_total{class=\"rejected\"} 0\n",
+        "# TYPE kasumi_storage_reclaimed_files_total counter\n",
+        "kasumi_local_group_storage_dedicated{tenant=\"tenant-a\"} 0\n",
+        "kasumi_local_group_figures_age_seconds{tenant=\"tenant-a\"} 0\n",
     ] {
         assert!(text.contains(line), "missing {line:?}");
     }
+    // Shared figures are not repeated under tenant labels.
+    assert!(!text.contains("kasumi_local_group_storage_compaction_cycle"));
     // Exactly one compaction phase is current.
     let current_phases = ["idle", "evacuating", "reclaiming", "packing"]
         .iter()
         .filter(|phase| {
             text.contains(&format!(
-                "kasumi_local_group_storage_compaction_phase{{tenant=\"tenant-a\",phase=\"{phase}\"}} 1\n"
+                "kasumi_storage_compaction_phase{{phase=\"{phase}\"}} 1\n"
             ))
         })
         .count();
     assert_eq!(current_phases, 1);
+    assert_floor_headroom(&text);
     // The node-wide persistent disk gauges are unchanged.
     assert!(text.contains("kasumi_persistent_disk_charged_bytes "));
     assert!(text.contains("kasumi_persistent_disk_files "));
@@ -733,7 +871,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     registry.insert(removed).unwrap();
     ready_response(&client, &ready, &operator, "route_reinstalled").await;
     hold.release.notify_one();
-    withheld(pending, 503).await;
+    withheld(pending, 503, Some("coverage_stale")).await;
 
     // Listener authentication rejects this before the backup adapter is entered.
     let denied = admin
@@ -838,7 +976,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .await
         .unwrap();
     hold.release.notify_one();
-    withheld(pending, 401).await;
+    withheld(pending, 401, None).await;
 
     let hold = gate(&telemetry).await;
     let credential_clock = kasumi_clock::EpochClock::system().unwrap();
@@ -907,7 +1045,8 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         short.expires_at_ms, renewed.expires_at_ms
     );
     hold.release.notify_one();
-    withheld(pending, 401).await;
+    // The original credential expired while its response was held.
+    expired(pending.await.unwrap()).await;
     assert_eq!(
         client
             .get(&ready)
@@ -925,7 +1064,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     entered(&hold).await;
     telemetry.set_lifecycle(Lifecycle::Draining);
     hold.release.notify_one();
-    withheld(pending, 503).await;
+    withheld(pending, 503, Some("lifecycle")).await;
     assert_eq!(
         client
             .get(&ready)
@@ -979,7 +1118,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
             .is_none()
     );
     hold.release.notify_one();
-    withheld(pending, 503).await;
+    withheld(pending, 503, Some("store_closed")).await;
     // A new complete sweep diagnoses the sealed installed tenant without
     // making the healthy node services unready. Require its fresh negative
     // observation; the earlier response retaining that store stays withheld.
@@ -990,16 +1129,28 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .iter()
         .find(|group| group["tenant"] == "tenant-a")
         .unwrap();
+    // Its last observed figures stay, with their age, instead of vanishing.
     assert_eq!(data["store_available"], false);
-    assert!(data["retention"].is_null());
-    assert!(data["audit_maintenance"].is_null());
-    assert!(data["capacity"].is_null());
+    assert!(
+        data["figures_age_seconds"].as_f64().unwrap() > 0.0,
+        "{data}"
+    );
+    assert!(data["retention"]["hot_bytes"].is_u64(), "{data}");
+    assert!(
+        data["audit_maintenance"]["committed_segments"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(data["capacity"]["logical_budget_bytes"].is_u64(), "{data}");
     let text = unavailable_tenant_metrics(&client, &metrics, &operator).await;
     assert!(
-        !text.contains("kasumi_local_group_audit_maintenance_failures_total{tenant=\"tenant-a\"}")
+        text.contains(
+            "kasumi_local_group_audit_maintenance_failures_total{tenant=\"tenant-a\"} 0\n"
+        )
     );
-    assert!(!text.contains(
-        "kasumi_local_group_audit_maintenance_committed_segments_total{tenant=\"tenant-a\"}"
+    assert!(text.contains(
+        "kasumi_local_group_audit_maintenance_committed_segments_total{tenant=\"tenant-a\"} "
     ));
     drop(management_hold);
 
@@ -1052,7 +1203,11 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         assert_eq!(expected, 131);
     }
     assert!(coverage.status.examined_groups < 131);
-    assert!(coverage.details.len() <= 128);
+    assert!(
+        coverage
+            .roster
+            .is_some_and(|roster| roster.groups.len() <= 128)
+    );
     assert!(!coverage.status.ready());
     assert!(coverage.token.is_none());
     let response = client
@@ -1063,7 +1218,9 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .unwrap();
     assert_eq!(response.status().as_u16(), 503);
     let body = response.text().await.unwrap();
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body) {
+    if let Ok(value) = serde_json::from_str::<serde_json::Value>(&body)
+        && value.get("reason").is_none()
+    {
         assert_eq!(value["ready"], false);
         assert_eq!(value["readiness_coverage"]["complete"], false);
         assert_eq!(value["readiness_coverage"]["fresh"], false);
@@ -1093,7 +1250,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .await
         .unwrap();
     hold.release.notify_one();
-    withheld(pending, 403).await;
+    withheld(pending, 403, Some("forbidden")).await;
     let last_epoch = management.readiness_epoch().unwrap();
     stop.send(true).unwrap();
     serving.await.unwrap().unwrap();
@@ -1602,8 +1759,8 @@ async fn installed_healthy_group_coverage() {
             {
                 assert_eq!(coverage.status.expected_groups, Some(GROUPS));
                 assert_eq!(coverage.status.examined_groups, GROUPS);
-                assert_eq!(coverage.details.len(), 128);
-                assert!(coverage.details.iter().all(|sample| sample.quorum));
+                assert_eq!(coverage.probes.len(), 128);
+                assert!(coverage.probes.values().all(|probe| probe.quorum));
                 assert!(coverage.status.ready() && coverage.token.is_some());
                 break;
             }
@@ -1846,4 +2003,269 @@ async fn standalone_control_closure_stops_daemon() {
         format!("{error:#}").contains("control plane closed"),
         "unexpected serving failure: {error:#}"
     );
+}
+
+#[test]
+fn protected_metrics_keep_every_family_through_pressure_maintenance_and_closure() {
+    std::thread::Builder::new()
+        .name("protected metrics pressure fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(protected_metrics_under_pressure()));
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
+async fn protected_metrics_under_pressure() {
+    let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+    let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("kasumi"),
+        "tenant-a",
+    )
+    .await
+    .unwrap();
+    let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
+    let mut control = ClientProfile::load(&installation.control_profile).unwrap();
+    let mut tenant = ClientProfile::load(&installation.tenant_profile).unwrap();
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
+        .collect::<Vec<_>>();
+    config.mcp.listen = listeners[0].local_addr().unwrap();
+    config.native.listen = listeners[1].local_addr().unwrap();
+    config.admin.listen = listeners[2].local_addr().unwrap();
+    config.mcp.protocol = crate::mcp::McpConfig::new(format!(
+        "https://localhost:{}/mcp",
+        config.mcp.listen.port()
+    ))
+    .unwrap();
+    for profile in [&mut control, &mut tenant] {
+        profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
+        profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
+        profile.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
+    }
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
+    drop(listeners);
+    let runtime = NodeRuntime::open_using_storage(
+        config.clone(),
+        crate::runtime::file_secret,
+        storage.clone(),
+    )
+    .await
+    .unwrap();
+    let management = runtime.administration.as_ref().unwrap().clone();
+    let application = runtime.tenants[0].store.clone();
+    let (stop, shutdown) = watch::channel(false);
+    let serving = tokio::spawn(runtime.serve(shutdown));
+    let mut admin = KasumiAdminClient::connect(&control.connection(true).unwrap())
+        .await
+        .unwrap();
+    let operator = control.bearer().unwrap();
+    let client = http(&control, true);
+    let endpoint = control.administrative_member().unwrap().endpoint.clone();
+    let metrics = format!("{endpoint}/metrics");
+    let ready = format!("{endpoint}/ready");
+    let compaction = format!("{endpoint}/maintenance/compaction");
+    ready_response(&client, &ready, &operator, "initial_serving").await;
+    published_storage(&client, &ready, &operator).await;
+    let baseline = scrape(&client, &metrics, &operator).await;
+    let expected = families(&baseline);
+    assert!(expected.contains("kasumi_storage_segment_bytes"));
+    assert!(expected.contains("kasumi_local_group_quorum{tenant=\"tenant-a\"}"));
+    assert!(expected.contains("kasumi_persistent_disk_headroom_bytes"));
+    assert!(expected.contains("kasumi_admission_memory_headroom_bytes"));
+    assert!(expected.contains(
+        "kasumi_persistent_disk_capacity_refusals_total{check=\"persistent_filesystem_floor\"}"
+    ));
+    assert_floor_headroom(&baseline);
+    assert_eq!(
+        gauge(&baseline, "kasumi_admission_memory_used_bytes"),
+        gauge(&baseline, "kasumi_process_resident_memory_bytes")
+            + gauge(&baseline, "kasumi_admission_reserved_bytes")
+    );
+
+    // Exhaust request admission: every operation slot is taken, so the old
+    // per-scrape workspace quote is refused. The scrape keeps its own slot.
+    let admission = management.admission().clone();
+    let mut held = Vec::new();
+    while let Ok(reservation) = admission.reserve(1, None) {
+        held.push(reservation);
+        assert!(held.len() <= 4096, "operation admission never refused");
+    }
+    assert!(
+        admission
+            .reserve(crate::observability::OBSERVATION_SLOT_BYTES, None)
+            .is_err()
+    );
+    let pressured = scrape(&client, &metrics, &operator).await;
+    assert_eq!(families(&pressured), expected);
+    drop(held);
+
+    // A maintenance step holds its opening's state for its whole duration;
+    // the observation copies the worker's published status instead.
+    let node = management.node_for_enrollment_test();
+    let (entered, held_step) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = std::thread::spawn(move || {
+        node.hold_maintenance_state_for_test(|| {
+            entered.send(()).unwrap();
+            // Never outlive a stuck observer: release on our own deadline.
+            let _ = released.recv_timeout(Duration::from_secs(20));
+        })
+    });
+    held_step.recv_timeout(Duration::from_secs(10)).unwrap();
+    let started = std::time::Instant::now();
+    let observed = management.local_observation().await.unwrap();
+    let waited = started.elapsed();
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(
+        waited < Duration::from_secs(5),
+        "observation waited {waited:?}"
+    );
+    assert!(observed.storage.is_some());
+    assert!(
+        observed
+            .groups
+            .iter()
+            .any(|group| group.tenant == "tenant-a" && group.store_available)
+    );
+
+    // An authorized request resets backoff and starts a cycle at the next
+    // step; every scrape during it carries the same families.
+    let node = management.node_for_enrollment_test();
+    let before = node.storage_maintenance_status().unwrap();
+    assert_eq!(
+        client
+            .post(&compaction)
+            .bearer_auth(&*tenant.bearer().unwrap())
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16(),
+        403
+    );
+    let response = client
+        .post(&compaction)
+        .bearer_auth(&*operator)
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(response.status().as_u16(), 200);
+    assert_eq!(response.headers()["cache-control"], "no-store");
+    let body: serde_json::Value = response.json().await.unwrap();
+    assert_eq!(
+        body,
+        serde_json::json!({
+            "accepted": 1,
+            "refused": 0,
+            "databases": [{"database": "node", "accepted": true}],
+        })
+    );
+    tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            let status = node.storage_maintenance_status().unwrap();
+            if status.cycle > before.cycle
+                || status.requested
+                || status.phase != kasumi_store::StorageCompactionPhase::Idle
+            {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the request reached the node database");
+    for _ in 0..20 {
+        assert_eq!(
+            families(&scrape(&client, &metrics, &operator).await),
+            expected
+        );
+    }
+
+    // A bearer whose own expiry passed is told so; others stay generic.
+    let short = admin
+        .create_credential(
+            &operator,
+            &CreateCredential {
+                family_id: Uuid::new_v4(),
+                principal: "administrator".into(),
+                tenant: CONTROL_TENANT.into(),
+                resource: control.resource.clone(),
+                scopes: BTreeSet::from([Action::Admin]),
+                lifetime_seconds: 2,
+            },
+        )
+        .await
+        .unwrap();
+    let now = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .now_ms()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(
+        short.expires_at_ms.saturating_sub(now) + 100,
+    ))
+    .await;
+    expired(
+        client
+            .get(&metrics)
+            .bearer_auth(&short.token)
+            .send()
+            .await
+            .unwrap(),
+    )
+    .await;
+    let invalid = client
+        .get(&metrics)
+        .bearer_auth("not-a-token")
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(invalid.status().as_u16(), 401);
+    assert!(invalid.headers().get("www-authenticate").is_none());
+    assert_eq!(
+        invalid.text().await.unwrap(),
+        "protected node observation unavailable\n"
+    );
+
+    // A closed store reports store_available 0 and ages its last figures
+    // under the same families.
+    let management_hold =
+        tokio::time::timeout(Duration::from_secs(10), management.test_hold_management())
+            .await
+            .unwrap()
+            .unwrap();
+    application.seal();
+    let closed = tokio::time::timeout(Duration::from_secs(10), async {
+        loop {
+            let body = scrape(&client, &metrics, &operator).await;
+            if body.contains("kasumi_local_group_store_available{tenant=\"tenant-a\"} 0\n") {
+                return body;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    })
+    .await
+    .unwrap();
+    assert_eq!(families(&closed), expected);
+    assert!(
+        gauge(
+            &closed,
+            "kasumi_local_group_figures_age_seconds{tenant=\"tenant-a\"}"
+        ) >= 0.0
+    );
+    assert!(
+        !gauge(&closed, "kasumi_local_group_documents{tenant=\"tenant-a\"}").is_nan(),
+        "a closed store keeps its last figures"
+    );
+    drop(management_hold);
+    stop.send(true).unwrap();
+    serving.await.unwrap().unwrap();
 }

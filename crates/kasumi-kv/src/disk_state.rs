@@ -52,6 +52,7 @@ pub use maintenance::{
     MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
     MaintenanceStep, StorageCompactionPhase, StorageMaintenanceStatus,
 };
+pub(crate) use maintenance::{PublishedMaintenance, published_maintenance_heap_bytes};
 
 #[path = "disk_reclaim.rs"]
 mod reclamation;
@@ -233,6 +234,9 @@ pub(crate) struct DiskState {
     maintenance: Maintenance,
     warmup: Warmup,
     auto_warm: AutoWarm,
+    /// The core's copy of the maintenance status, refreshed at the end of
+    /// each step, policy change and request. The core's grant funds it.
+    published: Option<Arc<maintenance::PublishedMaintenance>>,
     _lease: Option<NativeResidentLease>,
 }
 

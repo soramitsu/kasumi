@@ -165,6 +165,136 @@ fn explicit_run_reports_capacity_deferral_without_spinning() {
 }
 
 #[test]
+fn request_clears_a_deferral_backoff_and_starts_a_cycle_below_the_growth_threshold() {
+    let admission = Admission::new();
+    let c = core(InMemoryGroup::new(), admission.clone());
+    c.commit(&[
+        Operation::create_table("rows"),
+        Operation::put("rows", b"a", vec![7; 4096]),
+    ])
+    .unwrap();
+    c.seal_files_for_test().unwrap();
+    let budget = crate::MaintenanceBudget {
+        units: 1 << 20,
+        mutations: 1 << 20,
+    };
+    // Nothing is due below the growth threshold.
+    let idle = c.run_maintenance(budget).unwrap();
+    assert!(idle.idle, "{idle:?}");
+    let before = c.maintenance_status().unwrap();
+    assert!(before.measured);
+    assert_eq!(
+        (before.phase, before.cycle),
+        (crate::StorageCompactionPhase::Idle, 0)
+    );
+    assert!(
+        before.segment_bytes + before.arena_bytes < before.trigger_bytes,
+        "{before:?}"
+    );
+    // A requested cycle whose workspace is refused defers and backs off.
+    c.request_compaction().unwrap();
+    admission.limit.store(
+        crate::segment::maintenance_workspace_bytes() - 1,
+        Ordering::Release,
+    );
+    let deferred = c.run_maintenance(budget).unwrap();
+    assert_eq!(
+        deferred.deferred,
+        Some(crate::MaintenanceDeferral::Capacity)
+    );
+    admission.limit.store(u64::MAX, Ordering::Release);
+    let skipped = c.run_maintenance(budget).unwrap();
+    assert_eq!((skipped.units, skipped.mutations), (0, 0));
+    assert_eq!(skipped.deferred, Some(crate::MaintenanceDeferral::Capacity));
+    // A new request clears the backoff: the very next step runs.
+    c.request_compaction().unwrap();
+    let resumed = c.run_maintenance(budget).unwrap();
+    assert_eq!(resumed.deferred, None, "{resumed:?}");
+    assert!(resumed.units + resumed.mutations > 0, "{resumed:?}");
+    let mut finished = c.maintenance_status().unwrap();
+    for _ in 0..1_000 {
+        if finished.phase == crate::StorageCompactionPhase::Idle {
+            break;
+        }
+        assert_eq!(c.run_maintenance(budget).unwrap().deferred, None);
+        finished = c.maintenance_status().unwrap();
+    }
+    assert_eq!(
+        (finished.phase, finished.cycle),
+        (crate::StorageCompactionPhase::Idle, 1)
+    );
+    assert!(!finished.requested);
+    // Below the new threshold, a request alone starts the next cycle.
+    c.commit(&[Operation::put("rows", b"b", vec![8; 4096])])
+        .unwrap();
+    c.seal_files_for_test().unwrap();
+    let measured = c.run_maintenance(budget).unwrap();
+    assert!(measured.idle, "{measured:?}");
+    let below = c.maintenance_status().unwrap();
+    assert!(
+        below.segment_bytes + below.arena_bytes < below.trigger_bytes,
+        "{below:?}"
+    );
+    c.request_compaction().unwrap();
+    let started = c.run_maintenance(crate::MaintenanceBudget {
+        units: 1,
+        mutations: 1,
+    });
+    assert_eq!(started.unwrap().deferred, None);
+    let cycle = c.maintenance_status().unwrap();
+    assert!(
+        cycle.cycle == 2 || cycle.phase != crate::StorageCompactionPhase::Idle,
+        "{cycle:?}"
+    );
+}
+
+#[test]
+fn maintenance_status_is_published_by_each_step_and_read_without_the_state_lock() {
+    let c = core(InMemoryGroup::new(), Admission::new());
+    c.commit(&[
+        Operation::create_table("rows"),
+        Operation::put("rows", b"a", vec![7; 4096]),
+    ])
+    .unwrap();
+    c.seal_files_for_test().unwrap();
+    let computed = || {
+        c.shared
+            .run(CoreError::panicked, |state| {
+                state.disk()?.maintenance_status()
+            })
+            .unwrap()
+    };
+    assert_eq!(c.maintenance_status().unwrap(), computed());
+    c.request_compaction().unwrap();
+    assert!(c.maintenance_status().unwrap().requested);
+    let budget = crate::MaintenanceBudget {
+        units: 64,
+        mutations: 1,
+    };
+    let progress = c.run_maintenance(budget).unwrap();
+    let published = c.maintenance_status().unwrap();
+    assert_eq!(published.phase, progress.phase);
+    assert_eq!(published, computed());
+    // Hold the state lock as a running step or commit does: the published
+    // status is still read at once.
+    let guard = c.shared.lock_state().unwrap();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        scope.spawn(|| sender.send(c.maintenance_status()).unwrap());
+        let read = receiver.recv_timeout(std::time::Duration::from_secs(10));
+        drop(guard);
+        assert_eq!(
+            read.expect("the status read waited for the state lock")
+                .unwrap(),
+            published
+        );
+    });
+    let cycle = c.complete_cycle_for_test().unwrap();
+    assert_eq!(cycle.relocated_bytes, 4096);
+    assert_eq!(c.maintenance_status().unwrap(), computed());
+}
+
+#[test]
 fn strict_create_rejects_existing_group_and_open_requires_exact_incarnation() {
     let group = InMemoryGroup::new();
     let c = core(group.clone(), Admission::new());

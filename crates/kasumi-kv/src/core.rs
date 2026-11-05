@@ -610,6 +610,7 @@ impl Shared {
 }
 pub struct Core {
     shared: NativeOwnedArc<Shared>,
+    maintenance: Arc<crate::disk_state::PublishedMaintenance>,
 }
 
 pub struct ReadSnapshot {
@@ -1037,11 +1038,16 @@ impl Core {
             state.disk()?.seal_files_for_test()
         })
     }
+    /// The status the maintenance owner published at the end of its last
+    /// step, policy change or request. This never enters `Shared::run`, so
+    /// it does not wait for a running step, commit or their I/O.
     pub fn maintenance_status(&self) -> Result<crate::StorageMaintenanceStatus, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
-            self.shared.check_open(state)?;
-            state.disk()?.maintenance_status()
-        })
+        self.shared.check_state_poison()?;
+        self.shared.check_admission_open()?;
+        Ok(*self
+            .maintenance
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
     pub fn configure_maintenance(&self, policy: crate::MaintenancePolicy) -> Result<(), CoreError> {
         self.shared.run(CoreError::panicked, |state| {

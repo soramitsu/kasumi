@@ -43,7 +43,7 @@ impl std::fmt::Display for SweepFailure {
 }
 
 impl Administration {
-    fn readiness_generation(
+    pub(super) fn readiness_generation(
         &self,
         tenant: &str,
         incarnation: &str,
@@ -117,7 +117,15 @@ impl Administration {
             if *stop.borrow() {
                 return Ok(());
             }
-            if let Err(error) = self.readiness_sweep(&mut stop).await {
+            let swept = self.readiness_sweep(&mut stop).await;
+            // Refresh the point observation scrapes report, here rather than
+            // in a scrape: its store read can wait behind maintenance.
+            if self.config.mode == crate::runtime::DeploymentMode::Standalone {
+                self.observation.set_recovery_pending(
+                    crate::local_recovery::runtime_pending(self.audit.store()).ok(),
+                );
+            }
+            if let Err(error) = swept {
                 self.readiness.invalidate();
                 let readiness_error_class = error
                     .downcast_ref::<SweepFailure>()
@@ -210,20 +218,6 @@ impl Administration {
                 .iter()
                 .any(|v| v.as_u64() == Some(local_id)))
         };
-        let mut expected = 1usize;
-        for (index, value) in routes.values().enumerate() {
-            if index % 16 == 0 {
-                ensure!(!*stop.borrow(), SweepFailure::Stopped);
-                tokio::task::yield_now().await;
-            }
-            expected = expected
-                .checked_add(usize::from(local(value)?))
-                .context(SweepFailure::RouteInvalid)?;
-        }
-        ensure!(!*stop.borrow(), SweepFailure::Stopped);
-        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
-        let started = Instant::now();
-        self.readiness.begin(epoch, expected, started);
         let control_incarnation = self
             .control
             .engine()
@@ -231,6 +225,34 @@ impl Administration {
             .context(SweepFailure::ControlUnavailable)?
             .incarnation()
             .to_owned();
+        // The observed roster: Control first, then local routes, bounded by
+        // the detail limit. Coverage itself counts every local route.
+        let mut roster = Vec::with_capacity(crate::readiness::DETAIL_LIMIT.min(routes.len() + 1));
+        roster.push((
+            crate::runtime::CONTROL_TENANT.to_owned(),
+            control_incarnation.clone(),
+        ));
+        let mut expected = 1usize;
+        for (index, (tenant, value)) in routes.iter().enumerate() {
+            if index % 16 == 0 {
+                ensure!(!*stop.borrow(), SweepFailure::Stopped);
+                tokio::task::yield_now().await;
+            }
+            let hosted = local(value)?;
+            expected = expected
+                .checked_add(usize::from(hosted))
+                .context(SweepFailure::RouteInvalid)?;
+            if hosted && roster.len() < crate::readiness::DETAIL_LIMIT {
+                let route = kasumi_engine::control::TenantRoute::deserialize(value)
+                    .context(SweepFailure::RouteInvalid)?;
+                roster.push((tenant.clone(), route.incarnation));
+            }
+        }
+        ensure!(!*stop.borrow(), SweepFailure::Stopped);
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
+        let started = Instant::now();
+        self.readiness.begin(epoch, expected, started);
+        self.readiness.enroll(roster);
         self.probe_one(
             crate::runtime::CONTROL_TENANT.to_owned(),
             control_incarnation,

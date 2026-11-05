@@ -1855,8 +1855,8 @@ impl Fixture {
         assert_eq!(missing.status().as_u16(), 404);
         assert_eq!(missing.headers()["cache-control"], "no-store");
         assert_eq!(
-            missing.text().await.unwrap(),
-            "protected node observation unavailable\n"
+            missing.json::<serde_json::Value>().await.unwrap()["reason"],
+            "not_found"
         );
     }
     fn client_with_credential(&self, token: &str) -> kasumi_client::KasumiRecoveryPool {

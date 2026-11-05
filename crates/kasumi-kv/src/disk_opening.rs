@@ -302,6 +302,7 @@ impl DiskOpening {
             maintenance: Maintenance::default(),
             warmup: Warmup::default(),
             auto_warm: self.auto_warm.take().unwrap(),
+            published: None,
             _lease: self.fixed.take(),
         });
         Ok(())

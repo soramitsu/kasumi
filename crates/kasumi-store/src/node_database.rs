@@ -336,6 +336,20 @@ impl NodeDatabase {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
+        match self
+            .accepted()
+            .map_err(|error| error.0)
+            .expect("open node database")
+        {
+            // A direct database has no opening state; its steps hold only
+            // the KV core lock, which observers no longer take.
+            Accepted::Direct(_) => work(),
+            Accepted::Registered(opening) => opening.hold_maintenance_state_for_test(work),
+        }
+    }
+
     pub(crate) fn configure_maintenance(
         &self,
         policy: kasumi_kv::MaintenancePolicy,

@@ -14,6 +14,9 @@ struct MemoryAdmission {
     memory: Arc<crate::test_utils::TestDiskMemory>,
     failed: AtomicBool,
     release_on_denial: Mutex<Option<crate::DiskMemoryLease>>,
+    /// Pauses the next workspace reservation: database work calls it while
+    /// holding the KV core lock.
+    workspace_gate: ReadGate,
 }
 impl StorageAdmission for MemoryAdmission {
     fn check_owner(&self) -> std::result::Result<(), OwnerFailed> {
@@ -29,6 +32,9 @@ impl StorageAdmission for MemoryAdmission {
     ) -> std::result::Result<Box<dyn ResidentLease>, AdmissionError> {
         self.check_owner()
             .map_err(|_| AdmissionError::OwnerFailed)?;
+        if self.workspace_gate.armed.swap(false, Ordering::AcqRel) {
+            self.workspace_gate.pause();
+        }
         let bytes = bytes
             .checked_add(std::mem::size_of::<crate::DiskMemoryLease>() as u64 + 4096)
             .ok_or(AdmissionError::CapacityDenied)?;
@@ -226,6 +232,7 @@ impl Fixture {
                 memory: memory.clone(),
                 failed: AtomicBool::new(false),
                 release_on_denial: Mutex::new(None),
+                workspace_gate: ReadGate::default(),
             })
         };
         let first =
@@ -749,6 +756,91 @@ fn completed_first_cycle(storage: &kasumi_kv::StorageMaintenanceStatus) -> bool 
     storage.cycle == 1 && storage.phase == kasumi_kv::StorageCompactionPhase::Idle
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn published_storage_status_is_copied_without_waiting_for_the_kv_core_lock() {
+    let fixture = Fixture::cold().await;
+    assert!(fixture.node.published_storage_status().is_none());
+    write_row(&fixture.node, 100);
+    fixture.node.request_storage_compaction().unwrap();
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture.node.activate_cache_warming().unwrap();
+    wait_storage(&fixture, completed_first_cycle).await;
+    let published = tokio::time::timeout(Duration::from_secs(30), async {
+        loop {
+            if let Some(published) = fixture.node.published_storage_status()
+                && completed_first_cycle(&published.status)
+                && published.census.is_some()
+            {
+                return published;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("the worker publishes the completed cycle");
+    let census = published.census.unwrap();
+    assert!(census.measured_at <= published.published_at);
+    assert_eq!(census.segment_files, published.status.segment_files);
+    // Database work reserves its workspace while it holds the KV core lock,
+    // as a running maintenance step does: pause the next reservation there.
+    fixture
+        .admission
+        .workspace_gate
+        .armed
+        .store(true, Ordering::Release);
+    let entered = fixture.admission.workspace_gate.entered.notified();
+    let node = fixture.node.clone();
+    let writer = std::thread::spawn(move || write_row(&node, 101));
+    tokio::time::timeout(Duration::from_secs(10), entered)
+        .await
+        .expect("the commit reached its workspace reservation");
+    let started = Instant::now();
+    let copy = fixture.node.published_storage_status().unwrap();
+    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(completed_first_cycle(&copy.status));
+    assert!(copy.census.is_some());
+    assert!(copy.published_at >= published.published_at);
+    fixture.admission.workspace_gate.release();
+    writer.join().unwrap();
+    assert_rows(&fixture.node, (0..20).chain([100, 101]));
+    assert!(!fixture.node.cache_worker_status().failed);
+    fixture.node.shutdown().await.unwrap();
+}
+
+#[test]
+fn a_census_survives_an_unmeasured_cycle_and_keeps_its_first_publication_time() {
+    let start = Instant::now();
+    let measured = kasumi_kv::StorageMaintenanceStatus {
+        measured: true,
+        segment_files: 3,
+        segment_bytes: 300,
+        arena_files: 1,
+        arena_bytes: 10,
+        ..Default::default()
+    };
+    let first = PublishedStorageStatus::next(None, measured, start);
+    assert_eq!(first.census.unwrap().measured_at, start);
+    let later = start + Duration::from_secs(5);
+    let same = PublishedStorageStatus::next(Some(first), measured, later);
+    assert_eq!(same.census.unwrap().measured_at, start);
+    assert_eq!(same.published_at, later);
+    let evacuating = kasumi_kv::StorageMaintenanceStatus {
+        phase: kasumi_kv::StorageCompactionPhase::Evacuating,
+        ..Default::default()
+    };
+    let cycle = PublishedStorageStatus::next(Some(same), evacuating, later);
+    assert!(!cycle.status.measured);
+    assert_eq!(cycle.census, same.census);
+    let remeasured = kasumi_kv::StorageMaintenanceStatus {
+        segment_files: 2,
+        ..measured
+    };
+    let newest = start + Duration::from_secs(9);
+    let next = PublishedStorageStatus::next(Some(cycle), remeasured, newest);
+    assert_eq!(next.census.unwrap().measured_at, newest);
+    assert_eq!(next.census.unwrap().segment_files, 2);
+}
+
 #[tokio::test]
 async fn worker_drives_storage_maintenance_and_reports_progress() {
     let fixture = Fixture::cold().await;
@@ -875,6 +967,7 @@ async fn stop_and_drain_unaffected_by_maintenance() {
             memory: fixture.memory.clone(),
             failed: AtomicBool::new(false),
             release_on_denial: Mutex::new(None),
+            workspace_gate: ReadGate::default(),
         }),
         fixture.node.scratch_disk().clone(),
     )

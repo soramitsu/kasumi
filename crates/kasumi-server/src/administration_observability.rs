@@ -5,38 +5,79 @@ use crate::observability::{
 };
 
 impl Administration {
+    /// One bounded local sample for the protected observation routes. It
+    /// lists every group of the readiness roster, whatever state coverage,
+    /// stores or maintenance are in, and never waits on a database: storage
+    /// figures are the node workers' published copies, the recovery flag is
+    /// the readiness worker's, and closed stores report their last figures
+    /// with an age instead of disappearing.
     pub(crate) async fn local_observation(&self) -> Result<LocalObservation> {
         let epoch = self.readiness_epoch()?;
-        let coverage = self.readiness.snapshot(epoch, tokio::time::Instant::now());
-        let mut groups = Vec::with_capacity(coverage.details.len());
-        let mut stores = Vec::with_capacity(coverage.details.len());
-        // Scrapes consume one bounded diagnostic page. The independently owned
-        // worker certifies every required group; this detail limit is never a
-        // readiness group-count limit and performs no foreground quorum probes.
-        for sample in coverage.details {
-            let managed = if sample.tenant == crate::runtime::CONTROL_TENANT {
-                (self.control.engine().generation()?.incarnation() == sample.incarnation)
-                    .then(|| SelectedTenant::new(self.control.clone()))
+        let now = tokio::time::Instant::now();
+        let clock = std::time::Instant::now();
+        let coverage = self.readiness.snapshot(epoch, now);
+        let roster = coverage
+            .roster
+            .map(|roster| roster.groups)
+            .unwrap_or_default();
+        self.observation.retain_roster(&roster);
+        let authority_required = self.config.mode == crate::runtime::DeploymentMode::Replicated;
+        let mut groups = Vec::with_capacity(roster.len());
+        let mut stores = Vec::with_capacity(roster.len());
+        for (tenant, incarnation) in roster {
+            let control = tenant == crate::runtime::CONTROL_TENANT;
+            let routed = if control {
+                self.control
+                    .engine()
+                    .generation()
+                    .is_ok_and(|generation| generation.incarnation() == incarnation)
             } else {
                 self.registry
-                    .installed_generation(&sample.tenant, &sample.incarnation)?
-                    .map(SelectedTenant::new)
+                    .installed_generation(&tenant, &incarnation)
+                    .ok()
+                    .flatten()
+                    .is_some()
             };
-            let routed = managed.is_some();
-            let authority_required = self.config.mode == crate::runtime::DeploymentMode::Replicated;
+            // A failed lookup describes this group as unavailable; it never
+            // withholds the other groups' figures.
+            let managed = if control {
+                routed.then(|| SelectedTenant::new(self.control.clone()))
+            } else {
+                self.readiness_generation(&tenant, &incarnation)
+                    .ok()
+                    .flatten()
+            };
+            let probe = coverage
+                .probes
+                .get(&tenant)
+                .filter(|probe| probe.incarnation == incarnation);
             let mut observation = GroupObservation {
-                tenant: sample.tenant,
+                tenant,
                 store_available: false,
                 routed,
-                quorum: coverage.status.fresh.then_some(sample.quorum),
+                quorum: probe.map(|probe| probe.quorum),
+                probe_age_seconds: probe
+                    .map(|probe| now.saturating_duration_since(probe.at).as_secs_f64()),
                 authority_required,
                 authority_remaining_seconds: None,
+                figures_age_seconds: None,
                 retention: None,
                 audit_maintenance: None,
                 capacity: None,
+                storage_dedicated: None,
                 storage: None,
             };
+            let mut dedicated_storage = None;
             if let Some(managed) = managed {
+                let node = managed.store.node_store();
+                let dedicated = !NodeStore::ptr_eq(node, &self.node);
+                observation.storage_dedicated = Some(dedicated);
+                if dedicated {
+                    dedicated_storage = node.published_storage_status();
+                    observation.storage = dedicated_storage
+                        .as_ref()
+                        .map(|published| StorageObservation::published(published, clock));
+                }
                 if let Some(gate) = managed.store.storage_access().serving_gate() {
                     observation.authority_remaining_seconds =
                         gate.remaining().ok().map(|value| value.as_secs_f64());
@@ -82,13 +123,6 @@ impl Administration {
                         archive_budget_bytes: budget.archive_bytes,
                     });
                     observation.audit_maintenance = managed.database.audit_maintenance_status();
-                    // A closed or fenced store has no current observation;
-                    // its other figures above still describe the group.
-                    observation.storage = managed
-                        .store
-                        .storage_maintenance_status()
-                        .ok()
-                        .map(|status| StorageObservation::from(&status));
                     observation.store_available = true;
                     stores.push(managed.store);
                 }
@@ -98,11 +132,18 @@ impl Administration {
                 // live store/gate being retained in the response fence.
                 observation.authority_remaining_seconds = None;
             }
+            self.observation.reconcile(
+                &mut observation,
+                &incarnation,
+                dedicated_storage,
+                now,
+                clock,
+            );
             groups.push(observation);
         }
         let standalone_recovery_pending =
             if self.config.mode == crate::runtime::DeploymentMode::Standalone {
-                Some(crate::local_recovery::runtime_pending(self.audit.store())?)
+                self.observation.recovery_pending()
             } else {
                 None
             };
@@ -115,6 +156,10 @@ impl Administration {
             groups,
             stores,
             standalone_recovery_pending,
+            storage: self
+                .node
+                .published_storage_status()
+                .map(|published| StorageObservation::published(&published, clock)),
         })
     }
 }

@@ -109,14 +109,22 @@ impl CoreDisposal {
             if core.shared.get_mut().is_none() {
                 return false;
             }
-            let Core { shared } = self.core.take().expect("original Core disposal");
+            let Core {
+                shared,
+                maintenance,
+            } = self.core.take().expect("original Core disposal");
             let mut shared = match shared.try_unwrap() {
                 Ok(shared) => shared,
                 Err(shared) => {
-                    self.core = Some(Core { shared });
+                    self.core = Some(Core {
+                        shared,
+                        maintenance,
+                    });
                     return false;
                 }
             };
+            // The disk's own reference retires with it, before the grant.
+            drop(maintenance);
             // Stage the exact authority before any owned field can be dropped.
             self.authority = shared._authority.take();
             self.state = shared.state.take();
@@ -821,16 +829,27 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
             },
             authority.grant(),
         ));
+        // The same shell grant funds the published maintenance status the
+        // disk refreshes and the Core reads without its state lock.
+        let maintenance = Arc::new(crate::native_sync::mutex(
+            crate::StorageMaintenanceStatus::default(),
+            authority.grant(),
+        ));
         let state = custody
             .admitted
             .core
             .state
             .as_ref()
             .expect("admitted state");
-        state
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .disk = custody.admitted.core.disk.take_completed();
+        {
+            let mut state = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            state.disk = custody.admitted.core.disk.take_completed();
+            if let Some(disk) = state.disk.as_mut() {
+                disk.attach_published_maintenance(maintenance.clone());
+            }
+        }
         let shared = Shared {
             state: custody.admitted.core.state.take(),
             admission: ManuallyDrop::new(admission.clone()),
@@ -842,6 +861,7 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
         };
         custody.admitted.core.core = Some(Core {
             shared: NativeOwnedArc::new(shared),
+            maintenance,
         });
         if facade {
             custody.admitted.facade.build(

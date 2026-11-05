@@ -3,6 +3,7 @@
 use kasumi_engine::admission::{NodeAdmission, Reservation};
 use serde::Serialize;
 use std::{
+    collections::BTreeMap,
     sync::{
         Arc, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -62,19 +63,37 @@ struct Sweep {
     healthy: usize,
     started: Instant,
     valid_until: Instant,
-    details: Vec<Sample>,
+}
+/// The local groups the latest sweep enumerated, Control first, bounded by
+/// `DETAIL_LIMIT`. It survives invalidation: observations keep listing every
+/// configured group while coverage is unavailable or being rebuilt.
+#[derive(Clone)]
+pub(crate) struct Roster {
+    /// (tenant, incarnation) pairs.
+    pub groups: Vec<(String, String)>,
+}
+/// The newest completed probe of one rostered group, kept across
+/// invalidation and sweeps so a diagnostic ages instead of disappearing.
+#[derive(Clone)]
+pub(crate) struct LastProbe {
+    pub incarnation: String,
+    pub quorum: bool,
+    pub at: Instant,
 }
 #[derive(Default)]
 struct State {
     completed: Option<Sweep>,
     progress: Option<Sweep>,
     invalidation: u64,
+    roster: Option<Roster>,
+    probes: BTreeMap<String, LastProbe>,
 }
 pub(crate) struct Coverage {
     state: Mutex<State>,
     pub(crate) probe: crate::readiness_probe::ProbeSlot,
-    // Covers both fixed-size detailed pages, counters and the worker metadata.
-    // The separately retained topology document has its own actual node charge.
+    // Covers both fixed-size detailed pages, the bounded roster and last
+    // probes, counters and the worker metadata. The separately retained
+    // topology document has its own actual node charge.
     _reservation: Reservation,
 }
 #[derive(Serialize)]
@@ -99,8 +118,11 @@ impl Status {
 }
 pub(crate) struct Snapshot {
     pub status: Status,
-    pub details: Vec<Sample>,
     pub token: Option<Token>,
+    /// The latest enumerated roster, whatever the epoch, and the newest probe
+    /// of each of its groups.
+    pub roster: Option<Roster>,
+    pub probes: BTreeMap<String, LastProbe>,
 }
 #[derive(Clone, Copy)]
 pub(crate) struct Token {
@@ -131,20 +153,41 @@ impl Coverage {
             healthy: 0,
             started: now,
             valid_until: now + FRESHNESS,
-            details: Vec::with_capacity(DETAIL_LIMIT.min(expected)),
         });
+    }
+    /// Replace the roster with the groups a sweep enumerated, and forget
+    /// the last probes of groups it no longer lists.
+    pub(crate) fn enroll(&self, mut groups: Vec<(String, String)>) {
+        groups.truncate(DETAIL_LIMIT);
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state
+            .probes
+            .retain(|tenant, _| groups.iter().any(|(listed, _)| listed == tenant));
+        state.roster = Some(Roster { groups });
     }
     pub(crate) fn record(&self, sample: Sample, healthy: bool) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.roster.as_ref().is_some_and(|roster| {
+            roster
+                .groups
+                .iter()
+                .any(|(tenant, _)| *tenant == sample.tenant)
+        }) {
+            state.probes.insert(
+                sample.tenant,
+                LastProbe {
+                    incarnation: sample.incarnation,
+                    quorum: sample.quorum,
+                    at: Instant::now(),
+                },
+            );
+        }
         // A completed negative group probe is fresh coverage. Its health is
         // diagnostic; only loss of coverage, its epoch or its original deadline
         // invalidates the node's coverage certificate.
         if let Some(sweep) = state.progress.as_mut() {
             sweep.examined += 1;
             sweep.healthy += usize::from(healthy);
-            if sweep.details.len() < DETAIL_LIMIT {
-                sweep.details.push(sample);
-            }
         }
     }
     pub(crate) fn finish(&self, epoch: Epoch) {
@@ -187,10 +230,9 @@ impl Coverage {
                     .map(|s| now.saturating_duration_since(s.started).as_secs_f64()),
                 detail_limit: DETAIL_LIMIT,
             },
-            // Detail identities remain useful for fresh storage observations;
-            // the adapter omits their quorum value unless this sweep is fresh.
-            details: selected.map_or_else(Vec::new, |s| s.details.clone()),
             token,
+            roster: state.roster.clone(),
+            probes: state.probes.clone(),
         }
     }
     pub(crate) fn check(&self, token: Token, epoch: Epoch, now: Instant) -> bool {

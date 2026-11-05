@@ -244,8 +244,14 @@ impl LiveAuthorization {
         }
     }
 }
+const EXPIRED: &str = "authenticated credential expired";
 fn expired() -> Error {
-    Error::new(ErrorCode::Unauthorized, "authenticated credential expired")
+    Error::new(ErrorCode::Unauthorized, EXPIRED)
+}
+/// Whether `error` is the refusal of a verified credential whose own expiry
+/// has passed. Expiry is not secret: the holder can read the token's `exp`.
+pub fn credential_expired(error: &Error) -> bool {
+    error.code == ErrorCode::Unauthorized && error.message == EXPIRED
 }
 
 #[cfg(test)]

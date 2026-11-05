@@ -1,20 +1,49 @@
 # Protected node observations
 
-The data-node daemon serves `GET /health`, `GET /ready`, `GET /metrics`, and
-`GET /recovery/{operation_id}` on its private administrative listener (loopback
-port 9445 in a fresh standalone install).
-All four require TLS 1.3, an installed client certificate, and a current Control
+The data-node daemon serves `GET /health`, `GET /ready`, `GET /metrics`,
+`GET /recovery/{operation_id}` and `POST /maintenance/compaction` on its private
+administrative listener (loopback port 9445 in a fresh standalone install).
+All five require TLS 1.3, an installed client certificate, and a current Control
 administrator bearer credential. Application administrator credentials cannot
 scrape these routes. There is no anonymous health endpoint.
 
 `/health`, `/ready`, and exact recovery status return JSON; `/metrics` returns
-Prometheus text. Responses are at most 1 MiB and carry `Cache-Control: no-store`. Each request reserves bounded
-node workspace and retains its original credential deadline and Control policy
-fence through encoding and release. Renewal cannot extend that deadline. A
-revocation, policy change, lifecycle transition, or closure of an observed store
-can withhold the whole result. For `/health`, `/ready`, and `/metrics`,
-membership changes or expiry/invalidation of the original readiness coverage
-also withhold the result. Authentication and authorization failures are audited. Failure responses contain no diagnostic state.
+Prometheus text. Responses are at most 1 MiB and carry `Cache-Control: no-store`.
+Each request uses one pre-reserved observation workspace (see *Admission* below)
+and retains its original credential deadline and Control policy fence through
+encoding and release. Renewal cannot extend that deadline. A revocation, policy
+change, lifecycle transition, or closure of an observed store can withhold the
+whole result. For `/health` and `/ready`, membership changes, expiry or
+invalidation of the original readiness coverage, and persistent-disk admission
+ceasing to be ready also withhold the result. `/metrics` is a point sample: it
+reports those readiness inputs as gauges and is not withheld when they change
+between observation and release. Authentication and authorization failures are
+audited.
+
+Failure responses carry no node state. A caller without a client certificate or
+a valid bearer, and every 401 other than the one below, gets the generic text
+body `protected node observation unavailable`. A 401 caused by the bearer
+credential's own expiry (its signature verified, its `exp` passed) carries
+`WWW-Authenticate: Bearer error="invalid_token", error_description="the access token expired"`
+and the JSON body `{"error":"credential_expired","detail":"the access token expired"}`;
+expiry is not secret, since the caller holds the token. Any other failure for an
+authenticated caller is JSON naming one coarse reason class,
+`{"error":"protected node observation unavailable","reason":"<class>"}`:
+
+| `reason` | Status | Meaning |
+| --- | --- | --- |
+| `admission` | 503 | No observation workspace: the dedicated slot was busy for 2 s and the shared pool refused too. |
+| `control_quorum` | 503 | Control authorization, its quorum barrier, response fence or membership epoch is unavailable. |
+| `audit_unavailable` | 503 | The durable service audit store refused the request's record or became inaccessible. |
+| `store_closed` | 503 | A store observed as available closed before the result was released. |
+| `coverage_stale` | 503 | `/health` or `/ready` coverage changed or expired before release. |
+| `disk_unready` | 503 | `/health` or `/ready` persistent-disk admission stopped being ready before release. |
+| `lifecycle` | 503 | The node left the serving state the result described. |
+| `forbidden` | 403 | The credential is not a current Control administrator. |
+| `invalid_request` | 400 | Recovery status only: the path is not a canonical UUID. |
+| `not_found` | 404 | Recovery status only: no such durable operation. |
+| `response_limit` | 503 | The encoded result exceeds 1 MiB. |
+| `unclassified` | 503 | Anything else. |
 
 `/health` reports whether startup completed and the daemon is serving. `/ready`
 additionally requires an accessible service audit store without persistence
@@ -31,21 +60,34 @@ establish readiness. Draining begins before listeners and workers stop.
 the exact durable Control operation's
 UUID, phase, updated revision, pending-phase flag, and terminal flag. It is a
 point-addressed read, not an enumeration or phase-count metric. With an
-available three-voter Control quorum, a valid but unknown UUID returns a generic
-404. An invalid UUID returns a generic 400 after authorization; unavailable
-quorum or release authority returns 503. The result is the verified
+available three-voter Control quorum, a valid but unknown UUID returns 404
+(`not_found`). An invalid UUID returns 400 (`invalid_request`) after
+authorization; unavailable quorum or release authority returns 503
+(`control_quorum`). The result is the verified
 phase at its reported revision and may be superseded by a later transition.
 The route does not reveal the recovery request, target placement, or dispatch
 inputs. The protected 1 MiB response limit and original release checks apply.
 
 Control administrator authorization itself requires a current Control quorum
-barrier. If that cannot be established, all protected endpoints return a generic
-503; they do not release counters using an old policy. On HA nodes this means a
-Control
-follower cannot serve these protected observations until it can satisfy that
-administrative authorization. Treat a failed scrape as unavailable monitoring,
-not as zero load or an empty database. Admission pressure can likewise prevent a
-scrape from reserving its workspace and return 503.
+barrier. If that cannot be established, all protected endpoints return 503
+(`control_quorum`); they do not release counters using an old policy. On HA
+nodes this means a Control follower cannot serve these protected observations
+until it can satisfy that administrative authorization. Treat a failed scrape as
+unavailable monitoring, not as zero load or an empty database, and use its
+`reason` to decide whether the node itself is in trouble.
+
+*Admission.* When the administration manager starts it reserves one observation
+slot of 4 MiB from node admission and keeps it as a resident charge. A scrape
+holds that slot instead of reserving from the shared request pool, so neither
+memory pressure (the RSS high-water) nor exhausted operation slots or bytes can
+refuse it. A second concurrent observation tries the shared pool as before and
+otherwise waits up to 2 s for the slot, then returns 503 (`admission`). Each
+observation is bounded by the 1 MiB response limit, so one slot bounds the
+permanent charge. The authentication record that every protected request
+writes to the service audit store is part of the protected boundary and still
+needs storage admission: a full disk or RSS pressure that refuses that write
+returns 503 (`audit_unavailable`). A scrape never waits on a database's
+maintenance: storage figures are copies the node workers publish (below).
 
 A retained background worker probes every locally assigned group, including
 Control, sequentially with a one-second diagnostic deadline per group. There is
@@ -85,15 +127,24 @@ negative result does not by itself invalidate fresh current-epoch coverage.
 Release checks the original epoch and coverage token in constant time without a
 whole-topology scan or a lagging metrics watch.
 
-Scrapes consume this cache and obtain fresh storage, capacity, retention and
-serving-authority details for at most 128 groups. The diagnostic limit does not
-limit readiness coverage. JSON's `readiness_coverage` reports expected, examined
-and healthy group counts, completeness, freshness, the age of the oldest probe,
-and the detail limit. Quorum details from partial or stale sweeps are unavailable;
-their remembered identities can still supply fresh storage diagnostics. These
-are bounded local samples, not a distributed snapshot or an authorization lease.
-The Control authorization barrier retains its separate five-second ceiling.
-Scrapes do not serialize tenant data.
+Each sweep records its roster: Control and every locally hosted group of the
+committed topology, at most 128 (the detail limit; it does not limit readiness
+coverage). The roster and each rostered group's newest completed probe survive
+coverage invalidation and are replaced only by the next sweep's enumeration, so
+every scrape lists every configured group whatever state coverage, stores or
+maintenance are in. Scrapes obtain fresh storage, capacity, retention and
+serving-authority details for the rostered groups. A group whose store is
+closed or unavailable reports `store_available` 0 and the figures last observed
+from its store (same incarnation) in this process, with
+`figures_age_seconds` (`kasumi_local_group_figures_age_seconds`, 0 when this
+sample observed them); a group never observed reports them as unknown. Quorum is
+the group's newest completed probe, with `probe_age_seconds`. JSON's
+`readiness_coverage` reports expected, examined and healthy group counts,
+completeness, freshness, the age of the oldest probe, and the detail limit.
+These are bounded local samples, not a distributed snapshot or an authorization
+lease. The Control authorization barrier retains its separate five-second
+ceiling. Scrapes do not serialize tenant data. The pending-standalone-recovery
+flag is read by the readiness worker after each sweep, not by the scrape.
 
 Available metrics include:
 
@@ -101,13 +152,20 @@ Available metrics include:
   `kasumi_readiness_coverage_fresh`, `kasumi_readiness_groups_expected`,
   `kasumi_readiness_groups_examined`, `kasumi_readiness_groups_healthy`,
   `kasumi_readiness_oldest_probe_age_seconds`, `kasumi_local_group_detail_limit`,
-  and `kasumi_local_group_details`. Per-group quorum values describe fresh cached
-  probes; serving-authority remaining seconds appear only where an admitted HA
-  lease supplies them.
-- Node admission reservations and operations, configured high/low memory marks,
-  sample usability, and RSS/pressure when the memory sample is usable. JSON keeps
-  the `sample_usable` flag alongside the last sample; do not interpret an unusable
-  sample as current memory use.
+  and `kasumi_local_group_details`. Per group, `kasumi_local_group_quorum` is the
+  newest completed probe and `kasumi_local_group_probe_age_seconds` its age.
+  Replicated nodes export `kasumi_local_group_authority_remaining_seconds` for
+  every group; it is known only where an admitted HA lease of an available
+  store supplies it.
+- Node admission reservations and operations, the effective (resolved) memory
+  high-water `kasumi_admission_high_water_bytes`, the low mark, sample
+  usability, and RSS/pressure. `kasumi_admission_memory_used_bytes` is resident
+  memory plus reserved bytes, the sum admission compares with the high-water, and
+  `kasumi_admission_memory_headroom_bytes` is the high-water less that use: an
+  operation of `n` bytes is admitted only while use plus `n` stays below the
+  high-water (and the sample is usable and unpressured). JSON reports the same as
+  `memory_admission`. Use, RSS and pressure are unknown while the memory sample is
+  unusable; do not interpret an unusable sample as current memory use.
 - Service-audit hot/archive bytes and budgets, sequence and pruning positions,
   segment count, draining state, persistence failure, maintenance failures, and
   policy-due archive backlog bytes.
@@ -147,12 +205,15 @@ capacity, including unused headroom, rather than RSS, decoded data size, or actu
 cache occupancy. A grant keeps its original category when retained or resized
 and leaves the counters when released. The breakdown is JSON-only.
 
-Unavailable values are omitted from Prometheus and represented as `null` in JSON.
-Tenant archive-worker counters are local to the current database instance and reset
-on restart or replacement. A live store can have due backlog without an installed
-worker; its worker counters are then `null` in JSON and absent from Prometheus.
-The per-group detail limit remains 128, so these tenant fields are not
-whole-node totals above that count. Durable backup-session totals, authority
+A 200 response always carries every family, and every per-group family for
+every rostered group. Unknown values are `NaN` in Prometheus, so the series
+stays present, and `null` in JSON: a filesystem or memory sample that failed, a
+group never observed in this process, a store whose node worker has not
+published yet. Tenant archive-worker counters are local to the current database
+instance and reset on restart or replacement; they are unknown (`NaN`/`null`)
+for a store without an installed worker. The per-group detail limit remains 128,
+so these tenant fields are not whole-node totals above that count. Within a
+response every family is one contiguous group introduced by its `# TYPE` line. Durable backup-session totals, authority
 daemon metrics, distributed recovery-coordinator phases, and peer-maintenance
 counters are not yet instrumented here. Their absence is not a zero value.
 
@@ -233,39 +294,88 @@ through its own gate. Daemon shutdown does not report a failure again when a
 superseded owner's complete drain was already logged.
 
 Persistent and scratch storage observations are available only through the same
-protected routes. Health JSON includes `persistent_disk`, with its owner phase,
-charged extents, pending growth, file counts, maintenance reserve and current
-filesystem observation. Prometheus exposes `kasumi_persistent_disk_admission_ready`,
+protected routes. They are node-wide and exported once, without a tenant label.
+Health JSON includes `persistent_disk`, with its owner phase,
+charged extents, pending growth, file counts, maintenance reserve, current
+filesystem observation, `capacity_refusals` and `last_capacity_refusal`.
+Prometheus exposes `kasumi_persistent_disk_admission_ready`,
 `kasumi_persistent_disk_max_bytes`, `kasumi_persistent_disk_maintenance_reserve_bytes`,
-`kasumi_persistent_disk_charged_bytes`, `kasumi_persistent_disk_pending_bytes`,
+`kasumi_persistent_disk_charged_bytes`, `kasumi_persistent_disk_pending_bytes`
+(this owner's promises on all its filesystems),
 `kasumi_persistent_disk_files`, `kasumi_persistent_disk_open_files`,
-`kasumi_persistent_disk_filesystem_pending_bytes`,
-`kasumi_persistent_disk_filesystem_min_free_bytes`, and the optional fresh
-`kasumi_persistent_disk_filesystem_available_bytes` sample, plus optional
+`kasumi_persistent_disk_filesystem_pending_bytes` (every owner's promises on the
+filesystem), `kasumi_persistent_disk_filesystem_min_free_bytes`,
+`kasumi_persistent_disk_filesystem_available_bytes` (the `f_bavail` sample),
+`kasumi_persistent_disk_headroom_bytes` and
+`kasumi_persistent_disk_filesystem_device`, plus the
 `kasumi_persistent_disk_filesystem_total_bytes` and
 `kasumi_persistent_disk_filesystem_used_bytes` physical-utilization samples.
 Total counts all filesystem blocks and used counts blocks not free according to
 `fstatvfs`; these values include other processes and are not node-owned charges.
-Readiness requires an
-open owner, usable filesystem admission and sufficient sampled free space for the
-shared pending growth and minimum-free reservation. Its response fence rechecks
-that requirement immediately before releasing a ready observation.
 
-When the persistent roots span several filesystems, health JSON adds
-`persistent_disk.filesystems`, one entry per filesystem with its device, root
-labels, pending bytes (all owners and this owner), floor, available, total and
-used bytes and admission readiness. The scalar `filesystem_*` fields and their
-gauges then describe the filesystem with the least headroom, so readiness covers
-every filesystem.
+Each persistent root is on one filesystem, and each filesystem keeps its own
+promises and `min_free_bytes` floor; the extent budget and namespace limits stay
+one owner total. The unlabelled `kasumi_persistent_disk_filesystem_*` gauges,
+`kasumi_persistent_disk_headroom_bytes` and the scalar JSON `filesystem_*`
+fields describe the filesystem with the least headroom, whose device number is
+`kasumi_persistent_disk_filesystem_device` (JSON `filesystem_device`). Every
+filesystem holding a root also has its own series, labelled
+`{filesystem="<device>"}`: `kasumi_persistent_filesystem_available_bytes`,
+`kasumi_persistent_filesystem_pending_bytes` (every owner's promises on it),
+`kasumi_persistent_filesystem_owner_pending_bytes` (this owner's),
+`kasumi_persistent_filesystem_min_free_bytes`,
+`kasumi_persistent_filesystem_headroom_bytes` and
+`kasumi_persistent_filesystem_admission_ready`. A node with one filesystem
+exports one series of each. When the roots span several filesystems, health
+JSON adds `persistent_disk.filesystems`, one entry per filesystem with its
+device, its root labels (which map device numbers to roots), pending bytes (all
+owners and this owner), floor, available bytes, `headroom_bytes`, total and used
+bytes and admission readiness.
+
+Headroom is exactly the margin the floor check compares a reservation in one of
+that filesystem's roots with, from one locked sample of its three inputs:
+available less pending less min-free. A reservation of `n` bytes passes the
+floor exactly when `n` is at most its filesystem's headroom; headroom is
+negative once the floor is overdrawn. Readiness requires an open owner, usable
+admission on every filesystem and sufficient sampled free space on the tightest
+one for its pending growth and minimum-free reservation, so it covers every
+filesystem. Its response fence rechecks that requirement immediately before
+releasing a ready observation.
+
+Every persistent capacity refusal names the check that refused and the figures
+it compared; nothing identifies a path, tenant or key. The checks are
+`persistent_directory_entries` (children of the transaction's directory,
+counting other batches' reserved children, against the directory policy),
+`persistent_files` (`max_persistent_files`), `persistent_open_files`
+(`max_open_files`, counting reserved descriptors), `persistent_extent` (charged
+extents against `max_bytes`, foreground work leaving the maintenance reserve)
+and `persistent_filesystem_floor`, which is per filesystem: its refusal names
+the device of the filesystem whose floor refused (`filesystem`). The counter
+`kasumi_persistent_disk_capacity_refusals_total{check="..."}` counts each since
+the owner opened; `last_capacity_refusal` in JSON holds the latest refusal's
+`requested`, `in_use` and `limit` (for the floor: available, pending, `min_free`
+and `filesystem`). A refused segment-transaction reservation also logs the check
+and figures on stderr, for example
+`Kasumi transaction reserve failed: stage=disk_space_reservation io=StorageFull check=persistent_filesystem_floor filesystem=2049 requested=67133440 available=7516192768 pending=7381975040 min_free=268435456 headroom=-134217728`,
+and a refused growth during a transaction write logs the owner's latest refusal
+as `last_refusal: check=...`. The scratch owner does the same for
+`scratch_extent`, `scratch_files` and `scratch_filesystem_floor` on its single
+filesystem
+(`Kasumi scratch transaction reserve failed: ... check=scratch_filesystem_floor ...`).
 
 Health JSON includes `scratch_disk`, including its configured per-table
-`native_cache_bytes` ceiling; Prometheus exposes
-`kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,
-`kasumi_scratch_disk_native_cache_bytes`,
+`native_cache_bytes` ceiling, `capacity_refusals` and `last_capacity_refusal`;
+Prometheus exposes
+`kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes` (its
+configured floor), `kasumi_scratch_disk_native_cache_bytes`,
 `kasumi_scratch_disk_charged_bytes`, `kasumi_scratch_disk_live_files`,
-`kasumi_scratch_disk_filesystem_pending_bytes`, and the optional fresh
-`kasumi_scratch_disk_filesystem_available_bytes` sample, plus optional
-`kasumi_scratch_disk_filesystem_total_bytes` and
+`kasumi_scratch_disk_filesystem_pending_bytes`,
+`kasumi_scratch_disk_filesystem_min_free_bytes` (the floor its checks keep: the
+largest of every owner's on that filesystem),
+`kasumi_scratch_disk_filesystem_available_bytes`,
+`kasumi_scratch_disk_headroom_bytes` (the scratch floor check's margin, as for
+the persistent disk), `kasumi_scratch_disk_capacity_refusals_total{check="..."}`,
+plus the `kasumi_scratch_disk_filesystem_total_bytes` and
 `kasumi_scratch_disk_filesystem_used_bytes` physical-utilization samples. If
 persistent and scratch directories share a filesystem, these samples overlap
 and must not be summed. Charged bytes include
@@ -274,15 +384,26 @@ workers. Filesystem pending bytes include promises by persistent and scratch
 owners on the same filesystem in this process; their installed extent limits
 remain separate.
 
-Each available group's health entry includes a `storage` object describing its
-`node.kv` group files and persisted maintenance cycle, or `null` when the
-store is unavailable. `measured` reports whether a census of the retained
-segment (`.kvseg`) and directory arena (`.kvdir`) files completed in the
-current process lifetime; `segment_files`, `segment_bytes`, `arena_files` and
-`arena_bytes` are that census's result (`null` before it completes) and can lag
-files created since. `garbage_files` counts files recorded for unlink.
-`compaction_phase` is `idle`, `evacuating`, `reclaiming` or `packing`, with
-`compaction_cycle`, the baseline measured when the last cycle finished
+Storage maintenance is reported per node database (`node.kv`): the node's
+shared database once, and, for a group served from a standalone generation's own
+database, that database under the group. Health JSON has a top-level `storage`
+object for the shared database; each group has `storage_dedicated` and, when it
+is true, its own `storage` object (`null` otherwise). Each node database's
+worker runs one bounded maintenance step per iteration and then copies the
+database's status, which the database's maintenance owner publishes at the end
+of every step (including the inline steps writes run), policy change and
+compaction request. Reading the status never enters the database's state lock,
+and scrapes read the worker's copy, so an observation never waits for a running
+step, a commit or their I/O. `status_age_seconds` is the age of that copy; it
+grows only if the worker stops. `measured` reports whether the last completed
+census of the retained segment (`.kvseg`) and directory arena (`.kvdir`) files
+is still current: a compaction cycle clears it until it measures again.
+`segment_files`, `segment_bytes`, `arena_files` and `arena_bytes` are that
+census's result, kept with `census_age_seconds` while a cycle runs (`null`
+before the first census in this process lifetime), and can lag files created
+since. `garbage_files` counts files recorded for unlink. `compaction_phase` is
+`idle`, `evacuating`, `reclaiming` or `packing`, with `compaction_cycle`,
+`compaction_requested`, the baseline measured when the last cycle finished
 reclaiming (`compaction_baseline_bytes`/`_files`) and the thresholds that begin
 the next one (`compaction_trigger_bytes`/`_files`). `snapshot_retained_files`
 and `snapshot_retained_bytes` are old files the last completed reclamation kept
@@ -291,27 +412,42 @@ relocated value bytes, invalidated reclamation cohorts and capacity or rejected
 maintenance deferrals since the store opened; `last_deferral` is `capacity` or
 `rejected` while maintenance is backing off.
 
-Prometheus exposes the same per tenant, labeled `{tenant="..."}`:
-`kasumi_local_group_storage_measured`, `kasumi_local_group_storage_segment_files`,
-`kasumi_local_group_storage_segment_bytes`, `kasumi_local_group_storage_arena_files`
-and `kasumi_local_group_storage_arena_bytes` (the last four only once measured),
-`kasumi_local_group_storage_garbage_files`,
-`kasumi_local_group_storage_compaction_phase{phase="..."}` (1 for the current
-phase, 0 for the other three), `kasumi_local_group_storage_compaction_cycle`,
-`kasumi_local_group_storage_compaction_baseline_bytes`,
-`kasumi_local_group_storage_compaction_trigger_bytes`,
-`kasumi_local_group_storage_snapshot_retained_bytes`, and the counters
-`kasumi_local_group_storage_reclaimed_files_total`,
-`kasumi_local_group_storage_reclaimed_bytes_total`,
-`kasumi_local_group_storage_relocated_bytes_total`,
-`kasumi_local_group_storage_reclaim_invalidations_total` and
-`kasumi_local_group_storage_maintenance_deferrals_total{class="capacity"|"rejected"}`.
-Counters restart from zero when the store reopens. Retained bytes normally
-oscillate between the baseline and the trigger; growth past the trigger while
-the phase stays `evacuating` and capacity deferrals rise means the volume lacks
-the headroom a cycle needs to copy before it can free files. These are
-node-local file observations; the `kasumi_persistent_disk_*` gauges still
-report the node-wide charged extents.
+Prometheus exposes the shared database as `kasumi_storage_*` without a tenant
+label, and a dedicated database as `kasumi_local_group_storage_*` labeled
+`{tenant="..."}`; `kasumi_local_group_storage_dedicated{tenant="..."}` (1 or 0)
+says which applies to each group. Node-wide figures are never repeated under
+tenant labels. The families are `measured`, `segment_files`, `segment_bytes`,
+`arena_files`, `arena_bytes`, `census_age_seconds`, `status_age_seconds`,
+`garbage_files`, `compaction_phase{phase="..."}` (1 for the current phase, 0 for
+the other three), `compaction_cycle`, `compaction_requested`,
+`compaction_baseline_bytes`, `compaction_trigger_bytes`,
+`snapshot_retained_files`, `snapshot_retained_bytes`,
+`evacuation_surveyed_segments`, `evacuation_kept_segments`,
+`evacuation_kept_garbage_bytes`, `deferred{class="capacity"|"rejected"}` (1 while
+the last step deferred with that class), and the counters
+`reclaimed_files_total`, `reclaimed_bytes_total`, `relocated_bytes_total`,
+`evacuation_survey_fallbacks_total`, `reclaim_invalidations_total` and
+`maintenance_deferrals_total{class="capacity"|"rejected"}`. Counters restart
+from zero when the store reopens. Retained bytes normally oscillate between the
+baseline and the trigger; growth past the trigger while the phase stays
+`evacuating` and capacity deferrals rise means the volume lacks the headroom a
+cycle needs to copy before it can free files (compare
+`kasumi_persistent_disk_headroom_bytes`). These are node-local file
+observations; the `kasumi_persistent_disk_*` gauges still report the node-wide
+charged extents.
+
+`POST /maintenance/compaction` asks every node database this runtime owns (the
+shared one and each active standalone generation's) to begin a compaction
+cycle at its next maintenance step, below the growth thresholds, and clears a
+capacity or rejected deferral's backoff (the rejected backoff otherwise lasts
+65,536 steps, hours, until a restart). A database that has nothing older than
+its newest files starts no cycle. The route has the same mTLS and Control
+administrator boundary as `/metrics`, ignores its request body, and is audited
+as an `administration` security event (`started`, then `succeeded`, or `failed`
+when a database refused). The JSON response lists each database (`node` for the
+shared one, else the tenant whose generation owns it) and whether it accepted:
+`{"accepted":1,"refused":0,"databases":[{"database":"node","accepted":true}]}`.
+A database refuses when it is closed or its owner failed.
 
 Each available tenant's protected capacity observation includes exact retained
 `schema_activation_bytes` and `retirement_bytes` and their configurable byte

@@ -348,6 +348,7 @@ pub struct Administration {
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
     credential: crate::serving_runtime::CredentialSource,
     pub(crate) readiness: crate::readiness::Coverage,
+    observation: crate::observability::ObservationState,
 }
 /// Administrative selection borrows the already installed serving owner. It
 /// never constructs providers, starts renewal, reopens storage, or owns shutdown.
@@ -471,6 +472,79 @@ impl Administration {
 
     pub(crate) fn security_audit(&self) -> &Arc<SecurityAudit> {
         &self.audit
+    }
+
+    pub(crate) fn observation(&self) -> &crate::observability::ObservationState {
+        &self.observation
+    }
+
+    pub(crate) fn admission(&self) -> &Arc<kasumi_engine::admission::NodeAdmission> {
+        &self.admission
+    }
+
+    /// Ask every node database this runtime owns to begin a compaction cycle
+    /// at its next maintenance step, below the growth thresholds and past a
+    /// deferral's backoff: the node's shared database, then each standalone
+    /// generation's own. Audited as an administrative action.
+    pub(crate) async fn request_storage_compaction(
+        &self,
+        context: &RequestContext,
+    ) -> kasumi_types::Result<Vec<crate::observability::CompactionRequestOutcome>> {
+        let event = |outcome| SecurityEvent {
+            kind: SecurityEventKind::Administration,
+            principal: Some(context.principal.clone()),
+            tenant: Some(context.tenant.clone()),
+            request_id: context.request_id.clone(),
+            outcome,
+        };
+        let unavailable = |_| {
+            kasumi_types::Error::new(
+                kasumi_types::ErrorCode::AuditUnavailable,
+                "durable service audit unavailable",
+            )
+        };
+        self.audit
+            .record(event(SecurityOutcome::Started))
+            .await
+            .map_err(unavailable)?;
+        let mut owned = vec![("node".to_owned(), self.node.clone())];
+        let tenants = self
+            .generations
+            .read()
+            .map(|generations| {
+                generations
+                    .iter()
+                    .map(|((tenant, _), owner)| (tenant.clone(), owner.store.node_store().clone()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        for (tenant, node) in tenants {
+            if !owned
+                .iter()
+                .any(|(_, known)| NodeStore::ptr_eq(known, &node))
+            {
+                owned.push((tenant, node));
+            }
+        }
+        let outcomes: Vec<_> = owned
+            .into_iter()
+            .map(
+                |(database, node)| crate::observability::CompactionRequestOutcome {
+                    database,
+                    accepted: node.request_storage_compaction().is_ok(),
+                },
+            )
+            .collect();
+        let outcome = if outcomes.iter().all(|outcome| outcome.accepted) {
+            SecurityOutcome::Succeeded
+        } else {
+            SecurityOutcome::Failed
+        };
+        self.audit
+            .record(event(outcome))
+            .await
+            .map_err(unavailable)?;
+        Ok(outcomes)
     }
 
     /// Administrative routing is separate from DatabaseRegistry. Reserved control
@@ -622,6 +696,9 @@ impl Administration {
         let control_context = crate::runtime::configured_control_context(&config.control)?;
         registry.observe_membership(&control)?;
         let readiness = crate::readiness::Coverage::new(&admission)?;
+        // Protected observations keep one pre-reserved workspace, so node
+        // admission pressure cannot refuse a scrape (see ObservationState).
+        let observation = crate::observability::ObservationState::new(&admission)?;
         // Reserve the complete membership-child inventory on the installed
         // memory core before this manager can accept an administrative command.
         let command_jobs = CommandJobs::new(&admission)?;
@@ -647,6 +724,7 @@ impl Administration {
             admission,
             credential,
             readiness,
+            observation,
         }))
     }
     fn current(&self, context: &RequestContext) -> Result<SelectedTenant> {

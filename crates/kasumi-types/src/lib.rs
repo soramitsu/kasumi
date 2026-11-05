@@ -41,7 +41,7 @@ pub use recovery::*;
 mod lifecycle;
 pub use lifecycle::*;
 mod authorization;
-pub use authorization::{CredentialLiveness, RequestAuthorization};
+pub use authorization::{CredentialLiveness, RequestAuthorization, credential_expired};
 mod credential_resource;
 mod credentials;
 pub use credentials::*;

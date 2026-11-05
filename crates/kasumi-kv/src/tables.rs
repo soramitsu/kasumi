@@ -661,6 +661,9 @@ pub(crate) const fn facade_heap_bytes() -> usize {
         + 3 * 64
         + crate::native_sync::mutex_backing_bytes()
         + crate::native_sync::condvar_backing_bytes()
+        // The Core's published maintenance status and its allocation slack.
+        + crate::disk_state::published_maintenance_heap_bytes()
+        + 64
 }
 struct DatabaseInner {
     core: NativeOwnedArc<Core>,

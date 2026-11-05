@@ -1083,6 +1083,15 @@ impl RegisteredNodeOpening {
             .run_maintenance(budget)
     }
 
+    /// Fixture hook: run `work` holding the opening's state, which a
+    /// maintenance step (`run_maintenance`) holds for its whole duration.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
+        let owner = self.registration.owner();
+        let _state = owner.state.lock();
+        work()
+    }
+
     /// Owner-checked retained-file and compaction-cycle observation.
     pub fn maintenance_status(
         &self,

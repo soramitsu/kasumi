@@ -7,6 +7,7 @@ use crate::{NodeStore, NodeStoreLocator, NodeStoreLookup, disk_memory};
 use anyhow::{Result, ensure};
 use kasumi_kv::{
     CacheWarmup, CacheWarmupState, CacheWarmupStatus, MaintenanceBudget, MaintenanceStep,
+    StorageMaintenanceStatus,
 };
 use kasumi_serving::{BackgroundWork, BackgroundWorkBudget};
 use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
@@ -59,6 +60,75 @@ pub struct CacheWorkerStatus {
     /// Unfinished warm attempts that were replaced, and when the last was seen.
     pub warm_restarts: u64,
     pub last_warm_restart: Option<Instant>,
+    /// The database's maintenance status as of this worker's last step.
+    pub storage: Option<PublishedStorageStatus>,
+}
+
+/// The maintenance status the node worker copies after each of its
+/// maintenance steps, whether the step ran or found the write gate busy.
+/// Readers take this copy without touching the database, its write gate,
+/// the opening's state or the KV core lock, so an observation never waits
+/// behind a maintenance step. It is as old as `published_at`; steps that
+/// writes run inline in between are reflected by the worker's next copy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublishedStorageStatus {
+    pub status: StorageMaintenanceStatus,
+    pub published_at: Instant,
+    /// The last census completed in this process lifetime. A compaction
+    /// cycle clears `status.measured` until it measures again; these figures
+    /// then stay, aging, instead of disappearing.
+    pub census: Option<PublishedCensus>,
+}
+
+/// Retained `.kvseg` and `.kvdir` figures of one completed census.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PublishedCensus {
+    pub segment_files: u64,
+    pub segment_bytes: u64,
+    pub arena_files: u64,
+    pub arena_bytes: u64,
+    /// When the worker first published these figures.
+    pub measured_at: Instant,
+}
+
+impl PublishedStorageStatus {
+    /// The next publication: `status` taken at `now`, keeping the previous
+    /// census while `status` has none and its time while figures are equal.
+    fn next(previous: Option<Self>, status: StorageMaintenanceStatus, now: Instant) -> Self {
+        let census = if status.measured {
+            let figures = (
+                status.segment_files,
+                status.segment_bytes,
+                status.arena_files,
+                status.arena_bytes,
+            );
+            let measured_at = previous
+                .and_then(|previous| previous.census)
+                .filter(|census| {
+                    (
+                        census.segment_files,
+                        census.segment_bytes,
+                        census.arena_files,
+                        census.arena_bytes,
+                    ) == figures
+                })
+                .map_or(now, |census| census.measured_at);
+            Some(PublishedCensus {
+                segment_files: status.segment_files,
+                segment_bytes: status.segment_bytes,
+                arena_files: status.arena_files,
+                arena_bytes: status.arena_bytes,
+                measured_at,
+            })
+        } else {
+            previous.and_then(|previous| previous.census)
+        };
+        Self {
+            status,
+            published_at: now,
+            census,
+        }
+    }
 }
 
 /// Record the native warm status of a step, noting an unfinished attempt that
@@ -222,6 +292,14 @@ impl CacheWarmer {
         }
     }
 
+    /// The worker's last published maintenance status. Takes only this
+    /// owner's state gate and the worker's status cell, both of which are
+    /// held briefly and never across database work.
+    pub(crate) fn published_storage(&self) -> Option<PublishedStorageStatus> {
+        let worker = self.state.lock().worker.clone()?;
+        worker.status.lock().storage
+    }
+
     pub(crate) fn status(&self) -> CacheWorkerStatus {
         let state = self.state.lock();
         let stopped = state.stopped;
@@ -363,7 +441,25 @@ impl Worker {
                                 }
                                 Err(error) => return Err(error.into()),
                             };
+                        // Publish this step's outcome for observers. A read
+                        // failure leaves the previous copy, which ages.
+                        let published = match work_node.body().db.maintenance_status() {
+                            Ok(status) => Some(status),
+                            Err(kasumi_kv::StorageError::DatabaseClosed)
+                                if work_node.body().db.is_stopped() =>
+                            {
+                                return Ok(());
+                            }
+                            Err(_) => None,
+                        };
                         let mut status = observer.status.lock();
+                        if let Some(published) = published {
+                            status.storage = Some(PublishedStorageStatus::next(
+                                status.storage,
+                                published,
+                                Instant::now(),
+                            ));
+                        }
                         match maintenance {
                             MaintenanceStep::Busy => {
                                 status.maintenance_busy = status.maintenance_busy.saturating_add(1);

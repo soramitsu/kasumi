@@ -203,6 +203,20 @@ pub struct StorageMaintenanceStatus {
     pub last_deferral: Option<MaintenanceDeferral>,
 }
 
+/// The status the maintenance owner published at the end of its last step,
+/// policy change or compaction request. `Core::maintenance_status` copies it
+/// without entering `Shared::run`, so an observer never waits for a running
+/// step, a commit or their I/O. Its lock is held only for the copy.
+pub(crate) type PublishedMaintenance = Mutex<StorageMaintenanceStatus>;
+
+/// The published cell's heap: its `Arc` control and payload and the
+/// platform mutex that `native_sync::mutex` initializes under the core grant.
+pub(crate) const fn published_maintenance_heap_bytes() -> usize {
+    std::mem::size_of::<PublishedMaintenance>()
+        + 2 * std::mem::size_of::<usize>()
+        + crate::native_sync::mutex_backing_bytes()
+}
+
 /// A durable publication fits the remaining step budget.
 pub(super) fn can_mutate(budget: MaintenanceBudget, progress: &MaintenanceProgress) -> bool {
     progress.mutations < budget.mutations
@@ -355,6 +369,7 @@ impl DiskState {
             Ok(()) => {
                 self.maintenance.last_deferral = None;
                 progress.phase = self.storage_phase()?;
+                self.publish_maintenance();
                 Ok(progress)
             }
             Err(error)
@@ -384,6 +399,7 @@ impl DiskState {
                 self.maintenance.backoff_until = self.maintenance.steps.saturating_add(backoff);
                 progress.deferred = Some(deferral);
                 progress.phase = self.storage_phase()?;
+                self.publish_maintenance();
                 Ok(progress)
             }
         }
@@ -424,6 +440,7 @@ impl DiskState {
         self.owner.check()?;
         policy.validate()?;
         self.maintenance.policy = policy;
+        self.publish_maintenance();
         Ok(())
     }
 
@@ -433,7 +450,25 @@ impl DiskState {
         self.owner.check()?;
         self.compact.requested = true;
         self.maintenance.backoff_until = 0;
+        self.publish_maintenance();
         Ok(())
+    }
+
+    /// Install the core's published cell and fill it with the opened state.
+    pub(crate) fn attach_published_maintenance(&mut self, cell: Arc<PublishedMaintenance>) {
+        self.published = Some(cell);
+        self.publish_maintenance();
+    }
+
+    /// Copy the current status into the published cell. An owner that can
+    /// no longer report keeps its last copy; readers check the owner first.
+    fn publish_maintenance(&self) {
+        let (Some(cell), Ok(status)) = (&self.published, self.maintenance_status()) else {
+            return;
+        };
+        *cell
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = status;
     }
 
     fn storage_phase(&self) -> Result<StorageCompactionPhase, CoreError> {

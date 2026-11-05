@@ -37,7 +37,7 @@ pub use backup_sessions::{
     MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
     verify_backup_session,
 };
-pub use cache_warmer::CacheWorkerStatus;
+pub use cache_warmer::{CacheWorkerStatus, PublishedCensus, PublishedStorageStatus};
 mod cached_rows;
 pub use cached_rows::NamespaceEpoch;
 use catalog_read_budget::AdmittedKeyCatalog;
@@ -1655,9 +1655,24 @@ impl NodeStore {
     }
 
     /// Ask the node's database to begin a compaction cycle at its next
-    /// maintenance step regardless of the growth thresholds.
+    /// maintenance step regardless of the growth thresholds. This also
+    /// clears a capacity or rejected deferral's backoff.
     pub fn request_storage_compaction(&self) -> Result<(), kasumi_kv::StorageError> {
         self.body().db.request_compaction()
+    }
+
+    /// The maintenance status the node worker copied after its last step,
+    /// or `None` before its first. Never waits on the database: see
+    /// `PublishedStorageStatus`.
+    pub fn published_storage_status(&self) -> Option<PublishedStorageStatus> {
+        self.body().cache_warmer.published_storage()
+    }
+
+    /// Fixture hook: run `work` holding the opening state a maintenance
+    /// step holds for its whole duration.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
+        self.body().db.hold_maintenance_state_for_test(work)
     }
 
     /// Exact installed census owner for this node's database and close report.
@@ -2033,6 +2048,12 @@ impl TenantStore {
         &self,
     ) -> Result<StorageMaintenanceStatus, kasumi_kv::StorageError> {
         self.node.storage_maintenance_status()
+    }
+
+    /// The node database this tenant's records live in: the node's shared
+    /// one, or a standalone generation's own.
+    pub fn node_store(&self) -> &NodeStore {
+        &self.node
     }
 
     pub fn scratch_disk(&self) -> &Arc<ScratchDisk> {

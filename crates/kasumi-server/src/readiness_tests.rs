@@ -26,8 +26,14 @@ fn sample(index: usize, quorum: bool) -> Sample {
         quorum,
     }
 }
+fn roster(groups: usize) -> Vec<(String, String)> {
+    (0..groups)
+        .map(|index| (format!("tenant-{index}"), "original".to_owned()))
+        .collect()
+}
 fn complete(coverage: &Coverage, groups: usize, now: Instant) {
     coverage.begin(epoch(), groups, now);
+    coverage.enroll(roster(groups));
     for index in 0..groups {
         coverage.record(sample(index, true), true);
     }
@@ -44,7 +50,11 @@ fn complete_coverage_exceeds_diagnostic_page_without_group_count_cutoff() {
     assert_eq!(snapshot.status.expected_groups, Some(1025));
     assert_eq!(snapshot.status.examined_groups, 1025);
     assert_eq!(snapshot.status.healthy_groups, 1025);
-    assert_eq!(snapshot.details.len(), DETAIL_LIMIT);
+    assert_eq!(snapshot.probes.len(), DETAIL_LIMIT);
+    assert_eq!(
+        snapshot.roster.map(|roster| roster.groups.len()),
+        Some(DETAIL_LIMIT)
+    );
     assert!(coverage.check(snapshot.token.unwrap(), epoch(), now));
 }
 
@@ -69,8 +79,9 @@ fn unhealthy_group_beyond_detail_page_preserves_complete_coverage_and_original_t
     assert_eq!(completed.status.healthy_groups, 129);
     assert!(completed.status.ready());
     assert!(coverage.check(token, epoch(), now));
-    assert_eq!(completed.details.len(), DETAIL_LIMIT);
-    assert!(completed.details.iter().all(|sample| sample.quorum));
+    // The negative probe beyond the roster's detail page is not retained.
+    assert_eq!(completed.probes.len(), DETAIL_LIMIT);
+    assert!(completed.probes.values().all(|probe| probe.quorum));
 }
 
 #[test]
@@ -121,12 +132,13 @@ fn original_coverage_freshness_deadline_applies_even_beyond_detail_page() {
     let coverage = Coverage::new(&admission(4 << 20)).unwrap();
     let now = Instant::now();
     coverage.begin(epoch(), 130, now);
+    coverage.enroll(roster(130));
     for index in 0..130 {
         coverage.record(sample(index, true), true);
     }
     coverage.finish(epoch());
     let original = coverage.snapshot(epoch(), now);
-    assert_eq!(original.details.len(), DETAIL_LIMIT);
+    assert_eq!(original.probes.len(), DETAIL_LIMIT);
     let token = original.token.unwrap();
     let deadline = now + FRESHNESS;
     let before_deadline = deadline - Duration::from_millis(1);
@@ -204,4 +216,35 @@ fn coverage_metadata_has_real_lifetime_charge_and_admission_rejection() {
     drop(coverage);
     assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
     assert!(Coverage::new(&admission).is_ok());
+}
+
+#[test]
+fn roster_and_last_probes_survive_invalidation_and_follow_the_next_enrollment() {
+    let coverage = Coverage::new(&admission(4 << 20)).unwrap();
+    let now = Instant::now();
+    complete(&coverage, 3, now);
+    coverage.invalidate();
+    let invalidated = coverage.snapshot(epoch(), now);
+    assert!(!invalidated.status.complete && invalidated.token.is_none());
+    assert_eq!(
+        invalidated.roster.map(|roster| roster.groups),
+        Some(roster(3))
+    );
+    assert_eq!(invalidated.probes.len(), 3);
+    // A narrower roster forgets the groups it no longer lists; an unlisted
+    // probe is not retained.
+    coverage.begin(epoch(), 2, now);
+    coverage.enroll(roster(2));
+    coverage.record(sample(2, false), false);
+    coverage.record(sample(1, false), false);
+    let narrowed = coverage.snapshot(epoch(), now);
+    assert_eq!(narrowed.roster.map(|roster| roster.groups), Some(roster(2)));
+    assert_eq!(
+        narrowed
+            .probes
+            .iter()
+            .map(|(tenant, probe)| (tenant.as_str(), probe.quorum))
+            .collect::<Vec<_>>(),
+        [("tenant-0", true), ("tenant-1", false)]
+    );
 }
