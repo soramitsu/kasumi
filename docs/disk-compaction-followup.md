@@ -35,6 +35,23 @@ describe density restarts, forced rotation and the 1 MiB trigger are historical.
   durably advances its exact worklist ordinal; foreground inserts cannot
   extend the worklist. The phase ends with `Evacuating -> Reclaiming`
   when the worklist is exhausted or no current key remains.
+- **Selective evacuation.** Before its first leaf, Evacuating surveys the
+  live value bytes of every segment at or below the cutoff in one read-only,
+  unit-bounded walk of the worklist root, then keeps some segments in place
+  (`MaintenancePolicy::retained_garbage_percent`, default 25; 0 relocates
+  every old value). It empties every segment at most half live, then the
+  emptiest others (lowest identifier first among equals) until the garbage
+  left in the kept ones is within that percentage of the old live bytes, then
+  the oldest kept ones while they span more than eight identifiers per
+  surveyed segment, so the reclaim floor keeps rising. Leaves relocate only
+  values of selected segments; the arena cutoff stays a prefix. The selection
+  is never persisted: it depends only on the worklist, the cutoff and the
+  policy, so a reopen surveys again and selects the same segments, and a
+  binary or policy that selects differently after a reopen only relocates
+  more or less. Reclamation proves reachability, so kept segments survive as
+  referenced files and count in the baseline. A survey refused admission
+  three times, or meeting more than 2^20 segments, keeps every old segment
+  (an arena-only cycle). No root, record or segment format changes.
 - **Reclamation.** See the [reclamation follow-up](disk-reclamation-followup.md).
   Completion publishes `Reclaiming -> Packing` with the new baseline: the
   census at the start of reclamation minus the reclaimed files and bytes.

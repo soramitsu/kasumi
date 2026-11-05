@@ -428,15 +428,27 @@ replay anchor. ROOT005 persists an exact frozen evacuation worklist and a
 finite Packing budget, so writes and reopen cannot restart completed work.
 
 The new build reclaims storage on its own. Each group's persisted cycle moves
-live values and leaves out of old files and unlinks files no root or snapshot
-references, driven by every write and by the node worker. Retained size
-oscillates between the last cycle's baseline `B` and about `max(2B, B + 256
-MiB)` by default; keep at least `B` of free space, because evacuation needs
-room to copy before anything is freed and defers (without failing writes) on a
-full disk. Watch `kasumi_local_group_storage_*` and the health `storage`
-object ([observability](observability.md)); a growing
-`maintenance_deferrals_total{class="capacity"}` with a phase stuck in
-`evacuating` means the disk needs headroom.
+leaves out of old directory arenas and live values out of the old segments it
+selects, and unlinks files no root or snapshot references, driven by every
+write and by the node worker. Evacuation first surveys the live bytes of each
+old segment and selects every segment at most half live, then the emptiest
+others until the garbage left in the rest is at most 25% of the old live
+bytes; the rest keep their values in place and stay referenced. `B` therefore
+includes that kept garbage, and a cycle copies only the selected segments'
+live values. Retained size oscillates between the last cycle's baseline `B`
+and about `max(1.5B, B + 256 MiB)` under kasumid's default
+`--storage-compaction-growth-percent 150` (`max(2B, ...)` at 200). Keep at
+least `B` of free space, because evacuation copies before anything is freed
+(with garbage spread evenly it can still select most segments). Compaction may
+use the persistent disk's `maintenance_reserve_bytes`, which foreground writes
+leave free; past it, or at the filesystem's free-space floor, it defers
+(without failing writes). A cleanup unlink refused for lack of headroom is a
+deferral too, retried on a later step. Watch `kasumi_storage_*` (and
+`kasumi_local_group_storage_*` for a group with its own standalone-generation
+database) and the health `storage` object ([observability](observability.md));
+a growing `maintenance_deferrals_total{class="capacity"}` with a phase stuck in
+`evacuating` means the disk needs headroom, and `kasumictl ... compact` retries
+at once after you free some.
 
 For ciphertext/integrity errors, stop using the affected store and preserve it.
 Restore an authenticated logical backup into a new incarnation or replace the
