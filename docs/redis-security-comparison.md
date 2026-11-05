@@ -1,0 +1,110 @@
+# Security comparison: standalone Kasumi and Redis 8
+
+This compares the controls a standalone `kasumid` enforces with those of an
+open-source Redis 8 server, and lists the concrete weaknesses a review of
+Kasumi's code found. Kasumi references are to source as of this document;
+Redis statements describe its documented open-source behavior and were not
+re-verified in this repository. The performance cost of each Kasumi control is
+measured in the [Redis comparison](../benchmarks/REDIS-COMPARISON.md).
+
+## Controls side by side
+
+| Control | Kasumi standalone | Redis 8 (open source) |
+| --- | --- | --- |
+| Transport encryption | TLS 1.3 only on every listener and outbound client, 0-RTT off (`kasumi-transport/src/lib.rs`). No plaintext listener exists. | Optional. TLS 1.2 and 1.3 by default; the plaintext port stays open unless `port 0`. |
+| Client certificates | Required on the native data and administrative listeners, issued by the installation CA. MCP uses server TLS plus a bearer token. | Optional (`tls-auth-clients`, default `yes` once TLS is on). |
+| Server identity | Clients pin the server's exact certificate SHA-256 in their profile. | CA verification only; no pinning in the server's protocol. |
+| Authentication | Ed25519 access tokens (or an external OAuth issuer with allowlisted asymmetric algorithms), `typ: at+jwt`, exact issuer and audience, zero leeway, lifetime ≤ 1 hour against a suspend-aware clock; revocable credential families checked on every request and again before the response is released. | ACL users with passwords (`AUTH`), checked once per connection. The default user has no password unless configured; no expiry or revocation of a connection that already authenticated. |
+| Authorization | Default deny. Scopes in the token must intersect a per-principal, optionally per-collection grant; re-checked during ordered apply and before release. Tenant comes only from the verified token. | ACL command categories and key patterns per user. |
+| Tenant isolation | Separate keys, policies, credentials, audit and (replicated) Raft groups per tenant. | Logical databases share one keyspace process; isolation is by ACL key pattern. |
+| Encryption at rest | Every record sealed with XChaCha20-Poly1305 under per-tenant data keys wrapped by a file keyring or OpenBao/Vault Transit; record keys are keyed HMACs; backups and spools are encrypted (`kasumi-store/src/lib.rs`). | None. RDB and AOF files are plaintext. |
+| Audit | Durable, encrypted, hash-linked service audit of transport accept/deny, authentication success/denial per request, access denials, key, backup and recovery operations; tenant audit of every mutation and, with `strict_read_audit`, every read before release. | No audit log. `ACL LOG` keeps a small in-memory list of recent denials. |
+| Idempotency / exactly-once | Every mutation has a durable receipt keyed by its idempotency key. | None; a retried command applies twice. |
+| Durability of acknowledged writes | Always flushed before the reply. | Configurable: `appendfsync always`, `everysec` (≤ ~1 s loss) or `no`. |
+| Server-side code | None. | Lua and functions; the Lua sandbox has had memory-safety CVEs (for example CVE-2025-49844). |
+| Secrets on disk | Secret files must be owner-only, are read without following links into zeroizing buffers; logs use fixed labels only. | `requirepass`/ACL passwords in the config or ACL file. |
+| Resource limits | 8 MiB requests, 16 MiB responses, authentication before body reads, memory admission with a high-water mark, per-tenant quotas, 32 HTTP/2 streams and 128 connections per listener, 60 s idle close. | `maxclients` 10000, `timeout 0` (idle clients never closed), `maxmemory` optional. |
+| Replication security | Raft peers authenticate with mTLS and certificate pins bound to node IDs. | Replication and cluster-bus TLS optional. |
+
+Kasumi is stricter in every row. What it does not have, and Redis does not
+either: no rate limiting of failed authentication, and no signatures or
+external anchoring on the audit chain (whoever holds the audit key could
+rewrite it).
+
+## What the controls cost
+
+The comparison benchmark runs both servers with TLS 1.3 and client
+certificates, so transport cost is matched. The rest is Kasumi-only work:
+
+- **Per-request authentication audit.** Every authenticated request, including
+  reads, waits for a durable service-audit record before its response is
+  released (`kasumi-server/src/auth.rs`, `authenticate`). Records from
+  concurrent requests share one commit (up to 64), but a lone client pays one
+  device flush per read. Each record is roughly 250–300 bytes, so a client
+  polling ten times a second writes about 250 MB of audit per day; this is the
+  growth behind multi-gigabyte audit archives on read-heavy deployments.
+- **Token verification.** An Ed25519 signature check and claim decoding per
+  request. Since this change a token already verified by the current key set
+  skips the signature check; expiry, revocation and audit still run every time.
+- **Encryption.** One AEAD seal or open per record and a keyed HMAC per key.
+- **Receipts and mutation audit.** Extra bytes in every write's durable commit.
+- **Strict read audit.** Each audited read becomes a journal entry and a
+  durable commit before release.
+
+## Weaknesses found in Kasumi
+
+Severity assumes the standalone defaults (listeners on loopback) unless noted;
+it is higher wherever a listener is reachable from a network.
+
+1. **Fixed: unknown token key IDs re-read the private signer file.** Before
+   this change, a request whose token header named any unknown `kid` made the
+   local issuer re-read and re-parse every private signing key, with no rate
+   limit and no valid signature required. A reload now happens only for a key
+   ID that could still appear (never for a malformed one or an older
+   generation of a cached signer), and only once per replacement of the
+   signer file, so rotated keys are still trusted on first use. A reload that
+   finds the same keys keeps the verified tokens. Covered by
+   `auth::tests::local_signer_is_reloaded_only_for_an_unknown_kid`.
+2. **Audit capacity can be exhausted by unauthenticated traffic (medium; high
+   on reachable listeners).** Every failed TLS handshake, every refused token
+   and every bad MCP `Origin` writes a durable service-audit record, and so
+   does every successful request. The hot log (64 MiB) drains into archive
+   segments that are never pruned and stop at `archive_bytes` (64 GiB by
+   default); when that is reached, new records are refused and every
+   authentication and TLS accept fails closed until an operator raises the
+   budget. Nothing rate-limits or merges denial records. Recommended:
+   aggregate denial records per peer and time window with an exact count,
+   reserve hot capacity for administrative records, add archive export and
+   pruning, and alert on `kasumi_service_audit_archive_bytes` approaching
+   `kasumi_service_audit_archive_budget_bytes`. Recording one successful
+   authentication per credential and connection instead of per request would
+   remove most of the volume; that changes what the audit trail records and
+   needs an explicit decision.
+3. **Connection slots can be held during TLS handshakes (medium).** Each
+   listener admits 128 connections and holds a slot through a 5 s handshake
+   timeout and its audit write, with no per-source cap
+   (`kasumi-server/src/tls.rs`, `ListenerLimits`). Recommended: a separate,
+   shorter pre-handshake budget and per-source limits.
+4. **Bearer tokens are not bound to a client certificate (medium-low).** All
+   listeners share one audience, and MCP requires no client certificate, so a
+   token copied from a native client works on MCP. Recommended: a distinct
+   audience per listener or certificate-bound tokens (RFC 8705).
+5. **Client certificates cannot be revoked (low-medium).** There is no CRL
+   check and certificate rotation keeps the CA, so an old client certificate
+   stays valid until it expires. Recommended: CRL support or a server-side
+   allowlist of client certificate pins.
+6. **The generated standalone profile is over-privileged (low-medium).** The
+   default application credential carries read, write, admin and audit scopes.
+   Recommended: separate application and administrator credentials.
+7. **Configuration and CA files are read without ownership checks (low).**
+   Secret files are checked; trust roots and the authentication configuration
+   are not. Recommended: the same owner and no-group/other-write check.
+
+Two lower-severity items affect replicated deployments only. The Raft peer
+listener buffers and parses a request body of up to 40 MiB before mapping the
+peer certificate to a node (`kasumi-server/src/cluster.rs`), and that memory
+is not charged to node admission. The `kasumi-authority` native listener has
+no request admission, so a slowly trickled body can hold a connection slot
+(`kasumi-server/src/authority_runtime.rs`). Recommended: check the peer pin
+before reading the body, and wrap the authority listener in
+`RequestAdmission::native`.

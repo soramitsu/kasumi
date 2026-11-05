@@ -107,3 +107,158 @@ Kasumi credentials expire after an hour, so the script runs
 To profile a server during a workload on macOS, attach `sample PID 10` while
 the driver runs (Linux: `perf record -g -p PID`). The driver alone can also be
 run against any installation; see `kasumi-bench-compare --help`.
+
+## Baseline results (2026-11-06)
+
+Kasumi 6ff7734d (release profile: thin LTO, one codegen unit), Redis 8.10.3
+(Homebrew, libc malloc), macOS 27.2 on a 16-core Apple M3 Max with 128 GiB.
+100,000 keys of 1,024-byte documents, 30 s measured after a 3 s warmup.
+The host was shared and loaded: load averages ranged from 19 to 160 across
+rows and are recorded per row in the raw results
+([Kasumi](results/redis-comparison-20261106/kasumi-6ff7734d.jsonl),
+[Redis](results/redis-comparison-20261106/redis-8.10.3.jsonl)). The Redis
+systems ran interleaved; Kasumi ran afterwards on its own because its first
+two loads failed (see below). Treat differences under about 2x as noise.
+
+**1 client** (ops/s; p50 and p99 in ms; server CPU per operation in µs)
+
+| Workload | Kasumi ops/s | Kasumi p50 / p99 | Kasumi CPU/op | Redis always ops/s | always p50 / p99 | always CPU/op | Redis everysec ops/s | everysec p50 / p99 | everysec CPU/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| point-read | 19 | 41 / 170 | 10,989 | 11,545 | 0.03 / 0.65 | 19 | 11,998 | 0.03 / 0.61 | 19 |
+| point-write | 10 | 79 / 227 | 23,154 | 83 | 8.55 / 30 | 302 | 5,221 | 0.05 / 4.14 | 38 |
+| mixed | 34 | 17 / 167 | 6,632 | 783 | 0.10 / 16 | 56 | 2,394 | 0.05 / 7.69 | 31 |
+| batch-read | 40 | 16 / 124 | 6,226 | 5,005 | 0.05 / 1.34 | 31 | 6,380 | 0.04 / 1.06 | 27 |
+| batch-write | 6 | 127 / 544 | 51,764 | 65 | 12 / 35 | 333 | 1,037 | 0.12 / 14 | 81 |
+| range-scan | 7 | 105 / 369 | 70,296 | 1,189 | 0.27 / 10 | 237 | 1,391 | 0.28 / 7.85 | 246 |
+
+**16 clients** (ops/s; p50 and p99 in ms; server CPU per operation in µs)
+
+| Workload | Kasumi ops/s | Kasumi p50 / p99 | Kasumi CPU/op | Redis always ops/s | always p50 / p99 | always CPU/op | Redis everysec ops/s | everysec p50 / p99 | everysec CPU/op |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| point-read | 90 | 158 / 662 | 4,024 | 21,384 | 0.23 / 15 | 14 | 22,060 | 0.24 / 12 | 14 |
+| point-write | 15 | 927 / 3,520 | 20,998 | 685 | 18 / 46 | 55 | 6,628 | 0.29 / 64 | 20 |
+| mixed | 64 | 45 / 2,133 | 5,933 | 849 | 12 / 132 | 30 | 11,309 | 0.27 / 19 | 15 |
+| batch-read | 27 | 419 / 2,106 | 19,377 | 6,288 | 0.41 / 56 | 25 | 6,893 | 0.36 / 54 | 23 |
+| batch-write | 5 | 2,356 / 7,064 | 55,652 | 128 | 102 / 389 | 85 | 4,765 | 0.74 / 37 | 42 |
+| range-scan | 15 | 966 / 2,929 | 70,941 | 1,639 | 3.70 / 94 | 222 | 2,170 | 3.84 / 68 | 218 |
+
+| Measure | Kasumi | Redis always | Redis everysec |
+| --- | ---: | ---: | ---: |
+| Load of 100,000 documents | 454 s, 220 docs/s (4 loaders) | 6 s, 15,730 docs/s | 2 s, 61,443 docs/s |
+| Device bytes written per logical byte, load | 61.6 | 1.1 | 1.0 |
+| Device bytes written per logical byte, 1-client point writes | 770 | 19 | 1.1 |
+| Peak resident memory during the runs | 780-980 MiB | 155-163 MiB | 160-410 MiB |
+| Idle after load: CPU, device writes in 10 s | 28%, 65 MB | 0.06%, 0 | 0.15%, 5 MB |
+| Data directory after the runs (99 MiB logical) | 992 MiB | 209 MiB | 385 MiB |
+| Graceful restart to first read | 22.9 s | 0.67 s | 0.93 s |
+| `SIGKILL` recovery to first read | 22.6 s | 0.53 s | 0.78 s |
+
+Two Kasumi loads with 16 concurrent loaders failed before this run. In one,
+a 100-document batch did not complete within the 60 s client deadline; in
+the other, the server refused a batch with `proposal admission deadline
+exceeded` because sixteen proposals queued behind the one being applied.
+Redis absorbed both loads at that concurrency.
+
+## Where Kasumi's time goes
+
+Profiles below are macOS `sample` captures of a standalone `kasumid` built
+from 6ff7734d with line tables, serving 20,000 documents to four clients
+(`benchmarks/redis-comparison` driver). Counts are samples across all server
+threads over 8 seconds; they rank costs, they are not exact shares.
+
+1. **Every request waits for a durable audit record.** The listener
+   authenticates each request and waits for an `AuthenticationSucceeded`
+   record in the service audit store before reading the body
+   (`kasumi-server/src/request_admission.rs` -> `Authenticator::authenticate`).
+   Concurrent records share one commit, but a lone client pays one full
+   device flush per read. In a read-only run those audit commits were the
+   node's only writes, yet they held the storage lock for 1,443 samples.
+2. **Readers wait for commits on one storage mutex.** `kasumi-kv`
+   serializes every operation on a node through `Shared::run`, and a commit
+   holds that mutex through its root publication, including the final full
+   flush (`root::publish` -> `sync_root`). Of 1,076 samples in point-read
+   lookups (`read_view::get_at`), 1,046 waited for the mutex; range scans
+   waited 5,247 samples and batch reads 5,195. Background maintenance held the
+   same mutex for 760 samples during reads. During a 100,000-document load
+   one 100-document batch did not complete within 60 seconds.
+3. **Writes are serialized through two durable commits.** Besides its audit
+   commit, each write needs a journal append and an application publication,
+   each a durable commit, and the engine admits one proposal at a time
+   (`proposal_gate`) through both. A tenant's write throughput therefore stays
+   near one write per two commits at any client count.
+   Redis `appendfsync always` shares one flush among every client served in
+   an event-loop turn.
+4. **Each document read opens and closes a registered read view.** Forking
+   the view (`TenantStorageReadView::fork`) and closing it took about 60% of a
+   point read's own work; closing spins with `yield_now` while another
+   operation holds the database owner's lock (`RegisteredNodeRead::finish`).
+5. **Physical identity checks on every file operation.** Each read, write
+   and sync re-verifies the file and its parent directory (`openat`,
+   `fstatat`, `fstat`, `lstat`, `geteuid`): about 830 samples in the write
+   run, half as many as the flushes themselves.
+6. **Copy-on-write directory pages amplify writes.** Each commit appends new
+   directory pages from leaf to root for every table it touches (documents,
+   indexes, receipts, journal, audit). During the load the store filled a
+   64 MB directory file about every 30 seconds.
+7. **Token verification.** Ed25519 signature checking and claim decoding
+   cost about 140-180 µs of CPU per request on this host. This is fixed:
+   see [changes](#changes-measured-here).
+
+## Changes measured here
+
+| Change | Status | Before | After |
+| --- | --- | --- | --- |
+| Verified-token cache: a token this key set already verified skips its Ed25519 signature check and claims decode; signed times, scopes, credential liveness and the audit record still run per request (`kasumi-server/src/auth.rs`) | committed, caf0d2a9 | 143-178 µs of CPU per request for verification (release micro-benchmark on this host) | 0.6-5 µs |
+| Unknown token key IDs no longer re-read the private signer file (security fix, same file) | committed, caf0d2a9 | every request naming an unknown `kid` re-parsed every signing key | at most one reload per replacement of the signer file |
+| Record successful authentication once per connection and token (prototype, not committed: changes what the service audit records) | awaiting a decision | 1-client point reads 25/s, p50 28 ms, 9.2 ms CPU/op; 16 clients 106/s, p50 104 ms | 1,001/s, p50 0.70 ms, 0.49 ms CPU/op; 3,343/s, p50 2.6 ms |
+
+The prototype row comes from a separate A/B run of two builds without LTO
+(10,000 documents, 15 s per case, same host and harness), so compare it only
+with its own baseline column. Writes did not change in that run: they wait
+for three durable commits each, and each commit issues six device syncs on
+this host (three segment-log syncs, one directory sync, two root syncs),
+which the `sync-trace` build of `kasumi-store` counts directly.
+
+## Summary: where Kasumi stands against Redis
+
+On this host, matched for TLS 1.3 with client certificates and for durable
+acknowledgements, Redis is faster and lighter than Kasumi on every workload
+measured here, by two to three orders of magnitude on reads. Most of the gap
+is not data structures or encryption but four design decisions, each of
+which buys a guarantee Redis does not offer:
+
+- **Per-request durable authentication audit.** Every request, read or
+  write, waits for a flushed service-audit record. Redis keeps no audit log.
+  This one decision is the floor under Kasumi's read latency and the main
+  source of its audit-archive growth.
+- **One storage mutex held through each commit's flushes, and serialized
+  proposals.** Readers queue behind writers' device flushes, and a tenant
+  applies one proposal at a time through two durable commits. Redis serves
+  reads from memory on its event loop and shares one AOF flush among all
+  clients in a turn.
+- **Copy-on-write durable structures with six device syncs per commit.**
+  These give Kasumi crash-consistent encrypted pages, receipts and audit at
+  the cost of 60-800x write amplification.
+- **Startup by journal replay.** A restart replays every entry since the last
+  snapshot through the same durable publication path. Here no snapshot had
+  been taken (the cadence is 5,000 entries), so the restart replayed an
+  estimated 2,500 entries in 22.9 s, roughly 9 ms each; Redis loaded its AOF in
+  under a second.
+
+Kasumi is ahead of Redis on what that cost buys: encryption at rest, exactly
+once mutations with durable receipts, schema validation and declared indexes
+maintained in the same commit, per-request authorization and revocation, an
+encrypted hash-linked service audit, and no configuration in which an acknowledged
+write can be lost (`everysec` can lose about a second). It also spreads
+requests over many cores where Redis serves commands on one thread, which
+starts to matter once reads stop waiting for flushes: the per-connection audit
+prototype made 16-client reads 32 times faster than Kasumi's baseline, yet its
+3,343 reads/s still trail Redis's 21,384.
+
+To approach Redis on throughput Kasumi would need, in order of measured
+effect: audit successful authentication per connection rather than per
+request (or make it asynchronous with a bounded loss window); stop holding
+the storage mutex across commit flushes so reads proceed during commits;
+group concurrent proposals into one journal append and one publication;
+reduce the syncs per commit; and batch journal replay. Each is described in
+[where Kasumi's time goes](#where-kasumis-time-goes).
