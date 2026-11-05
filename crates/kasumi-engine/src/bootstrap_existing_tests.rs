@@ -873,7 +873,7 @@ async fn standalone_snapshot_over_an_archived_history_reopens_without_copying_th
     database.shutdown().await?;
     drop(group);
     drop(database);
-    let _default = ReferenceDefault::set(true);
+    let _default = ArchiveDefault::set(crate::LocalSnapshotArchive::Reference);
     let fixture = fixture.reopen().await?;
     let reopened = open_existing_local(
         fixture.stores.clone(),
@@ -977,23 +977,29 @@ async fn existing_control_requires_the_non_nil_configured_incarnation_before_sta
 
 // ---- A standalone group's own snapshot form: real crashes and rollback ----
 
-static REFERENCE_DEFAULT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static ARCHIVE_DEFAULT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Holds this process's default snapshot form for a test that reopens with a
-/// chosen form. Unguarded tests may observe either default: both forms reopen.
-struct ReferenceDefault(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
-impl ReferenceDefault {
-    fn set(enabled: bool) -> Self {
-        let guard = REFERENCE_DEFAULT
+/// chosen form. Unguarded tests may observe any default: every form reopens.
+struct ArchiveDefault(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+impl ArchiveDefault {
+    fn set(archive: crate::LocalSnapshotArchive) -> Self {
+        let guard = ARCHIVE_DEFAULT
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        crate::set_reference_local_snapshots(enabled);
+        crate::set_local_snapshot_archive(archive);
         Self(guard)
     }
 }
-impl Drop for ReferenceDefault {
+impl ArchiveDefault {
+    /// Change the default while still holding it.
+    fn switch(&self, archive: crate::LocalSnapshotArchive) {
+        crate::set_local_snapshot_archive(archive);
+    }
+}
+impl Drop for ArchiveDefault {
     fn drop(&mut self) {
-        crate::set_reference_local_snapshots(false);
+        crate::set_local_snapshot_archive(crate::LocalSnapshotArchive::Embedded);
     }
 }
 
@@ -1226,7 +1232,7 @@ async fn form_child(
     abort: bool,
 ) -> crate::test_fixture_failure::FixtureResult<()> {
     // This process opens only this tenant.
-    crate::set_reference_local_snapshots(true);
+    crate::set_local_snapshot_archive(crate::LocalSnapshotArchive::Reference);
     let fixture = Rooted::create(root).await?;
     let database = open_local_with_incarnation(
         fixture.stores.clone(),
@@ -1358,7 +1364,7 @@ async fn a_killed_writer_reopens_from_its_reference_snapshot_with_every_acknowle
         let root = std::path::PathBuf::from(std::env::var(FORM_ROOT).map_err(anyhow::Error::from)?);
         return form_child(&root, stage == "abort").await;
     }
-    let _default = ReferenceDefault::set(true);
+    let _default = ArchiveDefault::set(crate::LocalSnapshotArchive::Reference);
     // Kill points spread over continuous capture, publication and purge.
     for delay_ms in [0u64, 3, 11, 37, 97] {
         let directory = kasumi_store::test_utils::private_tempdir()?;
@@ -1397,7 +1403,7 @@ async fn a_writer_that_dies_inside_its_next_snapshot_task_reopens_from_the_previ
         let root = std::path::PathBuf::from(std::env::var(FORM_ROOT).map_err(anyhow::Error::from)?);
         return form_child(&root, stage == "abort").await;
     }
-    let _default = ReferenceDefault::set(true);
+    let _default = ArchiveDefault::set(crate::LocalSnapshotArchive::Reference);
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let root = directory.path();
     let mut child = spawn_form_child(root, TEST, "abort")?;
@@ -1449,7 +1455,7 @@ async fn segment_child(
     root: &std::path::Path,
     stage: &str,
 ) -> crate::test_fixture_failure::FixtureResult<()> {
-    crate::set_reference_local_snapshots(true);
+    crate::set_local_snapshot_archive(crate::LocalSnapshotArchive::Reference);
     match stage {
         "populate" => {
             let fixture = Rooted::create(root).await?;
@@ -1620,7 +1626,7 @@ async fn an_embedded_reopen_replaces_a_reference_snapshot_so_an_older_binary_can
         crate::test_fixture_failure::FixtureResult::Ok((fixture, reopened))
     };
     // Rollback step 1: start once without the opt-in.
-    let default = ReferenceDefault::set(false);
+    let default = ArchiveDefault::set(crate::LocalSnapshotArchive::Embedded);
     let (fixture, reopened) = reopen("embedded reopen of a reference snapshot", storage).await?;
     assert!(!reopened.engine().stores_reference_local_snapshots());
     assert!(reopened.engine().reopened_from_reference_snapshot());
@@ -1661,7 +1667,7 @@ async fn an_embedded_reopen_replaces_a_reference_snapshot_so_an_older_binary_can
 )]
 async fn without_the_opt_in_a_standalone_group_stores_the_embedded_form()
 -> crate::test_fixture_failure::FixtureResult<()> {
-    let _default = ReferenceDefault::set(false);
+    let _default = ArchiveDefault::set(crate::LocalSnapshotArchive::Embedded);
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let root = directory.path();
     let fixture = Rooted::create(root).await?;
@@ -1704,5 +1710,349 @@ async fn without_the_opt_in_a_standalone_group_stores_the_embedded_form()
     reopened.shutdown().await?;
     drop(reopened);
     fixture.shutdown().await;
+    Ok(())
+}
+
+/// A store whose engine alone opted in: archived history, then periodic
+/// by-reference (KASUMIL1) snapshots. It is closed; the returned storage scope
+/// reopens it in this process. Also the tenant revision it closed at.
+#[allow(
+    clippy::result_large_err,
+    reason = "Whole native failure custody is the fixture result."
+)]
+async fn by_reference_store(
+    root: &std::path::Path,
+) -> crate::test_fixture_failure::FixtureResult<(crate::test_utils::FixtureStorage, u64)> {
+    let fixture = Rooted::create(root).await?;
+    let database = open_local_with_incarnation(
+        fixture.stores.clone(),
+        policy(),
+        small_hot_audit_limits(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    database.engine().fixture_reference_local_snapshots(true);
+    archived_history(&database, 50).await?;
+    let group = database.raft_group().clone();
+    group.fixture_local_snapshot_interval(2).await?;
+    for number in 50..56 {
+        audited_write(&database, number).await?;
+        group.fixture_local_snapshot_settled().await?;
+    }
+    assert!(group.local_snapshots_published().unwrap() > 0);
+    let revision = database.engine().generation()?.state.revision;
+    database.shutdown().await?;
+    drop(group);
+    drop(database);
+    Ok((fixture.close().await, revision))
+}
+
+/// Reopen in this process under the default the caller holds.
+#[allow(
+    clippy::result_large_err,
+    reason = "Whole native failure custody is the fixture result."
+)]
+async fn reopen_on(
+    root: &std::path::Path,
+    storage: crate::test_utils::FixtureStorage,
+    context: &'static str,
+) -> crate::test_fixture_failure::FixtureResult<(Rooted, Arc<Database>)> {
+    let fixture = Rooted::open_on(root, storage).await?;
+    let reopened =
+        open_existing_local(
+            fixture.stores.clone(),
+            fixture.audit.clone(),
+            fixture.incarnation,
+        )
+        .await
+        .map_err(|original| {
+            crate::test_fixture_failure::FixtureFailure::SnapshotContext { context, original }
+        })?;
+    Ok((fixture, reopened))
+}
+
+/// Shut a reopened tenant down and keep the storage scope for the next reopen.
+#[allow(
+    clippy::result_large_err,
+    reason = "Whole native failure custody is the fixture result."
+)]
+async fn close_reopened(
+    fixture: Rooted,
+    database: Arc<Database>,
+) -> crate::test_fixture_failure::FixtureResult<crate::test_utils::FixtureStorage> {
+    database.shutdown().await?;
+    drop(database);
+    Ok(fixture.close().await)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    clippy::await_holding_lock,
+    reason = "Whole native failure custody is the fixture result; the form default is held for each reopen."
+)]
+async fn an_offline_command_keeps_each_stored_form_and_converts_nothing()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    // Every kasumid command but `serve` opens its tenants under `Preserve`.
+    let _default = ArchiveDefault::set(crate::LocalSnapshotArchive::Preserve);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let root = directory.path();
+    let (storage, revision) = by_reference_store(root).await?;
+    // A by-reference tenant is not converted: no archive copy is written.
+    let (fixture, reopened) =
+        reopen_on(root, storage, "offline reopen of a reference snapshot").await?;
+    assert!(reopened.engine().reopened_from_reference_snapshot());
+    assert!(reopened.engine().stores_reference_local_snapshots());
+    assert_eq!(reopened.raft_group().local_snapshots_published(), Some(0));
+    assert!(reopened.engine().generation()?.state.revision >= revision);
+    // Its own snapshots stay by reference too.
+    let group = reopened.raft_group().clone();
+    group.fixture_local_snapshot_interval(2).await?;
+    for number in 100..104 {
+        audited_write(&reopened, number).await?;
+        group.fixture_local_snapshot_settled().await?;
+    }
+    assert!(group.local_snapshots_published().unwrap() > 0);
+    drop(group);
+    let storage = close_reopened(fixture, reopened).await?;
+    let (fixture, reopened) = reopen_on(root, storage, "second offline reopen").await?;
+    assert!(
+        reopened.engine().reopened_from_reference_snapshot(),
+        "an offline command stored an embedded snapshot"
+    );
+    assert_eq!(reopened.raft_group().local_snapshots_published(), Some(0));
+    drop(close_reopened(fixture, reopened).await?);
+
+    // A store that never opted in stays embedded: an offline command never
+    // starts the by-reference form on its own.
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let root = directory.path();
+    let fixture = Rooted::create(root).await?;
+    let database = open_local_with_incarnation(
+        fixture.stores.clone(),
+        policy(),
+        small_hot_audit_limits(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    assert!(!database.engine().stores_reference_local_snapshots());
+    archived_history(&database, 50).await?;
+    let group = database.raft_group().clone();
+    group.fixture_local_snapshot_interval(2).await?;
+    for number in 50..54 {
+        audited_write(&database, number).await?;
+        group.fixture_local_snapshot_settled().await?;
+    }
+    assert!(group.local_snapshots_published().unwrap() > 0);
+    drop(group);
+    let storage = close_reopened(fixture, database).await?;
+    let (fixture, reopened) =
+        reopen_on(root, storage, "offline reopen of an embedded snapshot").await?;
+    assert!(!reopened.engine().reopened_from_reference_snapshot());
+    assert!(!reopened.engine().stores_reference_local_snapshots());
+    assert_eq!(reopened.raft_group().local_snapshots_published(), Some(0));
+    let group = reopened.raft_group().clone();
+    group.fixture_local_snapshot_interval(2).await?;
+    for number in 100..104 {
+        audited_write(&reopened, number).await?;
+        group.fixture_local_snapshot_settled().await?;
+    }
+    assert!(group.local_snapshots_published().unwrap() > 0);
+    drop(group);
+    let storage = close_reopened(fixture, reopened).await?;
+    let (fixture, reopened) =
+        reopen_on(root, storage, "offline reopen after embedded snapshots").await?;
+    assert!(!reopened.engine().reopened_from_reference_snapshot());
+    reopened.shutdown().await?;
+    drop(reopened);
+    fixture.shutdown().await;
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    clippy::await_holding_lock,
+    reason = "Whole native failure custody is the fixture result; the form default is held for each reopen."
+)]
+async fn a_conversion_refused_for_capacity_serves_on_its_reference_snapshot()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let default = ArchiveDefault::set(crate::LocalSnapshotArchive::Embedded);
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let root = directory.path();
+    let (storage, revision) = by_reference_store(root).await?;
+    // The rollback start on a full store: the conversion's Blank entry is refused.
+    let fixture = Rooted::open_on(root, storage).await?;
+    let reopened = super::open_existing_local_as_stored(
+        fixture.stores.clone(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await
+    .map_err(
+        |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+            context: "embedded reopen before its conversion",
+            original,
+        },
+    )?;
+    assert!(reopened.engine().reopened_from_reference_snapshot());
+    assert!(!reopened.engine().stores_reference_local_snapshots());
+    let stored = reopened.raft_group().metrics().snapshot;
+    reopened.raft_group().fixture_local_refuse_next_blank()?;
+    super::store_embedded_after_reference_reopen(&reopened)
+        .await
+        .map_err(
+            |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+                context: "conversion refused for capacity",
+                original,
+            },
+        )?;
+    // Nothing reached the journal or the stored snapshot, and the tenant serves.
+    assert_eq!(reopened.raft_group().local_snapshots_published(), Some(0));
+    assert_eq!(reopened.raft_group().metrics().snapshot, stored);
+    assert!(audited_write(&reopened, 300).await? > revision);
+    let storage = close_reopened(fixture, reopened).await?;
+    default.switch(crate::LocalSnapshotArchive::Preserve);
+    let (fixture, reopened) = reopen_on(root, storage, "reopen after a refused conversion").await?;
+    assert!(
+        reopened.engine().reopened_from_reference_snapshot(),
+        "a refused conversion replaced the stored snapshot"
+    );
+    let storage = close_reopened(fixture, reopened).await?;
+    // With capacity back, the next embedded start converts it.
+    default.switch(crate::LocalSnapshotArchive::Embedded);
+    let (fixture, reopened) = reopen_on(root, storage, "embedded reopen with capacity").await?;
+    assert!(reopened.engine().reopened_from_reference_snapshot());
+    assert_eq!(reopened.raft_group().local_snapshots_published(), Some(1));
+    let storage = close_reopened(fixture, reopened).await?;
+    default.switch(crate::LocalSnapshotArchive::Preserve);
+    let (fixture, reopened) = reopen_on(root, storage, "reopen after the conversion").await?;
+    assert!(!reopened.engine().reopened_from_reference_snapshot());
+    reopened.shutdown().await?;
+    drop(reopened);
+    fixture.shutdown().await;
+    drop(default);
+    Ok(())
+}
+
+// ---- Cross-version rollback harness (writer side; the older release reads) ----
+
+/// A content manifest of every file under `root`: relative path, length, SHA-256.
+fn store_manifest(root: &std::path::Path) -> anyhow::Result<Vec<(String, u64, String)>> {
+    use sha2::Digest as _;
+    fn walk(
+        base: &std::path::Path,
+        directory: &std::path::Path,
+        out: &mut Vec<(String, u64, String)>,
+    ) -> anyhow::Result<()> {
+        for entry in std::fs::read_dir(directory)? {
+            let path = entry?.path();
+            let name = path.strip_prefix(base)?.to_string_lossy().into_owned();
+            if name.starts_with("manifest-") || name.ends_with("-record.json") {
+                continue;
+            }
+            if path.is_dir() {
+                walk(base, &path, out)?;
+            } else {
+                let bytes = std::fs::read(&path)?;
+                out.push((
+                    name,
+                    bytes.len() as u64,
+                    hex::encode(sha2::Sha256::digest(&bytes)),
+                ));
+            }
+        }
+        Ok(())
+    }
+    let mut out = Vec::new();
+    walk(root, root, &mut out)?;
+    out.sort();
+    Ok(out)
+}
+
+fn write_store_manifest(root: &std::path::Path, label: &str) -> anyhow::Result<()> {
+    durable_write(
+        &root.join(format!("manifest-{label}.json")),
+        &serde_json::to_vec_pretty(&store_manifest(root)?)?,
+    )
+}
+
+fn state_record(database: &Database) -> anyhow::Result<serde_json::Value> {
+    let generation = database.engine().generation()?;
+    Ok(serde_json::json!({
+        "revision": generation.state.revision,
+        "audit_next_sequence": generation.state.audit_retention.next_sequence,
+        "audit_retention": serde_json::to_value(&generation.state.audit_retention)?,
+    }))
+}
+
+/// Writer side of the cross-version rollback check, run explicitly with
+/// `KASUMI_ROLLBACK_ROOTS=<converted-root>:<control-root>` (both new, private,
+/// absent directories): archived history stored by reference (KASUMIL1) under
+/// both roots; the first is then reopened by this release without the opt-in,
+/// which converts it back to KASUMID1. The older release's reader harness opens
+/// both: it must reopen the converted store with the recorded state and refuse
+/// the by-reference control without rewriting it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "cross-version rollback harness; run explicitly with KASUMI_ROLLBACK_ROOTS"]
+#[allow(
+    clippy::result_large_err,
+    clippy::await_holding_lock,
+    reason = "Whole native failure custody is the fixture result; the form default is held for the conversion."
+)]
+async fn cross_version_rollback_harness_writes_a_converted_and_a_by_reference_store()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let roots = std::env::var("KASUMI_ROLLBACK_ROOTS").map_err(anyhow::Error::from)?;
+    let (converted, control) = roots
+        .split_once(':')
+        .ok_or_else(|| anyhow::anyhow!("KASUMI_ROLLBACK_ROOTS is <converted>:<control>"))?;
+    // `serve` without the flag: the embedded form, which converts on reopen.
+    let _default = ArchiveDefault::set(crate::LocalSnapshotArchive::Embedded);
+    for (root, convert) in [
+        (std::path::Path::new(converted), true),
+        (std::path::Path::new(control), false),
+    ] {
+        let fixture = Rooted::create(root).await?;
+        let database = open_local_with_incarnation(
+            fixture.stores.clone(),
+            policy(),
+            small_hot_audit_limits(),
+            fixture.audit.clone(),
+            fixture.incarnation,
+        )
+        .await?;
+        database.engine().fixture_reference_local_snapshots(true);
+        archived_history(&database, 50).await?;
+        let group = database.raft_group().clone();
+        group.fixture_local_snapshot_interval(2).await?;
+        for number in 50..56 {
+            audited_write(&database, number).await?;
+            group.fixture_local_snapshot_settled().await?;
+        }
+        assert!(group.local_snapshots_published().unwrap() > 0);
+        let mut record = serde_json::json!({ "by_reference": state_record(&database)? });
+        database.shutdown().await?;
+        drop(group);
+        drop(database);
+        let storage = fixture.close().await;
+        write_store_manifest(root, "b1-by-reference")?;
+        if convert {
+            let (fixture, reopened) = reopen_on(root, storage, "embedded conversion").await?;
+            assert!(reopened.engine().reopened_from_reference_snapshot());
+            assert!(!reopened.engine().stores_reference_local_snapshots());
+            assert_eq!(reopened.raft_group().local_snapshots_published(), Some(1));
+            record["converted"] = state_record(&reopened)?;
+            drop(close_reopened(fixture, reopened).await?);
+            write_store_manifest(root, "b2-converted")?;
+        } else {
+            drop(storage);
+        }
+        durable_write(
+            &root.join("b-record.json"),
+            &serde_json::to_vec_pretty(&record)?,
+        )?;
+    }
     Ok(())
 }

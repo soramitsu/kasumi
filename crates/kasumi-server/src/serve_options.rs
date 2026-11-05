@@ -61,6 +61,19 @@ pub enum ServeCommand {
     Serve(ServeOptions),
 }
 
+/// The engine's process default for this invocation: `serve` stores the form
+/// its option names (by reference unless `embedded`); every other command keeps
+/// each tenant's stored form and converts nothing.
+pub fn process_snapshot_archive(
+    serve: Option<&ServeOptions>,
+) -> kasumi_engine::LocalSnapshotArchive {
+    match serve.map(|options| options.local_snapshot_archive) {
+        Some(LocalSnapshotArchive::Reference) => kasumi_engine::LocalSnapshotArchive::Reference,
+        Some(LocalSnapshotArchive::Embedded) => kasumi_engine::LocalSnapshotArchive::Embedded,
+        None => kasumi_engine::LocalSnapshotArchive::Preserve,
+    }
+}
+
 const GROWTH: &str = "--storage-compaction-growth-percent";
 const ARCHIVE: &str = "--local-snapshot-archive";
 
@@ -215,6 +228,20 @@ mod tests {
         assert_eq!(
             serve(&["serve", "node.json", ARCHIVE, "reference"]).local_snapshot_archive,
             LocalSnapshotArchive::Reference
+        );
+    }
+
+    #[test]
+    fn only_serve_chooses_a_snapshot_form_and_offline_commands_preserve() {
+        use kasumi_engine::LocalSnapshotArchive as Engine;
+        assert_eq!(process_snapshot_archive(None), Engine::Preserve);
+        assert_eq!(
+            process_snapshot_archive(Some(&serve(&["serve", "node.json"]))),
+            Engine::Reference
+        );
+        assert_eq!(
+            process_snapshot_archive(Some(&serve(&["serve", "node.json", ARCHIVE, "embedded"]))),
+            Engine::Embedded
         );
     }
 

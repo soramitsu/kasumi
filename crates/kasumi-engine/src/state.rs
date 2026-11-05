@@ -297,30 +297,94 @@ pub struct TenantEngine {
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
     pub(crate) audit_maintenance:
         Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
-    /// Whether this group's own standalone snapshots are stored by reference
-    /// (KASUMIL1). Taken from [`reference_local_snapshots`] at construction.
-    reference_local_snapshots: std::sync::atomic::AtomicBool,
-    /// Whether this group's last reopen read a by-reference (KASUMIL1) snapshot.
-    reopened_local_reference: std::sync::atomic::AtomicBool,
+    /// The form of this group's own standalone snapshots.
+    local_snapshot_form: LocalSnapshotForm,
 }
 
-/// The process default for a standalone group's own snapshot form. Off keeps the
-/// transportable KASUMID1 bundle, which every earlier Kasumi binary reopens. On
-/// stores KASUMIL1 (archive by reference), which binaries before it refuse, so it
-/// is an explicit opt-in: `kasumid serve <config> --local-snapshot-archive reference`.
-static REFERENCE_LOCAL_SNAPSHOTS: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Select the process default before any tenant opens. Engines read it once,
-/// when constructed; a reopen in the embedded form converts a group's stored
-/// by-reference snapshot before it serves (see `open_existing_local`).
-pub fn set_reference_local_snapshots(enabled: bool) {
-    REFERENCE_LOCAL_SNAPSHOTS.store(enabled, std::sync::atomic::Ordering::Release);
+/// How a standalone (`local-v1`) group stores the snapshots it keeps for its own
+/// reopen. The process default is [`LocalSnapshotArchive::Embedded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LocalSnapshotArchive {
+    /// KASUMID1, the transportable bundle every earlier Kasumi binary reopens. A
+    /// group reopened from a KASUMIL1 snapshot durably publishes a KASUMID1 one
+    /// before it serves, so an earlier binary can reopen it afterwards.
+    Embedded,
+    /// KASUMIL1: the logical state only; the audit archive chain stays in this
+    /// node's archive cache and every reopen verifies it there. Binaries before it
+    /// refuse this form, so it is an explicit opt-in:
+    /// `kasumid serve <config> --local-snapshot-archive reference`.
+    Reference,
+    /// Each group keeps the form of the snapshot it reopened from (KASUMIL1 after
+    /// a by-reference reopen, otherwise KASUMID1) and converts nothing. For
+    /// commands that open tenants offline (recovery, key rotation, staging): they
+    /// neither copy a by-reference tenant's whole archive back into its snapshot
+    /// nor start the by-reference form on a store that never opted in.
+    Preserve,
 }
 
-/// The process default (see [`set_reference_local_snapshots`]).
-pub fn reference_local_snapshots() -> bool {
-    REFERENCE_LOCAL_SNAPSHOTS.load(std::sync::atomic::Ordering::Acquire)
+impl LocalSnapshotArchive {
+    const fn code(self) -> u8 {
+        match self {
+            Self::Embedded => 0,
+            Self::Reference => 1,
+            Self::Preserve => 2,
+        }
+    }
+    const fn from_code(code: u8) -> Self {
+        match code {
+            1 => Self::Reference,
+            2 => Self::Preserve,
+            _ => Self::Embedded,
+        }
+    }
+}
+
+static LOCAL_SNAPSHOT_ARCHIVE: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(LocalSnapshotArchive::Embedded.code());
+
+/// Select the process default before any tenant opens. Engines read it once, when
+/// constructed; an `Embedded` reopen converts a group's stored by-reference
+/// snapshot before it serves (see `open_existing_local`).
+pub fn set_local_snapshot_archive(archive: LocalSnapshotArchive) {
+    LOCAL_SNAPSHOT_ARCHIVE.store(archive.code(), std::sync::atomic::Ordering::Release);
+}
+
+/// The process default (see [`set_local_snapshot_archive`]).
+pub fn local_snapshot_archive() -> LocalSnapshotArchive {
+    LocalSnapshotArchive::from_code(
+        LOCAL_SNAPSHOT_ARCHIVE.load(std::sync::atomic::Ordering::Acquire),
+    )
+}
+
+/// One group's own snapshot form: the process default it was constructed under,
+/// the form its next snapshots take, and the form its reopen read.
+pub(crate) struct LocalSnapshotForm {
+    archive: LocalSnapshotArchive,
+    reference: std::sync::atomic::AtomicBool,
+    reopened_reference: std::sync::atomic::AtomicBool,
+}
+
+impl LocalSnapshotForm {
+    pub(crate) fn from_process_default() -> Self {
+        let archive = local_snapshot_archive();
+        Self {
+            archive,
+            reference: std::sync::atomic::AtomicBool::new(
+                archive == LocalSnapshotArchive::Reference,
+            ),
+            reopened_reference: std::sync::atomic::AtomicBool::new(false),
+        }
+    }
+    /// Record the form of the stored snapshot this group reopened from. Under
+    /// `Preserve` its next snapshots take that same form.
+    fn reopened(&self, by_reference: bool) {
+        if self.archive == LocalSnapshotArchive::Preserve {
+            self.reference
+                .store(by_reference, std::sync::atomic::Ordering::Release);
+        }
+        self.reopened_reference
+            .store(by_reference, std::sync::atomic::Ordering::Release);
+    }
 }
 
 enum ApplyScope {
@@ -716,18 +780,25 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
 impl TenantEngine {
     /// Whether this group's next own snapshots are stored by reference (KASUMIL1).
     pub fn stores_reference_local_snapshots(&self) -> bool {
-        self.reference_local_snapshots
+        self.local_snapshot_form
+            .reference
             .load(std::sync::atomic::Ordering::Acquire)
     }
     /// Whether this group's last reopen read a by-reference (KASUMIL1) snapshot.
     pub fn reopened_from_reference_snapshot(&self) -> bool {
-        self.reopened_local_reference
+        self.local_snapshot_form
+            .reopened_reference
             .load(std::sync::atomic::Ordering::Acquire)
+    }
+    /// A standalone group reopened its own stored snapshot of this form.
+    pub(crate) fn reopened_local_snapshot(&self, by_reference: bool) {
+        self.local_snapshot_form.reopened(by_reference);
     }
     /// Choose this one engine's own snapshot form, without the process default.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture_reference_local_snapshots(&self, enabled: bool) {
-        self.reference_local_snapshots
+        self.local_snapshot_form
+            .reference
             .store(enabled, std::sync::atomic::Ordering::Release);
     }
     pub(crate) fn install_application_sources(
@@ -1455,10 +1526,7 @@ impl TenantEngine {
         let restoration_identity =
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
-            reference_local_snapshots: std::sync::atomic::AtomicBool::new(
-                reference_local_snapshots(),
-            ),
-            reopened_local_reference: std::sync::atomic::AtomicBool::new(false),
+            local_snapshot_form: LocalSnapshotForm::from_process_default(),
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),
             application_sources: std::sync::OnceLock::new(),

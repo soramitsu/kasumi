@@ -86,9 +86,11 @@ Sources: [systemd execution settings](https://raw.githubusercontent.com/systemd/
   `--local-snapshot-archive embedded` and wait until every tenant serves: each
   by-reference snapshot is rewritten embedded (log `stored an embedded snapshot
   in place of its by-reference snapshot`), which needs free disk for one
-  embedded snapshot per tenant. Then stop and install the older binary without
-  running other commands of this one in between: every other kasumid command
-  keeps the by-reference form. With `reference`, never delete or move files in
+  embedded snapshot per tenant. If the disk is too full for that, the tenant
+  keeps serving on its by-reference snapshot and logs
+  `embedded_snapshot_not_published`; free space and start again before
+  installing the older binary. Every other kasumid command (recovery, key
+  rotation, staging) keeps each tenant's stored form and converts nothing. With `reference`, never delete or move files in
   `tenant-audit-archives/`: a reopen verifies the chain there and fails closed
   if a segment is missing, until it is restored.
 - `--storage-compaction-growth-percent 101-200` (default 150). A compaction

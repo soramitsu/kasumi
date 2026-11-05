@@ -617,9 +617,7 @@ fn read_inner(
             );
             decoder.finish()?;
             store.check_access()?;
-            engine
-                .reopened_local_reference
-                .store(true, std::sync::atomic::Ordering::Release);
+            engine.reopened_local_snapshot(true);
             return Ok(generation);
         }
         let mut expected = retention
@@ -670,9 +668,7 @@ fn read_inner(
         decoder.finish()?;
         store.check_access()?;
         if reopen {
-            engine
-                .reopened_local_reference
-                .store(false, std::sync::atomic::Ordering::Release);
+            engine.reopened_local_snapshot(false);
         }
         Ok(generation)
     })

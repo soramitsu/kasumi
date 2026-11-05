@@ -54,18 +54,18 @@ pub struct TenantAuditCacheMove {
 /// Move the cache now installed at `from` to the configuration's
 /// `tenant_audit_cache` (or the default location when it is absent). Requires
 /// the stopped installation's exclusive operator ownership. Run it as its own
-/// process: it opens every tenant as `serve --local-snapshot-archive reference`
-/// does. An opened tenant then keeps a by-reference snapshot as it is; an
-/// embedded reopen would first publish an embedded snapshot, copying the whole
-/// archive into the node file the move is meant to relieve. Opening for this
-/// verification appends nothing, so no snapshot of either form is written.
+/// process: like every offline command it opens tenants under
+/// `LocalSnapshotArchive::Preserve`, so an opened tenant keeps its stored
+/// snapshot form; an embedded reopen would first publish an embedded snapshot,
+/// copying the whole archive into the node file the move is meant to relieve.
+/// Opening for this verification appends nothing, so no snapshot is written.
 pub async fn move_tenant_audit_cache(
     configuration: &Path,
     from: &Path,
 ) -> Result<TenantAuditCacheMove> {
     let config = RuntimeConfig::load(configuration)?;
     let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
-    kasumi_engine::set_reference_local_snapshots(true);
+    kasumi_engine::set_local_snapshot_archive(kasumi_engine::LocalSnapshotArchive::Preserve);
     move_tenant_audit_cache_with_storage(configuration, from, storage).await
 }
 

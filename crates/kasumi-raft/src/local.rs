@@ -42,6 +42,8 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     before_apply: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(any(test, feature = "test-utils"))]
     before_snapshot: FixtureHook,
+    #[cfg(any(test, feature = "test-utils"))]
+    refuse_next_blank: AtomicBool,
 }
 
 struct LocalState<M: RaftStateMachine<TypeConfig>> {
@@ -241,6 +243,8 @@ where
             before_apply: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
             before_snapshot: Default::default(),
+            #[cfg(any(test, feature = "test-utils"))]
+            refuse_next_blank: AtomicBool::new(false),
         })
     }
 
@@ -277,6 +281,14 @@ where
         );
         *installed = Some(hook);
         Ok(())
+    }
+
+    /// Refuse the next Blank append for capacity, as a full journal store refuses
+    /// an append: nothing reaches the journal and the writer serves on. Commands
+    /// (a background audit worker's, say) are unaffected.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn fixture_refuse_next_blank(&self) {
+        self.refuse_next_blank.store(true, Ordering::Release);
     }
 
     /// Entries appended between periodic snapshots.
@@ -394,6 +406,11 @@ where
         let (response, receive) = tokio::sync::oneshot::channel();
         #[cfg(any(test, feature = "test-utils"))]
         let before_apply = self.before_apply.lock().unwrap().take();
+        #[cfg(any(test, feature = "test-utils"))]
+        let refused = matches!(payload, EntryPayload::Blank)
+            && self.refuse_next_blank.swap(false, Ordering::AcqRel);
+        #[cfg(not(any(test, feature = "test-utils")))]
+        let refused = false;
         // Move the serialization guard into the retained worker before
         // yielding. Cancellation cannot split commit and publication.
         *worker = Some(tokio::spawn(async move {
@@ -406,7 +423,12 @@ where
             if let Some(hook) = before_apply {
                 tokio::task::spawn_blocking(hook).await?;
             }
-            let (data, applied) = match state.append(payload).await? {
+            let appended = if refused {
+                Appended::Refused
+            } else {
+                state.append(payload).await?
+            };
+            let (data, applied) = match appended {
                 Appended::Applied(data, applied) => (data, applied),
                 // Nothing reached the journal, so this command is rejected
                 // and the writer, its position and its applied state go on.

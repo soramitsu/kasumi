@@ -84,8 +84,8 @@ pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,
 };
 pub use state::{
-    Generation, PreparedSnapshotRestore, TenantEngine, reference_local_snapshots,
-    set_reference_local_snapshots, validate_genesis_inputs,
+    Generation, LocalSnapshotArchive, PreparedSnapshotRestore, TenantEngine,
+    local_snapshot_archive, set_local_snapshot_archive, validate_genesis_inputs,
 };
 mod snapshot_failure;
 pub use snapshot_failure::SnapshotFailure;

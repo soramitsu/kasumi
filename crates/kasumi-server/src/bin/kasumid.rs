@@ -2,7 +2,7 @@
 
 use anyhow::{Context, Result, bail};
 use kasumi_server::runtime::{NodeRuntime, RuntimeConfig, example_config};
-use kasumi_server::serve_options::{self, LocalSnapshotArchive, ServeCommand, ServeOptions};
+use kasumi_server::serve_options::{self, ServeCommand, ServeOptions};
 use kasumi_server::startup_progress::{self, Retained};
 
 const USAGE: &str = "\
@@ -57,12 +57,12 @@ async fn main() -> std::process::ExitCode {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;
     }
-    // Every command stores a standalone group's snapshots by reference unless
-    // `serve --local-snapshot-archive embedded` says otherwise. An offline
-    // command (credential or administrator recovery, key rotation) that opened
-    // its tenants with the library's embedded default would rewrite each
-    // by-reference snapshot embedded: the whole audit archive into node.kv.
-    kasumi_engine::set_reference_local_snapshots(true);
+    // Every command but `serve` keeps each tenant's stored snapshot form and
+    // converts nothing. An offline command (credential or administrator
+    // recovery, key rotation, staging) that opened its tenants embedded would
+    // copy each by-reference tenant's whole audit archive into node.kv, and one
+    // that opened them by reference would undo a rollback's embedded start.
+    kasumi_engine::set_local_snapshot_archive(serve_options::process_snapshot_archive(None));
     let arguments = std::env::args().skip(1).collect::<Vec<_>>();
     match arguments.first().map(String::as_str) {
         None => {
@@ -119,9 +119,9 @@ async fn main() -> std::process::ExitCode {
 
 async fn serve(options: ServeOptions) -> Result<()> {
     // Engines read this when they are constructed: set it before any tenant opens.
-    kasumi_engine::set_reference_local_snapshots(
-        options.local_snapshot_archive == LocalSnapshotArchive::Reference,
-    );
+    kasumi_engine::set_local_snapshot_archive(serve_options::process_snapshot_archive(Some(
+        &options,
+    )));
     kasumi_server::logging::serve_options(&options);
     let config = RuntimeConfig::load(&options.configuration)?;
     let opening = NodeRuntime::open_with_storage_maintenance(config, options.storage_maintenance);

@@ -911,6 +911,19 @@ pub async fn open_existing_local(
     security_audit: Arc<SecurityAudit>,
     expected_incarnation: uuid::Uuid,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    let database =
+        open_existing_local_as_stored(stores, security_audit, expected_incarnation).await?;
+    // A data operation: never serialized behind the bootstrap gate.
+    store_embedded_after_reference_reopen(&database).await?;
+    Ok(database)
+}
+
+/// [`open_existing_local`] before any change of the stored snapshot's form.
+async fn open_existing_local_as_stored(
+    stores: Arc<TenantStorageSet>,
+    security_audit: Arc<SecurityAudit>,
+    expected_incarnation: uuid::Uuid,
+) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let construction = DatabaseConstruction::new(stores.clone(), security_audit)?;
     crate::SnapshotFailure::ordinary(|| {
         anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
@@ -932,22 +945,21 @@ pub async fn open_existing_local(
     require_deployment(&stores, b"local-v1")?;
     let bytes = load(stores.application())?
         .ok_or_else(|| anyhow::anyhow!("local bootstrap is not initialized"))?;
-    let database = start(
+    start(
         construction,
         &bytes,
         LocalRuntime::Production,
         Some(expected_incarnation),
     )
-    .await?;
-    store_embedded_after_reference_reopen(&database).await?;
-    Ok(database)
+    .await
 }
 
 /// A group reopened from its by-reference (KASUMIL1) snapshot by a process that
 /// stores the embedded form durably publishes one embedded snapshot before it
 /// serves. Afterwards a binary that cannot read KASUMIL1 reopens this group too,
-/// so rolling back is: start once with `--local-snapshot-archive embedded`,
-/// wait for every tenant to serve, then install the older binary.
+/// so rolling back is: start `serve` once with `--local-snapshot-archive
+/// embedded`, wait for every tenant to serve, then install the older binary.
+/// Under `Preserve` (every other kasumid command) the group keeps its form.
 async fn store_embedded_after_reference_reopen(
     database: &Database,
 ) -> std::result::Result<(), crate::SnapshotFailure> {
@@ -960,23 +972,32 @@ async fn store_embedded_after_reference_reopen(
     if !group.is_local() {
         return Err(anyhow::anyhow!("a by-reference snapshot reopened a replicated group").into());
     }
-    let stored = |group: &kasumi_raft::RaftGroup| group.metrics().snapshot.map(|id| id.index);
-    let before = stored(group);
-    // A snapshot at the stored snapshot's own position reuses that stored image
-    // instead of writing the new capture, so one Blank entry (applied as metadata,
-    // no command) gives the embedded capture a strictly newer position first.
-    group.local_append_blank().await?;
-    group.snapshot().await?;
-    group.local_snapshot_settled().await?;
-    let after = stored(group);
-    if after <= before {
-        // This binary still reads the stored by-reference snapshot, so it serves.
-        // An older binary refuses that snapshot's format and does not open.
+    // This binary still reads the stored by-reference snapshot, so the tenant
+    // serves; a binary that cannot read KASUMIL1 refuses it and does not open.
+    let unconverted = || {
         tracing::warn!(
             event = "embedded_snapshot_not_published",
             tenant = %tenant,
             "the embedded snapshot replacing its by-reference snapshot was not published; do not install a binary that cannot read KASUMIL1"
         );
+    };
+    let stored = |group: &kasumi_raft::RaftGroup| group.metrics().snapshot.map(|id| id.index);
+    let before = stored(group);
+    // A snapshot at the stored snapshot's own position reuses that stored image
+    // instead of writing the new capture, so one Blank entry (applied as metadata,
+    // no command) gives the embedded capture a strictly newer position first.
+    if let Err(error) = group.local_append_blank().await {
+        // Refused for capacity, nothing reached the journal and the writer serves on.
+        if kasumi_raft::is_application_write_capacity_denied(&error) {
+            unconverted();
+            return Ok(());
+        }
+        return Err(error.into());
+    }
+    group.snapshot().await?;
+    group.local_snapshot_settled().await?;
+    if stored(group) <= before {
+        unconverted();
         return Ok(());
     }
     // WARN so the default daemon filter keeps it: the rollback procedure waits
