@@ -10,6 +10,16 @@ pub(super) struct GroupTransaction {
     created: [u64; 2],
     lengths: [u64; 2],
 }
+
+/// A compaction batch reserves as maintenance work, which may use the owner's
+/// maintenance reserve; every other transaction is foreground work.
+pub(super) fn space_work(plan: &TransactionSpacePlan) -> DiskWork {
+    if plan.maintenance {
+        DiskWork::Maintenance
+    } else {
+        DiskWork::Foreground
+    }
+}
 impl GroupTransaction {
     fn range(&self, file: GroupFile) -> (usize, FileSpaceRange) {
         match file.kind {
@@ -230,9 +240,14 @@ impl NodeSegmentGroup {
         *stage = "parent_verify";
         let parent = self.effect(resources.directory()?.verified_identity())?;
         *stage = "disk_space_reservation";
-        let space = self
-            .disk
-            .reserve_transaction_space(parent, bytes, files, peak, live)?;
+        let space = self.disk.reserve_transaction_space(
+            parent,
+            bytes,
+            files,
+            peak,
+            live,
+            space_work(plan),
+        )?;
         resources.transaction = Some(GroupTransaction {
             space,
             plan: *plan,

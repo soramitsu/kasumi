@@ -834,6 +834,7 @@ impl DiskState {
                 group_id: self.owner.group_id,
                 root_generation: root.generation(),
                 batch_seq: self.writer.next_batch_sequence(),
+                maintenance: true,
                 segment,
                 directory,
                 new_segments,

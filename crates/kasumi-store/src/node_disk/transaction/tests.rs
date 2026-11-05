@@ -34,7 +34,7 @@ fn complete_atomic_quota_denial_and_pristine_cancel_leave_no_physical_effect() {
     *disk.available_override.lock().unwrap() =
         Some(before.filesystem_pending_bytes + before.filesystem_min_free_bytes + bytes - 1);
     assert_eq!(
-        disk.reserve_transaction_space(parent, bytes, 1, 1, 0)
+        disk.reserve_transaction_space(parent, bytes, 1, 1, 0, DiskWork::Foreground)
             .err()
             .unwrap()
             .kind(),
@@ -48,7 +48,7 @@ fn complete_atomic_quota_denial_and_pristine_cancel_leave_no_physical_effect() {
     *disk.available_override.lock().unwrap() =
         Some(before.filesystem_pending_bytes + before.filesystem_min_free_bytes + bytes);
     let mut claim = disk
-        .reserve_transaction_space(parent, bytes, 1, 1, 0)
+        .reserve_transaction_space(parent, bytes, 1, 1, 0, DiskWork::Foreground)
         .unwrap();
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + bytes);
     assert_eq!(
@@ -74,7 +74,14 @@ fn descriptor_rights_recycle_across_more_files_than_the_peak_without_readmission
     let before = disk.snapshot();
     let bytes = 3 * ceiling(&disk, 4096);
     let mut claim = disk
-        .reserve_transaction_space(root.verified_identity().unwrap(), bytes, 3, 1, 0)
+        .reserve_transaction_space(
+            root.verified_identity().unwrap(),
+            bytes,
+            3,
+            1,
+            0,
+            DiskWork::Foreground,
+        )
         .unwrap();
     let attempts = memory.snapshot().attempts;
     let charged = disk.snapshot().charged_bytes;
@@ -130,7 +137,14 @@ fn growth_transfers_to_the_exact_existing_file_without_double_charge() {
     let delta = file.transaction_growth_quote(0, 8192).unwrap();
     let before = disk.snapshot();
     let mut claim = disk
-        .reserve_transaction_space(root.verified_identity().unwrap(), delta, 0, 1, 1)
+        .reserve_transaction_space(
+            root.verified_identity().unwrap(),
+            delta,
+            0,
+            1,
+            1,
+            DiskWork::Foreground,
+        )
         .unwrap();
     assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + delta);
     file.reserve_transaction_growth(&mut claim, 0, 4096)
@@ -156,17 +170,38 @@ fn zero_file_claim_is_exclusive_and_unrelated_parent_claims_can_coexist() {
     let first = root.create_child(c"a", DiskWork::Foreground).unwrap();
     let second = root.create_child(c"b", DiskWork::Foreground).unwrap();
     let mut a = disk
-        .reserve_transaction_space(first.verified_identity().unwrap(), 0, 0, 1, 0)
+        .reserve_transaction_space(
+            first.verified_identity().unwrap(),
+            0,
+            0,
+            1,
+            0,
+            DiskWork::Foreground,
+        )
         .unwrap();
     assert_eq!(
-        disk.reserve_transaction_space(first.verified_identity().unwrap(), 0, 0, 1, 0)
-            .err()
-            .unwrap()
-            .kind(),
+        disk.reserve_transaction_space(
+            first.verified_identity().unwrap(),
+            0,
+            0,
+            1,
+            0,
+            DiskWork::Foreground
+        )
+        .err()
+        .unwrap()
+        .kind(),
         io::ErrorKind::WouldBlock
     );
     let mut b = disk
-        .reserve_transaction_space(second.verified_identity().unwrap(), 0, 0, 1, 0)
+        .reserve_transaction_space(
+            second.verified_identity().unwrap(),
+            0,
+            0,
+            1,
+            0,
+            DiskWork::Foreground,
+        )
         .unwrap();
     assert_eq!(disk.lock_state().transaction_witnesses, 2);
     assert_eq!(disk.lock_state().transaction_descriptors, 2);
@@ -182,7 +217,14 @@ fn abandoned_effect_keeps_unassigned_bytes_until_real_owner_drain_and_census() {
     let before = disk.snapshot();
     let bytes = 2 * ceiling(&disk, 4096);
     let mut claim = disk
-        .reserve_transaction_space(root.verified_identity().unwrap(), bytes, 2, 1, 0)
+        .reserve_transaction_space(
+            root.verified_identity().unwrap(),
+            bytes,
+            2,
+            1,
+            0,
+            DiskWork::Foreground,
+        )
         .unwrap();
     let mut file = disk
         .open_transaction_file(&mut claim, "fixture", Path::new("one"), true)
@@ -247,7 +289,14 @@ fn panic_after_entered_work_cannot_refund_the_unassigned_part_of_the_claim() {
     let attempts = memory.snapshot().attempts;
     let original = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         let mut claim = disk
-            .reserve_transaction_space(root.verified_identity().unwrap(), bytes, 2, 1, 0)
+            .reserve_transaction_space(
+                root.verified_identity().unwrap(),
+                bytes,
+                2,
+                1,
+                0,
+                DiskWork::Foreground,
+            )
             .unwrap();
         let mut file = disk
             .open_transaction_file(&mut claim, "fixture", Path::new("one"), true)
@@ -290,7 +339,14 @@ fn actual_create_parent_sync_failure_retains_claim_and_native_original_custody()
     let before = disk.snapshot();
     let bytes = 2 * ceiling(&disk, 4096);
     let mut claim = disk
-        .reserve_transaction_space(root.verified_identity().unwrap(), bytes, 2, 1, 0)
+        .reserve_transaction_space(
+            root.verified_identity().unwrap(),
+            bytes,
+            2,
+            1,
+            0,
+            DiskWork::Foreground,
+        )
         .unwrap();
     disk.namespace_failure.store(
         super::super::file::NamespaceFailure::CreateParentSync as u8,
@@ -325,6 +381,7 @@ fn claimed_namespace_consumption_does_not_repeat_foreground_or_floor_admission()
             1,
             1,
             0,
+            DiskWork::Foreground,
         )
         .unwrap();
     let attempts = memory.snapshot().attempts;
@@ -363,7 +420,14 @@ fn active_claim_prevents_removal_of_its_empty_parent_even_with_zero_files() {
         let child = root.create_child(c"claimed", DiskWork::Foreground).unwrap();
         let identity = child.verified_identity().unwrap();
         let mut claim = disk
-            .reserve_transaction_space(identity, files * ceiling(&disk, 4096), files, 1, 0)
+            .reserve_transaction_space(
+                identity,
+                files * ceiling(&disk, 4096),
+                files,
+                1,
+                0,
+                DiskWork::Foreground,
+            )
             .unwrap();
         let before = disk.snapshot();
         let generation = disk.lock_state().namespace_generation;
@@ -439,7 +503,7 @@ fn refused_by(
 fn each_transaction_capacity_check_reports_its_own_reason_and_figures() {
     let (entries, _) = refused_by(
         |config| config.directory_policy.max_entries = 2,
-        |disk, parent| disk.reserve_transaction_space(parent, 0, 3, 1, 0),
+        |disk, parent| disk.reserve_transaction_space(parent, 0, 3, 1, 0, DiskWork::Foreground),
     );
     assert_eq!(
         entries,
@@ -454,7 +518,7 @@ fn each_transaction_capacity_check_reports_its_own_reason_and_figures() {
     );
     let (files, _) = refused_by(
         |config| config.max_persistent_files = 2,
-        |disk, parent| disk.reserve_transaction_space(parent, 0, 3, 1, 0),
+        |disk, parent| disk.reserve_transaction_space(parent, 0, 3, 1, 0, DiskWork::Foreground),
     );
     assert_eq!(
         files,
@@ -469,7 +533,7 @@ fn each_transaction_capacity_check_reports_its_own_reason_and_figures() {
     );
     let (descriptors, _) = refused_by(
         |config| config.max_open_files = 1,
-        |disk, parent| disk.reserve_transaction_space(parent, 0, 1, 2, 0),
+        |disk, parent| disk.reserve_transaction_space(parent, 0, 1, 2, 0, DiskWork::Foreground),
     );
     assert_eq!(
         descriptors,
@@ -487,7 +551,9 @@ fn each_transaction_capacity_check_reports_its_own_reason_and_figures() {
             config.max_bytes = 16 << 20;
             config.maintenance_reserve_bytes = 1 << 20;
         },
-        |disk, parent| disk.reserve_transaction_space(parent, 64 << 20, 1, 1, 0),
+        |disk, parent| {
+            disk.reserve_transaction_space(parent, 64 << 20, 1, 1, 0, DiskWork::Foreground)
+        },
     );
     assert_eq!(
         extent,
@@ -505,7 +571,7 @@ fn each_transaction_capacity_check_reports_its_own_reason_and_figures() {
         |disk, parent| {
             let pending = disk.snapshot().filesystem_pending_bytes;
             *disk.available_override.lock().unwrap() = Some(pending + (1 << 20) + 4096);
-            disk.reserve_transaction_space(parent, 8192, 1, 1, 0)
+            disk.reserve_transaction_space(parent, 8192, 1, 1, 0, DiskWork::Foreground)
         },
     );
     assert_eq!(
@@ -556,7 +622,7 @@ fn snapshot_headroom_is_exactly_the_reserve_floor_margin() {
             })
         );
         // One byte past the margin is the floor's refusal; the margin itself fits.
-        match disk.reserve_transaction_space(parent, margin + 1, 0, 1, 0) {
+        match disk.reserve_transaction_space(parent, margin + 1, 0, 1, 0, DiskWork::Foreground) {
             Err(ReserveError::Capacity(refusal)) => {
                 assert_eq!(refusal.check, CapacityCheck::PersistentFilesystemFloor);
                 assert_eq!(refusal.headroom(), i128::from(margin));
@@ -564,7 +630,7 @@ fn snapshot_headroom_is_exactly_the_reserve_floor_margin() {
             other => panic!("margin + 1 was not refused by the floor: {:?}", other.err()),
         }
         let mut claim = disk
-            .reserve_transaction_space(parent, margin, 0, 1, 0)
+            .reserve_transaction_space(parent, margin, 0, 1, 0, DiskWork::Foreground)
             .unwrap();
         assert_eq!(disk.snapshot().filesystem_headroom_bytes, Some(0));
         claim.cancel().unwrap();
@@ -580,4 +646,46 @@ fn snapshot_headroom_is_exactly_the_reserve_floor_margin() {
         Some(-(2i64 << 20))
     );
     *disk.available_override.lock().unwrap() = None;
+}
+
+#[test]
+fn maintenance_transactions_may_use_the_maintenance_reserve() {
+    // Compaction writes what it relocates before it can reclaim anything, so
+    // the extent foreground work leaves free must stay usable by compaction:
+    // a store that foreground writes filled to their limit can still compact.
+    let directory = private_tempdir().unwrap();
+    let mut config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
+    config.max_bytes = 16 << 20;
+    config.maintenance_reserve_bytes = 8 << 20;
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = retry_disk_registry(|| {
+        NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+    })
+    .unwrap();
+    let root = disk.open_directory("fixture", Path::new("")).unwrap();
+    let parent = root.verified_identity().unwrap();
+    let before = disk.snapshot();
+    let bytes = 12 << 20;
+    assert!(
+        before.charged_bytes + bytes <= config.max_bytes,
+        "{before:?}"
+    );
+    match disk.reserve_transaction_space(parent, bytes, 1, 1, 0, DiskWork::Foreground) {
+        Err(ReserveError::Capacity(refusal)) => {
+            assert_eq!(refusal.check, CapacityCheck::PersistentExtent);
+            assert_eq!(
+                refusal.limit,
+                config.max_bytes - config.maintenance_reserve_bytes
+            );
+        }
+        Err(ReserveError::Failed(error)) => panic!("expected the extent refusal: {error:?}"),
+        Ok(_) => panic!("foreground work used the maintenance reserve"),
+    }
+    let mut claim = disk
+        .reserve_transaction_space(parent, bytes, 1, 1, 0, DiskWork::Maintenance)
+        .unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes + bytes);
+    claim.cancel().unwrap();
+    assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
 }

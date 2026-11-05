@@ -524,6 +524,12 @@ fn phase_publication_faults_reopen_to_old_or_new_phase() {
 struct PlanState {
     armed: bool,
     deny: bool,
+    /// Refuse every unlink before any effect, as the installed store does when
+    /// a namespace change has no physical headroom.
+    deny_unlink: bool,
+    refused_unlinks: usize,
+    maintenance_reservations: usize,
+    foreground_reservations: usize,
     plan: Option<TransactionSpacePlan>,
     created: [u64; 2],
     grown: [u64; 2],
@@ -620,6 +626,11 @@ impl SegmentGroupBackend for PlanChecked {
             return Err(crate::TransactionReserveError::CapacityDenied);
         }
         self.group.reserve_transaction(plan)?;
+        if plan.maintenance {
+            state.maintenance_reservations += 1;
+        } else {
+            state.foreground_reservations += 1;
+        }
         state.plan = Some(*plan);
         state.created = [0; 2];
         state.grown = [0; 2];
@@ -697,7 +708,11 @@ impl SegmentGroupBackend for PlanChecked {
         self.group.sync(file)
     }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
-        let state = self.state.lock().unwrap();
+        let mut state = self.state.lock().unwrap();
+        if state.deny_unlink {
+            state.refused_unlinks += 1;
+            return Err(io::ErrorKind::StorageFull.into());
+        }
         if state.armed && state.plan.is_some() {
             drop(state);
             self.state
@@ -770,6 +785,19 @@ fn maintenance_batch_space_plan_bounds_actual_writes() {
         observed.reservations > totals.maintenance_commits,
         "every maintenance batch and the foreground write reserve"
     );
+    // Compaction batches reserve as maintenance work, which may use the
+    // owner's maintenance reserve; the foreground write does not.
+    assert!(
+        observed.maintenance_reservations >= totals.maintenance_commits,
+        "{} maintenance reservations for {} maintenance commits",
+        observed.maintenance_reservations,
+        totals.maintenance_commits
+    );
+    assert_eq!(
+        observed.maintenance_reservations + observed.foreground_reservations,
+        observed.reservations
+    );
+    assert!(observed.foreground_reservations >= 1);
     assert!(
         observed.transaction_creates[0] > 0 && observed.transaction_creates[1] > 0,
         "fixture must roll both kinds inside reserved batches: {:?}",
@@ -833,6 +861,53 @@ fn reserve_transaction_capacity_denial_defers_without_effect_or_fence() {
     let totals = drive_cycle(&mut state, STEP);
     assert_eq!(totals.relocated, 200 * 32);
     assert_eq!(state.maintenance_status().unwrap().last_deferral, None);
+    drop(state);
+    let reopened = DiskState::open(
+        Arc::new(group.crash()),
+        Admission::new(16 << 20),
+        GROUP,
+        LARGE_CACHE,
+    )
+    .unwrap();
+    assert_eq!(phase(&reopened), CompactionPhase::Idle);
+}
+
+#[test]
+fn refused_garbage_unlink_defers_without_fencing_and_reclaims_later() {
+    // A full disk can refuse an unlink's namespace change before any effect.
+    // That refusal used to fence the owner until restart, on exactly the disk
+    // the unlink would have relieved. It must defer like any capacity refusal.
+    let group = InMemoryGroup::new();
+    let checked = PlanChecked::new(group.clone());
+    let admission = Admission::new(16 << 20);
+    let mut state = create(checked.clone(), admission, LARGE_CACHE);
+    rows(&mut state, 200, 32);
+    seal_files(&mut state);
+    checked.state.lock().unwrap().deny_unlink = true;
+    state.request_compaction().unwrap();
+    let mut deferred = None;
+    for _ in 0..200_000 {
+        let progress = state.maintenance_step(ONE).unwrap();
+        if progress.deferred.is_some() {
+            deferred = progress.deferred;
+            break;
+        }
+    }
+    assert_eq!(deferred, Some(MaintenanceDeferral::Capacity));
+    assert!(!state.is_fenced());
+    assert!(checked.state.lock().unwrap().refused_unlinks > 0);
+    let garbage = state.owner.lock().unwrap().garbage().len();
+    assert!(garbage > 0, "the refused file stays recorded as garbage");
+    // The owner still serves ordinary writes during the backoff.
+    state
+        .commit(&[Operation::put("accounts", b"after-refusal", b"y")])
+        .unwrap();
+    assert!(!state.is_fenced());
+    // Once the disk has room again, the same files are reclaimed.
+    checked.state.lock().unwrap().deny_unlink = false;
+    drive_cycle(&mut state, STEP);
+    assert_eq!(state.maintenance_status().unwrap().last_deferral, None);
+    assert!(state.owner.lock().unwrap().garbage().len() < garbage);
     drop(state);
     let reopened = DiskState::open(
         Arc::new(group.crash()),

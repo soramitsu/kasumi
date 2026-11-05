@@ -79,6 +79,7 @@ fn plan(count: u64) -> TransactionSpacePlan {
         group_id: GROUP,
         root_generation: 1,
         batch_seq: 1,
+        maintenance: false,
         segment: None,
         directory: None,
         new_segments: FileSpaceRange {
@@ -384,4 +385,23 @@ fn namespace_epoch_exhaustion_refuses_the_whole_range_before_claim_admission() {
     assert!(core.close().into_result().is_ok());
     let mut disposal = core.into_disposal();
     assert!(disposal.dispose().complete());
+}
+
+#[test]
+fn compaction_plans_reserve_as_maintenance_work() {
+    // Only maintenance work may use the owner's maintenance reserve; ordinary
+    // commits leave it free so that a full store can still compact.
+    let ordinary = plan(1);
+    assert!(matches!(
+        super::transaction::space_work(&ordinary),
+        DiskWork::Foreground
+    ));
+    let compaction = TransactionSpacePlan {
+        maintenance: true,
+        ..ordinary
+    };
+    assert!(matches!(
+        super::transaction::space_work(&compaction),
+        DiskWork::Maintenance
+    ));
 }

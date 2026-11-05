@@ -67,14 +67,20 @@ describe density restarts, forced rotation and the 1 MiB trigger are historical.
   publication by default) and the node worker runs `{512 units, 1 publication}`
   after every warm step. Capacity and other local refusals are deferrals with a
   step-count backoff (256 and 65,536 steps); they never fail a write. I/O,
-  corruption, unknown outcomes and owner failure fence.
+  corruption, unknown outcomes and owner failure fence. A garbage unlink the
+  backend refuses before any effect (no physical headroom for the namespace
+  change, or a busy parent) is a capacity deferral: the file stays garbage and
+  a later step unlinks it.
 
 Documented limits: a cycle copies every live value and every old leaf with its
 path; retained size oscillates between `B` and about `max(2B, B + slack)` plus
 the cycle transient, where `B` can approach `(1 + 2h)` times the live directory
 plus the live values under saturated writes; pinned files survive until the
-next cycle; on a full disk evacuation defers (it uses foreground admission, not
-the NodeDisk maintenance reserve) and only an operator response frees space;
+next cycle; compaction batches reserve as maintenance work, so on a store that
+foreground writes filled to `max_bytes - maintenance_reserve_bytes` they may
+still use the NodeDisk maintenance reserve. Past that reserve, or at the
+filesystem's free-space floor, evacuation defers and only an operator response
+frees space;
 reclamation needs one cohort walk to finish within one process lifetime.
 The ROOT005 successor freezes the cycle-start authenticated directory root as
 an immutable worklist. Evacuation uses an exact persisted ordinal into that

@@ -21,6 +21,7 @@ fn plan(root: &Superblock) -> TransactionSpacePlan {
         batch_seq: root
             .directory()
             .map_or(1, |commit| commit.start.batch_seq + 1),
+        maintenance: false,
         segment: None,
         directory: None,
         new_segments: empty_range(),

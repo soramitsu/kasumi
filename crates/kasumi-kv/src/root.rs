@@ -330,7 +330,16 @@ impl Superblock {
                 )));
             }
         }
-        backend.unlink(file)?;
+        backend.unlink(file).map_err(|error| match error.kind() {
+            // Refused before any effect (no physical headroom for the namespace
+            // change, or a busy parent): the file stays garbage for a later
+            // step. As an I/O error this fenced the owner, and only a restart
+            // cleared it, on exactly the full disk this unlink would relieve.
+            std::io::ErrorKind::StorageFull | std::io::ErrorKind::WouldBlock => {
+                CoreError::new(crate::CoreErrorCause::CapacityDenied)
+            }
+            _ => CoreError::from(error),
+        })?;
         Ok(Unlinked {
             group_id: self.group_id,
             file,

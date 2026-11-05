@@ -76,6 +76,7 @@ impl NodeDisk {
     /// Reserve all unassigned rights atomically. Existing cache descriptors
     /// count toward the requested peak; they are already charged live owners.
     /// Each capacity check refuses with its own typed `CapacityRefusal`.
+    /// `DiskWork::Maintenance` (compaction) may use the maintenance reserve.
     pub(crate) fn reserve_transaction_space(
         self: &Arc<Self>,
         parent: (u64, u64),
@@ -83,6 +84,7 @@ impl NodeDisk {
         files: u64,
         descriptor_peak: u32,
         live_descriptors: u32,
+        work: DiskWork,
     ) -> Result<TransactionSpace, ReserveError> {
         let mut state = self.lock_state();
         if state.phase != NodeDiskPhase::Open || live_descriptors > descriptor_peak {
@@ -184,7 +186,7 @@ impl NodeDisk {
         state.live.try_reserve(live)?;
         // No physical effect and no surviving provisional allocation precedes
         // this final quota transition. Every subsequent assignment is infallible.
-        self.reserve(&mut state, filesystem, bytes, DiskWork::Foreground)?;
+        self.reserve(&mut state, filesystem, bytes, work)?;
         state.transaction_files = reserved_files;
         state.transaction_descriptors = reserved_descriptors;
         state.transaction_witnesses = witnesses;

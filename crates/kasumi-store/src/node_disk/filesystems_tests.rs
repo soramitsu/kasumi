@@ -551,7 +551,8 @@ fn each_filesystem_reports_its_own_floor_margin_and_refusal() {
             (&archive, ARCHIVE_DEVICE, archive_margin),
         ] {
             let parent = directory.verified_identity().unwrap();
-            match disk.reserve_transaction_space(parent, margin + 1, 0, 1, 0) {
+            match disk.reserve_transaction_space(parent, margin + 1, 0, 1, 0, DiskWork::Foreground)
+            {
                 Err(ReserveError::Capacity(refusal)) => {
                     assert_eq!(refusal.check, CapacityCheck::PersistentFilesystemFloor);
                     assert_eq!(refusal.filesystem, Some(device));
@@ -566,7 +567,7 @@ fn each_filesystem_reports_its_own_floor_margin_and_refusal() {
                 other => panic!("margin + 1 was not refused: {:?}", other.err()),
             }
             let mut claim = disk
-                .reserve_transaction_space(parent, margin, 0, 1, 0)
+                .reserve_transaction_space(parent, margin, 0, 1, 0, DiskWork::Foreground)
                 .unwrap();
             let held = disk.snapshot();
             let filesystem = held

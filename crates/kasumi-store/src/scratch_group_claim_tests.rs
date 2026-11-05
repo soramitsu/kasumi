@@ -43,6 +43,7 @@ fn plan() -> TransactionSpacePlan {
         group_id: GROUP,
         root_generation: 1,
         batch_seq: 1,
+        maintenance: false,
         segment: None,
         directory: None,
         new_segments: FileSpaceRange {

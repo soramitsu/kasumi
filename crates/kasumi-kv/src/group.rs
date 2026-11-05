@@ -173,6 +173,9 @@ pub struct TransactionSpacePlan {
     pub group_id: [u8; 16],
     pub root_generation: u64,
     pub batch_seq: u64,
+    /// A compaction batch. It may use the owner's maintenance reserve, which
+    /// ordinary commits leave free so that a full store can still compact.
+    pub maintenance: bool,
     pub segment: Option<ExistingFileSpace>,
     pub directory: Option<ExistingFileSpace>,
     pub new_segments: FileSpaceRange,
@@ -237,6 +240,10 @@ impl std::error::Error for TransactionReserveError {
 /// its garbage record; a listing that no longer shows a name proves nothing.
 /// `sync_names` synchronizes the parent alone: on success every name the
 /// listing shows, and no name it no longer shows, survives power loss.
+/// An `unlink` refused before any effect returns `StorageFull` (no physical
+/// headroom for the namespace change) or `WouldBlock` (the parent is busy);
+/// the name is unchanged and the caller may retry later. Every other error
+/// may follow an effect.
 /// The root file is established with the group and holds two fixed slots; an
 /// unwritten slot reads as zeros.
 pub trait SegmentGroupBackend: Send + Sync {
