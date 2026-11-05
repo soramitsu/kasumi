@@ -112,6 +112,7 @@ impl CoreDisposal {
             let Core {
                 shared,
                 maintenance,
+                gate,
             } = self.core.take().expect("original Core disposal");
             let mut shared = match shared.try_unwrap() {
                 Ok(shared) => shared,
@@ -119,12 +120,15 @@ impl CoreDisposal {
                     self.core = Some(Core {
                         shared,
                         maintenance,
+                        gate,
                     });
                     return false;
                 }
             };
-            // The disk's own reference retires with it, before the grant.
+            // The disk's own reference retires with it, before the grant,
+            // and so does the commit gate's control.
             drop(maintenance);
+            drop(gate);
             // Stage the exact authority before any owned field can be dropped.
             self.authority = shared._authority.take();
             self.state = shared.state.take();
@@ -835,6 +839,9 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
             crate::StorageMaintenanceStatus::default(),
             authority.grant(),
         ));
+        // The commit gate's control, like the state's, is initialized under
+        // the original shell grant before the Core is shared.
+        let gate = crate::native_sync::mutex((), authority.grant());
         let state = custody
             .admitted
             .core
@@ -862,6 +869,7 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
         custody.admitted.core.core = Some(Core {
             shared: NativeOwnedArc::new(shared),
             maintenance,
+            gate,
         });
         if facade {
             custody.admitted.facade.build(

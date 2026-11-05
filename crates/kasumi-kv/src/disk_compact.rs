@@ -800,7 +800,7 @@ impl DiskState {
             .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
     }
 
-    /// Reserve the batch's complete space plan like `commit_inner`. A refusal
+    /// Reserve the batch's complete space plan like `prepare_commit`. A refusal
     /// stops before any effect; the caller settles the returned plan.
     pub(super) fn reserve_maintenance_space(
         &self,

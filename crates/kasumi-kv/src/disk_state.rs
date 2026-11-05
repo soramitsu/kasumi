@@ -28,7 +28,9 @@ use crate::directory::{
 use crate::group::{GroupFile, SegmentGroupBackend};
 use crate::native_backend::BackendRef;
 use crate::native_owned_arc::NativeOwnedArc;
-use crate::page_cache::{CachedDirectoryBackend, NativeIdentity, NativeSharedCache};
+use crate::page_cache::{
+    CachedDirectoryBackend, NativeIdentity, NativeSharedCache, SupersededIdentities,
+};
 use crate::root::{
     CompactionCursor, DirectoryCommit, MAX_GARBAGE, RootSelection, Superblock, Unlinked,
     publish_forget, publish_root, repair_mirror, select_root,
@@ -158,6 +160,59 @@ impl RootOwner {
         Ok(previous)
     }
 
+    /// Phase one of a foreground installation: the successor of the selected
+    /// root that installs `commit`, which must follow `source`. Nothing is
+    /// written; the selected superblock stays in place.
+    fn stage_install(
+        &self,
+        source: DirectoryRoot,
+        commit: DirectoryCommit,
+    ) -> Result<StagedRoot, CoreError> {
+        let root = self.lock()?;
+        let replaced = root.directory();
+        if replaced.map_or(empty_root(self.group_id), |commit| commit.root) != source {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "directory install does not follow the selected root",
+            )));
+        }
+        let next = root.install_directory(commit)?;
+        Ok(StagedRoot {
+            previous: root.clone(),
+            next,
+            replaced,
+        })
+    }
+
+    /// Phase two: write both root slots and make them durable. Root slots are
+    /// read only by publishers, all of which the Core serializes behind the
+    /// running commit, and by reopen; this needs neither the state lock nor
+    /// the superblock lock, so readers proceed on the selected root. Any
+    /// failure fences: the outcome is unknown.
+    fn publish_staged(&self, staged: &StagedRoot) -> Result<(), CoreError> {
+        let result = self
+            .check()
+            .and_then(|()| publish_root(self.backend.as_ref(), &staged.previous, &staged.next))
+            .and_then(|()| self.check());
+        if result.is_err() {
+            self.failed.store(true, Ordering::Release);
+        }
+        result
+    }
+
+    /// Phase three, once `publish_staged` succeeded: adopt the durable
+    /// successor. Returns the replaced commit for the reclamation chain.
+    fn adopt(&self, staged: StagedRoot) -> Result<Option<DirectoryCommit>, CoreError> {
+        let mut root = self.lock()?;
+        if *root != staged.previous {
+            self.failed.store(true, Ordering::Release);
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "published root does not follow the selected root",
+            )));
+        }
+        *root = staged.next;
+        Ok(staged.replaced)
+    }
+
     /// Drop one recorded garbage file whose unlink `unlinked` proves. Any
     /// failure leaves the owner unable to tell the record's state: fence.
     fn forget(&self, current: &mut Superblock, unlinked: Unlinked) -> Result<(), CoreError> {
@@ -180,6 +235,79 @@ impl RootOwner {
 /// Not `Clone`: one witness authorizes exactly one installation.
 pub(super) struct SelectionWitness {
     source: DirectoryRoot,
+}
+
+/// A foreground commit's successor root between its staging under the state
+/// lock and its adoption, back under that lock, once published.
+pub(crate) struct StagedRoot {
+    previous: Superblock,
+    next: Superblock,
+    replaced: Option<DirectoryCommit>,
+}
+
+/// A foreground commit whose log batch and directory pages are durable and
+/// whose successor root is staged but not yet published. The Core publishes
+/// it with `publish_root` after releasing its state lock, so readers keep
+/// using the selected root meanwhile, then completes it with
+/// `DiskState::complete_commit`. Dropping it unpublished leaves the outcome
+/// unknown: the caller has fenced, or must.
+pub(crate) struct PreparedCommit {
+    owner: NativeOwnedArc<RootOwner>,
+    witness: SelectionWitness,
+    commit: DirectoryCommit,
+    root: StagedRoot,
+    group_id: [u8; 16],
+    batch_seq: u64,
+    fresh: AppendFloor,
+    shrank: bool,
+    publication: Option<publication::PublicationCache>,
+    // Dropped before the charge that admitted it.
+    values: Vec<Option<ValueLocation>>,
+    values_charge: NativeResidentLease,
+}
+
+impl PreparedCommit {
+    /// Write and synchronize both root slots. This takes no `DiskState`
+    /// borrow: the Core runs it without the state lock. Every failure,
+    /// including an unwind, fences the owner as an unknown commit.
+    pub(crate) fn publish_root(&self) -> Result<(), CoreError> {
+        let result = catch_unwind(AssertUnwindSafe(|| self.owner.publish_staged(&self.root)))
+            .unwrap_or_else(|panic| {
+                self.owner.failed.store(true, Ordering::Release);
+                Err(CoreError::unknown_commit(CorePanic::new(panic)))
+            })
+            .map_err(|error| {
+                if error.is_unknown_commit() {
+                    error
+                } else {
+                    error.into_unknown_commit()
+                }
+            });
+        if let Err(error) = &result {
+            report_commit_failure("root_publication", error);
+        }
+        result
+    }
+}
+
+fn lock_record(
+    record: &Mutex<SupersededIdentities>,
+) -> Result<MutexGuard<'_, SupersededIdentities>, CoreError> {
+    record
+        .lock()
+        .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
+}
+
+/// Fixed stages and error kinds only. Borrow the original; diagnostics
+/// cannot change its disposition, ownership or failure behavior.
+fn report_commit_failure(stage: &str, error: &CoreError) {
+    use std::io::Write;
+    let _ = writeln!(
+        std::io::stderr().lock(),
+        "Kasumi native commit failed: stage={stage} disposition={:?} io={:?}",
+        error.disposition(),
+        error.io_error().map(std::io::Error::kind),
+    );
 }
 
 fn reserve_transaction(
@@ -365,7 +493,8 @@ impl DiskState {
         }
     }
 
-    /// The only post-open writer of `self.selected`. In one owner-lock hold
+    /// With `adopt_selected`, its split form for foreground commits, the only
+    /// post-open writer of `self.selected`. In one owner-lock hold
     /// of this state it checks the witness, installs `commit` with the
     /// in-phase compaction checkpoint (preserving it for foreground writes), selects
     /// it, and advances an active reclamation cohort's certified chain and
@@ -384,6 +513,37 @@ impl DiskState {
                 "selection witness is stale",
             )));
         }
+        self.certify_install(new_values)?;
+        let previous = self.owner.install(witness.source, commit, cursor)?;
+        self.selected = commit.root;
+        self.observe_install(previous, commit)
+    }
+
+    /// `install_selected` for a foreground commit whose staged root
+    /// `PreparedCommit::publish_root` already made durable. Its in-memory
+    /// effects all happen here, under the state lock: a reader that ran
+    /// during the publication saw the state as if the commit had not begun.
+    fn adopt_selected(
+        &mut self,
+        witness: SelectionWitness,
+        staged: StagedRoot,
+        commit: DirectoryCommit,
+        new_values: &[Option<ValueLocation>],
+    ) -> Result<(), CoreError> {
+        if witness.source != self.selected {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "selection witness is stale",
+            )));
+        }
+        self.certify_install(new_values)?;
+        let previous = self.owner.adopt(staged)?;
+        self.selected = commit.root;
+        self.observe_install(previous, commit)
+    }
+
+    /// While a cohort is active, invalidate it before an installation whose
+    /// new values or pages fall below its limits.
+    fn certify_install(&mut self, new_values: &[Option<ValueLocation>]) -> Result<(), CoreError> {
         if let Some(limits) = self.reclaim.active_limits() {
             let fresh_values = new_values
                 .iter()
@@ -397,9 +557,7 @@ impl DiskState {
                 self.invalidate_for_install()?;
             }
         }
-        let previous = self.owner.install(witness.source, commit, cursor)?;
-        self.selected = commit.root;
-        self.observe_install(previous, commit)
+        Ok(())
     }
 
     fn check_snapshot(&self, pin: &SnapshotPin) -> Result<DirectoryRoot, CoreError> {
@@ -535,34 +693,76 @@ impl DiskState {
         Ok(result)
     }
 
+    /// The whole commit under one exclusive borrow: `prepare_commit`, the
+    /// root publication, then `complete_commit`. The Core runs the same
+    /// three steps but releases its state lock around the publication.
+    #[cfg(test)]
     pub(crate) fn commit(&mut self, operations: &[Operation]) -> Result<(), CoreError> {
+        let prepared = self.prepare_commit(operations)?;
+        prepared.publish_root()?;
+        self.complete_commit(prepared, operations)
+    }
+
+    /// Everything durable except the root: the log batch and the directory
+    /// pages it binds, with the successor root staged in memory. Failures
+    /// keep their dispositions: refusals before the first effect prove no
+    /// effect, a capacity refusal during the mutation rolls back, and later
+    /// failures are unknown.
+    pub(crate) fn prepare_commit(
+        &mut self,
+        operations: &[Operation],
+    ) -> Result<PreparedCommit, CoreError> {
         self.run(|state| {
-            catch_unwind(AssertUnwindSafe(|| state.commit_inner(operations)))
-                .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
+            catch_unwind(AssertUnwindSafe(|| {
+                let mut stage = "admission";
+                state
+                    .prepare_staged(operations, &mut stage)
+                    .inspect_err(|error| report_commit_failure(stage, error))
+            }))
+            .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
         })
     }
 
-    fn commit_inner(&mut self, operations: &[Operation]) -> Result<(), CoreError> {
-        let mut stage = "admission";
-        self.commit_staged(operations, &mut stage)
-            .inspect_err(|error| {
-                // Fixed stages and error kinds only. Borrow the original; diagnostics
-                // cannot change its disposition, ownership or failure behavior.
-                use std::io::Write;
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "Kasumi native commit failed: stage={stage} disposition={:?} io={:?}",
-                    error.disposition(),
-                    error.io_error().map(std::io::Error::kind),
-                );
-            })
+    /// Adopt and select the root `PreparedCommit::publish_root` made durable,
+    /// settle the transaction and publish the caches. The root is durable, so
+    /// every failure here is an unknown commit and fences.
+    pub(crate) fn complete_commit(
+        &mut self,
+        prepared: PreparedCommit,
+        operations: &[Operation],
+    ) -> Result<(), CoreError> {
+        self.run(|state| {
+            catch_unwind(AssertUnwindSafe(|| {
+                let mut stage = "cache_publication_begin";
+                state
+                    .complete_staged(prepared, operations, &mut stage)
+                    .map_err(|error| {
+                        if error.is_unknown_commit() {
+                            error
+                        } else {
+                            error.into_unknown_commit()
+                        }
+                    })
+                    .inspect_err(|error| report_commit_failure(stage, error))
+            }))
+            .unwrap_or_else(|panic| Err(CoreError::unknown_commit(CorePanic::new(panic))))
+        })
+        .map_err(|error| {
+            if error.is_unknown_commit() {
+                error
+            } else {
+                // The owner check around `run` itself refused.
+                self.owner.failed.store(true, Ordering::Release);
+                error.into_unknown_commit()
+            }
+        })
     }
 
-    fn commit_staged(
+    fn prepare_staged(
         &mut self,
         operations: &[Operation],
         stage: &mut &'static str,
-    ) -> Result<(), CoreError> {
+    ) -> Result<PreparedCommit, CoreError> {
         // Preflight table existence against the selected tree and earlier
         // creates in this batch. No growing all-table overlay is retained.
         if operations.is_empty() || operations.len() > MAX_BATCH_OPERATIONS {
@@ -574,7 +774,7 @@ impl DiskState {
         // Hold its bounded replay workspace until prepare is committed or undone.
         let workspace_bytes = segment::prepared_batch_workspace_bytes(operations)?;
         let values_bytes = (operations.len() * std::mem::size_of::<Option<ValueLocation>>()) as u64;
-        let _values = self
+        let values_charge = self
             .owner
             .admission
             .reserve_workspace(
@@ -601,11 +801,11 @@ impl DiskState {
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_edits(self.owner.admission.clone())?;
         let witness = self.selection_witness();
-        // All proof buffers and snapshot coverage are acquired before any
-        // private disk effect. Marking never changes cache membership/policy.
+        // All proof buffers, the snapshot capture and the superseded-identity
+        // record are admitted before any private disk effect. Nothing marks
+        // the cache until the root is durable.
         *stage = "cache_publication_prepare";
-        self.observe_warm_publication_start()?;
-        let mut publication = self.prepare_cache_publication()?;
+        let mut publication = self.prepare_cache_publication(operations.len())?;
         *stage = "directory_preflight";
         let preflight = self.pages.maintenance_private_view();
         // Keep only a borrowed witness for a consecutive table run. Bulk
@@ -635,7 +835,7 @@ impl DiskState {
         // log/root effect. The installed backend atomically owns every physical
         // extent, name and descriptor promise until explicit settlement.
         *stage = "transaction_plan";
-        let plan = {
+        let (plan, first_directory) = {
             let root = self.owner.lock()?;
             if root.pending_segment().is_some() || root.pending_directory().is_some() {
                 return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -657,7 +857,7 @@ impl DiskState {
                 first_directory,
                 self.selected.transaction_page_bound(operations.len())?,
             )?;
-            crate::group::TransactionSpacePlan {
+            let plan = crate::group::TransactionSpacePlan {
                 group_id: self.owner.group_id,
                 root_generation: root.generation(),
                 batch_seq: self.writer.next_batch_sequence(),
@@ -666,7 +866,8 @@ impl DiskState {
                 directory,
                 new_segments,
                 new_directories,
-            }
+            };
+            (plan, first_directory)
         };
         *stage = "transaction_reserve";
         reserve_transaction(self.owner.backend.as_ref(), &plan)?;
@@ -694,13 +895,39 @@ impl DiskState {
         *stage = "directory_mutation";
         let generation = prepared.batch_seq();
         let mut shrank = false;
+        let (record, mut proof) = match publication.as_mut() {
+            Some(publication) => (Some(&publication.superseded), Some(&mut publication.proof)),
+            None => (None, None),
+        };
         let result = (|| {
-            let tracked = self.pages.publication_private_view();
+            if let Some(record) = record {
+                // Without an active arena the first append rolls a fresh
+                // one, so every older page is committed.
+                lock_record(record)?.set_floor(if fresh == AppendFloor::NONE {
+                    AppendFloor::at(first_directory, 0)
+                } else {
+                    fresh
+                });
+            }
+            // Each call that consumes edits is one recorded step; a table
+            // lookup or a refused batch attempt before it shares its route.
+            let begin_step = || -> Result<(), CoreError> {
+                if let Some(record) = record {
+                    lock_record(record)?.begin_step();
+                }
+                Ok(())
+            };
+            let end_step = |changed: bool| -> Result<(), CoreError> {
+                if let Some(record) = record {
+                    lock_record(record)?.end_step(changed);
+                }
+                Ok(())
+            };
             let untracked = self.pages.private_view();
-            let private: &dyn crate::directory::DirectoryBackend = if publication.is_some() {
-                &tracked
-            } else {
-                &untracked
+            let recording = record.map(|record| self.pages.recording_private_view(record));
+            let private: &dyn crate::directory::DirectoryBackend = match &recording {
+                Some(recording) => recording,
+                None => &untracked,
             };
             let mut mutator = DirectoryMutator::new(private, &mut directory_workspace)?;
             let mut root = self.selected;
@@ -711,7 +938,10 @@ impl DiskState {
                     prepared.values()[index],
                     generation,
                 )?;
+                begin_step()?;
+                let mut before = root.page;
                 if first.key.row.is_none() && mutator.get(root, first.key)?.is_some() {
+                    end_step(false)?;
                     index += 1;
                     continue;
                 }
@@ -719,7 +949,7 @@ impl DiskState {
                 let mut count = 1;
                 // Table creation and repeated/descending keys retain their
                 // exact original order. Only distinct row edits against one
-                // unchanged input root can share prior-value cache marking.
+                // unchanged input root can share prior-value lookups.
                 if first.key.row.is_some() {
                     while count < MAX_DIRECTORY_BATCH_EDITS && index + count < operations.len() {
                         let next = prepared_directory_edit(
@@ -735,14 +965,13 @@ impl DiskState {
                     }
                 }
                 for (offset, edit) in edits[..count].iter().enumerate() {
-                    if let (Some(publication), Some(row)) = (publication.as_mut(), edit.key.row)
+                    // The copied pages of these paths are recorded by the
+                    // steps below; this lookup only finds the prior value.
+                    if let (Some(record), Some(proof), Some(row)) =
+                        (record, proof.as_deref_mut(), edit.key.row)
                         && let Some(DirectoryValue::Row { value: old, .. }) =
-                            DirectoryReader::new(private, self.owner.admission.clone())
-                                .get_with_workspace(
-                                    root,
-                                    edit.key,
-                                    &mut publication.proof.directory,
-                                )?
+                            DirectoryReader::new(&untracked, self.owner.admission.clone())
+                                .get_with_workspace(root, edit.key, &mut proof.directory)?
                     {
                         shrank |= match &operations[index + offset] {
                             Operation::Delete { .. } => true,
@@ -753,14 +982,12 @@ impl DiskState {
                         // cannot replace this key's prior logical value.
                         let identity =
                             NativeIdentity::value(self.owner.group_id, old, edit.key.table, row)?;
-                        self.cache
-                            .lock()
-                            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
-                            .mark_publication_candidate(identity)?;
+                        lock_record(record)?.record_value(identity);
                     }
                 }
                 let mut applied = 0;
                 while applied < count {
+                    begin_step()?;
                     let remaining = &edits[applied..count];
                     let batched = if remaining.len() > 1 {
                         mutator.try_set_leaf_batch(root, generation, remaining)?
@@ -779,6 +1006,8 @@ impl DiskState {
                         root = mutator.set(root, generation, edit.key, edit.value)?;
                         applied += 1;
                     }
+                    end_step(root.page != before)?;
+                    before = root.page;
                 }
                 index += count;
             }
@@ -823,20 +1052,66 @@ impl DiskState {
                 chain: committed.chain,
             },
         };
-        // The log commit is ordered before this publication, whose full
+        // The log commit is ordered before the root publication, whose full
         // synchronization makes both durable. Any subsequent failure is
         // indeterminate to this caller and fences; reopen decides from the
         // log and root the device kept.
-        *stage = "root_publication";
-        self.install_selected(witness, commit, &committed.values, None)
-            .map_err(|error| match error {
-                _ if error.is_unknown_commit() => error,
-                _ => error.into_unknown_commit(),
-            })?;
+        *stage = "root_stage";
+        let root =
+            self.owner
+                .stage_install(witness.source, commit)
+                .map_err(|error| match error {
+                    _ if error.is_unknown_commit() => error,
+                    _ => error.into_unknown_commit(),
+                })?;
+        Ok(PreparedCommit {
+            owner: self.owner.clone(),
+            witness,
+            commit,
+            root,
+            group_id: plan.group_id,
+            batch_seq: plan.batch_seq,
+            fresh,
+            shrank,
+            publication,
+            values: committed.values,
+            values_charge,
+        })
+    }
+
+    fn complete_staged(
+        &mut self,
+        prepared: PreparedCommit,
+        operations: &[Operation],
+        stage: &mut &'static str,
+    ) -> Result<(), CoreError> {
+        let PreparedCommit {
+            values_charge,
+            values,
+            owner: _,
+            witness,
+            commit,
+            root,
+            group_id,
+            batch_seq,
+            fresh,
+            shrank,
+            mut publication,
+        } = prepared;
+        // Readers may have pinned the selected root during the publication.
+        // Include them before that root becomes historical, then mark the
+        // record: no reader can load or pin until this state lock is released.
+        *stage = "cache_publication_begin";
+        self.observe_warm_publication_start()?;
+        if let Some(publication) = publication.as_mut() {
+            self.begin_cache_publication(publication)?;
+        }
+        *stage = "root_adoption";
+        self.adopt_selected(witness, root, commit, &values)?;
         *stage = "transaction_settle";
         self.owner
             .backend
-            .finish_transaction(plan.group_id, plan.batch_seq)
+            .finish_transaction(group_id, batch_seq)
             .map_err(CoreError::unknown_io)?;
         self.warmup = Warmup::default();
         // Publication is durable before pruning or filling. Remove obsolete
@@ -848,15 +1123,15 @@ impl DiskState {
                 .and_then(|()| {
                     self.retain_committed(
                         operations,
-                        &committed.values,
+                        &values,
                         fresh,
                         &mut publication.proof.directory,
                     )
-                })
-                .map_err(|error| error.into_unknown_commit())?;
+                })?;
         }
-        self.observe_warm_publication(shrank)
-            .map_err(|error| error.into_unknown_commit())?;
+        self.observe_warm_publication(shrank)?;
+        drop(values);
+        drop(values_charge);
         Ok(())
     }
 
@@ -1006,7 +1281,9 @@ fn fixed_admission(
         + std::mem::size_of::<publication::PublicationCache>()
         + std::mem::size_of::<crate::cache::CacheCandidate<NativeIdentity>>()
         + SEGMENT_FIXED_WORKSPACE
-        + 2 * std::mem::size_of::<Superblock>()
+        // A staged root carries the superblock it follows across the
+        // unlocked publication, besides its successor.
+        + 3 * std::mem::size_of::<Superblock>()
         + 4 * MAX_GARBAGE * std::mem::size_of::<GroupFile>()
         + 5 * ALLOCATION_ALLOWANCE
         + LEASE_ALLOWANCE;

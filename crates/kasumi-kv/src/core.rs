@@ -608,9 +608,17 @@ impl Shared {
         result
     }
 }
+/// Reads take only the state lock. Every other operation first takes the
+/// commit gate: a commit holds it from preparation through its root
+/// publication, which runs without the state lock, to its completion. Every
+/// root installer and cache mutator (maintenance, compaction, warm-up,
+/// configuration, close) therefore waits for an in-flight publication, while
+/// readers proceed on the selected root and pin it through the ordinary
+/// snapshot accounting. Lock order: gate, then state.
 pub struct Core {
     shared: NativeOwnedArc<Shared>,
     maintenance: Arc<crate::disk_state::PublishedMaintenance>,
+    gate: Mutex<()>,
 }
 
 pub struct ReadSnapshot {
@@ -816,13 +824,14 @@ impl Core {
             .closed
     }
     /// One original native shell grant funds the sized backend body, its
-    /// authoritative cell, Shared, and every database facade control.
+    /// authoritative cell, Shared, the commit gate, and every database
+    /// facade control.
     pub(crate) fn shell_request_bytes<B>() -> io::Result<u64> {
         let fixed = (std::mem::size_of::<Shared>()
             + 2 * std::mem::size_of::<usize>()
             + 64
             + 128
-            + crate::native_sync::mutex_backing_bytes()
+            + 2 * crate::native_sync::mutex_backing_bytes()
             + crate::tables::facade_heap_bytes()) as u64;
         fixed
             .checked_add(crate::native_backend::BackendOwner::allocation_request_bytes::<B>()?)
@@ -879,6 +888,14 @@ impl Core {
         self.shared
             .run_admission(|| self.shared.check_admission_open())
     }
+    /// Take the commit gate. Each holder runs its work inside `Shared::run`,
+    /// which converts unwinds, so a poisoned gate is an owner failure.
+    fn gate(&self) -> Result<MutexGuard<'_, ()>, CoreError> {
+        self.gate.lock().map_err(|_| {
+            self.shared.fence();
+            CoreError::new(crate::CoreErrorCause::OwnerFailed)
+        })
+    }
     pub fn is_fenced(&self) -> bool {
         self.shared.fenced.load(Ordering::Acquire)
     }
@@ -917,6 +934,7 @@ impl Core {
         })
     }
     pub fn configure_cache(&self, config: CacheConfig) -> Result<(), CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state.disk()?.configure_cache(config)
@@ -938,6 +956,7 @@ impl Core {
                 "cache warm-up step must be nonzero",
             )));
         }
+        let _gate = self.gate()?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state.disk()?.warm(work_limit)
@@ -954,6 +973,7 @@ impl Core {
                 "cache warm-up step must be nonzero",
             )));
         }
+        let _gate = self.gate()?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state.disk()?.warm_if_needed(work_limit)
@@ -971,6 +991,7 @@ impl Core {
     /// Periodic drivers should use warm_cache_if_needed with provider backoff
     /// instead; headroom samples are not a reason to discard bounded progress.
     pub fn request_cache_warm_retry(&self) -> Result<(), CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state.disk()?.request_warm_retry()
@@ -986,6 +1007,7 @@ impl Core {
         &self,
         budget: crate::MaintenanceBudget,
     ) -> Result<crate::MaintenanceProgress, CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
             state.disk()?.driven_maintenance_step(budget)
@@ -996,6 +1018,7 @@ impl Core {
     /// step ran since the previous write. Local deferrals never fail the
     /// write; fatal maintenance errors do.
     pub(crate) fn maintain_before_write(&self) -> Result<(), CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
             state.disk()?.maintain_before_write()
@@ -1033,6 +1056,7 @@ impl Core {
     }
     #[cfg(test)]
     pub(crate) fn seal_files_for_test(&self) -> Result<(), CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
             state.disk()?.seal_files_for_test()
@@ -1050,6 +1074,7 @@ impl Core {
             .unwrap_or_else(std::sync::PoisonError::into_inner))
     }
     pub fn configure_maintenance(&self, policy: crate::MaintenancePolicy) -> Result<(), CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state.disk()?.configure_maintenance(policy)
@@ -1058,6 +1083,7 @@ impl Core {
     /// Begin a cycle at the next step even below the policy thresholds,
     /// unless nothing older than the newest files exists yet.
     pub fn request_compaction(&self) -> Result<(), CoreError> {
+        let _gate = self.gate()?;
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state.disk()?.request_compaction()
@@ -1225,14 +1251,49 @@ impl Core {
                 .next_admitted(&snapshot.pin, table, prefix, after, max_value_bytes)
         })
     }
+    /// Commit under the gate in three steps. The state lock is held to stage
+    /// everything except the root, released while the root publication
+    /// writes and flushes both root slots, and taken again to adopt and
+    /// select that root and publish the caches. Readers meanwhile use the
+    /// previous root. Every failure after staging is an unknown commit and
+    /// fences.
     pub fn commit(&self, operations: &[Operation]) -> Result<(), CoreError> {
-        self.shared.run(CoreError::unknown_commit, |state| {
+        let _gate = self.gate()?;
+        let prepared = self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
             if operations.is_empty() {
-                return Ok(());
+                return Ok(None);
             }
-            state.disk()?.commit(operations)
-        })
+            state.disk()?.prepare_commit(operations).map(Some)
+        })?;
+        let Some(prepared) = prepared else {
+            return Ok(());
+        };
+        let unknown = |error: CoreError| {
+            if error.is_unknown_commit() {
+                error
+            } else {
+                error.into_unknown_commit()
+            }
+        };
+        // A reader that failed meanwhile fenced the owner: publish nothing.
+        if let Err(error) = self.shared.check_owner() {
+            return Err(unknown(error));
+        }
+        if let Err(error) = prepared.publish_root() {
+            self.shared.fence();
+            return Err(error);
+        }
+        // The root is durable. Complete even if close began meanwhile: it
+        // cannot proceed past the gate this commit holds.
+        self.shared
+            .run(CoreError::unknown_commit, |state| {
+                state.disk()?.complete_commit(prepared, operations)
+            })
+            .map_err(|error| {
+                self.shared.fence();
+                unknown(error)
+            })
     }
     /// Stop new snapshots and writes. A pre-effect busy result is retryable;
     /// once the backend close is entered, its native effect is never replayed.
@@ -1242,6 +1303,18 @@ impl Core {
         if self.shared.snapshots.load(Ordering::Acquire) != 0 {
             return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
         }
+        // An in-flight commit holds the gate across its unlocked root
+        // publication; it must complete before the backend can close.
+        let _gate = match self.gate.try_lock() {
+            Ok(gate) => gate,
+            Err(TryLockError::WouldBlock) => {
+                return BackendCloseOutcome::not_entered(io::ErrorKind::WouldBlock.into());
+            }
+            Err(TryLockError::Poisoned(poisoned)) => {
+                self.shared.fence();
+                poisoned.into_inner()
+            }
+        };
         let mut state = match self
             .shared
             .state

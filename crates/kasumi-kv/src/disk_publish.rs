@@ -1,13 +1,21 @@
 //! Reconcile only identities touched by a foreground mutation before refill.
 //!
-//! Marks borrow cache slots and never allocate an operations-times-height
-//! queue. The enclosing Core lock excludes new pins, mutations and physical
-//! reclamation until this scope is drained. Concurrent pin drops are safe:
-//! captures conservatively retain their old reachable identities for this pass.
+//! The mutation records the identities it supersedes outside the cache, in a
+//! fixed record admitted with the capture and proof workspace before the
+//! commit's first disk effect (`SupersededIdentities` bounds it by the
+//! batch's operations and the selected tree's height). The cache stays fully
+//! usable meanwhile: the commit's root publication runs without the Core
+//! state lock, and readers keep loading through the cache. Only once that
+//! publication is durable, back under the state lock, does the commit
+//! recapture pins, begin the candidate scope, mark the record and drain it.
+//! The state lock then excludes new pins, mutations and physical reclamation
+//! until the scope is drained. Concurrent pin drops are safe: captures
+//! conservatively retain their old reachable identities for this pass.
 
 use super::auto_warming::{DeferredIdentity, DeferredWitness};
 use super::warming::{CachedIdentityProofWorkspace, CachedReach};
 use super::*;
+use crate::page_cache::SupersededIdentities;
 use crate::snapshot_pins::SnapshotRoots;
 
 #[cfg(test)]
@@ -20,6 +28,9 @@ pub(super) struct PublicationCache {
     cache: NativeSharedCache,
     capture: SnapshotRoots,
     pub(super) proof: CachedIdentityProofWorkspace,
+    /// Written only by the commit's own mutation; locked for its `Sync` view.
+    pub(super) superseded: Mutex<SupersededIdentities>,
+    _superseded_charge: NativeResidentLease,
     active: bool,
 }
 
@@ -46,7 +57,14 @@ impl Drop for PublicationCache {
 }
 
 impl DiskState {
-    pub(super) fn prepare_cache_publication(&self) -> Result<Option<PublicationCache>, CoreError> {
+    /// Admit everything a publication of `operations` operations needs, before
+    /// any disk effect: the pin capture, the proof workspace and the fixed
+    /// superseded-identity record. Nothing here touches cache membership; the
+    /// candidate scope begins only in `begin_cache_publication`.
+    pub(super) fn prepare_cache_publication(
+        &self,
+        operations: usize,
+    ) -> Result<Option<PublicationCache>, CoreError> {
         self.owner.check()?;
         if self
             .cache
@@ -60,16 +78,64 @@ impl DiskState {
         }
         let capture = self.pins.capture()?;
         let proof = CachedIdentityProofWorkspace::new(&self.owner.admission)?;
-        self.cache
-            .lock()
-            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
-            .begin_publication_candidates()?;
+        let pages = operations
+            .checked_mul(usize::from(self.selected.height))
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        let bytes = SupersededIdentities::backing_bytes(pages, operations)
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    crate::native_sync::mutex_backing_bytes()
+                        + 2 * ALLOCATION_ALLOWANCE
+                        + LEASE_ALLOWANCE,
+                )
+            })
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        let charge = self
+            .owner
+            .admission
+            .reserve_workspace(bytes as u64)
+            .map(NativeResidentLease::new)?;
+        let superseded = crate::native_sync::mutex(
+            SupersededIdentities::with_capacity(pages, operations)?,
+            &charge,
+        );
         Ok(Some(PublicationCache {
             cache: self.cache.clone(),
             capture,
             proof,
-            active: true,
+            superseded,
+            _superseded_charge: charge,
+            active: false,
         }))
+    }
+
+    /// Recapture pins, begin the candidate scope and mark every recorded
+    /// identity still resident. Call under the same state lock as the
+    /// installation that follows: readers may have pinned the then-selected
+    /// root, and loaded recorded identities, while the root was published.
+    pub(super) fn begin_cache_publication(
+        &self,
+        publication: &mut PublicationCache,
+    ) -> Result<(), CoreError> {
+        self.owner.check()?;
+        self.pins.recapture(&mut publication.capture)?;
+        let superseded = publication
+            .superseded
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        // The record is bounded by construction; an overflow would leave the
+        // unrecorded identities cached but unreachable, never served.
+        debug_assert!(!superseded.overflowed(), "superseded identity bound");
+        let mut cache = self
+            .cache
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        cache.begin_publication_candidates()?;
+        publication.active = true;
+        for identity in superseded.identities(self.owner.group_id) {
+            cache.mark_publication_candidate(identity)?;
+        }
+        Ok(())
     }
 
     pub(super) fn reconcile_publication(

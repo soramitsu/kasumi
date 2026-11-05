@@ -28,7 +28,7 @@ use crate::cache::{CacheConfig, CacheLoadError, NativeCache};
 use crate::cache::{CacheStats, CachedBytes};
 use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{
-    DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
+    AppendFloor, DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
     read_checks_owner,
 };
 
@@ -186,11 +186,19 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         PrivateDirectoryBackend { cached: self }
     }
 
-    /// Observe the actual COW paths for one active publication candidate
-    /// scope. Cached identities are marked without policy training; private
-    /// misses are read directly and never enter the retention pool.
-    pub(crate) fn publication_private_view(&self) -> PublicationDirectoryBackend<'_, B> {
-        PublicationDirectoryBackend { cached: self }
+    /// A private view that also records the committed pages a foreground
+    /// mutation copies, outside the cache: readers keep loading through the
+    /// cache while that commit's root publication runs without the owner
+    /// lock, and the publication marks the record only afterwards. Reads
+    /// behave as in `private_view`.
+    pub(crate) fn recording_private_view<'a>(
+        &'a self,
+        record: &'a Mutex<SupersededIdentities>,
+    ) -> RecordingDirectoryBackend<'a, B> {
+        RecordingDirectoryBackend {
+            cached: self,
+            record,
+        }
     }
 
     /// Reuse hot committed pages during maintenance without changing their
@@ -289,7 +297,6 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         &self,
         reference: DirectoryPageRef,
         out: &mut [u8],
-        mark: bool,
     ) -> Result<(), CoreError> {
         self.check_owner()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
@@ -298,13 +305,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
             )));
         }
         let identity = self.identity(reference)?;
-        let page = {
-            let mut cache = self.lock()?;
-            if mark {
-                cache.mark_publication_candidate(identity)?;
-            }
-            cache.peek(identity)
-        };
+        let page = self.lock()?.peek(identity);
         if let Some(page) = page {
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
@@ -350,7 +351,7 @@ pub(crate) struct PrivateDirectoryBackend<'a, B: DirectoryBackend> {
 
 impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
-        self.cached.read_private_page(reference, out, false)
+        self.cached.read_private_page(reference, out)
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
@@ -382,16 +383,154 @@ impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
     }
 }
 
-pub(crate) struct PublicationDirectoryBackend<'a, B: DirectoryBackend> {
-    cached: &'a CachedDirectoryBackend<B>,
+/// Identities a foreground commit replaces, recorded outside the cache so
+/// that loads stay possible until the commit's publication marks them.
+///
+/// Pages: a mutation proceeds in steps that each consume at least one
+/// operation and descend to one leaf before their first append. Only those
+/// descent reads are recorded, and only for pages below the mutation's
+/// append floor. The descent copies them unless the step changes nothing,
+/// in which case the step's record is dropped. A path holds one page per
+/// level of the selected tree, so `operations * height` pages bound the
+/// record. Values: at most one prior value per operation. Both capacities
+/// are fixed and admitted before the commit's first disk effect; recording
+/// never allocates.
+pub(crate) struct SupersededIdentities {
+    pages: Vec<DirectoryPageRef>,
+    values: Vec<NativeIdentity>,
+    floor: AppendFloor,
+    step: Option<usize>,
+    appended: bool,
+    overflowed: bool,
 }
 
-impl<B: DirectoryBackend> DirectoryBackend for PublicationDirectoryBackend<'_, B> {
+impl SupersededIdentities {
+    /// The admitted backing of a record with these capacities.
+    pub(crate) fn backing_bytes(pages: usize, values: usize) -> Option<usize> {
+        pages
+            .checked_mul(std::mem::size_of::<DirectoryPageRef>())?
+            .checked_add(values.checked_mul(std::mem::size_of::<NativeIdentity>())?)
+    }
+
+    /// Exact fixed capacities. The caller admitted `backing_bytes` first.
+    pub(crate) fn with_capacity(pages: usize, values: usize) -> Result<Self, CoreError> {
+        fn exact<T>(capacity: usize) -> Result<Vec<T>, CoreError> {
+            let mut vec = Vec::new();
+            vec.try_reserve_exact(capacity)
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+            if vec.capacity() != capacity {
+                return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+            }
+            Ok(vec)
+        }
+        Ok(Self {
+            pages: exact(pages)?,
+            values: exact(values)?,
+            floor: AppendFloor::NONE,
+            step: None,
+            appended: false,
+            overflowed: false,
+        })
+    }
+
+    /// Pages at or above `floor` are the mutation's own appends.
+    pub(crate) fn set_floor(&mut self, floor: AppendFloor) {
+        self.floor = floor;
+    }
+
+    /// Open a step, or keep the open one: its descent continues the route.
+    pub(crate) fn begin_step(&mut self) {
+        if self.step.is_none() {
+            self.step = Some(self.pages.len());
+            self.appended = false;
+        }
+    }
+
+    /// Close the open step. Pages a step did not copy stay referenced by the
+    /// new root and are not superseded.
+    pub(crate) fn end_step(&mut self, changed: bool) {
+        if let Some(start) = self.step.take()
+            && !changed
+        {
+            self.pages.truncate(start);
+        }
+    }
+
+    /// The location a row held before this commit replaced or deleted it.
+    pub(crate) fn record_value(&mut self, identity: NativeIdentity) {
+        if self.values.len() == self.values.capacity() {
+            self.overflowed = true;
+        } else {
+            self.values.push(identity);
+        }
+    }
+
+    fn observe_read(&mut self, reference: DirectoryPageRef) {
+        let Some(start) = self.step else {
+            return;
+        };
+        if self.appended
+            || !self.floor.precedes(reference)
+            || self.pages[start..].contains(&reference)
+        {
+            return;
+        }
+        if self.pages.len() == self.pages.capacity() {
+            self.overflowed = true;
+        } else {
+            self.pages.push(reference);
+        }
+    }
+
+    fn observe_append(&mut self) {
+        self.appended = true;
+    }
+
+    /// A bound was exceeded: the record misses identities. They stay cached
+    /// unreachable until a warm pass or reclamation removes them.
+    pub(crate) fn overflowed(&self) -> bool {
+        self.overflowed
+    }
+
+    pub(crate) fn identities(
+        &self,
+        group_id: [u8; 16],
+    ) -> impl Iterator<Item = NativeIdentity> + '_ {
+        self.pages
+            .iter()
+            .map(move |page| NativeIdentity::Page {
+                group_id,
+                arena_id: page.arena_id,
+                page_index: page.page_index,
+                sha256: page.sha256,
+            })
+            .chain(self.values.iter().copied())
+    }
+}
+
+/// `private_view` reads that record into a commit's `SupersededIdentities`.
+pub(crate) struct RecordingDirectoryBackend<'a, B: DirectoryBackend> {
+    cached: &'a CachedDirectoryBackend<B>,
+    record: &'a Mutex<SupersededIdentities>,
+}
+
+impl<B: DirectoryBackend> RecordingDirectoryBackend<'_, B> {
+    fn record(&self) -> Result<MutexGuard<'_, SupersededIdentities>, CoreError> {
+        self.record
+            .lock()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
+    }
+}
+
+impl<B: DirectoryBackend> DirectoryBackend for RecordingDirectoryBackend<'_, B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
-        self.cached.read_private_page(reference, out, true)
+        self.cached.read_private_page(reference, out)?;
+        self.record()?.observe_read(reference);
+        Ok(())
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
+        self.record()?.observe_append();
         self.cached.append_page(bytes)
     }
 
@@ -400,6 +539,7 @@ impl<B: DirectoryBackend> DirectoryBackend for PublicationDirectoryBackend<'_, B
         bytes: &[u8],
         sha256: [u8; 32],
     ) -> Result<DirectoryPageRef, CoreError> {
+        self.record()?.observe_append();
         self.cached.append_digested_page(bytes, sha256)
     }
 
@@ -729,8 +869,18 @@ mod tests {
         }
     }
 
+    fn record(pages: usize, values: usize, floor: AppendFloor) -> Mutex<SupersededIdentities> {
+        let mut record = SupersededIdentities::with_capacity(pages, values).unwrap();
+        record.set_floor(floor);
+        Mutex::new(record)
+    }
+
+    fn recorded(record: &Mutex<SupersededIdentities>) -> Vec<NativeIdentity> {
+        record.lock().unwrap().identities(GROUP).collect()
+    }
+
     #[test]
-    fn publication_private_reads_mark_only_actual_hot_paths_and_never_retain_misses() {
+    fn recording_reads_record_copied_committed_paths_and_leave_the_cache_loadable() {
         let admission = Admission::new(u64::MAX);
         let pages = Pages::default();
         for byte in 1..=3 {
@@ -745,17 +895,18 @@ mod tests {
             },
         );
         drop(cached.load_page(reference(0, 1)).unwrap());
-        drop(cached.load_page(reference(1, 2)).unwrap());
         let before = cached.stats().unwrap();
         let used = admission.used.load(Ordering::Acquire);
         let reads = pages.reads.load(Ordering::Relaxed);
-        cached
-            .lock()
-            .unwrap()
-            .begin_publication_candidates()
-            .unwrap();
-        let private = cached.publication_private_view();
+        // Pages 0..=2 are committed; the mutation appends from index 3.
+        let record = record(3, 1, AppendFloor::at(1, 3));
+        let private = cached.recording_private_view(&record);
         let mut out = [0; DIRECTORY_PAGE_BYTES];
+        // Outside a step nothing is recorded.
+        private.read_page(reference(1, 2), &mut out).unwrap();
+        // A step that copies its route keeps each committed page once, and
+        // nothing read after its first append.
+        record.lock().unwrap().begin_step();
         for _ in 0..3 {
             private.read_page(reference(0, 1), &mut out).unwrap();
             assert_eq!(out, [1; DIRECTORY_PAGE_BYTES]);
@@ -763,22 +914,85 @@ mod tests {
         private.read_page(reference(2, 3), &mut out).unwrap();
         let unpublished = private.append_page(&[4; DIRECTORY_PAGE_BYTES]).unwrap();
         private.read_page(unpublished, &mut out).unwrap();
-        private.sync_pages().unwrap();
         assert_eq!(out, [4; DIRECTORY_PAGE_BYTES]);
-        assert_eq!(pages.reads.load(Ordering::Relaxed), reads + 2);
+        private.read_page(reference(1, 2), &mut out).unwrap();
+        record.lock().unwrap().end_step(true);
+        // A step that changed nothing drops its record.
+        record.lock().unwrap().begin_step();
+        private.read_page(reference(1, 2), &mut out).unwrap();
+        record.lock().unwrap().end_step(false);
+        private.sync_pages().unwrap();
+        assert_eq!(
+            recorded(&record),
+            vec![
+                cached.identity(reference(0, 1)).unwrap(),
+                cached.identity(reference(2, 3)).unwrap(),
+            ]
+        );
+        assert!(!record.lock().unwrap().overflowed());
+        // Private misses are read directly, never retained, and the cache
+        // keeps its membership, policy and charge.
+        // Five misses: (1, 2) three times, (2, 3) and the appended page.
+        assert_eq!(pages.reads.load(Ordering::Relaxed), reads + 5);
         assert_eq!(cached.stats().unwrap(), before);
         assert_eq!(admission.used.load(Ordering::Acquire), used);
-        let mut cache = cached.lock().unwrap();
-        let candidate = cache.pop_publication_candidate().unwrap().unwrap();
-        assert_eq!(candidate.key, cached.identity(reference(0, 1)).unwrap());
-        assert_eq!(candidate.bytes.as_bytes(), &[1; DIRECTORY_PAGE_BYTES]);
-        assert!(cache.pop_publication_candidate().unwrap().is_none());
-        cache.clear_publication_candidates().unwrap();
-        assert_eq!(cache.stats(), before);
+        // No publication scope is active: a concurrent reader's miss loads.
+        drop(cached.load_page(reference(2, 3)).unwrap());
+        assert!(
+            cached
+                .lock()
+                .unwrap()
+                .contains(cached.identity(reference(2, 3)).unwrap())
+        );
     }
 
     #[test]
-    fn publication_private_reads_require_scope_and_recheck_owner_for_hits_and_misses() {
+    fn recording_never_grows_past_its_admitted_capacity() {
+        let admission = Admission::new(u64::MAX);
+        let pages = Pages::default();
+        for byte in 1..=3 {
+            pages.append_page(&[byte; DIRECTORY_PAGE_BYTES]).unwrap();
+        }
+        let cached = CachedDirectoryBackend::new(
+            &pages,
+            admission,
+            GROUP,
+            CacheConfig {
+                byte_limit: 1 << 20,
+            },
+        );
+        let record = record(1, 1, AppendFloor::at(1, 3));
+        let private = cached.recording_private_view(&record);
+        let mut out = [0; DIRECTORY_PAGE_BYTES];
+        record.lock().unwrap().begin_step();
+        private.read_page(reference(0, 1), &mut out).unwrap();
+        assert!(!record.lock().unwrap().overflowed());
+        private.read_page(reference(1, 2), &mut out).unwrap();
+        record.lock().unwrap().end_step(true);
+        assert!(record.lock().unwrap().overflowed());
+        let value = NativeIdentity::Value {
+            group_id: GROUP,
+            segment_id: 1,
+            offset: 64,
+            len: 3,
+            crc: 0,
+            table_len: 1,
+            key_len: 1,
+        };
+        let mut values = SupersededIdentities::with_capacity(0, 1).unwrap();
+        values.record_value(value);
+        assert!(!values.overflowed());
+        values.record_value(value);
+        assert!(values.overflowed());
+        assert_eq!(values.identities(GROUP).collect::<Vec<_>>(), vec![value]);
+        assert_eq!(
+            recorded(&record),
+            vec![cached.identity(reference(0, 1)).unwrap()]
+        );
+    }
+
+    #[test]
+    fn recording_reads_recheck_owner_and_record_only_verified_pages() {
         let admission = Admission::new(u64::MAX);
         let pages = Pages::default();
         pages.append_page(&[1; DIRECTORY_PAGE_BYTES]).unwrap();
@@ -793,16 +1007,10 @@ mod tests {
         );
         drop(cached.load_page(reference(0, 1)).unwrap());
         let before = cached.stats().unwrap();
-        let private = cached.publication_private_view();
+        let record = record(4, 0, AppendFloor::at(1, 2));
+        record.lock().unwrap().begin_step();
+        let private = cached.recording_private_view(&record);
         let mut out = [0; DIRECTORY_PAGE_BYTES];
-        assert!(
-            matches!(&(private.read_page(reference(0, 1), &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
-        );
-        cached
-            .lock()
-            .unwrap()
-            .begin_publication_candidates()
-            .unwrap();
         assert!(
             matches!(&(private.read_page(reference(0, 1), &mut out[..8])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
         );
@@ -815,49 +1023,24 @@ mod tests {
         assert!(
             matches!(&(private.read_page(reference(0, 1), &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
         );
-        assert_eq!(
-            cached.lock().unwrap().clear_publication_candidates(),
-            Err(AdmissionError::OwnerFailed)
-        );
         admission.failed.store(false, Ordering::Release);
-        cached
-            .lock()
-            .unwrap()
-            .begin_publication_candidates()
-            .unwrap();
         *pages.expire_on_read.lock().unwrap() = Some(admission.clone());
         assert!(
             matches!(&(private.read_page(reference(1, 2), &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
         );
-        assert_eq!(
-            cached.lock().unwrap().clear_publication_candidates(),
-            Err(AdmissionError::OwnerFailed)
-        );
         admission.failed.store(false, Ordering::Release);
-        assert_eq!(cached.stats().unwrap(), before);
-        cached
-            .lock()
-            .unwrap()
-            .begin_publication_candidates()
-            .unwrap();
         let mut wrong = reference(1, 2);
         wrong.sha256[0] ^= 1;
         assert!(
             matches!(&(private.read_page(wrong, &mut out)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_))))
         );
-        assert!(
-            cached
-                .lock()
-                .unwrap()
-                .pop_publication_candidate()
-                .unwrap()
-                .is_none()
+        assert_eq!(recorded(&record), Vec::new());
+        assert_eq!(cached.stats().unwrap(), before);
+        private.read_page(reference(1, 2), &mut out).unwrap();
+        assert_eq!(
+            recorded(&record),
+            vec![cached.identity(reference(1, 2)).unwrap()]
         );
-        cached
-            .lock()
-            .unwrap()
-            .clear_publication_candidates()
-            .unwrap();
     }
 
     #[test]

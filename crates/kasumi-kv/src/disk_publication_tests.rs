@@ -19,7 +19,8 @@ fn resident_fixture() -> (DiskState, Arc<Reads>, Arc<Admission>) {
 }
 
 fn reconcile_retained_identities(state: &mut DiskState) -> Result<(), CoreError> {
-    let mut publication = state.prepare_cache_publication()?.unwrap();
+    let mut publication = state.prepare_cache_publication(1)?.unwrap();
+    state.begin_cache_publication(&mut publication)?;
     state.reconcile_publication(&mut publication)
 }
 
@@ -158,7 +159,8 @@ fn pinned_root_witness_never_masks_owner_failure() {
         .commit(&[Operation::put("accounts", b"a", vec![7; 8192])])
         .unwrap();
     assert!(state.auto_warm.deferred.len() > 0);
-    let mut publication = state.prepare_cache_publication().unwrap().unwrap();
+    let mut publication = state.prepare_cache_publication(1).unwrap().unwrap();
+    state.begin_cache_publication(&mut publication).unwrap();
     admission.owner_failed();
     assert!(matches!(
         state
@@ -178,7 +180,8 @@ fn deferred_root_witnesses_reject_foreign_capture_and_proof_owners() {
         .unwrap();
     let (foreign, _, _) = resident_fixture();
     let count = state.auto_warm.deferred.len();
-    let mut publication = state.prepare_cache_publication().unwrap().unwrap();
+    let mut publication = state.prepare_cache_publication(1).unwrap().unwrap();
+    state.begin_cache_publication(&mut publication).unwrap();
     publication.replace_capture_for_test(foreign.pins.capture().unwrap());
     assert!(matches!(
         state
@@ -189,7 +192,8 @@ fn deferred_root_witnesses_reject_foreign_capture_and_proof_owners() {
     ));
     drop(publication);
     assert_eq!(state.auto_warm.deferred.len(), count);
-    let mut publication = state.prepare_cache_publication().unwrap().unwrap();
+    let mut publication = state.prepare_cache_publication(1).unwrap().unwrap();
+    state.begin_cache_publication(&mut publication).unwrap();
     publication.proof =
         crate::disk_state::warming::CachedIdentityProofWorkspace::new(&foreign.owner.admission)
             .unwrap();
@@ -665,9 +669,12 @@ fn retired_lookup_preserves_returned_payload_charge_until_last_guard_drops() {
 fn publication_proof_preflight_denials_leave_cache_and_root_unchanged() {
     let (state, _, admission) = resident_fixture();
     let before = admission.calls.load(Ordering::Acquire);
-    drop(state.prepare_cache_publication().unwrap());
+    drop(state.prepare_cache_publication(1).unwrap());
     let reservations = admission.calls.load(Ordering::Acquire) - before;
-    assert_eq!(reservations, 2, "snapshot capture and complete proof owner");
+    assert_eq!(
+        reservations, 3,
+        "snapshot capture, complete proof owner and superseded-identity record"
+    );
     drop(state);
     for nth in 1..=reservations {
         let (mut state, _, admission) = resident_fixture();
@@ -675,7 +682,7 @@ fn publication_proof_preflight_denials_leave_cache_and_root_unchanged() {
         let cache = format!("{:?}", state.cache_stats().unwrap());
         let position = state.committed_position().unwrap();
         // Values, rollback/edit scratch and the admitted directory writer
-        // precede the exact capture/proof constructors under test.
+        // precede the exact capture/proof/record constructors under test.
         admission.deny_nth(3 + nth);
         assert!(
             matches!(&(state.commit(&[Operation::put("accounts", b"a", vec![9; 8192])])), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
@@ -865,4 +872,65 @@ fn changed_separator_tracks_redirected_path_and_root_collapse_without_warmup() {
     assert_eq!(reads.count(), before);
     assert_eq!(state.cache_stats().unwrap().entries, 2);
     assert_eq!(state.cache_stats().unwrap().evictions, evictions);
+}
+
+/// Between `prepare_commit` and `complete_commit` the Core runs readers
+/// without its state lock. They pin the still-selected root and load what
+/// the commit replaces; the commit's own publication must reconcile those
+/// loads, which no capture or mark existed for when it was prepared.
+#[test]
+fn loads_during_the_unlocked_root_publication_are_reconciled_by_that_commit() {
+    let (state, reads, _) = resident_fixture();
+    drop(state);
+    // A reopened owner starts with nothing resident.
+    let mut state = DiskState::open(
+        Arc::new(reads.group.crash()),
+        Admission::new(16 << 20),
+        GROUP,
+        LARGE_CACHE,
+    )
+    .unwrap();
+    let old_root = state.selected;
+    let old_value = match DirectoryReader::new(state.arena.as_ref(), state.owner.admission.clone())
+        .get(old_root, DirectoryKey::row("accounts", b"a"))
+        .unwrap()
+        .unwrap()
+    {
+        DirectoryValue::Row { value, .. } => {
+            NativeIdentity::value(GROUP, value, "accounts", b"a").unwrap()
+        }
+        DirectoryValue::Table { .. } => unreachable!(),
+    };
+    let reference = old_root.page.unwrap();
+    let old_page = NativeIdentity::Page {
+        group_id: GROUP,
+        arena_id: reference.arena_id,
+        page_index: reference.page_index,
+        sha256: reference.sha256,
+    };
+    let resident = |state: &DiskState, identity| state.cache.lock().unwrap().contains(identity);
+    assert!(!resident(&state, old_value) && !resident(&state, old_page));
+    let ops = [Operation::put("accounts", b"a", vec![7; 8192])];
+    let prepared = state.prepare_commit(&ops).unwrap();
+    prepared.publish_root().unwrap();
+    // A reader during the publication: misses load normally.
+    let pin = state.snapshot().unwrap();
+    assert_eq!(pin.root(), old_root);
+    assert_eq!(value(&mut state, &pin, b"a").unwrap(), vec![1; 8192]);
+    assert!(resident(&state, old_value) && resident(&state, old_page));
+    state.complete_commit(prepared, &ops).unwrap();
+    assert!(!state.is_fenced());
+    assert_ne!(state.selected, old_root);
+    // The pin taken meanwhile still reaches both: deferred, not removed.
+    assert!(resident(&state, old_value) && resident(&state, old_page));
+    assert_eq!(value(&mut state, &pin, b"a").unwrap(), vec![1; 8192]);
+    drop(pin);
+    // Once released, the next publication proves them unreachable.
+    state
+        .commit(&[Operation::put("accounts", b"b", vec![8; 8192])])
+        .unwrap();
+    assert!(!resident(&state, old_value) && !resident(&state, old_page));
+    let current = state.snapshot().unwrap();
+    assert_eq!(value(&mut state, &current, b"a").unwrap(), vec![7; 8192]);
+    assert_eq!(value(&mut state, &current, b"b").unwrap(), vec![8; 8192]);
 }

@@ -363,6 +363,38 @@ impl SnapshotPins {
         })
     }
 
+    /// Refill an existing capture with the currently pinned roots, reusing
+    /// its admitted buffer. Every distinct pinned root occupies a slot, so the
+    /// fixed `max_pins` capacity always suffices. A foreground commit admits
+    /// its capture before any disk effect and refreshes it here once the
+    /// unlocked root publication is durable: readers may have pinned the
+    /// then-selected root meanwhile.
+    pub(crate) fn recapture(&self, capture: &mut SnapshotRoots) -> Result<(), CoreError> {
+        self.inner.check()?;
+        if !RetiredArc::ptr_eq(&self.inner, &capture.registry) {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "snapshot capture belongs to another owner",
+            )));
+        }
+        let state = self.inner.lock()?;
+        capture.roots.clear();
+        for slot in state.slots.iter().filter_map(Entry::pinned) {
+            if !capture.roots.contains(&slot.root) {
+                if capture.roots.len() == capture.roots.capacity() {
+                    // Unreachable while slots are bounded by `max_pins`;
+                    // never grow past the admitted backing.
+                    drop(state);
+                    self.inner.failed.store(true, Ordering::Release);
+                    return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
+                }
+                capture.roots.push(slot.root);
+            }
+        }
+        capture.epoch = state.epoch;
+        drop(state);
+        self.inner.check()
+    }
+
     #[cfg(test)]
     pub(crate) fn validate_capture(&self, capture: &SnapshotRoots) -> Result<(), CoreError> {
         self.inner.check()?;

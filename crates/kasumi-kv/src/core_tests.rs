@@ -907,3 +907,6 @@ fn maintenance_phase_publication_does_not_report_a_fabricated_commit() {
         b"new"
     );
 }
+
+#[path = "core_flush_tests.rs"]
+mod flush;

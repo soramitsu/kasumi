@@ -1277,8 +1277,8 @@ fn assert_constructor_sync(sync: &crate::native_sync::tests::Watch, ledger: &Led
     let condvar_controls = usize::from(crate::native_sync::condvar_backing_bytes() != 0);
     assert_eq!(
         sync.count(),
-        8 * mutex_controls + condvar_controls,
-        "actual Shared/Gate/Root/Arena/Pin/Disk-cache/published-maintenance controls were initialized under their original grants"
+        9 * mutex_controls + condvar_controls,
+        "actual Shared/Gate/Root/Arena/Pin/Disk-cache/published-maintenance/commit-gate controls were initialized under their original grants"
     );
     for index in 0..sync.count() {
         let (funding, address, bytes, align, freed) = sync.record(index);
