@@ -71,6 +71,71 @@ Sources: [systemd execution settings](https://raw.githubusercontent.com/systemd/
 [systemd memory controls](https://raw.githubusercontent.com/systemd/systemd/v259/man/systemd.resource-control.xml),
 [Linux swappiness semantics](https://docs.kernel.org/admin-guide/sysctl/vm.html#swappiness).
 
+## Running kasumid
+
+`kasumid serve <configuration.json> [options]` runs the node; `kasumid serve
+--help` lists the options, which may appear in any order:
+
+- `--local-snapshot-archive reference|embedded` (default `reference`). How a
+  standalone group stores the snapshot it reopens from. `reference` (format
+  KASUMIL1) names the tenant audit archive chain the node already keeps under
+  `tenant-audit-archives/`, so a snapshot holds only the tenant's logical state.
+  `embedded` (KASUMID1) copies the whole chain into every snapshot: on a tenant
+  with an 8 GB archive, every snapshot then writes 8 GB. Releases before
+  KASUMIL1 read only KASUMID1. To install one, first serve once with
+  `--local-snapshot-archive embedded` and wait until every tenant serves: each
+  by-reference snapshot is rewritten embedded (log `stored an embedded snapshot
+  in place of its by-reference snapshot`), which needs free disk for one
+  embedded snapshot per tenant. With `reference`, never delete or move files in
+  `tenant-audit-archives/`: a reopen verifies the chain there and fails closed
+  if a segment is missing, until it is restored.
+- `--storage-compaction-growth-percent 101-200` (default 150). A compaction
+  cycle starts once retained storage files reach this percentage of what the
+  last cycle left. Lower values compact earlier and need less free disk at a
+  cycle's peak; higher values rewrite less often.
+
+Startup is visible. Each phase (`counting persistent files`, `opening the node
+database`, `opening tenant <name> (i/n)`, `starting tenant <name>`, ...) is a
+JSON `startup_phase` event with its elapsed time, `effective_admission` reports
+the memory high-water mark the node enforces, and `storage_placement` reports the
+free space on the persistent and scratch filesystems. Scratch spools snapshot
+builds and restores (tens of GB for a large tenant), so put
+`scratch_disk.directory` on a different volume from the persistent data; the
+daemon warns (`scratch_shares_persistent_filesystem`) when they share one. Under systemd the
+[unit template](../deploy/kasumi.service) uses `Type=notify`: `systemctl status
+kasumi` shows the current phase, dependent units ordered `After=kasumi.service`
+start only once the node serves (`READY=1`), and each phase may take up to 30
+minutes before systemd fails the start.
+
+A failed start logs `daemon_failed` with typed `failure_classes` (for example
+`io_storage_full`, `json_syntax`, `io_address_in_use`) and a `diagnostic_path`:
+a private (0600) file holding the full error chain. It is written to
+`KASUMI_DIAGNOSTIC_DIRECTORY`, else systemd's `LogsDirectory=` (the template
+uses `/var/log/kasumi`), else the temporary directory, which `PrivateTmp=yes`
+discards when the unit stops. If a failed open or a shutdown drain keeps native
+owners retained for 60 seconds, kasumid logs
+`daemon_exit_with_retained_owners` and exits non-zero rather than staying
+"active" while retrying; the store then recovers on the next start exactly as
+after a crash.
+
+Node status from the command line uses an admin client profile (`kasumictl
+example-config` shows its shape) and exits non-zero unless the endpoint
+answered 200:
+
+```sh
+kasumictl --config /etc/kasumi/admin-client.json health
+kasumictl --config /etc/kasumi/admin-client.json ready
+kasumictl --config /etc/kasumi/admin-client.json metrics
+```
+
+`kasumid credential inspect <profile>` prints, offline and without verifying
+the token, when a profile's bearer expires. `credential watch` renews each
+credential at a random point between 50% and 70% of its remaining lifetime and
+retries every 3 to 8 seconds while the daemon is unavailable, so credentials
+issued together do not renew in the same second. A credential that expired
+while the daemon was down cannot renew itself: stop kasumid and run
+`kasumid recover-existing-credentials` for those profiles.
+
 ## Placement, networking and credentials
 
 Local mode uses durable local commits without Raft and survives recoverable

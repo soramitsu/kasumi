@@ -143,6 +143,7 @@ impl Job {
                 retry_after_secs = delay.as_secs(),
                 "serving drain incomplete; exact runtime remains retained"
             );
+            crate::startup_progress::owners_retained(crate::startup_progress::Retained::Drain);
             tokio::time::sleep(delay).await;
             delay = (delay * 2).min(Duration::from_secs(30));
         }

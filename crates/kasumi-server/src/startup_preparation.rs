@@ -2,14 +2,42 @@
 //! the caught future. This is not recovery from process abort or a drain panic.
 use std::{any::Any, fmt, future::Future, panic::AssertUnwindSafe, sync::Mutex, task::Poll};
 
-/// Record the original before cleanup can wait on retained native ownership.
-/// Public logs contain only fixed stages/classes; details stay in private tmp.
-pub(crate) fn record_failure(stage: &'static str, class: &'static str, error: &dyn fmt::Debug) {
-    let path = std::env::temp_dir().join(format!(
-        "kasumi-startup-{}-{}.log",
+/// Where private failure details go: `KASUMI_DIAGNOSTIC_DIRECTORY`, else the
+/// first systemd `LogsDirectory=` (`LOGS_DIRECTORY`), else the temporary
+/// directory. Under systemd `PrivateTmp=yes` the temporary directory is
+/// discarded when the unit stops, so a failed start keeps no detail there.
+pub(crate) fn diagnostic_directory() -> std::path::PathBuf {
+    diagnostic_directory_from(|name| std::env::var_os(name))
+}
+
+fn diagnostic_directory_from(
+    variable: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> std::path::PathBuf {
+    for name in ["KASUMI_DIAGNOSTIC_DIRECTORY", "LOGS_DIRECTORY"] {
+        if let Some(value) = variable(name)
+            && let Some(first) = value.to_str().and_then(|value| value.split(':').next())
+            && std::path::Path::new(first).is_absolute()
+        {
+            return first.into();
+        }
+    }
+    std::env::temp_dir()
+}
+
+/// A new private (0600, never replacing) diagnostic file path for `kind`.
+pub(crate) fn diagnostic_path(kind: &str) -> std::path::PathBuf {
+    diagnostic_directory().join(format!(
+        "kasumi-{kind}-{}-{}.log",
         std::process::id(),
         uuid::Uuid::new_v4()
-    ));
+    ))
+}
+
+/// Record the original before cleanup can wait on retained native ownership.
+/// Public logs contain only fixed stages/classes; details go to a private file.
+pub(crate) fn record_failure(stage: &'static str, class: &'static str, error: &dyn fmt::Debug) {
+    crate::startup_progress::owners_retained(crate::startup_progress::Retained::Startup);
+    let path = diagnostic_path("startup");
     let written = write_private_failure(&path, error).is_ok();
     tracing::error!(
         event = "startup_preparation_failed",
@@ -22,6 +50,12 @@ pub(crate) fn record_failure(stage: &'static str, class: &'static str, error: &d
 }
 
 fn write_private_failure(path: &std::path::Path, error: &dyn fmt::Debug) -> std::io::Result<()> {
+    write_private_text(path, &format!("{error:#?}"))
+}
+
+/// Write at most 64 KiB of `text` to a new 0600 file; never follows or replaces
+/// an existing path.
+pub(crate) fn write_private_text(path: &std::path::Path, text: &str) -> std::io::Result<()> {
     use std::{io::Write, os::unix::fs::OpenOptionsExt};
     struct BoundedFile(std::fs::File, usize);
     impl Write for BoundedFile {
@@ -41,7 +75,7 @@ fn write_private_failure(path: &std::path::Path, error: &dyn fmt::Debug) -> std:
         .mode(0o600)
         .open(path)?;
     let mut output = BoundedFile(file, 64 << 10);
-    writeln!(output, "{error:#?}")?;
+    writeln!(output, "{text}")?;
     output.0.sync_all()
 }
 
@@ -116,6 +150,29 @@ mod tests {
         std::os::unix::fs::symlink(&path, &link).unwrap();
         assert!(write_private_failure(&link, &"replacement").is_err());
         assert_eq!(std::fs::read(&path).unwrap(), before);
+    }
+
+    #[test]
+    fn failure_details_survive_a_systemd_private_tmp() {
+        let none = |_: &str| None;
+        assert_eq!(diagnostic_directory_from(none), std::env::temp_dir());
+        let logs = |name: &str| {
+            (name == "LOGS_DIRECTORY").then(|| "/var/log/kasumi:/var/log/other".into())
+        };
+        assert_eq!(
+            diagnostic_directory_from(logs),
+            std::path::PathBuf::from("/var/log/kasumi")
+        );
+        let both = |name: &str| match name {
+            "KASUMI_DIAGNOSTIC_DIRECTORY" => Some("/srv/kasumi-diagnostics".into()),
+            _ => Some("/var/log/kasumi".into()),
+        };
+        assert_eq!(
+            diagnostic_directory_from(both),
+            std::path::PathBuf::from("/srv/kasumi-diagnostics")
+        );
+        let relative = |name: &str| (name == "LOGS_DIRECTORY").then(|| "kasumi".into());
+        assert_eq!(diagnostic_directory_from(relative), std::env::temp_dir());
     }
 
     fn faults() -> &'static Mutex<BTreeSet<(uuid::Uuid, &'static str)>> {

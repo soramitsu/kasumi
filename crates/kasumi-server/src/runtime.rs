@@ -783,6 +783,14 @@ pub(crate) fn credential_path(value: &str) -> Result<()> {
     );
     Ok(())
 }
+/// Whether the database and scratch directories share one filesystem; `None`
+/// when either cannot be inspected.
+fn same_filesystem(database: &Path, scratch: &Path) -> Option<bool> {
+    use std::os::unix::fs::MetadataExt;
+    let device = |path: &Path| std::fs::metadata(path).ok().map(|metadata| metadata.dev());
+    Some(device(database.parent()?)? == device(scratch)?)
+}
+
 pub(crate) fn file_secret(path: &str) -> Result<Zeroizing<String>> {
     // This concrete reader owns only file bytes and ordinary I/O/validation
     // errors. Keep its retryable failure typed before entering key/storage
@@ -1148,7 +1156,9 @@ impl NodeRuntime {
         storage: crate::runtime_memory::RuntimeStorage,
         maintenance: Option<kasumi_store::MaintenancePolicy>,
     ) -> Result<Self> {
-        if let Some(policy) = maintenance { policy.validate()?; }
+        if let Some(policy) = maintenance {
+            policy.validate()?;
+        }
         storage.require_policy(&config.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::Data,
@@ -1204,13 +1214,24 @@ impl NodeRuntime {
         let outcome = crate::startup_preparation::capture("data runtime", async {
         config.validate()?;
         let admission = storage.facade(&config.admission)?;
+        crate::startup_progress::effective_admission(
+            &admission.snapshot(),
+            config.admission.high_water_bytes.is_some(),
+        );
         pending.owned_admissions.push(admission.clone());
         pending.original_recoveries = Some(crate::administration::original_serving_runtime::OriginalRecoveries::new(&admission, crate::administration::OriginalRecoveryParticipants::configured(&config))?);
         pending.signer_original_recoveries = config.signer_verifier.as_ref()
             .map(|verifier| verifier.node_start_inventory(&admission)).transpose()?;
+        crate::startup_progress::phase("counting persistent files", "");
         let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
         pending.standalone_owner = crate::standalone::claim(&config, &persistent_disk)?;
         let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
+        crate::startup_progress::storage_placement(
+            &config.persistent_disk,
+            &persistent_disk.snapshot(),
+            &scratch_disk.snapshot(),
+            same_filesystem(&config.database_path, &config.scratch_disk.directory),
+        );
         let signer_verifier = if let Some(verifier) = &config.signer_verifier {
             let mut domains = BTreeMap::new();
             for authority in config.serving_authorities.values() {
@@ -1317,6 +1338,7 @@ impl NodeRuntime {
         } else {
             (None, None)
         };
+        crate::startup_progress::phase("opening the node database", "");
         let node = {
             let mut constructor = pending.original_recoveries.as_ref()
                 .expect("same installed original startup inventory").claim(0).await;
@@ -1396,6 +1418,7 @@ impl NodeRuntime {
         if let Some(cluster) = &cluster {
             cluster.install_audit(audit.clone())?;
         }
+        crate::startup_progress::phase("opening the control group", "");
         let control = async {
             let control_stores = TenantStorageSet::open_existing(
                 node.clone(),
@@ -1487,6 +1510,10 @@ impl NodeRuntime {
                     // absent installation eligible for provider or grant work.
                     continue;
                 }
+                crate::startup_progress::phase(
+                    "opening tenant",
+                    &format!("{} ({}/{})", configured_tenant.tenant, tenant_index + 1, config.tenants.len()),
+                );
                 if enrollment_required {
                     let enrolled = crate::node_enrollment::tenant_record(runtime.audit.store(), &configured_tenant.tenant)?.context("completed tenant enrollment disappeared during startup")?;
                     ensure!(enrolled.stage == crate::node_enrollment::Stage::Prepared, "completed tenant enrollment changed during startup");
@@ -1610,6 +1637,18 @@ impl NodeRuntime {
                     bootstrap: opened.bootstrap.clone(),
                     lease,
                 });
+                // Strict read auditing turns every read into a durable Raft
+                // entry, which sets the snapshot cadence; show it per tenant.
+                let detail = match opened.database.engine().generation() {
+                    Ok(generation) => format!(
+                        "{} ({} documents, strict read audit {})",
+                        tenant.tenant,
+                        generation.document_count(),
+                        if generation.policy().strict_read_audit { "on" } else { "off" }
+                    ),
+                    Err(_) => tenant.tenant.clone(),
+                };
+                crate::startup_progress::phase("opened tenant", &detail);
                 runtime.tenants.push(opened);
             }
             if config.target_recovery.is_some() {
@@ -1988,6 +2027,7 @@ impl NodeRuntime {
             ));
         }
         let startup = async {
+            crate::startup_progress::phase("starting the control group", "");
             if tasks
                 .wait_for_startup(self.initialize_original(&self.control), shutdown.changed())
                 .await?
@@ -2010,6 +2050,13 @@ impl NodeRuntime {
                     // Configuration may contain staged tenants. Only a durable
                     // route authorizes starting its original group automatically.
                     if topology.tenants.contains_key(tenant.store.tenant())
+                        && {
+                            crate::startup_progress::phase(
+                                "starting tenant",
+                                tenant.store.tenant(),
+                            );
+                            true
+                        }
                         && tasks
                             .wait_for_startup(self.initialize_original(tenant), shutdown.changed())
                             .await?
@@ -2018,6 +2065,7 @@ impl NodeRuntime {
                         return Ok(false);
                     }
                 }
+                crate::startup_progress::phase("reconciling administration", "");
                 manager.reconcile().await?;
             }
             self.audit
@@ -2049,11 +2097,13 @@ impl NodeRuntime {
                 .maintenance
                 .spawn(manager.reconcile_while_serving(tasks.data_stop.subscribe()));
         }
+        crate::startup_progress::serving();
         if shutdown.requested() {
+            crate::startup_progress::stopping();
             Ok(())
         } else {
             tokio::select! {
-                _=shutdown.changed()=>Ok(()),
+                _=shutdown.changed()=>{ crate::startup_progress::stopping(); Ok(()) },
                 result=tasks.listeners.join_next()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required listener stopped unexpectedly")) },
                 result=tasks.maintenance.join_next(), if !tasks.maintenance.is_empty()=> match result { Some(Ok(Err(error)))=>Err(error),Some(Err(error))=>Err(error.into()),_=>Err(anyhow::anyhow!("required reconciliation stopped unexpectedly")) },
             }
@@ -2847,6 +2897,46 @@ impl AdminClientConfig {
             crate::rpc::proto::kasumi_admin_client::KasumiAdminClient::new(channel),
             authorization,
         ))
+    }
+
+    /// GET one protected observation route (`/health`, `/ready`, `/metrics`)
+    /// with this profile's client certificate, pinned server and bearer token.
+    /// Returns the HTTP status and the body (at most 1 MiB, as the server bounds it).
+    pub async fn observe(&self, route: &str) -> Result<(u16, String)> {
+        ensure!(
+            matches!(route, "/health" | "/ready" | "/metrics"),
+            "unknown observation route"
+        );
+        self.validate()?;
+        let identity = self.identity.load()?;
+        let ca = read_bounded(&self.server_ca, MAX_PEM_BYTES)?;
+        let pins = self
+            .server_certificate_pins
+            .iter()
+            .map(|pin| parse_certificate_pin(pin))
+            .collect::<Result<_>>()?;
+        let secret = file_secret(&self.token_file)?;
+        ensure!(
+            !secret.contains(char::is_whitespace),
+            "admin token must not contain whitespace"
+        );
+        let tls = kasumi_transport::peer_client_config(&identity, &ca, pins)?;
+        let client = reqwest::Client::builder()
+            .use_preconfigured_tls(tls)
+            .https_only(true)
+            .http2_prior_knowledge()
+            .timeout(std::time::Duration::from_secs(30))
+            .build()?;
+        let response = client
+            .get(format!("{}{route}", self.endpoint.trim_end_matches('/')))
+            .bearer_auth(secret.as_str())
+            .send()
+            .await
+            .context("observation request failed")?;
+        let status = response.status().as_u16();
+        let body = response.bytes().await?;
+        ensure!(body.len() <= 1 << 20, "observation response exceeds 1 MiB");
+        Ok((status, String::from_utf8_lossy(&body).into_owned()))
     }
 }
 

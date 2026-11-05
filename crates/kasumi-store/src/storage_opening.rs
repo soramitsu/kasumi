@@ -1110,7 +1110,9 @@ impl RegisteredNodeOpening {
         if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
             return Err(kasumi_kv::StorageError::DatabaseClosed);
         }
-        state.engine.database()
+        state
+            .engine
+            .database()
             .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
             .configure_maintenance(policy)
     }

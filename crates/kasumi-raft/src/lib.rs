@@ -752,7 +752,8 @@ impl RaftGroup {
                     gate.pause(&ownership).await?;
                 }
             }
-            let local = local::LocalGroup::open(id, log, machine, machine_failed.clone()).await?;
+            let local =
+                local::LocalGroup::open(id, &group, log, machine, machine_failed.clone()).await?;
             Ok::<_, ScratchOperationFailure>((local, machine_failed))
         }
         .await;

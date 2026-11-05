@@ -224,6 +224,24 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 )?
             );
         }
+        [command, action, path] if command == "credential" && action == "inspect" => {
+            // Offline and unverified: reads this profile's own bearer file only
+            // to report when it expires, e.g. before a planned restart.
+            let profile = ClientProfile::load(Path::new(path))?;
+            let expires_at_ms = bearer_expiry_ms(profile.bearer()?.as_str())?;
+            let now = kasumi_clock::EpochClock::system()?.now_ms()?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "family_id": profile.family_id,
+                    "tenant": profile.tenant,
+                    "principal": profile.principal,
+                    "expires_at_ms": expires_at_ms,
+                    "remaining_seconds": expires_at_ms.saturating_sub(now) / 1000,
+                    "expired": expires_at_ms <= now,
+                })
+            );
+        }
         [command, action, path]
             if command == "credential" && (action == "renew" || action == "watch") =>
         {
@@ -242,16 +260,17 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                             break;
                         }
                         let now = kasumi_clock::EpochClock::system()?.now_ms()?;
-                        let delay = expiry.saturating_sub(now).saturating_mul(2) / 3;
-                        tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay.max(1000))) => {}, _ = tokio::signal::ctrl_c() => break }
+                        let delay = renewal_delay_ms(expiry.saturating_sub(now), random_unit());
+                        tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}, _ = tokio::signal::ctrl_c() => break }
                     }
                     Err(error) if action == "watch" && retryable(&error) => {
                         tracing::warn!(
                             "credential renewal unavailable; retaining original renewal identity"
                         );
-                        tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}, _ = tokio::signal::ctrl_c() => break }
+                        let delay = retry_delay_ms(random_unit());
+                        tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}, _ = tokio::signal::ctrl_c() => break }
                     }
-                    Err(error) => return Err(error),
+                    Err(error) => return Err(explain_renewal_failure(&profile, error)),
                 }
             }
         }
@@ -342,6 +361,60 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
     Ok(true)
 }
 
+/// The `exp` claim of a compact JWT, in milliseconds, without verifying the
+/// token: the daemon verifies every use; this only reports the profile's state.
+fn bearer_expiry_ms(token: &str) -> Result<u64> {
+    use base64::Engine as _;
+    let payload = token
+        .split('.')
+        .nth(1)
+        .context("bearer file does not hold a compact JWT")?;
+    let claims: serde_json::Value =
+        serde_json::from_slice(&base64::engine::general_purpose::URL_SAFE_NO_PAD.decode(payload)?)?;
+    claims["exp"]
+        .as_u64()
+        .and_then(|seconds| seconds.checked_mul(1000))
+        .context("bearer token has no exp claim")
+}
+
+/// Renew somewhere between 50% and 70% of the remaining lifetime. Credentials
+/// issued together (installation, recovery) would otherwise all renew in the
+/// same second, every hour, and contend for the same admission budget.
+fn renewal_delay_ms(remaining_ms: u64, unit: f64) -> u64 {
+    let fraction = 0.5 + 0.2 * unit.clamp(0.0, 1.0);
+    ((remaining_ms as f64 * fraction) as u64).max(1000)
+}
+
+/// While the daemon is unavailable, retry every 3 to 8 seconds rather than in
+/// lockstep with every other watcher.
+fn retry_delay_ms(unit: f64) -> u64 {
+    3000 + (5000.0 * unit.clamp(0.0, 1.0)) as u64
+}
+
+/// A uniform value in [0, 1) from the operating system's random source.
+fn random_unit() -> f64 {
+    (Uuid::new_v4().as_u128() >> 75) as f64 / (1u64 << 53) as f64
+}
+
+/// A renewal the daemon refused is final for this watcher. If the credential has
+/// already expired, only stopped-installation recovery can renew it; say so.
+fn explain_renewal_failure(profile: &ClientProfile, error: anyhow::Error) -> anyhow::Error {
+    let refused = matches!(
+        error.downcast_ref::<kasumi_client::ClientError>(),
+        Some(kasumi_client::ClientError::Transport(status))
+            if status.code() == tonic::Code::Unauthenticated
+    );
+    if refused {
+        return error.context(format!(
+            "credential family {} was refused renewal, most likely because it expired while the daemon was unavailable. \
+             An expired credential cannot renew itself: stop kasumid, run `kasumid recover-existing-credentials <configuration.json> <private-manifest.json>` \
+             for the expired profiles, start kasumid, then restart this watcher",
+            profile.family_id
+        ));
+    }
+    error
+}
+
 fn retryable(error: &anyhow::Error) -> bool {
     match error.downcast_ref::<kasumi_client::ClientError>() {
         Some(kasumi_client::ClientError::Connection(_)) => true,
@@ -360,6 +433,41 @@ fn retryable(error: &anyhow::Error) -> bool {
 mod credential_renewal_tests {
     use super::*;
     use kasumi_client::ClientError;
+
+    #[test]
+    fn inspect_reads_the_bearer_expiry_without_a_daemon() {
+        use base64::Engine as _;
+        let encode = |value: &serde_json::Value| {
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(value.to_string())
+        };
+        let token = format!(
+            "{}.{}.signature",
+            encode(&serde_json::json!({"alg": "EdDSA", "typ": "at+jwt"})),
+            encode(&serde_json::json!({"exp": 1_793_900_000u64, "sub": "fixture"}))
+        );
+        assert_eq!(bearer_expiry_ms(&token).unwrap(), 1_793_900_000_000);
+        assert!(bearer_expiry_ms("opaque").is_err());
+        let no_exp = format!(
+            "{}.{}.s",
+            encode(&serde_json::json!({})),
+            encode(&serde_json::json!({"sub": "x"}))
+        );
+        assert!(bearer_expiry_ms(&no_exp).is_err());
+    }
+
+    #[test]
+    fn renewals_spread_over_a_fifth_of_the_lifetime_and_retries_are_jittered() {
+        let hour = 3_600_000;
+        assert_eq!(renewal_delay_ms(hour, 0.0), hour / 2);
+        assert_eq!(renewal_delay_ms(hour, 1.0), hour * 7 / 10);
+        assert!((hour / 2..=hour * 7 / 10).contains(&renewal_delay_ms(hour, 0.37)));
+        assert_eq!(renewal_delay_ms(0, 0.5), 1000);
+        assert_eq!(retry_delay_ms(0.0), 3000);
+        assert_eq!(retry_delay_ms(1.0), 8000);
+        let samples = (0..256).map(|_| random_unit()).collect::<Vec<_>>();
+        assert!(samples.iter().all(|unit| (0.0..1.0).contains(unit)));
+        assert!(samples.iter().any(|unit| *unit < 0.5) && samples.iter().any(|unit| *unit >= 0.5));
+    }
 
     #[test]
     fn credential_watch_retries_only_uncertain_transport_failures() {

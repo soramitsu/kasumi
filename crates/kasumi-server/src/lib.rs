@@ -43,15 +43,15 @@ mod runtime_memory;
 #[cfg(test)]
 mod runtime_storage_fixtures;
 mod runtime_worker;
+pub mod serve_options;
 mod serving_owner;
 pub mod serving_runtime;
 pub mod standalone;
 pub mod standalone_cli;
-pub mod local_snapshot_archive;
-pub mod storage_maintenance;
 pub mod standalone_key_backup;
 mod startup_owner;
 mod startup_preparation;
+pub mod startup_progress;
 mod startup_resources;
 pub mod tls;
 pub mod tls_reload;

@@ -97,7 +97,50 @@ async fn main() -> std::process::ExitCode {
     }
 }
 
+const USAGE: &str = "\
+usage: kasumictl <command>
+
+Offline:
+  schema-reference <operation.json>          canonical digest of a schema change
+  example-config                             an admin client profile template
+
+Node status (admin client profile; prints the protected endpoint's body and
+exits 1 unless it answered 200):
+  --config <client.json> health              startup completed and serving
+  --config <client.json> ready               every local group covered and admitted
+  --config <client.json> metrics             Prometheus text
+
+Administration (admin client profile):
+  --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status <operation.json>
+  --config <client.json> create-collection|replace-collection|set-policy|set-limits <operation.json>
+  --config <client.json> suspend|resume
+  --config <client.json> manage <command.json>
+  --config <client.json> authority-maintenance <request.json>
+
+  help, --help, -h                           print this help";
+
 async fn run(arguments: &[String]) -> Result<()> {
+    if matches!(
+        arguments.first().map(String::as_str),
+        Some("help" | "--help" | "-h")
+    ) {
+        println!(
+            "{USAGE}\n\nData commands:\n{}",
+            kasumi_server::data_cli::USAGE
+        );
+        return Ok(());
+    }
+    if let [flag, path, operation] = arguments
+        && flag == "--config"
+        && matches!(operation.as_str(), "health" | "ready" | "metrics")
+    {
+        let (status, body) = AdminClientConfig::load(path)?
+            .observe(&format!("/{operation}"))
+            .await?;
+        print!("{body}");
+        ensure!(status == 200, "{operation} answered HTTP {status}");
+        return Ok(());
+    }
     if let [operation, path] = arguments
         && operation == "schema-reference"
     {
@@ -120,10 +163,7 @@ async fn run(arguments: &[String]) -> Result<()> {
         return Ok(());
     }
     let [flag, path, operation, rest @ ..] = arguments else {
-        bail!(
-            "usage: kasumictl schema-reference <operation.json> | kasumictl --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status|create-collection|replace-collection|set-policy|set-limits <operation.json>, or suspend|resume, or manage <command.json>, or authority-maintenance <request.json>\n\nData commands:\n{}",
-            kasumi_server::data_cli::USAGE
-        );
+        bail!("{USAGE}");
     };
     ensure!(flag == "--config", "first argument must be --config");
     if operation == "authority-maintenance" {

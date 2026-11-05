@@ -4,17 +4,29 @@ After=network-online.target
 Wants=network-online.target
 
 [Service]
-Type=simple
+# kasumid reports READY=1 only once every listener serves, so units ordered
+# After=kasumi.service start against a serving node. While it opens, it publishes
+# its current phase (`systemctl status kasumi`) and restarts the start timeout
+# at each phase: a reopen may take many minutes, one phase at most 30.
+Type=notify
+NotifyAccess=main
+TimeoutStartSec=30min
 User=kasumi
 Group=kasumi
 StateDirectory=kasumi
 StateDirectoryMode=0700
+# A failed start writes its full error chain here (0600); the journal line
+# daemon_failed names the file. PrivateTmp would discard it with the unit.
+LogsDirectory=kasumi
+LogsDirectoryMode=0700
 WorkingDirectory=/var/lib/kasumi
 ExecStartPre=/usr/local/bin/kasumid check-config /etc/kasumi/node.json
+# Options: kasumid serve --help
 ExecStart=/usr/local/bin/kasumid serve /etc/kasumi/node.json
 Restart=on-failure
-RestartSec=5
-TimeoutStopSec=60
+RestartSec=15
+# Draining seals resident state; a SIGKILL forces a longer recovery next start.
+TimeoutStopSec=10min
 UMask=0077
 LimitCORE=0
 LimitNOFILE=65536

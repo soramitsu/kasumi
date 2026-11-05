@@ -859,7 +859,10 @@ async fn standalone_snapshot_over_an_archived_history_reopens_without_copying_th
         group.fixture_local_snapshot_settled().await?;
     }
     let metrics = group.metrics();
-    assert!(metrics.snapshot > before, "no periodic snapshot was published");
+    assert!(
+        metrics.snapshot > before,
+        "no periodic snapshot was published"
+    );
     assert_eq!(metrics.purged, metrics.snapshot);
     let generation = database.engine().generation()?;
     let retention = generation.state.audit_retention.clone();
@@ -901,7 +904,12 @@ async fn standalone_snapshot_over_an_archived_history_reopens_without_copying_th
     serde_json::from_slice::<kasumi_types::Result<WriteReceipt>>(&response)?
         .map_err(|error| anyhow::anyhow!("{error:?}"))?;
     assert_eq!(
-        reopened.engine().generation()?.state.audit_retention.archive_head,
+        reopened
+            .engine()
+            .generation()?
+            .state
+            .audit_retention
+            .archive_head,
         retention.archive_head
     );
     reopened.shutdown().await?;
@@ -1010,7 +1018,10 @@ struct Rooted {
 impl Rooted {
     fn configs(
         root: &std::path::Path,
-    ) -> anyhow::Result<(kasumi_store::NodeDiskConfig, kasumi_store::ScratchDiskConfig)> {
+    ) -> anyhow::Result<(
+        kasumi_store::NodeDiskConfig,
+        kasumi_store::ScratchDiskConfig,
+    )> {
         // Exactly `fixture_disk_configs`, without creating the directory again.
         Ok((
             kasumi_store::NodeDisk::fixture_config(root.join("persistent/node.kv"))?,
@@ -1201,7 +1212,10 @@ async fn archived_history(database: &Database, writes: u64) -> anyhow::Result<()
 /// writing (every second entry snapshots) until the parent kills it, recording
 /// each acknowledged write durably. With `abort`, the next snapshot task kills
 /// this process itself after its capture and before its build.
-async fn form_child(root: &std::path::Path, abort: bool) -> crate::test_fixture_failure::FixtureResult<()> {
+async fn form_child(
+    root: &std::path::Path,
+    abort: bool,
+) -> crate::test_fixture_failure::FixtureResult<()> {
     // This process opens only this tenant.
     crate::set_reference_local_snapshots(true);
     let fixture = Rooted::create(root).await?;
@@ -1269,10 +1283,15 @@ fn child_log(root: &std::path::Path) -> String {
 /// Reopen what a dead child left and prove nothing it acknowledged was lost,
 /// that the reopen started from a by-reference snapshot over the archived
 /// chain, and that the tenant keeps auditing on that chain.
-async fn reopen_after_crash(root: &std::path::Path) -> crate::test_fixture_failure::FixtureResult<()> {
+async fn reopen_after_crash(
+    root: &std::path::Path,
+) -> crate::test_fixture_failure::FixtureResult<()> {
     let acknowledged: Acknowledged =
         serde_json::from_slice(&std::fs::read(root.join("acknowledged.json"))?)?;
-    assert!(acknowledged.reference_snapshots >= 2, "no reference snapshot preceded the crash");
+    assert!(
+        acknowledged.reference_snapshots >= 2,
+        "no reference snapshot preceded the crash"
+    );
     let fixture = Rooted::open(root).await?;
     let reopened = open_existing_local(
         fixture.stores.clone(),
@@ -1301,7 +1320,12 @@ async fn reopen_after_crash(root: &std::path::Path) -> crate::test_fixture_failu
     audited_write(&reopened, 200_000).await?;
     // Background audit maintenance may archive another segment meanwhile; the
     // chain only ever extends from the one the reopen verified.
-    let after = reopened.engine().generation()?.state.audit_retention.clone();
+    let after = reopened
+        .engine()
+        .generation()?
+        .state
+        .audit_retention
+        .clone();
     assert!(after.archive_segments >= retention.archive_segments);
     if after.archive_segments == retention.archive_segments {
         assert_eq!(after.archive_head, retention.archive_head);
@@ -1336,7 +1360,10 @@ async fn a_killed_writer_reopens_from_its_reference_snapshot_with_every_acknowle
             if let Some(status) = child.try_wait()? {
                 panic!("child exited early with {status}: {}", child_log(root));
             }
-            assert!(std::time::Instant::now() < deadline, "child never became ready");
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child never became ready"
+            );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
@@ -1375,7 +1402,11 @@ async fn a_writer_that_dies_inside_its_next_snapshot_task_reopens_from_the_previ
     };
     // Aborted by its own snapshot task, after the ready marker.
     assert!(!status.success());
-    assert!(root.join("ready").exists(), "child failed before its crash point: {}", child_log(root));
+    assert!(
+        root.join("ready").exists(),
+        "child failed before its crash point: {}",
+        child_log(root)
+    );
     reopen_after_crash(root).await
 }
 
@@ -1386,8 +1417,12 @@ fn archive_segments(root: &std::path::Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 walk(&path, found);
-            } else if path.extension().is_some_and(|extension| extension == "audit")
-                && path.components().any(|part| part.as_os_str() == "tenant-audit-archives")
+            } else if path
+                .extension()
+                .is_some_and(|extension| extension == "audit")
+                && path
+                    .components()
+                    .any(|part| part.as_os_str() == "tenant-audit-archives")
             {
                 found.push(path);
             }
@@ -1401,7 +1436,10 @@ fn archive_segments(root: &std::path::Path) -> Vec<std::path::PathBuf> {
 
 /// One child stage of the missing-segment test; each runs in a fresh process,
 /// because a refused open leaves its disk owners for that process to discard.
-async fn segment_child(root: &std::path::Path, stage: &str) -> crate::test_fixture_failure::FixtureResult<()> {
+async fn segment_child(
+    root: &std::path::Path,
+    stage: &str,
+) -> crate::test_fixture_failure::FixtureResult<()> {
     crate::set_reference_local_snapshots(true);
     match stage {
         "populate" => {
@@ -1447,7 +1485,9 @@ async fn segment_child(root: &std::path::Path, stage: &str) -> crate::test_fixtu
             durable_write(&root.join("refused"), b"refused")?;
         }
         "open" => {
-            let expected: u64 = std::fs::read_to_string(root.join("revision"))?.parse().map_err(anyhow::Error::from)?;
+            let expected: u64 = std::fs::read_to_string(root.join("revision"))?
+                .parse()
+                .map_err(anyhow::Error::from)?;
             let fixture = Rooted::open(root).await?;
             let reopened = open_existing_local(
                 fixture.stores.clone(),
@@ -1455,12 +1495,12 @@ async fn segment_child(root: &std::path::Path, stage: &str) -> crate::test_fixtu
                 fixture.incarnation,
             )
             .await
-            .map_err(
-                |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+            .map_err(|original| {
+                crate::test_fixture_failure::FixtureFailure::SnapshotContext {
                     context: "reopen with the archive segment restored",
                     original,
-                },
-            )?;
+                }
+            })?;
             assert!(reopened.engine().reopened_from_reference_snapshot());
             assert!(reopened.engine().generation()?.state.revision >= expected);
             reopened.shutdown().await?;
@@ -1545,7 +1585,10 @@ async fn an_embedded_reopen_replaces_a_reference_snapshot_so_an_older_binary_can
     }
     assert!(group.local_snapshots_published().unwrap() > 0);
     let generation = database.engine().generation()?;
-    let (revision, retention) = (generation.state.revision, generation.state.audit_retention.clone());
+    let (revision, retention) = (
+        generation.state.revision,
+        generation.state.audit_retention.clone(),
+    );
     drop(generation);
     database.shutdown().await?;
     drop(group);
@@ -1559,12 +1602,12 @@ async fn an_embedded_reopen_replaces_a_reference_snapshot_so_an_older_binary_can
             fixture.incarnation,
         )
         .await
-        .map_err(
-            |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+        .map_err(|original| {
+            crate::test_fixture_failure::FixtureFailure::SnapshotContext {
                 context: phase,
                 original,
-            },
-        )?;
+            }
+        })?;
         crate::test_fixture_failure::FixtureResult::Ok((fixture, reopened))
     };
     // Rollback step 1: start once without the opt-in.

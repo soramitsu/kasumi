@@ -946,7 +946,7 @@ pub async fn open_existing_local(
 /// A group reopened from its by-reference (KASUMIL1) snapshot by a process that
 /// stores the embedded form durably publishes one embedded snapshot before it
 /// serves. Afterwards a binary that cannot read KASUMIL1 reopens this group too,
-/// so rolling back is: start once without `--local-snapshot-archive reference`,
+/// so rolling back is: start once with `--local-snapshot-archive embedded`,
 /// wait for every tenant to serve, then install the older binary.
 async fn store_embedded_after_reference_reopen(
     database: &Database,
@@ -965,21 +965,26 @@ async fn store_embedded_after_reference_reopen(
     // A snapshot at the stored snapshot's own position reuses that stored image
     // instead of writing the new capture, so one Blank entry (applied as metadata,
     // no command) gives the embedded capture a strictly newer position first.
-    group.local_append_blank().await.map_err(anyhow::Error::from)?;
-    group.snapshot().await.map_err(anyhow::Error::from)?;
-    group.local_snapshot_settled().await.map_err(anyhow::Error::from)?;
+    group.local_append_blank().await?;
+    group.snapshot().await?;
+    group.local_snapshot_settled().await?;
     let after = stored(group);
     if after <= before {
         // This binary still reads the stored by-reference snapshot, so it serves.
         // An older binary refuses that snapshot's format and does not open.
-        eprintln!(
-            "Kasumi tenant {tenant}: WARNING the embedded snapshot replacing its by-reference \
-             snapshot was not published; do not install a binary that cannot read KASUMIL1"
+        tracing::warn!(
+            event = "embedded_snapshot_not_published",
+            tenant = %tenant,
+            "the embedded snapshot replacing its by-reference snapshot was not published; do not install a binary that cannot read KASUMIL1"
         );
         return Ok(());
     }
-    eprintln!(
-        "Kasumi tenant {tenant}: stored an embedded snapshot in place of its by-reference snapshot"
+    // WARN so the default daemon filter keeps it: the rollback procedure waits
+    // for this line from every tenant that reopened by reference.
+    tracing::warn!(
+        event = "embedded_snapshot_replaced_reference",
+        tenant = %tenant,
+        "stored an embedded snapshot in place of its by-reference snapshot"
     );
     Ok(())
 }

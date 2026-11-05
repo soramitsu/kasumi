@@ -25,6 +25,8 @@ type FixtureHook = Arc<Mutex<Option<Box<dyn FnOnce() + Send>>>>;
 const SNAPSHOT_INTERVAL: u64 = 5000;
 
 pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
+    /// The group identity, only for operator diagnostics.
+    group: Arc<str>,
     state: Arc<tokio::sync::Mutex<Option<LocalState<M>>>>,
     metrics: Arc<Mutex<Metrics>>,
     closed: AtomicBool,
@@ -54,6 +56,7 @@ struct LocalState<M: RaftStateMachine<TypeConfig>> {
 
 // What a snapshot task shares with its group.
 struct SnapshotWork {
+    group: Arc<str>,
     metrics: Arc<Mutex<Metrics>>,
     worker: Arc<Worker>,
     failed: Arc<AtomicBool>,
@@ -121,6 +124,7 @@ where
 {
     pub(crate) async fn open(
         id: u64,
+        group: &str,
         mut log: LogStore,
         mut machine: M,
         failed: Arc<AtomicBool>,
@@ -224,6 +228,7 @@ where
         metrics.current_leader = Some(id);
         metrics.membership_config = Arc::new(membership);
         Ok(Self {
+            group: group.into(),
             state: Arc::new(tokio::sync::Mutex::new(Some(state))),
             metrics: Arc::new(Mutex::new(metrics)),
             closed: AtomicBool::new(false),
@@ -325,6 +330,7 @@ where
 
     fn snapshot_work(&self) -> SnapshotWork {
         SnapshotWork {
+            group: self.group.clone(),
             metrics: self.metrics.clone(),
             worker: self.snapshot_worker.clone(),
             failed: self.failed.clone(),
@@ -567,6 +573,7 @@ where
         let metrics = work.metrics.clone();
         let failed = work.failed.clone();
         let published = work.published.clone();
+        let group = work.group.clone();
         #[cfg(any(test, feature = "test-utils"))]
         let before_build = work.before_build.clone();
         *worker = Some(tokio::spawn(async move {
@@ -590,7 +597,11 @@ where
                         None => true,
                     };
                     if !purged {
-                        eprintln!("Kasumi local journal purge deferred: capacity refused");
+                        // The journal keeps its entries until a later snapshot purges them.
+                        eprintln!(
+                            "Kasumi local journal purge deferred: capacity refused group={group} snapshot_index={}",
+                            position.map_or(0, |log| log.index)
+                        );
                     }
                     let mut metrics = metrics.lock().unwrap_or_else(|p| p.into_inner());
                     metrics.snapshot = position;
@@ -602,7 +613,9 @@ where
                 }
                 // The journal keeps every entry until a later snapshot covers it.
                 LocalSnapshot::Deferred => {
-                    eprintln!("Kasumi local snapshot deferred: capacity refused");
+                    // The published snapshot and journal are unchanged; the next
+                    // snapshot retries.
+                    eprintln!("Kasumi local snapshot deferred: capacity refused group={group}");
                 }
             }
             fence.complete = true;

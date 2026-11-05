@@ -39,11 +39,105 @@ pub fn tls_reload_failed() {
     );
 }
 
-pub fn daemon_failed() {
+/// The journal line carries only typed failure classes. The whole error chain,
+/// which can name provider details, goes to a new private (0600) diagnostic file
+/// whose path the line gives (see `startup_preparation::diagnostic_directory`).
+pub fn daemon_failed(error: &anyhow::Error) {
+    let classes = failure_classes(error);
+    let path = crate::startup_preparation::diagnostic_path("daemon");
+    let written =
+        crate::startup_preparation::write_private_text(&path, &format!("{error:?}")).is_ok();
     tracing::error!(
         event = "daemon_failed",
-        "daemon failed; inspect the protected audit and installed configuration"
+        failure_classes = %classes.join(","),
+        diagnostic_written = written,
+        diagnostic_path = %path.display(),
+        "daemon failed ({}); the full error chain is in diagnostic_path",
+        if classes.is_empty() { "unclassified" } else { classes[0] }
     );
+}
+
+/// The options this daemon serves with, so the journal shows the snapshot form
+/// and compaction schedule a node actually ran with.
+pub fn serve_options(options: &crate::serve_options::ServeOptions) {
+    let growth = options.storage_maintenance.growth_percent;
+    tracing::info!(
+        event = "serve_options",
+        local_snapshot_archive = options.local_snapshot_archive.name(),
+        storage_compaction_growth_percent = growth,
+        "standalone snapshots store the audit archive {}; storage compaction starts at {growth}% growth",
+        match options.local_snapshot_archive {
+            crate::serve_options::LocalSnapshotArchive::Reference => "by reference (KASUMIL1)",
+            crate::serve_options::LocalSnapshotArchive::Embedded => "embedded (KASUMID1)",
+        }
+    );
+}
+
+/// Typed classes of every cause in `error`, outermost first, without formatting
+/// any cause: a cause's own text may carry provider details.
+pub fn failure_classes(error: &anyhow::Error) -> Vec<&'static str> {
+    let mut classes = Vec::new();
+    if let Some(class) = kasumi_raft::raft_failure_class(error) {
+        classes.push(class);
+    }
+    for cause in error.chain() {
+        let class = if let Some(error) = cause.downcast_ref::<std::io::Error>() {
+            Some(io_failure_class(error.kind()))
+        } else if let Some(error) = cause.downcast_ref::<kasumi_types::Error>() {
+            Some(database_failure_class(error.code))
+        } else if let Some(error) = cause.downcast_ref::<kasumi_store::StorageError>() {
+            Some(match error {
+                kasumi_store::StorageError::DatabaseClosed => "kv_database_closed",
+                kasumi_store::StorageError::Io(error) => io_failure_class(error.kind()),
+                kasumi_store::StorageError::UnknownCommit(_) => "kv_unknown_commit",
+                kasumi_store::StorageError::Core(_) => "kv_core",
+                kasumi_store::StorageError::RetainedOwner { error, .. } => {
+                    io_failure_class(error.kind())
+                }
+            })
+        } else if cause
+            .downcast_ref::<kasumi_engine::admission::TotalExceedsHighWater>()
+            .is_some()
+        {
+            Some("admission_exceeds_high_water")
+        } else if let Some(error) = cause.downcast_ref::<serde_json::Error>() {
+            Some(match error.classify() {
+                serde_json::error::Category::Io => "json_io",
+                serde_json::error::Category::Syntax => "json_syntax",
+                serde_json::error::Category::Data => "json_data",
+                serde_json::error::Category::Eof => "json_eof",
+            })
+        } else if let Some(error) = cause.downcast_ref::<tokio::task::JoinError>() {
+            Some(if error.is_panic() {
+                "task_panicked"
+            } else {
+                "task_cancelled"
+            })
+        } else {
+            None
+        };
+        if let Some(class) = class
+            && !classes.contains(&class)
+        {
+            classes.push(class);
+        }
+    }
+    classes
+}
+
+fn io_failure_class(kind: std::io::ErrorKind) -> &'static str {
+    match kind {
+        std::io::ErrorKind::NotFound => "io_not_found",
+        std::io::ErrorKind::PermissionDenied => "io_permission_denied",
+        std::io::ErrorKind::StorageFull => "io_storage_full",
+        std::io::ErrorKind::OutOfMemory => "io_out_of_memory",
+        std::io::ErrorKind::InvalidData => "io_invalid_data",
+        std::io::ErrorKind::TimedOut => "io_timed_out",
+        std::io::ErrorKind::AddrInUse => "io_address_in_use",
+        std::io::ErrorKind::AlreadyExists => "io_already_exists",
+        std::io::ErrorKind::ReadOnlyFilesystem => "io_read_only_filesystem",
+        _ => "io_other",
+    }
 }
 
 /// The configured admission total cannot start below the RSS high-water mark.
@@ -98,15 +192,7 @@ fn snapshot_failure_class(original: &kasumi_engine::SnapshotFailure) -> &'static
                 return database_failure_class(error.code);
             }
             if let Some(error) = error.downcast_ref::<std::io::Error>() {
-                return match error.kind() {
-                    std::io::ErrorKind::NotFound => "io_not_found",
-                    std::io::ErrorKind::PermissionDenied => "io_permission_denied",
-                    std::io::ErrorKind::StorageFull => "io_storage_full",
-                    std::io::ErrorKind::OutOfMemory => "io_out_of_memory",
-                    std::io::ErrorKind::InvalidData => "io_invalid_data",
-                    std::io::ErrorKind::TimedOut => "io_timed_out",
-                    _ => "io_other",
-                };
+                return io_failure_class(error.kind());
             }
             if let Some(error) = error.downcast_ref::<tokio::task::JoinError>() {
                 return if error.is_panic() {
@@ -214,6 +300,36 @@ mod tests {
             let encoded = value.to_string();
             assert!(!encoded.contains("private-") && !encoded.contains("secret-span-token"));
         }
+    }
+
+    #[test]
+    fn daemon_failures_name_every_typed_cause_without_formatting_any() {
+        #[derive(Debug)]
+        struct Opaque;
+        impl std::fmt::Display for Opaque {
+            fn fmt(&self, _: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                panic!("opaque originals must not be formatted")
+            }
+        }
+        impl std::error::Error for Opaque {}
+        let error =
+            anyhow::Error::new(std::io::Error::new(std::io::ErrorKind::StorageFull, Opaque))
+                .context("opening encrypted node runtime");
+        assert_eq!(failure_classes(&error), ["io_storage_full"]);
+        let error = anyhow::Error::new(kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "private-record",
+        ))
+        .context(Opaque);
+        assert_eq!(failure_classes(&error), ["corruption"]);
+        let json = serde_json::from_slice::<serde_json::Value>(b"{").unwrap_err();
+        assert_eq!(
+            failure_classes(
+                &anyhow::Error::new(json).context("invalid runtime configuration JSON")
+            ),
+            ["json_eof"]
+        );
+        assert!(failure_classes(&anyhow::Error::new(Opaque)).is_empty());
     }
 
     #[test]

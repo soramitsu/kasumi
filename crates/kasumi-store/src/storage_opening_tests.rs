@@ -4872,14 +4872,20 @@ fn registered_opening_maintenance_respects_phase_and_stop() {
         Err(kasumi_kv::StorageError::DatabaseClosed)
     ));
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
-    opening.configure_maintenance(kasumi_kv::MaintenancePolicy {
-        growth_percent: 150,
-        ..kasumi_kv::MaintenancePolicy::default()
-    }).unwrap();
-    assert!(opening.configure_maintenance(kasumi_kv::MaintenancePolicy {
-        growth_percent: 100,
-        ..kasumi_kv::MaintenancePolicy::default()
-    }).is_err());
+    opening
+        .configure_maintenance(kasumi_kv::MaintenancePolicy {
+            growth_percent: 150,
+            ..kasumi_kv::MaintenancePolicy::default()
+        })
+        .unwrap();
+    assert!(
+        opening
+            .configure_maintenance(kasumi_kv::MaintenancePolicy {
+                growth_percent: 100,
+                ..kasumi_kv::MaintenancePolicy::default()
+            })
+            .is_err()
+    );
     let status = opening.maintenance_status().unwrap();
     assert_eq!(status.phase, kasumi_kv::StorageCompactionPhase::Idle);
     assert_eq!(status.cycle, 0);

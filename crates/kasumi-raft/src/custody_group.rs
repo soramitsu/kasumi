@@ -206,8 +206,14 @@ impl CustodyRaftGroup {
                 None => (
                     None,
                     Some(Arc::new(
-                        crate::local::LocalGroup::open(id, log, machine, machine_failed.clone())
-                            .await?,
+                        crate::local::LocalGroup::open(
+                            id,
+                            &group,
+                            log,
+                            machine,
+                            machine_failed.clone(),
+                        )
+                        .await?,
                     )),
                 ),
             };

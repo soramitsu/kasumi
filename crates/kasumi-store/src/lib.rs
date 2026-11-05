@@ -37,8 +37,8 @@ mod cached_rows;
 pub use cached_rows::NamespaceEpoch;
 use catalog_read_budget::AdmittedKeyCatalog;
 pub use kasumi_kv::{
-    MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress, MaintenanceStep,
-    StorageCompactionPhase, StorageMaintenanceStatus,
+    MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
+    MaintenanceStep, StorageCompactionPhase, StorageError, StorageMaintenanceStatus,
 };
 pub use key_access_denied::KeyAccessDenied;
 #[cfg(test)]

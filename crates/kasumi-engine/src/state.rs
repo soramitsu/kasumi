@@ -378,7 +378,11 @@ fn decode_committed_command(bytes: &[u8]) -> anyhow::Result<Command> {
 /// transportable bundle, or a standalone group's own local one.
 fn capture_tenant_snapshot(
     engine: &TenantEngine,
-    write: fn(&Generation, &kasumi_store::TenantStore, &mut dyn std::io::Write) -> anyhow::Result<()>,
+    write: fn(
+        &Generation,
+        &kasumi_store::TenantStore,
+        &mut dyn std::io::Write,
+    ) -> anyhow::Result<()>,
 ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure> {
     kasumi_store::ScratchOperationFailure::ordinary(|| {
         let generation = engine.generation()?;
@@ -516,14 +520,13 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 .transpose()?;
             Ok((apply, selection))
         })?;
-        let mut generation =
-            snapshot_bundle::read(
-                self,
-                &ValidationBaseline::from_apply(&apply),
-                bytes,
-                None,
-                context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
-            )?;
+        let mut generation = snapshot_bundle::read(
+            self,
+            &ValidationBaseline::from_apply(&apply),
+            bytes,
+            None,
+            context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+        )?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let expected_revision = self
                 .revision_base

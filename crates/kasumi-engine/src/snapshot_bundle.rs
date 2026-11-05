@@ -508,46 +508,47 @@ pub(super) fn read_checked(
     reopen: bool,
     check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
 ) -> std::result::Result<Generation, kasumi_store::ScratchOperationFailure> {
-    let (store, mut decoder, source, form) = kasumi_store::ScratchOperationFailure::ordinary(|| {
-        check()?;
-        baseline.current_for(engine)?;
-        let store = engine
-            .snapshot_store
-            .get()
-            .context("snapshot storage not installed")?;
-        store.check_access()?;
-        let mut decoder = Decoder {
-            reader,
-            digest: Sha256::new(),
-            counts: Counts::default(),
-        };
-        let mut magic = [0; 8];
-        decoder.bytes(&mut magic)?;
-        let form = if &magic == MAGIC {
-            ArchiveForm::Embedded
-        } else if &magic == LOCAL_MAGIC {
+    let (store, mut decoder, source, form) =
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            check()?;
+            baseline.current_for(engine)?;
+            let store = engine
+                .snapshot_store
+                .get()
+                .context("snapshot storage not installed")?;
+            store.check_access()?;
+            let mut decoder = Decoder {
+                reader,
+                digest: Sha256::new(),
+                counts: Counts::default(),
+            };
+            let mut magic = [0; 8];
+            decoder.bytes(&mut magic)?;
+            let form = if &magic == MAGIC {
+                ArchiveForm::Embedded
+            } else if &magic == LOCAL_MAGIC {
+                ensure!(
+                    reopen,
+                    "a local snapshot is accepted only when its own group reopens"
+                );
+                ArchiveForm::LocalReference
+            } else {
+                anyhow::bail!("unsupported tenant snapshot bundle format");
+            };
+            let length = decoder.length(SOURCE_LIMIT)?;
+            let mut encoded = vec![0; length];
+            decoder.bytes(&mut encoded)?;
+            let source: StoragePurpose = serde_json::from_slice(&encoded)?;
             ensure!(
-                reopen,
-                "a local snapshot is accepted only when its own group reopens"
+                serde_json::to_vec(&source)? == encoded,
+                "noncanonical snapshot source purpose"
             );
-            ArchiveForm::LocalReference
-        } else {
-            anyhow::bail!("unsupported tenant snapshot bundle format");
-        };
-        let length = decoder.length(SOURCE_LIMIT)?;
-        let mut encoded = vec![0; length];
-        decoder.bytes(&mut encoded)?;
-        let source: StoragePurpose = serde_json::from_slice(&encoded)?;
-        ensure!(
-            serde_json::to_vec(&source)? == encoded,
-            "noncanonical snapshot source purpose"
-        );
-        ensure!(
-            same_snapshot_resource(&source, store.storage_access().purpose()),
-            "snapshot source installation differs"
-        );
-        Ok((store, decoder, source, form))
-    })?;
+            ensure!(
+                same_snapshot_resource(&source, store.storage_access().purpose()),
+                "snapshot source installation differs"
+            );
+            Ok((store, decoder, source, form))
+        })?;
     let mut logical = LogicalReader {
         decoder: &mut decoder,
         buffer: Vec::with_capacity(CHUNK),
@@ -892,7 +893,13 @@ mod tests {
     ) -> crate::test_fixture_failure::FixtureResult<kasumi_types::AuditRetentionState> {
         tokio::task::spawn_blocking(move || -> crate::test_fixture_failure::FixtureResult<_> {
             let prior = CapturedValidation::capture(&engine)?;
-            let generation = read(&engine, &prior.baseline(), &mut bytes.as_slice(), None, reopen)?;
+            let generation = read(
+                &engine,
+                &prior.baseline(),
+                &mut bytes.as_slice(),
+                None,
+                reopen,
+            )?;
             Ok(generation.state.audit_retention.clone())
         })
         .await?
@@ -1039,9 +1046,17 @@ mod tests {
         // It is never installed: not as a Raft install, not as a transported
         // snapshot's validation, and not on a node whose cache lacks the chain.
         let before = target.generation().unwrap().state.audit_retention.clone();
-        assert!(restore_as(target.clone(), local.clone(), Install).await.is_err());
+        assert!(
+            restore_as(target.clone(), local.clone(), Install)
+                .await
+                .is_err()
+        );
         assert!(validate(source.clone(), local.clone()).await.is_err());
-        assert!(read_bundle(target.clone(), local.clone(), true).await.is_err());
+        assert!(
+            read_bundle(target.clone(), local.clone(), true)
+                .await
+                .is_err()
+        );
         assert_eq!(target.generation().unwrap().state.audit_retention, before);
         for reference in &references {
             assert!(
@@ -1057,9 +1072,23 @@ mod tests {
         // The group that wrote it reads it on reopen, verifying its own chain in
         // place; an embedded (pre-upgrade) snapshot still reopens too.
         let retention = source.generation().unwrap().state.audit_retention.clone();
-        assert_eq!(read_bundle(source.clone(), local.clone(), true).await.unwrap(), retention);
-        assert_eq!(read_bundle(source.clone(), embedded.clone(), true).await.unwrap(), retention);
-        assert!(read_bundle(source.clone(), local.clone(), false).await.is_err());
+        assert_eq!(
+            read_bundle(source.clone(), local.clone(), true)
+                .await
+                .unwrap(),
+            retention
+        );
+        assert_eq!(
+            read_bundle(source.clone(), embedded.clone(), true)
+                .await
+                .unwrap(),
+            retention
+        );
+        assert!(
+            read_bundle(source.clone(), local.clone(), false)
+                .await
+                .is_err()
+        );
         // Corruption of the stream itself is refused like an embedded bundle's.
         let mut corrupt = local.clone();
         *corrupt.last_mut().unwrap() ^= 1;
@@ -1071,7 +1100,10 @@ mod tests {
         );
         // The transportable bundle is unchanged and still installs elsewhere.
         restore(target.clone(), embedded).await.unwrap();
-        assert_eq!(target.generation().unwrap().state.audit_retention, retention);
+        assert_eq!(
+            target.generation().unwrap().state.audit_retention,
+            retention
+        );
         // A segment missing from this node's cache refuses both a new local
         // snapshot and the reopen of an existing one.
         let cache = source_store
@@ -1090,13 +1122,26 @@ mod tests {
     async fn local_snapshot_of_a_tenant_without_archive_reopens() {
         let incarnation = uuid::Uuid::new_v4().to_string();
         let (_dir, engine, store) = fixture(&incarnation).await;
-        assert!(engine.generation().unwrap().state.audit_retention.archive_head.is_none());
+        assert!(
+            engine
+                .generation()
+                .unwrap()
+                .state
+                .audit_retention
+                .archive_head
+                .is_none()
+        );
         let local = capture_local(engine.clone()).await.unwrap();
         let embedded = capture(engine.clone()).await.unwrap();
         // Without an archive both forms differ only in their magic and trailer.
         assert_eq!(local.len(), embedded.len());
         let retention = engine.generation().unwrap().state.audit_retention.clone();
-        assert_eq!(read_bundle(engine.clone(), local.clone(), true).await.unwrap(), retention);
+        assert_eq!(
+            read_bundle(engine.clone(), local.clone(), true)
+                .await
+                .unwrap(),
+            retention
+        );
         assert!(read_bundle(engine.clone(), local, false).await.is_err());
         store.shutdown().await.unwrap();
     }

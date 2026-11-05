@@ -1808,6 +1808,9 @@ fn parameters(name: &str, days: i64) -> Result<rcgen::CertificateParams> {
         .push(rcgen::DnType::CommonName, name);
     parameters.not_before = time::OffsetDateTime::now_utc() - time::Duration::minutes(5);
     parameters.not_after = time::OffsetDateTime::now_utc() + time::Duration::days(days);
+    // RFC 5280 path building: strict verifiers (OpenSSL X509_STRICT, the Python
+    // 3.13 default) reject certificates without an authority key identifier.
+    parameters.use_authority_key_identifier_extension = true;
     Ok(parameters)
 }
 fn generate_ca() -> Result<(rcgen::Certificate, rcgen::KeyPair)> {

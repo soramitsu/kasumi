@@ -21,7 +21,15 @@ async fn main() -> std::process::ExitCode {
         }
         Err(error) => {
             if daemon {
-                kasumi_server::logging::daemon_failed();
+                match &error {
+                    CommandFailure::Operation(original) => {
+                        kasumi_server::logging::daemon_failed(original)
+                    }
+                    // An enrollment failure is not an error chain; log its class.
+                    CommandFailure::Enrollment(_) => kasumi_server::logging::daemon_failed(
+                        &anyhow::anyhow!("authority enrollment failed"),
+                    ),
+                }
             } else {
                 // An invoked CLI command retains its human-readable operator error.
                 eprintln!("{error:#}");
