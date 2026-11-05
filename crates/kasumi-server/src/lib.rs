@@ -56,6 +56,8 @@ mod startup_resources;
 pub mod tls;
 pub mod tls_reload;
 mod tls_tasks;
+#[cfg(test)]
+mod unauthenticated_flood_tests;
 
 mod target_phase_runtime;
 pub mod target_runtime_config;

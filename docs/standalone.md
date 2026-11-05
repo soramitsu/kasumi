@@ -241,6 +241,26 @@ verification method returns a `VerifiedSecurityAuditArchive` only after the
 server reads and authenticates the exact encrypted segment. These observations
 are not a grant to delete archives or retire their wrapping keys.
 
+Events that identify no client are counted rather than recorded one by one:
+TLS connections to a listener that takes no client certificate (MCP), failed
+TLS handshakes, refused tokens, and requests refused before any identity is
+verified, such as a bad MCP `Origin`. In each minute the first such event of
+each kind from each peer address is recorded, for up to 64 addresses, and
+events from further addresses share one entry per kind. When the minute
+ends, one `events_counted` record per entry carries the exact number of the
+other events and the first and last times they were observed. These records
+stop at 75% of the hot budget, where archiving starts; above it such events
+are only counted, which keeps the rest of the hot log for authentications,
+accepts with a client certificate and administrative records while archives
+cannot drain. Counts not yet written are lost if the process crashes.
+Releases that predate `events_counted` records cannot read them: they refuse
+to open a service audit whose hot log holds one. Archives are never pruned:
+once `archive_bytes` is used, the hot log cannot drain, and when it is full
+every request that needs a record fails with `audit_unavailable` until the
+budget is raised. Alert well before that on
+`kasumi_service_audit_archive_bytes` and
+`kasumi_service_audit_archive_budget_bytes`.
+
 ## Backup sessions
 
 Create a backup with the generated application administrator profile:

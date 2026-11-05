@@ -6,6 +6,8 @@ use kasumi_store::{TenantStore, WriteOp};
 use kasumi_types::{AuditRetentionBudget, SecurityAuditRecord};
 /// The closed event shapes are shared wire types; these paths remain stable.
 pub use kasumi_types::{SecurityEvent, SecurityEventKind, SecurityOutcome, TransportAuditMetadata};
+#[path = "security_audit_counts.rs"]
+mod counts;
 #[path = "security_audit_jobs.rs"]
 mod jobs;
 #[path = "security_audit_retention.rs"]
@@ -57,6 +59,8 @@ struct AuditWriter {
     workspace: Mutex<Option<crate::admission::Reservation>>,
     admission: Arc<crate::admission::NodeAdmission>,
     work: Arc<WorkFence>,
+    /// Events that identify no client, counted instead of recorded one by one.
+    counts: Mutex<counts::Counts>,
 }
 
 static LIVE_WRITERS: LazyLock<Mutex<HashMap<usize, Weak<AuditWriter>>>> =
@@ -87,6 +91,19 @@ struct QueuedRecord {
     ticket: u64,
     event: SecurityEvent,
     transport: Option<TransportAuditMetadata>,
+    class: RecordClass,
+}
+
+/// How much of the hot budget a record may use.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum RecordClass {
+    /// Every record that a request, an operation or the node's lifecycle
+    /// waits for: up to the whole hot budget.
+    Required,
+    /// Events that identify no client, and their counts: only up to the
+    /// archive start threshold. Above it, the event is counted instead, and
+    /// the rest of the budget stays free for required records.
+    Unauthenticated,
 }
 
 /// A leader's claim on the records it took. Dropping it, also on unwind,
@@ -138,7 +155,25 @@ struct AuditWork {
 }
 impl AuditWork {
     fn record(self, event: SecurityEvent, transport: Option<TransportAuditMetadata>) -> Result<()> {
-        self.writer.record_inner(event, transport)
+        self.record_class(event, transport, RecordClass::Required)
+    }
+    fn record_class(
+        self,
+        event: SecurityEvent,
+        transport: Option<TransportAuditMetadata>,
+        class: RecordClass,
+    ) -> Result<()> {
+        self.writer.record_inner(event, transport, class)
+    }
+    /// One outcome per count, each recorded as its own event.
+    fn record_counts(self, events: Vec<SecurityEvent>) -> Vec<Result<()>> {
+        events
+            .into_iter()
+            .map(|event| {
+                self.writer
+                    .record_inner(event, None, RecordClass::Unauthenticated)
+            })
+            .collect()
     }
 }
 
@@ -281,6 +316,7 @@ impl SecurityAudit {
             work: Arc::new(WorkFence::default()),
             workspace: Mutex::new(Some(workspace)),
             admission,
+            counts: Mutex::new(Default::default()),
         });
         // Register the worker before another open can observe this owner.
         // Its strong upgrade can precede WorkFence admission, so the work
@@ -361,6 +397,7 @@ impl SecurityAudit {
         &self,
         event: SecurityEvent,
         transport: Option<TransportAuditMetadata>,
+        class: RecordClass,
     ) -> Result<()> {
         #[cfg(test)]
         if let Some(fault) = self.writer.record_fault.lock().unwrap().take() {
@@ -388,6 +425,7 @@ impl SecurityAudit {
             ticket,
             event,
             transport,
+            class,
         });
         loop {
             if let Some(outcome) = queue.outcomes.remove(&ticket) {
@@ -510,6 +548,7 @@ impl SecurityAudit {
         head: &mut retention::Head,
         record: QueuedRecord,
     ) -> Result<(WriteOp, String)> {
+        let class = record.class;
         let timestamp_ms =
             u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
         let entry = SecurityAuditRecord {
@@ -535,6 +574,12 @@ impl SecurityAudit {
             .hot_bytes
             .checked_add(encoded.len() as u64 + 8)
             .context("service audit byte count overflow")?;
+        // An event that identifies no client is counted instead above the
+        // archive start threshold; that is not an audit failure, even where
+        // the budget is also full.
+        if class == RecordClass::Unauthenticated && hot_bytes > self.writer.budget.starts_at() {
+            return Err(counts::CountThreshold.into());
+        }
         ensure!(
             hot_bytes <= self.writer.budget.hot_bytes,
             "service audit hot budget exhausted; archive maintenance is pending"
@@ -571,7 +616,13 @@ impl SecurityAudit {
     /// Called once all databases/listeners sharing the writer have stopped.
     /// Cancellation leaves the fence closed and permits a later call to finish.
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {
+        // No listener sharing this writer can add to a count now: write the
+        // pending counts under a registration admitted before sealing.
+        let counts = self.take_final_counts();
         self.writer.work.seal();
+        if let Some((work, events)) = counts {
+            self.write_final_counts(work, events).await;
+        }
         self.writer.wake.notify_one();
         {
             let mut worker = self.writer.worker.lock().await;

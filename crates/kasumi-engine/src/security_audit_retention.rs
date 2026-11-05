@@ -232,6 +232,9 @@ pub(super) fn start_worker(
             let audit = SecurityAudit { writer };
             let Ok(work) = audit.begin() else { return; };
             drop(audit);
+            // Counts of an ended window go first: they are small, and a long
+            // archive publication must not hold them back.
+            work.writer.write_ended_counts().await;
             let result = work.writer.maintenance_inner().await;
             let draining = result.is_ok() && work.writer.status().is_ok_and(|status| status.draining);
             if result.is_err() {

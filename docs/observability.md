@@ -168,7 +168,11 @@ Available metrics include:
   unusable; do not interpret an unusable sample as current memory use.
 - Service-audit hot/archive bytes and budgets, sequence and pruning positions,
   segment count, draining state, persistence failure, maintenance failures, and
-  policy-due archive backlog bytes.
+  policy-due archive backlog bytes. Archives are never pruned, so alert before
+  `kasumi_service_audit_archive_bytes` reaches
+  `kasumi_service_audit_archive_budget_bytes`: a full archive stops the hot log
+  from draining, and a full hot log fails every request that needs a record
+  with `audit_unavailable`.
 - Per-group tenant-audit hot/archive bytes and budgets, sequence/pruning positions,
   segment counts, draining state, policy-due archive backlog bytes, and
   archive-worker failure/committed-segment counters where the original store

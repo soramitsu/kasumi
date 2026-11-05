@@ -876,7 +876,15 @@ impl tls::TlsHandshakeAudit for SecurityAudit {
             certificate_pin: event.certificate_pin.as_ref().map(format_certificate_pin),
             observed_at_ms: event.timestamp_ms,
         };
-        self.record_transport(entry, Some(transport)).await
+        // A client certificate identifies the client: its accept is recorded
+        // before the connection is served. A failed handshake, or an accept
+        // on a listener that takes no client certificate (MCP), identifies
+        // nobody, so repeats from one address are counted.
+        if success && transport.certificate_pin.is_some() {
+            self.record_transport(entry, Some(transport)).await
+        } else {
+            self.record_unauthenticated(entry, Some(transport)).await
+        }
     }
 }
 
@@ -908,7 +916,20 @@ impl crate::auth::RequestAuditSink for SecurityAudit {
                 SecurityOutcome::Denied
             },
         };
-        SecurityAudit::record(self, entry).await.map_err(|_| {
+        // A refusal before any identity was verified names no principal or
+        // tenant. Its repeats are counted, so a flood of them cannot fill the
+        // audit; every other event is recorded on its own.
+        let recorded = if entry.principal.is_none()
+            && entry.tenant.is_none()
+            && matches!(
+                entry.kind,
+                SecurityEventKind::AuthenticationDenied | SecurityEventKind::AccessDenied
+            ) {
+            self.record_unauthenticated(entry, None).await
+        } else {
+            SecurityAudit::record(self, entry).await
+        };
+        recorded.map_err(|_| {
             kasumi_types::Error::new(
                 kasumi_types::ErrorCode::AuditUnavailable,
                 "durable service audit unavailable",

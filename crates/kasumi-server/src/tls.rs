@@ -63,9 +63,12 @@ pub struct TlsHandshakeEvent {
 
 #[async_trait]
 pub trait TlsHandshakeAudit: Send + Sync + 'static {
-    /// Return success only after the event is durably persisted under the
-    /// operator's security-audit key, independently of customer tenant keys.
-    /// Authentication success is never released to HTTP before this succeeds.
+    /// Return success once the event is kept under the operator's
+    /// security-audit key, independently of customer tenant keys. An accept
+    /// with a client certificate is durably persisted first, so that
+    /// authentication is never released to HTTP before its record. An event
+    /// that identifies no client (a failed handshake, or an accept without a
+    /// client certificate) may instead be counted with others from its peer.
     async fn record(&self, event: &TlsHandshakeEvent) -> Result<()>;
 }
 

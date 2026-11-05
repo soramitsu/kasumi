@@ -8,7 +8,7 @@ use crate::{
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use uuid::Uuid;
 pub const MAX_SECURITY_AUDIT_PAGE_BYTES: usize = 1 << 20;
 pub const SECURITY_AUDIT_RECORD_FORMAT: u32 = 1;
@@ -50,6 +50,43 @@ pub enum SecurityEventKind {
         source_revision: u64,
         custody_policy_epoch: u64,
     },
+    /// Events of kind `event` that identify no client and have no record of
+    /// their own, counted exactly instead: `count` of them, observed from
+    /// `first_observed_ms` through `last_observed_ms`. `peer` is the address
+    /// they came from; it is None for events that carry no transport address
+    /// and for peers beyond those one counting window tracks.
+    EventsCounted {
+        event: CountedEvent,
+        #[serde(deserialize_with = "crate::require_explicit_option")]
+        peer: Option<IpAddr>,
+        count: u64,
+        first_observed_ms: u64,
+        last_observed_ms: u64,
+    },
+}
+
+/// Events that identify no client, which the service audit may count instead
+/// of recording each one: a TLS accept on a listener that takes no client
+/// certificate, a failed TLS handshake, a refused bearer token, and a request
+/// refused before any identity was verified.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CountedEvent {
+    TransportAuthenticated,
+    TransportDenied,
+    AuthenticationDenied,
+    AccessDenied,
+}
+impl CountedEvent {
+    /// The outcome of every event of this kind.
+    pub fn outcome(self) -> SecurityOutcome {
+        match self {
+            Self::TransportAuthenticated => SecurityOutcome::Succeeded,
+            Self::TransportDenied | Self::AuthenticationDenied | Self::AccessDenied => {
+                SecurityOutcome::Denied
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +167,24 @@ impl SecurityEvent {
                         "invalid retirement observation position",
                     ));
                 }
+            }
+            // Counted events identify no client: no identity is claimed.
+            SecurityEventKind::EventsCounted {
+                event,
+                count,
+                first_observed_ms,
+                last_observed_ms,
+                ..
+            } if *count == 0
+                || first_observed_ms > last_observed_ms
+                || self.principal.is_some()
+                || self.tenant.is_some()
+                || self.outcome != event.outcome() =>
+            {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "invalid counted events",
+                ));
             }
             _ => {}
         }
@@ -997,6 +1052,100 @@ mod tests {
         ];
         for (case, capacity) in changed.into_iter().enumerate() {
             assert!(capacity.validate().is_err(), "case {case}");
+        }
+    }
+
+    #[test]
+    fn counted_events_are_an_exact_unattributed_count() {
+        let mut valid = record(4);
+        valid.event = SecurityEvent {
+            kind: SecurityEventKind::EventsCounted {
+                event: CountedEvent::TransportDenied,
+                peer: Some("203.0.113.9".parse().unwrap()),
+                count: 5,
+                first_observed_ms: 10,
+                last_observed_ms: 12,
+            },
+            principal: None,
+            tenant: None,
+            request_id: Uuid::from_u128(9).to_string(),
+            outcome: SecurityOutcome::Denied,
+        };
+        valid.transport = None;
+        valid.validate().unwrap();
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        assert_eq!(
+            decode_exact::<SecurityAuditRecord>(&bytes, 64 << 10, "record").unwrap(),
+            valid
+        );
+        let encoded = serde_json::to_value(&valid).unwrap();
+        assert_eq!(
+            encoded["event"]["kind"],
+            json!({"events_counted": {
+                "event": "transport_denied",
+                "peer": "203.0.113.9",
+                "count": 5,
+                "first_observed_ms": 10,
+                "last_observed_ms": 12
+            }})
+        );
+        let mut missing = encoded.clone();
+        missing["event"]["kind"]["events_counted"]
+            .as_object_mut()
+            .unwrap()
+            .remove("peer");
+        assert!(serde_json::from_value::<SecurityAuditRecord>(missing).is_err());
+        let mut unknown = encoded;
+        unknown["event"]["kind"]["events_counted"]["legacy"] = json!(true);
+        assert!(serde_json::from_value::<SecurityAuditRecord>(unknown).is_err());
+
+        let counted =
+            |event, count, first_observed_ms, last_observed_ms| SecurityEventKind::EventsCounted {
+                event,
+                peer: None,
+                count,
+                first_observed_ms,
+                last_observed_ms,
+            };
+        let denials = SecurityEvent {
+            kind: counted(CountedEvent::AuthenticationDenied, 1, 7, 7),
+            ..valid.event.clone()
+        };
+        denials.validate().unwrap();
+        // Anonymous TLS accepts succeeded; their count says so.
+        let accepts = SecurityEvent {
+            kind: counted(CountedEvent::TransportAuthenticated, 2, 7, 8),
+            outcome: SecurityOutcome::Succeeded,
+            ..valid.event.clone()
+        };
+        accepts.validate().unwrap();
+        for invalid in [
+            SecurityEvent {
+                kind: counted(CountedEvent::AuthenticationDenied, 0, 7, 7),
+                ..denials.clone()
+            },
+            SecurityEvent {
+                kind: counted(CountedEvent::AuthenticationDenied, 1, 8, 7),
+                ..denials.clone()
+            },
+            SecurityEvent {
+                principal: Some("person".into()),
+                ..denials.clone()
+            },
+            SecurityEvent {
+                tenant: Some("tenant-a".into()),
+                ..denials.clone()
+            },
+            SecurityEvent {
+                outcome: SecurityOutcome::Succeeded,
+                ..denials.clone()
+            },
+            SecurityEvent {
+                outcome: SecurityOutcome::Denied,
+                ..accepts.clone()
+            },
+        ] {
+            assert!(invalid.validate().is_err(), "{invalid:?}");
         }
     }
 }
