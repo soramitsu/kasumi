@@ -10,7 +10,7 @@ default-run = "kasumi-bench"
 
 [features]
 embedded-fixture = ["dep:kasumi-engine", "dep:kasumi-raft", "dep:kasumi-store", "kasumi-store/test-utils", "kasumi-engine/test-utils"]
-network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize", "dep:base64"]
+network = ["dep:kasumi-client", "dep:kasumi-transport", "dep:reqwest", "dep:tonic", "dep:zeroize", "dep:base64", "dep:rustls", "dep:tokio-rustls", "dep:async-trait"]
 loopback-fixture = ["network", "dep:kasumi-store", "kasumi-store/test-utils", "dep:kasumi-server", "kasumi-server/test-utils", "dep:rcgen", "dep:jsonwebtoken", "dep:base64", "dep:axum", "dep:async-trait"]
 
 [[bin]]
@@ -21,6 +21,11 @@ required-features = ["embedded-fixture"]
 [[bin]]
 name = "kasumi-bench-network"
 path = "src/bin/network.rs"
+required-features = ["network"]
+
+[[bin]]
+name = "kasumi-bench-compare"
+path = "src/bin/compare.rs"
 required-features = ["network"]
 
 [[bin]]
@@ -58,3 +63,5 @@ jsonwebtoken = { version = "9.3.1", optional = true }
 base64 = { version = "0.22", optional = true }
 axum = { version = "0.8", optional = true }
 async-trait = { workspace = true, optional = true }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"], optional = true }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring"], optional = true }

@@ -12,6 +12,9 @@ access, authenticated gRPC, MCP, local durable writes, and quorum durable writes
 have different guarantees and are reported separately. No Redis speed ratio is
 inferred. External comparisons require matched payloads, replication,
 persistence, indexing, authentication, concurrency, hardware and audit settings.
+The [Redis comparison](REDIS-COMPARISON.md) is such a run: standalone Kasumi
+against Redis 8 with matched TLS, client certificates, durability, key space and
+document bytes, using `benchmarks/redis-comparison/run.py`.
 
 ## Build and run
 
