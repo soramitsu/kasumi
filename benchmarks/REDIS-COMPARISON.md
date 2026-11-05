@@ -190,8 +190,9 @@ threads over 8 seconds; they rank costs, they are not exact shares.
    an event-loop turn.
 4. **Each document read opens and closes a registered read view.** Forking
    the view (`TenantStorageReadView::fork`) and closing it took about 60% of a
-   point read's own work; closing spins with `yield_now` while another
-   operation holds the database owner's lock (`RegisteredNodeRead::finish`).
+   point read's own work. Closing used to spin with `yield_now` while another
+   operation held the database owner's lock (`RegisteredNodeRead::finish`);
+   it now sleeps on that lock (see [changes](#changes-measured-here)).
 5. **Physical identity checks on every file operation.** Each read, write
    and sync re-verifies the file and its parent directory (`openat`,
    `fstatat`, `fstat`, `lstat`, `geteuid`): about 830 samples in the write
@@ -210,6 +211,7 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 | --- | --- | --- | --- |
 | Verified-token cache: a token this key set already verified skips its Ed25519 signature check and claims decode; signed times, scopes, credential liveness and the audit record still run per request (`kasumi-server/src/auth.rs`) | committed, caf0d2a9 | 143-178 µs of CPU per request for verification (release micro-benchmark on this host) | 0.6-5 µs |
 | Unknown token key IDs no longer re-read the private signer file (security fix, same file) | committed, caf0d2a9 | every request naming an unknown `kid` re-parsed every signing key | at most one reload per replacement of the signer file |
+| Closing readers sleep on the database owner's lock instead of spinning on `yield_now` (`kasumi-store/src/storage_opening/reads.rs`) | committed, 1f375877 | server CPU per point read 2,318 µs, per range scan 32.9 ms (16 clients, release build without LTO, two alternating rounds) | 1,908 µs (−18%), 21.0 ms (−36%); throughput unchanged within noise |
 | Record successful authentication once per connection and token (prototype, not committed: changes what the service audit records) | awaiting a decision | 1-client point reads 25/s, p50 28 ms, 9.2 ms CPU/op; 16 clients 106/s, p50 104 ms | 1,001/s, p50 0.70 ms, 0.49 ms CPU/op; 3,343/s, p50 2.6 ms |
 
 The prototype row comes from a separate A/B run of two builds without LTO
@@ -254,6 +256,14 @@ requests over many cores where Redis serves commands on one thread, which
 starts to matter once reads stop waiting for flushes: the per-connection audit
 prototype made 16-client reads 32 times faster than Kasumi's baseline, yet its
 3,343 reads/s still trail Redis's 21,384.
+
+Splitting the storage mutex so that reads run during a commit's flushes was
+designed here and not landed. While a commit's cache publication scope is
+active, the shared value cache refuses loads, so a reader that missed the
+cache mid-flush would fail; the commit would first have to record superseded
+identities outside the cache. On Linux all six of a commit's syncs are
+`fdatasync` calls (on macOS only the last is a full flush), so fewer syncs
+per commit is the larger lever there.
 
 To approach Redis on throughput Kasumi would need, in order of measured
 effect: audit successful authentication per connection rather than per
