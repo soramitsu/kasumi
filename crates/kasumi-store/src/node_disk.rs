@@ -2,6 +2,10 @@
 //! Raw path writes never enroll files or replace an admitted owner's extent.
 use crate::DiskOpenError;
 use crate::{
+    ReserveError,
+    capacity_refusal::{
+        CapacityCheck, CapacityRefusal, CapacityRefusalCount, RefusalLedger, floor_headroom,
+    },
     device_disk::{DeviceDisk, DeviceSelection},
     disk_memory::{self, DiskMemoryRequirements, Lease, List, NodeDiskMemoryAdmission},
 };
@@ -355,8 +359,16 @@ pub struct NodeDiskSnapshot {
     pub filesystem_pending_bytes: u64,
     pub filesystem_min_free_bytes: u64,
     pub filesystem_available_bytes: Option<u64>,
+    /// The margin the floor check of `reserve` compares each request on this
+    /// filesystem with, from the same locked sample as the three figures
+    /// above: `filesystem_available_bytes - filesystem_pending_bytes -
+    /// filesystem_min_free_bytes`. A request of `n` bytes passes the floor
+    /// exactly when `n` is at most this; negative once overdrawn.
+    pub filesystem_headroom_bytes: Option<i64>,
     pub filesystem_total_bytes: Option<u64>,
     pub filesystem_used_bytes: Option<u64>,
+    /// The device number of the filesystem the `filesystem_*` fields describe.
+    pub filesystem_device: u64,
     /// Every filesystem's shared admission is ready.
     pub filesystem_admission_ready: bool,
     /// One entry per filesystem when the roots span more than one. The
@@ -365,6 +377,10 @@ pub struct NodeDiskSnapshot {
     /// so a single readiness check covers them all.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub filesystems: Vec<NodeDiskFilesystemSnapshot>,
+    /// Refusals of each persistent capacity check since this owner opened.
+    pub capacity_refusals: [CapacityRefusalCount; 5],
+    /// The most recent refusal, with the figures its check compared.
+    pub last_capacity_refusal: Option<CapacityRefusal>,
 }
 
 /// One filesystem of a multi-filesystem persistent owner.
@@ -380,6 +396,10 @@ pub struct NodeDiskFilesystemSnapshot {
     pub owner_pending_bytes: u64,
     pub min_free_bytes: u64,
     pub available_bytes: Option<u64>,
+    /// This filesystem's floor margin: available less pending less min-free,
+    /// from the same locked sample. A reservation in one of its roots of `n`
+    /// bytes passes the floor exactly when `n` is at most this.
+    pub headroom_bytes: Option<i64>,
     pub total_bytes: Option<u64>,
     pub used_bytes: Option<u64>,
     pub admission_ready: bool,
@@ -509,6 +529,7 @@ struct State {
     transaction_witnesses: u32,
     directory_bytes: u64,
     directories: u64,
+    refusals: RefusalLedger<5>,
     live: fixed_map::Banks<Weak<file::FileOwner>>,
     file_custody: file::CustodySlots,
     accounted: fixed_map::Banks<AccountedInode>,
@@ -1008,6 +1029,7 @@ impl NodeDisk {
                 transaction_witnesses: 0,
                 directory_bytes: totals.directory_bytes,
                 directories: totals.directories,
+                refusals: RefusalLedger::default(),
                 live,
                 file_custody,
                 accounted,
@@ -1263,10 +1285,10 @@ impl NodeDisk {
         for index in 0..self.filesystems.len() {
             let observed = self.observe_filesystem(index);
             admission_ready &= observed.admission_ready;
+            // The floor check's own margin; an unobservable filesystem is
+            // the tightest of all.
             let headroom = observed.available_bytes.map_or(i128::MIN, |available| {
-                i128::from(available)
-                    - i128::from(observed.min_free_bytes)
-                    - i128::from(observed.pending_bytes)
+                floor_headroom(available, observed.pending_bytes, observed.min_free_bytes)
             });
             if self.filesystems.len() > 1 {
                 filesystems.push(observed.clone());
@@ -1298,17 +1320,38 @@ impl NodeDisk {
             filesystem_pending_bytes: tightest.pending_bytes,
             filesystem_min_free_bytes: tightest.min_free_bytes,
             filesystem_available_bytes: tightest.available_bytes,
+            filesystem_headroom_bytes: tightest.headroom_bytes,
             filesystem_total_bytes: tightest.total_bytes,
             filesystem_used_bytes: tightest.used_bytes,
+            filesystem_device: tightest.device,
             filesystem_admission_ready: admission_ready,
             filesystems,
+            capacity_refusals: state.refusals.counts(CapacityCheck::PERSISTENT),
+            last_capacity_refusal: state.refusals.last(),
         }
+    }
+
+    /// The most recent capacity refusal of this owner, for diagnostics that
+    /// only received the `StorageFull` kind. Another caller's later refusal
+    /// can replace it; the typed `ReserveError` names the caller's own.
+    pub(crate) fn last_capacity_refusal(&self) -> Option<CapacityRefusal> {
+        self.lock_state().refusals.last()
+    }
+
+    /// Count and keep one refusal under the caller's State guard.
+    fn refused(state: &mut State, refusal: CapacityRefusal) -> ReserveError {
+        ReserveError::Capacity(state.refusals.record(refusal))
     }
 
     fn observe_filesystem(&self, index: usize) -> NodeDiskFilesystemSnapshot {
         let filesystem = &self.filesystems[index];
+        // One locked sample: the same available, promises and floor that a
+        // concurrent reservation on this filesystem compares, since it holds
+        // this device guard while sampling too.
         let promises = filesystem.promises.lock();
         let physical = filesystem_usage(&self.filesystem_root(index).file).ok();
+        let available = self.available(index).ok();
+        let min_free = promises.minimum_free_bytes();
         NodeDiskFilesystemSnapshot {
             device: filesystem.device,
             roots: if self.filesystems.len() > 1 {
@@ -1322,8 +1365,12 @@ impl NodeDisk {
             },
             pending_bytes: *promises,
             owner_pending_bytes: promises.owned(),
-            min_free_bytes: promises.minimum_free_bytes(),
-            available_bytes: self.available(index).ok(),
+            min_free_bytes: min_free,
+            available_bytes: available,
+            headroom_bytes: available.map(|available| {
+                let headroom = floor_headroom(available, *promises, min_free);
+                i64::try_from(headroom).unwrap_or(if headroom < 0 { i64::MIN } else { i64::MAX })
+            }),
             total_bytes: physical.map(|(total, _)| total),
             used_bytes: physical.map(|(_, used)| used),
             admission_ready: promises.admission_ready(),
@@ -1697,13 +1744,15 @@ impl NodeDisk {
 
     /// Charge `delta` to the owner's extent budget and to the promises of
     /// filesystem `index`, whose own floor and free space must cover it.
+    /// Refusals are typed; `?` in an `io::Result` caller turns them into
+    /// `StorageFull` without allocating.
     fn reserve(
         &self,
         state: &mut State,
         index: usize,
         delta: u64,
         work: DiskWork,
-    ) -> io::Result<()> {
+    ) -> std::result::Result<(), ReserveError> {
         OnFilesystem {
             config: &self.config,
             device: &self.filesystems[index].promises,
@@ -1728,40 +1777,63 @@ impl OnFilesystem<'_> {
         self.disk.available(self.index)
     }
 
-    fn reserve(&self, state: &mut State, delta: u64, work: DiskWork) -> io::Result<()> {
+    /// Charge `delta` bytes of extent and of this filesystem's promise.
+    /// Refusals are typed and allocation-free; a floor refusal names this
+    /// filesystem's device. Observation failures fail the owner as before.
+    fn reserve(
+        &self,
+        state: &mut State,
+        delta: u64,
+        work: DiskWork,
+    ) -> std::result::Result<(), ReserveError> {
         if state.phase != NodeDiskPhase::Open {
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
+            return Err(io::ErrorKind::InvalidData.into());
         }
         let maximum = match work {
             DiskWork::Foreground => self.config.max_bytes - self.config.maintenance_reserve_bytes,
             DiskWork::Maintenance => self.config.max_bytes,
         };
-        let next = state
-            .bytes
-            .checked_add(delta)
-            .filter(|n| *n <= maximum)
-            .ok_or_else(|| exhausted("persistent extent budget exhausted"))?;
+        let Some(next) = state.bytes.checked_add(delta).filter(|n| *n <= maximum) else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::PersistentExtent,
+                requested: delta,
+                in_use: state.bytes,
+                limit: maximum,
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(NodeDisk::refused(state, refusal));
+        };
         let mut promises = self.device.lock();
         if !promises.admission_ready() {
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
+            return Err(io::ErrorKind::InvalidData.into());
         }
-        let next_promises = promises
-            .checked_add(delta)
-            .ok_or_else(|| exhausted("persistent filesystem promises overflow"))?;
-        let required = next_promises
-            .checked_add(promises.minimum_free_bytes())
-            .ok_or_else(|| exhausted("persistent filesystem floor overflow"))?;
         let available = self.available().inspect_err(|_| {
             state.phase = NodeDiskPhase::Failed;
             promises.fail_owner();
         })?;
-        if required > available {
-            return Err(exhausted("persistent filesystem floor exhausted"));
+        let pending = *promises;
+        let min_free = promises.minimum_free_bytes();
+        // Passing the floor bounds pending + delta by available, so neither
+        // promise sum below can overflow once this check admits the request.
+        let floor = CapacityRefusal {
+            check: CapacityCheck::PersistentFilesystemFloor,
+            requested: delta,
+            in_use: pending,
+            limit: available,
+            min_free,
+            filesystem: Some(self.disk.filesystems[self.index].device),
+        };
+        if i128::from(delta) > floor_headroom(available, pending, min_free) {
+            drop(promises);
+            return Err(NodeDisk::refused(state, floor));
         }
-        let own_pending = state
-            .pending
-            .checked_add(delta)
-            .ok_or_else(|| exhausted("persistent owner promises overflow"))?;
+        let (Some(next_promises), Some(own_pending)) =
+            (pending.checked_add(delta), state.pending.checked_add(delta))
+        else {
+            drop(promises);
+            return Err(NodeDisk::refused(state, floor));
+        };
         promises
             .set_pending(next_promises)
             .inspect_err(|_| state.phase = NodeDiskPhase::Failed)?;
@@ -1818,14 +1890,11 @@ impl NodeDisk {
     }
 }
 
-fn exhausted(_message: &'static str) -> io::Error {
-    io::ErrorKind::StorageFull.into()
-}
-
+/// Extent arithmetic past `u64` cannot be charged; it is not a capacity check.
 fn rounded(len: u64, unit: u64) -> io::Result<u64> {
     len.div_ceil(unit)
         .checked_mul(unit)
-        .ok_or_else(|| exhausted("persistent rounded extent overflow"))
+        .ok_or_else(|| io::ErrorKind::StorageFull.into())
 }
 
 /// Raw observed extent, independent of the configured standing allowance. This
@@ -1845,7 +1914,7 @@ fn extent(metadata: &std::fs::Metadata, unit: u64) -> io::Result<(u64, u64)> {
 fn file_ceiling(logical_len: u64, unit: u64, policy: FileAllocationPolicy) -> io::Result<u64> {
     rounded(logical_len, unit)?
         .checked_add(rounded(policy.maximum_extra_extent_bytes, unit)?)
-        .ok_or_else(|| exhausted("persistent file allocation ceiling overflow"))
+        .ok_or_else(|| io::ErrorKind::StorageFull.into())
 }
 
 /// Canonical durable accounting. Keep this separate from raw `extent`: a live

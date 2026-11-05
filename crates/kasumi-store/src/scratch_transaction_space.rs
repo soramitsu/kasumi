@@ -11,6 +11,8 @@ pub(crate) struct ReserveDiagnostic {
     pub(crate) requested: Option<u64>,
     pub(crate) current: Option<u64>,
     pub(crate) limit: Option<u64>,
+    /// The scratch owner's own typed refusal, when one of its checks refused.
+    pub(crate) refusal: Option<CapacityRefusal>,
 }
 impl ReserveDiagnostic {
     pub(crate) fn at(&mut self, stage: &'static str) {
@@ -31,6 +33,7 @@ impl ReserveDiagnostic {
             requested: Some(requested),
             current: Some(current),
             limit: Some(limit),
+            refusal: None,
         };
     }
 }
@@ -98,37 +101,62 @@ impl ScratchDisk {
             return Err(io::ErrorKind::Other.into());
         }
         diagnostic.capacity("disk_bytes", bytes, state.bytes, self.config.max_bytes);
-        let next = state
+        let Some(next) = state
             .bytes
             .checked_add(bytes)
             .filter(|next| *next <= self.config.max_bytes)
-            .ok_or(ReserveFailure::Capacity)?;
-        diagnostic.capacity("device_pending_bytes", bytes, *pending, u64::MAX);
-        let promised = pending.checked_add(bytes).ok_or(ReserveFailure::Capacity)?;
-        let minimum_free = pending.minimum_free_bytes();
-        diagnostic.capacity("filesystem_floor_bytes", minimum_free, promised, u64::MAX);
-        let required = promised
-            .checked_add(minimum_free)
-            .ok_or(ReserveFailure::Capacity)?;
+        else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::ScratchExtent,
+                requested: bytes,
+                in_use: state.bytes,
+                limit: self.config.max_bytes,
+                min_free: 0,
+                filesystem: None,
+            };
+            diagnostic.refusal = Some(state.refusals.record(refusal));
+            return Err(ReserveFailure::Capacity);
+        };
         diagnostic.capacity(
             "reserved_files",
             files,
             state.reserved_files,
             u64::MAX - state.files,
         );
-        let reserved_files = state
+        let Some(reserved_files) = state
             .reserved_files
             .checked_add(files)
             .filter(|reserved| state.files.checked_add(*reserved).is_some())
-            .ok_or(ReserveFailure::Capacity)?;
+        else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::ScratchFiles,
+                requested: files,
+                in_use: state.files.saturating_add(state.reserved_files),
+                limit: u64::MAX,
+                min_free: 0,
+                filesystem: None,
+            };
+            diagnostic.refusal = Some(state.refusals.record(refusal));
+            return Err(ReserveFailure::Capacity);
+        };
         diagnostic.at("filesystem_observation");
         let available = self.available().inspect_err(|_| pending.fail_owner())?;
         diagnostic.at("filesystem_available_bytes");
-        diagnostic.requested = Some(required);
+        let minimum_free = pending.minimum_free_bytes();
+        diagnostic.requested = Some(pending.saturating_add(bytes).saturating_add(minimum_free));
         diagnostic.limit = Some(available);
-        if available < required {
+        let floor = Self::floor_refusal(bytes, *pending, minimum_free, available);
+        let (None, Some(promised)) = (floor, pending.checked_add(bytes)) else {
+            diagnostic.refusal = Some(state.refusals.record(floor.unwrap_or(CapacityRefusal {
+                check: CapacityCheck::ScratchFilesystemFloor,
+                requested: bytes,
+                in_use: *pending,
+                limit: available,
+                min_free: minimum_free,
+                filesystem: None,
+            })));
             return Err(ReserveFailure::Capacity);
-        }
+        };
         diagnostic.at("device_pending_install");
         pending.set_pending(promised)?;
         state.bytes = next;
@@ -422,6 +450,17 @@ mod tests {
         assert_eq!(diagnostic.requested, Some(required));
         assert_eq!(diagnostic.current, None);
         assert_eq!(diagnostic.limit, Some(required - 1));
+        let refusal = CapacityRefusal {
+            check: CapacityCheck::ScratchFilesystemFloor,
+            requested: 4096,
+            in_use: before.filesystem_pending_bytes,
+            limit: required - 1,
+            min_free: config.min_free_bytes,
+            filesystem: None,
+        };
+        assert_eq!(diagnostic.refusal, Some(refusal));
+        assert_eq!(refusal.headroom(), 4095);
+        assert_eq!(disk.snapshot().last_capacity_refusal, Some(refusal));
         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
         assert_eq!(
             disk.snapshot().filesystem_pending_bytes,

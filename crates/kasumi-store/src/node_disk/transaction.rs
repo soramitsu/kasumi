@@ -1,7 +1,10 @@
 //! Inline transaction rights owned by the existing group. State holds aggregate
 //! promises; abandonment fences them until an accepted census. There is no
 //! independent registry, cleanup allocation, or destructor refund.
-use super::{AccountedInode, DiskWork, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State};
+use super::{
+    AccountedInode, CapacityCheck, CapacityRefusal, DiskWork, Identity, NamespaceBinding, NodeDisk,
+    NodeDiskPhase, ReserveError, State,
+};
 use std::{io, sync::Arc};
 
 pub(crate) struct TransactionSpace {
@@ -72,6 +75,7 @@ impl NodeDisk {
 
     /// Reserve all unassigned rights atomically. Existing cache descriptors
     /// count toward the requested peak; they are already charged live owners.
+    /// Each capacity check refuses with its own typed `CapacityRefusal`.
     pub(crate) fn reserve_transaction_space(
         self: &Arc<Self>,
         parent: (u64, u64),
@@ -79,7 +83,7 @@ impl NodeDisk {
         files: u64,
         descriptor_peak: u32,
         live_descriptors: u32,
-    ) -> io::Result<TransactionSpace> {
+    ) -> Result<TransactionSpace, ReserveError> {
         let mut state = self.lock_state();
         if state.phase != NodeDiskPhase::Open || live_descriptors > descriptor_peak {
             return Err(io::ErrorKind::InvalidInput.into());
@@ -95,38 +99,70 @@ impl NodeDisk {
         }
         let binding = directory.binding;
         let filesystem = self.directory_filesystem(&state, parent)?;
-        let children = directory
+        let present_children = directory
             .children
+            .saturating_add(super::batch::reserved_children(&state, binding));
+        let children = present_children
             .checked_add(files)
-            .and_then(|n| n.checked_add(super::batch::reserved_children(&state, binding)))
-            .ok_or(io::ErrorKind::StorageFull)?;
-        let reserved_files = state
-            .transaction_files
-            .checked_add(files)
-            .ok_or(io::ErrorKind::StorageFull)?;
+            .filter(|children| *children <= self.config.directory_policy.max_entries);
+        let Some(_) = children else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::PersistentDirectoryEntries,
+                requested: files,
+                in_use: present_children,
+                limit: self.config.directory_policy.max_entries,
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(NodeDisk::refused(&mut state, refusal));
+        };
+        let present_files = state
+            .files
+            .saturating_add(state.transaction_files)
+            .saturating_add(u64::from(super::batch::reserved_files(&state)));
+        let reserved_files = state.transaction_files.checked_add(files).filter(|_| {
+            present_files
+                .checked_add(files)
+                .is_some_and(|total| total <= self.config.max_persistent_files)
+        });
+        let Some(reserved_files) = reserved_files else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::PersistentFiles,
+                requested: files,
+                in_use: present_files,
+                limit: self.config.max_persistent_files,
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(NodeDisk::refused(&mut state, refusal));
+        };
         let free_descriptors = descriptor_peak - live_descriptors;
+        let present_descriptors = u64::from(state.open_files)
+            .saturating_add(u64::from(state.transaction_descriptors))
+            .saturating_add(u64::from(super::batch::reserved_files(&state)));
         let reserved_descriptors = state
             .transaction_descriptors
             .checked_add(free_descriptors)
-            .ok_or(io::ErrorKind::StorageFull)?;
+            .filter(|_| {
+                present_descriptors
+                    .checked_add(u64::from(free_descriptors))
+                    .is_some_and(|total| total <= u64::from(self.config.max_open_files))
+            });
+        let Some(reserved_descriptors) = reserved_descriptors else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::PersistentOpenFiles,
+                requested: u64::from(free_descriptors),
+                in_use: present_descriptors,
+                limit: u64::from(self.config.max_open_files),
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(NodeDisk::refused(&mut state, refusal));
+        };
         let witnesses = state
             .transaction_witnesses
             .checked_add(1)
             .ok_or(io::ErrorKind::StorageFull)?;
-        if children > self.config.directory_policy.max_entries
-            || state
-                .files
-                .checked_add(reserved_files)
-                .and_then(|n| n.checked_add(u64::from(super::batch::reserved_files(&state))))
-                .is_none_or(|n| n > self.config.max_persistent_files)
-            || state
-                .open_files
-                .checked_add(reserved_descriptors)
-                .and_then(|n| n.checked_add(super::batch::reserved_files(&state)))
-                .is_none_or(|n| n > self.config.max_open_files)
-        {
-            return Err(io::ErrorKind::StorageFull.into());
-        }
         let ledger = usize::try_from(reserved_files)
             .ok()
             .and_then(|n| {

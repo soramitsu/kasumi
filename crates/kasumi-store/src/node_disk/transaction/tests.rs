@@ -390,3 +390,194 @@ fn active_claim_prevents_removal_of_its_empty_parent_even_with_zero_files() {
         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Open);
     }
 }
+
+/// Reserve against one fixture whose limits only the named check can trip,
+/// and require that check's own typed refusal, its figures and no effect.
+fn refused_by(
+    configure: impl FnOnce(&mut crate::NodeDiskConfig),
+    reserve: impl FnOnce(&Arc<NodeDisk>, (u64, u64)) -> Result<TransactionSpace, ReserveError>,
+) -> (CapacityRefusal, crate::NodeDiskSnapshot) {
+    let directory = private_tempdir().unwrap();
+    let mut config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
+    configure(&mut config);
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = retry_disk_registry(|| {
+        NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+    })
+    .unwrap();
+    let root = disk.open_directory("fixture", Path::new("")).unwrap();
+    let before = disk.snapshot();
+    let refusal = match reserve(&disk, root.verified_identity().unwrap()) {
+        Err(ReserveError::Capacity(refusal)) => refusal,
+        Err(ReserveError::Failed(error)) => panic!("expected a capacity refusal: {error:?}"),
+        Ok(_) => panic!("expected a capacity refusal"),
+    };
+    let after = disk.snapshot();
+    assert_eq!(after.charged_bytes, before.charged_bytes);
+    assert_eq!(after.pending_bytes, before.pending_bytes);
+    assert_eq!(
+        after.filesystem_pending_bytes,
+        before.filesystem_pending_bytes
+    );
+    assert_eq!(after.phase, NodeDiskPhase::Open);
+    assert_eq!(disk.lock_state().transaction_witnesses, 0);
+    assert_eq!(after.last_capacity_refusal, Some(refusal));
+    for count in &after.capacity_refusals {
+        assert_eq!(
+            count.refusals,
+            u64::from(count.check == refusal.check),
+            "{:?}",
+            after.capacity_refusals
+        );
+    }
+    *disk.available_override.lock().unwrap() = None;
+    drop(root);
+    (refusal, after)
+}
+
+#[test]
+fn each_transaction_capacity_check_reports_its_own_reason_and_figures() {
+    let (entries, _) = refused_by(
+        |config| config.directory_policy.max_entries = 2,
+        |disk, parent| disk.reserve_transaction_space(parent, 0, 3, 1, 0),
+    );
+    assert_eq!(
+        entries,
+        CapacityRefusal {
+            check: CapacityCheck::PersistentDirectoryEntries,
+            requested: 3,
+            in_use: 0,
+            limit: 2,
+            min_free: 0,
+            filesystem: None,
+        }
+    );
+    let (files, _) = refused_by(
+        |config| config.max_persistent_files = 2,
+        |disk, parent| disk.reserve_transaction_space(parent, 0, 3, 1, 0),
+    );
+    assert_eq!(
+        files,
+        CapacityRefusal {
+            check: CapacityCheck::PersistentFiles,
+            requested: 3,
+            in_use: 0,
+            limit: 2,
+            min_free: 0,
+            filesystem: None,
+        }
+    );
+    let (descriptors, _) = refused_by(
+        |config| config.max_open_files = 1,
+        |disk, parent| disk.reserve_transaction_space(parent, 0, 1, 2, 0),
+    );
+    assert_eq!(
+        descriptors,
+        CapacityRefusal {
+            check: CapacityCheck::PersistentOpenFiles,
+            requested: 2,
+            in_use: 0,
+            limit: 1,
+            min_free: 0,
+            filesystem: None,
+        }
+    );
+    let (extent, snapshot) = refused_by(
+        |config| {
+            config.max_bytes = 16 << 20;
+            config.maintenance_reserve_bytes = 1 << 20;
+        },
+        |disk, parent| disk.reserve_transaction_space(parent, 64 << 20, 1, 1, 0),
+    );
+    assert_eq!(
+        extent,
+        CapacityRefusal {
+            check: CapacityCheck::PersistentExtent,
+            requested: 64 << 20,
+            in_use: snapshot.charged_bytes,
+            limit: 15 << 20,
+            min_free: 0,
+            filesystem: None,
+        }
+    );
+    let (floor, snapshot) = refused_by(
+        |config| config.min_free_bytes = 1 << 20,
+        |disk, parent| {
+            let pending = disk.snapshot().filesystem_pending_bytes;
+            *disk.available_override.lock().unwrap() = Some(pending + (1 << 20) + 4096);
+            disk.reserve_transaction_space(parent, 8192, 1, 1, 0)
+        },
+    );
+    assert_eq!(
+        floor,
+        CapacityRefusal {
+            check: CapacityCheck::PersistentFilesystemFloor,
+            requested: 8192,
+            in_use: snapshot.filesystem_pending_bytes,
+            limit: snapshot.filesystem_pending_bytes + (1 << 20) + 4096,
+            min_free: 1 << 20,
+            filesystem: Some(snapshot.filesystem_device),
+        }
+    );
+    assert_eq!(floor.headroom(), 4096);
+    assert!(
+        floor.to_string().starts_with(&format!(
+            "check=persistent_filesystem_floor filesystem={} requested=8192 available=",
+            snapshot.filesystem_device
+        )),
+        "{floor}"
+    );
+}
+
+#[test]
+fn snapshot_headroom_is_exactly_the_reserve_floor_margin() {
+    let directory = private_tempdir().unwrap();
+    let mut config = NodeDisk::fixture_config(directory.path().join("unused")).unwrap();
+    config.min_free_bytes = 3 << 20;
+    let memory = TestDiskMemory::new(256 << 20, 4096);
+    let disk = retry_disk_registry(|| {
+        NodeDisk::open_fixture(&config, memory.clone(), &CensusCancellation::default())
+    })
+    .unwrap();
+    let root = disk.open_directory("fixture", Path::new("")).unwrap();
+    let parent = root.verified_identity().unwrap();
+    let pending = disk.snapshot().filesystem_pending_bytes;
+    for margin in [0u64, 1, 4096, 5 << 20] {
+        *disk.available_override.lock().unwrap() = Some(pending + (3 << 20) + margin);
+        let snapshot = disk.snapshot();
+        assert_eq!(snapshot.filesystem_min_free_bytes, 3 << 20);
+        assert_eq!(snapshot.filesystem_headroom_bytes, Some(margin as i64));
+        assert_eq!(
+            snapshot.filesystem_headroom_bytes,
+            snapshot.filesystem_available_bytes.map(|available| {
+                available as i64
+                    - snapshot.filesystem_pending_bytes as i64
+                    - snapshot.filesystem_min_free_bytes as i64
+            })
+        );
+        // One byte past the margin is the floor's refusal; the margin itself fits.
+        match disk.reserve_transaction_space(parent, margin + 1, 0, 1, 0) {
+            Err(ReserveError::Capacity(refusal)) => {
+                assert_eq!(refusal.check, CapacityCheck::PersistentFilesystemFloor);
+                assert_eq!(refusal.headroom(), i128::from(margin));
+            }
+            other => panic!("margin + 1 was not refused by the floor: {:?}", other.err()),
+        }
+        let mut claim = disk
+            .reserve_transaction_space(parent, margin, 0, 1, 0)
+            .unwrap();
+        assert_eq!(disk.snapshot().filesystem_headroom_bytes, Some(0));
+        claim.cancel().unwrap();
+        assert_eq!(
+            disk.snapshot().filesystem_headroom_bytes,
+            Some(margin as i64)
+        );
+    }
+    // An overdrawn floor reports its deficit as negative headroom.
+    *disk.available_override.lock().unwrap() = Some(pending + (1 << 20));
+    assert_eq!(
+        disk.snapshot().filesystem_headroom_bytes,
+        Some(-(2i64 << 20))
+    );
+    *disk.available_override.lock().unwrap() = None;
+}

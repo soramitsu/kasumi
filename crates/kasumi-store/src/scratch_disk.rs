@@ -4,6 +4,10 @@
 //! or make filesystem allocation immune to other processes or device failures.
 use crate::DiskOpenError;
 use crate::{
+    ReserveError,
+    capacity_refusal::{
+        CapacityCheck, CapacityRefusal, CapacityRefusalCount, RefusalLedger, floor_headroom,
+    },
     device_disk::{DeviceDisk, DeviceSelection},
     disk_memory::{self, DiskMemoryRequirements, Lease, List, NodeDiskMemoryAdmission},
 };
@@ -71,16 +75,27 @@ pub struct ScratchDiskSnapshot {
     /// Capacity promised but not yet observed in allocated file blocks, shared
     /// with every scratch governor on the same physical filesystem in this process.
     pub filesystem_pending_bytes: u64,
+    /// The floor the scratch checks keep free: the largest `min_free_bytes`
+    /// of any owner registered on this filesystem in this process.
+    pub filesystem_min_free_bytes: u64,
     pub filesystem_available_bytes: Option<u64>,
+    /// The margin the scratch floor check compares each request with, from
+    /// the same locked sample: available less pending less the floor.
+    pub filesystem_headroom_bytes: Option<i64>,
     pub filesystem_total_bytes: Option<u64>,
     pub filesystem_used_bytes: Option<u64>,
     pub filesystem_admission_ready: bool,
+    /// Refusals of each scratch capacity check since this owner opened.
+    pub capacity_refusals: [CapacityRefusalCount; 3],
+    /// The most recent refusal, with the figures its check compared.
+    pub last_capacity_refusal: Option<CapacityRefusal>,
 }
 #[derive(Default, Debug)]
 struct State {
     bytes: u64,
     files: u64,
     reserved_files: u64,
+    refusals: RefusalLedger<3>,
 }
 struct RegisteredScratch {
     identity: (u64, u64),
@@ -338,6 +353,8 @@ impl ScratchDisk {
         let state = self.lock_state();
         let pending = self.device.lock();
         let physical = filesystem_usage(&self.directory).ok();
+        let available = self.available().ok();
+        let min_free = pending.minimum_free_bytes();
         ScratchDiskSnapshot {
             max_bytes: self.config.max_bytes,
             min_free_bytes: self.config.min_free_bytes,
@@ -345,11 +362,41 @@ impl ScratchDisk {
             charged_bytes: state.bytes,
             live_files: state.files,
             filesystem_pending_bytes: *pending,
-            filesystem_available_bytes: self.available().ok(),
+            filesystem_min_free_bytes: min_free,
+            filesystem_available_bytes: available,
+            filesystem_headroom_bytes: available.map(|available| {
+                let headroom = floor_headroom(available, *pending, min_free);
+                i64::try_from(headroom).unwrap_or(if headroom < 0 { i64::MIN } else { i64::MAX })
+            }),
             filesystem_total_bytes: physical.map(|(total, _)| total),
             filesystem_used_bytes: physical.map(|(_, used)| used),
             filesystem_admission_ready: pending.admission_ready(),
+            capacity_refusals: state.refusals.counts(CapacityCheck::SCRATCH),
+            last_capacity_refusal: state.refusals.last(),
         }
+    }
+    /// Count and keep one refusal under the caller's State guard.
+    fn refused(state: &mut State, refusal: CapacityRefusal) -> ReserveError {
+        ReserveError::Capacity(state.refusals.record(refusal))
+    }
+    /// The scratch floor check shared by file creation, growth and claims.
+    /// Passing it bounds `pending + bytes` by the available sample.
+    fn floor_refusal(
+        bytes: u64,
+        pending: u64,
+        min_free: u64,
+        available: u64,
+    ) -> Option<CapacityRefusal> {
+        (i128::from(bytes) > floor_headroom(available, pending, min_free)).then_some(
+            CapacityRefusal {
+                check: CapacityCheck::ScratchFilesystemFloor,
+                requested: bytes,
+                in_use: pending,
+                limit: available,
+                min_free,
+                filesystem: None,
+            },
+        )
     }
     /// Fully synchronize an anonymous extent of this governor.
     pub(crate) fn synchronized(&self, file: &File) -> io::Result<()> {
@@ -396,11 +443,12 @@ impl ScratchDisk {
         }
         filesystem(&self.directory).map(|v| v.0)
     }
+    /// Extent arithmetic past `u64` cannot be charged; it is not a capacity check.
     fn rounded(&self, ciphertext_len: u64) -> io::Result<u64> {
         ciphertext_len
             .div_ceil(self.allocation_unit)
             .checked_mul(self.allocation_unit)
-            .ok_or_else(|| exhausted("scratch rounded extent overflow"))
+            .ok_or_else(|| io::ErrorKind::StorageFull.into())
     }
     fn file_ceiling(&self, ciphertext_len: u64) -> io::Result<u64> {
         self.rounded(ciphertext_len)?
@@ -411,7 +459,7 @@ impl ScratchDisk {
                         .maximum_extra_extent_bytes,
                 )?,
             )
-            .ok_or_else(|| exhausted("scratch allocation ceiling overflow"))
+            .ok_or_else(|| io::ErrorKind::StorageFull.into())
     }
     pub(crate) fn file(self: &Arc<Self>) -> io::Result<(File, Charge)> {
         let mut charge = {
@@ -421,26 +469,51 @@ impl ScratchDisk {
             if !pending.admission_ready() {
                 return Err(io::ErrorKind::Other.into());
             }
-            let next = state
+            let Some(next) = state
                 .bytes
                 .checked_add(bytes)
                 .filter(|next| *next <= self.config.max_bytes)
-                .ok_or_else(|| exhausted("scratch file allowance exhausted"))?;
-            let promised = pending
-                .checked_add(bytes)
-                .ok_or_else(|| exhausted("scratch promises overflow"))?;
-            let required = promised
-                .checked_add(pending.minimum_free_bytes())
-                .ok_or_else(|| exhausted("scratch reserve overflow"))?;
-            let files = state
+            else {
+                let refusal = CapacityRefusal {
+                    check: CapacityCheck::ScratchExtent,
+                    requested: bytes,
+                    in_use: state.bytes,
+                    limit: self.config.max_bytes,
+                    min_free: 0,
+                    filesystem: None,
+                };
+                return Err(Self::refused(&mut state, refusal).into());
+            };
+            let Some(files) = state
                 .files
                 .checked_add(1)
                 .filter(|files| files.checked_add(state.reserved_files).is_some())
-                .ok_or_else(|| exhausted("scratch file count overflow"))?;
+            else {
+                let refusal = CapacityRefusal {
+                    check: CapacityCheck::ScratchFiles,
+                    requested: 1,
+                    in_use: state.files.saturating_add(state.reserved_files),
+                    limit: u64::MAX,
+                    min_free: 0,
+                    filesystem: None,
+                };
+                return Err(Self::refused(&mut state, refusal).into());
+            };
             let available = self.available().inspect_err(|_| pending.fail_owner())?;
-            if available < required {
-                return Err(exhausted("scratch filesystem free-space reserve exhausted"));
-            }
+            let floor =
+                Self::floor_refusal(bytes, *pending, pending.minimum_free_bytes(), available);
+            let promised = pending.checked_add(bytes);
+            let (None, Some(promised)) = (floor, promised) else {
+                let refusal = floor.unwrap_or(CapacityRefusal {
+                    check: CapacityCheck::ScratchFilesystemFloor,
+                    requested: bytes,
+                    in_use: *pending,
+                    limit: available,
+                    min_free: pending.minimum_free_bytes(),
+                    filesystem: None,
+                });
+                return Err(Self::refused(&mut state, refusal).into());
+            };
             pending.set_pending(promised)?;
             state.bytes = next;
             state.files = files;
@@ -503,9 +576,6 @@ fn check_directory(metadata: &std::fs::Metadata) -> Result<()> {
         "scratch directory must be private and owned"
     );
     Ok(())
-}
-fn exhausted(_message: &'static str) -> io::Error {
-    io::Error::from(io::ErrorKind::StorageFull)
 }
 
 fn filesystem_stat(directory: &File) -> io::Result<libc::statvfs> {
@@ -608,24 +678,38 @@ impl Charge {
             return Ok(());
         }
         let delta = bytes - self.bytes;
-        let next = state
+        let Some(next) = state
             .bytes
             .checked_add(delta)
             .filter(|n| *n <= self.disk.config.max_bytes)
-            .ok_or_else(|| exhausted("shared scratch byte budget exhausted"))?;
-        let promised = pending
-            .checked_add(delta)
-            .ok_or_else(|| exhausted("scratch promises overflow"))?;
-        let required = promised
-            .checked_add(pending.minimum_free_bytes())
-            .ok_or_else(|| exhausted("scratch filesystem reserve overflow"))?;
+        else {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::ScratchExtent,
+                requested: delta,
+                in_use: state.bytes,
+                limit: self.disk.config.max_bytes,
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(ScratchDisk::refused(&mut state, refusal).into());
+        };
         let available = self
             .disk
             .available()
             .inspect_err(|_| pending.fail_owner())?;
-        if available < required {
-            return Err(exhausted("scratch filesystem free-space reserve exhausted"));
-        }
+        let min_free = pending.minimum_free_bytes();
+        let floor = ScratchDisk::floor_refusal(delta, *pending, min_free, available);
+        let (None, Some(promised)) = (floor, pending.checked_add(delta)) else {
+            let refusal = floor.unwrap_or(CapacityRefusal {
+                check: CapacityCheck::ScratchFilesystemFloor,
+                requested: delta,
+                in_use: *pending,
+                limit: available,
+                min_free,
+                filesystem: None,
+            });
+            return Err(ScratchDisk::refused(&mut state, refusal).into());
+        };
         pending.set_pending(promised)?;
         state.bytes = next;
         self.bytes = bytes;
@@ -811,6 +895,106 @@ mod tests {
         drop(charge);
         assert_eq!(disk.snapshot().charged_bytes, 0);
         assert_eq!(disk.snapshot().filesystem_pending_bytes, 0);
+    }
+
+    #[test]
+    fn scratch_capacity_checks_report_their_own_reason_and_exact_headroom() {
+        let counts = |disk: &ScratchDisk| {
+            disk.snapshot()
+                .capacity_refusals
+                .iter()
+                .map(|count| (count.check, count.refusals))
+                .collect::<Vec<_>>()
+        };
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk_with_allowance(directory.path(), 1, 0, 4096);
+        let allowance = disk.file_ceiling(0).unwrap();
+        assert_eq!(
+            disk.file().err().unwrap().kind(),
+            io::ErrorKind::StorageFull
+        );
+        assert_eq!(
+            disk.snapshot().last_capacity_refusal,
+            Some(CapacityRefusal {
+                check: CapacityCheck::ScratchExtent,
+                requested: allowance,
+                in_use: 0,
+                limit: 1,
+                min_free: 0,
+                filesystem: None,
+            })
+        );
+        assert_eq!(
+            counts(&disk),
+            [
+                (CapacityCheck::ScratchExtent, 1),
+                (CapacityCheck::ScratchFiles, 0),
+                (CapacityCheck::ScratchFilesystemFloor, 0),
+            ]
+        );
+
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = disk_with_allowance(directory.path(), 1 << 20, 8192, 4096);
+        let allowance = disk.file_ceiling(0).unwrap();
+        *disk.available_override.lock().unwrap() = Some(8192 + allowance - 1);
+        let snapshot = disk.snapshot();
+        assert_eq!(snapshot.filesystem_min_free_bytes, 8192);
+        assert_eq!(
+            snapshot.filesystem_headroom_bytes,
+            Some(allowance as i64 - 1)
+        );
+        assert_eq!(
+            disk.file().err().unwrap().kind(),
+            io::ErrorKind::StorageFull
+        );
+        let refusal = disk.snapshot().last_capacity_refusal.unwrap();
+        assert_eq!(
+            refusal,
+            CapacityRefusal {
+                check: CapacityCheck::ScratchFilesystemFloor,
+                requested: allowance,
+                in_use: 0,
+                limit: 8192 + allowance - 1,
+                min_free: 8192,
+                filesystem: None,
+            }
+        );
+        assert_eq!(refusal.headroom(), i128::from(allowance) - 1);
+        // The margin admits exactly its own size, leaving no headroom.
+        *disk.available_override.lock().unwrap() = Some(8192 + allowance);
+        assert_eq!(
+            disk.snapshot().filesystem_headroom_bytes,
+            Some(allowance as i64)
+        );
+        let (file, mut charge) = disk.file().unwrap();
+        assert_eq!(disk.snapshot().filesystem_headroom_bytes, Some(0));
+        let grown = disk.file_ceiling(2 * allowance).unwrap();
+        assert_eq!(
+            charge.grow(2 * allowance).unwrap_err().kind(),
+            io::ErrorKind::StorageFull
+        );
+        assert_eq!(
+            disk.snapshot().last_capacity_refusal,
+            Some(CapacityRefusal {
+                check: CapacityCheck::ScratchFilesystemFloor,
+                requested: grown - allowance,
+                in_use: allowance,
+                limit: 8192 + allowance,
+                min_free: 8192,
+                filesystem: None,
+            })
+        );
+        assert_eq!(
+            counts(&disk),
+            [
+                (CapacityCheck::ScratchExtent, 0),
+                (CapacityCheck::ScratchFiles, 0),
+                (CapacityCheck::ScratchFilesystemFloor, 2),
+            ]
+        );
+        drop(file);
+        drop(charge);
+        *disk.available_override.lock().unwrap() = None;
     }
 
     #[test]

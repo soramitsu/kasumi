@@ -1584,7 +1584,18 @@ impl NodeDisk {
             .and_then(|n| n.checked_add(state.transaction_descriptors))
             .is_none_or(|n| n >= self.config.max_open_files)
         {
-            return Err(io::ErrorKind::StorageFull.into());
+            let in_use = u64::from(state.open_files)
+                .saturating_add(u64::from(super::batch::reserved_files(&state)))
+                .saturating_add(u64::from(state.transaction_descriptors));
+            let refusal = super::CapacityRefusal {
+                check: super::CapacityCheck::PersistentOpenFiles,
+                requested: 1,
+                in_use,
+                limit: u64::from(self.config.max_open_files),
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(Self::refused(&mut state, refusal).into());
         }
         if let Some(work) = create {
             if state
@@ -1593,7 +1604,19 @@ impl NodeDisk {
                 .and_then(|n| n.checked_add(state.transaction_files))
                 .is_none_or(|n| n >= self.config.max_persistent_files)
             {
-                return Err(io::ErrorKind::StorageFull.into());
+                let in_use = state
+                    .files
+                    .saturating_add(u64::from(super::batch::reserved_files(&state)))
+                    .saturating_add(state.transaction_files);
+                let refusal = super::CapacityRefusal {
+                    check: super::CapacityCheck::PersistentFiles,
+                    requested: 1,
+                    in_use,
+                    limit: self.config.max_persistent_files,
+                    min_free: 0,
+                    filesystem: None,
+                };
+                return Err(Self::refused(&mut state, refusal).into());
             }
             // A namespace admission or transaction permit already paid for
             // this file; only an ordinary create checks the current policy.

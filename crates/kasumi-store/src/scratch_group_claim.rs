@@ -503,11 +503,19 @@ impl Backend {
                 TransactionReserveError::CapacityDenied => ("capacity", None),
                 TransactionReserveError::Failed(error) => ("failed", Some(error.kind())),
             };
-            let _ = writeln!(
-                std::io::stderr().lock(),
-                "Kasumi scratch transaction reserve failed: stage={} disposition={disposition} requested={:?} current={:?} limit={:?} io={kind:?}",
-                diagnostic.stage, diagnostic.requested, diagnostic.current, diagnostic.limit,
-            );
+            let mut stderr = std::io::stderr().lock();
+            let _ = match diagnostic.refusal {
+                Some(refusal) => writeln!(
+                    stderr,
+                    "Kasumi scratch transaction reserve failed: stage={} disposition={disposition} io={kind:?} {refusal}",
+                    diagnostic.stage,
+                ),
+                None => writeln!(
+                    stderr,
+                    "Kasumi scratch transaction reserve failed: stage={} disposition={disposition} requested={:?} current={:?} limit={:?} io={kind:?}",
+                    diagnostic.stage, diagnostic.requested, diagnostic.current, diagnostic.limit,
+                ),
+            };
         })
     }
     fn reserve_plan_staged(

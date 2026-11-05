@@ -27,6 +27,9 @@ pub use backup_destination_index::{ExactBackupDestinationIndex, MAX_EXACT_BACKUP
 mod backup_marker;
 mod backup_sessions;
 mod cache_warmer;
+mod capacity_refusal;
+pub(crate) use capacity_refusal::ReserveError;
+pub use capacity_refusal::{CapacityCheck, CapacityRefusal, CapacityRefusalCount};
 mod catalog_read_budget;
 mod key_access_denied;
 pub use backup_sessions::{

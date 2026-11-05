@@ -494,3 +494,92 @@ fn a_mount_inside_a_root_is_refused_with_the_supported_layout() {
     assert!(message.contains("on another filesystem"), "{message}");
     assert!(message.contains("as its own root"), "{message}");
 }
+
+/// Each filesystem's headroom is exactly the margin its own floor check
+/// compares a reservation in one of its roots with, and a refusal names the
+/// filesystem whose floor refused. The scalar fields describe the tightest.
+#[test]
+fn each_filesystem_reports_its_own_floor_margin_and_refusal() {
+    let (_directory, config) = installation();
+    let disk = open(&config);
+    let data = disk.open_directory("data", Path::new("")).unwrap();
+    let archive = disk.open_directory("archive", Path::new("")).unwrap();
+    let min_free = config.min_free_bytes;
+    for (data_margin, archive_margin) in [(4096u64, 1 << 20), (1 << 20, 4096), (0, 0)] {
+        disk.set_root_available_for_test(
+            "data",
+            Some(shared(&disk, "data") + min_free + data_margin),
+        );
+        disk.set_root_available_for_test(
+            "archive",
+            Some(shared(&disk, "archive") + min_free + archive_margin),
+        );
+        let snapshot = disk.snapshot();
+        let by_device = |device| {
+            snapshot
+                .filesystems
+                .iter()
+                .find(|filesystem| filesystem.device == device)
+                .unwrap()
+        };
+        for (device, margin) in [(DATA_DEVICE, data_margin), (ARCHIVE_DEVICE, archive_margin)] {
+            let filesystem = by_device(device);
+            assert_eq!(filesystem.headroom_bytes, Some(margin as i64));
+            assert_eq!(
+                filesystem.headroom_bytes,
+                filesystem.available_bytes.map(|available| {
+                    available as i64
+                        - filesystem.pending_bytes as i64
+                        - filesystem.min_free_bytes as i64
+                })
+            );
+        }
+        let least = data_margin.min(archive_margin);
+        assert_eq!(snapshot.filesystem_headroom_bytes, Some(least as i64));
+        if data_margin != archive_margin {
+            let tightest = if data_margin < archive_margin {
+                DATA_DEVICE
+            } else {
+                ARCHIVE_DEVICE
+            };
+            assert_eq!(snapshot.filesystem_device, tightest);
+        }
+        // Each root's floor admits its own margin and refuses one byte more,
+        // naming that filesystem; the other filesystem is untouched.
+        for (directory, device, margin) in [
+            (&data, DATA_DEVICE, data_margin),
+            (&archive, ARCHIVE_DEVICE, archive_margin),
+        ] {
+            let parent = directory.verified_identity().unwrap();
+            match disk.reserve_transaction_space(parent, margin + 1, 0, 1, 0) {
+                Err(ReserveError::Capacity(refusal)) => {
+                    assert_eq!(refusal.check, CapacityCheck::PersistentFilesystemFloor);
+                    assert_eq!(refusal.filesystem, Some(device));
+                    assert_eq!(refusal.headroom(), i128::from(margin));
+                    assert!(
+                        refusal
+                            .to_string()
+                            .contains(&format!("filesystem={device} ")),
+                        "{refusal}"
+                    );
+                }
+                other => panic!("margin + 1 was not refused: {:?}", other.err()),
+            }
+            let mut claim = disk
+                .reserve_transaction_space(parent, margin, 0, 1, 0)
+                .unwrap();
+            let held = disk.snapshot();
+            let filesystem = held
+                .filesystems
+                .iter()
+                .find(|filesystem| filesystem.device == device)
+                .unwrap();
+            assert_eq!(filesystem.headroom_bytes, Some(0));
+            claim.cancel().unwrap();
+        }
+    }
+    disk.set_root_available_for_test("data", None);
+    disk.set_root_available_for_test("archive", None);
+    drop((data, archive));
+    disk.pause().unwrap();
+}

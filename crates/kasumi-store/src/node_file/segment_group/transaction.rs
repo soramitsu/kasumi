@@ -1,6 +1,7 @@
 //! Finite physical-space claims acquired by native commit before private writes
 //! and retained until explicit pristine cancellation or positive settlement.
 use super::*;
+use crate::ReserveError;
 use kasumi_kv::{FileSpaceRange, TransactionReserveError, TransactionSpacePlan};
 
 pub(super) struct GroupTransaction {
@@ -81,7 +82,7 @@ impl NodeSegmentGroup {
             // Only this pre-effect corridor mints routine capacity. Observation
             // failures latch their owner and preserve the original io::Error.
             if !self.failed.load(Ordering::Acquire)
-                && self.disk.snapshot().phase == crate::NodeDiskPhase::Open
+                && self.disk.is_open()
                 && matches!(
                     error.kind(),
                     io::ErrorKind::StorageFull | io::ErrorKind::OutOfMemory
@@ -89,27 +90,38 @@ impl NodeSegmentGroup {
             {
                 TransactionReserveError::CapacityDenied
             } else {
-                TransactionReserveError::Failed(error)
+                TransactionReserveError::Failed(error.into())
             }
         })
     }
-    fn reserve_transaction_inner(&self, plan: &TransactionSpacePlan) -> io::Result<()> {
+    fn reserve_transaction_inner(
+        &self,
+        plan: &TransactionSpacePlan,
+    ) -> std::result::Result<(), ReserveError> {
         let mut stage = "entry";
         self.reserve_transaction_staged(plan, &mut stage)
             .inspect_err(|error| {
+                // Fixed stage, check name and byte or entry counts only.
                 use std::io::Write;
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "Kasumi transaction reserve failed: stage={stage} io={:?}",
-                    error.kind(),
-                );
+                let mut stderr = std::io::stderr().lock();
+                let _ = match error {
+                    ReserveError::Capacity(refusal) => writeln!(
+                        stderr,
+                        "Kasumi transaction reserve failed: stage={stage} io=StorageFull {refusal}",
+                    ),
+                    ReserveError::Failed(error) => writeln!(
+                        stderr,
+                        "Kasumi transaction reserve failed: stage={stage} io={:?}",
+                        error.kind(),
+                    ),
+                };
             })
     }
     fn reserve_transaction_staged(
         &self,
         plan: &TransactionSpacePlan,
         stage: &mut &'static str,
-    ) -> io::Result<()> {
+    ) -> std::result::Result<(), ReserveError> {
         self.require_healthy()?;
         plan.validate()?;
         let mut guard = self.state.write();
@@ -154,7 +166,7 @@ impl NodeSegmentGroup {
             ) {
                 self.fence();
             }
-            return Err(io::Error::other(error));
+            return Err(io::Error::other(error).into());
         }
         for (range, kind) in [
             (plan.new_segments, GroupFileKind::Segment),
@@ -375,13 +387,23 @@ impl NodeSegmentGroup {
         self.write_transaction_file_staged(file, at, bytes, &mut stage)
             .inspect_err(|error| {
                 use std::io::Write;
-                let _ = writeln!(
-                    std::io::stderr().lock(),
-                    "Kasumi transaction write failed: stage={stage} kind={:?} offset={at} length={} io={:?}",
-                    file.kind,
-                    bytes.len(),
-                    error.kind(),
-                );
+                let mut stderr = std::io::stderr().lock();
+                // Ordinary growth reaches here as StorageFull without its
+                // typed refusal; name the owner's most recent one instead.
+                let _ = match (error.kind(), self.disk.last_capacity_refusal()) {
+                    (io::ErrorKind::StorageFull, Some(refusal)) => writeln!(
+                        stderr,
+                        "Kasumi transaction write failed: stage={stage} kind={:?} offset={at} length={} io=StorageFull last_refusal: {refusal}",
+                        file.kind,
+                        bytes.len(),
+                    ),
+                    (kind, _) => writeln!(
+                        stderr,
+                        "Kasumi transaction write failed: stage={stage} kind={:?} offset={at} length={} io={kind:?}",
+                        file.kind,
+                        bytes.len(),
+                    ),
+                };
             })
     }
     fn write_transaction_file_staged(
