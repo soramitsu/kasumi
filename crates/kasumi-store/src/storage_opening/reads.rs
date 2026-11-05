@@ -1252,9 +1252,13 @@ impl RegisteredNodeRead {
             // another opening operation briefly owns its state lock. Do not
             // report a failed catalog read before the same transaction gets its
             // actual close and disposal attempt. Release the reader lock so the
-            // competing opening operation can finish before this retry.
+            // competing opening operation can finish before this retry, and
+            // sleep until it releases the opening lock instead of spinning:
+            // under load many readers close and writers dispose through it.
+            // No reader lock is held while waiting, so the reader-then-opening
+            // order holds.
             drop(state);
-            std::thread::yield_now();
+            drop(request.database.owner().state.lock());
         }
     }
     pub fn retire(self) -> StorageCensusDisposition {
