@@ -1113,6 +1113,18 @@ impl NodeRuntime {
         Self::open_using(config, file_secret).await
     }
 
+    /// Explicit per-process scheduling opt-in. The ordinary open keeps the
+    /// installed default. No RuntimeConfig or persisted schema is extended.
+    pub async fn open_with_storage_maintenance(
+        config: RuntimeConfig,
+        policy: kasumi_store::MaintenancePolicy,
+    ) -> Result<Self> {
+        policy.validate()?;
+        config.validate()?;
+        let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
+        Self::open_using_storage_policy(config, file_secret, storage, Some(policy)).await
+    }
+
     async fn open_using(
         config: RuntimeConfig,
         credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
@@ -1127,6 +1139,18 @@ impl NodeRuntime {
         credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
         storage: crate::runtime_memory::RuntimeStorage,
     ) -> Result<Self> {
+        Self::open_using_storage_policy(config, credential, storage, None).await
+    }
+
+    async fn open_using_storage_policy(
+        config: RuntimeConfig,
+        credential: impl Fn(&str) -> Result<Zeroizing<String>> + Send + Sync + 'static,
+        storage: crate::runtime_memory::RuntimeStorage,
+        maintenance: Option<kasumi_store::MaintenancePolicy>,
+    ) -> Result<Self> {
+        if let Some(policy) = maintenance {
+            policy.validate()?;
+        }
         storage.require_policy(&config.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::Data,
@@ -1134,6 +1158,7 @@ impl NodeRuntime {
                 config,
                 Arc::new(credential),
                 storage,
+                maintenance,
                 #[cfg(test)]
                 None,
             ),
@@ -1154,7 +1179,7 @@ impl NodeRuntime {
         storage.require_policy(&config.admission)?;
         crate::startup_owner::open(
             crate::startup_owner::Kind::Data,
-            Self::open_owned(config, Arc::new(credential), storage, Some(clock)),
+            Self::open_owned(config, Arc::new(credential), storage, None, Some(clock)),
         )
         .await
     }
@@ -1173,6 +1198,7 @@ impl NodeRuntime {
         config: RuntimeConfig,
         credential: crate::serving_runtime::CredentialSource,
         storage: crate::runtime_memory::RuntimeStorage,
+        maintenance: Option<kasumi_store::MaintenancePolicy>,
         #[cfg(test)] auth_clock: Option<Arc<kasumi_clock::EpochClock>>,
     ) -> Result<Self> {
         let mut pending = crate::startup_resources::Resources::default();
@@ -1302,6 +1328,7 @@ impl NodeRuntime {
             )).map_err(|observed| observed.foreign_error())?
         };
         pending.owned_nodes.push(node.clone());
+        if let Some(policy) = maintenance { node.configure_storage_maintenance(policy)?; }
         node.prepare_cache_warming().await?;
         let security_store = TenantStore::open_existing(
             node.clone(),
@@ -1487,6 +1514,7 @@ impl NodeRuntime {
                 if active.is_some() {
                     pending.owned_nodes.push(tenant_node.clone());
                     runtime.owned_nodes.push(tenant_node.clone());
+                    if let Some(policy) = maintenance { tenant_node.configure_storage_maintenance(policy)?; }
                     tenant_node.prepare_cache_warming().await?;
                     #[cfg(test)]
                     crate::startup_preparation::checkpoint(config.database_id, "data-active-node");

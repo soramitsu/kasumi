@@ -43,6 +43,7 @@ async fn run(arguments: &[String]) -> Result<()> {
     if kasumi_server::standalone_cli::command(arguments).await? {
         return Ok(());
     }
+    let (arguments, maintenance) = kasumi_server::storage_maintenance::serve_arguments(arguments)?;
     match arguments {
         [command, policy_flag, policy, allocation_flag, allocation]
             if command == "example-config"
@@ -76,9 +77,11 @@ async fn run(arguments: &[String]) -> Result<()> {
         }
         [command, path] if command == "serve" => {
             let config = RuntimeConfig::load(path)?;
-            let runtime = NodeRuntime::open(config)
-                .await
-                .context("opening encrypted node runtime")?;
+            let runtime = match maintenance {
+                Some(policy) => NodeRuntime::open_with_storage_maintenance(config, policy).await,
+                None => NodeRuntime::open(config).await,
+            }
+            .context("opening encrypted node runtime")?;
             let reload = runtime.tls_reload_handle()?;
             let (stop, shutdown) = tokio::sync::watch::channel(false);
             let signal = tokio::spawn(async move {
@@ -106,7 +109,7 @@ async fn run(arguments: &[String]) -> Result<()> {
             result
         }
         _ => bail!(
-            "usage: kasumid init --mode standalone <absolute-directory> --directory-policy <policy.json> --file-allocation-policy <allocation.json> --network <network.json> --tenant-audit-placements <placements.json> [--tenant name] | initialize-target-journal <runtime.json> | example-config --directory-policy <policy.json> --file-allocation-policy <allocation.json> | check-config <configuration.json> | provision-node <configuration.json> | enroll-backup-destination <configuration.json> <request.json> <new-receipt.json> | serve <configuration.json> | tenant stage <configuration.json> <request.json> | tenant stage-status <configuration.json> <operation-uuid> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-existing-credentials <configuration.json> <private-manifest.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
+            "usage: kasumid init --mode standalone <absolute-directory> --directory-policy <policy.json> --file-allocation-policy <allocation.json> --network <network.json> --tenant-audit-placements <placements.json> [--tenant name] | initialize-target-journal <runtime.json> | example-config --directory-policy <policy.json> --file-allocation-policy <allocation.json> | check-config <configuration.json> | provision-node <configuration.json> | enroll-backup-destination <configuration.json> <request.json> <new-receipt.json> | serve <configuration.json> [--storage-compaction-growth-percent 101..200] | tenant stage <configuration.json> <request.json> | tenant stage-status <configuration.json> <operation-uuid> | credential create <control-profile> <request.json> <output-profile> | credential renew|watch <profile> | credential status|revoke <control-profile> <family-uuid> | maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json> | recover-existing-credentials <configuration.json> <private-manifest.json> | recover-administrator <configuration.json> <new-private-directory> | backup-operator-keys <configuration.json> <new-private-directory> | verify-operator-keys <private-directory> | backup create <database-profile> <destination> <checkpoint.json> | backup status|verify <database-profile> <destination> <session-uuid> | backup abort <database-profile> <destination> <session-uuid> <reason> | backup cleanup <database-profile> <destination> <session-uuid> <max-objects> | audit status <control-profile> | audit export|archives <control-profile> <request.json> <output.json> | audit verify <control-profile> <stream-uuid> <index> | control-recovery configuration-digest|start|status|resume|stop|phase <arguments> | local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>"
         ),
     }
 }

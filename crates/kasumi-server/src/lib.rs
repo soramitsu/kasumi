@@ -51,6 +51,7 @@ pub mod standalone_key_backup;
 mod startup_owner;
 mod startup_preparation;
 mod startup_resources;
+pub mod storage_maintenance;
 pub mod tls;
 pub mod tls_reload;
 mod tls_tasks;
