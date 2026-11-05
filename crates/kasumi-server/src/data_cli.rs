@@ -232,6 +232,7 @@ fn classify(error: &ClientError, write: bool) -> ErrorClass {
         ClientError::Transport(status) => transport_class(status.code()),
         ClientError::DecodeRejected { code, .. } => transport_class(*code),
         ClientError::Json(_) | ClientError::InvalidResponse(_) => ErrorClass::Internal,
+        _ => ErrorClass::Internal,
     }
 }
 

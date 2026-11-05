@@ -97,7 +97,12 @@ pub fn verify_submitted_mutation_receipt(
     mutation_receipt::verify_committed_write_receipt(original, response)
 }
 
+/// Classify with [`ClientError::is_transient`], [`ClientError::grpc_code`] and
+/// [`ClientError::code`] rather than matching variants or raw gRPC numbers:
+/// a bounded read reports every failure, a cancelled stream included, in its
+/// normalized `DecodeRejected` form. New variants may be added.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ClientError {
     #[error("native secure connection failed: {0}")]
     Connection(#[from] anyhow::Error),
@@ -133,6 +138,82 @@ impl ClientError {
             Self::DecodeRejected { database, .. } => *database,
             _ => None,
         }
+    }
+
+    /// The gRPC status code of this failure, whichever variant carries it.
+    pub fn grpc_code(&self) -> tonic::Code {
+        match self {
+            Self::Transport(status) => status.code(),
+            Self::DecodeRejected { code, .. } => *code,
+            Self::Connection(_) => tonic::Code::Unavailable,
+            Self::Json(_) | Self::InvalidResponse(_) => tonic::Code::DataLoss,
+            Self::Authorization => tonic::Code::Unauthenticated,
+            Self::RequestTooLarge => tonic::Code::ResourceExhausted,
+        }
+    }
+
+    /// Whether the same request can succeed if sent again later: the node was
+    /// unreachable, opening, draining or busy, or the attempt was cut short.
+    /// A write sent again must reuse its idempotency key and identical batch;
+    /// `UnknownOutcome` is transient in exactly that sense. Back off between
+    /// attempts: a node reopening after a restart can take minutes.
+    pub fn is_transient(&self) -> bool {
+        use kasumi_types::ErrorCode;
+        if let Some(code) = self.code() {
+            return matches!(
+                code,
+                ErrorCode::Unavailable | ErrorCode::UnknownOutcome | ErrorCode::ResourceExhausted
+            );
+        }
+        matches!(
+            self.grpc_code(),
+            tonic::Code::Unavailable
+                | tonic::Code::DeadlineExceeded
+                | tonic::Code::Cancelled
+                | tonic::Code::Unknown
+                | tonic::Code::ResourceExhausted
+        )
+    }
+}
+
+#[cfg(test)]
+mod classification_tests {
+    use super::*;
+
+    fn kasumi(code: kasumi_types::ErrorCode, grpc: tonic::Code) -> ClientError {
+        ClientError::Transport(tonic::Status::with_details(
+            grpc,
+            "fixture",
+            serde_json::to_vec(&kasumi_types::Error::new(code, "fixture"))
+                .unwrap()
+                .into(),
+        ))
+    }
+
+    #[test]
+    fn a_cancelled_bounded_read_is_transient_whatever_its_variant() {
+        let cancelled = ClientError::DecodeRejected {
+            code: tonic::Code::Cancelled,
+            reason: "native transport failed",
+            database: None,
+        };
+        assert_eq!(cancelled.grpc_code(), tonic::Code::Cancelled);
+        assert!(cancelled.is_transient());
+        assert!(ClientError::Connection(anyhow::anyhow!("refused")).is_transient());
+        assert!(ClientError::Transport(tonic::Status::unavailable("opening")).is_transient());
+    }
+
+    #[test]
+    fn the_database_code_decides_before_the_grpc_code() {
+        use kasumi_types::ErrorCode;
+        assert!(kasumi(ErrorCode::UnknownOutcome, tonic::Code::Aborted).is_transient());
+        assert!(
+            kasumi(ErrorCode::ResourceExhausted, tonic::Code::ResourceExhausted).is_transient()
+        );
+        assert!(!kasumi(ErrorCode::QuotaExceeded, tonic::Code::ResourceExhausted).is_transient());
+        assert!(!kasumi(ErrorCode::Forbidden, tonic::Code::PermissionDenied).is_transient());
+        assert!(!ClientError::Authorization.is_transient());
+        assert!(!ClientError::InvalidResponse("fixture").is_transient());
     }
 }
 

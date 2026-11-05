@@ -34,6 +34,7 @@ fn recovery_step_error(error: &kasumi_client::ClientError) -> String {
         ClientError::Json(_) => "json".into(),
         ClientError::Authorization => "authorization".into(),
         ClientError::RequestTooLarge => "request too large".into(),
+        _ => "other".into(),
     }
 }
 // Failure-only borrowed metadata; emit no original error text or credentials.

@@ -53,7 +53,9 @@ const MAX_APPEND_BATCH_DOCUMENTS: usize = 128;
 /// Encoded bytes kept free in each append batch for its key and framing.
 const APPEND_BATCH_FRAMING_BYTES: usize = 512;
 
+/// New variants may be added; match with a wildcard arm.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CustodyError {
     #[error("invalid private evidence input: {0}")]
     Invalid(&'static str),
