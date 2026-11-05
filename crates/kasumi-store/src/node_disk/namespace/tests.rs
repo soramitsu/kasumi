@@ -60,7 +60,7 @@ fn assert_physical_parents(disk: &NodeDisk, paths: &[(&Path, u64, u32)]) {
     assert_eq!(state.directory_bytes, observed);
     assert_eq!(state.bytes, charged + file_bytes);
     assert_eq!(state.pending, pending + file_pending);
-    assert_eq!(*disk.device.lock(), state.pending);
+    assert_eq!(*disk.device().lock(), state.pending);
 }
 
 #[test]

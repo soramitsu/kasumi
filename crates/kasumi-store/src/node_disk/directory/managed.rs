@@ -610,7 +610,7 @@ fn finish_open(
 fn ready(disk: &NodeDisk, state: &State) -> io::Result<()> {
     if state.phase != NodeDiskPhase::Open
         || state.pending_directory.is_some()
-        || !disk.device.lock().admission_ready()
+        || !disk.admission_ready()
     {
         return Err(io::ErrorKind::Other.into());
     }
@@ -1198,7 +1198,13 @@ fn prepare_child(
     if let Some(work) = work
         && !precharged
     {
-        disk.reserve(state, disk.config.directory_policy.extent_bytes, work)?;
+        let filesystem = disk.root_filesystem(&root)?;
+        disk.reserve(
+            state,
+            filesystem,
+            disk.config.directory_policy.extent_bytes,
+            work,
+        )?;
     }
     parent
         .register(disk, state)
@@ -1409,7 +1415,9 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         .directory_bytes
         .checked_add(observed)
         .ok_or(io::ErrorKind::InvalidData)?;
-    let mut promises = disk.device.lock();
+    let mut promises = disk.filesystems[disk.root_filesystem(&operation.root)?]
+        .promises
+        .lock();
     let shared = promises
         .checked_sub(reserved)
         .and_then(|v| v.checked_add(pending))
@@ -1552,11 +1560,12 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
         .expect("retained operation");
     let parent_identity = operation.parent.identity();
     let identity = operation.identity.expect("retained identity");
+    let filesystem = disk.root_filesystem(&operation.root)?;
     operation.close_resources()?;
     if !namespace::can_retire_parent(state, parent_identity) {
         return Err(io::ErrorKind::InvalidData.into());
     }
-    let mut promises = disk.device.lock();
+    let mut promises = disk.filesystems[filesystem].promises.lock();
     let shared = promises
         .checked_sub(entry.pending)
         .ok_or(io::ErrorKind::InvalidData)?;

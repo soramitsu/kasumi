@@ -230,7 +230,7 @@ fn admission_refuses_a_parent_charged_beyond_its_extent_policy() {
     {
         let (device, inode) = sessions.verified_identity().unwrap();
         let mut state = disk.lock_state();
-        disk.reserve(&mut state, disk.unit, DiskWork::Foreground)
+        disk.reserve(&mut state, 0, disk.unit, DiskWork::Foreground)
             .unwrap();
         let entry = state
             .accounted

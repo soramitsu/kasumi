@@ -251,6 +251,13 @@ open owner, usable filesystem admission and sufficient sampled free space for th
 shared pending growth and minimum-free reservation. Its response fence rechecks
 that requirement immediately before releasing a ready observation.
 
+When the persistent roots span several filesystems, health JSON adds
+`persistent_disk.filesystems`, one entry per filesystem with its device, root
+labels, pending bytes (all owners and this owner), floor, available, total and
+used bytes and admission readiness. The scalar `filesystem_*` fields and their
+gauges then describe the filesystem with the least headroom, so readiness covers
+every filesystem.
+
 Health JSON includes `scratch_disk`, including its configured per-table
 `native_cache_bytes` ceiling; Prometheus exposes
 `kasumi_scratch_disk_max_bytes`, `kasumi_scratch_disk_min_free_bytes`,

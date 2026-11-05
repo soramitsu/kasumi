@@ -195,7 +195,7 @@ fn owner_check_under_uncertain_shared_admission_latches_until_census() {
     let (_directory, config) = installation();
     seed(&config, "file", 32 << 10);
     let disk = open(config, fixture_memory.clone());
-    let sibling = disk.device.share(0);
+    let sibling = disk.device().share(0);
     let file = disk.open_file("data", Path::new("file")).unwrap();
     file.check_owner().unwrap();
     sibling.lock().fail_owner();
@@ -730,7 +730,7 @@ fn substitution_closes_shared_admission_and_does_not_delete_the_replacement() {
     let (_directory, config) = installation();
     seed(&config, "data", 64 << 10);
     let disk = open(config.clone(), fixture_memory.clone());
-    let sibling = disk.device.share(0);
+    let sibling = disk.device().share(0);
     let file = disk.open_file("data", Path::new("data")).unwrap();
     let root = config.roots["data"].clone();
     std::fs::rename(root.join("data"), root.join("held")).unwrap();
@@ -892,7 +892,7 @@ fn persistent_and_scratch_cannot_spend_the_same_filesystem_promise() {
     *disk.available_override.lock().unwrap() = Some(available);
     let scratch = crate::ScratchDisk::test_with_device(
         directory.path().join("scratch"),
-        disk.device.share(0),
+        disk.device().share(0),
         available,
     );
     let file = disk
@@ -930,7 +930,7 @@ fn poisoned_shared_promises_cannot_be_reopened_by_either_owner() {
     let disk = open(config, fixture_memory.clone());
     let scratch = crate::ScratchDisk::test_with_device(
         directory.path().join("scratch"),
-        disk.device.share(0),
+        disk.device().share(0),
         16 << 20,
     );
     let file = disk
@@ -942,7 +942,7 @@ fn poisoned_shared_promises_cannot_be_reopened_by_either_owner() {
     file.sync_all().unwrap();
     let before = disk.snapshot();
     let (scratch_file, mut charge) = scratch.file().unwrap();
-    disk.device.poison();
+    disk.device().poison();
     assert!(
         file.reserve_growth(disk.unit, 2 * disk.unit, DiskWork::Foreground)
             .is_err()
@@ -1037,7 +1037,7 @@ fn unknown_filesystem_observation_fences_scratch_until_a_drained_census() {
     let disk = open(config, fixture_memory.clone());
     let scratch = crate::ScratchDisk::test_with_device(
         directory.path().join("scratch"),
-        disk.device.share(0),
+        disk.device().share(0),
         16 << 20,
     );
     let file = disk
@@ -1228,7 +1228,7 @@ fn live_shrink_failure_retains_charges_through_drop_and_fences_shared_device() {
         let disk = open(config, fixture_memory.clone());
         let scratch = crate::ScratchDisk::test_with_device(
             directory.path().join("scratch"),
-            disk.device.share(0),
+            disk.device().share(0),
             16 << 20,
         );
         let (scratch_file, mut scratch_charge) = scratch.file().unwrap();
@@ -1738,7 +1738,7 @@ fn failed_direct_handles_never_release_bytes_or_restart_sync() {
         file.sync_all_and_parent().unwrap();
         let before = disk.snapshot();
         if fail_shared_device {
-            disk.device.lock().fail_owner();
+            disk.device().lock().fail_owner();
         } else {
             disk.fail();
         }
@@ -2998,7 +2998,7 @@ fn reclaim_retires_parent_metadata_and_weak_backing_before_releasing_promises() 
             parent_charge - config.roots["data"].metadata().unwrap().blocks() * 512
         };
         assert_eq!(
-            *disk.device.lock(),
+            *disk.device().lock(),
             before.filesystem_pending_bytes - old_parent_pending + expected_parent_pending
         );
         release.send(()).unwrap();

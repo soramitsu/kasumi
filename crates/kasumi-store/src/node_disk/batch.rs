@@ -171,7 +171,7 @@ impl NamespaceAdmission {
     /// admitted length before the operation can shed its retained plan backing.
     pub(crate) fn finish(mut self) -> io::Result<()> {
         let mut state = self.disk.lock_state();
-        if state.phase != NodeDiskPhase::Open || !self.disk.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !self.disk.admission_ready() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         let batch = state
@@ -223,6 +223,14 @@ impl NamespaceAdmission {
                 .checked_add(part.bytes)
                 .ok_or(io::ErrorKind::InvalidData)?;
         }
+        // Admission placed every part on its first part's filesystem.
+        let filesystem = batch
+            .parts
+            .iter()
+            .flatten()
+            .next()
+            .map(|part| self.disk.root_filesystem(&part.root))
+            .ok_or(io::ErrorKind::InvalidData)??;
         let bytes = state
             .bytes
             .checked_sub(credit)
@@ -231,7 +239,7 @@ impl NamespaceAdmission {
             .pending
             .checked_sub(credit)
             .ok_or(io::ErrorKind::InvalidData)?;
-        let mut device = self.disk.device.lock();
+        let mut device = self.disk.filesystems[filesystem].promises.lock();
         let shared = device
             .checked_sub(credit)
             .ok_or(io::ErrorKind::InvalidData)?;
@@ -343,7 +351,7 @@ impl NodeDisk {
         state: &mut State,
         binding: NamespaceBinding,
     ) -> io::Result<NamespaceClaim> {
-        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !self.admission_ready() {
             return Err(io::ErrorKind::InvalidData.into());
         }
         if state.namespace_claim.is_some()
@@ -453,6 +461,8 @@ impl NodeDisk {
             .namespace_batch_generation
             .checked_add(1)
             .ok_or(io::ErrorKind::StorageFull)?;
+        // One plan reserves on one filesystem: every part shares its root's.
+        let filesystem = self.root_filesystem(requests[0].root)?;
         let mut record = BatchRecord {
             id,
             work,
@@ -465,6 +475,9 @@ impl NodeDisk {
                 .roots
                 .get(request.root)
                 .ok_or(io::ErrorKind::InvalidInput)?;
+            if root.filesystem != filesystem {
+                return Err(io::ErrorKind::CrossesDevices.into());
+            }
             let names = super::directory::names(
                 request.relative,
                 self.config.max_depth,
@@ -560,7 +573,7 @@ impl NodeDisk {
         state.live.try_reserve(live)?;
         // All bounded names and actual owner Arc backing exist before aggregate
         // byte admission and before the first future native descriptor effect.
-        self.reserve(&mut state, bytes, work)?;
+        self.reserve(&mut state, filesystem, bytes, work)?;
         state.namespace_batch_generation = id;
         state.namespace_batch = Some(record);
         Ok(NamespaceAdmission {

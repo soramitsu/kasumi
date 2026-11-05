@@ -59,6 +59,11 @@ pub(crate) enum DeviceSelection {
     Isolated,
     #[cfg(test)]
     Existing(DeviceDisk),
+    /// Fixture device numbers by persistent root label. Roots that share one
+    /// physical filesystem are accounted as the assigned devices, each with
+    /// its own isolated promise ledger.
+    #[cfg(test)]
+    Assigned(std::collections::BTreeMap<String, u64>),
 }
 impl DeviceSelection {
     pub(crate) fn open(
@@ -72,6 +77,8 @@ impl DeviceSelection {
             #[cfg(any(test, feature = "test-utils"))]
             Self::Isolated => DeviceDisk::isolated(minimum, memory).map_err(Into::into),
             #[cfg(test)]
+            Self::Assigned(_) => DeviceDisk::isolated(minimum, memory).map_err(Into::into),
+            #[cfg(test)]
             Self::Existing(owner) => {
                 if !Arc::ptr_eq(owner.memory(), &memory) {
                     return Err(std::io::ErrorKind::InvalidInput.into());
@@ -79,6 +86,47 @@ impl DeviceSelection {
                 Ok(owner)
             }
         }
+    }
+
+    /// One registration per filesystem, in the given order. An existing
+    /// fixture registration can stand for a single filesystem only.
+    pub(crate) fn open_each(
+        self,
+        devices: &[u64],
+        minimum: u64,
+        memory: &Arc<dyn NodeDiskMemoryAdmission>,
+    ) -> Result<Vec<DeviceDisk>, DiskOpenError> {
+        let mut opened = Vec::new();
+        opened
+            .try_reserve_exact(devices.len())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::OutOfMemory))?;
+        match self {
+            Self::Installed => {
+                for device in devices {
+                    opened.push(DeviceDisk::open(*device, minimum, memory.clone())?);
+                }
+            }
+            #[cfg(any(test, feature = "test-utils"))]
+            Self::Isolated => {
+                for _ in devices {
+                    opened.push(DeviceDisk::isolated(minimum, memory.clone())?);
+                }
+            }
+            #[cfg(test)]
+            Self::Assigned(_) => {
+                for _ in devices {
+                    opened.push(DeviceDisk::isolated(minimum, memory.clone())?);
+                }
+            }
+            #[cfg(test)]
+            Self::Existing(owner) => {
+                if devices.len() != 1 {
+                    return Err(std::io::ErrorKind::InvalidInput.into());
+                }
+                opened.push(Self::Existing(owner).open(devices[0], minimum, memory.clone())?);
+            }
+        }
+        Ok(opened)
     }
 }
 impl DeviceDisk {
@@ -215,6 +263,15 @@ pub(crate) struct DevicePromises<'a> {
 }
 
 impl DevicePromises<'_> {
+    /// This registration's own contribution to the shared aggregate.
+    pub(crate) fn owned(&self) -> u64 {
+        self.state
+            .owners
+            .find(|owner| owner.id == self.owner)
+            .expect("registered device owner")
+            .pending
+    }
+
     pub(crate) fn minimum_free_bytes(&self) -> u64 {
         self.state
             .owners

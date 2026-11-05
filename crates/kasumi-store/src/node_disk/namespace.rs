@@ -404,6 +404,8 @@ enum Funding<'a> {
 #[derive(Clone, Copy)]
 pub(super) struct ParentTransition {
     generation: u64,
+    /// Both affected parents are on this filesystem; its promises settle.
+    filesystem: usize,
     changes: [Option<Change>; 2],
 }
 impl ParentTransition {
@@ -462,13 +464,21 @@ impl ParentTransition {
         second: Option<(Identity, i8)>,
         funding: Funding<'_>,
     ) -> io::Result<Self> {
-        if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         let generation = state
             .namespace_generation
             .checked_add(1)
             .ok_or(io::ErrorKind::StorageFull)?;
+        let filesystem = disk.directory_filesystem(state, first.0)?;
+        // One namespace change never spans filesystems: a rename across them
+        // has no effect to settle. Refuse it before anything changes.
+        if let Some((identity, _)) = second
+            && disk.directory_filesystem(state, identity)? != filesystem
+        {
+            return Err(io::ErrorKind::CrossesDevices.into());
+        }
         // Other namespace work cannot spend generation slots already promised
         // to complete namespace batches or transaction-file ranges.
         generation
@@ -478,17 +488,17 @@ impl ParentTransition {
             Funding::Transaction(permit) => permit.check_parent(state, first.0)?,
             // Full parent allowances were promised by census. This checks the
             // unchanged node/work/floor policy before consuming those promises.
-            Funding::Work(work) => disk.reserve(state, 0, work)?,
+            Funding::Work(work) => disk.reserve(state, filesystem, 0, work)?,
             Funding::Admitted => {}
             Funding::Cleanup => {
                 // Cleanup may proceed above the configured extent limit or
                 // paused, but it may not spend a shared promise without
                 // physical headroom.
-                let promises = disk.device.lock();
+                let promises = disk.filesystems[filesystem].promises.lock();
                 let needed = promises
                     .checked_add(promises.minimum_free_bytes())
                     .ok_or(io::ErrorKind::StorageFull)?;
-                if disk.available()? < needed {
+                if disk.available(filesystem)? < needed {
                     return Err(io::ErrorKind::StorageFull.into());
                 }
             }
@@ -547,6 +557,7 @@ impl ParentTransition {
         }
         Ok(Self {
             generation,
+            filesystem,
             changes,
         })
     }
@@ -639,7 +650,7 @@ impl ParentTransition {
         let mut bytes = state.bytes;
         let mut pending = state.pending;
         let mut directory_bytes = state.directory_bytes;
-        let mut promises = disk.device.lock();
+        let mut promises = disk.filesystems[self.filesystem].promises.lock();
         let mut shared = *promises;
         let mut exceeded = false;
         for (slot, change) in updated.iter_mut().zip(self.changes.iter()) {

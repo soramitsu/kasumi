@@ -1,6 +1,7 @@
 //! Fixed, checked resident workspace for retained metadata and its replacement peak.
 use super::{
-    AccountedInode, Identity, NodeDisk, NodeDiskConfig, census, directory, file, fixed_map, ledger,
+    AccountedInode, Filesystem, Identity, NodeDisk, NodeDiskConfig, census, directory, file,
+    fixed_map, ledger,
 };
 use crate::disk_memory::{self, add, mul, size};
 use std::{io, os::unix::ffi::OsStrExt, sync::Weak};
@@ -93,8 +94,10 @@ impl NodeDisk {
                 .map_err(|_| disk_memory::overflow())?;
             let copies = mul(4, add(add(label, path)?, 1)?)?;
             let ancestors = mul(add(depth, 1)?, ALLOCATION_HEADROOM)?;
+            // Each root can add one filesystem slot and its device number.
+            let filesystem = add(size::<Filesystem>()?, size::<u64>()?)?;
             let root = add(
-                add(4096, size::<census::Root>()?)?,
+                add(4096, add(size::<census::Root>()?, filesystem)?)?,
                 add(size::<NodeDiskConfig>()?, add(copies, ancestors)?)?,
             )?;
             roots = add(roots, root)?;

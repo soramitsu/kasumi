@@ -140,7 +140,9 @@ pub(crate) fn require(condition: bool, message: &'static str) -> Result<(), Disk
 
 /// Four independently owned resident allocations for a fresh isolated device.
 /// Reusing an existing physical device does not acquire `device_bytes` again.
-/// The provider adds its own lease storage to each acquired component.
+/// The provider adds its own lease storage to each acquired component. A
+/// persistent owner whose roots span several filesystems acquires one
+/// `registration_bytes`, and for a new device one `device_bytes`, per filesystem.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DiskMemoryRequirements {
     pub owner_bytes: u64,

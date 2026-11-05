@@ -1,6 +1,6 @@
 use super::{
     AccountedDirectory, AccountedFile, AccountedInode, CensusCancellation, Identity,
-    NamespaceBinding, NodeDiskConfig, file_extent,
+    MAX_FILESYSTEMS, NamespaceBinding, NodeDiskConfig, file_extent,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -22,6 +22,8 @@ pub(super) struct Root {
     path_c: CString,
     pub(super) file: File,
     pub(super) identity: Identity,
+    /// Index of the filesystem charged for every promise beneath this root.
+    pub(super) filesystem: usize,
 }
 
 impl Root {
@@ -99,26 +101,53 @@ fn private_nonallocating(metadata: &Metadata) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn open_roots(config: &NodeDiskConfig) -> Result<BTreeMap<String, Root>> {
-    let mut roots = BTreeMap::new();
-    let mut device = None;
+/// Open every configured root and group the roots by filesystem. Each
+/// filesystem is one promise and free-space account; the returned devices are
+/// in filesystem index order. `assigned` replaces each named root's device
+/// number for that grouping only, so fixtures can place roots that share one
+/// physical filesystem on distinct accounted devices. The census and every
+/// descriptor check still compare the actual device numbers.
+pub(super) fn open_roots(
+    config: &NodeDiskConfig,
+    assigned: Option<&BTreeMap<String, u64>>,
+) -> Result<(BTreeMap<String, Root>, Vec<u64>)> {
+    let mut roots: BTreeMap<String, Root> = BTreeMap::new();
+    let mut devices: Vec<u64> = Vec::new();
     for (name, path) in &config.roots {
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
-            .open(path)?;
+            .open(path)
+            .with_context(|| format!("opening persistent root {name} ({})", path.display()))?;
         let metadata = file.metadata()?;
-        directory(&metadata)?;
+        directory(&metadata)
+            .with_context(|| format!("persistent root {name} ({})", path.display()))?;
         let identity = Identity::of(&metadata);
-        ensure!(
-            device.is_none_or(|device| device == identity.0),
-            "one persistent owner requires one filesystem"
-        );
-        device = Some(identity.0);
-        ensure!(
-            !roots.values().any(|root: &Root| root.identity == identity),
-            "duplicate physical persistent root"
-        );
+        if let Some((other, _)) = roots.iter().find(|(_, root)| root.identity == identity) {
+            anyhow::bail!(
+                "persistent roots {other} and {name} ({}) are the same directory",
+                path.display()
+            );
+        }
+        let device = match assigned {
+            Some(assigned) => *assigned
+                .get(name)
+                .with_context(|| format!("fixture assigns no device to root {name}"))?,
+            None => identity.0,
+        };
+        let filesystem = match devices.iter().position(|known| *known == device) {
+            Some(index) => index,
+            None => {
+                ensure!(
+                    devices.len() < MAX_FILESYSTEMS,
+                    "persistent roots span more than {MAX_FILESYSTEMS} filesystems; \
+                     root {name} ({}) would add another",
+                    path.display()
+                );
+                devices.push(device);
+                devices.len() - 1
+            }
+        };
         roots.insert(
             name.clone(),
             Root {
@@ -129,10 +158,11 @@ pub(super) fn open_roots(config: &NodeDiskConfig) -> Result<BTreeMap<String, Roo
                 },
                 file,
                 identity,
+                filesystem,
             },
         );
     }
-    Ok(roots)
+    Ok((roots, devices))
 }
 
 // Shared ancestor locks conflict with another owner's exclusive root lock in
@@ -150,10 +180,15 @@ pub(super) fn lock_roots(roots: &BTreeMap<String, Root>, max_depth: u32) -> Resu
                 reached_root = true;
                 break;
             }
-            ensure!(
-                !roots.values().any(|root| root.identity == identity),
-                "persistent roots overlap"
-            );
+            if let Some(outer) = roots.values().find(|outer| outer.identity == identity) {
+                anyhow::bail!(
+                    "persistent root {} is inside persistent root {}; roots may not nest, even \
+                     across a mount point. Mount another filesystem outside every persistent \
+                     root and install that directory as its own root",
+                    root.path.display(),
+                    outer.path.display()
+                );
+            }
             lock(&parent, libc::LOCK_SH)?;
             current = parent.try_clone()?;
             ancestors.push(parent);
@@ -330,6 +365,8 @@ pub(super) struct Totals {
     pub(super) files: u64,
     pub(super) directory_bytes: u64,
     pub(super) directories: u64,
+    /// `pending` split by the filesystem of each enrolled inode's root.
+    pub(super) filesystem_pending: [u64; MAX_FILESYSTEMS],
 }
 struct Scan<'a> {
     counters: Totals,
@@ -459,6 +496,7 @@ impl<'a> CensusSession<'a> {
                     NamespaceBinding::root(root.identity),
                     None,
                     self.config.directory_policy,
+                    root.filesystem,
                 )?;
                 self.stack.push(Cursor::open(
                     root.file.try_clone()?,
@@ -510,7 +548,13 @@ impl<'a> CensusSession<'a> {
             let metadata = child.metadata()?;
             ensure!(
                 metadata.dev() == root.identity.0,
-                "census crossed filesystem"
+                "persistent root {} holds {:?} on another filesystem (device {}, root device {}); \
+                 a root is one filesystem. Mount the other filesystem outside every persistent \
+                 root and install that directory as its own root",
+                root.path.display(),
+                name,
+                metadata.dev(),
+                root.identity.0
             );
             if metadata.is_dir() {
                 directory(&metadata)?;
@@ -528,6 +572,7 @@ impl<'a> CensusSession<'a> {
                     binding,
                     Some(parent),
                     self.config.directory_policy,
+                    root.filesystem,
                 )?;
                 self.subdirectories += 1;
                 self.stack.push(Cursor::open(
@@ -579,6 +624,10 @@ impl<'a> CensusSession<'a> {
                 self.scan.pending = self
                     .scan
                     .pending
+                    .checked_add(pending)
+                    .context("census pending overflow")?;
+                let filesystem = &mut self.scan.filesystem_pending[root.filesystem];
+                *filesystem = filesystem
                     .checked_add(pending)
                     .context("census pending overflow")?;
                 self.scan.files = self
@@ -657,6 +706,7 @@ fn enroll_directory(
     binding: NamespaceBinding,
     parent: Option<Identity>,
     policy: super::DirectoryPolicy,
+    filesystem: usize,
 ) -> Result<()> {
     let metadata = file.metadata()?;
     directory(&metadata)?;
@@ -704,6 +754,10 @@ fn enroll_directory(
         .context("census directory count overflow")?;
     totals.pending = totals
         .pending
+        .checked_add(pending)
+        .context("directory promises overflow")?;
+    let promised = &mut totals.filesystem_pending[filesystem];
+    *promised = promised
         .checked_add(pending)
         .context("directory promises overflow")?;
     totals.bytes = next_bytes;

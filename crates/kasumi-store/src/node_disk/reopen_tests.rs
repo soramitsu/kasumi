@@ -397,7 +397,7 @@ fn reopen_rejects_foreign_identity_absent_owners_and_shared_poison_before_census
 
     // Shared device poison is process-restart-only: no census may run or
     // reopen admission on top of an unprovable aggregate.
-    disk.device.poison();
+    disk.device().poison();
     for _ in 0..2 {
         assert!(
             failed(reopen(&config, &memory, &CensusCancellation::default()))

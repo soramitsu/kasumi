@@ -168,7 +168,7 @@ impl NodeDisk {
         relative: &Path,
     ) -> io::Result<NodeDiskDirectory> {
         let mut state = self.lock_state();
-        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !self.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         if state
@@ -296,9 +296,7 @@ impl NodeDiskDirectory {
     /// The observation carries no descriptor custody or write authority.
     pub fn verified_identity(&self) -> io::Result<(u64, u64)> {
         let mut state = self.owner().disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed
-            || !self.owner().disk.device.lock().admission_ready()
-        {
+        if state.phase == NodeDiskPhase::Failed || !self.owner().disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.verify(&state)
@@ -309,9 +307,7 @@ impl NodeDiskDirectory {
 
     pub fn observed_allocated_bytes(&self) -> io::Result<u64> {
         let mut state = self.owner().disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed
-            || !self.owner().disk.device.lock().admission_ready()
-        {
+        if state.phase == NodeDiskPhase::Failed || !self.owner().disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.verify(&state)
@@ -329,9 +325,7 @@ impl NodeDiskDirectory {
     /// Paused permits existing custody to drain; Failed never advertises success.
     pub fn sync_all(&self) -> io::Result<()> {
         let mut state = self.owner().disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed
-            || !self.owner().disk.device.lock().admission_ready()
-        {
+        if state.phase == NodeDiskPhase::Failed || !self.owner().disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.verify(&state)

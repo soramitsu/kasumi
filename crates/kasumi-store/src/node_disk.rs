@@ -29,6 +29,8 @@ mod memory;
 mod namespace;
 mod transaction;
 pub(crate) use transaction::TransactionSpace;
+#[cfg(test)]
+mod filesystems_tests;
 mod native_file;
 #[cfg(test)]
 mod reopen_tests;
@@ -55,7 +57,11 @@ use ledger::AccountedInode;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeDiskConfig {
-    /// Exact private, non-overlapping persistent roots on one filesystem.
+    /// Exact private, non-overlapping persistent roots. Each root is one
+    /// filesystem, and roots may be on different filesystems: every
+    /// filesystem keeps its own promises and `min_free_bytes` floor, and every
+    /// reservation is charged to the filesystem of the root it writes in.
+    /// `max_bytes` and the namespace limits stay one total for the owner.
     pub roots: BTreeMap<String, PathBuf>,
     pub max_bytes: u64,
     /// Explicit native database cache and descriptor ceilings. Actual live
@@ -309,6 +315,19 @@ pub enum DiskWork {
     Maintenance,
 }
 
+/// At most this many filesystems hold one owner's roots.
+pub(super) const MAX_FILESYSTEMS: usize = 8;
+
+/// A filesystem holding at least one installed root. Every promise for an
+/// inode beneath those roots, and the free-space floor its growth must keep,
+/// uses this filesystem's shared device ledger. The extent budget stays one
+/// owner total.
+struct Filesystem {
+    /// The roots' device number, or a fixture-assigned one.
+    device: u64,
+    promises: DeviceDisk,
+}
+
 #[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 pub enum NodeDiskPhase {
     Open,
@@ -338,7 +357,32 @@ pub struct NodeDiskSnapshot {
     pub filesystem_available_bytes: Option<u64>,
     pub filesystem_total_bytes: Option<u64>,
     pub filesystem_used_bytes: Option<u64>,
+    /// Every filesystem's shared admission is ready.
     pub filesystem_admission_ready: bool,
+    /// One entry per filesystem when the roots span more than one. The
+    /// `filesystem_*` fields above then describe the filesystem with the least
+    /// headroom (available bytes beyond its floor and outstanding promises),
+    /// so a single readiness check covers them all.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub filesystems: Vec<NodeDiskFilesystemSnapshot>,
+}
+
+/// One filesystem of a multi-filesystem persistent owner.
+#[derive(Clone, Debug, Serialize)]
+pub struct NodeDiskFilesystemSnapshot {
+    /// The filesystem's device number.
+    pub device: u64,
+    /// Installed root labels on this filesystem.
+    pub roots: Vec<String>,
+    /// Outstanding promises of every owner on this filesystem.
+    pub pending_bytes: u64,
+    /// This owner's part of `pending_bytes`.
+    pub owner_pending_bytes: u64,
+    pub min_free_bytes: u64,
+    pub available_bytes: Option<u64>,
+    pub total_bytes: Option<u64>,
+    pub used_bytes: Option<u64>,
+    pub admission_ready: bool,
 }
 
 #[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -516,11 +560,15 @@ pub struct NodeDisk {
     memory: Arc<dyn NodeDiskMemoryAdmission>,
     roots: BTreeMap<String, Root>,
     _ancestor_locks: Vec<File>,
-    device: DeviceDisk,
+    filesystems: Box<[Filesystem]>,
+    /// The largest allocation unit among the filesystems. Rounding a smaller
+    /// unit's extents up to it only overstates charges and promises.
     unit: u64,
     state: Mutex<State>,
     #[cfg(test)]
     available_override: Mutex<Option<u64>>,
+    #[cfg(test)]
+    filesystem_available_override: Mutex<[Option<u64>; MAX_FILESYSTEMS]>,
     #[cfg(test)]
     available_error: AtomicBool,
     #[cfg(test)]
@@ -617,6 +665,8 @@ struct PreparedResources {
     config: NodeDiskConfig,
     memory: Arc<dyn NodeDiskMemoryAdmission>,
     roots: BTreeMap<String, Root>,
+    /// Accounting device of each filesystem, in filesystem index order.
+    devices: Vec<u64>,
     ancestor_locks: Vec<File>,
     accounted: fixed_map::Banks<AccountedInode>,
     live: fixed_map::Banks<Weak<file::FileOwner>>,
@@ -743,7 +793,7 @@ impl NodeDisk {
     ) -> io::Result<Option<NodeDiskEntryKind>> {
         use std::{os::unix::ffi::OsStrExt, path::Component};
         let mut state = self.lock_state();
-        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !self.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         let installed = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
@@ -798,6 +848,22 @@ impl NodeDisk {
     ) -> std::result::Result<Arc<Self>, DiskOpenError> {
         Self::open_inner(config, memory, cancel, DeviceSelection::Isolated)
     }
+    /// Fixture roots on one physical filesystem, accounted as the assigned
+    /// device numbers: each distinct number is a filesystem with its own
+    /// isolated promise ledger, floor and free-space observation.
+    #[cfg(test)]
+    pub(crate) fn open_fixture_filesystems(
+        config: &NodeDiskConfig,
+        memory: Arc<dyn NodeDiskMemoryAdmission>,
+        devices: BTreeMap<String, u64>,
+    ) -> std::result::Result<Arc<Self>, DiskOpenError> {
+        Self::open_inner(
+            config,
+            memory,
+            &CensusCancellation::default(),
+            DeviceSelection::Assigned(devices),
+        )
+    }
     fn open_inner(
         config: &NodeDiskConfig,
         memory: Arc<dyn NodeDiskMemoryAdmission>,
@@ -830,7 +896,14 @@ impl NodeDisk {
             .reserve_installed(requirement.registry_bytes)?;
         // The new fixed bank has no failure path after configured-root FD acquisition.
         let file_custody = file::CustodySlots::new(config.max_open_files)?;
-        let roots = open_roots(config)?;
+        #[cfg(test)]
+        let assigned = match &selection {
+            DeviceSelection::Assigned(devices) => Some(devices),
+            _ => None,
+        };
+        #[cfg(not(test))]
+        let assigned = None;
+        let (roots, devices) = open_roots(config, assigned)?;
         for entry in installed.iter() {
             disk_memory::require(
                 entry.roots().is_none_or(|old_roots| {
@@ -842,8 +915,10 @@ impl NodeDisk {
             )?;
         }
         let ancestor_locks = census::lock_roots(&roots, config.max_depth)?;
-        let root = roots.values().next().expect("validated roots");
-        let (_, unit) = filesystem(&root.file)?;
+        let mut unit = 0;
+        for root in roots.values() {
+            unit = unit.max(filesystem(&root.file)?.1);
+        }
         let (retained_limit, census_limit) = ledger::map_limits(config)?;
         let accounted = fixed_map::Banks::new(retained_limit)?;
         let live = fixed_map::Banks::new(
@@ -858,6 +933,7 @@ impl NodeDisk {
                 config: config.clone(),
                 memory,
                 roots,
+                devices,
                 ancestor_locks,
                 accounted,
                 live,
@@ -883,11 +959,13 @@ impl NodeDisk {
         )?;
         cancel.check()?;
         prepared.accounted.commit_stage();
-        let device = selection.open(identity.0, config.min_free_bytes, prepared.memory.clone())?;
+        let registrations =
+            selection.open_each(&prepared.devices, config.min_free_bytes, &prepared.memory)?;
         let PreparedResources {
             config,
             memory,
             roots,
+            devices,
             ancestor_locks,
             accounted,
             live,
@@ -895,12 +973,18 @@ impl NodeDisk {
             streams: _,
             charge,
         } = registration.take();
+        let filesystems = devices
+            .into_iter()
+            .zip(registrations)
+            .map(|(device, promises)| Filesystem { device, promises })
+            .collect::<Vec<_>>()
+            .into_boxed_slice();
         let disk = ProvisionalOwner::new(Self {
             config,
             memory,
             roots,
             _ancestor_locks: ancestor_locks,
-            device,
+            filesystems,
             unit,
             state: Mutex::new(State {
                 phase: NodeDiskPhase::Open,
@@ -931,6 +1015,8 @@ impl NodeDisk {
             #[cfg(test)]
             available_override: Mutex::new(None),
             #[cfg(test)]
+            filesystem_available_override: Mutex::new([None; MAX_FILESYSTEMS]),
+            #[cfg(test)]
             available_error: AtomicBool::new(false),
             #[cfg(test)]
             after_file_close: Mutex::new(None),
@@ -952,20 +1038,23 @@ impl NodeDisk {
         #[cfg(test)]
         {
             drop(disk.available_override.lock().unwrap());
+            drop(disk.filesystem_available_override.lock().unwrap());
             // First-use allocation belongs to acquisition, never a publication
             // or descriptor destructor, even for dormant fault-injection hooks.
             drop(disk.after_file_close.lock().unwrap());
             drop(disk.shrink_failure.lock().unwrap());
             drop(disk.sync_pause.lock().unwrap());
         }
-        let mut promises = disk.device.lock();
-        let next = promises
-            .checked_add(totals.pending)
-            .context("persistent census promises overflow")?;
-        // Publish one complete census. Existing over-budget files remain charged;
-        // read/cleanup can proceed, while every new reservation checks both limits.
-        promises.set_pending(next)?;
-        drop(promises);
+        // Publish one complete census, each filesystem's promises on its own
+        // device. Existing over-budget files remain charged; read/cleanup can
+        // proceed, while every new reservation checks both limits.
+        for (filesystem, census) in disk.filesystems.iter().zip(totals.filesystem_pending) {
+            let mut promises = filesystem.promises.lock();
+            let next = promises
+                .checked_add(census)
+                .context("persistent census promises overflow")?;
+            promises.set_pending(next)?;
+        }
         Ok(disk.install(&mut registration))
     }
 
@@ -1017,7 +1106,7 @@ impl NodeDisk {
             return Err(state.fenced());
         }
         disk_memory::require(
-            !owner.device.lock().poisoned(),
+            !owner.promises_poisoned(),
             "shared filesystem promises are poisoned; process restart required",
         )?;
         let retained = owner.clone();
@@ -1053,7 +1142,7 @@ impl NodeDisk {
             return Err(state.fenced());
         }
         disk_memory::require(
-            !owner.device.lock().poisoned(),
+            !owner.promises_poisoned(),
             "shared filesystem promises are poisoned; process restart required",
         )?;
         owner.reconcile_locked(&mut state, cancel)?;
@@ -1168,9 +1257,28 @@ impl NodeDisk {
 
     pub fn snapshot(&self) -> NodeDiskSnapshot {
         let state = self.lock_state();
-        let promises = self.device.lock();
-        let physical =
-            filesystem_usage(&self.roots.values().next().expect("installed roots").file).ok();
+        let mut tightest = None;
+        let mut admission_ready = true;
+        let mut filesystems = Vec::new();
+        for index in 0..self.filesystems.len() {
+            let observed = self.observe_filesystem(index);
+            admission_ready &= observed.admission_ready;
+            let headroom = observed.available_bytes.map_or(i128::MIN, |available| {
+                i128::from(available)
+                    - i128::from(observed.min_free_bytes)
+                    - i128::from(observed.pending_bytes)
+            });
+            if self.filesystems.len() > 1 {
+                filesystems.push(observed.clone());
+            }
+            if tightest
+                .as_ref()
+                .is_none_or(|(least, _): &(i128, NodeDiskFilesystemSnapshot)| headroom < *least)
+            {
+                tightest = Some((headroom, observed));
+            }
+        }
+        let (_, tightest) = tightest.expect("installed filesystems");
         NodeDiskSnapshot {
             phase: state.phase,
             charged_bytes: state.bytes,
@@ -1187,13 +1295,115 @@ impl NodeDisk {
             observed_directory_bytes: state.directory_bytes,
             max_bytes: self.config.max_bytes,
             maintenance_reserve_bytes: self.config.maintenance_reserve_bytes,
-            filesystem_pending_bytes: *promises,
-            filesystem_min_free_bytes: promises.minimum_free_bytes(),
-            filesystem_available_bytes: self.available().ok(),
-            filesystem_total_bytes: physical.map(|(total, _)| total),
-            filesystem_used_bytes: physical.map(|(_, used)| used),
-            filesystem_admission_ready: promises.admission_ready(),
+            filesystem_pending_bytes: tightest.pending_bytes,
+            filesystem_min_free_bytes: tightest.min_free_bytes,
+            filesystem_available_bytes: tightest.available_bytes,
+            filesystem_total_bytes: tightest.total_bytes,
+            filesystem_used_bytes: tightest.used_bytes,
+            filesystem_admission_ready: admission_ready,
+            filesystems,
         }
+    }
+
+    fn observe_filesystem(&self, index: usize) -> NodeDiskFilesystemSnapshot {
+        let filesystem = &self.filesystems[index];
+        let promises = filesystem.promises.lock();
+        let physical = filesystem_usage(&self.filesystem_root(index).file).ok();
+        NodeDiskFilesystemSnapshot {
+            device: filesystem.device,
+            roots: if self.filesystems.len() > 1 {
+                self.roots
+                    .iter()
+                    .filter(|(_, root)| root.filesystem == index)
+                    .map(|(label, _)| label.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            },
+            pending_bytes: *promises,
+            owner_pending_bytes: promises.owned(),
+            min_free_bytes: promises.minimum_free_bytes(),
+            available_bytes: self.available(index).ok(),
+            total_bytes: physical.map(|(total, _)| total),
+            used_bytes: physical.map(|(_, used)| used),
+            admission_ready: promises.admission_ready(),
+        }
+    }
+
+    /// The first installed root on filesystem `index`, used for its
+    /// free-space and allocation-unit observations.
+    fn filesystem_root(&self, index: usize) -> &Root {
+        self.roots
+            .values()
+            .find(|root| root.filesystem == index)
+            .expect("every filesystem holds an installed root")
+    }
+
+    /// The filesystem charged for every inode beneath an installed root.
+    fn root_filesystem(&self, root: &str) -> io::Result<usize> {
+        self.roots
+            .get(root)
+            .map(|root| root.filesystem)
+            .ok_or_else(|| io::ErrorKind::InvalidInput.into())
+    }
+
+    /// The filesystem of an enrolled directory: the one of the installed root
+    /// its retained parent chain ends at. Directories are never renamed, so
+    /// the chain is the directory's actual ancestry.
+    fn directory_filesystem(&self, state: &State, mut identity: Identity) -> io::Result<usize> {
+        for _ in 0..=self.config.max_depth {
+            let entry = state
+                .accounted
+                .get(&identity)
+                .and_then(AccountedInode::directory)
+                .ok_or(io::ErrorKind::InvalidData)?;
+            match entry.parent {
+                Some(parent) => identity = parent,
+                None => {
+                    return self
+                        .roots
+                        .values()
+                        .find(|root| root.identity == identity)
+                        .map(|root| root.filesystem)
+                        .ok_or_else(|| io::ErrorKind::InvalidData.into());
+                }
+            }
+        }
+        Err(io::ErrorKind::InvalidData.into())
+    }
+
+    /// Every filesystem's shared admission is ready: no device poison and no
+    /// registered owner's uncertainty on any of them.
+    fn admission_ready(&self) -> bool {
+        self.filesystems
+            .iter()
+            .all(|filesystem| filesystem.promises.lock().admission_ready())
+    }
+
+    fn promises_poisoned(&self) -> bool {
+        self.filesystems
+            .iter()
+            .any(|filesystem| filesystem.promises.lock().poisoned())
+    }
+
+    /// The single-filesystem fixture's device ledger.
+    #[cfg(test)]
+    pub(crate) fn device(&self) -> &DeviceDisk {
+        assert_eq!(self.filesystems.len(), 1, "one filesystem");
+        &self.filesystems[0].promises
+    }
+
+    /// The device ledger of the filesystem holding `root`.
+    #[cfg(test)]
+    pub(crate) fn root_device(&self, root: &str) -> &DeviceDisk {
+        &self.filesystems[self.root_filesystem(root).unwrap()].promises
+    }
+
+    /// Report `available` free bytes for the filesystem holding `root`.
+    #[cfg(test)]
+    pub(crate) fn set_root_available_for_test(&self, root: &str, available: Option<u64>) {
+        let index = self.root_filesystem(root).unwrap();
+        self.filesystem_available_override.lock().unwrap()[index] = available;
     }
 
     /// Seal new mutation admission before waiting for file/backend/directory owners to drain.
@@ -1281,45 +1491,60 @@ impl NodeDisk {
             Ok(totals) => totals,
             Err(error) => {
                 state.accounted.cancel_stage();
-                state.phase = NodeDiskPhase::Failed;
-                self.device.lock().fail_owner();
+                self.fail_locked(state);
                 return Err(error);
             }
         };
-        let mut promises = self.device.lock();
-        let Some(next) = promises
-            .checked_sub(state.pending)
-            .and_then(|n| n.checked_add(totals.pending))
-        else {
-            state.accounted.cancel_stage();
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
-            anyhow::bail!("persistent census promise accounting overflow");
+        // Each filesystem replaces exactly this owner's own contribution to
+        // its shared aggregate with the census of the roots it holds.
+        let republished = |filesystem: &Filesystem, census: u64| {
+            let promises = filesystem.promises.lock();
+            promises
+                .checked_sub(promises.owned())
+                .and_then(|n| n.checked_add(census))
         };
+        if self
+            .filesystems
+            .iter()
+            .zip(totals.filesystem_pending)
+            .any(|(filesystem, census)| republished(filesystem, census).is_none())
+        {
+            state.accounted.cancel_stage();
+            self.fail_locked(state);
+            anyhow::bail!("persistent census promise accounting overflow");
+        }
         if let Err(error) = cancel.check() {
             state.accounted.cancel_stage();
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
+            self.fail_locked(state);
             return Err(error);
         }
         if let Some(operation) = &mut state.pending_directory
             && let Err(error) = operation.retire_before_release()
         {
             state.accounted.cancel_stage();
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
+            self.fail_locked(state);
             return Err(error.into());
         }
-        if let Err(error) = promises.set_pending(next) {
-            state.accounted.cancel_stage();
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
-            let error = if let Some(operation) = &mut state.pending_directory {
-                operation.retain_publication_error(error)
-            } else {
-                error
-            };
-            return Err(error.into());
+        // A filesystem published before a later one fails keeps its new
+        // contribution: the next census replaces exactly that contribution.
+        for (filesystem, census) in self.filesystems.iter().zip(totals.filesystem_pending) {
+            let mut promises = filesystem.promises.lock();
+            let published = promises
+                .checked_sub(promises.owned())
+                .and_then(|n| n.checked_add(census))
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))
+                .and_then(|next| promises.set_pending(next));
+            if let Err(error) = published {
+                drop(promises);
+                state.accounted.cancel_stage();
+                self.fail_locked(state);
+                let error = if let Some(operation) = &mut state.pending_directory {
+                    operation.retain_publication_error(error)
+                } else {
+                    error
+                };
+                return Err(error.into());
+            }
         }
         // This is the publication boundary: the complete candidate and shared
         // promises are accepted. Swap fixed backing, then retire old entries.
@@ -1345,13 +1570,14 @@ impl NodeDisk {
             // actual opaque panic remains owned; its payload size is not a
             // proved bounded allocator/RSS allowance. Never retry retirement.
             state.census_retirement_panic = Some(payload);
-            state.phase = NodeDiskPhase::Failed;
-            promises.fail_owner();
+            self.fail_locked(state);
             anyhow::bail!("persistent original outcome retirement panicked");
         }
         state.open_files = 0;
         state.open_directories = 0;
-        promises.reconcile_owner();
+        for filesystem in &*self.filesystems {
+            filesystem.promises.lock().reconcile_owner();
+        }
         // A receipt is observable only after every required physical/backing
         // retirement and shared promise publication completed under this gate.
         state.accepted_census_generation = accepted_generation;
@@ -1433,30 +1659,73 @@ impl NodeDisk {
         self.fail_locked(&mut state);
     }
 
+    /// Every filesystem's registration becomes uncertain: none of this
+    /// owner's promises can be trusted until a drained census replaces them.
     fn fail_locked(&self, state: &mut State) {
         state.phase = NodeDiskPhase::Failed;
-        self.device.lock().fail_owner();
+        for filesystem in &*self.filesystems {
+            filesystem.promises.lock().fail_owner();
+        }
     }
 
     fn lock_state(&self) -> std::sync::MutexGuard<'_, State> {
         crate::sync_trace::lock(&self.state, crate::sync_trace::Lock::State).unwrap_or_else(|p| {
             let mut state = p.into_inner();
             state.phase = NodeDiskPhase::Failed;
-            self.device.lock().fail_owner();
+            for filesystem in &*self.filesystems {
+                filesystem.promises.lock().fail_owner();
+            }
             state
         })
     }
 
-    fn available(&self) -> io::Result<u64> {
+    fn available(&self, filesystem_index: usize) -> io::Result<u64> {
         #[cfg(test)]
         if self.available_error.load(Ordering::Relaxed) {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         #[cfg(test)]
+        if let Some(value) = self.filesystem_available_override.lock().unwrap()[filesystem_index] {
+            return Ok(value);
+        }
+        #[cfg(test)]
         if let Some(value) = *self.available_override.lock().unwrap() {
             return Ok(value);
         }
-        filesystem(&self.roots.values().next().expect("installed roots").file).map(|v| v.0)
+        filesystem(&self.filesystem_root(filesystem_index).file).map(|v| v.0)
+    }
+
+    /// Charge `delta` to the owner's extent budget and to the promises of
+    /// filesystem `index`, whose own floor and free space must cover it.
+    fn reserve(
+        &self,
+        state: &mut State,
+        index: usize,
+        delta: u64,
+        work: DiskWork,
+    ) -> io::Result<()> {
+        OnFilesystem {
+            config: &self.config,
+            device: &self.filesystems[index].promises,
+            disk: self,
+            index,
+        }
+        .reserve(state, delta, work)
+    }
+}
+
+/// One filesystem of an owner, beside the owner's shared extent budget: the
+/// device ledger and free space a reservation in one of its roots uses.
+struct OnFilesystem<'a> {
+    config: &'a NodeDiskConfig,
+    device: &'a DeviceDisk,
+    disk: &'a NodeDisk,
+    index: usize,
+}
+
+impl OnFilesystem<'_> {
+    fn available(&self) -> io::Result<u64> {
+        self.disk.available(self.index)
     }
 
     fn reserve(&self, state: &mut State, delta: u64, work: DiskWork) -> io::Result<()> {
@@ -1500,7 +1769,9 @@ impl NodeDisk {
         state.pending = own_pending;
         Ok(())
     }
+}
 
+impl NodeDisk {
     /// Promise again the allocation a closed settled file released since its
     /// last observation. The paid charge is unchanged and no credit returns.
     /// The caller holds State and matched the observed inode's identity and
@@ -1509,6 +1780,7 @@ impl NodeDisk {
     fn adopt_released_allocation(
         &self,
         state: &mut State,
+        filesystem_index: usize,
         identity: Identity,
         observed: AccountedFile,
     ) -> io::Result<()> {
@@ -1521,10 +1793,10 @@ impl NodeDisk {
         if released == 0 || state.live.contains_key(&identity) {
             return Ok(());
         }
-        if state.phase == NodeDiskPhase::Failed || !self.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
-        let mut promises = self.device.lock();
+        let mut promises = self.filesystems[filesystem_index].promises.lock();
         let (Some(next), Some(own_next)) = (
             promises.checked_add(released),
             state.pending.checked_add(released),

@@ -7,6 +7,8 @@ use std::{io, sync::Arc};
 pub(crate) struct TransactionSpace {
     disk: Arc<NodeDisk>,
     parent: Identity,
+    /// The parent's filesystem, which holds every unassigned right's promise.
+    filesystem: usize,
     binding: NamespaceBinding,
     bytes: u64,
     files: u64,
@@ -92,6 +94,7 @@ impl NodeDisk {
             return Err(io::ErrorKind::WouldBlock.into());
         }
         let binding = directory.binding;
+        let filesystem = self.directory_filesystem(&state, parent)?;
         let children = directory
             .children
             .checked_add(files)
@@ -145,7 +148,7 @@ impl NodeDisk {
         state.live.try_reserve(live)?;
         // No physical effect and no surviving provisional allocation precedes
         // this final quota transition. Every subsequent assignment is infallible.
-        self.reserve(&mut state, bytes, DiskWork::Foreground)?;
+        self.reserve(&mut state, filesystem, bytes, DiskWork::Foreground)?;
         state.transaction_files = reserved_files;
         state.transaction_descriptors = reserved_descriptors;
         state.transaction_witnesses = witnesses;
@@ -164,6 +167,7 @@ impl NodeDisk {
         Ok(TransactionSpace {
             disk: self.clone(),
             parent,
+            filesystem,
             binding,
             bytes,
             files,
@@ -335,7 +339,7 @@ impl TransactionSpace {
             .pending
             .checked_sub(self.bytes)
             .ok_or(io::ErrorKind::InvalidData)?;
-        let mut device = self.disk.device.lock();
+        let mut device = self.disk.filesystems[self.filesystem].promises.lock();
         let shared = device
             .checked_sub(self.bytes)
             .ok_or(io::ErrorKind::InvalidData)?;

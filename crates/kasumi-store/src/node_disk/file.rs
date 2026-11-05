@@ -706,7 +706,8 @@ fn execute_prepared(
             Some(admitted) => admitted,
             None => {
                 let bytes = file_ceiling(0, disk.unit, disk.config.file_allocation_policy)?;
-                disk.reserve(state, bytes, work.expect("creation work class"))?;
+                let filesystem = disk.root_filesystem(&resources.root)?;
+                disk.reserve(state, filesystem, bytes, work.expect("creation work class"))?;
                 (bytes, 0)
             }
         };
@@ -907,7 +908,12 @@ fn execute_prepared(
         let enrolled = AccountedFile::durable(resources.binding, bytes, pending, metadata.len());
         // No owner is registered (checked above), so released allocation is
         // promised again before this owner can grow back into it.
-        if let Err(error) = disk.adopt_released_allocation(state, identity, enrolled) {
+        let adopted = disk
+            .root_filesystem(&resources.root)
+            .and_then(|filesystem| {
+                disk.adopt_released_allocation(state, filesystem, identity, enrolled)
+            });
+        if let Err(error) = adopted {
             if error.kind() == io::ErrorKind::InvalidData {
                 report_enrollment_mismatch(
                     "exclusive-open",
@@ -952,13 +958,14 @@ fn execute_prepared(
 fn account_materialization(
     disk: &NodeDisk,
     state: &mut State,
+    filesystem: usize,
     budget: &mut Budget,
     logical_len: u64,
     allocated: u64,
     changed_length_expected: bool,
 ) -> io::Result<()> {
     let outcome = (|| -> io::Result<()> {
-        if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         let observed = rounded(logical_len.max(allocated), disk.unit)?;
@@ -966,7 +973,7 @@ fn account_materialization(
         let bytes = budget.bytes.max(observed);
         let pending = bytes - allocated;
         let changed_length = logical_len != budget.actual_len && !changed_length_expected;
-        let mut promises = disk.device.lock();
+        let mut promises = disk.filesystems[filesystem].promises.lock();
         let next = promises
             .checked_sub(budget.pending)
             .and_then(|n| n.checked_add(pending));
@@ -1019,7 +1026,19 @@ fn reconcile_created_file(
         .expect("prepared budget")
         .get_mut()
         .expect("unpublished budget");
-    let outcome = account_materialization(disk, state, budget, metadata.len(), allocated, false);
+    let outcome = disk
+        .root_filesystem(&resources.root)
+        .and_then(|filesystem| {
+            account_materialization(
+                disk,
+                state,
+                filesystem,
+                budget,
+                metadata.len(),
+                allocated,
+                false,
+            )
+        });
     if !durable {
         budget.settled = false;
     }
@@ -1068,7 +1087,9 @@ fn refund_uncreated_file(
             .pending
             .checked_sub(budget.pending)
             .ok_or(io::ErrorKind::InvalidData)?;
-        let mut device = disk.device.lock();
+        let mut device = disk.filesystems[disk.root_filesystem(&resources.root)?]
+            .promises
+            .lock();
         let shared = device
             .checked_sub(budget.pending)
             .ok_or(io::ErrorKind::InvalidData)?;
@@ -1154,7 +1175,7 @@ fn execute_publication(
     let mut transition = None;
     let result = (|| -> io::Result<()> {
         let owner = &mut *retained;
-        if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         {
@@ -1203,6 +1224,12 @@ fn execute_publication(
             disk.unit,
             disk.config.file_allocation_policy,
         )?;
+        // A rename cannot move an inode to another filesystem. Refuse it like
+        // an occupied target, before any effect and without fencing.
+        if disk.root_filesystem(&owner.root)? != disk.root_filesystem(&target.root)? {
+            refused = true;
+            return Err(io::ErrorKind::CrossesDevices.into());
+        }
         transition = Some(
             ParentTransition::prepare(
                 disk,
@@ -1571,7 +1598,8 @@ impl NodeDisk {
             // A namespace admission or transaction permit already paid for
             // this file; only an ordinary create checks the current policy.
             if transaction.is_none() && admitted.is_none() {
-                self.reserve(&mut state, 0, work)?;
+                let filesystem = self.root_filesystem(root)?;
+                self.reserve(&mut state, filesystem, 0, work)?;
             }
             let required = 1 + super::batch::reserved_entries(&state);
             state
@@ -1682,7 +1710,7 @@ impl NodeDisk {
         }
         // Hold the same serialization through all charged preparation and acquisition.
         let mut state = self.lock_state();
-        if state.phase != NodeDiskPhase::Open || !self.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !self.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         let selected = self.roots.get(root).ok_or(io::ErrorKind::InvalidInput)?;
@@ -1758,7 +1786,7 @@ impl NodeDisk {
         };
         if owner.budget().is_poisoned()
             || state.phase == NodeDiskPhase::Failed
-            || !self.device.lock().admission_ready()
+            || !self.admission_ready()
         {
             self.fail_locked(&mut state);
             drop(state);
@@ -1775,6 +1803,15 @@ impl NodeDisk {
             drop(owner);
             return Err(error);
         }
+        let filesystem = match self.root_filesystem(&owner.root) {
+            Ok(filesystem) => filesystem,
+            Err(error) => {
+                drop(budget);
+                drop(state);
+                drop(owner);
+                return Err(error);
+            }
+        };
         // A delete the namespace preflight refuses (no physical headroom, or
         // a parent with reserved children) has had no effect. Refuse it like
         // the enrollment check above, without failing the whole disk.
@@ -1897,7 +1934,7 @@ impl NodeDisk {
         }
         let outcome = match result {
             Ok((bytes, pending)) if bytes <= old_bytes => {
-                let mut promises = self.device.lock();
+                let mut promises = self.filesystems[filesystem].promises.lock();
                 let next = promises
                     .checked_sub(old_pending)
                     .and_then(|n| n.checked_add(pending));
@@ -2109,6 +2146,10 @@ impl FileOwner {
     fn name(&self) -> &CString {
         self.name.as_ref().expect("live file name")
     }
+    /// The filesystem charged for this inode: its root's.
+    fn filesystem(&self) -> io::Result<usize> {
+        self.disk.root_filesystem(&self.root)
+    }
     fn parent(&self) -> &File {
         self.parent_custody().file()
     }
@@ -2180,7 +2221,7 @@ impl FileOwner {
         // Keep the same State gate through the complete temporary-descriptor
         // walk. A sealed owner cannot begin another verification acquisition.
         let mut state = self.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.verify(file)
@@ -2208,7 +2249,7 @@ impl FileOwner {
 
     fn check_retained(&self, file: &File) -> io::Result<std::fs::Metadata> {
         let mut state = self.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed || !self.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.verify_retained(file)
@@ -2244,14 +2285,17 @@ impl FileOwner {
         changed_length_expected: bool,
     ) -> io::Result<()> {
         self.check_enrollment(state, budget)?;
-        let outcome = account_materialization(
-            &self.disk,
-            state,
-            budget,
-            logical_len,
-            allocated,
-            changed_length_expected,
-        );
+        let outcome = self.filesystem().and_then(|filesystem| {
+            account_materialization(
+                &self.disk,
+                state,
+                filesystem,
+                budget,
+                logical_len,
+                allocated,
+                changed_length_expected,
+            )
+        });
         self.record_enrollment(state, budget);
         outcome.map_err(|error| self.record_error(error))
     }
@@ -2357,8 +2401,7 @@ impl NodeDiskFile {
             identity,
             executing: false,
         };
-        let failed =
-            close.state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready();
+        let failed = close.state.phase == NodeDiskPhase::Failed || !disk.admission_ready();
         let owner = Arc::get_mut(&mut *close.owner).expect("exclusive original owner");
         if let CloseAttempt::Failed(_) = owner.close_attempt {
             return Err(owner
@@ -2537,7 +2580,7 @@ impl NodeDiskFile {
             self.0.disk.fail_locked(&mut state);
             return Err(io::ErrorKind::InvalidData.into());
         }
-        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.admission_ready() {
             self.0.disk.fail_locked(&mut state);
             return Err(io::ErrorKind::Other.into());
         }
@@ -2574,7 +2617,7 @@ impl NodeDiskFile {
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().ok_or(io::ErrorKind::BrokenPipe)?;
         let mut state = self.0.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         *stage = "enrollment";
@@ -2653,7 +2696,10 @@ impl NodeDiskFile {
             self.0.record_error(error)
         })?;
         *stage = "accounting";
-        let mut promises = self.0.disk.device.lock();
+        let filesystem = self.0.filesystem().inspect_err(|_| {
+            self.0.disk.fail_locked(&mut state);
+        })?;
+        let mut promises = self.0.disk.filesystems[filesystem].promises.lock();
         let next = promises
             .checked_sub(budget.pending)
             .and_then(|n| n.checked_add(pending));
@@ -2721,7 +2767,7 @@ impl NodeDiskFile {
         if Arc::strong_count(owner) != 1 {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
-        if state.phase == NodeDiskPhase::Failed || !owner.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !owner.disk.admission_ready() {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         // Exclusive &mut plus the sole Arc and registration mutex guarantee
@@ -2816,7 +2862,14 @@ impl NodeDiskFile {
                 return Err(self.0.record_error(error));
             }
         };
-        let mut promises = owner.disk.device.lock();
+        let filesystem = match owner.filesystem() {
+            Ok(filesystem) => filesystem,
+            Err(error) => {
+                owner.disk.fail_locked(&mut state);
+                return Err(error);
+            }
+        };
+        let mut promises = owner.disk.filesystems[filesystem].promises.lock();
         let next = promises
             .checked_sub(budget.pending)
             .and_then(|n| n.checked_add(pending));
@@ -2908,7 +2961,8 @@ impl NodeDiskFile {
         let delta = bytes.saturating_sub(budget.bytes);
         let mut state = self.0.disk.lock_state();
         self.0.check_enrollment(&mut state, &budget)?;
-        self.0.disk.reserve(&mut state, delta, work)?;
+        let filesystem = self.0.filesystem()?;
+        self.0.disk.reserve(&mut state, filesystem, delta, work)?;
         budget.bytes += delta;
         budget.pending += delta;
         budget.reserved_len = budget.reserved_len.max(requested_len);
@@ -3020,7 +3074,7 @@ impl NodeDiskFile {
             .len();
         let mut state = self.0.disk.lock_state();
         if state.phase == NodeDiskPhase::Failed
-            || !self.0.disk.device.lock().admission_ready()
+            || !self.0.disk.admission_ready()
             || len < current
             || len > budget.reserved_len
         {
@@ -3056,7 +3110,7 @@ impl NodeDiskFile {
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         let mut state = self.0.disk.lock_state();
         if state.phase == NodeDiskPhase::Failed
-            || !self.0.disk.device.lock().admission_ready()
+            || !self.0.disk.admission_ready()
             || end > budget.reserved_len
         {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
@@ -3103,7 +3157,7 @@ impl NodeDiskFile {
         let budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
         let mut state = self.0.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.0.check_enrollment(&mut state, &budget)?;
@@ -3154,7 +3208,7 @@ impl NodeDiskFile {
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
         let mut state = self.0.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         self.0.check_enrollment(&mut state, &budget)?;
@@ -3215,7 +3269,7 @@ impl NodeDiskFile {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;
         let mut state = self.0.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed || !self.0.disk.device.lock().admission_ready() {
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.admission_ready() {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         self.0.check_enrollment(&mut state, &budget)?;

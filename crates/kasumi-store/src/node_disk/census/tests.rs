@@ -34,7 +34,7 @@ fn file(path: &Path) {
     file.sync_all().unwrap();
 }
 fn root_set(config: &NodeDiskConfig) -> (BTreeMap<String, Root>, Vec<File>, u64) {
-    let roots = open_roots(config).unwrap();
+    let (roots, _) = open_roots(config, None).unwrap();
     let locks = lock_roots(&roots, config.max_depth).unwrap();
     let unit = super::super::filesystem(&roots.values().next().unwrap().file)
         .unwrap()
@@ -395,6 +395,7 @@ fn registered_preparation(
             config: config.clone(),
             memory: memory.clone(),
             roots,
+            devices: vec![identity.0],
             ancestor_locks,
             accounted,
             live,
@@ -484,7 +485,7 @@ fn uncertain_initial_close_retains_registered_outcome_and_resources_through_erro
             Some(libc::EIO)
         );
         assert_eq!(memory.snapshot().attempts, before.attempts);
-        let other = open_roots(&config).unwrap();
+        let (other, _) = open_roots(&config, None).unwrap();
         assert!(lock_roots(&other, config.max_depth).is_err());
     }
 }

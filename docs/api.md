@@ -27,7 +27,8 @@ A fresh physical node uses
 an installed node uses `NodeStore::open_existing` with the same immutable identity
 and explicit `Arc<NodeDisk>` and `Arc<ScratchDisk>` owners. Construct `NodeDisk`
 from an explicit `NodeDiskConfig` and completed bounded census of preinstalled
-private roots on one filesystem. Database paths never enroll their parent
+private roots, each on one filesystem; roots may be on different filesystems,
+each with its own promises and free-space floor. Database paths never enroll their parent
 implicitly. Persistent roots must be disjoint from each other and from scratch. Missing files, catalogs and genesis records never authorize repair
 or initialization during ordinary startup.
 

@@ -217,3 +217,40 @@ had run. These methods prepared the future canonical NodeFile adapter; they
 added no alternate backend, production constructor, or recoverable redb
 capacity contract. Production persistent disk admission was still unwired at
 that time.
+
+## Roots on several filesystems (2026-11)
+
+This section describes current source, not the historical checkpoint above.
+One installed owner may now hold roots on different filesystems. Each root is
+still exactly one filesystem: the census refuses an entry on another device and
+names the root and the entry. Roots still may not nest; the nesting error names
+both roots and says to install the other filesystem's directory as its own root.
+
+Opening groups the roots by device number and registers the owner once with
+each device's shared `DeviceDisk` ledger, with the configured `min_free_bytes`.
+The device number stands for the free-space pool, as it already did for
+scratch: pools shared behind different device numbers (btrfs subvolumes) are
+accounted separately and are not a supported layout. At
+most eight filesystems are accepted. The census totals promises per filesystem,
+and installation publishes each total on its own device. Every reservation and
+every promise settlement, refund or adoption uses the filesystem of the root its
+inode is under. For a file that is its root. For a directory it is the root its
+retained parent chain ends at; directories are never renamed. The extent budget,
+maintenance reserve and namespace limits remain one owner total. Extents are
+rounded to the largest allocation unit among the filesystems, which can only
+overstate charges.
+
+A reconciling census replaces exactly this owner's own contribution on each
+device; other owners' promises on a shared device are untouched. A failure makes
+the owner uncertain on every device until a drained census accepts. Two
+operations never span filesystems. A publication rename to another filesystem
+and a namespace plan with parts on two filesystems are refused with
+`CrossesDevices` before any effect, without fencing.
+
+Unit tests cannot mount filesystems. A test-only `DeviceSelection::Assigned`
+gives each root a fixture device number. Roots on one physical filesystem are
+then accounted as distinct devices, each with an isolated ledger and its own
+free-space override. The census and descriptor checks keep comparing the actual
+device numbers. `node_disk/filesystems_tests.rs` covers census assignment,
+per-device reservation charging and floors, census republication beside another
+owner's promises, failure fencing and refused cross-filesystem effects.

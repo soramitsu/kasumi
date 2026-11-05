@@ -95,7 +95,7 @@ pub use node_disk::{
     NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
     NodeDiskDirectoryEntry, NodeDiskDirectoryFailure, NodeDiskDirectoryOperation,
     NodeDiskDirectoryOperationKind, NodeDiskDirectoryOperationStep, NodeDiskDirectoryOriginals,
-    NodeDiskEntryKind, NodeDiskFile, NodeDiskPhase, NodeDiskSnapshot,
+    NodeDiskEntryKind, NodeDiskFile, NodeDiskFilesystemSnapshot, NodeDiskPhase, NodeDiskSnapshot,
 };
 mod scratch_disk;
 mod scratch_table;

@@ -327,7 +327,7 @@ fn failed_shared_device_rejects_directory_sync_without_releasing_custody_or_byte
     let disk = open(&config, &memory);
     let handle = disk.open_directory("fixture", Path::new("")).unwrap();
     let before = disk.snapshot();
-    disk.device.lock().fail_owner();
+    disk.device().lock().fail_owner();
     assert!(handle.sync_all().is_err());
     assert!(handle.observed_allocated_bytes().is_err());
     assert!(disk.open_directory("fixture", Path::new("")).is_err());

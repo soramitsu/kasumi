@@ -140,7 +140,7 @@ impl NodeDiskDirectory {
         // before the registered stream and the input directory retire.
         let stream;
         let mut state = disk.lock_state();
-        if state.phase != NodeDiskPhase::Open || !disk.device.lock().admission_ready() {
+        if state.phase != NodeDiskPhase::Open || !disk.admission_ready() {
             return Err(io::ErrorKind::Other.into());
         }
         if state.open_directory_cursors >= disk.config.max_depth {
@@ -253,7 +253,7 @@ impl NodeDiskDirectoryCursor {
                 return Err(io::ErrorKind::Interrupted.into());
             }
             let mut state = disk.lock_state();
-            if state.phase == NodeDiskPhase::Failed || !disk.device.lock().admission_ready() {
+            if state.phase == NodeDiskPhase::Failed || !disk.admission_ready() {
                 drop(state);
                 self.stop(io::ErrorKind::Other);
                 return Err(io::ErrorKind::Other.into());
@@ -383,7 +383,10 @@ impl NodeDiskDirectoryCursor {
                             return Err(io::ErrorKind::InvalidData.into());
                         }
                         if entry.settled {
-                            disk.adopt_released_allocation(&mut state, identity, observed)?;
+                            let filesystem = disk.directory_filesystem(&state, parent.identity)?;
+                            disk.adopt_released_allocation(
+                                &mut state, filesystem, identity, observed,
+                            )?;
                         }
                         NodeDiskEntryKind::File
                     }
