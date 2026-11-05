@@ -110,6 +110,10 @@ exits 1 unless it answered 200):
   --config <client.json> ready               every local group covered and admitted
   --config <client.json> metrics             Prometheus text
 
+Storage (admin client profile):
+  --config <client.json> compact             start a compaction cycle on every node database
+                                             at its next step, clearing any deferral backoff
+
 Administration (admin client profile):
   --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status <operation.json>
   --config <client.json> create-collection|replace-collection|set-policy|set-limits <operation.json>
@@ -128,6 +132,15 @@ async fn run(arguments: &[String]) -> Result<()> {
             "{USAGE}\n\nData commands:\n{}",
             kasumi_server::data_cli::USAGE
         );
+        return Ok(());
+    }
+    if let [flag, path, operation] = arguments
+        && flag == "--config"
+        && operation == "compact"
+    {
+        let (status, body) = AdminClientConfig::load(path)?.request_compaction().await?;
+        println!("{body}");
+        ensure!(status == 200, "compaction request answered HTTP {status}");
         return Ok(());
     }
     if let [flag, path, operation] = arguments

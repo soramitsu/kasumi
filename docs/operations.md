@@ -130,6 +130,12 @@ kasumictl --config /etc/kasumi/admin-client.json ready
 kasumictl --config /etc/kasumi/admin-client.json metrics
 ```
 
+`kasumictl --config /etc/kasumi/admin-client.json compact` asks every node
+database to start a compaction cycle at its next maintenance step, below the
+growth threshold if need be, and clears a deferral backoff (otherwise a
+capacity-rejected cycle waits up to hours or a restart). It prints which
+databases accepted.
+
 `kasumid credential inspect <profile>` prints, offline and without verifying
 the token, when a profile's bearer expires. `credential watch` renews each
 credential at a random point between 50% and 70% of its remaining lifetime and
