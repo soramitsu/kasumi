@@ -283,7 +283,10 @@ fn crash_loop_reopen_stays_bounded() {
 
 #[test]
 fn earlier_compaction_150_crash_reopen_preserves_values_and_bounded_growth() {
-    crash_loop_with_policy(MaintenancePolicy { growth_percent: 150, ..policy() });
+    crash_loop_with_policy(MaintenancePolicy {
+        growth_percent: 150,
+        ..policy()
+    });
 }
 
 fn crash_loop_with_policy(selected_policy: MaintenancePolicy) {
@@ -649,10 +652,16 @@ fn randomized_model_interleavings_preserve_reachability() {
 /// selected evacuation and authenticated reads are exercised across several cycles.
 #[test]
 fn earlier_compaction_150_with_pinned_snapshot_churn_plateaus() {
+    // Long enough for the second half to measure the plateau: at 150% the
+    // first cycles under pinned churn peak once (73 files at commit ~6,000)
+    // before settling, and 8,000 commits put that peak in the tail.
     let status = steady_stream(
         Some(97),
-        MaintenancePolicy { growth_percent: 150, ..policy() },
-        8_000,
+        MaintenancePolicy {
+            growth_percent: 150,
+            ..policy()
+        },
+        16_000,
     );
     assert_eq!(status.evacuation_survey_fallbacks_total, 0);
     assert_eq!(status.capacity_deferrals_total, 0);
