@@ -350,11 +350,19 @@ async fn high_level_client_reads_writes_pages_and_reports_database_codes() {
         got["result"]["document"]["body"],
         json!({"n": 7, "m": true})
     );
-    // Snapshot reads reuse the session's read connection too: each new TLS session
-    // costs a durable security-audit record before it can serve a request.
+    // The cached routed client has its own read/write connection pair. Warm it
+    // before checking reuse: each new TLS session costs a durable security-audit
+    // record before it can serve a request.
     let snapshot =
         json!({"documents": [{"collection": "docs", "id": "s"}], "queries": [], "time_bounds": null})
             .to_string();
+    let line = json!({"id": 9, "argv": ["read-snapshot", "-"], "input": snapshot});
+    let (_, status, read) = answer(&line.to_string()).await;
+    assert_eq!(status, 0, "{read}");
+    assert_eq!(
+        read["result"]["snapshot"]["documents"][0]["document"]["body"],
+        json!({"n": 7, "m": true})
+    );
     let before = accepted.load(Ordering::SeqCst);
     for id in 10..13 {
         let line = json!({"id": id, "argv": ["read-snapshot", "-"], "input": snapshot});

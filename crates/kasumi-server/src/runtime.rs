@@ -1739,7 +1739,7 @@ impl NodeRuntime {
         constructor_seat: &mut crate::administration::original_serving_runtime::OriginalRecoveryGuard<'_>,
     ) -> Result<OpenedTenant> {
         let result = constructor_seat
-            .run_snapshot(async {
+            .run_snapshot_operation(async {
                 macro_rules! ensure_result {
                     ($condition:expr, $message:expr) => {
                         if !$condition {
@@ -1751,6 +1751,12 @@ impl NodeRuntime {
                 }
                 let store = stores.application().clone();
                 config.install_tenant_audit_archive(&store, None)?;
+                #[cfg(test)]
+                lifecycle_tests::refuse_database_open_for_test(
+                    config.database_id,
+                    store.tenant(),
+                    audit.admission(),
+                )?;
                 let mut bootstrap = None;
                 let database = if config.mode == DeploymentMode::Replicated {
                     let replication = config
@@ -1846,7 +1852,7 @@ impl NodeRuntime {
                 );
             });
         }
-        result.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)
+        Ok(result.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)??)
     }
 
     pub fn registry(&self) -> &DatabaseRegistry {

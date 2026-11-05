@@ -181,6 +181,7 @@ struct PreparedCommand {
     generation: Option<Arc<Generation>>,
     outcome: Result<WriteReceipt>,
     changed: ChangedIds,
+    receipt_publication: Option<crate::mutation_receipt::PreparedPublication>,
 }
 
 /// Terminal state prepared for the current command, before budget acceptance.
@@ -915,6 +916,13 @@ impl TenantEngine {
                 .and_then(|n| n.checked_add(typed.checked_mul(2)?))
                 .and_then(|n| n.checked_add(patched.checked_mul(16)?))
                 .and_then(|n| n.checked_add(2 << 20))
+                .and_then(|n| {
+                    n.checked_add(if matches!(command.operation, Operation::Mutate(_)) {
+                        crate::mutation_receipt::PreparedPublication::MAX_WORKSPACE
+                    } else {
+                        0
+                    })
+                })
                 .context("document proposal workspace overflow")
         })();
         let quote = quote.map_err(|error| {
@@ -951,13 +959,17 @@ impl TenantEngine {
             sources.is_none() || position.is_some(),
             "runtime publication lacks actual applied position"
         );
-        let documents = sources
-            .map(|sources| accepted.prepare_documents(sources))
-            .transpose()?
-            .flatten();
-        let writes = documents
+        let prepared_writes = sources
+            .map(|sources| {
+                accepted.prepare_publication_writes(
+                    sources,
+                    position.expect("checked applied position"),
+                )
+            })
+            .transpose()?;
+        let writes = prepared_writes
             .as_ref()
-            .map_or(&[][..], |documents| documents.writes());
+            .map_or(&[][..], |prepared| prepared.writes());
         let candidate = accepted.candidate();
         if let Some(sources) = sources {
             let expectation = sources.publication_expectation(
@@ -1897,7 +1909,9 @@ impl TenantEngine {
             }
             Some(candidate) => self
                 .publish_prepared_generation(
-                    apply.accept(candidate, prepared.changed)?,
+                    apply
+                        .accept(candidate, prepared.changed)?
+                        .with_receipt_publication(prepared.receipt_publication)?,
                     response,
                     None,
                     publisher,
@@ -1925,6 +1939,7 @@ impl TenantEngine {
         }
         if previous.state.retired {
             return Ok(PreparedCommand {
+                receipt_publication: None,
                 generation: None,
                 changed: ChangedIds::new(),
                 outcome: Err(Error::new(
@@ -2050,6 +2065,7 @@ impl TenantEngine {
                 _read_reservations: vec![],
             });
             return Ok(PreparedCommand {
+                receipt_publication: None,
                 generation: Some(candidate),
                 changed: ChangedIds::new(),
                 outcome: Err(Error::new(
@@ -2146,6 +2162,7 @@ impl TenantEngine {
             _read_reservations: vec![],
         });
         Ok(PreparedCommand {
+            receipt_publication: None,
             generation: Some(candidate),
             changed,
             outcome,
@@ -2243,6 +2260,7 @@ impl TenantEngine {
                     _read_reservations: vec![],
                 });
                 return Ok(PreparedCommand {
+                    receipt_publication: None,
                     generation: Some(candidate),
                     changed: ChangedIds::new(),
                     outcome: Err(error),
@@ -2267,6 +2285,7 @@ impl TenantEngine {
             _read_reservations: vec![],
         });
         Ok(PreparedCommand {
+            receipt_publication: None,
             generation: Some(candidate),
             changed: ChangedIds::new(),
             outcome: Err(Error::new(

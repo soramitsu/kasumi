@@ -1014,6 +1014,7 @@ pub(crate) fn read(
     let mut terminals: Option<crate::staged_terminal::Builder> = None;
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let mut documents: Option<crate::document_restore::Builder> = None;
+    let mut document_table_limit = None;
     let summary = visit(reader, |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
@@ -1058,19 +1059,36 @@ pub(crate) fn read(
                     &header.staged_terminal_head.origin_incarnation,
                 )?);
             }
-            documents = Some(crate::document_restore::Builder::new(
-                disk,
+            document_table_limit = Some(kasumi_store::ScratchOperationFailure::ordinary(|| {
+                kasumi_types::validate_name(&header.incarnation)?;
+                crate::document_store::Scope::new(&header.tenant, &header.incarnation)?;
                 header
                     .limits
                     .max_snapshot_bytes
                     .checked_mul(8)
                     .and_then(|v| v.checked_add(64 << 20))
-                    .ok_or_else(|| anyhow::anyhow!("document staging budget overflow"))?,
-                &header.tenant,
-                &header.incarnation,
-            )?);
+                    .ok_or_else(|| anyhow::anyhow!("document staging budget overflow"))
+            })?);
             state = Some(*header);
             return Ok(());
+        }
+        // Native acquisition stays outside `ordinary`: a refused or failed
+        // constructor must retain its exact typed cleanup owner. Empty
+        // snapshots never acquire the two scratch databases at all.
+        if documents.is_none()
+            && (matches!(&record, Record::Document(..))
+                || matches!(&record, Record::ChangeItem(_, _, change) if change.document.is_some()))
+        {
+            let state = state
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("snapshot metadata must be first"))?;
+            documents = Some(crate::document_restore::Builder::new(
+                disk,
+                document_table_limit
+                    .ok_or_else(|| anyhow::anyhow!("document staging budget absent"))?,
+                &state.tenant,
+                &state.incarnation,
+            )?);
         }
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let state = state
@@ -1341,6 +1359,16 @@ pub(crate) fn read(
                 empty
             }
         };
+        let documents = match documents {
+            Some(builder) => builder.finish()?,
+            None => crate::document_restore::StagedDocuments::empty(
+                disk,
+                document_table_limit
+                    .ok_or_else(|| anyhow::anyhow!("document staging budget absent"))?,
+                &state.tenant,
+                &state.incarnation,
+            )?,
+        };
         Ok(Decoded {
             state,
             receipts,
@@ -1348,9 +1376,7 @@ pub(crate) fn read(
             summary,
             terminals,
             target_resolutions,
-            documents: documents
-                .ok_or_else(|| anyhow::anyhow!("snapshot document builder absent"))?
-                .finish()?,
+            documents,
         })
     })
 }
@@ -1394,6 +1420,98 @@ mod tests {
         .state
         .clone()
     }
+    #[test]
+    fn empty_decoded_snapshots_retain_scope_without_scratch_databases() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
+        let state = state();
+        let mut bytes = Vec::new();
+        write(&state, &mut bytes).unwrap();
+        let before = memory.snapshot();
+        let files = scratch.disk.snapshot().live_files;
+        let decoded: Vec<_> = (0..129)
+            .map(|_| super::read(&scratch.disk, &mut bytes.as_slice()).unwrap())
+            .collect();
+        assert_eq!(scratch.disk.snapshot().live_files, files);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            before.live_reservations + 129
+        );
+        for value in &decoded {
+            assert_eq!(value.documents.object_counts().unwrap(), (0, 0));
+            assert_eq!(value.state.tenant, state.tenant);
+            assert_eq!(value.state.incarnation, state.incarnation);
+        }
+        drop(decoded);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            before.live_reservations
+        );
+        assert_eq!(memory.snapshot().used_bytes, before.used_bytes);
+    }
+
+    #[test]
+    fn first_document_creation_failure_preserves_typed_native_custody() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let path = directory.path().join("scratch");
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64);
+        let disk = kasumi_store::ScratchDisk::fixture(&path, memory.clone());
+        let mut state = state();
+        let document = Document {
+            id: "one".into(),
+            version: 1,
+            body: serde_json::json!({"value": 1}),
+        };
+        state.collections.insert(
+            "docs".into(),
+            CollectionState {
+                definition: Arc::new(CollectionDefinition {
+                    name: "docs".into(),
+                    schema: serde_json::json!({"type": "object"}),
+                    indexes: vec![],
+                    strict_read_audit: false,
+                    retention_class: CollectionRetentionClass::Operational,
+                    write_mode: CollectionWriteMode::Mutable,
+                }),
+                data_epoch: 0,
+                documents: [(
+                    document.id.clone(),
+                    Arc::new(DocumentSlot::Pending(Arc::new(document))),
+                )]
+                .into_iter()
+                .collect(),
+                archived_documents: Default::default(),
+                archived_document_bytes: 0,
+            },
+        );
+        let mut bytes = Vec::new();
+        write(&state, &mut bytes).unwrap();
+        let baseline = memory.snapshot();
+        let permissions = std::fs::metadata(&path).unwrap().permissions();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let error = match super::read(&disk, &mut bytes.as_slice()) {
+            Err(error) => error,
+            Ok(_) => panic!("first document must acquire native scratch ownership"),
+        };
+        std::fs::set_permissions(&path, permissions).unwrap();
+        let kasumi_store::ScratchOperationFailure::Creation(original) = error else {
+            panic!("first document constructor failure was erased");
+        };
+        assert!(original.owner_id().is_some());
+        assert!(memory.snapshot().live_reservations > baseline.live_reservations);
+        assert_eq!(
+            original.retire().disposition(),
+            kasumi_store::StorageCensusDisposition::Retired
+        );
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            baseline.live_reservations
+        );
+        assert_eq!(memory.snapshot().used_bytes, baseline.used_bytes);
+    }
+
     #[test]
     fn canonical_stream_requires_terminal_counts_digest_and_exact_eof() {
         let scratch = crate::codec_fixture::ScratchScope::new(

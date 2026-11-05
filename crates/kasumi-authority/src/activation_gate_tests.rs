@@ -494,15 +494,34 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     assert!(store.storage_access().check_serving().is_err());
     f.clock.0.store(500, Ordering::SeqCst);
     let attempt = phase_boot.begin(&intent).unwrap();
-    let newer = attempt
-        .verify(
-            service
-                .acquire_lifecycle(node(&f), attempt.request().clone())
+    let caller = node(&f);
+    let newer = tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            let current = f.leader().await;
+            // A leader change does not create a new acquisition attempt or
+            // credential. Verification retains this attempt's original start.
+            let caller = AuthenticatedNode::from_verified_transport(
+                caller.context.clone(),
+                caller.certificate_sha256.clone(),
+            )
+            .unwrap();
+            match current
+                .acquire_lifecycle(caller, attempt.request().clone())
                 .await
-                .unwrap()
-                .0,
-        )
-        .unwrap();
+            {
+                Ok((lease, _)) => break attempt.verify(lease).unwrap(),
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::Unavailable | ErrorCode::UnknownOutcome
+                    ) => {}
+                Err(error) => panic!("original phase renewal rejected: {error:?}"),
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("original phase renewal did not reach the current authority leader");
     let new_gate = LifecycleGate::with_test_clock(
         original_control(&f, &control, 1_050_000),
         newer.clone(),

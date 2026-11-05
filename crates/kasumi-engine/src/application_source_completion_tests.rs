@@ -1549,3 +1549,6 @@ async fn ordinary_completion_capture_wake_unwind_retires_the_actual_counted_hand
 
 #[path = "application_source_committed_admission_tests.rs"]
 mod committed_admission_tests;
+
+#[path = "application_source_receipt_publication_tests.rs"]
+mod receipt_publication_tests;

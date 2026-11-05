@@ -335,7 +335,10 @@ impl TenantEngine {
                         )
                         .map_err(crate::index_source::into_anyhow)?,
                     );
-                    let receipts = pending.stage()?;
+                    let (receipts, receipt_publication) = match self.application_sources.get() {
+                        Some(roots) => pending.prepare_publication(roots)?,
+                        None => (pending.stage()?, None),
+                    };
                     let candidate = Arc::new(Generation {
                         state: next,
                         receipts,
@@ -350,6 +353,7 @@ impl TenantEngine {
                         _read_reservations: vec![],
                     });
                     return Ok(PreparedCommand {
+                        receipt_publication,
                         generation: Some(candidate),
                         changed,
                         outcome,
@@ -386,7 +390,10 @@ impl TenantEngine {
                 )
                 .into());
             }
-            let receipts = pending.stage()?;
+            let (receipts, receipt_publication) = match self.application_sources.get() {
+                Some(roots) => pending.prepare_publication(roots)?,
+                None => (pending.stage()?, None),
+            };
             let candidate = Arc::new(Generation {
                 state: rejected,
                 receipts,
@@ -401,6 +408,7 @@ impl TenantEngine {
                 _read_reservations: vec![],
             });
             Ok(PreparedCommand {
+                receipt_publication,
                 generation: Some(candidate),
                 changed: ChangedIds::new(),
                 outcome,
@@ -480,6 +488,7 @@ impl TenantEngine {
             _read_reservations: vec![],
         });
         Ok(PreparedCommand {
+            receipt_publication: None,
             generation: Some(candidate),
             changed: ChangedIds::new(),
             outcome,

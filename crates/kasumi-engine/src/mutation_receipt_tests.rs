@@ -1040,3 +1040,72 @@ fn receipt_append_requires_absence_from_its_own_head() {
         &applied(2),
     ));
 }
+
+#[test]
+fn prospective_receipt_head_preserves_all_metadata_validation() {
+    let initial = state();
+    let empty = View::empty(&initial.tenant, &initial.incarnation).unwrap();
+    let (next, _) = commit(&initial, &empty, "prospective", &applied(1));
+    let prospective = View {
+        source: None,
+        head: next.mutation_receipt_head,
+    };
+    prospective.check_head_metadata(&initial.tenant).unwrap();
+    assert!(
+        prospective.check_head(&initial.tenant).is_err(),
+        "unpublished rows cannot serve reads"
+    );
+    for fault in 0..4 {
+        let mut invalid = prospective.clone();
+        match fault {
+            0 => invalid.head.origin_incarnation.clear(),
+            1 => invalid.head.sha256 = "invalid".into(),
+            2 => invalid.head.encoded_bytes = 0,
+            3 => invalid.head.last_applied_revision = 0,
+            _ => unreachable!(),
+        }
+        assert!(
+            invalid.check_head_metadata(&initial.tenant).is_err(),
+            "fault {fault}"
+        );
+    }
+    let mut invalid_empty = empty.clone();
+    invalid_empty.head.encoded_bytes = 1;
+    assert!(invalid_empty.check_head_metadata(&initial.tenant).is_err());
+}
+
+#[test]
+fn receipt_joint_publication_requires_the_bounded_ordinary_shape() {
+    let log_id = openraft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 2);
+    let position = kasumi_raft::AppliedEntryContext {
+        log_id,
+        previous: Some(openraft::LogId::new(
+            openraft::CommittedLeaderId::new(1, 1),
+            1,
+        )),
+        membership: Default::default(),
+        command_sha256: "ab".repeat(32),
+        retirement_seed: None,
+    };
+    let namespace = crate::document_store::BLOBS;
+    let body = |bytes| WriteOp::put(namespace, b"key", vec![0; bytes]);
+    let exact = (1 << 20) - namespace.len() - 3;
+    assert!(PreparedPublication::can_join(&position, &[]));
+    assert!(PreparedPublication::can_join(&position, &[body(exact)]));
+    assert!(!PreparedPublication::can_join(
+        &position,
+        &[body(exact + 1)]
+    ));
+    let mut writes = (0..32).map(|_| body(0)).collect::<Vec<_>>();
+    assert!(PreparedPublication::can_join(&position, &writes));
+    writes.push(body(0));
+    assert!(!PreparedPublication::can_join(&position, &writes));
+    assert!(!PreparedPublication::can_join(
+        &position,
+        &[WriteOp::delete(namespace, b"key")]
+    ));
+    assert!(!PreparedPublication::can_join(
+        &position,
+        &[WriteOp::put("other", b"key", b"value")]
+    ));
+}

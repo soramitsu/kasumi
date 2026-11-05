@@ -247,7 +247,7 @@ impl View {
         );
         Ok(entry)
     }
-    pub(crate) fn check_head(&self, tenant: &str) -> Result<()> {
+    fn check_head_metadata(&self, tenant: &str) -> Result<()> {
         validate_name(&self.head.origin_incarnation)?;
         ensure!(digest(&self.head.sha256), "invalid receipt head digest");
         if self.head.count == 0 {
@@ -257,9 +257,17 @@ impl View {
             );
         } else {
             ensure!(
-                self.head.encoded_bytes > 0
-                    && self.head.last_applied_revision > 0
-                    && self.index(self.head.count)?.sha256 == self.head.sha256,
+                self.head.encoded_bytes > 0 && self.head.last_applied_revision > 0,
+                "receipt physical prefix differs from selected root"
+            );
+        }
+        Ok(())
+    }
+    pub(crate) fn check_head(&self, tenant: &str) -> Result<()> {
+        self.check_head_metadata(tenant)?;
+        if self.head.count > 0 {
+            ensure!(
+                self.index(self.head.count)?.sha256 == self.head.sha256,
                 "receipt physical prefix differs from selected root"
             );
         }
@@ -674,6 +682,97 @@ impl View {
     }
 }
 
+/// Private prospective immutable receipt writes. The selected View has only
+/// its ordinary namespace/head; these bytes and their credit stay with apply.
+/// The exact pair joins custody publication or uses the original staging path.
+pub(crate) struct PreparedPublication {
+    writes: Vec<WriteOp>,
+    source: Arc<Source>,
+    head: MutationReceiptHead,
+    tenant: String,
+    // Last: all encoded row/key/vector backing retires before its real credit.
+    _workspace: crate::admission::DocumentWorkspace,
+}
+impl PreparedPublication {
+    const MAX_ROW: usize = 64 << 10;
+    const MAX_ENCRYPTION_OVERHEAD: usize = 512;
+    // At most 320 KiB of private preparation, then 192 KiB retained alongside
+    // one <=64 KiB encrypted row, its small index, native staging chunks and
+    // one transient encryption output. Commit moves staged values uncopied.
+    // The common planner/capture work remains in the existing base escrow.
+    pub(crate) const MAX_WORKSPACE: u64 = 1 << 20;
+
+    pub(crate) fn require_view(&self, view: &View) -> Result<()> {
+        ensure!(
+            view.head == self.head
+                && view
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| Arc::ptr_eq(source, &self.source)),
+            "private receipt publication differs from candidate"
+        );
+        Ok(())
+    }
+
+    /// A deliberately bounded optimization, not a new acceptance limit.
+    /// In this ordinary-entry shape custody adds only its <=2 MiB applied row.
+    /// 32 body puts + 2 receipt puts + 1 cursor put stay below 64 MiB logical
+    /// and 96 MiB physical even for the <2 MiB active IDs allowed by catalogs.
+    pub(crate) fn can_join(
+        position: &kasumi_raft::AppliedEntryContext,
+        documents: &[WriteOp],
+    ) -> bool {
+        if position.retirement_seed.is_some()
+            || *position.membership.log_id() == Some(position.log_id)
+            || documents.len() > 32
+        {
+            return false;
+        }
+        let bytes = documents.iter().try_fold(0usize, |bytes, operation| {
+            let WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } = operation
+            else {
+                return None;
+            };
+            // Only the actual immutable body producer may use this bound.
+            if !matches!(
+                namespace.as_str(),
+                crate::document_store::BODIES | crate::document_store::BLOBS
+            ) {
+                return None;
+            }
+            bytes
+                .checked_add(namespace.len())?
+                .checked_add(key.len())?
+                .checked_add(value.len())
+        });
+        bytes.is_some_and(|bytes| bytes <= 1 << 20)
+    }
+
+    pub(crate) fn append_to(&mut self, writes: &mut Vec<WriteOp>) -> Result<()> {
+        // The <=32-entry destination's reallocation/shell overlap is covered
+        // by this owner's 64 KiB floor. Payloads move once, never clone.
+        writes.try_reserve_exact(self.writes.len())?;
+        writes.append(&mut self.writes);
+        Ok(())
+    }
+
+    pub(crate) fn stage_separately(self) -> Result<()> {
+        let Source::Durable(storage) = self.source.as_ref() else {
+            anyhow::bail!("private receipt publication lacks durable storage");
+        };
+        storage.store.write_batch(&self.writes)?;
+        View {
+            source: Some(self.source.clone()),
+            head: self.head.clone(),
+        }
+        .check_head(&self.tenant)
+    }
+}
+
 /// At most one finalized ordinary receipt can arise from one ordered mutation.
 pub(crate) struct Pending {
     previous: View,
@@ -726,6 +825,108 @@ impl Pending {
     pub(crate) fn head(&self) -> &MutationReceiptHead {
         &self.head
     }
+    /// Prepare a small pair without writing it. The only returned prospective
+    /// View remains private to the command/accepted apply until its bound pair
+    /// crosses the same publisher as the selected applied cursor.
+    pub(crate) fn prepare_publication(
+        self,
+        roots: &crate::application_sources::SourceRootsRef,
+    ) -> Result<(View, Option<PreparedPublication>)> {
+        use crate::admission::RetainedWorkspace as _;
+        if self.rows.is_empty() {
+            return Ok((self.previous, None));
+        }
+        ensure!(
+            self.rows.len() == 1,
+            "ordinary receipt publication has multiple rows"
+        );
+        let Some(Source::Durable(storage)) = self.previous.source.as_deref() else {
+            return Ok((self.stage()?, None));
+        };
+        ensure!(
+            Arc::ptr_eq(&storage.store, roots.primary_installation().0.application()),
+            "receipt publication belongs to another application store"
+        );
+        // A large imported key identifier is repeated in every ciphertext.
+        // Keep its native staging overlap on the original separate-commit path.
+        if storage.store.record_encryption_overhead()?
+            > PreparedPublication::MAX_ENCRYPTION_OVERHEAD
+        {
+            return Ok((self.stage()?, None));
+        }
+        let row = &self.rows[0];
+        let length = crate::accounting::encoded_len(row)?;
+        if length > PreparedPublication::MAX_ROW {
+            return Ok((self.stage()?, None));
+        }
+        let mut workspace = crate::admission::DocumentWorkspace::new(
+            roots.primary_installation().1,
+            4 * length as u64 + (64 << 10),
+        )?;
+        let mut bytes = Vec::new();
+        bytes.try_reserve_exact(length)?;
+        ensure!(
+            bytes.capacity() <= 2 * length + 4096,
+            "receipt allocation exceeds admission"
+        );
+        serde_json::to_writer(&mut bytes, row)?;
+        ensure!(bytes.len() == length, "receipt encoded length changed");
+        let index = serde_json::to_vec(&Ordinal {
+            key: row.key.clone(),
+            sha256: row.sha256()?,
+        })?;
+        let id = id_key(&row.key);
+        let ordinal = ordinal_key(row.ordinal);
+        let source = self
+            .previous
+            .source
+            .as_ref()
+            .expect("checked durable receipt source");
+        // Preserve the old ahead-pair reconciliation exactly, including corrupt
+        // oversized values and a half pair. Never overwrite or ignore either.
+        match (source.get(&id)?, source.get(&ordinal)?) {
+            (Some(old_row), Some(old_index)) => {
+                ensure!(
+                    old_row == bytes && old_index == index,
+                    "future receipt row differs from exact original command replay"
+                );
+                let view = View {
+                    source: self.previous.source,
+                    head: self.head,
+                };
+                view.check_head(&row.receipt.scope.tenant)?;
+                return Ok((view, None));
+            }
+            (None, None) => {}
+            _ => anyhow::bail!("partially published receipt row/index"),
+        }
+        ensure!(
+            row.ordinal == self.head.count && row.sha256()? == self.head.sha256,
+            "prospective receipt head differs from immutable pair"
+        );
+        let tenant = row.receipt.scope.tenant.clone();
+        let namespace = storage.binding.namespace();
+        let writes = vec![
+            WriteOp::put(namespace.clone(), id, bytes),
+            WriteOp::put(namespace, ordinal, index),
+        ];
+        workspace.retain(2 * length as u64 + (64 << 10));
+        let publication = PreparedPublication {
+            writes,
+            source: source.clone(),
+            head: self.head.clone(),
+            tenant,
+            _workspace: workspace,
+        };
+        let view = View {
+            source: self.previous.source,
+            head: self.head,
+        };
+        view.check_head_metadata(&publication.tenant)?;
+        publication.require_view(&view)?;
+        Ok((view, Some(publication)))
+    }
+
     /// Preserve immutable row/index pairs before selecting the returned view.
     /// An exact replay may reuse this durable prefix after publication fails.
     pub(crate) fn stage(self) -> Result<View> {

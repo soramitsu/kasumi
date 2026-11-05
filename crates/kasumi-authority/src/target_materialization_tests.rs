@@ -1400,6 +1400,53 @@ async fn exact_target_activation(
     }
 }
 
+async fn exact_target_inspection(
+    target: &RunningTarget,
+    signer: &TargetSigner,
+    input: &TargetInspectionInput,
+) -> (
+    kasumi_engine::VerifiedTargetInspection,
+    SignedTargetInspection,
+) {
+    let database = target.owner.database();
+    let group = database.raft_group();
+    tokio::time::timeout(Duration::from_secs(20), async {
+        loop {
+            target.operation.check().unwrap();
+            elect_original_target(target).await;
+            let mut observed_term = group.raft().metrics().borrow().current_term;
+            let result = async {
+                let proof = database
+                    .inspect_target(&target.operation, input.clone())
+                    .await?;
+                observed_term = proof.observation().observed_term;
+                let signed = signer.sign_inspection(&proof, &target.operation).await?;
+                Ok::<_, Error>((proof, signed))
+            }
+            .await;
+            match result {
+                Ok(observation) => return observation,
+                Err(error) => {
+                    target.operation.check().unwrap();
+                    let metrics = group.raft().metrics().borrow().clone();
+                    assert!(
+                        error.code == ErrorCode::Unauthorized
+                            && (metrics.current_leader != Some(target.id)
+                                || metrics.current_term != observed_term),
+                        "original target inspection rejected without a leader change: {error:?}"
+                    );
+                }
+            }
+            // Release fences bind each observation to its actual leader/term.
+            // Re-observe under the same operation and exact inspection input;
+            // never sign a stale proof or obtain a replacement phase/deadline.
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("original target inspection did not retain leadership through signing")
+}
+
 #[tokio::test]
 async fn retained_initial_start_requires_the_same_live_prebound_child() {
     let f = MaterialFixture::new().await;
@@ -1850,12 +1897,9 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
     let targets = f.open_targets(&complete, &input, &router).await;
     let index = current_target(&targets).await;
     let selected = &targets[index];
-    let proof = selected
-        .owner
-        .database()
-        .complete_target(&selected.operation, initial_complete(&input))
-        .await
-        .unwrap();
+    // Selection is only an observation of leadership. Recover this same phase
+    // and operation if leadership changes before its completion is acknowledged.
+    let proof = exact_target_completion(selected, &initial_complete(&input)).await;
     let signed = f.signers[&selected.id]
         .sign_completed(&proof, &selected.operation)
         .await
@@ -2430,19 +2474,13 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
     let mut wrong = inspection_input.clone();
     wrong.quorum.origin_sha256 = "aa".repeat(32);
     assert!(db.inspect_target(&selected.operation, wrong).await.is_err());
-    let observed = db
-        .inspect_target(&selected.operation, inspection_input.clone())
-        .await
-        .unwrap();
+    let (observed, signed) =
+        exact_target_inspection(selected, &f.signers[&selected.id], &inspection_input).await;
     assert_eq!(observed.observation().completion, original);
     assert_eq!(
         observed.observation().completion.completion_intent,
         complete.observation.intent
     );
-    let signed = f.signers[&selected.id]
-        .sign_inspection(&observed, &selected.operation)
-        .await
-        .unwrap();
     verify_target_inspection(&inspection_input, &signed).unwrap();
     let mut substitution = signed.clone();
     substitution.observation.completion.admitted_at_ms += 1;

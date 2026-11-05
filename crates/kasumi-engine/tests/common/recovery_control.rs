@@ -385,7 +385,9 @@ async fn exercise_completed_recovery(
     activation_outcome: Option<bool>,
     inspect_completion: bool,
 ) {
-    let manual = inspect_completion.then(manual_epoch);
+    // Crash/reopen orchestration must not consume an intended live phase's
+    // lifetime. Only the explicit expiry checks below advance this same clock.
+    let (elapsed, epoch) = manual_epoch();
     let CompletionFixture {
         live:
             RoutePublicationFixture {
@@ -398,11 +400,7 @@ async fn exercise_completed_recovery(
         completed,
         outcome,
     } = {
-        let prepared = Box::pin(prepare_completion(
-            planned,
-            inspect_completion,
-            manual.as_ref().map(|(_, epoch)| epoch.clone()),
-        ));
+        let prepared = Box::pin(prepare_completion(planned, inspect_completion, Some(epoch)));
         prepared.await
     };
     // The preparation poll frame has returned before resolving the original
@@ -416,7 +414,7 @@ async fn exercise_completed_recovery(
             complete_phase,
             completed,
             &attestation,
-            manual.as_ref().map(|(elapsed, _)| elapsed.as_ref()),
+            Some(elapsed.as_ref()),
         ))
         .await;
     } else {
@@ -448,7 +446,7 @@ async fn exercise_completed_recovery(
             &mut fixture,
             database,
             &request,
-            manual.as_ref().map(|(elapsed, _)| elapsed.as_ref()),
+            Some(elapsed.as_ref()),
         ))
         .await;
     }

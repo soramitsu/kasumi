@@ -658,8 +658,35 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     assert_eq!(second_descriptor.load(&resolver)?.as_ref(), &second);
     staged.reconcile(store)?;
     assert_eq!(published_objects(store)?, expected);
+    let files = fixture.image.disk().snapshot().live_files;
+    let empty = crate::document_restore::StagedDocuments::empty(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    assert_eq!(fixture.image.disk().snapshot().live_files, files);
+    assert!(
+        crate::document_restore::BootstrapDocuments::new(
+            empty.clone(),
+            fixture.roots.clone(),
+            selected.clone(),
+            TENANT,
+            "different-incarnation",
+        )
+        .is_err(),
+        "empty staging still binds its exact scope"
+    );
     drop(resolver);
     drop(selected);
+    // An empty install's preparation cannot delete the generation still
+    // serving. Its later reconciliation must remove both old namespaces.
+    empty.write_missing(store)?;
+    assert_eq!(published_objects(store)?, expected);
+    empty.reconcile(store)?;
+    assert!(published_objects(store)?.is_empty());
+    assert_eq!(fixture.image.disk().snapshot().live_files, files);
+    drop(empty);
     drop(staged);
     fixture.close().await
 }

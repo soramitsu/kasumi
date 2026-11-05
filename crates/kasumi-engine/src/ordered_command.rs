@@ -130,9 +130,11 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                 retirement,
             };
             let owner = match prepared.generation {
-                Some(candidate) => {
-                    OutcomeOwner::Candidate(apply.accept(candidate, prepared.changed)?)
-                }
+                Some(candidate) => OutcomeOwner::Candidate(
+                    apply
+                        .accept(candidate, prepared.changed)?
+                        .with_receipt_publication(prepared.receipt_publication)?,
+                ),
                 None => OutcomeOwner::Frozen(apply),
             };
             Ok(Self {
@@ -171,15 +173,13 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                         .context("ordinary application sources absent")?;
                     // Immutable body writes share the exact completion/custody
                     // publication, and their grant lives through selection.
-                    let documents = accepted.prepare_documents(sources)?;
+                    let writes = accepted.prepare_publication_writes(sources, position)?;
                     let candidate = accepted.candidate();
                     let Some(selection) = completion.publish_source(
                         position,
                         response,
                         publisher,
-                        documents
-                            .as_ref()
-                            .map_or(&[][..], |documents| documents.writes()),
+                        writes.writes(),
                         candidate.state.retired,
                     )?
                     else {

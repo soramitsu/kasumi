@@ -109,9 +109,14 @@ pub(crate) fn workspace(maximum_record_bytes: u64, maximum_record_work: u64) -> 
     Ok(encoding.max(reading))
 }
 
-struct Tables {
+struct TableBacking {
     bodies: EncryptedTable,
     blobs: EncryptedTable,
+}
+struct Tables {
+    // Empty authenticated snapshots need scope ownership, not two native
+    // databases. A builder always installs both tables before accepting rows.
+    backing: Option<TableBacking>,
     disk: Arc<ScratchDisk>,
     scope: Scope,
     max_table_bytes: u64,
@@ -254,8 +259,7 @@ impl Builder {
             documents_since_flush: 0,
             has_bodies: false,
             tables: Arc::new(Tables {
-                bodies,
-                blobs,
+                backing: Some(TableBacking { bodies, blobs }),
                 disk: disk.clone(),
                 scope,
                 max_table_bytes,
@@ -301,10 +305,11 @@ impl Builder {
             <[u8; 32]>::from(Sha256::digest(bytes)) == digest,
             "document restore object digest differs"
         );
+        let backing = self.tables.backing.as_ref().expect("builder table backing");
         let (table, batch) = if body {
-            (&self.tables.bodies, &mut self.bodies)
+            (&backing.bodies, &mut self.bodies)
         } else {
-            (&self.tables.blobs, &mut self.blobs)
+            (&backing.blobs, &mut self.blobs)
         };
         let key = self.tables.scope.key(digest);
         batch.put(table, self.tables.disk.memory(), key, bytes)?;
@@ -418,6 +423,27 @@ impl<'a> Correction<'a> {
 }
 
 impl StagedDocuments {
+    pub(crate) fn empty(
+        disk: &Arc<ScratchDisk>,
+        max_table_bytes: u64,
+        tenant: &str,
+        incarnation: &str,
+    ) -> Result<Self> {
+        kasumi_types::validate_name(incarnation)?;
+        let scope = Scope::new(tenant, incarnation)?;
+        let metadata = disk.memory().clone().reserve_installed(FLOOR)?;
+        Ok(Self {
+            tables: Arc::new(Tables {
+                backing: None,
+                disk: disk.clone(),
+                scope,
+                max_table_bytes,
+                _metadata: metadata,
+            }),
+            has_bodies: false,
+        })
+    }
+
     fn read_grant(&self, bytes: u64) -> Result<DiskMemoryLease> {
         self.tables
             .disk
@@ -440,6 +466,14 @@ impl StagedDocuments {
         if target_scope == self.tables.scope {
             return Ok(self.clone());
         }
+        let Some(backing) = &self.tables.backing else {
+            return Ok(Self::empty(
+                &self.tables.disk,
+                self.tables.max_table_bytes,
+                tenant,
+                incarnation,
+            )?);
+        };
         let mut builder = Builder::new(
             &self.tables.disk,
             self.tables.max_table_bytes,
@@ -448,7 +482,7 @@ impl StagedDocuments {
         )?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let source_prefix = self.tables.scope.key([0; 32]);
-            for (body, table) in [(true, &self.tables.bodies), (false, &self.tables.blobs)] {
+            for (body, table) in [(true, &backing.bodies), (false, &backing.blobs)] {
                 let mut since_flush = 0;
                 table.visit(|key, value| {
                     ensure!(
@@ -492,6 +526,9 @@ impl StagedDocuments {
         let _lookup = self.read_grant(FLOOR)?;
         let Some(wire) = self
             .tables
+            .backing
+            .as_ref()
+            .context("staged document manifest missing")?
             .bodies
             .get(&self.tables.scope.key(descriptor.body_object))?
         else {
@@ -525,17 +562,31 @@ impl StagedDocuments {
     pub(crate) fn complete_snapshot_replacements(
         &self,
     ) -> [kasumi_store::NamespaceReplacement<'_>; 2] {
-        [
-            kasumi_store::NamespaceReplacement::from_table(BODIES, &self.tables.bodies),
-            kasumi_store::NamespaceReplacement::from_table(BLOBS, &self.tables.blobs),
-        ]
+        match &self.tables.backing {
+            Some(backing) => [
+                kasumi_store::NamespaceReplacement::from_table(BODIES, &backing.bodies),
+                kasumi_store::NamespaceReplacement::from_table(BLOBS, &backing.blobs),
+            ],
+            None => [
+                kasumi_store::NamespaceReplacement::empty(BODIES),
+                kasumi_store::NamespaceReplacement::empty(BLOBS),
+            ],
+        }
     }
 
     /// Each published object namespace, its staged table and its row bound.
-    fn namespaces(&self) -> [(&'static str, &EncryptedTable, usize); 2] {
+    fn namespaces(&self) -> [(&'static str, Option<&EncryptedTable>, usize); 2] {
         [
-            (BODIES, &self.tables.bodies, MAX_OBJECT_BYTES),
-            (BLOBS, &self.tables.blobs, BLOB_CHUNK_BYTES),
+            (
+                BODIES,
+                self.tables.backing.as_ref().map(|backing| &backing.bodies),
+                MAX_OBJECT_BYTES,
+            ),
+            (
+                BLOBS,
+                self.tables.backing.as_ref().map(|backing| &backing.blobs),
+                BLOB_CHUNK_BYTES,
+            ),
         ]
     }
 
@@ -546,7 +597,10 @@ impl StagedDocuments {
     /// leaves the previous snapshot whole.
     pub(crate) fn write_missing(&self, store: &Arc<TenantStore>) -> Result<()> {
         for (namespace, table, _) in self.namespaces() {
-            Correction::new(store, self.tables.disk.memory(), namespace)?.write_missing(table)?;
+            if let Some(table) = table {
+                Correction::new(store, self.tables.disk.memory(), namespace)?
+                    .write_missing(table)?;
+            }
         }
         Ok(())
     }
@@ -571,18 +625,21 @@ impl StagedDocuments {
             // The view keeps its selected root while earlier batches commit.
             let view = store.read_view()?;
             view.visit(namespace, max_bytes, |key, value| {
-                let _lookup = self.read_grant(FLOOR)?;
-                if table
-                    .get(key)?
-                    .is_some_and(|staged| staged.as_bytes() == value)
-                {
-                    kept += 1;
-                    return Ok(());
+                if let Some(table) = table {
+                    let _lookup = self.read_grant(FLOOR)?;
+                    if table
+                        .get(key)?
+                        .is_some_and(|staged| staged.as_bytes() == value)
+                    {
+                        kept += 1;
+                        return Ok(());
+                    }
                 }
                 correction.delete(key)
             })?;
             view.close()?;
             correction.flush()?;
+            let Some(table) = table else { continue };
             let mut staged = 0u64;
             table.visit(|_, _| {
                 staged += 1;
@@ -598,13 +655,16 @@ impl StagedDocuments {
 
     #[cfg(test)]
     pub(crate) fn object_counts(&self) -> Result<(u64, u64)> {
+        let Some(backing) = &self.tables.backing else {
+            return Ok((0, 0));
+        };
         let mut bodies = 0u64;
-        self.tables.bodies.visit(|_, _| {
+        backing.bodies.visit(|_, _| {
             bodies += 1;
             Ok(())
         })?;
         let mut blobs = 0u64;
-        self.tables.blobs.visit(|_, _| {
+        backing.blobs.visit(|_, _| {
             blobs += 1;
             Ok(())
         })?;
@@ -613,15 +673,18 @@ impl StagedDocuments {
 
     #[cfg(test)]
     pub(crate) fn object_value_bytes(&self) -> Result<(u64, u64)> {
+        let Some(backing) = &self.tables.backing else {
+            return Ok((0, 0));
+        };
         let mut bodies = 0u64;
-        self.tables.bodies.visit(|_, value| {
+        backing.bodies.visit(|_, value| {
             bodies = bodies
                 .checked_add(value.len() as u64)
                 .context("body byte count overflow")?;
             Ok(())
         })?;
         let mut blobs = 0u64;
-        self.tables.blobs.visit(|_, value| {
+        backing.blobs.visit(|_, value| {
             blobs = blobs
                 .checked_add(value.len() as u64)
                 .context("blob byte count overflow")?;
@@ -632,8 +695,13 @@ impl StagedDocuments {
 
     #[cfg(test)]
     pub(crate) fn corrupt_first_blob_for_test(&self) -> Result<()> {
+        let backing = self
+            .tables
+            .backing
+            .as_ref()
+            .context("staged fixture has no proof blob")?;
         let mut first = None;
-        self.tables.blobs.visit(|key, value| {
+        backing.blobs.visit(|key, value| {
             if first.is_none() {
                 first = Some((key.to_vec(), value.to_vec()));
             }
@@ -641,7 +709,7 @@ impl StagedDocuments {
         })?;
         let (key, mut bytes) = first.context("staged fixture has no proof blob")?;
         bytes[0] ^= 1;
-        self.tables.blobs.set(&key, &bytes)
+        backing.blobs.set(&key, &bytes)
     }
 }
 
@@ -751,6 +819,11 @@ impl StagedDocuments {
             manifest_bytes > 0 && manifest_bytes <= limits.manifest_bytes,
             "staged document manifest exceeds bound"
         );
+        let backing = self
+            .tables
+            .backing
+            .as_ref()
+            .context("staged document manifest missing")?;
         let wire_bytes = descriptor
             .body_bytes
             .checked_mul(2)
@@ -758,8 +831,7 @@ impl StagedDocuments {
             .and_then(|bytes| bytes.checked_add(FLOOR))
             .context("staged document wire workspace overflow")?;
         let wire_grant = self.read_grant(wire_bytes)?;
-        let manifest_wire = self
-            .tables
+        let manifest_wire = backing
             .bodies
             .get(&self.tables.scope.key(descriptor.body_object))?
             .context("staged document manifest missing")?;
@@ -786,8 +858,7 @@ impl StagedDocuments {
         );
         let canonical = document_encoding::reconstruct_body(&manifest, limits, |reference| {
             check()?;
-            let blob = self
-                .tables
+            let blob = backing
                 .blobs
                 .get(&self.tables.scope.key(reference.sha256))?
                 .context("staged document proof chunk missing")?;
@@ -889,10 +960,22 @@ mod workspace_tests {
     fn empty_staged_membership_needs_no_table_read_or_workspace() {
         let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 128);
         let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
-        let empty = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation")
-            .unwrap()
-            .finish()
-            .unwrap();
+        let before_empty = memory.snapshot();
+        let files = scratch.disk.snapshot().live_files;
+        let empty =
+            StagedDocuments::empty(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+        assert_eq!(scratch.disk.snapshot().live_files, files);
+        assert_eq!(
+            memory.snapshot().live_reservations,
+            before_empty.live_reservations + 1,
+            "only the scope/metadata owner is admitted"
+        );
+        assert_eq!(empty.object_counts().unwrap(), (0, 0));
+        let rebound_empty = empty.rebind_scope("tenant", "empty-rebound").unwrap();
+        assert_eq!(scratch.disk.snapshot().live_files, files);
+        assert_eq!(rebound_empty.object_counts().unwrap(), (0, 0));
+        assert!(empty.rebind_scope("tenant", "").is_err());
+        drop(rebound_empty);
         let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
         let document = Document {
             id: "native-only".into(),
@@ -904,6 +987,7 @@ mod workspace_tests {
         assert!(populated.has_bodies);
         assert!(populated.contains(&descriptor).unwrap());
         assert!(!empty.has_bodies);
+        assert!(empty.load(&descriptor).is_err());
         let before = memory.snapshot();
         for _ in 0..1000 {
             assert!(!empty.contains(&descriptor).unwrap());

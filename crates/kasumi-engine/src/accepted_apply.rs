@@ -148,6 +148,7 @@ impl<'engine> ApplyOwner<'engine> {
             delta: PrimaryDelta {
                 changed: ChangedIds::new(),
             },
+            receipt_publication: None,
             owner: self,
         })
     }
@@ -186,6 +187,7 @@ impl<'engine> ApplyOwner<'engine> {
         Ok(AcceptedGeneration {
             candidate,
             delta,
+            receipt_publication: None,
             owner: self,
         })
     }
@@ -197,11 +199,62 @@ impl<'engine> ApplyOwner<'engine> {
 pub(super) struct AcceptedGeneration<'engine> {
     candidate: Arc<Generation>,
     delta: PrimaryDelta,
+    receipt_publication: Option<crate::mutation_receipt::PreparedPublication>,
     // Last: candidate/map destruction and visibility transfer stay serialized.
     owner: ApplyOwner<'engine>,
 }
 
 impl AcceptedGeneration<'_> {
+    pub(super) fn with_receipt_publication(
+        mut self,
+        publication: Option<crate::mutation_receipt::PreparedPublication>,
+    ) -> anyhow::Result<Self> {
+        if let Some(publication) = &publication {
+            publication.require_view(&self.candidate.receipts)?;
+        }
+        anyhow::ensure!(
+            self.receipt_publication.is_none(),
+            "receipt publication already attached"
+        );
+        self.receipt_publication = publication;
+        Ok(self)
+    }
+
+    pub(super) fn prepare_publication_writes(
+        &mut self,
+        roots: &crate::application_sources::SourceRootsRef,
+        position: &kasumi_raft::AppliedEntryContext,
+    ) -> anyhow::Result<PreparedApplicationWrites> {
+        let mut documents = self.prepare_documents(roots)?;
+        let mut receipt = self.receipt_publication.take();
+        if receipt.is_some()
+            && !crate::mutation_receipt::PreparedPublication::can_join(
+                position,
+                documents
+                    .as_ref()
+                    .map_or(&[][..], |documents| documents.writes()),
+            )
+        {
+            // This is the original immutable pair commit, before the publisher
+            // is entered. No publisher/capacity error is caught or retried.
+            receipt
+                .take()
+                .expect("checked receipt")
+                .stage_separately()?;
+        }
+        let mut writes = documents
+            .as_mut()
+            .map_or_else(Vec::new, |documents| documents.take_writes());
+        if let Some(receipt) = &mut receipt {
+            receipt.append_to(&mut writes)?;
+        }
+        Ok(PreparedApplicationWrites {
+            writes,
+            _documents: documents,
+            _receipt: receipt,
+        })
+    }
+
     /// Stage each changed after-image once. The same compact handle is retained
     /// by both the current document map and its complete change-feed event.
     pub(super) fn prepare_documents(
@@ -306,15 +359,33 @@ impl AcceptedGeneration<'_> {
     }
 
     pub(super) fn publish(self) {
+        // Check before destructuring: unwinding must retire candidate/payload
+        // owners before releasing the apply guard, in the struct's field order.
+        assert!(
+            self.receipt_publication.is_none(),
+            "unpublished receipt pair reached visibility"
+        );
         let Self {
             candidate,
             delta,
+            receipt_publication: _,
             owner,
         } = self;
         owner.engine.publish_generation(Some(candidate));
         // Preserve the moved exact IDs until the actual visible swap completes.
         drop(delta.changed);
         drop(owner);
+    }
+}
+
+pub(super) struct PreparedApplicationWrites {
+    writes: Vec<kasumi_store::WriteOp>,
+    _documents: Option<crate::document_store::PreparedDocuments>,
+    _receipt: Option<crate::mutation_receipt::PreparedPublication>,
+}
+impl PreparedApplicationWrites {
+    pub(super) fn writes(&self) -> &[kasumi_store::WriteOp] {
+        &self.writes
     }
 }
 

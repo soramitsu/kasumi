@@ -720,18 +720,20 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     hold.release.notify_one();
     withheld(pending, 503).await;
 
-    // These counters describe actual adapter responses, not permanent outcomes.
+    // Listener authentication rejects this before the backup adapter is entered.
+    let denied = admin
+        .verify_backup_checkpoint(
+            "bad-token",
+            &VerifyBackupCheckpoint {
+                destination: "local".into(),
+                backup_id: Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap_err();
     assert!(
-        admin
-            .verify_backup_checkpoint(
-                "bad-token",
-                &VerifyBackupCheckpoint {
-                    destination: "local".into(),
-                    backup_id: Uuid::new_v4()
-                }
-            )
-            .await
-            .is_err()
+        matches!(&denied, kasumi_client::ClientError::Transport(status) if status.code() == tonic::Code::Unauthenticated),
+        "{denied:?}"
     );
     let text = client
         .get(&metrics)
@@ -743,7 +745,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         .await
         .unwrap();
     assert!(text.contains(
-        "kasumi_backup_requests_total{operation=\"verify\",outcome=\"returned_denied\"} 1\n"
+        "kasumi_backup_requests_total{operation=\"verify\",outcome=\"returned_denied\"} 0\n"
     ));
 
     let create = |seconds, principal: &str, scopes| CreateCredential {
@@ -761,6 +763,34 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         )
         .await
         .unwrap();
+    // An authenticated credential without Admin reaches the adapter and counts
+    // its actual denied response, without claiming a permanent backup outcome.
+    let denied = admin
+        .verify_backup_checkpoint(
+            &reader.token,
+            &VerifyBackupCheckpoint {
+                destination: "local".into(),
+                backup_id: Uuid::new_v4(),
+            },
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&denied, kasumi_client::ClientError::Transport(status) if status.code() == tonic::Code::PermissionDenied),
+        "{denied:?}"
+    );
+    let text = client
+        .get(&metrics)
+        .bearer_auth(&*operator)
+        .send()
+        .await
+        .unwrap()
+        .text()
+        .await
+        .unwrap();
+    assert!(text.contains(
+        "kasumi_backup_requests_total{operation=\"verify\",outcome=\"returned_denied\"} 1\n"
+    ));
     assert_eq!(
         client
             .get(&ready)

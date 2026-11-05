@@ -298,6 +298,9 @@ impl PreparedDocuments {
     pub(crate) fn writes(&self) -> &[WriteOp] {
         &self.writes
     }
+    pub(crate) fn take_writes(&mut self) -> Vec<WriteOp> {
+        std::mem::take(&mut self.writes)
+    }
 }
 
 /// Each operation borrows the exact selected native source. It never opens

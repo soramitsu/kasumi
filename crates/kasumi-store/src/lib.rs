@@ -1583,6 +1583,12 @@ impl NodeStore {
         self.body().db.physical_identity()
     }
 
+    /// Observe the actual native publication generation for physical fixtures.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_native_generation(&self) -> Result<u64> {
+        Ok(self.body().db.begin_read()?.generation())
+    }
+
     pub fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
@@ -2758,6 +2764,23 @@ impl TenantStore {
 
     pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
         self.write_batch_with_source(operations, None)
+    }
+
+    /// Bound encryption framing separately from namespace, key and value bytes.
+    /// Imported key identifiers may be large. Rotation only adds UUID identifiers,
+    /// so this also bounds future locally generated keys on this installed owner.
+    pub fn record_encryption_overhead(&self) -> Result<usize> {
+        let state = self.state.read();
+        self.require_access(&state)?;
+        let longest_key_id = state
+            .keys
+            .keys()
+            .map(String::len)
+            .max()
+            .unwrap_or(0)
+            .max(36);
+        encrypted_record_length(0, 0, 0, longest_key_id)
+            .context("record encryption framing overflow")
     }
 
     pub async fn rotate_data_key(&self) -> Result<()> {

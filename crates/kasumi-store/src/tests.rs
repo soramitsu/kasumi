@@ -266,6 +266,65 @@ async fn fixture(
     (dir, store, provider, clock)
 }
 
+#[tokio::test]
+async fn encryption_framing_bound_covers_imported_identifiers_and_future_rotation() -> Result<()> {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir()?;
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let (_directory, store, provider, clock) = fixture(memory, scratch).await;
+    assert_eq!(store.record_encryption_overhead()?, 36 + 4 + 12 + 24 + 16);
+    let node = store.node.clone();
+    let mut catalog = store.catalog.read().clone();
+    let original = catalog.active.clone();
+    let wrapped = catalog.keys.remove(&original).unwrap();
+    let imported = "k".repeat(512 << 10);
+    catalog.active = imported.clone();
+    catalog.keys.insert(imported.clone(), wrapped);
+    catalog.validate("tenant-a")?;
+    store.shutdown().await?;
+    assert!(store.record_encryption_overhead().is_err());
+    drop(store);
+    // Install a valid imported catalog before opening its live key owner.
+    node.save_catalog("tenant-a", &catalog)?;
+    let store = TenantStore::open_existing_fixture_with_clock(
+        node.clone(),
+        "tenant-a".into(),
+        provider,
+        clock,
+    )
+    .await?;
+    let overhead = store.record_encryption_overhead()?;
+    assert_eq!(overhead, imported.len() + 4 + 12 + 24 + 16);
+    assert!(overhead > 512);
+    let namespace = "framing";
+    let key = b"row";
+    let value = b"immutable bytes";
+    for rotated in [false, true] {
+        if rotated {
+            store.rotate_data_key().await?;
+        }
+        store.write_batch(&[WriteOp::put(namespace, key, value)])?;
+        let physical = {
+            let state = store.state.read();
+            let physical_key = record_key("tenant-a", namespace, key, &state.keys[INDEX_KEY]);
+            let read = node.body().db.begin_read()?;
+            let table = read.open_table(RECORDS)?;
+            table.get(physical_key.as_slice())?.unwrap().value().len()
+        };
+        let bound = namespace.len() + key.len() + value.len() + overhead;
+        assert!(physical <= bound);
+        if !rotated {
+            assert_eq!(physical, bound);
+        }
+        assert_eq!(store.record_encryption_overhead()?, overhead);
+        assert_eq!(store.get(namespace, key)?.unwrap().as_bytes(), value);
+    }
+    store.shutdown().await?;
+    drop(store);
+    node.shutdown().await?;
+    Ok(())
+}
+
 #[tokio::test(start_paused = true)]
 async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);

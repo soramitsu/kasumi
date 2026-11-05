@@ -1,3 +1,180 @@
+fn database_open_refusals()
+-> &'static std::sync::Mutex<BTreeMap<Uuid, Arc<std::sync::atomic::AtomicUsize>>> {
+    static REFUSALS: std::sync::OnceLock<
+        std::sync::Mutex<BTreeMap<Uuid, Arc<std::sync::atomic::AtomicUsize>>>,
+    > = std::sync::OnceLock::new();
+    REFUSALS.get_or_init(Default::default)
+}
+
+pub(super) fn refuse_database_open_for_test(
+    id: Uuid,
+    tenant: &str,
+    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+) -> kasumi_types::Result<()> {
+    if tenant != "acme" {
+        return Ok(());
+    }
+    let Some(observed) = database_open_refusals().lock().unwrap().remove(&id) else {
+        return Ok(());
+    };
+    // Existing node, audit, Control and tenant-store owners already consume
+    // capacity. This requests a real impossible resident grant, before any
+    // application startup effects, without changing the configured limit.
+    let requested = admission.policy().resolved_fixture_total_bytes().unwrap();
+    let error = match admission.memory().reserve_resident(requested) {
+        Err(error) => error,
+        Ok(_) => panic!("whole-budget reservation accepted beside installed owners"),
+    };
+    assert_eq!(error.code, kasumi_types::ErrorCode::ResourceExhausted);
+    observed.store(
+        error.message.as_ptr() as usize,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+    Err(error)
+}
+
+struct DatabaseOpenRefusal(Uuid);
+impl Drop for DatabaseOpenRefusal {
+    fn drop(&mut self) {
+        database_open_refusals().lock().unwrap().remove(&self.0);
+    }
+}
+
+#[test]
+fn refused_database_startup_returns_exact_error_after_drain_even_if_canceled() -> Result<()> {
+    std::thread::Builder::new()
+        .name("runtime admission refusal cleanup fixture".into())
+        .stack_size(16 << 20)
+        .spawn(|| {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(refused_database_startup_after_drain_impl()))
+        })
+        .unwrap()
+        .join()
+        .unwrap()
+}
+
+async fn refused_database_startup_after_drain_impl() -> Result<()> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let _gate = LIFECYCLE_GATE.lock().await;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+        &directory.path().join("installed"),
+        "acme",
+    )
+    .await?;
+    let mut config = RuntimeConfig::load(&installed.configuration)?;
+    let [mcp, native, admin] = listening_addresses();
+    config.mcp.listen = mcp;
+    config.native.listen = native;
+    config.admin.listen = admin;
+    config.mcp.protocol = McpConfig::new(format!("https://localhost:{}/mcp", mcp.port()))?;
+
+    for cancel in [false, true] {
+        let original_backing = Arc::new(AtomicUsize::new(0));
+        assert!(
+            database_open_refusals()
+                .lock()
+                .unwrap()
+                .insert(config.database_id, original_backing.clone())
+                .is_none()
+        );
+        let _refusal = DatabaseOpenRefusal(config.database_id);
+        let pause = crate::startup_preparation::pause_failure(config.database_id);
+        let open_config = config.clone();
+        let open_storage = storage.clone();
+        let opening = tokio::spawn(async move {
+            NodeRuntime::open_using_storage(open_config, file_secret, open_storage).await
+        });
+        tokio::time::timeout(Duration::from_secs(30), pause.entered()).await?;
+        assert_ne!(original_backing.load(Ordering::SeqCst), 0);
+        assert!(
+            crate::standalone::claim(
+                &config,
+                &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
+            )
+            .is_err(),
+            "failed startup still owns the installation before cleanup"
+        );
+        let error = if cancel {
+            opening.abort();
+            assert!(matches!(opening.await, Err(error) if error.is_cancelled()));
+            // A canceled public receiver cannot release the background owner.
+            assert!(
+                crate::standalone::claim(
+                    &config,
+                    &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
+                )
+                .is_err()
+            );
+            pause.release();
+            tokio::time::timeout(Duration::from_secs(30), NodeRuntime::drain_startups())
+                .await?
+                .expect_err("abandoned exact operation failure must reach the startup drain")
+        } else {
+            pause.release();
+            match tokio::time::timeout(Duration::from_secs(30), opening).await?? {
+                Err(error) => error,
+                Ok(_) => anyhow::bail!("refused database startup unexpectedly succeeded"),
+            }
+        };
+        let original = error
+            .downcast_ref::<kasumi_types::Error>()
+            .context("native-free refusal lost its original typed error")?;
+        assert_eq!(original.code, kasumi_types::ErrorCode::ResourceExhausted);
+        assert_eq!(
+            original.message.as_ptr() as usize,
+            original_backing.load(Ordering::SeqCst)
+        );
+        drop(error);
+        NodeRuntime::drain_startups().await?;
+        drop(pause);
+
+        // Returning the failure establishes physical drain, not merely a free
+        // logical marker: both the exclusive installation and native database
+        // immediately reopen, with the original encrypted audit data intact.
+        let installation = crate::standalone::claim(
+            &config,
+            &crate::persistent_disk::open(&config.persistent_disk, &storage)?,
+        )?;
+        let disk = storage.open_persistent(&config.persistent_disk)?;
+        let node = NodeStore::open_existing(
+            &config.database_path,
+            config.database_id,
+            disk.clone(),
+            storage.open_scratch(&config.scratch_disk)?,
+            disk.native_storage_config(),
+        )
+        .expect("drained refused startup must release its physical native owner");
+        let store = TenantStore::open_existing(
+            node.clone(),
+            SECURITY_TENANT.into(),
+            config.security_audit.keys.provider(Arc::new(file_secret))?,
+            kasumi_store::StorageAccess::security_audit(),
+        )
+        .await?;
+        assert!(store.get("security.audit.meta", b"head")?.is_some());
+        store.shutdown().await?;
+        drop(store);
+        node.shutdown().await?;
+        drop(node);
+        drop(installation);
+        drop(disk);
+        let mut reopened = tokio::time::timeout(
+            Duration::from_secs(30),
+            NodeRuntime::open_using_storage(config.clone(), file_secret, storage.clone()),
+        )
+        .await??;
+        reopened.shutdown().await?;
+        drop(reopened);
+    }
+    Ok(())
+}
+
 #[test]
 fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime() -> Result<()> {
     // The repeated real cold-open and panic-cleanup futures exceed libtest's
