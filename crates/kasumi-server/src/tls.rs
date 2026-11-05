@@ -301,9 +301,11 @@ async fn serve_tls_source(
                         return;
                     }
                     let (active, activity) = watch::channel(0usize);
+                    let authentications = Arc::new(crate::auth::ConnectionAuthentications::default());
                     let service = TowerToHyperService::new(
                         router
                             .layer(Extension(peer))
+                            .layer(Extension(authentications.clone()))
                             .layer(axum::middleware::from_fn_with_state(active, track_request)),
                     );
                     let mut builder = Builder::new(executor);
@@ -326,6 +328,13 @@ async fn serve_tls_source(
                             let _ = tokio::time::timeout(limits.drain_timeout, connection).await;
                         }
                     }
+                    // Record how many requests the connection's last token
+                    // authenticated after its recorded success, still holding
+                    // the slot and bounded like the handshake audit, so closing
+                    // connections stay bounded. A failure means audit writes
+                    // are failing, which refuses requests on every connection;
+                    // only this count is lost.
+                    let _ = tokio::time::timeout(limits.handshake_timeout, authentications.close()).await;
                 });
             }
         }

@@ -58,6 +58,7 @@ async fn entered(gate: &crate::rpc::AuditReleaseGate) {
 enum NativeAuditScope {
     History,
     Authorization,
+    Connection,
 }
 struct ManualCredentialClock {
     base_ms: u64,
@@ -80,6 +81,10 @@ fn audit_native_tls_fixed_history_and_cancellation() {
 #[test]
 fn audit_native_tls_original_authorization_release() {
     run_native_audit_fixture(NativeAuditScope::Authorization);
+}
+#[test]
+fn audit_native_tls_connection_records_one_success_and_counts_the_rest() {
+    run_native_audit_fixture(NativeAuditScope::Connection);
 }
 fn run_native_audit_fixture(scope: NativeAuditScope) {
     // Both scopes retain native TLS and runtime ownership. Their independent
@@ -188,6 +193,89 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
         .await
         .unwrap();
     let operator = control.bearer().unwrap();
+    if scope == NativeAuditScope::Connection {
+        // Three requests with one bearer on their own TLS connection record
+        // one success; closing the connection records the other two as a count.
+        let mut connection = KasumiAdminClient::connect(&control.connection(true).unwrap())
+            .await
+            .unwrap();
+        for _ in 0..3 {
+            connection.security_audit_status(&operator).await.unwrap();
+        }
+        drop(connection);
+        let options = || kasumi_client::JsonReadOptions {
+            resources: kasumi_client::ClientResources::new(64 << 20, 4).unwrap(),
+            limits: kasumi_client::ClientDecodeLimits {
+                max_request_bytes: 64 << 10,
+                max_wire_bytes: 2 << 20,
+                max_json_bytes: 1 << 20,
+                max_decoded_bytes: 16 << 20,
+                max_rows: 1024,
+                ..Default::default()
+            },
+            deadline: tokio::time::Instant::now() + Duration::from_secs(30),
+        };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let (succeeded, repeated) = loop {
+            let mut records = Vec::new();
+            let mut cursor = None;
+            loop {
+                let page = admin
+                    .export_security_audit(
+                        &operator,
+                        &SecurityAuditExportRequest {
+                            cursor,
+                            limit: 1024,
+                        },
+                        &options(),
+                    )
+                    .await
+                    .unwrap();
+                records.extend(page.records.iter().map(|record| record.event.clone()));
+                cursor = page.cursor();
+                if cursor.is_none() {
+                    break;
+                }
+            }
+            let repeated = records
+                .iter()
+                .filter(|event| {
+                    matches!(event.kind, SecurityEventKind::AuthenticationRepeated { .. })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if !repeated.is_empty() {
+                break (records, repeated);
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "a closed connection never recorded its repeated authentications"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(repeated.len(), 1);
+        let repeated = &repeated[0];
+        assert_eq!(
+            repeated.kind,
+            SecurityEventKind::AuthenticationRepeated { requests: 2 }
+        );
+        assert_eq!(repeated.outcome, SecurityOutcome::Succeeded);
+        let first = succeeded
+            .iter()
+            .filter(|event| {
+                event.kind == SecurityEventKind::AuthenticationSucceeded
+                    && event.request_id == repeated.request_id
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(first.len(), 1);
+        assert_eq!(
+            (&first[0].principal, &first[0].tenant),
+            (&repeated.principal, &repeated.tenant)
+        );
+        stop.send(true).unwrap();
+        serving.await.unwrap().unwrap();
+        return;
+    }
     if scope == NativeAuditScope::History {
         append(&audit, 40).await;
         let decode_resources = kasumi_client::ClientResources::new(512 << 20, 4).unwrap();

@@ -884,9 +884,15 @@ impl tls::TlsHandshakeAudit for SecurityAudit {
 impl crate::auth::RequestAuditSink for SecurityAudit {
     async fn record(&self, event: crate::auth::RequestAuditEvent) -> kasumi_types::Result<()> {
         use crate::auth::RequestAuditKind as Kind;
-        let success = matches!(event.kind, Kind::AuthenticationSucceeded);
+        let success = matches!(
+            event.kind,
+            Kind::AuthenticationSucceeded | Kind::AuthenticationRepeated { .. }
+        );
         let kind = match event.kind {
             Kind::AuthenticationSucceeded => SecurityEventKind::AuthenticationSucceeded,
+            Kind::AuthenticationRepeated { requests } => {
+                SecurityEventKind::AuthenticationRepeated { requests }
+            }
             Kind::AuthenticationDenied => SecurityEventKind::AuthenticationDenied,
             Kind::AccessDenied => SecurityEventKind::AccessDenied,
             Kind::TenantSealed => SecurityEventKind::TenantSealed,

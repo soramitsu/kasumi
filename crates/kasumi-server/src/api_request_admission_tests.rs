@@ -124,6 +124,62 @@ async fn native_bearer_is_verified_before_any_body_byte_is_read() {
 }
 
 #[tokio::test]
+async fn a_connection_durably_records_a_tokens_first_success_and_counts_the_rest() {
+    let fixture = Fixture::new().await;
+    let router = admitted_native(&fixture, std::time::Duration::from_secs(60));
+    let token = fixture.token("person", "tenant-a", "kasumi:read");
+    let connection = Arc::new(crate::auth::ConnectionAuthentications::default());
+    let get = proto::GetRequest {
+        collection: "docs".into(),
+        id: "absent".into(),
+    }
+    .encode_to_vec();
+    for _ in 0..3 {
+        let mut body = grpc_prefix(get.len() as u64);
+        body.extend_from_slice(&get);
+        let mut request = grpc_request("Get", Some(&token), Body::from(body));
+        request.extensions_mut().insert(connection.clone());
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = axum::body::to_bytes(response.into_body(), 1 << 20)
+            .await
+            .unwrap();
+        assert!(
+            decode_grpc::<proto::GetResponse>(&response)
+                .document
+                .is_none()
+        );
+    }
+    connection.close().await.unwrap();
+    let events: Vec<Value> = fixture
+        .audit_store
+        .scan("security.audit")
+        .unwrap()
+        .iter()
+        .map(|(_, body)| serde_json::from_slice(body).unwrap())
+        .collect();
+    let person = |kind: Value| {
+        events
+            .iter()
+            .filter(|event| {
+                event["event"]["kind"] == kind && event["event"]["principal"] == "person"
+            })
+            .collect::<Vec<_>>()
+    };
+    let succeeded = person(json!("authentication_succeeded"));
+    assert_eq!(succeeded.len(), 1);
+    let repeated = person(json!({"authentication_repeated": {"requests": 2}}));
+    assert_eq!(repeated.len(), 1);
+    assert_eq!(
+        repeated[0]["event"]["request_id"],
+        succeeded[0]["event"]["request_id"]
+    );
+    assert_eq!(repeated[0]["event"]["tenant"], "tenant-a");
+    assert_eq!(repeated[0]["event"]["outcome"], "succeeded");
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn native_message_is_charged_from_its_prefix_before_its_body_arrives() {
     let fixture = Fixture::new().await;
     let admission = fixture.physical.admission.clone();

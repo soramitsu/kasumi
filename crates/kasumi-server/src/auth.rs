@@ -8,7 +8,7 @@ use std::{
     collections::BTreeSet,
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -18,6 +18,11 @@ use tokio::sync::RwLock;
 #[serde(rename_all = "snake_case")]
 pub enum RequestAuditKind {
     AuthenticationSucceeded,
+    /// Later successes on one connection with the token whose recorded
+    /// success has this event's `request_id` (see `authenticate_on`).
+    AuthenticationRepeated {
+        requests: u64,
+    },
     AuthenticationDenied,
     AccessDenied,
     TenantSealed,
@@ -127,6 +132,73 @@ impl CachedKeys {
     }
 }
 
+/// The bearer token whose successful authentication one client connection
+/// has durably recorded, and how many later requests it authenticated there.
+/// The connection's serving task owns it and closes it when the connection
+/// ends; its requests share it through a request extension.
+#[derive(Default)]
+pub(crate) struct ConnectionAuthentications {
+    current: tokio::sync::Mutex<Option<RecordedToken>>,
+}
+
+impl ConnectionAuthentications {
+    /// Durably record how many requests the current token authenticated
+    /// after its recorded success. A connection that ends without this, such
+    /// as one aborted at shutdown, loses only that count: each of its tokens'
+    /// first success is already durable.
+    pub(crate) async fn close(&self) -> Result<()> {
+        match self.current.lock().await.take() {
+            Some(mut token) => token.settle().await,
+            None => Ok(()),
+        }
+    }
+}
+
+struct RecordedToken {
+    auth: Arc<Authenticator>,
+    digest: TokenDigest,
+    principal: String,
+    tenant: String,
+    /// The request whose `AuthenticationSucceeded` record covers this token.
+    request_id: String,
+    /// Later successes counted instead of recorded.
+    repeated: u64,
+}
+
+impl RecordedToken {
+    /// Durably record the successes counted since the last record, if any.
+    /// A failed record keeps the count; a cancelled one may lose it but
+    /// never records it twice.
+    async fn settle(&mut self) -> Result<()> {
+        let requests = std::mem::take(&mut self.repeated);
+        if requests == 0 {
+            return Ok(());
+        }
+        let recorded = self
+            .auth
+            .record(RequestAuditEvent {
+                kind: RequestAuditKind::AuthenticationRepeated { requests },
+                principal: Some(self.principal.clone()),
+                tenant: Some(self.tenant.clone()),
+                request_id: self.request_id.clone(),
+            })
+            .await;
+        if recorded.is_err() {
+            self.repeated = self.repeated.saturating_add(requests);
+        }
+        recorded
+    }
+}
+
+fn succeeded(context: &RequestContext) -> RequestAuditEvent {
+    RequestAuditEvent {
+        kind: RequestAuditKind::AuthenticationSucceeded,
+        principal: Some(context.principal.clone()),
+        tenant: Some(context.tenant.clone()),
+        request_id: context.request_id.clone(),
+    }
+}
+
 /// The physical identity of the local signer file a reload read. Rotation
 /// atomically replaces the file, so an unchanged identity has the same keys.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -197,6 +269,10 @@ pub struct Authenticator {
     /// Local signer reloads begun, numbered while holding `refresh`.
     reloads: AtomicU64,
     audit: std::sync::OnceLock<Arc<dyn RequestAuditSink>>,
+    /// Whether the latest audit write failed. Connections then record every
+    /// success again instead of counting it, so an audit outage refuses
+    /// their requests as it refuses everyone else's.
+    audit_failed: AtomicBool,
     local_credentials: std::sync::OnceLock<Arc<crate::local_auth::LocalCredentials>>,
 }
 
@@ -283,6 +359,7 @@ impl Authenticator {
             refresh: tokio::sync::Mutex::new(RefreshState::default()),
             reloads: AtomicU64::new(0),
             audit: std::sync::OnceLock::new(),
+            audit_failed: AtomicBool::new(false),
             local_credentials: std::sync::OnceLock::new(),
         }))
     }
@@ -317,22 +394,21 @@ impl Authenticator {
     }
 
     async fn record(&self, event: RequestAuditEvent) -> Result<()> {
-        self.audit
-            .get()
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::AuditUnavailable,
-                    "required request audit sink unavailable",
-                )
-            })?
-            .record(event)
-            .await
-            .map_err(|_| {
+        let recorded = match self.audit.get() {
+            Some(sink) => sink.record(event).await.map_err(|_| {
                 Error::new(
                     ErrorCode::AuditUnavailable,
                     "required request audit storage unavailable",
                 )
-            })
+            }),
+            None => Err(Error::new(
+                ErrorCode::AuditUnavailable,
+                "required request audit sink unavailable",
+            )),
+        };
+        self.audit_failed
+            .store(recorded.is_err(), Ordering::Release);
+        recorded
     }
 
     /// Record adapter-originated authorization and sealed-tenant rejections in
@@ -527,32 +603,83 @@ impl Authenticator {
         Ok(())
     }
 
+    /// Authenticate one request, durably recording its success or refusal.
     pub async fn authenticate(&self, authorization: &str) -> Result<RequestContext> {
-        match self.verify(authorization).await {
-            Ok(context) => {
-                self.record(RequestAuditEvent {
-                    kind: RequestAuditKind::AuthenticationSucceeded,
-                    principal: Some(context.principal.clone()),
-                    tenant: Some(context.tenant.clone()),
-                    request_id: context.request_id.clone(),
-                })
-                .await?;
-                self.audit_result(&context, context.authorization.check_live())
-                    .await?;
-                Ok(context)
+        let context = match self.verify(authorization).await {
+            Ok((context, _)) => context,
+            Err(error) => return Err(self.refuse(error).await),
+        };
+        self.record(succeeded(&context)).await?;
+        self.audit_result(&context, context.authorization.check_live())
+            .await?;
+        Ok(context)
+    }
+
+    /// Authenticate a request received on `connection`. Each request is
+    /// verified in full: signature (through the verified-token cache), signed
+    /// times, token use, scopes and credential liveness. The first success of
+    /// a token on the connection is durably recorded before that request
+    /// proceeds, like every success of `authenticate`; later successes with
+    /// the same token are counted instead, and the count is recorded once,
+    /// when the connection presents another token or closes. While audit
+    /// writes fail, each success is recorded again, so the outage refuses
+    /// these requests too. Every refusal is recorded.
+    pub(crate) async fn authenticate_on(
+        self: &Arc<Self>,
+        authorization: &str,
+        connection: &ConnectionAuthentications,
+    ) -> Result<RequestContext> {
+        let (context, digest) = match self.verify(authorization).await {
+            Ok(verified) => verified,
+            Err(error) => return Err(self.refuse(error).await),
+        };
+        // Held across a first success's durable record: concurrent first
+        // requests on one connection record one success, and none of them
+        // proceeds before it is durable.
+        let mut current = connection.current.lock().await;
+        let recorded = current
+            .as_ref()
+            .is_some_and(|token| token.digest == digest && Arc::ptr_eq(&token.auth, self));
+        if recorded && !self.audit_failed.load(Ordering::Acquire) {
+            if let Some(token) = current.as_mut() {
+                token.repeated = token.repeated.saturating_add(1);
             }
-            Err(error) => {
-                let _ = self
-                    .record(RequestAuditEvent {
-                        kind: RequestAuditKind::AuthenticationDenied,
-                        principal: None,
-                        tenant: None,
-                        request_id: uuid::Uuid::new_v4().to_string(),
-                    })
-                    .await;
-                Err(error)
+            drop(current);
+        } else if recorded {
+            drop(current);
+            self.record(succeeded(&context)).await?;
+        } else {
+            if let Some(previous) = current.as_mut() {
+                previous.settle().await?;
             }
+            self.record(succeeded(&context)).await?;
+            *current = Some(RecordedToken {
+                auth: self.clone(),
+                digest,
+                principal: context.principal.clone(),
+                tenant: context.tenant.clone(),
+                request_id: context.request_id.clone(),
+                repeated: 0,
+            });
+            drop(current);
         }
+        self.audit_result(&context, context.authorization.check_live())
+            .await?;
+        Ok(context)
+    }
+
+    /// Record a refused bearer without any claimed identity. The refusal
+    /// stands even if its record fails.
+    async fn refuse(&self, error: Error) -> Error {
+        let _ = self
+            .record(RequestAuditEvent {
+                kind: RequestAuditKind::AuthenticationDenied,
+                principal: None,
+                tenant: None,
+                request_id: uuid::Uuid::new_v4().to_string(),
+            })
+            .await;
+        error
     }
 
     /// The signed claims of `token` under `keys`, without any time check.
@@ -602,7 +729,9 @@ impl Authenticator {
             .claims)
     }
 
-    async fn verify(&self, authorization: &str) -> Result<RequestContext> {
+    /// The request context `authorization` grants, with the digest of its
+    /// token bytes.
+    async fn verify(&self, authorization: &str) -> Result<(RequestContext, TokenDigest)> {
         // Capture before JWKS/signature work. Delayed verification cannot renew
         // the absolute token lifetime or ignore time spent suspended.
         let observation = self.clock.observe().map_err(|_| unauthorized())?;
@@ -629,15 +758,15 @@ impl Authenticator {
             .filter(|kid| !kid.is_empty() && kid.len() <= 256)
             .ok_or_else(unauthorized)?;
         self.refresh_keys(kid).await?;
+        let digest: TokenDigest = Sha256::digest(token.as_bytes()).into();
         let claims = {
             let cache = self.cache.read().await;
             let cached = cache.as_ref().ok_or_else(unavailable)?;
             // Signature, issuer, audience and required-claim checks depend
             // only on these exact token bytes and this key set, so a token
             // this key set already verified skips them. Everything below
-            // (signed times against the trusted epoch, token use, scopes,
-            // credential liveness and the audit record) runs every request.
-            let digest: TokenDigest = Sha256::digest(token.as_bytes()).into();
+            // (signed times against the trusted epoch, token use, scopes and
+            // credential liveness) runs every request.
             match cached.verified(&digest) {
                 Some(claims) => claims,
                 None => {
@@ -704,13 +833,16 @@ impl Authenticator {
                 claims.kasumi_resource,
             )?,
         };
-        Ok(RequestContext {
-            authorization,
-            principal: claims.sub,
-            tenant: claims.tenant,
-            scopes,
-            request_id: uuid::Uuid::new_v4().to_string(),
-        })
+        Ok((
+            RequestContext {
+                authorization,
+                principal: claims.sub,
+                tenant: claims.tenant,
+                scopes,
+                request_id: uuid::Uuid::new_v4().to_string(),
+            },
+            digest,
+        ))
     }
 
     /// Only an installed external authorization provider advertises discovery.
@@ -1128,6 +1260,298 @@ mod tests {
             assert!(cached.verified.lock().unwrap().len() <= MAX_VERIFIED_TOKENS);
         }
         assert!(cached.verified(&[0; 32]).is_none());
+    }
+
+    /// Keeps every event it accepts and refuses every write while `failing`.
+    /// Each write yields first, so concurrent requests interleave.
+    #[derive(Default)]
+    struct SwitchedAudit {
+        events: std::sync::Mutex<Vec<RequestAuditEvent>>,
+        failing: AtomicBool,
+    }
+    #[async_trait::async_trait]
+    impl RequestAuditSink for SwitchedAudit {
+        async fn record(&self, event: RequestAuditEvent) -> Result<()> {
+            tokio::task::yield_now().await;
+            if self.failing.load(Ordering::SeqCst) {
+                return Err(Error::new(
+                    ErrorCode::AuditUnavailable,
+                    "test audit failing",
+                ));
+            }
+            self.events.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+    impl SwitchedAudit {
+        fn fail(&self, failing: bool) {
+            self.failing.store(failing, Ordering::SeqCst);
+        }
+        /// Each kept event's kind with the request it names.
+        fn recorded(&self) -> Vec<(RequestAuditKind, String)> {
+            self.events
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| (event.kind.clone(), event.request_id.clone()))
+                .collect()
+        }
+    }
+
+    async fn connection_fixture() -> (Arc<Authenticator>, Arc<SwitchedAudit>, EncodingKey) {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let keys: JwkSet = serde_json::from_value(serde_json::json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"key-1","x":URL_SAFE_NO_PAD.encode(key.public_key_raw())}]})).unwrap();
+        let auth = Authenticator::new(config()).unwrap();
+        let audit = Arc::new(SwitchedAudit::default());
+        auth.install_audit(audit.clone()).unwrap();
+        *auth.cache.write().await = Some(CachedKeys::new(keys, auth.clock.elapsed_clock().now()));
+        (
+            auth,
+            audit,
+            EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap(),
+        )
+    }
+
+    fn renewed(key: &EncodingKey) -> String {
+        let mut renewed = claims();
+        renewed["exp"] = serde_json::json!(renewed["exp"].as_u64().unwrap() + 1);
+        bearer(key, &renewed, "at+jwt")
+    }
+
+    fn repeated(requests: u64) -> RequestAuditKind {
+        RequestAuditKind::AuthenticationRepeated { requests }
+    }
+
+    #[tokio::test]
+    async fn a_connection_records_each_tokens_first_success_and_counts_the_rest() {
+        use RequestAuditKind::{
+            AuthenticationDenied as Denied, AuthenticationSucceeded as Succeeded,
+        };
+        let (auth, audit, key) = connection_fixture().await;
+        let token = bearer(&key, &claims(), "at+jwt");
+        let renewed = renewed(&key);
+        let mut expired = claims();
+        expired["exp"] = serde_json::json!(1);
+        let expired = bearer(&key, &expired, "at+jwt");
+        let connection = ConnectionAuthentications::default();
+        let first = auth.authenticate_on(&token, &connection).await.unwrap();
+        for _ in 0..2 {
+            let later = auth.authenticate_on(&token, &connection).await.unwrap();
+            assert_ne!(later.request_id, first.request_id);
+            assert_eq!(later.principal, "person");
+        }
+        assert_eq!(audit.recorded(), [(Succeeded, first.request_id.clone())]);
+        // Another token closes the first one's account before its own first
+        // success is recorded.
+        let second = auth.authenticate_on(&renewed, &connection).await.unwrap();
+        auth.authenticate_on(&renewed, &connection).await.unwrap();
+        // Refusals are recorded one by one and leave the account alone.
+        for _ in 0..2 {
+            assert_eq!(
+                auth.authenticate_on(&expired, &connection)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Unauthorized
+            );
+        }
+        connection.close().await.unwrap();
+        connection.close().await.unwrap();
+        let recorded = audit.recorded();
+        assert_eq!(
+            recorded[..4],
+            [
+                (Succeeded, first.request_id.clone()),
+                (repeated(2), first.request_id.clone()),
+                (Succeeded, second.request_id.clone()),
+                (Denied, recorded[3].1.clone()),
+            ]
+        );
+        assert_eq!(recorded[4].0, Denied);
+        assert_eq!(recorded[5..], [(repeated(1), second.request_id.clone())]);
+        let count = audit.events.lock().unwrap()[1].clone();
+        assert_eq!(
+            (count.principal.as_deref(), count.tenant.as_deref()),
+            (Some("person"), Some("tenant-a"))
+        );
+        // The same token on another connection, and every request without a
+        // connection, record their own successes.
+        audit.events.lock().unwrap().clear();
+        let other = ConnectionAuthentications::default();
+        auth.authenticate_on(&token, &other).await.unwrap();
+        auth.authenticate(&token).await.unwrap();
+        auth.authenticate(&token).await.unwrap();
+        assert!(audit.recorded().iter().all(|(kind, _)| *kind == Succeeded));
+        assert_eq!(audit.recorded().len(), 3);
+        // A connection whose token made one request closes without a count.
+        other.close().await.unwrap();
+        assert_eq!(audit.recorded().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn a_connection_records_every_success_again_while_audit_writes_fail() {
+        use RequestAuditKind::AuthenticationSucceeded as Succeeded;
+        let (auth, audit, key) = connection_fixture().await;
+        let token = bearer(&key, &claims(), "at+jwt");
+        let connection = ConnectionAuthentications::default();
+        // A first success that cannot be recorded is refused and not counted.
+        audit.fail(true);
+        assert_eq!(
+            auth.authenticate_on(&token, &connection)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::AuditUnavailable
+        );
+        audit.fail(false);
+        let first = auth.authenticate_on(&token, &connection).await.unwrap();
+        auth.authenticate_on(&token, &connection).await.unwrap();
+        // Any failed write, here a refusal's, stops the counting: the
+        // connection's next success must be recorded, so the outage refuses it.
+        audit.fail(true);
+        assert_eq!(
+            auth.authenticate_on("Bearer invalid", &connection)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        assert_eq!(
+            auth.authenticate_on(&token, &connection)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::AuditUnavailable
+        );
+        // Another token must first record the counted successes; that fails
+        // too, and the count is kept.
+        assert_eq!(
+            auth.authenticate_on(&renewed(&key), &connection)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::AuditUnavailable
+        );
+        audit.fail(false);
+        // The first success after the outage is recorded and resumes counting.
+        let recovered = auth.authenticate_on(&token, &connection).await.unwrap();
+        auth.authenticate_on(&token, &connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(
+            audit.recorded(),
+            [
+                (Succeeded, first.request_id.clone()),
+                (Succeeded, recovered.request_id),
+                (repeated(2), first.request_id),
+            ]
+        );
+        // A count that cannot be recorded at close is lost, not retried.
+        let closing = ConnectionAuthentications::default();
+        auth.authenticate_on(&token, &closing).await.unwrap();
+        auth.authenticate_on(&token, &closing).await.unwrap();
+        audit.fail(true);
+        assert_eq!(
+            closing.close().await.unwrap_err().code,
+            ErrorCode::AuditUnavailable
+        );
+        audit.fail(false);
+        closing.close().await.unwrap();
+        assert_eq!(audit.recorded().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn concurrent_first_requests_on_a_connection_record_one_success() {
+        use RequestAuditKind::AuthenticationSucceeded as Succeeded;
+        let (auth, audit, key) = connection_fixture().await;
+        let token = bearer(&key, &claims(), "at+jwt");
+        let connection = ConnectionAuthentications::default();
+        let (first, second, third) = tokio::join!(
+            auth.authenticate_on(&token, &connection),
+            auth.authenticate_on(&token, &connection),
+            auth.authenticate_on(&token, &connection),
+        );
+        let ids =
+            [first.unwrap(), second.unwrap(), third.unwrap()].map(|context| context.request_id);
+        connection.close().await.unwrap();
+        let recorded = audit.recorded();
+        assert_eq!(recorded.len(), 2);
+        assert_eq!(recorded[0].0, Succeeded);
+        assert!(ids.contains(&recorded[0].1));
+        assert_eq!(recorded[1], (repeated(2), recorded[0].1.clone()));
+    }
+
+    #[tokio::test]
+    async fn a_connection_counts_only_successes_of_the_authenticator_that_recorded_them() {
+        use RequestAuditKind::AuthenticationSucceeded as Succeeded;
+        let (auth, audit, key) = connection_fixture().await;
+        let other = Authenticator::new(config()).unwrap();
+        let other_audit = Arc::new(SwitchedAudit::default());
+        other.install_audit(other_audit.clone()).unwrap();
+        let keys = auth.cache.read().await.as_ref().unwrap().keys.clone();
+        *other.cache.write().await = Some(CachedKeys::new(keys, other.clock.elapsed_clock().now()));
+        let token = bearer(&key, &claims(), "at+jwt");
+        let connection = ConnectionAuthentications::default();
+        let first = auth.authenticate_on(&token, &connection).await.unwrap();
+        auth.authenticate_on(&token, &connection).await.unwrap();
+        // The same token through another authenticator is recorded in that
+        // authenticator's audit, after this one's count.
+        let elsewhere = other.authenticate_on(&token, &connection).await.unwrap();
+        connection.close().await.unwrap();
+        assert_eq!(
+            audit.recorded(),
+            [
+                (Succeeded, first.request_id.clone()),
+                (repeated(1), first.request_id),
+            ]
+        );
+        assert_eq!(other_audit.recorded(), [(Succeeded, elsewhere.request_id)]);
+    }
+
+    #[tokio::test]
+    async fn a_connection_refuses_its_recorded_token_once_it_expires() {
+        use RequestAuditKind::{
+            AuthenticationDenied as Denied, AuthenticationSucceeded as Succeeded,
+        };
+        use std::sync::atomic::AtomicU64;
+        let mut claims = claims();
+        let base = claims["exp"].as_u64().unwrap() - 300;
+        claims["exp"] = serde_json::json!(base + 10);
+        let elapsed = Arc::new(ManualElapsed(AtomicU64::new(0)));
+        let clock = Arc::new(
+            EpochClock::new(
+                elapsed.clone(),
+                Arc::new(ManualWall(AtomicU64::new(base * 1000))),
+            )
+            .unwrap(),
+        );
+        let (source, key) = fixture().await;
+        let auth = Authenticator::new_with_clock(config(), clock).unwrap();
+        let keys = source.cache.read().await.as_ref().unwrap().keys.clone();
+        *auth.cache.write().await = Some(CachedKeys::new(keys, Duration::ZERO));
+        let audit = Arc::new(SwitchedAudit::default());
+        auth.install_audit(audit.clone()).unwrap();
+        let token = bearer(&key, &claims, "at+jwt");
+        let connection = ConnectionAuthentications::default();
+        let first = auth.authenticate_on(&token, &connection).await.unwrap();
+        auth.authenticate_on(&token, &connection).await.unwrap();
+        // The token's success is recorded on this connection, yet each later
+        // request checks its expiry again and is refused, and recorded, alone.
+        elapsed.0.store(10_000, Ordering::SeqCst);
+        for _ in 0..2 {
+            assert_eq!(
+                auth.authenticate_on(&token, &connection)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Unauthorized
+            );
+        }
+        connection.close().await.unwrap();
+        let recorded = audit.recorded();
+        assert_eq!(recorded.len(), 4);
+        assert_eq!(recorded[0], (Succeeded, first.request_id.clone()));
+        assert_eq!((&recorded[1].0, &recorded[2].0), (&Denied, &Denied));
+        assert_eq!(recorded[3], (repeated(1), first.request_id));
     }
 
     struct ExpiringAudit {

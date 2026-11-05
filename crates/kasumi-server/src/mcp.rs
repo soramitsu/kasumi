@@ -302,7 +302,16 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
     } else {
         authorization.unwrap_or("")
     };
-    let context = state.auth.authenticate(authorization).await;
+    // A TLS connection records each token's first success and counts the
+    // rest, as on the native listener.
+    let connection = request
+        .extensions()
+        .get::<Arc<crate::auth::ConnectionAuthentications>>()
+        .cloned();
+    let context = match &connection {
+        Some(connection) => state.auth.authenticate_on(authorization, connection).await,
+        None => state.auth.authenticate(authorization).await,
+    };
     match context {
         Ok(context) => {
             let invocation = Verified::new(context.clone());

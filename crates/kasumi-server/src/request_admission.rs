@@ -4,7 +4,10 @@
 //! storage, then their JSON structure is inspected before the decoder runs.
 //! Other requests reserve the conservative expansion from their declared size.
 //! Charges remain through the handler, and every body has a read deadline.
-use crate::{api::MAX_REQUEST_BYTES, auth::Authenticator};
+use crate::{
+    api::MAX_REQUEST_BYTES,
+    auth::{Authenticator, ConnectionAuthentications},
+};
 use axum::{
     Json,
     body::Body,
@@ -178,7 +181,17 @@ pub(crate) async fn admit(
         } else {
             first.unwrap_or("")
         };
-        match auth.authenticate(authorization).await {
+        // A TLS connection records each token's first success and counts
+        // the rest; other callers record every success.
+        let connection = request
+            .extensions()
+            .get::<Arc<ConnectionAuthentications>>()
+            .cloned();
+        let authenticated = match &connection {
+            Some(connection) => auth.authenticate_on(authorization, connection).await,
+            None => auth.authenticate(authorization).await,
+        };
+        match authenticated {
             Ok(context) => {
                 request.extensions_mut().insert(Authenticated {
                     auth: auth.clone(),

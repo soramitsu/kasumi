@@ -792,6 +792,105 @@ mod tests {
         node.shutdown().await.unwrap();
     }
 
+    #[derive(Default)]
+    struct RecordingAudit(std::sync::Mutex<Vec<crate::auth::RequestAuditKind>>);
+    #[async_trait::async_trait]
+    impl RequestAuditSink for RecordingAudit {
+        async fn record(&self, event: RequestAuditEvent) -> kasumi_types::Result<()> {
+            self.0.lock().unwrap().push(event.kind);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_connection_refuses_its_recorded_token_once_revoked() {
+        use crate::auth::RequestAuditKind::{
+            AuthenticationDenied as Denied, AuthenticationRepeated as Repeated,
+            AuthenticationSucceeded as Succeeded,
+        };
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let private = root.path().join("operator");
+        private_files::create_directory(&private).unwrap();
+        let signer = private.join("signer.json");
+        initialize_signer(&signer).unwrap();
+        let keys = Arc::new(
+            FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
+        );
+        let physical =
+            crate::runtime_storage_fixtures::physical(root.path(), Default::default()).unwrap();
+        let node = physical
+            .create_new(
+                root.path().join("persistent/database"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            keys,
+            StorageAccess::security_audit(),
+        )
+        .await
+        .unwrap();
+        let config = AuthConfig {
+            issuer: "https://localhost/local".into(),
+            audience: "https://localhost/kasumi".into(),
+            source: AuthKeySource::Local {
+                signer_file: signer.clone(),
+            },
+            algorithms: vec![Algorithm::EdDSA],
+            access_token_types: BTreeSet::from(["at+jwt".into()]),
+        };
+        let manager = LocalCredentials::open(
+            store,
+            signer,
+            config.issuer.clone(),
+            config.audience.clone(),
+        )
+        .unwrap();
+        let auth = Authenticator::new(config).unwrap();
+        let audit = Arc::new(RecordingAudit::default());
+        auth.install_audit(audit.clone()).unwrap();
+        auth.install_local_credentials(manager.clone()).unwrap();
+        let issued = manager
+            .create(
+                CreateCredential {
+                    family_id: Uuid::new_v4(),
+                    principal: "reader".into(),
+                    tenant: "tenant-a".into(),
+                    resource: kasumi_types::CredentialResource::Database {
+                        incarnation: Uuid::new_v4(),
+                    },
+                    scopes: BTreeSet::from([Action::Read]),
+                    lifetime_seconds: 3600,
+                },
+                "initializer",
+            )
+            .unwrap();
+        let bearer = format!("Bearer {}", issued.token);
+        let connection = crate::auth::ConnectionAuthentications::default();
+        auth.authenticate_on(&bearer, &connection).await.unwrap();
+        auth.authenticate_on(&bearer, &connection).await.unwrap();
+        // Revocation reaches the next request on the same connection: its
+        // token is checked again, refused, and the refusal recorded alone.
+        manager.revoke(issued.family_id, "administrator").unwrap();
+        for _ in 0..2 {
+            assert_eq!(
+                auth.authenticate_on(&bearer, &connection)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Unauthorized
+            );
+        }
+        connection.close().await.unwrap();
+        assert_eq!(
+            *audit.0.lock().unwrap(),
+            [Succeeded, Denied, Denied, Repeated { requests: 1 }]
+        );
+        node.shutdown().await.unwrap();
+    }
+
     /// Equivalent spellings the current writer never produces. Serde alone
     /// admits each of them as the original value.
     fn respelled(current: &[u8]) -> [Vec<u8>; 2] {

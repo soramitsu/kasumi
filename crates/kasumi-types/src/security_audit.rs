@@ -20,6 +20,13 @@ pub enum SecurityEventKind {
     NodeStopping,
     AuthenticationSucceeded,
     AuthenticationDenied,
+    /// Later successful authentications on one client connection with the
+    /// token of the `AuthenticationSucceeded` record whose `request_id` this
+    /// event repeats, counted instead of recorded one by one. Written when
+    /// the connection presents another token or closes.
+    AuthenticationRepeated {
+        requests: u64,
+    },
     TransportAuthenticated,
     TransportDenied,
     AccessDenied,
@@ -80,6 +87,14 @@ impl SecurityEvent {
             validate_name(value)?;
         }
         match &self.kind {
+            SecurityEventKind::AuthenticationRepeated { requests } => {
+                if *requests == 0 || self.principal.is_none() || self.tenant.is_none() {
+                    return Err(Error::new(
+                        ErrorCode::InvalidArgument,
+                        "invalid repeated authentication count",
+                    ));
+                }
+            }
             SecurityEventKind::ControlCommitmentObserved {
                 control_incarnation,
                 command_id,
@@ -604,6 +619,50 @@ mod tests {
             custody_policy_epoch: 1,
         };
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn repeated_authentications_are_a_positive_attributed_count() {
+        let mut valid = record(4);
+        valid.event = SecurityEvent {
+            kind: SecurityEventKind::AuthenticationRepeated { requests: 3 },
+            principal: Some("person".into()),
+            tenant: Some("tenant-a".into()),
+            request_id: "request-1".into(),
+            outcome: SecurityOutcome::Succeeded,
+        };
+        valid.transport = None;
+        valid.validate().unwrap();
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        assert_eq!(
+            decode_exact::<SecurityAuditRecord>(&bytes, 64 << 10, "record").unwrap(),
+            valid
+        );
+        let encoded = serde_json::to_value(&valid).unwrap();
+        assert_eq!(
+            encoded["event"]["kind"],
+            json!({"authentication_repeated": {"requests": 3}})
+        );
+        let mut unknown = encoded;
+        unknown["event"]["kind"]["authentication_repeated"]["legacy"] = json!(true);
+        assert!(serde_json::from_value::<SecurityAuditRecord>(unknown).is_err());
+        let mut invalid = valid.clone();
+        invalid.event.kind = SecurityEventKind::AuthenticationRepeated { requests: 0 };
+        assert!(invalid.validate().is_err());
+        for unattributed in [
+            SecurityEvent {
+                principal: None,
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                tenant: None,
+                ..valid.event.clone()
+            },
+        ] {
+            let mut invalid = valid.clone();
+            invalid.event = unattributed;
+            assert!(invalid.validate().is_err());
+        }
     }
 
     #[test]
