@@ -18,7 +18,7 @@ measured in the [Redis comparison](../benchmarks/REDIS-COMPARISON.md).
 | Authorization | Default deny. Scopes in the token must intersect a per-principal, optionally per-collection grant; re-checked during ordered apply and before release. Tenant comes only from the verified token. | ACL command categories and key patterns per user. |
 | Tenant isolation | Separate keys, policies, credentials, audit and (replicated) Raft groups per tenant. | Logical databases share one keyspace process; isolation is by ACL key pattern. |
 | Encryption at rest | Every record sealed with XChaCha20-Poly1305 under per-tenant data keys wrapped by a file keyring or OpenBao/Vault Transit; record keys are keyed HMACs; backups and spools are encrypted (`kasumi-store/src/lib.rs`). | None. RDB and AOF files are plaintext. |
-| Audit | Durable, encrypted, hash-linked service audit of transport accept/deny, authentication success/denial per request, access denials, key, backup and recovery operations; tenant audit of every mutation and, with `strict_read_audit`, every read before release. | No audit log. `ACL LOG` keeps a small in-memory list of recent denials. |
+| Audit | Durable, encrypted, hash-linked service audit of transport accept/deny, every authentication denial, each bearer token's first success on a connection with a count of its later successes, access denials, key, backup and recovery operations; tenant audit of every mutation and, with `strict_read_audit`, every read before release. | No audit log. `ACL LOG` keeps a small in-memory list of recent denials. |
 | Idempotency / exactly-once | Every mutation has a durable receipt keyed by its idempotency key. | None; a retried command applies twice. |
 | Durability of acknowledged writes | Always flushed before the reply. | Configurable: `appendfsync always`, `everysec` (≤ ~1 s loss) or `no`. |
 | Server-side code | None. | Lua and functions; the Lua sandbox has had memory-safety CVEs (for example CVE-2025-49844). |
@@ -36,16 +36,30 @@ rewrite it).
 The comparison benchmark runs both servers with TLS 1.3 and client
 certificates, so transport cost is matched. The rest is Kasumi-only work:
 
-- **Per-request authentication audit.** Every authenticated request, including
-  reads, waits for a durable service-audit record before its response is
-  released (`kasumi-server/src/auth.rs`, `authenticate`). Records from
-  concurrent requests share one commit (up to 64), but a lone client pays one
-  device flush per read. Each record is roughly 250–300 bytes, so a client
-  polling ten times a second writes about 250 MB of audit per day; this is the
-  growth behind multi-gigabyte audit archives on read-heavy deployments.
+- **Authentication audit.** Every refused bearer, and the first successful
+  request of each token on a TLS connection, waits for a durable
+  service-audit record before the request proceeds
+  (`kasumi-server/src/auth.rs`, `authenticate_on`). Later requests with that
+  token on that connection are verified in full but counted instead; one
+  record carries the count when the connection presents another token or
+  closes. Records from concurrent requests share one commit (up to 64). Until
+  1a0f7bc5 every successful request waited for its own record: a lone
+  client paid one device flush per read, and at roughly 250–300 bytes a
+  record, a client polling ten times a second wrote about 250 MB of audit per
+  day, the growth behind multi-gigabyte audit archives on read-heavy
+  deployments. A client that opens a new connection for every request still
+  pays that.
+  - An access denial on a counted request names that request's own id, which
+    has no success record of its own; its principal and tenant identify it,
+    and its connection's recorded success covers its authentication.
+  - After any failed audit write, connections stop counting and record every
+    success again, so an audit outage refuses their requests as it refuses
+    everyone else's. A count that cannot be written when its connection
+    closes, or that a crash interrupts, is lost; the token's first success
+    is already durable.
 - **Token verification.** An Ed25519 signature check and claim decoding per
   request. Since this change a token already verified by the current key set
-  skips the signature check; expiry, revocation and audit still run every time.
+  skips the signature check; expiry and revocation still run every time.
 - **Encryption.** One AEAD seal or open per record and a keyed HMAC per key.
 - **Receipts and mutation audit.** Extra bytes in every write's durable commit.
 - **Strict read audit.** Each audited read becomes a journal entry and a
@@ -65,21 +79,22 @@ it is higher wherever a listener is reachable from a network.
    signer file, so rotated keys are still trusted on first use. A reload that
    finds the same keys keeps the verified tokens. Covered by
    `auth::tests::local_signer_is_reloaded_only_for_an_unknown_kid`.
-2. **Audit capacity can be exhausted by unauthenticated traffic (medium; high
-   on reachable listeners).** Every failed TLS handshake, every refused token
-   and every bad MCP `Origin` writes a durable service-audit record, and so
-   does every successful request. The hot log (64 MiB) drains into archive
-   segments that are never pruned and stop at `archive_bytes` (64 GiB by
-   default); when that is reached, new records are refused and every
-   authentication and TLS accept fails closed until an operator raises the
-   budget. Nothing rate-limits or merges denial records. Recommended:
-   aggregate denial records per peer and time window with an exact count,
-   reserve hot capacity for administrative records, add archive export and
-   pruning, and alert on `kasumi_service_audit_archive_bytes` approaching
-   `kasumi_service_audit_archive_budget_bytes`. Recording one successful
-   authentication per credential and connection instead of per request would
-   remove most of the volume; that changes what the audit trail records and
-   needs an explicit decision.
+2. **Audit capacity can be exhausted by unauthenticated traffic (medium;
+   high on reachable listeners).** Every failed TLS handshake, every refused
+   token and every bad MCP `Origin` writes a durable service-audit record,
+   and so does the first successful request of each token on a connection.
+   The hot log (64 MiB) drains into archive segments that are never pruned
+   and stop at `archive_bytes` (64 GiB by default); when that is reached,
+   new records are refused and every authentication and TLS accept fails
+   closed until an operator raises the budget. Nothing rate-limits or merges
+   denial records. Recommended: aggregate denial records per peer and time
+   window with an exact count, reserve hot capacity for administrative
+   records, add archive export and pruning, and alert on
+   `kasumi_service_audit_archive_bytes` approaching
+   `kasumi_service_audit_archive_budget_bytes`. Successful requests now
+   write one record per connection and token plus one count, which removes
+   most of their volume; refusals still write one record each, and those are
+   what an unauthenticated flood controls.
 3. **Connection slots can be held during TLS handshakes (medium).** Each
    listener admits 128 connections and holds a slot through a 5 s handshake
    timeout and its audit write, with no per-source cap

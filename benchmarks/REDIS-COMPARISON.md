@@ -19,7 +19,7 @@ SLA or capacity qualification.
 | Durability | every acknowledged write is durable: journal entry and applied state are flushed (`F_FULLFSYNC` on macOS, `fdatasync`/`fsync` on Linux) before the reply | AOF with `appendfsync always` (flushed before the reply, batched per event-loop turn; `F_FULLFSYNC` on macOS) or `appendfsync everysec` (up to ~1 s of acknowledged writes can be lost) |
 | Snapshots/compaction | journal snapshot every 5,000 entries, background segment compaction | `save ""` (no RDB); default automatic AOF rewrite |
 | Transport | TLS 1.3, client certificate from the installation CA, pinned server certificate | TLS 1.3 (`tls-protocols "TLSv1.3"`), `tls-auth-clients yes` with a private CA |
-| Authentication | Ed25519 bearer token (JWT) on every request, verified and audited durably | ACL user and password once per connection (`AUTH`) |
+| Authentication | Ed25519 bearer token (JWT) verified on every request and audited durably: per request in the baseline, once per connection and token since 1a0f7bc5 | ACL user and password once per connection (`AUTH`) |
 | Authorization | per-collection RBAC re-checked before release | ACL `~* &* +@all` for the benchmark user |
 | Encryption at rest | yes (AEAD per record, wrapped keys) | no |
 | Audit | durable service audit of every authentication; mutation audit; optional strict read audit (`kasumi-audited`) | none |
@@ -173,6 +173,8 @@ threads over 8 seconds; they rank costs, they are not exact shares.
    Concurrent records share one commit, but a lone client pays one full
    device flush per read. In a read-only run those audit commits were the
    node's only writes, yet they held the storage lock for 1,443 samples.
+   Since 1a0f7bc5 only a token's first request on a connection waits;
+   see [changes](#changes-measured-here).
 2. **Readers wait for commits on one storage mutex.** `kasumi-kv`
    serializes every operation on a node through `Shared::run`, and a commit
    holds that mutex through its root publication, including the final full
@@ -212,14 +214,20 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 | Verified-token cache: a token this key set already verified skips its Ed25519 signature check and claims decode; signed times, scopes, credential liveness and the audit record still run per request (`kasumi-server/src/auth.rs`) | committed, caf0d2a9 | 143-178 µs of CPU per request for verification (release micro-benchmark on this host) | 0.6-5 µs |
 | Unknown token key IDs no longer re-read the private signer file (security fix, same file) | committed, caf0d2a9 | every request naming an unknown `kid` re-parsed every signing key | at most one reload per replacement of the signer file |
 | Closing readers sleep on the database owner's lock instead of spinning on `yield_now` (`kasumi-store/src/storage_opening/reads.rs`) | committed, 1f375877 | server CPU per point read 2,318 µs, per range scan 32.9 ms (16 clients, release build without LTO, two alternating rounds) | 1,908 µs (−18%), 21.0 ms (−36%); throughput unchanged within noise |
-| Record successful authentication once per connection and token (prototype, not committed: changes what the service audit records) | awaiting a decision | 1-client point reads 25/s, p50 28 ms, 9.2 ms CPU/op; 16 clients 106/s, p50 104 ms | 1,001/s, p50 0.70 ms, 0.49 ms CPU/op; 3,343/s, p50 2.6 ms |
+| Record a bearer token's success once per connection and count the later ones in one record when the connection changes token or closes; refusals are still recorded one by one (`kasumi-server/src/auth.rs`, `authenticate_on`) | committed, 1a0f7bc5 | 1-client point reads 20/s, p50 44 ms, 7.3 ms server CPU per read; 16 clients 117/s, p50 172 ms; range scans 7.3/s (1 client) and 15/s (16); mixed 90/10 16/s and 30/s | 2,015/s, p50 0.31 ms, 0.30 ms CPU per read; 6,900/s, p50 1.9 ms; 77/s and 56/s; 71/s and 58/s; writes unchanged within noise |
 
-The prototype row comes from a separate A/B run of two builds without LTO
-(10,000 documents, 15 s per case, same host and harness), so compare it only
-with its own baseline column. Writes did not change in that run: they wait
-for three durable commits each, and each commit issues six device syncs on
-this host (three segment-log syncs, one directory sync, two root syncs),
-which the `sync-trace` build of `kasumi-store` counts directly.
+The per-connection row comes from a separate A/B run of two builds without
+LTO at 51f47f27 (10,000 documents of 1 KiB, 15 s per case, two alternating
+rounds per build for reads and four for writes and mixed, medians, host load
+average 90–510 from other work; [raw
+results](results/redis-comparison-20261106/per-connection-audit/), same host
+and harness), so compare it only with its own baseline column. Writes did
+not change beyond noise in that run: each still waits for two durable data
+commits (its audit commit is now one per connection), and each commit issues
+six device syncs on this host (three segment-log syncs, one directory sync,
+two root syncs), which the `sync-trace` build of `kasumi-store` counts
+directly. In some rounds of both builds, 16-client writes stalled for 16 to
+111 seconds.
 
 ## Summary: where Kasumi stands against Redis
 
@@ -229,10 +237,13 @@ measured here, by two to three orders of magnitude on reads. Most of the gap
 is not data structures or encryption but four design decisions, each of
 which buys a guarantee Redis does not offer:
 
-- **Per-request durable authentication audit.** Every request, read or
-  write, waits for a flushed service-audit record. Redis keeps no audit log.
-  This one decision is the floor under Kasumi's read latency and the main
-  source of its audit-archive growth.
+- **Durable authentication audit.** In the baseline every request, read or
+  write, waited for a flushed service-audit record: the floor under Kasumi's
+  read latency and the main source of its audit-archive growth. Since
+  1a0f7bc5 only a token's first request on a connection waits, which made
+  single-client point reads 100 times faster (20 to 2,015 per second) and
+  16-client point reads 59 times faster in an A/B run; a client that
+  reconnects for every request still pays it. Redis keeps no audit log.
 - **One storage mutex held through each commit's flushes, and serialized
   proposals.** Readers queue behind writers' device flushes, and a tenant
   applies one proposal at a time through two durable commits. Redis serves
@@ -253,9 +264,10 @@ maintained in the same commit, per-request authorization and revocation, an
 encrypted hash-linked service audit, and no configuration in which an acknowledged
 write can be lost (`everysec` can lose about a second). It also spreads
 requests over many cores where Redis serves commands on one thread, which
-starts to matter once reads stop waiting for flushes: the per-connection audit
-prototype made 16-client reads 32 times faster than Kasumi's baseline, yet its
-3,343 reads/s still trail Redis's 21,384.
+starts to matter once reads stop waiting for flushes: recording
+authentication once per connection made 16-client reads 59 times faster
+than its own baseline, yet its 6,900 reads/s trail the 75,944 that Redis
+served in the same run.
 
 Splitting the storage mutex so that reads run during a commit's flushes was
 designed here and not landed. While a commit's cache publication scope is
@@ -265,10 +277,9 @@ identities outside the cache. On Linux all six of a commit's syncs are
 `fdatasync` calls (on macOS only the last is a full flush), so fewer syncs
 per commit is the larger lever there.
 
-To approach Redis on throughput Kasumi would need, in order of measured
-effect: audit successful authentication per connection rather than per
-request (or make it asynchronous with a bounded loss window); stop holding
-the storage mutex across commit flushes so reads proceed during commits;
-group concurrent proposals into one journal append and one publication;
-reduce the syncs per commit; and batch journal replay. Each is described in
-[where Kasumi's time goes](#where-kasumis-time-goes).
+To approach Redis on throughput Kasumi would still need, in order of
+measured effect: stop holding the storage mutex across commit flushes so
+reads proceed during commits; group concurrent proposals into one journal
+append and one publication; reduce the syncs per commit; and batch journal
+replay. Each is described in [where Kasumi's time
+goes](#where-kasumis-time-goes).
