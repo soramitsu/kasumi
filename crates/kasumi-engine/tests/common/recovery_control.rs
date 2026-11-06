@@ -351,26 +351,53 @@ async fn assert_rejected_recovery_response(
     .expect("exact invalid response did not receive a definite rejection");
 }
 
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit()
+#[test]
+fn recovery_journal_persists_before_dispatch_rejects_substitution_and_recovers_ambiguous_control_commit()
  {
-    exercise_completed_recovery(false, None, false).await;
+    on_recovery_stack(|| exercise_completed_recovery(false, None, false));
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion() {
-    exercise_completed_recovery(true, None, false).await;
+#[test]
+fn recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion() {
+    on_recovery_stack(|| exercise_completed_recovery(true, None, false));
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward() {
-    exercise_completed_recovery(false, Some(true), false).await;
+#[test]
+fn recovery_uncertain_activation_resolves_original_winner_and_confirms_every_voter_forward() {
+    on_recovery_stack(|| exercise_completed_recovery(false, Some(true), false));
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup() {
-    exercise_completed_recovery(false, Some(false), false).await;
+#[test]
+fn recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup() {
+    on_recovery_stack(|| exercise_completed_recovery(false, Some(false), false));
 }
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
-    exercise_completed_recovery(false, Some(true), true).await;
+#[test]
+fn recovery_expired_completion_resolves_its_exact_positive_fact_before_activation() {
+    on_recovery_stack(|| exercise_completed_recovery(false, Some(true), true));
+}
+/// A whole recovery outgrows libtest's 2 MiB thread in a debug build even with
+/// each phase boxed: the drop that ends in one encrypted scratch table takes
+/// about 1 MiB of debug frames, which copy the 33 KB native database owner by
+/// value. Run each recovery on its own 16 MiB thread, as the server's ownership
+/// fixtures do, with the same four-worker runtime `tokio::test` gave it.
+fn on_recovery_stack<F, Fut>(recovery: F)
+where
+    F: FnOnce() -> Fut + Send + 'static,
+    Fut: Future<Output = ()>,
+{
+    let fixture = std::thread::Builder::new()
+        .name("recovery control fixture".into())
+        .stack_size(16 << 20)
+        .spawn(move || {
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(4)
+                .thread_stack_size(16 << 20)
+                .enable_all()
+                .build()
+                .unwrap()
+                .block_on(Box::pin(recovery()))
+        })
+        .unwrap();
+    if let Err(original) = fixture.join() {
+        std::panic::resume_unwind(original);
+    }
 }
 /// Transfer the exact live fixture only after a phase future has returned.
 /// Polling large phases inside another composes their debug poll frames on the
