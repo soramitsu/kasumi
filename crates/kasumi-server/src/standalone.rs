@@ -916,9 +916,19 @@ async fn rotate_certificates_owned(
                     &identity,
                     kasumi_transport::ClientAuthentication::OAuth,
                 )?;
-                replacements.push((files, key_pem, certificate_pem));
+                replacements.push((name, client_auth, files, key_pem, certificate_pem));
             }
-            for (files, key_pem, certificate_pem) in replacements {
+            // Admit every replacement client certificate before any is
+            // installed; the ones they replace are retired at the end.
+            let mut admitted = Vec::new();
+            for (name, client_auth, _, _, certificate_pem) in &replacements {
+                if *client_auth {
+                    let pin = kasumi_transport::certificate_pin(certificate_pem.as_bytes())?;
+                    crate::client_pins::enroll_configured(&config, pin, name)?;
+                    admitted.push((name.clone(), pin));
+                }
+            }
+            for (_, _, files, key_pem, certificate_pem) in replacements {
                 private_files::replace(&files.private_key, key_pem.as_bytes())?;
                 private_files::replace(&files.certificate, certificate_pem.as_bytes())?;
             }
@@ -971,6 +981,9 @@ async fn rotate_certificates_owned(
                     }
                     private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
                 }
+            }
+            for (name, pin) in admitted {
+                crate::client_pins::retire_configured(&config, &name, pin)?;
             }
             Ok::<_, anyhow::Error>(serde_json::json!({
                 "native_certificate_pin": native_pin,
@@ -1460,6 +1473,14 @@ async fn initialize_owned(
                 generate_identity(&profiles, name, &ca, &ca_key, true)?,
             );
         }
+        // The native and administrative listeners admit exactly these client
+        // certificates, beyond checking that the installation CA issued them.
+        let client_pins = tls.join("client-pins.json");
+        let mut admitted = crate::client_pins::ClientPins::default();
+        for (name, files) in &client_identities {
+            admitted.enroll(files.load()?.certificate_pin(), name)?;
+        }
+        admitted.store(&client_pins)?;
         let native_pin = hex::encode(identities["native"].load()?.certificate_pin());
         let admin_pin = hex::encode(identities["admin"].load()?.certificate_pin());
         let control_policy = Policy {
@@ -1520,9 +1541,11 @@ async fn initialize_owned(
         config.native.listen = network.native_listen;
         config.native.tls = identities["native"].clone();
         config.native.client_ca = tls.join("ca.pem");
+        config.native.client_certificate_pins = Some(client_pins.clone());
         config.admin.listen = network.admin_listen;
         config.admin.tls = identities["admin"].clone();
         config.admin.client_ca = tls.join("ca.pem");
+        config.admin.client_certificate_pins = Some(client_pins);
         config.control.keys = provider("control");
         config.control.custody_keys = provider("control-custody");
         config.control.initial_policy = control_policy;
@@ -2003,3 +2026,7 @@ mod storage_tests;
 #[cfg(test)]
 #[path = "standalone_online_recovery_tests.rs"]
 mod online_recovery_tests;
+
+#[cfg(test)]
+#[path = "standalone_client_pins_tests.rs"]
+mod client_pins_tests;

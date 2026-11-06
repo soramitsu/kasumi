@@ -12,7 +12,7 @@ measured in the [Redis comparison](../benchmarks/REDIS-COMPARISON.md).
 | Control | Kasumi standalone | Redis 8 (open source) |
 | --- | --- | --- |
 | Transport encryption | TLS 1.3 only on every listener and outbound client, 0-RTT off (`kasumi-transport/src/lib.rs`). No plaintext listener exists. | Optional. TLS 1.2 and 1.3 by default; the plaintext port stays open unless `port 0`. |
-| Client certificates | Required on the native data and administrative listeners, issued by the installation CA. MCP uses server TLS plus a bearer token. | Optional (`tls-auth-clients`, default `yes` once TLS is on). |
+| Client certificates | Required on the native data and administrative listeners, issued by the installation CA and, on new installations, listed in a revocable pin allowlist. MCP uses server TLS plus a bearer token. | Optional (`tls-auth-clients`, default `yes` once TLS is on). |
 | Server identity | Clients pin the server's exact certificate SHA-256 in their profile. | CA verification only; no pinning in the server's protocol. |
 | Authentication | Ed25519 access tokens (or an external OAuth issuer with allowlisted asymmetric algorithms), `typ: at+jwt`, exact issuer and audience, zero leeway, lifetime ≤ 1 hour against a suspend-aware clock; revocable credential families checked on every request and again before the response is released. After expiry a credential can do one thing, for at most 24 hours: renew its own unrevoked family over a client-certificate connection, if it is that family's latest issuance, audited each time (`docs/credential-lifetime.md`). | ACL users with passwords (`AUTH`), checked once per connection. The default user has no password unless configured; no expiry or revocation of a connection that already authenticated. |
 | Authorization | Default deny. Scopes in the token must intersect a per-principal, optionally per-collection grant; re-checked during ordered apply and before release. Tenant comes only from the verified token. | ACL command categories and key patterns per user. |
@@ -180,10 +180,31 @@ it is higher wherever a listener is reachable from a network.
    listeners share one audience, and MCP requires no client certificate, so a
    token copied from a native client works on MCP. Recommended: a distinct
    audience per listener or certificate-bound tokens (RFC 8705).
-5. **Client certificates cannot be revoked (low-medium).** There is no CRL
-   check and certificate rotation keeps the CA, so an old client certificate
-   stays valid until it expires. Recommended: CRL support or a server-side
-   allowlist of client certificate pins.
+5. **Fixed: client certificates could not be revoked (was low-medium).**
+   There was no CRL check and certificate rotation keeps the CA, so an old
+   client certificate stayed valid until it expired, up to a year. The native
+   and administrative listeners now admit a client certificate only when the
+   CA issued it and its SHA-256 pin is in a bounded, trusted allowlist file
+   (`client_certificate_pins`; `kasumi-transport/src/lib.rs`,
+   `AdmittedClientVerifier`, and `kasumi-server/src/client_pins.rs`). The
+   WebPKI chain, validity, usage and handshake-signature checks run first and
+   unchanged. The file is loaded at startup and by every TLS reload (SIGHUP);
+   a missing or malformed file fails startup or refuses the reload, which
+   keeps the previous generation, and an empty one admits no one. A new
+   installation lists its three generated client certificates;
+   `kasumid client-certificate enroll|remove|list` edits the list, and
+   certificate rotation admits replacements before it retires what they
+   replace. Covered by
+   `admitted_client_tests::only_admitted_leaves_of_the_trusted_authority_complete_a_handshake`
+   (kasumi-transport) and
+   `api::tests::native_listener_admits_only_allowlisted_clients_across_reloads`
+   (a removed pin is refused at the next handshake after a reload, and a
+   malformed or missing list keeps the previous generation). What remains:
+   removal applies to new handshakes; established connections drain within
+   the listener's drain limit, so revoke the credential families too. An
+   installation from before this change checks the CA only until the
+   operator runs `kasumid client-certificate enable` and restarts. Replicated
+   peers keep their own membership pins.
 6. **Fixed: the generated standalone profile was over-privileged (was
    low-medium).** The default application credential carried read, write,
    admin and audit scopes, so whoever held it could change the tenant's

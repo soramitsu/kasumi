@@ -23,19 +23,9 @@ impl ListenerSource {
                     kasumi_transport::server_config(&identity, ClientAuthentication::OAuth)?,
                 ))
             }
-            Self::Mutual(endpoint) => {
-                let identity = endpoint.tls.load()?;
-                let ca = crate::runtime::read_bounded(&endpoint.client_ca, 1 << 20)?;
-                Ok((
-                    identity.certificate_pin(),
-                    kasumi_transport::server_config(
-                        &identity,
-                        ClientAuthentication::Required {
-                            trusted_ca_pem: &ca,
-                        },
-                    )?,
-                ))
-            }
+            // Certificate, key, CA and client pin allowlist are read again; a
+            // missing or malformed allowlist refuses the whole reload.
+            Self::Mutual(endpoint) => endpoint.load_with_pin(),
         }
     }
 }

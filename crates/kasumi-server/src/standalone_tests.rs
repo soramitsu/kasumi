@@ -762,6 +762,33 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
         old_client_certificate
     );
     private_files::replace(&ca_path, &old_ca).unwrap();
+    // The listeners admit exactly the installation's three client certificates.
+    let pins_path = config.native.client_certificate_pins.clone().unwrap();
+    assert_eq!(
+        config.admin.client_certificate_pins.as_ref(),
+        Some(&pins_path)
+    );
+    let client_pins = || {
+        [
+            &installation.control_profile,
+            &installation.tenant_profile,
+            &installation.operator_profile,
+        ]
+        .map(|path| {
+            crate::runtime::TlsFiles::from(ClientProfile::load(path).unwrap().identity)
+                .load()
+                .unwrap()
+                .certificate_pin()
+        })
+    };
+    let old_pins = client_pins();
+    assert_eq!(
+        crate::client_pins::ClientPins::load(&pins_path)
+            .unwrap()
+            .admitted()
+            .unwrap(),
+        BTreeSet::from(old_pins)
+    );
     // An interrupted earlier rotation replaced the admin leaf without
     // rewriting the profiles, which still pin the original certificate.
     private_files::replace(
@@ -780,6 +807,16 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     let admin_pin = BTreeSet::from([hex::encode(
         config.admin.tls.load().unwrap().certificate_pin(),
     )]);
+    // Rotation admitted the replacements and retired the replaced ones.
+    let new_pins = client_pins();
+    assert!(new_pins.iter().all(|pin| !old_pins.contains(pin)));
+    assert_eq!(
+        crate::client_pins::ClientPins::load(&pins_path)
+            .unwrap()
+            .admitted()
+            .unwrap(),
+        BTreeSet::from(new_pins)
+    );
     for path in [&installation.control_profile, &installation.tenant_profile] {
         assert_eq!(
             ClientProfile::load(path)

@@ -116,6 +116,7 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
             listen: "127.0.0.1:49543".parse()?,
             tls: tls.clone(),
             client_ca: tls.certificate.clone(),
+            client_certificate_pins: None,
         },
         peers: (1..=3)
             .map(|id| ReplicaConfig {

@@ -12,6 +12,7 @@ fn configuration() -> ReplicationConfig {
                 private_key: "/synthetic/key".into(),
             },
             client_ca: "/synthetic/ca".into(),
+            client_certificate_pins: None,
         },
         peers: (1..=3)
             .map(|id| ReplicaConfig {

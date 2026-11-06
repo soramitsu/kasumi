@@ -5,12 +5,13 @@ use anyhow::{Context, Result, ensure};
 use hyper_util::rt::TokioIo;
 pub use reload::ReloadableServerConfig;
 use rustls::{
-    ClientConfig, RootCertStore, ServerConfig,
+    ClientConfig, DistinguishedName, RootCertStore, ServerConfig,
     client::{
         WebPkiServerVerifier,
         danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier},
     },
     pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime, pem::PemObject},
+    server::danger::{ClientCertVerified, ClientCertVerifier},
 };
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, sync::Arc, time::Duration};
@@ -116,6 +117,193 @@ mod identity_pin_tests {
     }
 }
 
+#[cfg(test)]
+mod admitted_client_tests {
+    use super::*;
+    use rcgen::{
+        BasicConstraints, CertificateParams, ExtendedKeyUsagePurpose, IsCa, Issuer, KeyPair,
+        KeyUsagePurpose,
+    };
+
+    struct Authority {
+        pem: String,
+        issuer: Issuer<'static, KeyPair>,
+    }
+
+    fn authority(name: &str) -> Authority {
+        let key = KeyPair::generate().unwrap();
+        let mut parameters = CertificateParams::new(Vec::<String>::new()).unwrap();
+        parameters
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        parameters.is_ca = IsCa::Ca(BasicConstraints::Unconstrained);
+        parameters.key_usages = vec![KeyUsagePurpose::KeyCertSign];
+        let pem = parameters.self_signed(&key).unwrap().pem();
+        Authority {
+            pem,
+            issuer: Issuer::new(parameters, key),
+        }
+    }
+
+    fn leaf(authority: &Authority, name: &str, client: bool) -> TlsIdentity {
+        let key = KeyPair::generate().unwrap();
+        let mut parameters = CertificateParams::new(vec!["localhost".into()]).unwrap();
+        parameters
+            .distinguished_name
+            .push(rcgen::DnType::CommonName, name);
+        parameters.extended_key_usages = vec![if client {
+            ExtendedKeyUsagePurpose::ClientAuth
+        } else {
+            ExtendedKeyUsagePurpose::ServerAuth
+        }];
+        let certificate = parameters.signed_by(&key, &authority.issuer).unwrap();
+        TlsIdentity::from_pem(certificate.pem().as_bytes(), key.serialize_pem().as_bytes()).unwrap()
+    }
+
+    /// One complete TLS 1.3 handshake over an in-memory stream; the server's
+    /// result, since a client finishes before the server has verified it.
+    async fn handshake(
+        server: Arc<ServerConfig>,
+        server_pin: CertificatePin,
+        authority: &Authority,
+        client: Option<&TlsIdentity>,
+    ) -> std::result::Result<(), String> {
+        let (client_stream, server_stream) = tokio::io::duplex(64 << 10);
+        let mut roots = RootCertStore::empty();
+        roots
+            .add(certificates_from_pem(authority.pem.as_bytes()).unwrap()[0].clone())
+            .unwrap();
+        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let verifier = Arc::new(PinnedServerVerifier {
+            trusted: WebPkiServerVerifier::builder_with_provider(Arc::new(roots), provider.clone())
+                .build()
+                .unwrap(),
+            pins: BTreeSet::from([server_pin]),
+        });
+        let builder = ClientConfig::builder_with_provider(provider)
+            .with_protocol_versions(&[&rustls::version::TLS13])
+            .unwrap()
+            .dangerous()
+            .with_custom_certificate_verifier(verifier);
+        let config = match client {
+            Some(identity) => builder
+                .with_client_auth_cert(
+                    identity.certificates.clone(),
+                    identity.private_key.clone_key(),
+                )
+                .unwrap(),
+            None => builder.with_no_client_auth(),
+        };
+        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        let acceptor = tokio_rustls::TlsAcceptor::from(server);
+        let name = ServerName::try_from("localhost").unwrap();
+        let (_, accepted) = tokio::join!(
+            async {
+                // The client may finish before the server refuses it; keep its
+                // side open until the server has decided.
+                let connected = connector.connect(name, client_stream).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                connected
+            },
+            acceptor.accept(server_stream)
+        );
+        accepted.map(drop).map_err(|error| error.to_string())
+    }
+
+    #[tokio::test]
+    async fn only_admitted_leaves_of_the_trusted_authority_complete_a_handshake() {
+        let installation = authority("installation");
+        let other = authority("other");
+        let server = leaf(&installation, "server", false);
+        let listed = leaf(&installation, "listed", true);
+        let unlisted = leaf(&installation, "unlisted", true);
+        let foreign = leaf(&other, "foreign", true);
+        let server_only = leaf(&installation, "server-usage", false);
+        let admitted = BTreeSet::from([
+            listed.certificate_pin(),
+            foreign.certificate_pin(),
+            server_only.certificate_pin(),
+        ]);
+        let config = |admitted: &BTreeSet<CertificatePin>| {
+            server_config(
+                &server,
+                ClientAuthentication::Admitted {
+                    trusted_ca_pem: installation.pem.as_bytes(),
+                    admitted,
+                },
+            )
+            .unwrap()
+        };
+        let pin = server.certificate_pin();
+        handshake(config(&admitted), pin, &installation, Some(&listed))
+            .await
+            .unwrap();
+        // An unlisted certificate of the trusted authority is refused.
+        let refused = handshake(config(&admitted), pin, &installation, Some(&unlisted))
+            .await
+            .unwrap_err();
+        assert!(
+            refused.contains("ApplicationVerificationFailure"),
+            "{refused}"
+        );
+        // A listed pin admits nothing the CA-only checks refuse: another
+        // authority's leaf, a server-only leaf, or no certificate at all.
+        for client in [Some(&foreign), Some(&server_only), None] {
+            let refused = handshake(config(&admitted), pin, &installation, client)
+                .await
+                .unwrap_err();
+            assert!(
+                !refused.contains("ApplicationVerificationFailure"),
+                "{refused}"
+            );
+        }
+        // An empty allowlist admits no one.
+        assert!(
+            handshake(config(&BTreeSet::new()), pin, &installation, Some(&listed))
+                .await
+                .is_err()
+        );
+        // Without an allowlist, CA-only verification admits the unlisted leaf.
+        let ca_only = server_config(
+            &server,
+            ClientAuthentication::Required {
+                trusted_ca_pem: installation.pem.as_bytes(),
+            },
+        )
+        .unwrap();
+        handshake(ca_only, pin, &installation, Some(&unlisted))
+            .await
+            .unwrap();
+    }
+
+    #[test]
+    fn enrollment_pins_only_client_certificates_of_the_trusted_authority() {
+        let installation = authority("installation");
+        let other = authority("other");
+        let pem = |authority: &Authority, client: bool| {
+            let key = KeyPair::generate().unwrap();
+            let mut parameters = CertificateParams::new(vec!["localhost".into()]).unwrap();
+            parameters.extended_key_usages = vec![if client {
+                ExtendedKeyUsagePurpose::ClientAuth
+            } else {
+                ExtendedKeyUsagePurpose::ServerAuth
+            }];
+            parameters.signed_by(&key, &authority.issuer).unwrap().pem()
+        };
+        let client = pem(&installation, true);
+        assert_eq!(
+            admissible_client_pin(installation.pem.as_bytes(), client.as_bytes()).unwrap(),
+            certificate_pin(client.as_bytes()).unwrap()
+        );
+        for refused in [pem(&other, true), pem(&installation, false)] {
+            assert!(
+                admissible_client_pin(installation.pem.as_bytes(), refused.as_bytes()).is_err()
+            );
+        }
+        assert!(admissible_client_pin(installation.pem.as_bytes(), b"not a certificate").is_err());
+    }
+}
+
 pub fn certificate_digest(certificate: &CertificateDer<'_>) -> CertificatePin {
     Sha256::digest(certificate.as_ref()).into()
 }
@@ -131,8 +319,106 @@ fn roots(pem: &[u8]) -> Result<RootCertStore> {
 /// Use Required for native data/admin and cluster listeners. MCP authenticates
 /// each HTTP request with OAuth and uses OAuth at this transport boundary.
 pub enum ClientAuthentication<'a> {
-    Required { trusted_ca_pem: &'a [u8] },
+    Required {
+        trusted_ca_pem: &'a [u8],
+    },
+    /// As `Required`, and the leaf certificate's SHA-256 pin must also be one
+    /// of `admitted`. An empty set admits no client.
+    Admitted {
+        trusted_ca_pem: &'a [u8],
+        admitted: &'a BTreeSet<CertificatePin>,
+    },
     OAuth,
+}
+
+fn client_verifier(
+    trusted_ca_pem: &[u8],
+    provider: Arc<rustls::crypto::CryptoProvider>,
+) -> Result<Arc<dyn ClientCertVerifier>> {
+    Ok(rustls::server::WebPkiClientVerifier::builder_with_provider(
+        Arc::new(roots(trusted_ca_pem)?),
+        provider,
+    )
+    .build()?)
+}
+
+/// WebPKI client verification (CA chain, validity, client-authentication
+/// usage and the handshake signature), and then the leaf certificate's pin
+/// must be admitted. The pin is checked only after the chain verifies.
+#[derive(Debug)]
+struct AdmittedClientVerifier {
+    trusted: Arc<dyn ClientCertVerifier>,
+    admitted: BTreeSet<CertificatePin>,
+}
+
+impl ClientCertVerifier for AdmittedClientVerifier {
+    fn offer_client_auth(&self) -> bool {
+        self.trusted.offer_client_auth()
+    }
+    fn client_auth_mandatory(&self) -> bool {
+        self.trusted.client_auth_mandatory()
+    }
+    fn root_hint_subjects(&self) -> &[DistinguishedName] {
+        self.trusted.root_hint_subjects()
+    }
+    fn verify_client_cert(
+        &self,
+        end_entity: &CertificateDer<'_>,
+        intermediates: &[CertificateDer<'_>],
+        now: UnixTime,
+    ) -> std::result::Result<ClientCertVerified, rustls::Error> {
+        let verified = self
+            .trusted
+            .verify_client_cert(end_entity, intermediates, now)?;
+        if !self.admitted.contains(&certificate_digest(end_entity)) {
+            return Err(rustls::Error::InvalidCertificate(
+                rustls::CertificateError::ApplicationVerificationFailure,
+            ));
+        }
+        Ok(verified)
+    }
+    fn verify_tls12_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.trusted
+            .verify_tls12_signature(message, cert, signature)
+    }
+    fn verify_tls13_signature(
+        &self,
+        message: &[u8],
+        cert: &CertificateDer<'_>,
+        signature: &rustls::DigitallySignedStruct,
+    ) -> std::result::Result<HandshakeSignatureValid, rustls::Error> {
+        self.trusted
+            .verify_tls13_signature(message, cert, signature)
+    }
+    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
+        self.trusted.supported_verify_schemes()
+    }
+    fn requires_raw_public_keys(&self) -> bool {
+        self.trusted.requires_raw_public_keys()
+    }
+}
+
+/// The pin of `certificate_pem`'s leaf, after checking it as a listener that
+/// requires client certificates from `trusted_ca_pem` would: its chain,
+/// validity now and client-authentication usage.
+pub fn admissible_client_pin(
+    trusted_ca_pem: &[u8],
+    certificate_pem: &[u8],
+) -> Result<CertificatePin> {
+    let verifier = client_verifier(
+        trusted_ca_pem,
+        Arc::new(rustls::crypto::ring::default_provider()),
+    )?;
+    let certificates = certificates_from_pem(certificate_pem)?;
+    verifier
+        .verify_client_cert(&certificates[0], &certificates[1..], UnixTime::now())
+        .map_err(|error| anyhow::anyhow!("the client certificate is not admissible: {error}"))?;
+    Ok(certificate_digest(&certificates[0]))
 }
 
 pub fn server_config(
@@ -142,15 +428,19 @@ pub fn server_config(
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?;
+    // Each configuration has its own session cache and issues no tickets, so
+    // a session never resumes under a later admission generation.
     let builder = match authentication {
         ClientAuthentication::Required { trusted_ca_pem } => {
-            let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-                Arc::new(roots(trusted_ca_pem)?),
-                provider,
-            )
-            .build()?;
-            builder.with_client_cert_verifier(verifier)
+            builder.with_client_cert_verifier(client_verifier(trusted_ca_pem, provider)?)
         }
+        ClientAuthentication::Admitted {
+            trusted_ca_pem,
+            admitted,
+        } => builder.with_client_cert_verifier(Arc::new(AdmittedClientVerifier {
+            trusted: client_verifier(trusted_ca_pem, provider)?,
+            admitted: admitted.clone(),
+        })),
         ClientAuthentication::OAuth => builder.with_no_client_auth(),
     };
     let mut config = builder.with_single_cert(

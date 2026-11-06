@@ -201,6 +201,7 @@ impl Fixture {
                 listen: "127.0.0.1:49540".parse()?,
                 tls: tls.clone(),
                 client_ca: tls.certificate.clone(),
+                client_certificate_pins: None,
             },
             replication: ReplicationConfig {
                 node_id: 1,
@@ -209,6 +210,7 @@ impl Fixture {
                     listen: "127.0.0.1:49543".parse()?,
                     tls: tls.clone(),
                     client_ca: tls.certificate.clone(),
+                    client_certificate_pins: None,
                 },
                 peers,
             },

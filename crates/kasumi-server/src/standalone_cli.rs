@@ -18,6 +18,9 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
     if crate::audit_cli::command(arguments).await? {
         return Ok(true);
     }
+    if crate::client_pins::command(arguments).await? {
+        return Ok(true);
+    }
     match arguments {
         [command, configuration, request, output] if command == "enroll-backup-destination" => {
             crate::backup_destination_installation::command(

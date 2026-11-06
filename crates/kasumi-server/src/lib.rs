@@ -10,6 +10,7 @@ mod authority_node_enrollment;
 pub mod authority_runtime;
 mod backup_cli;
 mod backup_destination_installation;
+pub mod client_pins;
 pub mod cluster;
 mod control_genesis;
 pub mod data_cli;

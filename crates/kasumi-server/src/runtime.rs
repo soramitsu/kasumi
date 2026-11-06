@@ -68,6 +68,11 @@ pub struct MutualTlsEndpoint {
     pub listen: SocketAddr,
     pub tls: TlsFiles,
     pub client_ca: PathBuf,
+    /// The client certificates this listener admits beyond `client_ca`
+    /// (`crate::client_pins`). Absent: the CA alone decides. The replication
+    /// listener admits its peers by membership and never names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub client_certificate_pins: Option<PathBuf>,
 }
 
 /// Separate named wrapping key for each tenant and for service-security records.
@@ -622,6 +627,9 @@ impl MutualTlsEndpoint {
     pub(crate) fn validate(&self) -> Result<()> {
         self.tls.validate()?;
         absolute(&self.client_ca)?;
+        if let Some(pins) = &self.client_certificate_pins {
+            absolute(pins)?;
+        }
         ensure!(
             self.listen.port() > 0,
             "listener needs an explicit nonzero port"
@@ -629,14 +637,33 @@ impl MutualTlsEndpoint {
         Ok(())
     }
     pub(crate) fn load(&self) -> Result<Arc<rustls::ServerConfig>> {
+        Ok(self.load_with_pin()?.1)
+    }
+    /// The listener's own certificate pin and a server configuration that
+    /// admits clients by `client_ca` and, when named, the pin allowlist. A
+    /// missing or malformed named allowlist is an error, never CA-only.
+    pub(crate) fn load_with_pin(
+        &self,
+    ) -> Result<(kasumi_transport::CertificatePin, Arc<rustls::ServerConfig>)> {
+        self.validate()?;
         let identity = self.tls.load()?;
         let ca = read_bounded(&self.client_ca, MAX_PEM_BYTES)?;
-        kasumi_transport::server_config(
-            &identity,
-            ClientAuthentication::Required {
-                trusted_ca_pem: &ca,
-            },
-        )
+        let config = match &self.client_certificate_pins {
+            None => kasumi_transport::server_config(
+                &identity,
+                ClientAuthentication::Required {
+                    trusted_ca_pem: &ca,
+                },
+            )?,
+            Some(path) => kasumi_transport::server_config(
+                &identity,
+                ClientAuthentication::Admitted {
+                    trusted_ca_pem: &ca,
+                    admitted: &crate::client_pins::ClientPins::load(path)?.admitted()?,
+                },
+            )?,
+        };
+        Ok((identity.certificate_pin(), config))
     }
 }
 impl TransitSettings {
@@ -715,6 +742,10 @@ impl ReplicationConfig {
     }
     pub(crate) fn validate(&self) -> Result<()> {
         self.listener.validate()?;
+        ensure!(
+            self.listener.client_certificate_pins.is_none(),
+            "the replication listener admits peers by membership, not client certificate pins"
+        );
         ensure!(
             self.node_id > 0 && (3..=64).contains(&self.peers.len()),
             "replicated runtime requires 3 to 64 explicitly configured peers"
@@ -2723,6 +2754,7 @@ pub fn example_config(
         listen: format!("127.0.0.1:{port}").parse().unwrap(),
         tls: tls(),
         client_ca: "/etc/kasumi/operator-ca.pem".into(),
+        client_certificate_pins: None,
     };
     let transit = |key: &str, variable: &str| {
         KeyProviderSettings::Transit(TransitSettings {
@@ -5399,6 +5431,7 @@ mod lifecycle_tests {
                     listen: addresses[node * 4 + 3],
                     tls: files[node].clone(),
                     client_ca: ca_path.clone(),
+                    client_certificate_pins: None,
                 },
                 peers: peers.clone(),
             });

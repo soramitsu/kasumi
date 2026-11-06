@@ -32,6 +32,12 @@ Credentials and keys:
   backup-operator-keys <configuration.json> <new-private-directory>
   verify-operator-keys <private-directory>
   maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json>
+  client-certificate list|enable <configuration.json>
+  client-certificate enroll <configuration.json> <certificate.pem> <name>
+  client-certificate remove <configuration.json> <certificate.pem-or-sha256-pin>
+                                             admit only listed client certificates on the
+                                             native and administrative listeners; apply
+                                             with SIGHUP (enable: at the next start)
   maintenance split-credentials <configuration.json>
                                              give an installation from before the credential
                                              split separate application and operator profiles

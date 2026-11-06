@@ -142,7 +142,7 @@ async fn apply(
     current: &ClientProfile,
 ) -> Result<()> {
     let root = installation_root(config)?;
-    let identities = client_identities(root, profiles)?;
+    let identities = client_identities(config, root, profiles)?;
     restrict_tenant_policy(config, owner, journal).await?;
     let application = live_credential(
         &owner.credentials,
@@ -217,7 +217,11 @@ async fn apply(
 
 /// The operator's and the Control administrator's own client certificates,
 /// signed by the installation CA. A rerun keeps a pair an earlier run wrote.
-fn client_identities(root: &Path, profiles: &Path) -> Result<BTreeMap<&'static str, TlsFiles>> {
+fn client_identities(
+    config: &RuntimeConfig,
+    root: &Path,
+    profiles: &Path,
+) -> Result<BTreeMap<&'static str, TlsFiles>> {
     let ca_key_pem = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
     let ca_pem = private_files::read(&root.join("tls/ca.pem"), 1 << 20)?;
     let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
@@ -227,10 +231,18 @@ fn client_identities(root: &Path, profiles: &Path) -> Result<BTreeMap<&'static s
         let files = identity_files(profiles, name);
         if files.load().is_err() {
             let (certificate, key) = leaf(name, &issuer, true)?;
+            // Admitted before it exists; an earlier run's leftover is retired.
+            crate::client_pins::enroll_configured(
+                config,
+                kasumi_transport::certificate_pin(certificate.as_bytes())?,
+                name,
+            )?;
             private_files::replace(&files.private_key, key.as_bytes())?;
             private_files::replace(&files.certificate, certificate.as_bytes())?;
-            files.load()?;
         }
+        let pin = files.load()?.certificate_pin();
+        crate::client_pins::enroll_configured(config, pin, name)?;
+        crate::client_pins::retire_configured(config, name, pin)?;
         identities.insert(name, files);
     }
     Ok(identities)

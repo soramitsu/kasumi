@@ -136,6 +136,25 @@ kasumid maintenance split-credentials /var/lib/kasumi/kasumi.json
 
 The command removes document write from the tenant policy's tenant-wide `administrator` grant and grants `application` read and write; other grants are kept. It creates the application and operator families and the operator's and the Control profile's own client certificates, publishes `profiles/operator.json`, rewrites `profiles/default.json` and its token for the application (same certificate, so a client that rereads the token moves over without changes), moves `profiles/control.json` to its own certificate (its credential is unchanged), removes the stopped watcher's renewal journal and revokes the old family. It journals the new families in `profiles/credential-split.json` first, so rerunning it after any interruption finishes the same split; on an installation that is already split it changes nothing. Afterwards start `kasumid`, restart the `default.json` watcher, start one for `operator.json`, and move any administrative tooling that used `default.json` or its token (an `admin-client.json`, backup commands) to `operator.json`. Until it runs, the old installation keeps the old risk: whoever holds the application's credential administers the tenant.
 
+### Client certificate admission
+
+A new installation's native and administrative listeners admit a client certificate only if the installation CA issued it (chain, validity and client-authentication usage, as before) and its SHA-256 pin is listed in `tls/client-pins.json`. Both listeners name that file as `client_certificate_pins` in `kasumi.json`; the installer lists the three generated client certificates under their names (`client`, `operator-client`, `control-client`). An unlisted certificate fails the TLS handshake before any request is read. MCP takes no client certificate and is unaffected.
+
+```sh
+kasumid client-certificate list /var/lib/kasumi/kasumi.json
+kasumid client-certificate enroll /var/lib/kasumi/kasumi.json /path/new-client.pem reporting
+kasumid client-certificate remove /var/lib/kasumi/kasumi.json /path/old-client.pem
+kasumid client-certificate remove /var/lib/kasumi/kasumi.json SHA256_PIN_HEX
+```
+
+`enroll` accepts only a certificate the listeners would verify anyway: issued by their `client_ca`, currently valid, for client authentication. `remove` takes the certificate or its 64-digit pin. Both edit the file only. Send `kasumid` SIGHUP (or restart it) to apply them: the reload rereads certificates, keys, CAs and allowlists together, and a missing or malformed allowlist refuses the whole reload and keeps the previous generation (a TLS reload failure is logged as `tls_reload_failed`). The same file fails startup. After a reload, every new handshake is checked against the new list, and sessions cannot resume across it. Connections that were already established drain within the listener's drain limit, so in-flight work may finish: removal is not instantaneous request revocation. When a certificate is compromised, remove it and also revoke the credential families that used it (`kasumid credential revoke`).
+
+`maintenance rotate-certificates` admits each replacement client certificate before installing it and retires the certificates it replaced, by name, once the profiles are updated. `maintenance split-credentials` admits the certificates it creates.
+
+A listener that names no allowlist checks the CA only, as an installation from before this change does; such an installation keeps working unchanged. A named file that lists nothing admits no one. To turn admission on for an older installation, run `kasumid client-certificate enable /var/lib/kasumi/kasumi.json`: it lists the certificate of every profile in `profiles/` in `tls/client-pins.json`, then names that file on both listeners. Rerunning it after an interruption finishes the same change. Enroll any other client certificate (copied profiles, scrapers, other hosts) first, then restart `kasumid`, which enforces the list from then on. Until then the older installation keeps the CA-only risk: any certificate the CA ever issued is admitted until it expires.
+
+If the list no longer admits the certificates you administer with, the listeners still serve everyone listed, and the file is local: `enroll` the certificate again and send SIGHUP. No network authentication is involved.
+
 Generated client profiles use current `format: 2` with an explicit `principal`.
 Rust applications load them through `kasumi_client::ClientProfile`, compare the
 exact profile-file SHA-256 and database binding against their separately signed
