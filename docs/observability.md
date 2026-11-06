@@ -168,8 +168,9 @@ Available metrics include:
   unusable; do not interpret an unusable sample as current memory use.
 - Service-audit hot/archive bytes and budgets, sequence and pruning positions,
   segment count, draining state, persistence failure, maintenance failures, and
-  policy-due archive backlog bytes. Archives are never pruned, so alert before
-  `kasumi_service_audit_archive_bytes` reaches
+  policy-due archive backlog bytes. Archives shrink only when an operator
+  prunes exported segments ([`kasumid audit prune`](standalone.md#pruning-exported-archives)),
+  so alert before `kasumi_service_audit_archive_bytes` reaches
   `kasumi_service_audit_archive_budget_bytes`: a full archive stops the hot log
   from draining, and a full hot log fails every request that needs a record
   with `audit_unavailable`.

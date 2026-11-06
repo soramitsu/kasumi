@@ -185,6 +185,7 @@ impl Fixture {
                 keys: keys("security")?,
                 retention: Default::default(),
                 archive: None,
+                prune_minimum_age_days: 0,
             },
             auth: AuthConfig {
                 issuer: "https://issuer.example".into(),

@@ -63,6 +63,19 @@ pub enum SecurityEventKind {
         first_observed_ms: u64,
         last_observed_ms: u64,
     },
+    /// A Control administrator pruned the archive segments below
+    /// `retained_index`: their objects are deleted and their roots kept.
+    /// Retained history starts at `retained_sequence`, and
+    /// `pruned_record_sha256` is the exact digest of the last pruned record.
+    /// `segments` and `bytes` count the segments and ciphertext this prune
+    /// retired. Written in the same commit as the retirement itself.
+    ArchivePruned {
+        retained_index: u64,
+        retained_sequence: u64,
+        pruned_record_sha256: String,
+        segments: u64,
+        bytes: u64,
+    },
 }
 
 /// Events that identify no client, which the service audit may count instead
@@ -186,6 +199,30 @@ impl SecurityEvent {
                     "invalid counted events",
                 ));
             }
+            // An administrator's committed action: always attributed, and
+            // every pruned segment held at least one record.
+            SecurityEventKind::ArchivePruned {
+                retained_index,
+                retained_sequence,
+                pruned_record_sha256,
+                segments,
+                bytes,
+            } => {
+                if self.principal.is_none()
+                    || self.tenant.is_none()
+                    || self.outcome != SecurityOutcome::Succeeded
+                    || *segments == 0
+                    || *bytes == 0
+                    || retained_index < segments
+                    || retained_sequence < retained_index
+                {
+                    return Err(Error::new(
+                        ErrorCode::InvalidArgument,
+                        "invalid archive prune record",
+                    ));
+                }
+                validate_sha256(pruned_record_sha256)?;
+            }
             _ => {}
         }
         Ok(())
@@ -276,6 +313,9 @@ pub struct SecurityAuditStatus {
     /// hot, observed together with the position.
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub hot_tail_sha256: Option<String>,
+    /// The archive segments pruned so far and where retained history starts.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub retired: Option<SecurityAuditRetirement>,
 }
 impl SecurityAuditStatus {
     pub fn validate(&self) -> Result<()> {
@@ -293,15 +333,20 @@ impl SecurityAuditStatus {
                 "service audit status differs from its position",
             ));
         }
+        if let Some(retired) = &self.retired {
+            retired.validate(&self.position)?;
+        }
         Ok(())
     }
 
     /// The first cursor of an export fixed at this one observation: its
-    /// exclusive end, archive snapshot and hot tail are never re-read.
+    /// exclusive end, archive snapshot and hot tail are never re-read. After
+    /// a prune it starts at the first retained record, anchored by the digest
+    /// of the last pruned one.
     pub fn snapshot_cursor(&self) -> SecurityAuditCursor {
         SecurityAuditCursor {
             stream_id: self.position.stream_id,
-            next_sequence: 0,
+            next_sequence: self.retired.as_ref().map_or(0, |retired| retired.sequence),
             through_sequence: self.position.next_sequence,
             snapshot_segments: self.position.archive_segments,
             snapshot_head: self
@@ -310,8 +355,119 @@ impl SecurityAuditStatus {
                 .as_ref()
                 .map(|archive| archive.object.clone()),
             snapshot_tail_sha256: self.hot_tail_sha256.clone(),
-            previous_record_sha256: None,
+            previous_record_sha256: self
+                .retired
+                .as_ref()
+                .map(|retired| retired.record_sha256.clone()),
         }
+    }
+}
+
+/// Archive segments below `index` were pruned: their objects are deleted and
+/// their roots remain. Retained history starts at `sequence`, the first record
+/// of segment `index`, anchored by `record_sha256`, the exact digest of the
+/// last pruned record.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityAuditRetirement {
+    pub index: u64,
+    pub sequence: u64,
+    pub record_sha256: String,
+    /// Pruned objects whose deletion is still pending: indexes
+    /// `deleting_from..index`. Their ciphertext counts in `archive_bytes`
+    /// until it is deleted.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub deleting_from: Option<u64>,
+}
+impl SecurityAuditRetirement {
+    /// Every segment holds at least one record, so its first sequence is at
+    /// least its index.
+    fn validate_shape(&self) -> Result<()> {
+        if self.index == 0
+            || self.sequence < self.index
+            || self.deleting_from.is_some_and(|from| from >= self.index)
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid service audit archive retirement",
+            ));
+        }
+        validate_sha256(&self.record_sha256)
+    }
+
+    /// The newest segment is never pruned, so retained history always
+    /// reaches the archive head.
+    pub fn validate(&self, position: &AuditRetentionState) -> Result<()> {
+        self.validate_shape()?;
+        if self.index >= position.archive_segments || self.sequence >= position.pruned_before {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "service audit archive retirement differs from its position",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// Prune the archive segments below `through_index`. `exported` is the
+/// resumed cursor of an export page whose `next_sequence` reaches past the
+/// last record of segment `through_index - 1`; its anchors must match stored
+/// history. The newest segment is never pruned.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityAuditPruneRequest {
+    pub stream_id: Uuid,
+    pub through_index: u64,
+    pub exported: SecurityAuditCursor,
+}
+impl SecurityAuditPruneRequest {
+    pub fn validate(&self) -> Result<()> {
+        self.exported.validate()?;
+        // Each pruned segment holds a record the export must have returned.
+        if self.stream_id.is_nil()
+            || self.through_index == 0
+            || self.exported.stream_id != self.stream_id
+            || self.exported.next_sequence < self.through_index
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid service audit prune request",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The archive's retirement after a prune request. `pruned_segments` and
+/// `pruned_bytes` count what this request retired: zero when its range was
+/// already pruned.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SecurityAuditPruneResult {
+    pub stream_id: Uuid,
+    pub retired: SecurityAuditRetirement,
+    pub pruned_segments: u64,
+    pub pruned_bytes: u64,
+    /// Archive ciphertext still counted, including objects whose deletion is
+    /// pending.
+    pub archive_bytes: u64,
+}
+impl SecurityAuditPruneResult {
+    /// This result answers `request`: its stream, with that range retired.
+    pub fn validate(&self, request: &SecurityAuditPruneRequest) -> Result<()> {
+        self.retired.validate_shape()?;
+        if self.stream_id != request.stream_id
+            || self.retired.index < request.through_index
+            || (self.pruned_segments == 0) != (self.pruned_bytes == 0)
+            || (self.pruned_segments > 0 && self.retired.index != request.through_index)
+            || self.pruned_segments > self.retired.index
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "service audit prune result differs from its request",
+            ));
+        }
+        Ok(())
     }
 }
 
@@ -888,6 +1044,7 @@ mod tests {
                 maintenance_failures: 0,
                 last_failure: None,
                 hot_tail_sha256,
+                retired: None,
             };
         let empty = status(&position, None);
         empty.validate().unwrap();
@@ -963,6 +1120,289 @@ mod tests {
                 .validate()
                 .is_err()
         );
+    }
+
+    #[test]
+    fn a_pruned_status_starts_its_cursor_at_the_retained_anchor() {
+        let head = AuditArchiveReference {
+            stream_id: Uuid::from_u128(3),
+            object: link(10, 15),
+            previous: Some(link(6, 10)),
+            record_count: 5,
+            plaintext_bytes: 10,
+            ciphertext_bytes: 20,
+            key: crate::AuditArchiveKeyDependency {
+                provider: "file".into(),
+                key_ref: "installed-key".into(),
+                version: 1,
+                wrapped_key_sha256: "b".repeat(64),
+            },
+        };
+        let mut position = AuditRetentionState::empty(head.stream_id);
+        position.next_sequence = 20;
+        position.pruned_before = 15;
+        position.hot_bytes = 500;
+        position.archive_bytes = 40;
+        position.archive_segments = 3;
+        position.archive_head = Some(head.clone());
+        let retired = SecurityAuditRetirement {
+            index: 2,
+            sequence: 10,
+            record_sha256: record(9).sha256().unwrap(),
+            deleting_from: None,
+        };
+        let status = SecurityAuditStatus {
+            position: position.clone(),
+            budget: AuditRetentionBudget {
+                hot_bytes: 128 << 10,
+                archive_bytes: 128 << 20,
+            },
+            archived_bytes: 40,
+            archive_segments: 3,
+            draining: false,
+            persistence_failed: false,
+            maintenance_failures: 0,
+            last_failure: None,
+            hot_tail_sha256: Some(record(19).sha256().unwrap()),
+            retired: Some(retired.clone()),
+        };
+        status.validate().unwrap();
+        let cursor = status.snapshot_cursor();
+        cursor.validate().unwrap();
+        assert_eq!(cursor.next_sequence, 10);
+        assert_eq!(
+            cursor.previous_record_sha256,
+            Some(retired.record_sha256.clone())
+        );
+        assert_eq!(cursor.snapshot_head, Some(head.object));
+        let mut missing = serde_json::to_value(&status).unwrap();
+        missing.as_object_mut().unwrap().remove("retired");
+        assert!(serde_json::from_value::<SecurityAuditStatus>(missing).is_err());
+        let mut missing = serde_json::to_value(&retired).unwrap();
+        missing.as_object_mut().unwrap().remove("deleting_from");
+        assert!(serde_json::from_value::<SecurityAuditRetirement>(missing).is_err());
+        for changed in [
+            // The newest segment is never pruned.
+            SecurityAuditRetirement {
+                index: 3,
+                ..retired.clone()
+            },
+            SecurityAuditRetirement {
+                index: 0,
+                ..retired.clone()
+            },
+            SecurityAuditRetirement {
+                sequence: 1,
+                ..retired.clone()
+            },
+            SecurityAuditRetirement {
+                sequence: 15,
+                ..retired.clone()
+            },
+            SecurityAuditRetirement {
+                deleting_from: Some(2),
+                ..retired.clone()
+            },
+            SecurityAuditRetirement {
+                record_sha256: "digest".into(),
+                ..retired.clone()
+            },
+        ] {
+            assert!(
+                SecurityAuditStatus {
+                    retired: Some(changed.clone()),
+                    ..status.clone()
+                }
+                .validate()
+                .is_err(),
+                "{changed:?}"
+            );
+        }
+        SecurityAuditRetirement {
+            deleting_from: Some(0),
+            ..retired.clone()
+        }
+        .validate(&position)
+        .unwrap();
+
+        let request = SecurityAuditPruneRequest {
+            stream_id: position.stream_id,
+            through_index: 2,
+            exported: SecurityAuditCursor {
+                next_sequence: 12,
+                previous_record_sha256: Some(record(11).sha256().unwrap()),
+                ..cursor.clone()
+            },
+        };
+        request.validate().unwrap();
+        for changed in [
+            SecurityAuditPruneRequest {
+                stream_id: Uuid::nil(),
+                ..request.clone()
+            },
+            SecurityAuditPruneRequest {
+                stream_id: Uuid::from_u128(9),
+                ..request.clone()
+            },
+            SecurityAuditPruneRequest {
+                through_index: 0,
+                ..request.clone()
+            },
+            SecurityAuditPruneRequest {
+                through_index: 13,
+                ..request.clone()
+            },
+            SecurityAuditPruneRequest {
+                exported: SecurityAuditCursor {
+                    previous_record_sha256: None,
+                    ..request.exported.clone()
+                },
+                ..request.clone()
+            },
+        ] {
+            assert!(changed.validate().is_err());
+        }
+
+        let result = SecurityAuditPruneResult {
+            stream_id: position.stream_id,
+            retired: retired.clone(),
+            pruned_segments: 2,
+            pruned_bytes: 40,
+            archive_bytes: 20,
+        };
+        result.validate(&request).unwrap();
+        // A repeated request finds its range already pruned, perhaps further.
+        let repeated = SecurityAuditPruneRequest {
+            through_index: 1,
+            ..request.clone()
+        };
+        SecurityAuditPruneResult {
+            pruned_segments: 0,
+            pruned_bytes: 0,
+            ..result.clone()
+        }
+        .validate(&repeated)
+        .unwrap();
+        for changed in [
+            SecurityAuditPruneResult {
+                stream_id: Uuid::from_u128(9),
+                ..result.clone()
+            },
+            SecurityAuditPruneResult {
+                pruned_bytes: 0,
+                ..result.clone()
+            },
+            SecurityAuditPruneResult {
+                pruned_segments: 3,
+                ..result.clone()
+            },
+        ] {
+            assert!(changed.validate(&request).is_err());
+        }
+        assert!(result.validate(&repeated).is_err());
+        assert!(
+            SecurityAuditPruneResult {
+                retired: SecurityAuditRetirement {
+                    index: 1,
+                    ..retired.clone()
+                },
+                ..result.clone()
+            }
+            .validate(&request)
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn archive_prune_records_are_attributed_and_consistent() {
+        let mut valid = record(30);
+        valid.event = SecurityEvent {
+            kind: SecurityEventKind::ArchivePruned {
+                retained_index: 4,
+                retained_sequence: 21,
+                pruned_record_sha256: record(20).sha256().unwrap(),
+                segments: 4,
+                bytes: 800,
+            },
+            principal: Some("operator".into()),
+            tenant: Some("__kasumi_control".into()),
+            request_id: "prune-1".into(),
+            outcome: SecurityOutcome::Succeeded,
+        };
+        valid.transport = None;
+        valid.validate().unwrap();
+        let bytes = serde_json::to_vec(&valid).unwrap();
+        assert_eq!(
+            decode_exact::<SecurityAuditRecord>(&bytes, 64 << 10, "record").unwrap(),
+            valid
+        );
+        let SecurityEventKind::ArchivePruned {
+            retained_index,
+            retained_sequence,
+            pruned_record_sha256,
+            segments,
+            bytes,
+        } = valid.event.kind.clone()
+        else {
+            unreachable!()
+        };
+        let kind = |retained_index, retained_sequence, segments, bytes, digest: &str| {
+            SecurityEventKind::ArchivePruned {
+                retained_index,
+                retained_sequence,
+                pruned_record_sha256: digest.into(),
+                segments,
+                bytes,
+            }
+        };
+        for changed in [
+            SecurityEvent {
+                principal: None,
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                tenant: None,
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                outcome: SecurityOutcome::Denied,
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                kind: kind(
+                    retained_index,
+                    retained_sequence,
+                    0,
+                    bytes,
+                    &pruned_record_sha256,
+                ),
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                kind: kind(
+                    retained_index,
+                    retained_sequence,
+                    segments,
+                    0,
+                    &pruned_record_sha256,
+                ),
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                kind: kind(3, retained_sequence, segments, bytes, &pruned_record_sha256),
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                kind: kind(retained_index, 3, segments, bytes, &pruned_record_sha256),
+                ..valid.event.clone()
+            },
+            SecurityEvent {
+                kind: kind(retained_index, retained_sequence, segments, bytes, "digest"),
+                ..valid.event.clone()
+            },
+        ] {
+            assert!(changed.validate().is_err(), "{changed:?}");
+        }
     }
 
     #[test]

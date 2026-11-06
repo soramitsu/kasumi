@@ -46,6 +46,7 @@ Backups, audit and recovery:
   audit status <control-profile>
   audit export|archives <control-profile> <request.json> <output.json>
   audit verify <control-profile> <stream-uuid> <index>
+  audit prune <control-profile> <export-page.json> <through-index> <output.json>
   control-recovery configuration-digest|start|status|resume|stop|phase <arguments>
   local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>
 

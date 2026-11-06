@@ -929,6 +929,13 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         self.security_audit_rpc(request, security_audit::AuditOperation::Verify)
             .await
     }
+    async fn security_audit_prune(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Prune)
+            .await
+    }
 
     async fn create_credential(
         &self,

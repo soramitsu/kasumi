@@ -86,43 +86,50 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             .await?;
             println!("{}", serde_json::json!({"page":output}));
         }
+        [command, action, profile, exported, through, output]
+            if command == "audit" && action == "prune" =>
+        {
+            prune(
+                Path::new(profile),
+                Path::new(exported),
+                through.parse().context("invalid archive index")?,
+                Path::new(output),
+            )
+            .await?;
+            println!("{}", serde_json::json!({"prune":output}));
+        }
         [command, ..] if command == "audit" => anyhow::bail!(
-            "usage: kasumid audit status PROFILE | audit export|archives PROFILE REQUEST_JSON OUTPUT_JSON | audit verify PROFILE STREAM_UUID INDEX"
+            "usage: kasumid audit status PROFILE | audit export|archives PROFILE REQUEST_JSON OUTPUT_JSON | audit verify PROFILE STREAM_UUID INDEX | audit prune PROFILE EXPORT_PAGE_JSON THROUGH_INDEX OUTPUT_JSON"
         ),
         _ => return Ok(false),
     }
     Ok(true)
 }
 
-async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path) -> Result<()> {
-    ensure!(output.is_absolute(), "audit page output must be absolute");
-    private_files::check_directory(output.parent().context("audit page has no parent")?)?;
-    let profile = ClientProfile::load(profile_path)?;
-    let binding = binding(&profile)?;
-    let original: serde_json::Value = serde_json::from_slice(&crate::runtime::read_bounded(
-        input,
-        MAX_SECURITY_AUDIT_PAGE_BYTES,
-    )?)?;
-    match operation {
-        "export" => {
-            serde_json::from_value::<SecurityAuditExportRequest>(original.clone())?.validate()?
-        }
-        "archives" => serde_json::from_value::<SecurityAuditArchivePageRequest>(original.clone())?
-            .validate()?,
-        _ => anyhow::bail!("unknown audit page operation"),
-    }
+/// The attempt journal beside `output`, persisted before any dispatch, and
+/// its lock. A retry must repeat the original endpoint, credential family,
+/// trust and input; a published output is never overwritten.
+struct Journal {
+    _lock: private_files::ExclusiveLock,
+    path: std::path::PathBuf,
+    attempt: Attempt,
+}
+fn journal(
+    operation: &str,
+    binding: Binding,
+    original: serde_json::Value,
+    output: &Path,
+) -> Result<Journal> {
     let lock = output.with_extension("audit.lock");
-    let journal = output.with_extension("audit-attempt.json");
+    let path = output.with_extension("audit-attempt.json");
     ensure!(
-        journal != output && lock != output,
+        path != output && lock != output,
         "audit output collides with its attempt journal or lock"
     );
-    let _lock = private_files::ExclusiveLock::acquire(&lock)?;
-    let mut attempt = if journal.exists() {
-        let attempt: Attempt = serde_json::from_slice(&private_files::read(
-            &journal,
-            MAX_SECURITY_AUDIT_PAGE_BYTES,
-        )?)?;
+    let lock = private_files::ExclusiveLock::acquire(&lock)?;
+    let attempt = if path.exists() {
+        let attempt: Attempt =
+            serde_json::from_slice(&private_files::read(&path, MAX_SECURITY_AUDIT_PAGE_BYTES)?)?;
         ensure!(
             attempt.format == 1
                 && attempt.operation == operation
@@ -143,13 +150,82 @@ async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path)
             original,
             resolved: None,
         };
-        private_files::publish(&journal, &serde_json::to_vec(&attempt)?)?;
+        private_files::publish(&path, &serde_json::to_vec(&attempt)?)?;
         attempt
     };
     ensure!(
         !output.exists(),
-        "audit page already published; use its cursor with a new output path"
+        "audit output already published; choose a new output path"
     );
+    Ok(Journal {
+        _lock: lock,
+        path,
+        attempt,
+    })
+}
+
+/// Prune the archive segments below `through_index`, covered by the export
+/// whose last page is `exported`. The request is fixed from that page and
+/// journaled before dispatch; repeating the command after an uncertain outcome
+/// resends it, and the server prunes nothing more.
+async fn prune(
+    profile_path: &Path,
+    exported: &Path,
+    through_index: u64,
+    output: &Path,
+) -> Result<()> {
+    ensure!(output.is_absolute(), "audit prune output must be absolute");
+    private_files::check_directory(
+        output
+            .parent()
+            .context("audit prune output has no parent")?,
+    )?;
+    let profile = ClientProfile::load(profile_path)?;
+    let binding = binding(&profile)?;
+    let page: SecurityAuditPage = serde_json::from_slice(&crate::runtime::read_bounded(
+        exported,
+        MAX_SECURITY_AUDIT_PAGE_BYTES,
+    )?)?;
+    let request = SecurityAuditPruneRequest {
+        stream_id: page.stream_id,
+        through_index,
+        exported: page.resumed(),
+    };
+    request.validate()?;
+    let original = serde_json::to_value(&request)?;
+    let journal = journal("prune", binding, original, output)?;
+    let request: SecurityAuditPruneRequest =
+        serde_json::from_value(journal.attempt.original.clone())?;
+    let mut client = kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+    let result = client
+        .prune_security_audit(&profile.bearer()?, &request)
+        .await?;
+    private_files::publish(output, &serde_json::to_vec(&result)?)?;
+    Ok(())
+}
+
+async fn page(operation: &str, profile_path: &Path, input: &Path, output: &Path) -> Result<()> {
+    ensure!(output.is_absolute(), "audit page output must be absolute");
+    private_files::check_directory(output.parent().context("audit page has no parent")?)?;
+    let profile = ClientProfile::load(profile_path)?;
+    let binding = binding(&profile)?;
+    let original: serde_json::Value = serde_json::from_slice(&crate::runtime::read_bounded(
+        input,
+        MAX_SECURITY_AUDIT_PAGE_BYTES,
+    )?)?;
+    match operation {
+        "export" => {
+            serde_json::from_value::<SecurityAuditExportRequest>(original.clone())?.validate()?
+        }
+        "archives" => serde_json::from_value::<SecurityAuditArchivePageRequest>(original.clone())?
+            .validate()?,
+        _ => anyhow::bail!("unknown audit page operation"),
+    }
+    let Journal {
+        _lock,
+        path: journal,
+        mut attempt,
+    } = journal(operation, binding, original, output)?;
     let mut client = kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
     if attempt.resolved.is_none() {
         let resolved = match operation {

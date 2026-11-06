@@ -16,10 +16,10 @@ mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
     AuditArchiveDestination, AuditArchivePublicationObserver, AuditCacheEntry, AuditCiphertext,
-    AuditSegmentBuilder, FilesystemAuditArchive, HistoricalAuditVerifier, InspectedAuditDependency,
-    PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement, TenantAuditPlacementDiffers,
-    VerifiedAuditSegment, filesystem_archive_directory, filesystem_archive_identity,
-    inspect_audit_object,
+    AuditObjectDeletion, AuditSegmentBuilder, FilesystemAuditArchive, HistoricalAuditVerifier,
+    InspectedAuditDependency, PreparedAuditSegment, S3AuditArchive, TenantAuditPlacement,
+    TenantAuditPlacementDiffers, VerifiedAuditSegment, filesystem_archive_directory,
+    filesystem_archive_identity, inspect_audit_object,
 };
 mod backup;
 mod backup_destination_index;

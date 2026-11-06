@@ -4,15 +4,25 @@ use super::*;
 use kasumi_store::{AuditSegmentBuilder, PreparedAuditSegment};
 use kasumi_types::{
     AuditArchiveReference, AuditCapacity, AuditRetentionState, ErrorCode, MAX_AUDIT_EVENT_BYTES,
-    MAX_AUDIT_SEGMENT_BYTES, SecurityAuditCursor, SecurityAuditPage, SecurityAuditStatus,
-    audit_record_sha256, exact_json::decode_exact,
+    MAX_AUDIT_SEGMENT_BYTES, SecurityAuditCursor, SecurityAuditPage, SecurityAuditPruneRequest,
+    SecurityAuditPruneResult, SecurityAuditRetirement, SecurityAuditStatus, audit_record_sha256,
+    exact_json::decode_exact,
 };
 use sha2::Digest;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use uuid::Uuid;
 
 const META: &str = "security.audit.meta";
 const ARCHIVES: &str = "security.audit.archives";
+/// The one retirement row of a pruned archive. Its own namespace leaves every
+/// row that earlier releases check on open unchanged.
+const RETIRED: &str = "security.audit.retired";
+const RETIREMENT: &[u8] = b"retirement";
+/// Pruned objects deleted per step; each step commits its progress.
+const DELETION_CHUNK: u64 = 64;
+/// How long a prune request deletes before leaving the rest to the
+/// maintenance worker, well inside the client's request deadline.
+const PRUNE_DELETION_BUDGET: Duration = Duration::from_secs(10);
 const MAX_ROOT_BYTES: usize = 64 << 10;
 // Reserve wire-envelope and per-record separator bytes inside the shared limit.
 const MAX_PAGE_BYTES: usize = kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES - 4096;
@@ -52,7 +62,7 @@ impl Head {
     /// even when its head is missing or its hot log has already been pruned.
     pub fn initialize(store: &Arc<TenantStore>, destination: &str) -> Result<Self> {
         let view = store.read_view()?;
-        for namespace in [META, ARCHIVES, "security.audit"] {
+        for namespace in [META, ARCHIVES, RETIRED, "security.audit"] {
             view.visit(namespace, MAX_AUDIT_SEGMENT_BYTES, |_, _| {
                 anyhow::bail!("service audit initialization requires empty audit namespaces")
             })?;
@@ -206,6 +216,119 @@ impl Head {
     }
 }
 
+/// Archive segments below `index` are pruned: their roots remain, and their
+/// objects are deleted once `deleting` is None. Retained history starts at
+/// `sequence`, the first record of segment `index`, anchored by the exact
+/// digest of the record before it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct Retirement {
+    format: u32,
+    stream_id: Uuid,
+    index: u64,
+    sequence: u64,
+    record_sha256: String,
+    deleting: Option<Deletion>,
+}
+
+/// Pruned objects not yet deleted: indexes `from..index`, whose `bytes` of
+/// ciphertext still count in `archive_bytes`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Deletion {
+    from: u64,
+    bytes: u64,
+}
+
+impl Retirement {
+    /// The committed retirement, if any. A row that does not continue this
+    /// head's stream and archive chain is corruption; this reads no archive
+    /// object.
+    pub fn open(store: &Arc<TenantStore>, head: &Head) -> Result<Option<Self>> {
+        let view = store.read_view()?;
+        let mut found: Option<Self> = None;
+        view.visit(RETIRED, MAX_ROOT_BYTES, |key, bytes| {
+            ensure!(
+                key == RETIREMENT && found.is_none(),
+                "unsupported service audit retirement row"
+            );
+            found = Some(decode_exact(
+                bytes,
+                MAX_ROOT_BYTES,
+                "service audit retirement",
+            )?);
+            Ok(())
+        })?;
+        let Some(retirement) = found else {
+            return Ok(None);
+        };
+        retirement.validate(&head.position)?;
+        let bytes = view
+            .get(ARCHIVES, &retirement.index.to_be_bytes(), MAX_ROOT_BYTES)?
+            .context("first retained service audit archive root is missing")?;
+        let root: AuditArchiveReference =
+            decode_exact(&bytes, MAX_ROOT_BYTES, "service audit archive root")?;
+        ensure!(
+            root.object.first_sequence == retirement.sequence,
+            "service audit retirement differs from its first retained root"
+        );
+        Ok(Some(retirement))
+    }
+
+    fn validate(&self, position: &AuditRetentionState) -> Result<()> {
+        ensure!(
+            self.format == 1 && self.stream_id == position.stream_id,
+            "unsupported or substituted service audit retirement"
+        );
+        internal(
+            self.observed().validate(position),
+            "invalid stored service audit retirement",
+        )?;
+        if let Some(deletion) = &self.deleting {
+            // The newest segment is never pruned, so its ciphertext is never
+            // part of a pending deletion.
+            let head = position
+                .archive_head
+                .as_ref()
+                .context("service audit retirement without an archive head")?;
+            ensure!(
+                deletion.bytes > 0
+                    && position
+                        .archive_bytes
+                        .checked_sub(head.ciphertext_bytes)
+                        .is_some_and(|older| deletion.bytes <= older),
+                "service audit retirement deletion exceeds its archived bytes"
+            );
+        }
+        Ok(())
+    }
+
+    pub fn observed(&self) -> SecurityAuditRetirement {
+        SecurityAuditRetirement {
+            index: self.index,
+            sequence: self.sequence,
+            record_sha256: self.record_sha256.clone(),
+            deleting_from: self.deleting.as_ref().map(|deletion| deletion.from),
+        }
+    }
+
+    fn write(&self) -> Result<WriteOp> {
+        Ok(WriteOp::put(RETIRED, RETIREMENT, serde_json::to_vec(self)?))
+    }
+}
+
+/// Who prunes, under which age floor, and the check of their authority that
+/// runs immediately before the retirement commits.
+pub struct ArchivePrune {
+    pub principal: String,
+    pub tenant: String,
+    pub request_id: String,
+    /// No pruned record may be younger than this; zero disables the floor.
+    pub minimum_age: Duration,
+    /// An error refuses the prune before anything is committed.
+    pub authorize: Box<dyn Fn() -> kasumi_types::Result<()> + Send + Sync>,
+}
+
 #[cfg(test)]
 #[derive(Default)]
 pub(super) struct WorkerPause {
@@ -268,6 +391,7 @@ impl SecurityAudit {
             maintenance_failures: state.failures,
             last_failure: state.last_failure.clone(),
             hot_tail_sha256: state.hot_tail_sha256.clone(),
+            retired: state.retired.as_ref().map(Retirement::observed),
         })
     }
 
@@ -338,9 +462,13 @@ impl SecurityAudit {
     }
 
     fn report_maintenance_failure(&self) {
+        self.report_failure("archive maintenance failed; hot prefix retained");
+    }
+
+    fn report_failure(&self, message: &str) {
         if let Ok(mut state) = self.writer.sequence.lock() {
             state.failures = state.failures.saturating_add(1);
-            state.last_failure = Some("archive maintenance failed; hot prefix retained".into());
+            state.last_failure = Some(message.into());
         }
     }
 
@@ -457,6 +585,12 @@ impl SecurityAudit {
             .first()
         {
             return Err(kasumi_types::drain::DrainFailure::retained(issue.clone()).into());
+        }
+        // A prune's pending deletions go first, one bounded chunk per turn:
+        // they free archive budget the next publication may need. A failed
+        // deletion is reported and retried, and never holds publication back.
+        if self.delete_retired(Instant::now()).await.is_err() {
+            self.report_failure("pruned archive object deletion failed; it is retried");
         }
         // One bounded segment per turn; permanent backlog resumes on the next
         // turn, leaving cancellation and other consumers a scheduling boundary.
@@ -642,17 +776,27 @@ impl SecurityAudit {
     pub async fn verify_archive(&self, index: u64) -> Result<AuditArchiveReference> {
         self.run_owned(move |work, _| async move {
             let _serial = work.writer.writer.maintenance.lock().await;
-            let head = work
-                .writer
-                .writer
-                .sequence
-                .lock()
-                .map_err(|_| anyhow::anyhow!("audit state unavailable"))?
-                .head
-                .clone();
+            let (head, retained) = {
+                let state = work
+                    .writer
+                    .writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+                let retained = state.retired.as_ref().map_or(0, |retired| retired.index);
+                (state.head.clone(), retained)
+            };
             ensure!(
                 index < head.position.archive_segments,
                 "audit verification index is beyond history"
+            );
+            // A pruned segment keeps its root, but its object is deleted.
+            ensure!(
+                index >= retained,
+                kasumi_types::Error::new(
+                    ErrorCode::NotFound,
+                    format!("audit archive segment {index} was pruned"),
+                )
             );
             let reference = work.writer.archive_reference(index)?;
             let previous = match index.checked_sub(1) {
@@ -683,6 +827,374 @@ impl SecurityAudit {
             Ok(reference)
         })
         .await
+    }
+
+    /// Retire the archive segments below `request.through_index` once the
+    /// export that covers them matches stored history, then delete their
+    /// objects. The retirement and its own record commit together; deletion
+    /// then proceeds in chunks, each committing its freed bytes, and the
+    /// maintenance worker finishes what this request leaves. A crash
+    /// therefore leaves either no prune or a retirement whose deletions
+    /// resume. Repeating a request retires and records nothing more.
+    /// Cancelling the caller cancels nothing.
+    pub async fn prune(
+        &self,
+        request: SecurityAuditPruneRequest,
+        prune: ArchivePrune,
+    ) -> Result<SecurityAuditPruneResult> {
+        request.validate()?;
+        self.run_owned(move |work, _| async move {
+            // Publication, export, verification and pruning share this lock,
+            // so the archive chain checked here is the one retired below.
+            let _serial = work.writer.writer.maintenance.lock().await;
+            work.writer.prune_held(request, prune).await
+        })
+        .await
+    }
+
+    async fn prune_held(
+        &self,
+        request: SecurityAuditPruneRequest,
+        prune: ArchivePrune,
+    ) -> Result<SecurityAuditPruneResult> {
+        ensure!(
+            self.writer.destination.deletes_objects(),
+            kasumi_types::Error::new(
+                ErrorCode::Unavailable,
+                "the service audit archive destination keeps its objects; raise the archive budget instead",
+            )
+        );
+        // An earlier prune's deletions finish first.
+        ensure!(
+            self.delete_retired(Instant::now() + PRUNE_DELETION_BUDGET)
+                .await?,
+            kasumi_types::Error::new(
+                ErrorCode::Unavailable,
+                "an earlier prune is still deleting archive objects; repeat the request",
+            )
+        );
+        let (head, retired) = {
+            let state = self
+                .writer
+                .sequence
+                .lock()
+                .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+            ensure!(!state.failed, "service audit persistence requires recovery");
+            (state.head.clone(), state.retired.clone())
+        };
+        let position = &head.position;
+        ensure!(
+            request.stream_id == position.stream_id,
+            cursor_differs("audit prune request belongs to another installed stream")
+        );
+        let retained = retired.as_ref().map_or(0, |retired| retired.index);
+        let through = request.through_index;
+        if through <= retained {
+            return self.prune_result(0, 0);
+        }
+        ensure!(
+            through < position.archive_segments,
+            cursor_differs("the newest audit archive segment is never pruned")
+        );
+        // The pruned roots and the first retained one must form one chain
+        // that continues from the last root pruned before.
+        let mut previous = match retained.checked_sub(1) {
+            Some(index) => Some(self.archive_reference(index)?.object),
+            None => None,
+        };
+        let mut bytes = 0u64;
+        let mut first_retained = None;
+        for index in retained..=through {
+            let root = self.archive_reference(index)?;
+            ensure!(
+                root.stream_id == position.stream_id && root.previous == previous,
+                "audit archive chain link differs"
+            );
+            if index + 1 == position.archive_segments {
+                ensure!(
+                    position.archive_head.as_ref() == Some(&root),
+                    "audit archive root differs from head"
+                );
+            }
+            previous = Some(root.object.clone());
+            if index < through {
+                bytes = bytes
+                    .checked_add(root.ciphertext_bytes)
+                    .context("audit archive accounting overflow")?;
+            } else {
+                first_retained = Some(root);
+            }
+        }
+        let first_retained = first_retained.context("first retained audit root missing")?;
+        let sequence = first_retained.object.first_sequence;
+
+        // The export must reach past every pruned record and agree with
+        // stored history at its anchor, snapshot head and captured tail.
+        let exported = &request.exported;
+        ensure!(
+            exported.next_sequence >= sequence,
+            cursor_differs("the export does not cover the pruned audit archive segments")
+        );
+        ensure!(
+            exported.through_sequence <= position.next_sequence
+                && exported.snapshot_segments <= position.archive_segments,
+            cursor_differs("audit export position is beyond history")
+        );
+        if let Some(snapshot) = &exported.snapshot_head {
+            ensure!(
+                self.archive_reference(exported.snapshot_segments - 1)?
+                    .object
+                    == *snapshot,
+                cursor_differs("audit cursor snapshot differs from the archive chain")
+            );
+        }
+        let mut records = RetainedRecords {
+            audit: self,
+            position,
+            segment: None,
+        };
+        // Reading the last pruned record authenticates its segment.
+        let anchor = records.digest(sequence - 1).await?;
+        ensure!(
+            exported.previous_record_sha256.as_deref()
+                == Some(records.digest(exported.next_sequence - 1).await?.as_str()),
+            cursor_differs("audit cursor previous record differs")
+        );
+        if let Some(tail) = &exported.snapshot_tail_sha256 {
+            ensure!(
+                *tail == records.digest(exported.through_sequence - 1).await?,
+                cursor_differs("audit cursor snapshot tail differs")
+            );
+        }
+        drop(records);
+        // Timestamps follow the wall clock, not sequence order, so every
+        // pruned record is checked against the floor.
+        if !prune.minimum_age.is_zero() {
+            let now = u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
+            let cutoff = now.saturating_sub(u64::try_from(prune.minimum_age.as_millis())?);
+            for index in retained..through {
+                let segment = self
+                    .verified_segment(&self.archive_reference(index)?)
+                    .await?;
+                segment.visit(|record_sequence, record| {
+                    ensure!(
+                        decode_record(record_sequence, record)?.timestamp_ms <= cutoff,
+                        cursor_differs(
+                            "an audit record to prune is younger than the prune minimum age"
+                        )
+                    );
+                    Ok(())
+                })?;
+            }
+        }
+
+        let event = SecurityEvent {
+            kind: SecurityEventKind::ArchivePruned {
+                retained_index: through,
+                retained_sequence: sequence,
+                pruned_record_sha256: anchor.clone(),
+                segments: through - retained,
+                bytes,
+            },
+            principal: Some(prune.principal),
+            tenant: Some(prune.tenant),
+            request_id: prune.request_id,
+            outcome: SecurityOutcome::Succeeded,
+        };
+        event.validate()?;
+        let retirement = Retirement {
+            format: 1,
+            stream_id: position.stream_id,
+            index: through,
+            sequence,
+            record_sha256: anchor,
+            deleting: Some(Deletion {
+                from: retained,
+                bytes,
+            }),
+        };
+        let authorize = prune.authorize;
+        let worker = self.clone();
+        let committed =
+            tokio::task::spawn_blocking(move || -> Result<()> {
+                // The original credential and Control policy still hold at the
+                // commit, however long the checks above took.
+                authorize()?;
+                let mut state = worker
+                    .writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+                ensure!(!state.failed, "service audit persistence requires recovery");
+                let current = &state.head.position;
+                ensure!(
+                    current.archive_segments == head.position.archive_segments
+                        && current.archive_bytes == head.position.archive_bytes
+                        && current.archive_head == head.position.archive_head
+                        && state.retired == retired,
+                    "audit prune phase changed"
+                );
+                let mut updated = state.head.clone();
+                let (record, tail) =
+                    worker.admit_record(&mut updated, event, None, RecordClass::Prune)?;
+                let operations = [record, retirement.write()?, updated.write()?];
+                if let Err(error) = worker.writer.store.write_batch(&operations) {
+                    state.failed = true;
+                    return Err(kasumi_types::drain::DrainFailure::retained(
+                        worker.record_terminal("audit persistence", 0, error),
+                    )
+                    .into());
+                }
+                state.head = updated;
+                state.hot_tail_sha256 = Some(tail);
+                state.retired = Some(retirement);
+                if state.head.position.hot_bytes >= worker.writer.budget.starts_at() {
+                    worker.writer.wake.notify_one();
+                }
+                Ok(())
+            })
+            .await;
+        self.observe_join("audit archive prune", 0, committed)?;
+        // The retirement is committed; deletion left now resumes in maintenance.
+        if self
+            .delete_retired(Instant::now() + PRUNE_DELETION_BUDGET)
+            .await
+            .is_err()
+        {
+            self.report_failure("pruned archive object deletion failed; it is retried");
+        }
+        self.prune_result(through - retained, bytes)
+    }
+
+    fn prune_result(
+        &self,
+        pruned_segments: u64,
+        pruned_bytes: u64,
+    ) -> Result<SecurityAuditPruneResult> {
+        let state = self
+            .writer
+            .sequence
+            .lock()
+            .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+        Ok(SecurityAuditPruneResult {
+            stream_id: state.head.position.stream_id,
+            retired: state
+                .retired
+                .as_ref()
+                .context("pruned service audit has no retirement")?
+                .observed(),
+            pruned_segments,
+            pruned_bytes,
+            archive_bytes: state.head.position.archive_bytes,
+        })
+    }
+
+    /// Delete pending pruned objects a chunk at a time; each chunk's deletions
+    /// are durable before its commit subtracts their bytes, so accounting never
+    /// falls below what the destination holds. Stops once `deadline` has passed
+    /// after a chunk. True once nothing is pending. The caller holds the
+    /// maintenance lock.
+    async fn delete_retired(&self, deadline: Instant) -> Result<bool> {
+        loop {
+            let (retirement, deletion) = {
+                let state = self
+                    .writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+                let Some(retirement) = &state.retired else {
+                    return Ok(true);
+                };
+                let Some(deletion) = &retirement.deleting else {
+                    return Ok(true);
+                };
+                ensure!(!state.failed, "service audit persistence requires recovery");
+                (retirement.clone(), deletion.clone())
+            };
+            let end = retirement
+                .index
+                .min(deletion.from.saturating_add(DELETION_CHUNK));
+            let mut links = Vec::new();
+            let mut bytes = 0u64;
+            for index in deletion.from..end {
+                let root = self.archive_reference(index)?;
+                bytes = bytes
+                    .checked_add(root.ciphertext_bytes)
+                    .context("audit archive accounting overflow")?;
+                links.push(root.object);
+            }
+            let outcomes = self.writer.destination.delete(&links).await?;
+            ensure!(
+                outcomes.len() == links.len(),
+                "audit archive deletion outcomes differ from their objects"
+            );
+            let worker = self.clone();
+            let committed = tokio::task::spawn_blocking(move || -> Result<bool> {
+                let mut state = worker
+                    .writer
+                    .sequence
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("audit state unavailable"))?;
+                ensure!(!state.failed, "service audit persistence requires recovery");
+                ensure!(
+                    state.retired.as_ref() == Some(&retirement),
+                    "audit archive deletion phase changed"
+                );
+                let remaining = deletion
+                    .bytes
+                    .checked_sub(bytes)
+                    .context("audit archive deletion accounting mismatch")?;
+                let done = end == retirement.index;
+                ensure!(
+                    done == (remaining == 0),
+                    "audit archive deletion accounting mismatch"
+                );
+                let mut updated = retirement.clone();
+                updated.deleting = (!done).then_some(Deletion {
+                    from: end,
+                    bytes: remaining,
+                });
+                let mut head = state.head.clone();
+                head.position.archive_bytes = head
+                    .position
+                    .archive_bytes
+                    .checked_sub(bytes)
+                    .context("audit archive byte count mismatch")?;
+                if let Err(error) = worker
+                    .writer
+                    .store
+                    .write_batch(&[updated.write()?, head.write()?])
+                {
+                    state.failed = true;
+                    return Err(kasumi_types::drain::DrainFailure::retained(
+                        worker.record_terminal("audit persistence", 0, error),
+                    )
+                    .into());
+                }
+                state.head = head;
+                state.retired = Some(updated);
+                Ok(done)
+            })
+            .await;
+            if self.observe_join("audit archive deletion", 0, committed)? {
+                return Ok(true);
+            }
+            if Instant::now() >= deadline {
+                return Ok(false);
+            }
+        }
+    }
+
+    /// One archived object, read and authenticated against its root.
+    async fn verified_segment(
+        &self,
+        reference: &AuditArchiveReference,
+    ) -> Result<kasumi_store::VerifiedAuditSegment> {
+        let bytes = self.writer.destination.read(&reference.object).await?;
+        self.writer
+            .store
+            .decrypt_audit_segment(&bytes, reference)
+            .await
     }
 
     /// One bounded page of typed records. The cursor must continue the exact
@@ -770,6 +1282,28 @@ impl SecurityAudit {
             // Visit from the anchor record. A page reads records from at most
             // one archive segment; the anchor may lie in the preceding one.
             let mut sequence = builder.cursor.next_sequence.saturating_sub(1);
+            // Pruned records are gone. A cursor that still needs one has
+            // expired; at the boundary itself, the retained digest of the
+            // last pruned record stands for it, as anchor or captured tail.
+            if let Some(retired) = &status.retired {
+                ensure!(
+                    builder.cursor.next_sequence >= retired.sequence,
+                    kasumi_types::Error::new(
+                        ErrorCode::CursorExpired,
+                        format!(
+                            "audit records before sequence {} were pruned; start a new export",
+                            retired.sequence
+                        ),
+                    )
+                );
+                if builder.cursor.next_sequence == retired.sequence {
+                    builder.check_retired_anchor(retired)?;
+                    sequence = retired.sequence;
+                }
+                if !builder.tail_checked && end == retired.sequence {
+                    builder.check_retired_tail(retired)?;
+                }
+            }
             while sequence < position.pruned_before && builder.needs() {
                 let reference = audit
                     .archive_reference(audit.archive_index(sequence, position.archive_segments)?)?;
@@ -819,6 +1353,58 @@ impl SecurityAudit {
     }
 }
 
+/// Exact stored records of retained history, read for a prune's checks. One
+/// authenticated segment is kept: the checks usually fall in one segment.
+struct RetainedRecords<'a> {
+    audit: &'a SecurityAudit,
+    position: &'a AuditRetentionState,
+    segment: Option<kasumi_store::VerifiedAuditSegment>,
+}
+impl RetainedRecords<'_> {
+    /// Digest of the exact stored record at `sequence`, admitted first as a
+    /// valid record of that sequence.
+    async fn digest(&mut self, sequence: u64) -> Result<String> {
+        if sequence >= self.position.pruned_before {
+            let bytes = self
+                .audit
+                .writer
+                .store
+                .get_bounded(
+                    "security.audit",
+                    &sequence.to_be_bytes(),
+                    MAX_AUDIT_EVENT_BYTES,
+                )?
+                .context("audit hot record missing")?;
+            decode_record(sequence, &bytes)?;
+            return Ok(audit_record_sha256(&bytes));
+        }
+        let held = self.segment.as_ref().is_some_and(|segment| {
+            let object = &segment.reference().object;
+            (object.first_sequence..object.next_sequence).contains(&sequence)
+        });
+        if !held {
+            let index = self
+                .audit
+                .archive_index(sequence, self.position.archive_segments)?;
+            let reference = self.audit.archive_reference(index)?;
+            self.segment = Some(self.audit.verified_segment(&reference).await?);
+        }
+        let segment = self
+            .segment
+            .as_ref()
+            .context("audit archive segment missing")?;
+        let mut digest = None;
+        segment.visit(|current, bytes| {
+            if current == sequence {
+                decode_record(current, bytes)?;
+                digest = Some(audit_record_sha256(bytes));
+            }
+            Ok(())
+        })?;
+        digest.context("audit archive segment lacks its record")
+    }
+}
+
 struct PageBuilder {
     cursor: SecurityAuditCursor,
     page: SecurityAuditPage,
@@ -835,6 +1421,34 @@ impl PageBuilder {
         !self.anchored
             || (self.page.records.is_empty()
                 && self.page.next_sequence < self.page.through_sequence)
+    }
+
+    /// A cursor at the retained boundary is anchored by the stored digest of
+    /// the last pruned record instead of the record itself.
+    fn check_retired_anchor(&mut self, retired: &SecurityAuditRetirement) -> Result<()> {
+        if self.cursor.previous_record_sha256.as_deref() != Some(retired.record_sha256.as_str()) {
+            ensure!(
+                self.supplied,
+                "service audit retirement anchor differs from its writer"
+            );
+            return Err(cursor_differs("audit cursor previous record differs").into());
+        }
+        self.anchored = true;
+        Ok(())
+    }
+
+    /// A completed cursor ending at the retained boundary captured the last
+    /// pruned record as its tail.
+    fn check_retired_tail(&mut self, retired: &SecurityAuditRetirement) -> Result<()> {
+        if self.cursor.snapshot_tail_sha256.as_deref() != Some(retired.record_sha256.as_str()) {
+            ensure!(
+                self.supplied,
+                "service audit retirement anchor differs from its writer"
+            );
+            return Err(cursor_differs("audit cursor snapshot tail differs").into());
+        }
+        self.tail_checked = true;
+        Ok(())
     }
 
     /// An anchor row is first admitted as an exact valid record, so storage
@@ -902,6 +1516,11 @@ mod tests {
         release: tokio::sync::Semaphore,
         // Every destination call, including failed and paused publications.
         remote: AtomicUsize,
+        /// Keep objects as an S3 destination does: pruning is refused.
+        keeps: AtomicBool,
+        /// Delete only this many objects of a call, then fail as a deletion
+        /// interrupted before its progress commit would. MAX means never.
+        interrupt_deletion: AtomicUsize,
     }
     impl UncertainArchive {
         fn new(
@@ -916,6 +1535,8 @@ mod tests {
                 entered: tokio::sync::Notify::new(),
                 release: tokio::sync::Semaphore::new(0),
                 remote: AtomicUsize::new(0),
+                keeps: AtomicBool::new(false),
+                interrupt_deletion: AtomicUsize::new(usize::MAX),
             })
         }
     }
@@ -940,6 +1561,23 @@ mod tests {
         async fn read(&self, link: &kasumi_types::AuditArchiveLink) -> Result<Vec<u8>> {
             self.remote.fetch_add(1, Ordering::SeqCst);
             self.inner.read(link).await
+        }
+        fn deletes_objects(&self) -> bool {
+            !self.keeps.load(Ordering::SeqCst)
+        }
+        async fn delete(
+            &self,
+            links: &[kasumi_types::AuditArchiveLink],
+        ) -> Result<Vec<kasumi_store::AuditObjectDeletion>> {
+            self.remote.fetch_add(1, Ordering::SeqCst);
+            let interrupt = self.interrupt_deletion.load(Ordering::SeqCst);
+            if interrupt != usize::MAX {
+                self.inner
+                    .delete(&links[..interrupt.min(links.len())])
+                    .await?;
+                anyhow::bail!("injected interrupted deletion");
+            }
+            self.inner.delete(links).await
         }
     }
     fn event(sequence: u64) -> SecurityEvent {
@@ -1928,5 +2566,510 @@ mod tests {
         assert_eq!(page.records.first().unwrap().sequence, 7);
         assert_eq!(export_rest(&audit, page.cursor(), 1024, event).await, end);
         fixture.close(audit).await;
+    }
+
+    fn pruner() -> ArchivePrune {
+        ArchivePrune {
+            principal: "operator".into(),
+            tenant: "__kasumi_control".into(),
+            request_id: "prune-request".into(),
+            minimum_age: Duration::ZERO,
+            authorize: Box::new(|| Ok(())),
+        }
+    }
+    fn prune_request(
+        through_index: u64,
+        exported: &SecurityAuditPage,
+    ) -> SecurityAuditPruneRequest {
+        SecurityAuditPruneRequest {
+            stream_id: exported.stream_id,
+            through_index,
+            exported: exported.resumed(),
+        }
+    }
+    /// Every record of one export from `cursor` to its end, checked for
+    /// contiguity, and its last page.
+    async fn export_all(
+        audit: &SecurityAudit,
+        mut cursor: Option<SecurityAuditCursor>,
+        limit: u16,
+    ) -> (Vec<SecurityAuditRecord>, SecurityAuditPage) {
+        let mut records: Vec<SecurityAuditRecord> = Vec::new();
+        loop {
+            let page = audit.export_page(cursor.clone(), limit).await.unwrap();
+            page.resumed().validate().unwrap();
+            let first = page.next_sequence - page.records.len() as u64;
+            if let Some(last) = records.last() {
+                assert_eq!(first, last.sequence + 1);
+            }
+            for (offset, record) in page.records.iter().enumerate() {
+                assert_eq!(record.sequence, first + offset as u64);
+            }
+            records.extend(page.records.iter().cloned());
+            cursor = page.cursor();
+            if cursor.is_none() {
+                return (records, page);
+            }
+        }
+    }
+    /// Export from the start until a page ends exactly at `boundary`.
+    async fn export_until(audit: &SecurityAudit, boundary: u64) -> SecurityAuditCursor {
+        let mut cursor = None;
+        loop {
+            let next = cursor
+                .as_ref()
+                .map_or(0, |cursor: &SecurityAuditCursor| cursor.next_sequence);
+            if next == boundary {
+                return cursor.unwrap();
+            }
+            let limit = (boundary - next).min(1024) as u16;
+            cursor = audit.export_page(cursor, limit).await.unwrap().cursor();
+        }
+    }
+    async fn fill_segments(audit: &SecurityAudit, segments: u64) {
+        while audit.status().unwrap().archive_segments < segments {
+            fill_to_high(audit).await;
+            drain(audit).await;
+        }
+    }
+    fn present(fixture: &Fixture, root: &AuditArchiveReference) -> bool {
+        fixture.archive.inner.read_blocking(&root.object).is_ok()
+    }
+    fn code(error: &anyhow::Error) -> ErrorCode {
+        error
+            .downcast_ref::<kasumi_types::Error>()
+            .unwrap_or_else(|| panic!("untyped prune refusal: {error:#}"))
+            .code
+    }
+
+    #[tokio::test]
+    async fn a_prune_keeps_retained_history_exportable_and_verifiable_across_restart() {
+        let (fixture, audit) = Fixture::new(178, false).await;
+        fill_segments(&audit, 4).await;
+        let before = audit.status().unwrap();
+        let segments = before.archive_segments;
+        let roots = audit.archive_page(0, 256).unwrap();
+        let through = segments - 1;
+        let boundary = roots[through as usize].object.first_sequence;
+        let (records, last) = export_all(&audit, None, 64).await;
+        assert_eq!(records.len() as u64, before.position.next_sequence);
+        // Cursors captured before the prune: one inside the pruned range and
+        // one exactly at its end.
+        let early = audit.export_page(None, 3).await.unwrap().cursor().unwrap();
+        let at_boundary = export_until(&audit, boundary).await;
+        let pruned_bytes: u64 = roots[..through as usize]
+            .iter()
+            .map(|root| root.ciphertext_bytes)
+            .sum();
+
+        let result = audit
+            .prune(prune_request(through, &last), pruner())
+            .await
+            .unwrap();
+        let anchor = records[boundary as usize - 1].sha256().unwrap();
+        assert_eq!(
+            result.retired,
+            SecurityAuditRetirement {
+                index: through,
+                sequence: boundary,
+                record_sha256: anchor.clone(),
+                deleting_from: None,
+            }
+        );
+        assert_eq!(
+            (result.pruned_segments, result.pruned_bytes),
+            (through, pruned_bytes)
+        );
+        assert_eq!(result.archive_bytes, before.archived_bytes - pruned_bytes);
+        let status = audit.status().unwrap();
+        status.validate().unwrap();
+        assert_eq!(status.retired, Some(result.retired.clone()));
+        assert_eq!(status.archive_segments, segments);
+        assert_eq!(status.archived_bytes, result.archive_bytes);
+        // The prune is the next record, written with the retirement.
+        assert_eq!(
+            status.position.next_sequence,
+            before.position.next_sequence + 1
+        );
+        // Objects are gone but every root stays listed.
+        for (index, root) in roots.iter().enumerate() {
+            assert_eq!(present(&fixture, root), index as u64 >= through, "{index}");
+        }
+        assert_eq!(audit.archive_page(0, 256).unwrap(), roots);
+        for index in 0..segments {
+            match audit.verify_archive(index).await {
+                Ok(root) => {
+                    assert!(index >= through);
+                    assert_eq!(root, roots[index as usize]);
+                }
+                Err(error) => {
+                    assert!(index < through, "{error:#}");
+                    assert_eq!(code(&error), ErrorCode::NotFound);
+                }
+            }
+        }
+
+        let check = |audit: Arc<SecurityAudit>,
+                     early: SecurityAuditCursor,
+                     at_boundary: SecurityAuditCursor| {
+            let records = records.clone();
+            let anchor = anchor.clone();
+            let roots = roots.clone();
+            async move {
+                // A fresh export starts at the boundary, anchored by the last
+                // pruned record's digest, and ends with the prune's record.
+                let status = audit.status().unwrap();
+                let cursor = status.snapshot_cursor();
+                assert_eq!(cursor.next_sequence, boundary);
+                assert_eq!(cursor.previous_record_sha256, Some(anchor.clone()));
+                let (fresh, _) = export_all(&audit, None, 64).await;
+                assert_eq!(fresh[..fresh.len() - 1], records[boundary as usize..]);
+                let prune = fresh.last().unwrap();
+                assert_eq!(prune.sequence, records.len() as u64);
+                assert_eq!(
+                    prune.event,
+                    SecurityEvent {
+                        kind: SecurityEventKind::ArchivePruned {
+                            retained_index: through,
+                            retained_sequence: boundary,
+                            pruned_record_sha256: anchor.clone(),
+                            segments: through,
+                            bytes: pruned_bytes,
+                        },
+                        principal: Some("operator".into()),
+                        tenant: Some("__kasumi_control".into()),
+                        request_id: "prune-request".into(),
+                        outcome: SecurityOutcome::Succeeded,
+                    }
+                );
+                // A cursor exactly at the boundary continues the old range.
+                let (continued, _) = export_all(&audit, Some(at_boundary.clone()), 64).await;
+                assert_eq!(continued, records[boundary as usize..]);
+                // One that still needs a pruned record has expired.
+                let error = audit.export_page(Some(early), 8).await.unwrap_err();
+                assert_eq!(code(&error), ErrorCode::CursorExpired);
+                assert!(format!("{error:#}").contains(&format!("before sequence {boundary}")));
+                // A boundary cursor with another anchor is another history.
+                let error = audit
+                    .export_page(
+                        Some(SecurityAuditCursor {
+                            previous_record_sha256: Some("0".repeat(64)),
+                            ..at_boundary.clone()
+                        }),
+                        8,
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(invalid_argument(&error).contains("previous record differs"));
+                // A completed range captured when the stream ended at the
+                // boundary checks its tail against the same digest.
+                let completed = SecurityAuditCursor {
+                    stream_id: status.position.stream_id,
+                    next_sequence: boundary,
+                    through_sequence: boundary,
+                    snapshot_segments: 1,
+                    snapshot_head: Some(roots[0].object.clone()),
+                    snapshot_tail_sha256: Some(anchor.clone()),
+                    previous_record_sha256: Some(anchor.clone()),
+                };
+                let page = audit.export_page(Some(completed.clone()), 8).await.unwrap();
+                assert!(page.records.is_empty() && page.cursor().is_none());
+                let other = Some(records[0].sha256().unwrap());
+                let error = audit
+                    .export_page(
+                        Some(SecurityAuditCursor {
+                            snapshot_tail_sha256: other.clone(),
+                            previous_record_sha256: other,
+                            ..completed
+                        }),
+                        8,
+                    )
+                    .await
+                    .unwrap_err();
+                assert!(invalid_argument(&error).contains("differs"));
+            }
+        };
+        check(audit.clone(), early.clone(), at_boundary.clone()).await;
+        let retired = audit.status().unwrap().retired;
+        let fixture = fixture.restart(Some(audit)).await;
+        let audit = fixture.open().unwrap();
+        assert_eq!(audit.status().unwrap().retired, retired);
+        check(audit.clone(), early, at_boundary).await;
+        for index in through..segments {
+            audit.verify_archive(index).await.unwrap();
+        }
+        fixture.close(audit).await;
+    }
+
+    #[tokio::test]
+    async fn a_prune_refuses_what_its_export_does_not_vouch_for_and_repeats_as_a_no_op() {
+        let (fixture, audit) = Fixture::new(179, false).await;
+        fill_segments(&audit, 3).await;
+        let roots = audit.archive_page(0, 256).unwrap();
+        let segments = roots.len() as u64;
+        let (_, last) = export_all(&audit, None, 64).await;
+        let unchanged = |audit: &SecurityAudit, next_sequence: u64| {
+            let status = audit.status().unwrap();
+            assert!(status.retired.is_none());
+            assert_eq!(status.position.next_sequence, next_sequence);
+            assert!(roots.iter().all(|root| present(&fixture, root)));
+        };
+        let next = audit.status().unwrap().position.next_sequence;
+        let refuse = |request: SecurityAuditPruneRequest, prune: ArchivePrune| {
+            let audit = audit.clone();
+            async move { audit.prune(request, prune).await.unwrap_err() }
+        };
+        // Another stream, the newest segment, and an export that stops short.
+        let mut other = prune_request(1, &last);
+        other.stream_id = Uuid::new_v4();
+        other.exported.stream_id = other.stream_id;
+        assert!(
+            invalid_argument(&refuse(other, pruner()).await).contains("another installed stream")
+        );
+        assert!(
+            invalid_argument(&refuse(prune_request(segments, &last), pruner()).await)
+                .contains("never pruned")
+        );
+        let short = audit.export_page(None, 2).await.unwrap();
+        assert!(
+            invalid_argument(&refuse(prune_request(1, &short), pruner()).await)
+                .contains("does not cover")
+        );
+        // Anchors that differ from stored history, on a page that covers the
+        // first segment and continues.
+        let covering = export_until(&audit, roots[1].object.first_sequence + 1).await;
+        let forged = |change: fn(&mut SecurityAuditCursor)| {
+            let mut exported = covering.clone();
+            change(&mut exported);
+            SecurityAuditPruneRequest {
+                stream_id: exported.stream_id,
+                through_index: 1,
+                exported,
+            }
+        };
+        let previous = forged(|cursor| cursor.previous_record_sha256 = Some("0".repeat(64)));
+        assert!(
+            invalid_argument(&refuse(previous, pruner()).await).contains("previous record differs")
+        );
+        let tail = forged(|cursor| cursor.snapshot_tail_sha256 = Some("0".repeat(64)));
+        assert!(invalid_argument(&refuse(tail, pruner()).await).contains("snapshot tail differs"));
+        let head =
+            forged(|cursor| cursor.snapshot_head.as_mut().unwrap().object_id = Uuid::new_v4());
+        assert!(invalid_argument(&refuse(head, pruner()).await).contains("snapshot differs"));
+        // A destination that keeps its objects, a refused authority and the
+        // age floor refuse before anything commits.
+        fixture.archive.keeps.store(true, Ordering::SeqCst);
+        assert_eq!(
+            code(&refuse(prune_request(1, &last), pruner()).await),
+            ErrorCode::Unavailable
+        );
+        fixture.archive.keeps.store(false, Ordering::SeqCst);
+        let mut revoked = pruner();
+        revoked.authorize = Box::new(|| {
+            Err(kasumi_types::Error::new(
+                ErrorCode::Forbidden,
+                "credential revoked",
+            ))
+        });
+        assert_eq!(
+            code(&refuse(prune_request(1, &last), revoked).await),
+            ErrorCode::Forbidden
+        );
+        let mut floor = pruner();
+        floor.minimum_age = Duration::from_secs(86_400);
+        assert!(
+            invalid_argument(&refuse(prune_request(1, &last), floor).await)
+                .contains("younger than the prune minimum age")
+        );
+        unchanged(&audit, next);
+
+        // A valid prune, then the same request again: nothing more is pruned
+        // or recorded.
+        let first = audit
+            .prune(prune_request(1, &last), pruner())
+            .await
+            .unwrap();
+        assert_eq!(first.pruned_segments, 1);
+        let next = audit.status().unwrap().position.next_sequence;
+        let repeated = audit
+            .prune(prune_request(1, &last), pruner())
+            .await
+            .unwrap();
+        assert_eq!((repeated.pruned_segments, repeated.pruned_bytes), (0, 0));
+        assert_eq!(repeated.retired, first.retired);
+        assert_eq!(audit.status().unwrap().position.next_sequence, next);
+        // A later prune continues the chain from the earlier one.
+        fill_segments(&audit, segments + 2).await;
+        let (_, last) = export_all(&audit, None, 64).await;
+        let second = audit
+            .prune(prune_request(segments, &last), pruner())
+            .await
+            .unwrap();
+        assert_eq!(
+            (second.retired.index, second.pruned_segments),
+            (segments, segments - 1)
+        );
+        assert_eq!(
+            second.pruned_bytes,
+            roots[1..]
+                .iter()
+                .map(|root| root.ciphertext_bytes)
+                .sum::<u64>()
+        );
+        assert!(roots.iter().all(|root| !present(&fixture, root)));
+        audit.verify_archive(segments).await.unwrap();
+        fixture.close(audit).await;
+    }
+
+    #[tokio::test]
+    async fn an_interrupted_deletion_resumes_after_restart() {
+        let (fixture, audit) = Fixture::new(180, false).await;
+        fill_segments(&audit, 4).await;
+        let roots = audit.archive_page(0, 256).unwrap();
+        let through = roots.len() as u64 - 1;
+        let pruned_bytes: u64 = roots[..through as usize]
+            .iter()
+            .map(|root| root.ciphertext_bytes)
+            .sum();
+        let (records, last) = export_all(&audit, None, 64).await;
+        let before = audit.status().unwrap();
+        // The first object is deleted, then the deletion stops before its
+        // progress commits, as a crash there would leave it.
+        fixture
+            .archive
+            .interrupt_deletion
+            .store(1, Ordering::SeqCst);
+        let result = audit
+            .prune(prune_request(through, &last), pruner())
+            .await
+            .unwrap();
+        assert_eq!(result.retired.deleting_from, Some(0));
+        assert_eq!(result.archive_bytes, before.archived_bytes);
+        let status = audit.status().unwrap();
+        assert_eq!(status.retired, Some(result.retired.clone()));
+        assert!(status.last_failure.unwrap().contains("deletion failed"));
+        assert!(!present(&fixture, &roots[0]));
+        assert!(roots[1..].iter().all(|root| present(&fixture, root)));
+        // The retirement is committed: the pruned range is no longer served.
+        assert_eq!(
+            code(&audit.verify_archive(1).await.unwrap_err()),
+            ErrorCode::NotFound
+        );
+        let fixture = fixture.restart(Some(audit)).await;
+        let audit = fixture.open().unwrap();
+        assert_eq!(
+            audit.status().unwrap().retired,
+            Some(result.retired.clone())
+        );
+        assert_eq!(
+            audit.status().unwrap().archived_bytes,
+            before.archived_bytes
+        );
+        fixture
+            .archive
+            .interrupt_deletion
+            .store(usize::MAX, Ordering::SeqCst);
+        audit.maintain().await.unwrap();
+        let status = audit.status().unwrap();
+        assert_eq!(status.retired.as_ref().unwrap().deleting_from, None);
+        assert_eq!(status.archived_bytes, before.archived_bytes - pruned_bytes);
+        assert!(
+            roots[..through as usize]
+                .iter()
+                .all(|root| !present(&fixture, root))
+        );
+        assert!(present(&fixture, &roots[through as usize]));
+        let (fresh, _) = export_all(&audit, None, 64).await;
+        assert_eq!(
+            fresh[..fresh.len() - 1],
+            records[roots[through as usize].object.first_sequence as usize..]
+        );
+        // Reopening once more finds the completed retirement unchanged.
+        let fixture = fixture.restart(Some(audit)).await;
+        let audit = fixture.open().unwrap();
+        assert_eq!(audit.status().unwrap().retired, status.retired);
+        assert_eq!(
+            audit.status().unwrap().archived_bytes,
+            status.archived_bytes
+        );
+        fixture.close(audit).await;
+    }
+
+    #[tokio::test]
+    async fn a_prune_records_itself_when_required_records_no_longer_fit() {
+        let (fixture, audit) = Fixture::new(181, false).await;
+        fill_segments(&audit, 3).await;
+        let through = audit.status().unwrap().archive_segments - 1;
+        let (_, last) = export_all(&audit, None, 64).await;
+        // Archives stop draining; required records fill the hot log until
+        // one is refused.
+        fixture.archive.uncertain.store(true, Ordering::SeqCst);
+        let refused = loop {
+            let sequence = audit.status().unwrap().position.next_sequence;
+            if let Err(error) = audit.record(event(sequence)).await {
+                break error;
+            }
+        };
+        assert!(refused.to_string().contains("hot budget exhausted"));
+        let full = audit.status().unwrap();
+        assert!(full.position.hot_bytes <= required_limit(&fixture.budget));
+        let result = audit
+            .prune(prune_request(through, &last), pruner())
+            .await
+            .unwrap();
+        assert_eq!(result.pruned_segments, through);
+        let status = audit.status().unwrap();
+        assert_eq!(
+            status.position.next_sequence,
+            full.position.next_sequence + 1
+        );
+        assert!(status.position.hot_bytes <= fixture.budget.hot_bytes);
+        let bytes = fixture
+            .store
+            .get("security.audit", &full.position.next_sequence.to_be_bytes())
+            .unwrap()
+            .unwrap();
+        let record: SecurityAuditRecord = serde_json::from_slice(&bytes).unwrap();
+        assert!(matches!(
+            record.event.kind,
+            SecurityEventKind::ArchivePruned { retained_index, .. } if retained_index == through
+        ));
+        // Required records still wait for archives to drain.
+        assert!(audit.record(event(0)).await.is_err());
+        fixture.archive.uncertain.store(false, Ordering::SeqCst);
+        drain(&audit).await;
+        audit
+            .record(event(status.position.next_sequence))
+            .await
+            .unwrap();
+        fixture.close(audit).await;
+    }
+
+    /// The reserve holds the largest record a prune can write.
+    #[test]
+    fn the_largest_prune_record_fits_the_hot_reserve() {
+        let name = "\"".repeat(256);
+        let record = SecurityAuditRecord {
+            format: kasumi_types::SECURITY_AUDIT_RECORD_FORMAT,
+            sequence: u64::MAX,
+            timestamp_ms: u64::MAX,
+            event: SecurityEvent {
+                kind: SecurityEventKind::ArchivePruned {
+                    retained_index: u64::MAX,
+                    retained_sequence: u64::MAX,
+                    pruned_record_sha256: "f".repeat(64),
+                    segments: u64::MAX,
+                    bytes: u64::MAX,
+                },
+                principal: Some(name.clone()),
+                tenant: Some(name.clone()),
+                request_id: name,
+                outcome: SecurityOutcome::Succeeded,
+            },
+            transport: None,
+        };
+        record.validate().unwrap();
+        let bytes = serde_json::to_vec(&record).unwrap().len() as u64 + 8;
+        assert!(bytes * 2 <= super::super::PRUNE_RESERVE_BYTES, "{bytes}");
     }
 }

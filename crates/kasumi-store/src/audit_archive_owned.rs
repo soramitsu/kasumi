@@ -99,7 +99,7 @@ impl FilesystemAuditArchive {
     /// Only an unknown leaf beneath the retained, verified archive directory is
     /// a healthy absence. An enrolled file that disappeared fences NodeDisk
     /// even when the OS reports ENOENT.
-    fn open_leaf(&self, name: &str) -> Result<Option<crate::NodeDiskFile>> {
+    pub(super) fn open_leaf(&self, name: &str) -> Result<Option<crate::NodeDiskFile>> {
         self.directory.sync_all()?;
         let path = self.root.join(name);
         let (root, relative) = self.disk.binding(&path)?;

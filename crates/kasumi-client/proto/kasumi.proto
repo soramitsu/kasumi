@@ -58,6 +58,8 @@ service KasumiAdmin {
   rpc SecurityAuditExport(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditArchives(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditVerify(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
+  // Retires exported archive segments and deletes their objects; audited.
+  rpc SecurityAuditPrune(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc CreateCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc RenewCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc RevokeCredential(CredentialJsonRequest) returns (CredentialJsonResponse);

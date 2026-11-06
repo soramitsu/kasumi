@@ -425,6 +425,20 @@ impl KasumiAdminClient {
         request: &SecurityAuditExportRequest,
         options: &JsonReadOptions,
     ) -> Result<AdmittedResponse<SecurityAuditPage>, ClientError> {
+        // A first page is fixed by a validated status: its end, snapshot and,
+        // once archives were pruned, the anchor where retained history starts.
+        let resolved;
+        let request = match &request.cursor {
+            Some(_) => request,
+            None => {
+                let status = self.security_audit_status(bearer).await?;
+                resolved = SecurityAuditExportRequest {
+                    cursor: Some(status.snapshot_cursor()),
+                    limit: request.limit,
+                };
+                &resolved
+            }
+        };
         let call = options.admit()?;
         request
             .validate()

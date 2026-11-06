@@ -11,6 +11,7 @@ pub(super) enum AuditOperation {
     Export,
     Archives,
     Verify,
+    Prune,
 }
 
 fn audit_error(error: anyhow::Error) -> kasumi_types::Error {
@@ -239,6 +240,40 @@ impl NativeAdmin {
                         index: request.index,
                         archive,
                     })?
+                }
+                AuditOperation::Prune => {
+                    let request: SecurityAuditPruneRequest = decode_json(&payload)?;
+                    request.validate()?;
+                    let minimum_age = std::time::Duration::from_secs(
+                        u64::from(management.config.security_audit.prune_minimum_age_days) * 86_400,
+                    );
+                    // Checked again immediately before the retirement commits:
+                    // a credential revoked or a policy changed while archives
+                    // were read refuses the prune instead of only its reply.
+                    let commit_fence = database.owned_response_fence(&context)?;
+                    let commit_database = database.clone();
+                    let commit_context = context.clone();
+                    let result = audit
+                        .prune(
+                            request.clone(),
+                            kasumi_engine::ArchivePrune {
+                                principal: context.principal.clone(),
+                                tenant: context.tenant.clone(),
+                                request_id: context.request_id.clone(),
+                                minimum_age,
+                                authorize: Box::new(move || {
+                                    commit_fence.check()?;
+                                    commit_database.engine().authorize(
+                                        &commit_context,
+                                        None,
+                                        Action::Admin,
+                                    )
+                                }),
+                            },
+                        )
+                        .await?;
+                    result.validate(&request)?;
+                    encode_json(&result)?
                 }
             };
             anyhow::ensure!(

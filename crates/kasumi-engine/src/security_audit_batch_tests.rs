@@ -278,7 +278,8 @@ async fn a_queued_record_beyond_the_hot_budget_refuses_only_itself() {
     let before = loop {
         let status = audit.status().unwrap();
         let next = status.position.next_sequence;
-        let room = budget.hot_bytes - status.position.hot_bytes;
+        // Required records stop below the prune reserve.
+        let room = required_limit(&budget) - status.position.hot_bytes;
         let fits = hot_bytes(next, &first) + hot_bytes(next + 1, &second);
         let refused = hot_bytes(next, &first) + hot_bytes(next + 1, &large);
         if (fits..refused).contains(&room) {

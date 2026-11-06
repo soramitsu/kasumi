@@ -12,6 +12,7 @@ mod counts;
 mod jobs;
 #[path = "security_audit_retention.rs"]
 mod retention;
+pub use retention::ArchivePrune;
 
 use serde::{Deserialize, Serialize};
 use std::{
@@ -68,6 +69,8 @@ static LIVE_WRITERS: LazyLock<Mutex<HashMap<usize, Weak<AuditWriter>>>> =
 
 struct AuditSequence {
     head: retention::Head,
+    /// The committed archive retirement of earlier prunes, if any.
+    retired: Option<retention::Retirement>,
     /// Exact stored bytes digest of the last hot record, which fixes the end
     /// of every export captured at this head.
     hot_tail_sha256: Option<String>,
@@ -94,16 +97,31 @@ struct QueuedRecord {
     class: RecordClass,
 }
 
+/// Hot bytes that only the record of an archive prune may use. When archives
+/// cannot drain, required records fill the hot log; a prune frees archive
+/// capacity and must still be able to write its record in the same commit.
+/// The largest prune record is far smaller (see `retention::tests`).
+const PRUNE_RESERVE_BYTES: u64 = 8 << 10;
+
 /// How much of the hot budget a record may use.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum RecordClass {
     /// Every record that a request, an operation or the node's lifecycle
-    /// waits for: up to the whole hot budget.
+    /// waits for: up to the hot budget less the prune reserve.
     Required,
     /// Events that identify no client, and their counts: only up to the
     /// archive start threshold. Above it, the event is counted instead, and
     /// the rest of the budget stays free for required records.
     Unauthenticated,
+    /// The record of an archive prune: the whole hot budget.
+    Prune,
+}
+
+/// Where records other than a prune's stop. `AuditRetentionBudget::validate`
+/// keeps the hot budget at least 128 KiB, so the reserve always lies above the
+/// archive start threshold.
+fn required_limit(budget: &AuditRetentionBudget) -> u64 {
+    budget.hot_bytes - PRUNE_RESERVE_BYTES
 }
 
 /// A leader's claim on the records it took. Dropping it, also on unwind,
@@ -275,8 +293,9 @@ impl SecurityAudit {
                     .lock()
                     .map_err(|_| anyhow::anyhow!("service audit state unavailable"))?;
                 let head = retention::Head::open(&store, &destination.identity(), &budget)?;
+                let retired = retention::Retirement::open(&store, &head)?;
                 ensure!(
-                    !current.failed && head == current.head,
+                    !current.failed && head == current.head && retired == current.retired,
                     "live service audit head differs from durable state"
                 );
             }
@@ -284,15 +303,23 @@ impl SecurityAudit {
         }
         let mut workspace = admission.reserve(AuditRetentionBudget::MAINTENANCE_BYTES, None)?;
         workspace.retain_workspace();
-        let head = match mode {
-            AuditOpen::Initialize => retention::Head::initialize(&store, &destination.identity())?,
-            AuditOpen::Existing => retention::Head::open(&store, &destination.identity(), &budget)?,
+        let (head, retired) = match mode {
+            AuditOpen::Initialize => (
+                retention::Head::initialize(&store, &destination.identity())?,
+                None,
+            ),
+            AuditOpen::Existing => {
+                let head = retention::Head::open(&store, &destination.identity(), &budget)?;
+                let retired = retention::Retirement::open(&store, &head)?;
+                (head, retired)
+            }
         };
         let hot_tail_sha256 = head.hot_tail_sha256(&store)?;
         let writer = Arc::new(AuditWriter {
             store,
             sequence: Mutex::new(AuditSequence {
                 head,
+                retired,
                 hot_tail_sha256,
                 failed: false,
                 failures: 0,
@@ -504,7 +531,8 @@ impl SecurityAudit {
         let outcomes: Vec<Result<()>> = records
             .into_iter()
             .map(|record| {
-                let (operation, digest) = self.admit_record(&mut updated, record)?;
+                let (operation, digest) =
+                    self.admit_record(&mut updated, record.event, record.transport, record.class)?;
                 operations.push(operation);
                 tail = Some(digest);
                 Ok(())
@@ -546,17 +574,18 @@ impl SecurityAudit {
     fn admit_record(
         &self,
         head: &mut retention::Head,
-        record: QueuedRecord,
+        event: SecurityEvent,
+        transport: Option<TransportAuditMetadata>,
+        class: RecordClass,
     ) -> Result<(WriteOp, String)> {
-        let class = record.class;
         let timestamp_ms =
             u64::try_from(SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis())?;
         let entry = SecurityAuditRecord {
             format: kasumi_types::SECURITY_AUDIT_RECORD_FORMAT,
             sequence: head.position.next_sequence,
             timestamp_ms,
-            event: record.event,
-            transport: record.transport,
+            event,
+            transport,
         };
         let encoded = serde_json::to_vec(&entry)?;
         ensure!(
@@ -580,8 +609,14 @@ impl SecurityAudit {
         if class == RecordClass::Unauthenticated && hot_bytes > self.writer.budget.starts_at() {
             return Err(counts::CountThreshold.into());
         }
+        let limit = match class {
+            RecordClass::Prune => self.writer.budget.hot_bytes,
+            RecordClass::Required | RecordClass::Unauthenticated => {
+                required_limit(&self.writer.budget)
+            }
+        };
         ensure!(
-            hot_bytes <= self.writer.budget.hot_bytes,
+            hot_bytes <= limit,
             "service audit hot budget exhausted; archive maintenance is pending"
         );
         let operation = WriteOp::put("security.audit", entry.sequence.to_be_bytes(), encoded);

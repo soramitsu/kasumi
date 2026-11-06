@@ -504,6 +504,16 @@ fn reference(header: &Header, ciphertext: &[u8]) -> Result<AuditArchiveReference
     })
 }
 
+/// What deleting one pruned archive object found.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuditObjectDeletion {
+    /// Its exact bytes were deleted.
+    Deleted,
+    /// The verified archive directory no longer held it: an earlier,
+    /// interrupted deletion of the same pruned object removed it.
+    AlreadyAbsent,
+}
+
 #[async_trait]
 pub trait AuditArchiveDestination: Send + Sync {
     /// Stable installed namespace identity, excluding renewable credentials.
@@ -512,6 +522,18 @@ pub trait AuditArchiveDestination: Send + Sync {
     /// and a complete readback. An error never authorizes hot-record deletion.
     async fn publish(&self, segment: &PreparedAuditSegment) -> Result<()>;
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>>;
+    /// Whether `delete` removes objects. Pruning is refused before any change
+    /// on a destination that keeps them.
+    fn deletes_objects(&self) -> bool {
+        false
+    }
+    /// Delete pruned objects, each only while its bytes are exactly its
+    /// link's, with one outcome per link. Success proves every deletion is
+    /// durable. A destination that keeps its objects refuses.
+    async fn delete(&self, links: &[AuditArchiveLink]) -> Result<Vec<AuditObjectDeletion>> {
+        let _ = links;
+        anyhow::bail!("this audit archive destination does not delete objects")
+    }
 }
 
 /// Every replica owns a durable ciphertext cache independently of the selected
@@ -729,6 +751,46 @@ impl FilesystemAuditArchive {
             .map_err(|_| anyhow::anyhow!("archive publication ownership unavailable"))?;
         self.publish_owned(segment, self.observer.as_deref())
     }
+
+    /// Delete pruned objects, each only while its bytes are exactly its link's;
+    /// a differing object stops the deletion. An object the verified directory
+    /// no longer holds was removed by an earlier, interrupted deletion, while
+    /// an enrolled file that disappeared fences NodeDisk instead. Returns once
+    /// every deletion and the directory are synchronized.
+    pub fn delete_blocking(&self, links: &[AuditArchiveLink]) -> Result<Vec<AuditObjectDeletion>> {
+        let _publication = self
+            .publication
+            .lock()
+            .map_err(|_| anyhow::anyhow!("archive publication ownership unavailable"))?;
+        let mut outcomes = Vec::with_capacity(links.len());
+        for link in links {
+            outcomes.push(
+                match self.open_leaf(&format!("{}.audit", link.object_id))? {
+                    None => AuditObjectDeletion::AlreadyAbsent,
+                    Some(file) => {
+                        read_object(&file, link, false)?;
+                        self.disk.delete_file(file)?;
+                        AuditObjectDeletion::Deleted
+                    }
+                },
+            );
+        }
+        self.directory.sync_all()?;
+        Ok(outcomes)
+    }
+
+    /// Another owner of this same installed archive for a blocking worker.
+    fn share(&self) -> Self {
+        Self {
+            root: self.root.clone(),
+            directory: self.directory.clone(),
+            disk: self.disk.clone(),
+            observer: self.observer.clone(),
+            publication: self.publication.clone(),
+            #[cfg(test)]
+            publication_hook: self.publication_hook.clone(),
+        }
+    }
 }
 
 fn read_file(root: &Path, disk: &Arc<NodeDisk>, link: &AuditArchiveLink) -> Result<Vec<u8>> {
@@ -777,15 +839,7 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
             )?)?)
             .context("audit publication path admission denied")?;
         let segment = segment.share()?;
-        let archive = Self {
-            root: self.root.clone(),
-            directory: self.directory.clone(),
-            disk: self.disk.clone(),
-            observer: self.observer.clone(),
-            publication: self.publication.clone(),
-            #[cfg(test)]
-            publication_hook: self.publication_hook.clone(),
-        };
+        let archive = self.share();
         let work = PublicationWork {
             archive,
             segment,
@@ -798,6 +852,14 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
         let disk = self.disk.clone();
         let link = link.clone();
         tokio::task::spawn_blocking(move || read_file(&root, &disk, &link)).await?
+    }
+    fn deletes_objects(&self) -> bool {
+        true
+    }
+    async fn delete(&self, links: &[AuditArchiveLink]) -> Result<Vec<AuditObjectDeletion>> {
+        let archive = self.share();
+        let links = links.to_vec();
+        tokio::task::spawn_blocking(move || archive.delete_blocking(&links)).await?
     }
 }
 
@@ -1393,6 +1455,60 @@ mod tests {
         assert!(destination.publish(&first).await.is_err());
         assert_eq!(std::fs::read(&object).unwrap(), b"corrupted ciphertext");
         assert!(destination.read(&first.reference.object).await.is_err());
+        store.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn pruned_objects_are_deleted_only_while_their_bytes_match_their_links() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let fixture_scratch =
+            crate::ScratchDisk::fixture(scratch_directory.path(), fixture_memory.clone());
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let store = store(
+            directory.path(),
+            true,
+            fixture_memory.clone(),
+            fixture_scratch.clone(),
+        )
+        .await;
+        let stream = Uuid::new_v4();
+        let mut previous = None;
+        let mut segments = Vec::new();
+        for sequence in 0..3 {
+            let mut builder = AuditSegmentBuilder::new(stream, sequence, previous).unwrap();
+            assert!(builder.push(sequence, b"pruned audit record").unwrap());
+            let segment = store.encrypt_audit_segment(builder).unwrap();
+            previous = Some(segment.reference.object.clone());
+            segments.push(segment);
+        }
+        let path = directory.path().join("archives");
+        let destination =
+            FilesystemAuditArchive::open_fixture(&path, fixture_memory.clone()).unwrap();
+        assert!(destination.deletes_objects());
+        for segment in &segments {
+            destination.publish(segment).await.unwrap();
+        }
+        let links = segments
+            .iter()
+            .map(|segment| segment.reference.object.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            destination.delete(&links[..2]).await.unwrap(),
+            [AuditObjectDeletion::Deleted; 2]
+        );
+        // A repeated deletion, as after a crash before its progress commit.
+        assert_eq!(
+            destination.delete(&links[..2]).await.unwrap(),
+            [AuditObjectDeletion::AlreadyAbsent; 2]
+        );
+        assert!(destination.read(&links[0]).await.is_err());
+        destination.read(&links[2]).await.unwrap();
+        // An object whose bytes differ from its link is never deleted.
+        let object = path.join(format!("{}.audit", links[2].object_id));
+        std::fs::write(&object, b"substituted ciphertext").unwrap();
+        assert!(destination.delete(&links[2..]).await.is_err());
+        assert_eq!(std::fs::read(&object).unwrap(), b"substituted ciphertext");
         store.shutdown().await.unwrap();
     }
 

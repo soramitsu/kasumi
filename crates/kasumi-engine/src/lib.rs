@@ -77,8 +77,8 @@ pub use bootstrap::{
     resume_target_materialization,
 };
 pub use security_audit::{
-    SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome,
-    TransportAuditMetadata,
+    ArchivePrune, SECURITY_TENANT, SecurityAudit, SecurityEvent, SecurityEventKind,
+    SecurityOutcome, TransportAuditMetadata,
 };
 pub use service::{
     CustodyResponseFence, Database, ResponseFence, RetiredCustody, RetirementResponseFence,

@@ -17,10 +17,11 @@ drains their owners; Control/application/issuer bootstrap enrollment remains a
 separate operation.
 
 Reopen validates one immutable encrypted read root: canonical metadata, the hot
-sequence interval, exact hot byte accounting, the current archive reference and
-any retained pending publication/ciphertext pair. Hot records are read one at a
-time within the configured budget, after reserving the service maintenance
-workspace. A pending publication must retain its exact ciphertext digest, range
+sequence interval, exact hot byte accounting, the current archive reference,
+any retained pending publication/ciphertext pair, and any archive retirement
+left by a prune (its stream, first retained root and pending deletion bytes).
+Hot records are read one at a time within the configured budget, after
+reserving the service maintenance workspace. A pending publication must retain its exact ciphertext digest, range
 and predecessor. Reopen does not need archive connectivity. It does not scan all
 permanent archive history; explicit audit verification/export retains that role.
 The same checks apply when sharing an existing in-process writer, together with

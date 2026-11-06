@@ -59,6 +59,7 @@ enum NativeAuditScope {
     History,
     Authorization,
     Connection,
+    Prune,
 }
 struct ManualCredentialClock {
     base_ms: u64,
@@ -85,6 +86,10 @@ fn audit_native_tls_original_authorization_release() {
 #[test]
 fn audit_native_tls_connection_records_one_success_and_counts_the_rest() {
     run_native_audit_fixture(NativeAuditScope::Connection);
+}
+#[test]
+fn audit_native_tls_prunes_exported_segments_through_the_cli() {
+    run_native_audit_fixture(NativeAuditScope::Prune);
 }
 fn run_native_audit_fixture(scope: NativeAuditScope) {
     // Both scopes retain native TLS and runtime ownership. Their independent
@@ -272,6 +277,262 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
             (&first[0].principal, &first[0].tenant),
             (&repeated.principal, &repeated.tenant)
         );
+        stop.send(true).unwrap();
+        serving.await.unwrap().unwrap();
+        return;
+    }
+    if scope == NativeAuditScope::Prune {
+        append(&audit, 750).await;
+        let status = admin.security_audit_status(&operator).await.unwrap();
+        assert!(status.archive_segments >= 3);
+        assert!(status.retired.is_none());
+        let profile = installation.control_profile.display().to_string();
+        let cli = |arguments: &[&str]| {
+            let arguments = arguments
+                .iter()
+                .map(|argument| argument.to_string())
+                .collect::<Vec<_>>();
+            async move { crate::standalone_cli::command(&arguments).await }
+        };
+        // Export the whole range page by page, as an operator would.
+        let mut cursor: Option<SecurityAuditCursor> = None;
+        let mut records = Vec::new();
+        let mut index = 0;
+        let last = loop {
+            let input = installation
+                .control_profile
+                .with_file_name(format!("prune-export-{index}.json"));
+            let output = installation
+                .control_profile
+                .with_file_name(format!("prune-page-{index}.json"));
+            private_files::create(
+                &input,
+                &serde_json::to_vec(&SecurityAuditExportRequest {
+                    cursor: cursor.clone(),
+                    limit: 1024,
+                })
+                .unwrap(),
+            )
+            .unwrap();
+            assert!(
+                cli(&[
+                    "audit",
+                    "export",
+                    &profile,
+                    &input.display().to_string(),
+                    &output.display().to_string(),
+                ])
+                .await
+                .unwrap()
+            );
+            let page: SecurityAuditPage = serde_json::from_slice(
+                &private_files::read(&output, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
+            )
+            .unwrap();
+            records.extend(page.records.iter().cloned());
+            cursor = page.cursor();
+            index += 1;
+            if cursor.is_none() {
+                break output;
+            }
+        };
+        let page: SecurityAuditPage = serde_json::from_slice(
+            &private_files::read(&last, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(page.through_sequence, records.len() as u64);
+        let roots = admin
+            .security_audit_archives(
+                &operator,
+                &SecurityAuditArchivePageRequest {
+                    cursor: None,
+                    limit: 256,
+                },
+            )
+            .await
+            .unwrap()
+            .archives;
+        let through = page.snapshot_segments - 1;
+        let boundary = roots[through as usize].object.first_sequence;
+
+        // A tenant administrator cannot prune the service audit.
+        let request = SecurityAuditPruneRequest {
+            stream_id: page.stream_id,
+            through_index: through,
+            exported: page.resumed(),
+        };
+        denied(
+            admin
+                .prune_security_audit(&tenant.bearer().unwrap(), &request)
+                .await
+                .unwrap_err(),
+        );
+        let output = installation
+            .control_profile
+            .with_file_name("prune-result.json");
+        let arguments = [
+            "audit",
+            "prune",
+            &profile,
+            &last.display().to_string(),
+            &through.to_string(),
+            &output.display().to_string(),
+        ];
+        assert!(cli(&arguments).await.unwrap());
+        let result: SecurityAuditPruneResult = serde_json::from_slice(
+            &private_files::read(&output, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
+        )
+        .unwrap();
+        result.validate(&request).unwrap();
+        assert_eq!(
+            result.retired,
+            SecurityAuditRetirement {
+                index: through,
+                sequence: boundary,
+                record_sha256: records[boundary as usize - 1].sha256().unwrap(),
+                deleting_from: None,
+            }
+        );
+        assert_eq!(result.pruned_segments, through);
+        // A published result is never overwritten; the same request under a
+        // new output prunes nothing more.
+        assert!(cli(&arguments).await.is_err());
+        let repeated = installation
+            .control_profile
+            .with_file_name("prune-repeated.json");
+        let mut arguments = arguments;
+        let repeated_path = repeated.display().to_string();
+        arguments[5] = &repeated_path;
+        assert!(cli(&arguments).await.unwrap());
+        let again: SecurityAuditPruneResult = serde_json::from_slice(
+            &private_files::read(&repeated, MAX_SECURITY_AUDIT_PAGE_BYTES).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            (again.pruned_segments, again.retired),
+            (0, result.retired.clone())
+        );
+
+        let status = admin.security_audit_status(&operator).await.unwrap();
+        assert_eq!(status.retired, Some(result.retired.clone()));
+        // Every CLI connection records its accept and authentication, so
+        // maintenance may archive more meanwhile. The bytes still counted are
+        // exactly the retained roots' at this one status.
+        let retained = admin
+            .security_audit_archives(
+                &operator,
+                &SecurityAuditArchivePageRequest {
+                    cursor: Some(SecurityAuditArchiveCursor {
+                        stream_id: page.stream_id,
+                        next_index: through,
+                        through_index: status.archive_segments,
+                        snapshot_head: status
+                            .position
+                            .archive_head
+                            .as_ref()
+                            .map(|head| head.object.clone()),
+                        previous: Some(roots[through as usize - 1].object.clone()),
+                    }),
+                    limit: 256,
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(retained.next_index, status.archive_segments);
+        assert_eq!(
+            retained
+                .archives
+                .iter()
+                .map(|root| root.ciphertext_bytes)
+                .sum::<u64>(),
+            status.archived_bytes
+        );
+        let error = admin
+            .verify_security_audit_archive(
+                &operator,
+                &SecurityAuditVerifyRequest {
+                    stream_id: page.stream_id,
+                    index: 0,
+                },
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Some(ErrorCode::NotFound));
+        admin
+            .verify_security_audit_archive(
+                &operator,
+                &SecurityAuditVerifyRequest {
+                    stream_id: page.stream_id,
+                    index: through,
+                },
+            )
+            .await
+            .unwrap();
+        // A fresh export starts at the retained boundary and carries the
+        // prune's own record.
+        let options = || kasumi_client::JsonReadOptions {
+            resources: kasumi_client::ClientResources::new(64 << 20, 4).unwrap(),
+            limits: kasumi_client::ClientDecodeLimits {
+                max_request_bytes: 64 << 10,
+                max_wire_bytes: 2 << 20,
+                max_json_bytes: 1 << 20,
+                max_decoded_bytes: 16 << 20,
+                max_rows: 1024,
+                ..Default::default()
+            },
+            deadline: tokio::time::Instant::now() + Duration::from_secs(30),
+        };
+        let mut fresh = Vec::new();
+        let mut cursor = None;
+        loop {
+            let page = admin
+                .export_security_audit(
+                    &operator,
+                    &SecurityAuditExportRequest {
+                        cursor,
+                        limit: 1024,
+                    },
+                    &options(),
+                )
+                .await
+                .unwrap();
+            fresh.extend(page.records.iter().cloned());
+            cursor = page.cursor();
+            if cursor.is_none() {
+                break;
+            }
+        }
+        assert_eq!(fresh[0].sequence, boundary);
+        assert_eq!(
+            fresh[..records.len() - boundary as usize],
+            records[boundary as usize..]
+        );
+        let prune = fresh
+            .iter()
+            .find(|record| matches!(record.event.kind, SecurityEventKind::ArchivePruned { .. }))
+            .unwrap();
+        assert_eq!(
+            prune.event.principal.as_deref(),
+            Some(control.principal.as_str())
+        );
+        assert_eq!(prune.event.tenant.as_deref(), Some(CONTROL_TENANT));
+        // The page cursor captured before the prune has expired.
+        let error = admin
+            .export_security_audit(
+                &operator,
+                &SecurityAuditExportRequest {
+                    cursor: Some(SecurityAuditCursor {
+                        next_sequence: 0,
+                        previous_record_sha256: None,
+                        ..page.resumed()
+                    }),
+                    limit: 8,
+                },
+                &options(),
+            )
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), Some(ErrorCode::CursorExpired));
         stop.send(true).unwrap();
         serving.await.unwrap().unwrap();
         return;

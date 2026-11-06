@@ -194,6 +194,10 @@ pub struct SecurityAuditConfig {
     pub retention: kasumi_types::AuditRetentionBudget,
     #[serde(default)]
     pub archive: Option<crate::audit_destination::AuditDestinationConfig>,
+    /// `kasumid audit prune` refuses to prune any record younger than this
+    /// many days; 0 disables the floor. Changing it needs a restart.
+    #[serde(default)]
+    pub prune_minimum_age_days: u32,
 }
 
 impl SecurityAuditConfig {
@@ -2838,6 +2842,7 @@ pub fn example_config(
             keys: transit("kasumi-node-security", "KASUMI_SECURITY_TRANSIT_TOKEN"),
             retention: kasumi_types::AuditRetentionBudget::default(),
             archive: None,
+            prune_minimum_age_days: 0,
         },
         tenants: vec![TenantConfig {
             tenant: "acme".into(),

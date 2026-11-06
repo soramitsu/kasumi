@@ -112,6 +112,7 @@ mod tests {
             keys: crate::runtime::KeyProviderSettings::File { path: keys },
             retention: Default::default(),
             archive: None,
+            prune_minimum_age_days: 0,
         };
         let scratch = ScratchDiskConfig {
             directory: directory.path().join("scratch"),

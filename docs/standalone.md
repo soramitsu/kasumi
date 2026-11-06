@@ -266,6 +266,7 @@ kasumid audit status /var/lib/kasumi/profiles/control.json
 kasumid audit export /var/lib/kasumi/profiles/control.json /secure/audit-request.json /secure/audit-page.json
 kasumid audit archives /var/lib/kasumi/profiles/control.json /secure/archive-request.json /secure/archive-page.json
 kasumid audit verify /var/lib/kasumi/profiles/control.json STREAM_UUID ARCHIVE_INDEX
+kasumid audit prune /var/lib/kasumi/profiles/control.json /secure/audit-page-last.json THROUGH_INDEX /secure/audit-prune.json
 ```
 
 For the first export or archive page, the request is `{"cursor":null,"limit":256}`.
@@ -286,13 +287,15 @@ Export limits are 1–1024 records; archive limits are 1–256 segments. A respo
 at most 1 MiB and may contain fewer records to satisfy that bound.
 
 The Rust SDK provides `security_audit_status`, `export_security_audit`,
-`security_audit_archives`, and `verify_security_audit_archive` on
-`KasumiAdminClient`. Its page `.cursor()` returns the next exact cursor or `None`
-at completion. The client rejects changed stream/end positions, missing sequence
-numbers, and oversized responses. Archive listing reports dependencies; the
-verification method returns a `VerifiedSecurityAuditArchive` only after the
-server reads and authenticates the exact encrypted segment. These observations
-are not a grant to delete archives or retire their wrapping keys.
+`security_audit_archives`, `verify_security_audit_archive` and
+`prune_security_audit` on `KasumiAdminClient`. Its page `.cursor()` returns the
+next exact cursor or `None` at completion; an export requested without a cursor
+first fixes its range from a status response. The client rejects changed
+stream/end positions, missing sequence numbers, and oversized responses. Archive
+listing reports dependencies; the verification method returns a
+`VerifiedSecurityAuditArchive` only after the server reads and authenticates the
+exact encrypted segment. Listing and verification delete nothing, and no command
+retires the archives' wrapping keys.
 
 Events that identify no client are counted rather than recorded one by one:
 TLS connections to a listener that takes no client certificate (MCP), failed
@@ -307,12 +310,97 @@ are only counted, which keeps the rest of the hot log for authentications,
 accepts with a client certificate and administrative records while archives
 cannot drain. Counts not yet written are lost if the process crashes.
 Releases that predate `events_counted` records cannot read them: they refuse
-to open a service audit whose hot log holds one. Archives are never pruned:
-once `archive_bytes` is used, the hot log cannot drain, and when it is full
-every request that needs a record fails with `audit_unavailable` until the
-budget is raised. Alert well before that on
-`kasumi_service_audit_archive_bytes` and
+to open a service audit whose hot log holds one. Archives are pruned only by
+an operator, as described below: once `archive_bytes` is used, the hot log
+cannot drain, and when it is full every request that needs a record fails
+with `audit_unavailable` until archives are pruned or the budget is raised.
+Alert well before that on `kasumi_service_audit_archive_bytes` and
 `kasumi_service_audit_archive_budget_bytes`.
+
+### Pruning exported archives
+
+Archives are pruned only by a Control administrator, after exporting them:
+
+1. Export the whole range with `kasumid audit export`, page by page, and keep
+   every page somewhere safe.
+2. Optionally run `kasumid audit verify` on each segment to prune.
+3. Run `kasumid audit prune` with the last export page and `THROUGH_INDEX`.
+   Segments below that index are pruned. The newest segment is never pruned,
+   so `THROUGH_INDEX` is at most `archive_segments - 1` from `audit status`.
+
+The CLI builds the request from the page's own anchors and journals it in an
+`*.audit-attempt.json` beside the output before dispatch, like a page request.
+After an uncertain outcome, repeat the same command: it resends the journaled
+request, and a request whose range is already pruned prunes nothing more and
+reports zero segments. A published result is never overwritten.
+
+Before anything is deleted, the server checks the request:
+
+- The export must reach past the last pruned record. Its previous-record
+  digest, snapshot head and captured tail must match stored history.
+- The pruned roots must chain to each other and to the first retained root.
+- The last pruned segment is read and authenticated, and its last record's
+  exact digest becomes the anchor of retained history.
+- The original credential and the current Control policy are checked again
+  immediately before the commit, so a credential revoked while the archives
+  were read refuses the prune itself.
+
+The checks prove that the export agrees with stored history at its end. They
+do not prove that every earlier page was saved, so keep the pages.
+
+The prune and one `archive_pruned` audit record commit together. The record
+carries the administrator's principal, tenant and request id, the first
+retained index and sequence, the digest of the last pruned record, and the
+number of segments and ciphertext bytes pruned. Other records stop 8 KiB short
+of the hot budget, so this record fits even after they are refused.
+
+Every pruned root stays in the security store, and `audit archives` still
+lists it. `audit verify` of a pruned index reports `not_found`; verifying the
+first retained index still checks its link to the pruned predecessor's root.
+`audit status` reports the pruning in `retired`:
+
+| Field | Meaning |
+| --- | --- |
+| `index` | First retained segment. |
+| `sequence` | First retained record. |
+| `record_sha256` | Digest of the last pruned record, record `sequence - 1`. |
+| `deleting_from` | First pruned object not yet deleted, or `null` when deletion is complete. |
+
+A new export starts at `retired.sequence`, anchored by `retired.record_sha256`.
+That digest is the `sha256` of the last pruned record in your export, so the
+saved pages and the retained history can be checked to meet exactly. A cursor
+that still needs a pruned record fails with `cursor_expired`; start a new
+export. A cursor whose next record is the first retained one continues.
+
+Objects are deleted 64 at a time, each only while its bytes still match its
+root. `archive_bytes` drops only after a chunk's deletions are durable. A
+prune request deletes for up to about 10 seconds; the maintenance worker
+deletes the rest, and `retired.deleting_from` shows what is left. After a
+crash or a failed deletion, the pruning stays committed and deletion resumes on
+the next maintenance turn. A new prune waits for an earlier one's deletions.
+
+Only filesystem destinations are pruned: the default `audit-archives/`
+directory or an external `filesystem` destination. With an S3 destination the
+prune is refused with `unavailable` before anything changes; raise
+`archive_bytes` instead.
+
+Set `security_audit.prune_minimum_age_days` in the runtime configuration to
+refuse any prune that would remove a record younger than that many days. The
+default 0 disables the floor. Every pruned record's timestamp is checked,
+because timestamps follow the host clock and need not increase with sequence.
+Changing the floor needs the configuration file and a restart, not just a
+credential.
+
+A prune cannot rescue a node that already refuses audit records: the CLI's own
+TLS accept and authentication need records before the request runs. Raise
+`archive_bytes`, and `hot_bytes` if the hot log is full, then restart. Once the
+hot log drains, export and prune, then lower the budgets again; reopening
+requires the bytes in use to fit them.
+
+Releases that predate pruning refuse to open a service audit whose hot log
+holds an `archive_pruned` record. Once that record is archived they open
+again, but they cannot export pruned history or resume an interrupted
+deletion.
 
 ## Backup sessions
 

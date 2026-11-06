@@ -3,7 +3,8 @@ use crate::{ClientError, KasumiAdminClient, authorized, encode, proto};
 use kasumi_types::{
     AuditCapacity, AuditRetentionBudget, MAX_SECURITY_AUDIT_PAGE_BYTES, SecurityAuditArchivePage,
     SecurityAuditArchivePageRequest, SecurityAuditArchiveVerification, SecurityAuditExportRequest,
-    SecurityAuditPage, SecurityAuditStatus, SecurityAuditStatusRequest, SecurityAuditVerifyRequest,
+    SecurityAuditPage, SecurityAuditPruneRequest, SecurityAuditPruneResult, SecurityAuditStatus,
+    SecurityAuditStatusRequest, SecurityAuditVerifyRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
 
@@ -214,6 +215,25 @@ impl KasumiAdminClient {
             ));
         }
         Ok(VerifiedSecurityAuditArchive { observation })
+    }
+
+    /// Retire the archive segments below `input.through_index`, which the
+    /// export ending at `input.exported` covers. The server checks that cursor
+    /// against stored history, records the prune and deletes the objects.
+    /// Repeating a request after an uncertain outcome prunes nothing more.
+    pub async fn prune_security_audit(
+        &mut self,
+        bearer: &str,
+        input: &SecurityAuditPruneRequest,
+    ) -> Result<SecurityAuditPruneResult, ClientError> {
+        input.validate().map_err(invalid)?;
+        let mut request = request(bearer, input)?;
+        // An enabled age floor reads every pruned segment before the commit.
+        request.set_timeout(std::time::Duration::from_secs(300));
+        let response = self.inner.security_audit_prune(request).await?.into_inner();
+        let result: SecurityAuditPruneResult = decode(response)?;
+        result.validate(input).map_err(invalid)?;
+        Ok(result)
     }
 }
 
@@ -497,6 +517,7 @@ mod tests {
             maintenance_failures: 0,
             last_failure: None,
             hot_tail_sha256: Some(record(2).sha256().unwrap()),
+            retired: None,
         };
         status.validate().unwrap();
         let cursor = status.snapshot_cursor();

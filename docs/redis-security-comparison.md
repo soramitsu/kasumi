@@ -86,7 +86,7 @@ it is higher wherever a listener is reachable from a network.
    refused token and every request refused before any identity is verified
    (a bad MCP `Origin`, for example) wrote its own durable service-audit
    record, as does the first successful request of each token on a
-   connection. The hot log (64 MiB) drains into archive segments that are
+   connection. The hot log (64 MiB) drains into archive segments that were
    never pruned and stop at `archive_bytes` (64 GiB by default); when that is
    reached, new records are refused and every authentication and TLS accept
    fails closed until an operator raises the budget, so traffic that
@@ -110,14 +110,41 @@ it is higher wherever a listener is reachable from a network.
    TLS handshakes from 300 addresses into a 128 KiB hot log that cannot
    drain. It then records a client certificate's accept, authenticates and
    records administration, and checks that the exported records account for
-   every event exactly. What remains:
-   - Authenticated traffic shares the capacity above the threshold and
-     archives are never pruned, so a full archive still ends in a lockout
-     once legitimate traffic fills the hot log. Successful requests write one
-     record per connection and token plus one count (since 1a0f7bc5), which
-     slows that growth; archive export exists (`kasumid audit export`), but
-     pruning exported segments while keeping the hash chain verifiable does
-     not.
+   every event exactly.
+
+   Exported archives can now be pruned. `kasumid audit prune` (the
+   `SecurityAuditPrune` RPC) retires the archive segments below an index
+   once the export covering them matches stored history. It checks the last
+   export page's anchors, the pruned roots' chain and the last pruned
+   segment, and rechecks the Control credential and policy just before it
+   commits. It keeps every root, deletes the objects and frees their bytes
+   in `archive_bytes`. One `archive_pruned` record, written in the same
+   commit, names the administrator, the range and the digest of the last
+   pruned record. A fresh export starts at the first retained record,
+   anchored by that digest, so the saved export and the retained chain meet
+   verifiably; a cursor into the pruned range fails with `cursor_expired`.
+   Records other than the prune's stop 8 KiB short of the hot budget, so the
+   prune can record itself when nothing else fits. Deletion runs in chunks
+   that each commit their freed bytes, and resumes in maintenance after a
+   crash. Tests:
+   `security_audit::retention::tests::a_prune_keeps_retained_history_exportable_and_verifiable_across_restart`,
+   `..::an_interrupted_deletion_resumes_after_restart`,
+   `..::a_prune_records_itself_when_required_records_no_longer_fit` and
+   `..::a_prune_refuses_what_its_export_does_not_vouch_for_and_repeats_as_a_no_op`
+   (kasumi-engine), and
+   `runtime::audit_tests::audit_native_tls_prunes_exported_segments_through_the_cli`
+   (kasumi-server). What remains:
+   - Pruning is operator-driven. Legitimate traffic still fills a fixed
+     `archive_bytes` between prunes, so export and prune before it is full.
+     Successful requests write one record per connection and token plus one
+     count (since 1a0f7bc5), which slows that growth.
+   - A prune cannot rescue a node that already refuses records: the CLI's
+     own TLS accept and authentication need records first. Recovery is still
+     to raise the budgets and restart, then export and prune.
+   - S3 archive destinations are not pruned; the request is refused.
+   - A Control administrator can remove exported history. The prune is
+     recorded, and `security_audit.prune_minimum_age_days` (off by default)
+     keeps recent records out of reach of a stolen credential.
    - Alert before the archive fills: for example when
      `kasumi_service_audit_archive_bytes` passes 80% of
      `kasumi_service_audit_archive_budget_bytes`, or when
