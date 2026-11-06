@@ -1050,6 +1050,13 @@ impl StorageAdmission for OpeningAdmission {
         self.inner.check_owner()
     }
 
+    fn check_owner_live(&self) -> Result<(), OwnerFailed> {
+        if self.failed.load(Ordering::Acquire) {
+            return Err(OwnerFailed);
+        }
+        self.inner.check_owner_live()
+    }
+
     fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError> {
         if self.failed.load(Ordering::Acquire) {
             return Err(AdmissionError::OwnerFailed);

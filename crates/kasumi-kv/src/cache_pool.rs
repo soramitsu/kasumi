@@ -230,7 +230,7 @@ impl Pool {
         exchange: bool,
     ) -> Result<(), BorrowError> {
         admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
         let (lease, target) = {
             let mut state = self.lock();
@@ -275,7 +275,7 @@ impl Pool {
             result => result?,
         }
         admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
         // Restoration must not trim capacity that this pending borrow needs.
         let mut state = self.lock();
@@ -364,11 +364,11 @@ fn reserve_checked(
     credit: u64,
 ) -> Result<CacheMemoryLease, BorrowError> {
     admission
-        .check_owner()
+        .check_owner_live()
         .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
     let result = admission.clone().reserve_cache_memory(credit);
     admission
-        .check_owner()
+        .check_owner_live()
         .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
     result.map_err(BorrowError::Provider)
 }
@@ -379,11 +379,11 @@ fn grow_checked(
     credit: u64,
 ) -> Result<(), BorrowError> {
     admission
-        .check_owner()
+        .check_owner_live()
         .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
     let result = lease.try_grow_to(credit);
     admission
-        .check_owner()
+        .check_owner_live()
         .map_err(|_| BorrowError::Provider(AdmissionError::OwnerFailed))?;
     result.map_err(BorrowError::Provider)
 }

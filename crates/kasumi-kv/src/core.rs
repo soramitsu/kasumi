@@ -184,6 +184,14 @@ pub trait StorageAdmission: Send + Sync {
     }
 
     fn check_owner(&self) -> Result<(), OwnerFailed>;
+    /// The owner's in-memory state only: not failed, still open. For steps
+    /// that perform no I/O (a cache hit, memory admission, pin bookkeeping,
+    /// directory traversal) inside an operation that `check_owner` brackets,
+    /// such as `DiskState::run`. Every physical read and write keeps
+    /// `check_owner` around its own effect. Defaults to the full check.
+    fn check_owner_live(&self) -> Result<(), OwnerFailed> {
+        self.check_owner()
+    }
     fn reserve_workspace(&self, bytes: u64) -> Result<Box<dyn ResidentLease>, AdmissionError>;
     /// Pure charge planning; this neither admits memory nor checks owner health.
     fn quote_cache_memory(

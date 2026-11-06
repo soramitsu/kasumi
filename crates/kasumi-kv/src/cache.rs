@@ -1199,8 +1199,10 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         loader: impl FnOnce(&mut [u8]) -> Result<(), E>,
     ) -> Result<Option<CachedBytes>, CacheLoadError<E>> {
         self.require_no_publication()?;
+        // Lookup, optional backing and bookkeeping perform no I/O; the loader's
+        // physical read keeps the full owner check around itself.
         self.admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| AdmissionError::OwnerFailed)?;
         if let Some(value) = self.get(key) {
             return Ok(Some(value));
@@ -1228,7 +1230,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
                     bytes.resize(destination.len(), 0);
                     loader(&mut bytes).map_err(CacheLoadError::Load)?;
                     self.admission
-                        .check_owner()
+                        .check_owner_live()
                         .map_err(|_| AdmissionError::OwnerFailed)?;
                     self.counters.loads = self.counters.loads.saturating_add(1);
                     let value = CachedBytes::new(Payload {
@@ -1257,11 +1259,11 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         // A refused optional reservation may coincide with owner expiry.
         // Only capacity is optional; never hide a failed owner as a cache miss.
         self.admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| AdmissionError::OwnerFailed)?;
         loader(destination).map_err(CacheLoadError::Load)?;
         self.admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| AdmissionError::OwnerFailed)?;
         self.record_uncached_load();
         Ok(None)

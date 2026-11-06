@@ -519,8 +519,9 @@ fn reserve(
     admission: &Arc<dyn StorageAdmission>,
     bytes: usize,
 ) -> Result<NativeResidentLease, CoreError> {
+    // Memory admission performs no I/O; page reads verify themselves.
     admission
-        .check_owner()
+        .check_owner_live()
         .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
     // Every reservation returns an owned boxed lease, including scratch
     // reservations whose payload itself stays on the caller's stack.
@@ -1278,7 +1279,7 @@ impl DirectoryReadWorkspace {
         let buffer = page(DIRECTORY_PAGE_BYTES)?;
         let ancestors = page(ancestors * DIRECTORY_PAGE_BYTES)?;
         admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         Ok(Self {
             buffer,
@@ -1295,7 +1296,7 @@ impl DirectoryReadWorkspace {
             )));
         }
         admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 }
@@ -1516,8 +1517,9 @@ impl<'a> DirectoryReader<'a> {
         root: DirectoryRoot,
         key: DirectoryKey<'_>,
     ) -> Result<Option<DirectoryValue>, CoreError> {
+        // Traversal entry; each page read below verifies the owner itself.
         self.admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         key.validate()?;
@@ -1593,8 +1595,9 @@ impl<'a> DirectoryReader<'a> {
         lower: DirectoryKey<'_>,
         exclusive: bool,
     ) -> Result<Option<DirectoryRecord>, CoreError> {
+        // Traversal entry; each page read below verifies the owner itself.
         self.admission
-            .check_owner()
+            .check_owner_live()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         root.validate()?;
         lower.validate()?;

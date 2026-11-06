@@ -2160,6 +2160,10 @@ impl StorageAdmission for NodeSegmentGroup {
         })
     }
 
+    fn check_owner_live(&self) -> std::result::Result<(), OwnerFailed> {
+        self.check_live()
+    }
+
     fn reserve_workspace(
         &self,
         bytes: u64,

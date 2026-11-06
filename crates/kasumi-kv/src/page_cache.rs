@@ -129,6 +129,14 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
     }
 
+    // Lookups and hits perform no I/O: a miss's physical read keeps the full
+    // check around itself (`read_verified`, or the backend's own checks).
+    fn check_owner_live(&self) -> Result<(), CoreError> {
+        self.admission
+            .check_owner_live()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
+    }
+
     fn append_checked(
         &self,
         bytes: &[u8],
@@ -298,7 +306,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         reference: DirectoryPageRef,
         out: &mut [u8],
     ) -> Result<(), CoreError> {
-        self.check_owner()?;
+        self.check_owner_live()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory page output length differs",
@@ -313,7 +321,7 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
                 )));
             }
             out.copy_from_slice(page.as_bytes());
-            self.check_owner()
+            self.check_owner_live()
         } else {
             // Ends with the owner check after its physical read.
             self.read_verified(reference, out)
@@ -648,7 +656,7 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
 
 impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
-        self.check_owner()?;
+        self.check_owner_live()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
                 "directory page output length differs",
@@ -677,7 +685,7 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
             }
             out.copy_from_slice(page.as_bytes());
         }
-        self.check_owner()
+        self.check_owner_live()
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {

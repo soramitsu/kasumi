@@ -1337,6 +1337,64 @@ fn closed_prepared_node_file_cannot_acquire_a_new_descriptor() {
     assert_eq!(owner.disk.snapshot().open_files, 0);
 }
 
+#[test]
+fn cached_reads_after_root_substitution_fail_and_fence() {
+    // Inside one read, cache hits check only the owner's in-memory state;
+    // every operation still verifies the installed root file before and
+    // after. A value whose directory pages and bytes are all cached must
+    // never be served once that file is a different inode.
+    use kasumi_kv::{Core, CoreError, CoreErrorCause, Operation};
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = directory();
+    let path = directory.path().join("cached-substitution");
+    let moved = directory.path().join("cached-original-inode");
+    let owner = create_group(&path, ID, memory);
+    let disk = owner.disk().clone();
+    let core = Core::create_with_backend(
+        owner.clone(),
+        owner.clone(),
+        *ID.as_bytes(),
+        kasumi_kv::CacheConfig {
+            byte_limit: 8 << 20,
+        },
+    )
+    .unwrap();
+    core.commit(&[
+        Operation::create_table("items"),
+        Operation::put("items", b"key", b"cached"),
+    ])
+    .unwrap();
+    owner.publish_ready().unwrap();
+    let view = core.snapshot().unwrap();
+    assert_eq!(read_items_key(&core).as_deref(), Some(&b"cached"[..]));
+    let hits = core.cache_stats().unwrap().hits;
+    let value = core.get_admitted(&view, "items", b"key", 64).unwrap();
+    assert_eq!(value.unwrap().as_bytes(), b"cached");
+    assert!(core.cache_stats().unwrap().hits > hits);
+
+    let root_path = path.join(kasumi_kv::ROOT_FILE_NAME);
+    let acknowledged = std::fs::read(&root_path).unwrap();
+    std::fs::rename(&root_path, &moved).unwrap();
+    let replacement = options().create_new(true).open(&root_path).unwrap();
+    replacement.write_all_at(&acknowledged, 0).unwrap();
+    replacement.sync_all().unwrap();
+    drop(replacement);
+
+    let owner_failed =
+        |error: CoreError| matches!(error.rejected_cause(), Some(CoreErrorCause::OwnerFailed));
+    assert!(
+        core.get_admitted(&view, "items", b"key", 64)
+            .is_err_and(owner_failed)
+    );
+    assert!(
+        core.next_admitted(&view, "items", b"", None, 64)
+            .is_err_and(owner_failed)
+    );
+    assert!(core.is_fenced());
+    assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Failed);
+    assert_eq!(std::fs::read(&moved).unwrap(), acknowledged);
+}
+
 fn read_items_key(core: &kasumi_kv::Core) -> Option<Vec<u8>> {
     let view = core.snapshot().unwrap();
     core.get_admitted(&view, "items", b"key", 64)

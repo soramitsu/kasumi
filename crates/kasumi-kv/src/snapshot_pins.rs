@@ -693,11 +693,12 @@ impl SnapshotPin {
 }
 
 impl RegistryInner {
+    // Pins are in-memory bookkeeping over roots whose reads verify themselves.
     fn check(&self) -> Result<(), CoreError> {
         if self.failed.load(Ordering::Acquire) {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
-        if self.admission.check_owner().is_err() {
+        if self.admission.check_owner_live().is_err() {
             self.failed.store(true, Ordering::Release);
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
