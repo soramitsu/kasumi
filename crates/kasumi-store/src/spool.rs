@@ -17,6 +17,10 @@ const SLOT: u64 = BLOCK as u64 + 40;
 // the same authenticated granularity avoids decrypting 64 KiB on every cold
 // header/page alternation. Sequential images retain their streaming granularity.
 pub(crate) const NATIVE_BLOCK: usize = 4 << 10;
+/// Within a ciphertext extent its owner has already reserved, EOF grows in
+/// steps of this size rather than by one slot per flushed block: each
+/// extension is a filesystem metadata update.
+const EXTENT_STEP: u64 = 4 << 20;
 pub(crate) const NATIVE_SLOT: u64 = NATIVE_BLOCK as u64 + 40;
 #[derive(Clone, Copy)]
 enum SpoolLayout {
@@ -210,8 +214,32 @@ impl EncryptedSpool {
             return Err(io::Error::from(io::ErrorKind::InvalidData));
         }
         self.flush_block()?;
-        self.charge
-            .shrink(&self.file, self.layout.ciphertext_len(actual)?)
+        let exact = self.layout.ciphertext_len(actual)?;
+        if self.physical_len > exact {
+            // EOF grew ahead within the reservation (`flush_block`); the
+            // settled extent ends at the last written slot.
+            self.file
+                .set_len(exact)
+                .inspect_err(|_| self.owner_failed())?;
+            self.physical_len = exact;
+        }
+        self.charge.shrink(&self.file, exact)
+    }
+
+    /// Admit this stream's growth to `length` before writing it, when the
+    /// caller knows a bound. Its extent then grows in steps within that
+    /// reservation instead of one block at a time. Freezing the spool settles
+    /// whatever it did not write.
+    pub fn reserve(&mut self, length: u64) -> io::Result<()> {
+        self.reserve_length(length.max(self.length))
+    }
+
+    /// Settle a reservation beyond the written stream, if one remains.
+    fn settle_reservation(&mut self) -> io::Result<()> {
+        if self.charge.reserved_len() > self.layout.ciphertext_len(self.length)? {
+            self.settle_growth(self.length)?;
+        }
+        Ok(())
     }
 
     /// Write the cached block into the anonymous extent, without device
@@ -365,14 +393,24 @@ impl EncryptedSpool {
                 .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
             if self.physical_len < end {
                 // Writing across EOF can trigger speculative filesystem allocation
-                // beyond the admitted ciphertext extent. Extend only this slot,
-                // validate its allocation, then write entirely within the new EOF.
-                // Reservation alone must not change EOF: unused growth can settle
-                // back to the prior authenticated extent without a physical resize.
+                // beyond the admitted ciphertext extent. Extend EOF first, validate
+                // its allocation, then write entirely within it. EOF grows by a
+                // step, but never past the ciphertext extent already reserved, so
+                // a stream reserved ahead (`reserve`) extends rarely and any other
+                // grows one slot at a time. Reservation alone must not change EOF:
+                // unused growth can settle back to the prior authenticated extent
+                // without a physical resize.
+                let slot = self.layout.slot_bytes();
+                let step = self
+                    .physical_len
+                    .checked_add(EXTENT_STEP)
+                    .map(|bytes| bytes / slot * slot)
+                    .unwrap_or(end);
+                let target = end.max(step.min(self.charge.reserved_len()));
                 self.file
-                    .set_len(end)
+                    .set_len(target)
                     .inspect_err(|_| self.owner_failed())?;
-                self.physical_len = end;
+                self.physical_len = target;
                 self.charge.observe(&self.file)?;
             }
             self.file
@@ -534,6 +572,7 @@ impl SnapshotImage {
     }
     pub fn freeze(mut spool: EncryptedSpool) -> anyhow::Result<Self> {
         spool.flush()?;
+        spool.settle_reservation()?;
         let digest = if let Some(digest) = spool.append_digest.take() {
             digest
         } else {
@@ -689,6 +728,53 @@ mod tests {
         drop(spool);
         assert_eq!(disk.snapshot().charged_bytes, 0);
         assert!(disk.snapshot().filesystem_admission_ready);
+    }
+
+    #[test]
+    fn a_reserved_stream_extends_its_extent_in_steps_and_freezing_settles_it() {
+        let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+        let disk = ScratchDisk::isolated_fixture(
+            scratch_directory.path(),
+            64 << 20,
+            fixture_memory.clone(),
+        );
+        let data: Vec<_> = (0..BLOCK * 3 + 5).map(|i| (i % 251) as u8).collect();
+
+        // Unreserved, EOF never passes the slot being written.
+        let mut plain = EncryptedSpool::new(&disk, 32 << 20).unwrap();
+        plain.write_all(&data[..BLOCK + 1]).unwrap();
+        plain.flush_extent().unwrap();
+        assert_eq!(plain.file.metadata().unwrap().len(), 2 * SLOT);
+        close_and_dispose(&mut plain);
+        drop(plain);
+        let idle = disk.snapshot().charged_bytes;
+
+        let mut spool = EncryptedSpool::new(&disk, 32 << 20).unwrap();
+        spool.reserve(16 << 20).unwrap();
+        assert_eq!(spool.file.metadata().unwrap().len(), 0);
+        spool.write_all(&data).unwrap();
+        // The first flushed block extended EOF one step, within the reservation.
+        let step = EXTENT_STEP / SLOT * SLOT;
+        assert_eq!(spool.physical_len, step);
+        assert_eq!(spool.file.metadata().unwrap().len(), step);
+        let reserved = disk.snapshot().charged_bytes;
+        let image = SnapshotImage::freeze(spool).unwrap();
+        // Freezing settles the extent at its last written slot and returns
+        // the unwritten reservation.
+        {
+            let spool = image.spool.lock().unwrap();
+            assert_eq!(spool.physical_len, 4 * SLOT);
+            assert_eq!(spool.file.metadata().unwrap().len(), 4 * SLOT);
+        }
+        let settled = disk.snapshot().charged_bytes;
+        assert!(settled < reserved && settled > idle);
+        let mut read = Vec::new();
+        image.reader().read_to_end(&mut read).unwrap();
+        assert_eq!(read, data);
+        assert_eq!(image.sha256(), hex::encode(Sha256::digest(&data)));
+        drop(image);
+        assert_eq!(disk.snapshot().charged_bytes, idle);
     }
 
     #[test]

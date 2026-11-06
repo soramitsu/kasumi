@@ -1109,6 +1109,10 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert!(denied.is::<kasumi_store::KeyAccessDenied>());
     assert_eq!(denied.chain().count(), 1);
     assert_eq!(
+        crate::logging::failure_classes(&denied),
+        ["key_access_denied"]
+    );
+    assert_eq!(
         tenant_database.check_serving().unwrap_err().code,
         ErrorCode::Sealed
     );

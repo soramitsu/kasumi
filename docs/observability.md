@@ -266,8 +266,23 @@ this logging policy. Provider errors are represented by static operational event
 use the protected audit/maintenance interfaces for exact outcomes. Persist and
 rotate daemon logs using the host's service manager.
 
+The serving reconciliation loop checks for control-plane closure every 250 ms
+and runs a pass every 250 ms while passes succeed. After a pass fails, the
+loop waits 0.5 s, 1 s, 2 s, 4 s and then 5 s before each next pass, and the
+first clean pass resets the wait. It logs an unavailability when it starts
+(`serving_reconciliation_unavailable`), when the failing steps change, every
+ten minutes while it lasts (`serving_reconciliation_still_unavailable`) and
+when it ends (`serving_reconciliation_recovered`), with the count of failed
+passes and the first and last failure. It does not log every failed pass.
+The readiness probe still sweeps every second, and logs its failures the same
+way: `readiness_probe_failed` when sweeps start failing or their classes
+change, `readiness_probe_still_failing` every ten minutes, and
+`readiness_probe_recovered` at the next complete sweep. A sweep cut short by
+shutdown is not counted.
+
 An installed original tenant whose serving instance closes is drained and then
-freshly admitted by the 250 ms reconciliation loop. Only an owner whose drain is
+freshly admitted by the next reconciliation pass. A fresh admission that fails
+is retried on the loop's backoff. Only an owner whose drain is
 `Retained` keeps the tenant closed. A drain that completed with recorded issues
 is still complete. Its issues are logged once as component names, and the stale
 generation leaves the registry. While fresh admission is pending, a live
@@ -282,6 +297,14 @@ failure). Run every `kasumid serve` under a restarting supervisor: a daemon that
 stays down outlives its issued credentials. Their watchers recover them online
 for 24 hours after they expire; after that, they need
 `recover-existing-credentials`.
+
+Key-access leases are measured on a clock that keeps running while the host
+is suspended. A host that sleeps longer than a lease's remaining 40 to 60
+seconds wakes with every store sealed, so the control plane closes with
+`closure_cause` `key_lease_sealed` and `key_lease_class` `lease_expired`, and
+the daemon exits for its supervisor to reopen it. Do not let a host that runs
+`kasumid` sleep, including a laptop with its lid closed.
+
 Each event carries only fixed classes:
 
 | `event` | Fields |
@@ -291,7 +314,12 @@ Each event carries only fixed classes:
 | `original_tenant_recovery_failed` (message `original tenant remains closed pending fresh admission`) | `recover_stage`: `enrollment_mismatch`, `previous_lease_retained`, `previous_detach`, `previous_shutdown_retained`, `custody_open`, `access_lease`, `key_provider`, `storage_open`, `admission_reserve`, `engine_open`, `route_register`, `setup_route_changed`, `publish`, `initialize`, `unclassified`; `closure_cause` |
 | `original_tenant_reopened` | `closure_cause`, `key_lease_class`, `drained_with_issues`, `failed_attempts` |
 | `control_plane_closed` (ERROR, message `control plane closed; daemon stopping for restart`) | `closure_cause` (as for `original_tenant_closed`), `key_lease_class` |
-| `readiness_probe_failed` | `readiness_error_class`: `control_unavailable`, `epoch_unavailable`, `epoch_changed`, `stopped`, `admission_reserve`, `memory_pressure`, `route_invalid`, `generation_unavailable`, `probe_admission`, `actor_probe_failed`, `probe_deadline`, `unclassified`; `control_closure_cause`: a `closure_cause`, or `none` |
+| `serving_reconciliation_unavailable` (WARN, message `serving reconciliation unavailable; will retry`) | `failed_steps`: `management_gate`, `retired_generations`, `control_topology`, `original_recovery`, `generation_registry`, `route_install`, `unclassified`; `failure_classes`: the typed cause classes `daemon_failed` reports (for example `key_access_denied`, `sealed`, `resource_exhausted`, `io_storage_full`), the `recover_stage` of a failed fresh admission, or `unclassified`; `failed_passes`; `retry_after_ms` |
+| `serving_reconciliation_still_unavailable` (WARN) | `failed_steps`, `failure_classes` seen since the previous report, `failed_passes`, `first_failure`, `last_failure` (RFC 3339 UTC). Also logged once when the loop stops during an unavailability |
+| `serving_reconciliation_recovered` (INFO) | `failed_steps`, `failed_passes`, `first_failure`, `last_failure` |
+| `readiness_probe_failed` (WARN, message `complete readiness coverage unavailable`) | `readiness_error_class`: `control_unavailable`, `epoch_unavailable`, `epoch_changed`, `admission_reserve`, `memory_pressure`, `route_invalid`, `generation_unavailable`, `probe_admission`, `actor_probe_failed`, `probe_deadline`, `unclassified`; `control_closure_cause`: a `closure_cause`, or `none`; `failed_sweeps` |
+| `readiness_probe_still_failing` (WARN) | `readiness_error_class`, `control_closure_cause`, `failed_sweeps`, `first_failure`, `last_failure` (RFC 3339 UTC). Also logged once when the probe stops during a failure |
+| `readiness_probe_recovered` (INFO) | the last failure's `readiness_error_class` and `control_closure_cause`, `failed_sweeps`, `first_failure`, `last_failure` |
 
 A consensus write that commits and then loses group access before its result
 is released returns `UnknownOutcome`. It no longer fails the proposal child, so

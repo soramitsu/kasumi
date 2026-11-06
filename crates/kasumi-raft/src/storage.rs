@@ -1562,6 +1562,9 @@ fn load_snapshot(
     load_manifest(store, b"current", limit)?
         .map(|manifest| {
             let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
+            // Admitted whole before the first chunk: the extent then grows in
+            // steps instead of one block at a time.
+            spool.reserve(manifest.bytes.min(limit))?;
             for index in 0..manifest.chunks {
                 let data = store
                     .get(SNAPSHOT, &chunk_key(&manifest, index))?
@@ -1576,7 +1579,7 @@ fn load_snapshot(
                 image.len() == manifest.bytes && image.sha256() == manifest.sha256,
                 "snapshot content digest differs"
             );
-            SnapshotEnvelope::decode(image.disk(), &mut image.reader(), limit)
+            SnapshotEnvelope::decode_image(&image, limit)
         })
         .transpose()
 }
@@ -2152,11 +2155,8 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                 // Parsing stages bounded records into encrypted scratch. Keep disk,
                 // crypto, validation and materialization off the async runtime.
                 let snapshot = snapshot.into_image()?;
-                let envelope = SnapshotEnvelope::decode(
-                    snapshot.disk(),
-                    &mut snapshot.reader(),
-                    machine.limits.max_snapshot_bytes,
-                )?;
+                let envelope =
+                    SnapshotEnvelope::decode_image(&snapshot, machine.limits.max_snapshot_bytes)?;
                 ensure!(
                     envelope.version == 2 && envelope.meta == meta,
                     "snapshot metadata mismatch"

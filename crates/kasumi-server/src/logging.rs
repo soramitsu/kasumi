@@ -95,6 +95,8 @@ pub fn failure_classes(error: &anyhow::Error) -> Vec<&'static str> {
                     io_failure_class(error.kind())
                 }
             })
+        } else if cause.is::<kasumi_store::KeyAccessDenied>() {
+            Some("key_access_denied")
         } else if cause
             .downcast_ref::<kasumi_engine::admission::TotalExceedsHighWater>()
             .is_some()

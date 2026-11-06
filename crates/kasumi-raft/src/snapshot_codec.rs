@@ -110,10 +110,27 @@ impl SnapshotEnvelope {
             Ok(())
         })
     }
+    /// Decode the envelope frozen in `image`. Its length bounds the payload,
+    /// whose extent is then reserved before the first record
+    /// (`EncryptedSpool::reserve`).
+    pub(crate) fn decode_image(
+        image: &SnapshotImage,
+        limit: u64,
+    ) -> Result<Self, ScratchOperationFailure> {
+        Self::decode_bounded(image.disk(), &mut image.reader(), limit, Some(image.len()))
+    }
     pub(crate) fn decode(
         disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
         reader: &mut dyn Read,
         limit: u64,
+    ) -> Result<Self, ScratchOperationFailure> {
+        Self::decode_bounded(disk, reader, limit, None)
+    }
+    fn decode_bounded(
+        disk: &std::sync::Arc<kasumi_store::ScratchDisk>,
+        reader: &mut dyn Read,
+        limit: u64,
+        encoded: Option<u64>,
     ) -> Result<Self, ScratchOperationFailure> {
         let mut magic = [0; 8];
         reader.read_exact(&mut magic)?;
@@ -123,6 +140,9 @@ impl SnapshotEnvelope {
         let mut header: Option<Header> = None;
         let mut custody: Option<crate::custody_records::Builder> = None;
         let mut spool = EncryptedSpool::new(disk, limit)?;
+        if let Some(encoded) = encoded {
+            spool.reserve(encoded.min(limit))?;
+        }
         let (mut records, mut commands, mut audit) = (0u64, 0u64, 0u64);
         let mut encoded_bytes = 8u64;
         let mut previous_tag = 0u8;

@@ -659,6 +659,11 @@ impl Charge {
         Ok(metadata)
     }
 
+    /// The ciphertext extent this charge admits; the owner's EOF stays within it.
+    pub(crate) fn reserved_len(&self) -> u64 {
+        self.reserved_len
+    }
+
     pub(crate) fn grow(&mut self, ciphertext_len: u64) -> io::Result<()> {
         let bytes = self.disk.file_ceiling(ciphertext_len)?;
         let mut state = self.disk.lock_state();

@@ -232,9 +232,14 @@ pub(crate) mod original_serving_runtime;
 pub use original_serving_runtime::{
     OriginalRecoveries, OriginalRecoveryObservation, OriginalRecoveryParticipants,
 };
+#[path = "administration_failure_episodes.rs"]
+mod failure_episodes;
 #[path = "administration_readiness.rs"]
 mod readiness;
+#[path = "administration_reconciliation.rs"]
+mod reconciliation;
 use configured_tenant_enrollment::ProvisionSelection;
+use reconciliation::{ReconcileOutcome, ReconcileStep};
 
 /// Closure is synchronous; a shutdown waits for the original active command
 /// before releasing any generation it could still reach.
@@ -1627,40 +1632,40 @@ impl Administration {
             })
     }
 
-    /// Serving reconciliation. Returns only when the control plane has closed:
-    /// every later reconciliation, readiness probe and credential renewal would
-    /// fail, so the daemon must stop (non-zero) for its service manager to
-    /// reopen it, instead of staying up while unable to serve.
-    pub(crate) async fn reconcile_while_serving(
-        self: Arc<Self>,
-        mut stop: tokio::sync::watch::Receiver<bool>,
-    ) -> Result<()> {
-        loop {
-            tokio::select! {
-                _ = stop.changed() => return Ok(()),
-                _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
-            }
-            if let Some((closure_cause, key_lease_class)) = self.control_closure() {
-                tracing::error!(
-                    event = "control_plane_closed",
-                    closure_cause,
-                    key_lease_class,
-                    "control plane closed; daemon stopping for restart"
-                );
-                anyhow::bail!("control plane closed; daemon restart required");
-            }
-            if self.reconcile().await.is_err() {
-                tracing::warn!("serving reconciliation unavailable; will retry");
-            }
-        }
-    }
-
+    /// One reconciliation pass, as startup runs it: a pass that stops early is
+    /// an error, while retired generations that cannot close yet only warn.
     pub(crate) async fn reconcile(&self) -> Result<()> {
-        let _guard = self.gate.enter().await?;
-        if self.close_retired_generations().await.is_err() {
+        let mut outcome = ReconcileOutcome::default();
+        self.reconcile_steps(&mut outcome).await?;
+        if outcome.contains(ReconcileStep::RetiredGenerations) {
             tracing::warn!("retired generation reconciliation remains unavailable");
         }
-        let topology = ControlPlane::local_topology(&self.control)?;
+        Ok(())
+    }
+
+    /// One pass of the serving loop. It never fails; the outcome names, as
+    /// fixed classes, every step this pass could not complete.
+    pub(crate) async fn reconcile_pass(&self) -> ReconcileOutcome {
+        let mut outcome = ReconcileOutcome::default();
+        if let Err(error) = self.reconcile_steps(&mut outcome).await {
+            outcome.stopped(&error);
+        }
+        outcome
+    }
+
+    /// A step that fails while the pass goes on is recorded in `outcome`; an
+    /// error stops the pass and carries its step as context.
+    async fn reconcile_steps(&self, outcome: &mut ReconcileOutcome) -> Result<()> {
+        let _guard = self
+            .gate
+            .enter()
+            .await
+            .context(ReconcileStep::ManagementGate)?;
+        if let Err(error) = self.close_retired_generations().await {
+            outcome.failed(ReconcileStep::RetiredGenerations, &error);
+        }
+        let topology =
+            ControlPlane::local_topology(&self.control).context(ReconcileStep::ControlTopology)?;
         let topology = &topology.topology;
         for (tenant, route) in &topology.tenants {
             let Some(_tenant) = self.gate.try_enter_tenant(tenant) else {
@@ -1698,6 +1703,8 @@ impl Administration {
                     closure_cause,
                     "original tenant remains closed pending fresh admission"
                 );
+                // A failed fresh admission also backs the serving loop off.
+                outcome.failed_as(ReconcileStep::OriginalRecovery, recover_stage);
                 continue;
             }
             // Canonical targets belong exclusively to TargetRecoveryRuntime.
@@ -1705,7 +1712,8 @@ impl Administration {
             let Some(source) = self
                 .generations
                 .read()
-                .map_err(|_| anyhow::anyhow!("original generation registry unavailable"))?
+                .map_err(|_| anyhow::anyhow!("original generation registry unavailable"))
+                .context(ReconcileStep::GenerationRegistry)?
                 .get(&(tenant.clone(), route.incarnation.clone()))
                 .cloned()
             else {
@@ -1714,17 +1722,24 @@ impl Administration {
             if source.database.check_serving().is_err() {
                 continue;
             }
-            let generation = source.database.engine().generation()?;
+            let generation = source
+                .database
+                .engine()
+                .generation()
+                .context(ReconcileStep::GenerationRegistry)?;
             if generation.retired() || generation.pending_restore().is_some() {
                 continue;
             }
             drop(generation);
             if self
                 .registry
-                .installed_generation(tenant, &route.incarnation)?
+                .installed_generation(tenant, &route.incarnation)
+                .context(ReconcileStep::RouteInstall)?
                 .is_none()
             {
-                self.registry.insert(source.database.clone())?;
+                self.registry
+                    .insert(source.database.clone())
+                    .context(ReconcileStep::RouteInstall)?;
             }
         }
         Ok(())

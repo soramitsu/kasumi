@@ -1,6 +1,7 @@
+use super::failure_episodes::{EpisodeReport, EpisodeSummary, FailureEpisodes, utc};
 use super::*;
 use crate::readiness::{Epoch, PROBE_TIMEOUT, Sample};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 use tokio::{sync::watch, time::Instant};
 
 /// Fixed, non-sensitive class of one failed readiness sweep. Attached as error
@@ -40,6 +41,66 @@ impl std::fmt::Display for SweepFailure {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str(self.class())
     }
+}
+
+/// A failed sweep is known by its `readiness_error_class` and the control
+/// plane's `control_closure_cause`. Sweeps that keep failing with the same
+/// pair are one episode, logged by its transitions rather than every second.
+type ReadinessFailure = (&'static str, &'static str);
+/// A lasting failure episode is logged again at most this often.
+const READINESS_REMINDER: Duration = Duration::from_secs(600);
+
+/// Count one completed sweep, `None` when it succeeded, and log what it changed.
+fn report_sweep(
+    failures: &mut FailureEpisodes<ReadinessFailure>,
+    failed: Option<ReadinessFailure>,
+    now: Instant,
+    wall: SystemTime,
+) {
+    let Some(failure) = failed else {
+        if let Some(ended) = failures.close() {
+            let (readiness_error_class, control_closure_cause) = ended.key;
+            tracing::info!(
+                event = "readiness_probe_recovered",
+                readiness_error_class,
+                control_closure_cause,
+                failed_sweeps = ended.failures,
+                first_failure = %utc(ended.first_failure),
+                last_failure = %utc(ended.last_failure),
+                "complete readiness coverage restored"
+            );
+        }
+        return;
+    };
+    match failures.failed(failure, now, wall) {
+        Some(EpisodeReport::Started {
+            key,
+            failures: count,
+        }) => {
+            let (readiness_error_class, control_closure_cause) = key;
+            tracing::warn!(
+                event = "readiness_probe_failed",
+                readiness_error_class,
+                control_closure_cause,
+                failed_sweeps = count,
+                "complete readiness coverage unavailable"
+            );
+        }
+        Some(EpisodeReport::Lasting(lasting)) => readiness_still_failing(&lasting),
+        None => {}
+    }
+}
+fn readiness_still_failing(lasting: &EpisodeSummary<ReadinessFailure>) {
+    let (readiness_error_class, control_closure_cause) = lasting.key;
+    tracing::warn!(
+        event = "readiness_probe_still_failing",
+        readiness_error_class,
+        control_closure_cause,
+        failed_sweeps = lasting.failures,
+        first_failure = %utc(lasting.first_failure),
+        last_failure = %utc(lasting.last_failure),
+        "complete readiness coverage still unavailable"
+    );
 }
 
 impl Administration {
@@ -113,9 +174,10 @@ impl Administration {
             }
         }
         let _terminal = Invalidate(&self.readiness);
+        let mut failures = FailureEpisodes::new(READINESS_REMINDER);
         loop {
             if *stop.borrow() {
-                return Ok(());
+                break;
             }
             let swept = self.readiness_sweep(&mut stop).await;
             // Refresh the point observation scrapes report, here rather than
@@ -125,28 +187,38 @@ impl Administration {
                     crate::local_recovery::runtime_pending(self.audit.store()).ok(),
                 );
             }
-            if let Err(error) = swept {
-                self.readiness.invalidate();
-                let readiness_error_class = error
-                    .downcast_ref::<SweepFailure>()
-                    .map_or("unclassified", |failure| failure.class());
-                let control_closure_cause =
-                    self.control_closure().map_or("none", |(cause, _)| cause);
-                tracing::warn!(
-                    event = "readiness_probe_failed",
-                    readiness_error_class,
-                    control_closure_cause,
-                    "complete readiness coverage unavailable"
-                );
+            match swept {
+                Ok(()) => report_sweep(&mut failures, None, Instant::now(), SystemTime::now()),
+                Err(error) => {
+                    self.readiness.invalidate();
+                    let failure = error.downcast_ref::<SweepFailure>();
+                    // A sweep cut short by shutdown neither fails nor recovers.
+                    if failure != Some(&SweepFailure::Stopped) {
+                        let readiness_error_class =
+                            failure.map_or("unclassified", |failure| failure.class());
+                        let control_closure_cause =
+                            self.control_closure().map_or("none", |(cause, _)| cause);
+                        report_sweep(
+                            &mut failures,
+                            Some((readiness_error_class, control_closure_cause)),
+                            Instant::now(),
+                            SystemTime::now(),
+                        );
+                    }
+                }
             }
             if *stop.borrow() {
-                return Ok(());
+                break;
             }
             tokio::select! {
-                _ = stop.changed() => return Ok(()),
+                _ = stop.changed() => break,
                 _ = tokio::time::sleep(Duration::from_secs(1)) => {}
             }
         }
+        if let Some(open) = failures.close() {
+            readiness_still_failing(&open);
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -411,5 +483,59 @@ mod tests {
         let deadline =
             (|| -> Result<()> { anyhow::bail!(SweepFailure::ProbeDeadline) })().unwrap_err();
         assert_eq!(deadline.to_string(), "probe_deadline");
+    }
+
+    #[test]
+    fn an_hour_of_failed_sweeps_logs_its_transitions_not_each_second() {
+        use crate::administration::failure_episodes::test_log::Logs;
+        let logs = Logs::default();
+        let _subscriber = logs.capture();
+        let mut failures = FailureEpisodes::new(READINESS_REMINDER);
+        let start = Instant::now();
+        let first = std::time::UNIX_EPOCH + Duration::from_secs(1_800_000_000);
+        let mut sweep = |second: u64, failed: Option<ReadinessFailure>| {
+            let elapsed = Duration::from_secs(second);
+            report_sweep(&mut failures, failed, start + elapsed, first + elapsed);
+        };
+        // One sweep a second, as the probe runs, for an hour.
+        for second in 0..3_600 {
+            sweep(second, Some(("control_unavailable", "none")));
+        }
+        // The control plane closes: a new cause is a new report.
+        sweep(3_600, Some(("control_unavailable", "key_lease_sealed")));
+        sweep(3_601, None);
+        sweep(3_602, None);
+
+        let events = logs.events();
+        assert_eq!(
+            logs.event_names(),
+            [
+                "readiness_probe_failed",
+                "readiness_probe_still_failing",
+                "readiness_probe_still_failing",
+                "readiness_probe_still_failing",
+                "readiness_probe_still_failing",
+                "readiness_probe_still_failing",
+                "readiness_probe_failed",
+                "readiness_probe_recovered",
+            ]
+        );
+        let started = &events[0]["fields"];
+        assert_eq!(started["readiness_error_class"], "control_unavailable");
+        assert_eq!(started["control_closure_cause"], "none");
+        assert_eq!(started["failed_sweeps"], 1);
+        assert_eq!(events[0]["level"], "WARN");
+        assert_eq!(events[1]["fields"]["failed_sweeps"], 601);
+        assert_eq!(events[1]["fields"]["first_failure"], "2027-01-15T08:00:00Z");
+        assert_eq!(
+            events[6]["fields"]["control_closure_cause"],
+            "key_lease_sealed"
+        );
+        assert_eq!(events[6]["fields"]["failed_sweeps"], 3_601);
+        let recovered = &events[7];
+        assert_eq!(recovered["level"], "INFO");
+        assert_eq!(recovered["fields"]["failed_sweeps"], 3_601);
+        assert_eq!(recovered["fields"]["first_failure"], "2027-01-15T08:00:00Z");
+        assert_eq!(recovered["fields"]["last_failure"], "2027-01-15T09:00:00Z");
     }
 }
