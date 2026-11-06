@@ -206,13 +206,16 @@ threads over 8 seconds; they rank costs, they are not exact shares.
    one 100-document batch did not complete within 60 seconds.
    Since 89e011ed a commit releases that mutex while it writes and flushes its
    root; see [changes](#changes-measured-here).
-3. **Writes are serialized through two durable commits.** Besides its audit
-   commit, each write needs a journal append and an application publication,
+3. **Writes are serialized through durable commits.** Besides its audit
+   commit, each write needed a journal append and an application publication,
    each a durable commit, and the engine admits one proposal at a time
-   (`proposal_gate`) through both. A tenant's write throughput therefore stays
-   near one write per two commits at any client count.
-   Redis `appendfsync always` shares one flush among every client served in
-   an event-loop turn.
+   (`proposal_gate`) through both. Since dbd33325 a mutation of at most 16
+   operations and 64 KiB commits its journal entry in its publication's own
+   transaction, so point writes and 10-document batches take one commit;
+   larger batches still take two, and a third above 32 documents. A tenant's
+   write throughput therefore stays near one write per commit at any client
+   count. Redis `appendfsync always` shares one flush among every client
+   served in an event-loop turn.
 4. **Each document read opens and closes a registered read view.** Forking
    the view (`TenantStorageReadView::fork`) and closing it took about 60% of a
    point read's own work. Closing used to spin with `yield_now` while another
@@ -252,6 +255,7 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 | Record a bearer token's success once per connection and count the later ones in one record when the connection changes token or closes; refusals are still recorded one by one (`kasumi-server/src/auth.rs`, `authenticate_on`) | committed, 1a0f7bc5 | 1-client point reads 20/s, p50 44 ms, 7.3 ms server CPU per read; 16 clients 117/s, p50 172 ms; range scans 7.3/s (1 client) and 15/s (16); mixed 90/10 16/s and 30/s | 2,015/s, p50 0.31 ms, 0.30 ms CPU per read; 6,900/s, p50 1.9 ms; 77/s and 56/s; 71/s and 58/s; writes unchanged within noise |
 | A commit releases the kv state mutex while it writes and flushes its root, so reads continue on the previous root. It records the cache identities it supersedes outside the cache and reconciles them once the root is durable; maintenance, warm-up, configuration and close wait on a separate commit gate (`kasumi-kv/src/core.rs`, `disk_state.rs`) | committed, 89e011ed | mixed 90/10: 189/s with 1 client (p99 47–138 ms) and 252/s with 16; point reads 4,431/s (1 client) and 9,569/s (16); profiled under 16-client mixed load, 93% of kv point-read samples waited for the mutex | 240/s (p99 34–60 ms) and 211/s, a 16-client drop that did not reproduce once compaction was recorded or pinned (next row); 4,809/s and 9,546/s; 64% |
 | Record each Kasumi case's compaction cycle, phases and reclaimed bytes from the node's metrics, and pin the cycle with `--compact-before start` or `finish` (`benchmarks/redis-comparison/run.py`, `report.py`) | committed, c78efd57 | lock split, 16-client mixed 90/10: 252 → 211/s (−16%), two of five runs after the change at 107–146/s, with no record of which windows had a compaction cycle | the same sequence, recorded: in four more rounds the only 16-client window with a cycle was the old build's, at 50/s. Pinned (medians of three rounds on a device other sessions' startups and tests still flushed to; the rounds of both builds overlap): 151 vs 151/s with the cycle in the window, 164 vs 208/s with it finished first. Both builds made 284–300 maintenance publications per cycle; the node worker ran 74–82% of its attempted steps before the change and 62–74% after |
+| A mutation of at most 16 operations and 64 KiB commits its standalone journal entry in its apply publication's transaction. A disk or census refusal of that one commit still rejects only that write, and anything the apply writes ahead of its publication commits the entry first (`kasumi-raft/src/local.rs`, `storage.rs`, `apply_publication.rs`; `kasumi-store/src/deferred_batch.rs`) | committed, dbd33325 | point writes 27.9/s with 1 client (p50 28.8 ms) and 22.4/s with 16; 10-document batches 18.9/s and 12.3/s; two kv commits and 12 syncs per write | 47.1/s (p50 17.3 ms) and 30.2/s; 24.7/s and 20.8/s; one commit and six syncs |
 
 The per-connection row comes from a separate A/B run of two builds without
 LTO at 51f47f27 (10,000 documents of 1 KiB, 15 s per case, two alternating
@@ -259,10 +263,11 @@ rounds per build for reads and four for writes and mixed, medians, host load
 average 90–510 from other work; [raw
 results](results/redis-comparison-20261106/per-connection-audit/), same host
 and harness), so compare it only with its own baseline column. Writes did
-not change beyond noise in that run. A point write, like a batch of ten
-documents, costs two kv commits: the journal append and the apply
+not change beyond noise in that run. In that run a point write, like a batch
+of ten documents, cost two kv commits: the journal append and the apply
 publication. Each commit issues six syncs on this host (three segment-log
-syncs, one directory sync, two root syncs), so a write costs 12. The
+syncs, one directory sync, two root syncs), so a write cost 12; since dbd33325
+it costs one commit and six syncs (see the journal row above). The
 `sync-trace` build of `kasumi-store` counts them and, with
 `KASUMI_SYNC_TRACE_STACKS=1`, attributes each commit to its callers. A third
 commit per write appears only while a compaction cycle runs, when the node
@@ -276,11 +281,9 @@ SSD, though not every overlapping phase stalled. Their `F_FULLFSYNC` calls
 slow each of Kasumi's syncs and its buffered writes, and Kasumi applies one
 write at a time through its proposal gate with no group commit, so each of
 16 closed-loop clients waits behind the other 15 writes: about 16 times the
-slowed time of one write. Group commit, or fewer syncs per commit, would
-shrink that amplification. So would committing a write's journal entry
-together with its apply, which halves its syncs. That needs the apply to end
-cleanly when its one commit is refused for capacity, as the journal append
-does today.
+slowed time of one write. Committing a small write's journal entry together
+with its apply (dbd33325) halved its syncs; group commit, or fewer syncs per
+commit, would shrink that amplification further.
 
 The lock-split row compares two builds without LTO at 47a37475 (10,000
 documents of 1 KiB, 20 s per case, three to five alternating rounds per
@@ -321,6 +324,22 @@ difference of the original rounds did not reproduce. In the raw results,
 naming its build, condition and round, and `instrumented-counters.jsonl`
 holds the counters of each case.
 
+The journal row compares two builds without LTO at a7c4c178 (10,000
+documents of 1 KiB, 20 s per case, `--workloads point-write,batch-write`,
+four alternating rounds per build in ABBA order, each in a quiet window: no
+other harness driver or Kasumi test binary, a 4 KiB `F_FULLFSYNC` p50 of
+5.5–7.4 ms, load average 16–54; medians; [raw
+results](results/redis-comparison-20261106/journal-with-apply/)). A
+`sync-trace` build of the change counted no journal append and no separate
+apply commit in either write workload: one commit per write, at 6.0–6.1
+syncs each. The 100-document load batches keep their append, apply and
+receipt commits. Server CPU per point write fell from 13.9 to 10.8 ms with
+one client. The 16-client point-write p99 rose from 2.6 to 3.5 s: in every
+round of the change a whole compaction cycle started and finished inside
+that case and a few writes waited about 3 s behind it, while in the base
+rounds that case only started its cycle and the worst stalls fell in the
+16-client batch rounds, two of which collapsed to 4.7 and 5.9/s.
+
 ## Summary: where Kasumi stands against Redis
 
 On this host, matched for TLS 1.3 with client certificates and for durable
@@ -338,7 +357,8 @@ which buys a guarantee Redis does not offer:
   reconnects for every request still pays it. Redis keeps no audit log.
 - **One storage mutex held through each commit's flushes, and serialized
   proposals.** Readers queue behind writers' device flushes, and a tenant
-  applies one proposal at a time through two durable commits. Redis serves
+  applies one proposal at a time, each through one durable commit (two for
+  batches of more than 16 operations). Redis serves
   reads from memory on its event loop and shares one AOF flush among all
   clients in a turn.
 - **Copy-on-write durable structures with six device syncs per commit.**
@@ -374,6 +394,6 @@ fewer syncs per commit is the larger lever there.
 To approach Redis on throughput Kasumi would still need, in order of
 measured effect: stop holding the storage mutex across a commit's log and
 directory flushes and maintenance I/O, so reads proceed during them; group
-concurrent proposals into one journal append and one publication; reduce
+concurrent proposals into one commit; reduce
 the syncs per commit; and batch journal replay. Each is described in [where
 Kasumi's time goes](#where-kasumis-time-goes).
