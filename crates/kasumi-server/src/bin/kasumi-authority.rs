@@ -1,8 +1,11 @@
 use anyhow::Context;
 use kasumi_server::authority_runtime::EnrollmentFailure;
 use kasumi_server::authority_runtime::{AuthorityRuntime, AuthorityRuntimeConfig};
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
+    kasumi_server::process_runtime::block_on(async_main)
+}
+
+async fn async_main() -> std::process::ExitCode {
     if kasumi_server::logging::initialize().is_err() {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;

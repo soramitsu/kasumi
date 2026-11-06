@@ -68,8 +68,11 @@ fn leader_hint(status: &tonic::Status) {
     }
 }
 
-#[tokio::main]
-async fn main() -> std::process::ExitCode {
+fn main() -> std::process::ExitCode {
+    kasumi_server::process_runtime::block_on(async_main)
+}
+
+async fn async_main() -> std::process::ExitCode {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if arguments
         .first()
