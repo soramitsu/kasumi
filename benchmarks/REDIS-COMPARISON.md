@@ -428,6 +428,11 @@ the original baseline and journal-only measurements above predate it.
 
 ## Developer-experience follow-up
 
+The [macOS validation record](../docs/validation-macos.md#developer-experience-follow-up-2026-11-06-utc)
+documents the full workspace run and its follow-up checks, including the failed
+attempts and the two test-fixture corrections. Benchmark measurements below
+retain their original source and binary attribution.
+
 The follow-up adds bounded shared document readers and standalone group
 commit. A query or snapshot page reuses a registered reader within its
 bounded worker and closes it before releasing the result; it does not keep
