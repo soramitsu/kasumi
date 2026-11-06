@@ -5,7 +5,8 @@
 
 Prints one throughput/latency/resource table per client count, a startup and
 recovery table, and a disk table. Every row keeps the load average that was
-recorded around it, because the host is shared.
+recorded around it, because the host is shared, and Kasumi rows name the
+compaction work their node database did during the case.
 """
 from __future__ import annotations
 
@@ -26,6 +27,22 @@ def mib(value):
     return "–" if value is None else f"{value / (1 << 20):,.0f}"
 
 
+def compaction(entry):
+    """Kasumi only: the cycle and phases around the case and what it reclaimed."""
+    summary = entry.get("compaction")
+    if not summary:
+        return "–"
+    if not summary["active"]:
+        return "none"
+    text = (f"cycle {number(summary['cycle_before'])}→{number(summary['cycle_after'])}, "
+            f"{summary['phase_before']}→{summary['phase_after']}")
+    if summary["reclaimed_bytes"] or summary["relocated_bytes"]:
+        text += f", {mib(summary['reclaimed_bytes'])} MiB reclaimed"
+    if summary["relocated_bytes"]:
+        text += f", {mib(summary['relocated_bytes'])} MiB relocated"
+    return text
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("results")
@@ -42,15 +59,15 @@ def main(argv=None):
     for clients in sorted({entry["clients"] for entry in cases}):
         print(f"#### {clients} client{'s' if clients != 1 else ''}\n")
         print("| System | Workload | ops/s | docs/s | p50 µs | p99 µs | p99.9 µs | server CPU µs/op | "
-              "peak RSS MiB | disk write amp | errors | load avg before→after |")
-        print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |")
+              "peak RSS MiB | disk write amp | errors | load avg before→after | compaction during the case |")
+        print("| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- | --- |")
         for entry in cases:
             if entry["clients"] != clients:
                 continue
             server = entry.get("server", {})
             amplification = entry.get("write_amplification_physical")
             print("| {system} | {workload} | {ops} | {docs} | {p50} | {p99} | {p999} | {cpu} | {rss} | {amp} | "
-                  "{errors} | {before}→{after} |".format(
+                  "{errors} | {before}→{after} | {compaction} |".format(
                       system=entry["system"], workload=entry["workload"],
                       ops=number(entry["throughput_ops_per_second"]),
                       docs=number(entry["items_per_second"]),
@@ -60,7 +77,8 @@ def main(argv=None):
                       rss=mib(server.get("peak_rss_bytes_sampled")),
                       amp="–" if amplification is None else f"{amplification:.2f}",
                       errors=entry["errors"],
-                      before=entry["load_average_before"][0], after=entry["load_average_after"][0]))
+                      before=entry["load_average_before"][0], after=entry["load_average_after"][0],
+                      compaction=compaction(entry)))
         print()
     restarts = [entry for entry in entries if entry.get("phase") in
                 ("cold-start-empty", "install", "graceful-restart", "crash-recovery")]
