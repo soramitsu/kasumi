@@ -161,6 +161,26 @@ impl Authenticated {
     }
 }
 
+/// The one native method a credential authenticates after it has expired:
+/// the listener verifies the presented credential with
+/// `Authenticator::verify_recovery` instead of as a bearer.
+pub(crate) const RECOVER_CREDENTIAL_PATH: &str = "/kasumi.v1.KasumiAdmin/RecoverCredential";
+
+/// An expired credential the listener verified for online recovery before
+/// reading the request body. Only the recovery method reads it; it is never
+/// an `Authenticated` bearer.
+#[derive(Clone)]
+pub(crate) struct RecoveryAuthenticated {
+    auth: Arc<Authenticator>,
+    recovery: crate::auth::VerifiedRecovery,
+}
+impl RecoveryAuthenticated {
+    /// The verified recovery, if `auth` is the authenticator that verified it.
+    pub(crate) fn recovery(&self, auth: &Authenticator) -> Option<&crate::auth::VerifiedRecovery> {
+        std::ptr::eq(Arc::as_ptr(&self.auth), auth).then_some(&self.recovery)
+    }
+}
+
 pub(crate) async fn admit(
     State(state): State<RequestAdmission>,
     mut request: Request,
@@ -181,24 +201,43 @@ pub(crate) async fn admit(
         } else {
             first.unwrap_or("")
         };
-        // A TLS connection records each token's first success and counts
-        // the rest; other callers record every success.
-        let connection = request
-            .extensions()
-            .get::<Arc<ConnectionAuthentications>>()
-            .cloned();
-        let authenticated = match &connection {
-            Some(connection) => auth.authenticate_on(authorization, connection).await,
-            None => auth.authenticate(authorization).await,
-        };
-        match authenticated {
-            Ok(context) => {
-                request.extensions_mut().insert(Authenticated {
-                    auth: auth.clone(),
-                    context,
-                });
+        if grpc && request.uri().path() == RECOVER_CREDENTIAL_PATH {
+            let client_certificate = request
+                .extensions()
+                .get::<crate::tls::AuthenticatedTlsPeer>()
+                .and_then(crate::tls::AuthenticatedTlsPeer::certificate_pin);
+            match auth
+                .verify_recovery(authorization, client_certificate)
+                .await
+            {
+                Ok(recovery) => {
+                    request.extensions_mut().insert(RecoveryAuthenticated {
+                        auth: auth.clone(),
+                        recovery,
+                    });
+                }
+                Err(error) => return refused(grpc, error),
             }
-            Err(error) => return refused(grpc, error),
+        } else {
+            // A TLS connection records each token's first success and counts
+            // the rest; other callers record every success.
+            let connection = request
+                .extensions()
+                .get::<Arc<ConnectionAuthentications>>()
+                .cloned();
+            let authenticated = match &connection {
+                Some(connection) => auth.authenticate_on(authorization, connection).await,
+                None => auth.authenticate(authorization).await,
+            };
+            match authenticated {
+                Ok(context) => {
+                    request.extensions_mut().insert(Authenticated {
+                        auth: auth.clone(),
+                        context,
+                    });
+                }
+                Err(error) => return refused(grpc, error),
+            }
         }
     }
     // A gRPC message adds its five-byte length prefix to the request limit.

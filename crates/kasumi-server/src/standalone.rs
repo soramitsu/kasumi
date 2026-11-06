@@ -1875,3 +1875,7 @@ pub(crate) mod ownership_tests;
 #[cfg(test)]
 #[path = "standalone_storage_tests.rs"]
 mod storage_tests;
+
+#[cfg(test)]
+#[path = "standalone_online_recovery_tests.rs"]
+mod online_recovery_tests;

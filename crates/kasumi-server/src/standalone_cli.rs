@@ -253,6 +253,11 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                     "expires_at_ms": expires_at_ms,
                     "remaining_seconds": expires_at_ms.saturating_sub(now) / 1000,
                     "expired": expires_at_ms <= now,
+                    // The latest credential of an unrevoked family can still
+                    // renew itself online until then.
+                    "online_recovery_until_ms": expires_at_ms.saturating_add(
+                        kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS * 1000
+                    ),
                 })
             );
         }
@@ -284,7 +289,7 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                         let delay = retry_delay_ms(random_unit());
                         tokio::select! { _ = tokio::time::sleep(std::time::Duration::from_millis(delay)) => {}, _ = tokio::signal::ctrl_c() => break }
                     }
-                    Err(error) => return Err(explain_renewal_failure(&profile, error)),
+                    Err(error) => return Err(explain_renewal_failure(profile.family_id, error)),
                 }
             }
         }
@@ -410,23 +415,31 @@ fn random_unit() -> f64 {
     (Uuid::new_v4().as_u128() >> 75) as f64 / (1u64 << 53) as f64
 }
 
-/// A renewal the daemon refused is final for this watcher. If the credential has
-/// already expired, only stopped-installation recovery can renew it; say so.
-fn explain_renewal_failure(profile: &ClientProfile, error: anyhow::Error) -> anyhow::Error {
-    let refused = matches!(
+/// A renewal the daemon refused is final for this watcher. If online recovery
+/// refused the expired credential too, only stopped-installation recovery can
+/// renew it; say why and how. An uncertain recovery is retried as it is.
+fn explain_renewal_failure(family_id: Uuid, error: anyhow::Error) -> anyhow::Error {
+    if error.downcast_ref::<RecoveryRefused>().is_none() || retryable(&error) {
+        return error;
+    }
+    let unsupported = matches!(
         error.downcast_ref::<kasumi_client::ClientError>(),
         Some(kasumi_client::ClientError::Transport(status))
-            if status.code() == tonic::Code::Unauthenticated
+            if status.code() == tonic::Code::Unimplemented
     );
-    if refused {
-        return error.context(format!(
-            "credential family {} was refused renewal, most likely because it expired while the daemon was unavailable. \
-             An expired credential cannot renew itself: stop kasumid, run `kasumid recover-existing-credentials <configuration.json> <private-manifest.json>` \
-             for the expired profiles, start kasumid, then restart this watcher",
-            profile.family_id
-        ));
-    }
-    error
+    error.context(format!(
+        "credential family {} was refused renewal, most likely because it expired while the daemon was unavailable, and {}. \
+         Online recovery renews only the family's latest credential, less than {} hours after it expired, while the family is unrevoked. \
+         Otherwise stop kasumid, run `kasumid recover-existing-credentials <configuration.json> <private-manifest.json>` \
+         for the expired profiles, start kasumid, then restart this watcher",
+        family_id,
+        if unsupported {
+            "this kasumid does not offer online recovery"
+        } else {
+            "online recovery refused it"
+        },
+        kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS / 3600
+    ))
 }
 
 fn retryable(error: &anyhow::Error) -> bool {
@@ -484,6 +497,55 @@ mod credential_renewal_tests {
     }
 
     #[test]
+    fn only_a_refused_recovery_points_to_stopped_installation_recovery() {
+        let family = Uuid::new_v4();
+        let refused = |code| {
+            anyhow::Error::new(ClientError::Transport(tonic::Status::new(
+                code,
+                "fixture reason",
+            )))
+            .context(RecoveryRefused)
+        };
+        let message = format!(
+            "{:#}",
+            explain_renewal_failure(family, refused(tonic::Code::Unauthenticated))
+        );
+        for expected in [
+            family.to_string().as_str(),
+            "online recovery refused it",
+            "less than 24 hours after it expired",
+            "recover-existing-credentials",
+            "fixture reason",
+        ] {
+            assert!(
+                message.contains(expected),
+                "{expected:?} missing: {message}"
+            );
+        }
+        let message = format!(
+            "{:#}",
+            explain_renewal_failure(family, refused(tonic::Code::Unimplemented))
+        );
+        assert!(
+            message.contains("does not offer online recovery"),
+            "{message}"
+        );
+        // An uncertain recovery keeps its identity and is retried.
+        assert!(retryable(&refused(tonic::Code::Unavailable)));
+        assert!(!retryable(&refused(tonic::Code::Unauthenticated)));
+        let uncertain = format!(
+            "{:#}",
+            explain_renewal_failure(family, refused(tonic::Code::Unavailable))
+        );
+        assert!(
+            !uncertain.contains("recover-existing-credentials"),
+            "{uncertain}"
+        );
+        let other = explain_renewal_failure(family, anyhow::anyhow!("fixture corrupt journal"));
+        assert_eq!(format!("{other:#}"), "fixture corrupt journal");
+    }
+
+    #[test]
     fn credential_watch_retries_only_uncertain_transport_failures() {
         for code in [
             tonic::Code::Cancelled,
@@ -537,41 +599,84 @@ mod credential_renewal_tests {
     }
 }
 
+/// Marks a failure of online recovery after the daemon refused the bearer.
+#[derive(Debug)]
+struct RecoveryRefused;
+impl std::fmt::Display for RecoveryRefused {
+    fn fmt(&self, output: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        output.write_str("online recovery of the expired credential failed")
+    }
+}
+impl std::error::Error for RecoveryRefused {}
+
 /// Persist the renewal identity before dispatch, and keep it through any
 /// uncertain result. Crashing after token replacement can only replay the same
-/// issuance; it cannot extend an already admitted request's deadline.
+/// issuance; it cannot extend an already admitted request's deadline. A bearer
+/// the daemon refuses is presented for online recovery with the same identity:
+/// only the family's latest credential recovers, and only within the fixed
+/// window after it expired (docs/credential-lifetime.md).
 async fn renew(profile: &ClientProfile) -> Result<u64> {
     let journal = profile.bearer_file.with_extension("renewal.json");
-    let request: kasumi_types::RenewCredential = if journal.exists() {
-        serde_json::from_slice(&private_files::read(&journal, 4096)?)?
-    } else {
-        let request = kasumi_types::RenewCredential {
-            family_id: profile.family_id,
-            renewal_id: Uuid::new_v4(),
+    // A replayed issuance whose reply was lost until after it expired becomes
+    // the bearer, since only the family's latest credential can recover it;
+    // the second pass then recovers from it under a new identity.
+    for _ in 0..2 {
+        let request: kasumi_types::RenewCredential = if journal.exists() {
+            serde_json::from_slice(&private_files::read(&journal, 4096)?)?
+        } else {
+            let request = kasumi_types::RenewCredential {
+                family_id: profile.family_id,
+                renewal_id: Uuid::new_v4(),
+            };
+            private_files::create(&journal, &serde_json::to_vec(&request)?)?;
+            request
         };
-        private_files::create(&journal, &serde_json::to_vec(&request)?)?;
-        request
-    };
-    ensure!(
-        request.family_id == profile.family_id,
-        "renewal journal belongs to another credential"
-    );
-    let mut client = kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-    let issued = client
-        .renew_credential(&profile.bearer()?, &request)
-        .await?;
-    ensure!(
-        issued.family_id == profile.family_id,
-        "renewed credential family differs"
-    );
-    ensure!(
-        issued.expires_at_ms > kasumi_clock::EpochClock::system()?.now_ms()?,
+        ensure!(
+            request.family_id == profile.family_id,
+            "renewal journal belongs to another credential"
+        );
+        let mut client =
+            kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+        let bearer = profile.bearer()?;
+        let issued = match client.renew_credential(&bearer, &request).await {
+            Err(kasumi_client::ClientError::Transport(status))
+                if status.code() == tonic::Code::Unauthenticated =>
+            {
+                tracing::warn!(
+                    family_id = %profile.family_id,
+                    "the daemon refused this credential for renewal; presenting it for online recovery"
+                );
+                client
+                    .recover_credential(&bearer, &request)
+                    .await
+                    .map_err(|error| anyhow::Error::new(error).context(RecoveryRefused))?
+            }
+            result => result?,
+        };
+        ensure!(
+            issued.family_id == profile.family_id,
+            "renewed credential family differs"
+        );
+        let expired = issued.expires_at_ms <= kasumi_clock::EpochClock::system()?.now_ms()?;
+        ensure!(
+            !expired
+                || bearer_expiry_ms(&bearer).is_ok_and(|current| current <= issued.expires_at_ms),
+            "renewal journal issuance has expired; stopped-installation credential recovery is required"
+        );
+        private_files::replace(&profile.bearer_file, issued.token.as_bytes())?;
+        std::fs::remove_file(&journal)?;
+        private_files::sync_parent(&journal)?;
+        if !expired {
+            return Ok(issued.expires_at_ms);
+        }
+        tracing::warn!(
+            family_id = %profile.family_id,
+            "a replayed renewal had already expired; recovering from it"
+        );
+    }
+    anyhow::bail!(
         "renewal journal issuance has expired; stopped-installation credential recovery is required"
-    );
-    private_files::replace(&profile.bearer_file, issued.token.as_bytes())?;
-    std::fs::remove_file(&journal)?;
-    private_files::sync_parent(&journal)?;
-    Ok(issued.expires_at_ms)
+    )
 }
 
 /// Load the caller's explicit namespace bounds before any installation work.

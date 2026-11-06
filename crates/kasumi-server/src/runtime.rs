@@ -887,29 +887,31 @@ impl tls::TlsHandshakeAudit for SecurityAudit {
 impl crate::auth::RequestAuditSink for SecurityAudit {
     async fn record(&self, event: crate::auth::RequestAuditEvent) -> kasumi_types::Result<()> {
         use crate::auth::RequestAuditKind as Kind;
-        let success = matches!(
-            event.kind,
-            Kind::AuthenticationSucceeded | Kind::AuthenticationRepeated { .. }
-        );
-        let kind = match event.kind {
-            Kind::AuthenticationSucceeded => SecurityEventKind::AuthenticationSucceeded,
-            Kind::AuthenticationRepeated { requests } => {
-                SecurityEventKind::AuthenticationRepeated { requests }
-            }
-            Kind::AuthenticationDenied => SecurityEventKind::AuthenticationDenied,
-            Kind::AccessDenied => SecurityEventKind::AccessDenied,
-            Kind::TenantSealed => SecurityEventKind::TenantSealed,
+        let (kind, outcome) = match event.kind {
+            Kind::AuthenticationSucceeded => (
+                SecurityEventKind::AuthenticationSucceeded,
+                SecurityOutcome::Succeeded,
+            ),
+            Kind::AuthenticationRepeated { requests } => (
+                SecurityEventKind::AuthenticationRepeated { requests },
+                SecurityOutcome::Succeeded,
+            ),
+            Kind::AuthenticationDenied => (
+                SecurityEventKind::AuthenticationDenied,
+                SecurityOutcome::Denied,
+            ),
+            Kind::AccessDenied => (SecurityEventKind::AccessDenied, SecurityOutcome::Denied),
+            Kind::TenantSealed => (SecurityEventKind::TenantSealed, SecurityOutcome::Denied),
+            // Credential issuance outside the bearer's lifetime is key
+            // administration, as the stopped-installation recovery is.
+            Kind::CredentialRecovery { outcome } => (SecurityEventKind::KeyAdministration, outcome),
         };
         let entry = SecurityEvent {
             kind,
             principal: event.principal,
             tenant: event.tenant,
             request_id: event.request_id,
-            outcome: if success {
-                SecurityOutcome::Succeeded
-            } else {
-                SecurityOutcome::Denied
-            },
+            outcome,
         };
         // A refusal before any identity was verified names no principal or
         // tenant. Its repeats are counted, so a flood of them cannot fill the

@@ -279,7 +279,8 @@ The node control plane has no such in-process fresh admission. When it closes
 logs `control_plane_closed` at ERROR and the daemon drains and exits non-zero,
 so its service manager reopens it (`deploy/kasumi.service` restarts on
 failure). Run every `kasumid serve` under a restarting supervisor: a daemon that
-stays down outlives its issued credentials, which then need
+stays down outlives its issued credentials. Their watchers recover them online
+for 24 hours after they expire; after that, they need
 `recover-existing-credentials`.
 Each event carries only fixed classes:
 

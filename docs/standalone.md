@@ -133,7 +133,7 @@ kasumid credential watch /var/lib/kasumi/profiles/default.json
 kasumid credential watch /var/lib/kasumi/profiles/control.json
 ```
 
-The watcher saves a renewal identity before dispatch and atomically replaces the token file after a verified native response. It retries uncertain transport outcomes with the same identity. A restarted watcher renews immediately. Clients must reread token files per request. Renewal does not extend any existing request's deadline. Stopping a watcher does not revoke its family; use the explicit revocation command.
+The watcher saves a renewal identity before dispatch and atomically replaces the token file after a verified native response. It retries uncertain transport outcomes with the same identity. A restarted watcher renews immediately. A credential that expired while kasumid was down recovers online with the same identity when kasumid returns, if it is the family's latest credential, the family is unrevoked, and it expired less than 24 hours ago ([credential lifetime](credential-lifetime.md#online-recovery-of-credentials-that-expired-during-an-outage)). Otherwise the watcher exits and names `recover-existing-credentials`. Clients must reread token files per request. Renewal does not extend any existing request's deadline. Stopping a watcher does not revoke its family; use the explicit revocation command.
 
 Create a credential from a private Control profile and a JSON specification:
 

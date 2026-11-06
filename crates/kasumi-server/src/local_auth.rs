@@ -20,6 +20,9 @@ use zeroize::{Zeroize, Zeroizing};
 const FAMILIES: &str = "local-credential-families";
 const ISSUANCES: &str = "local-credential-issuances";
 const EVENTS: &str = "local-credential-events";
+/// Each family's most recent issuance, written with it. Only that issuance's
+/// token can recover the family online once it has expired.
+const LATEST: &str = "local-credential-latest-issuances";
 const MAX_SIGNERS: usize = 1 << 20;
 const MAX_RECORD: usize = 16 << 10;
 
@@ -196,6 +199,63 @@ struct CredentialEvent<'a> {
     actor: &'a str,
     family_id: Uuid,
     at_ms: u64,
+}
+/// The ledger row of an online recovery: which expired issuance renewed the
+/// family, into which issuance, and over which client certificate.
+#[derive(Serialize)]
+struct RecoveryEvent<'a> {
+    operation: &'static str,
+    actor: &'a str,
+    family_id: Uuid,
+    at_ms: u64,
+    renewal_id: Uuid,
+    recovered_issuance_id: Uuid,
+    recovered_expires_at_ms: u64,
+    client_certificate_sha256: String,
+}
+/// The issuance a family's latest creation, renewal or recovery wrote.
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct LatestIssuance {
+    issuance_id: Uuid,
+    expires_at: u64,
+}
+
+/// An expired local access token presented to recover its own family. The
+/// authenticator verified its signature, issuer, audience, type, token use
+/// and family claims, and that the family is unrevoked with exactly these
+/// claims; the issuer checks the rest under its writer lock.
+#[derive(Clone, Debug)]
+pub(crate) struct RecoveryProof {
+    pub(crate) family_id: Uuid,
+    /// The token's `jti`: the issuance it was signed for.
+    pub(crate) issuance_id: Uuid,
+    pub(crate) expires_at_ms: u64,
+    /// SHA-256 of the client certificate of the connection presenting it.
+    pub(crate) client_certificate: [u8; 32],
+}
+
+/// Whether a credential that expires at `expires_at_ms` may recover its family
+/// at `now_ms`: only after it has expired, and only within the fixed window.
+pub(crate) fn check_recovery_window(expires_at_ms: u64, now_ms: u64) -> kasumi_types::Result<()> {
+    if now_ms < expires_at_ms {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "credential has not expired; renew it instead of recovering it",
+        ));
+    }
+    let closes_at_ms = expires_at_ms
+        .saturating_add(kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS * 1000);
+    if now_ms >= closes_at_ms {
+        return Err(Error::new(
+            ErrorCode::Unauthorized,
+            format!(
+                "credential expired more than {} hours ago; its online recovery window has closed",
+                kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS / 3600
+            ),
+        ));
+    }
+    Ok(())
 }
 
 pub struct LocalCredentials {
@@ -427,8 +487,38 @@ impl LocalCredentials {
                 Uuid::new_v4().as_bytes(),
                 serde_json::to_vec(&event)?,
             ),
+            Self::latest(&issuance)?,
         ])?;
         Ok(token)
+    }
+    /// Record `issuance` as its family's latest, in the batch that writes it.
+    fn latest(issuance: &Issuance) -> Result<WriteOp> {
+        Ok(WriteOp::put(
+            LATEST,
+            issuance.family_id.as_bytes(),
+            encoded(&LatestIssuance {
+                issuance_id: issuance.issuance_id,
+                expires_at: issuance.expires_at,
+            })?,
+        ))
+    }
+    /// The family's next issuance, signed by the active key from `now_ms`.
+    fn next_issuance(
+        &self,
+        status: &CredentialStatus,
+        issuance_id: Uuid,
+        now_ms: u64,
+    ) -> Result<Issuance> {
+        let issued_at = now_ms / 1000;
+        Ok(Issuance {
+            family_id: status.specification.family_id,
+            issuance_id,
+            issued_at,
+            expires_at: issued_at
+                .checked_add(status.specification.lifetime_seconds)
+                .context("credential time overflow")?,
+            signer: Signers::read(&self.signer_file)?.active,
+        })
     }
     pub fn renew(&self, request: &RenewCredential, actor: &str) -> Result<IssuedCredential> {
         ensure!(
@@ -454,16 +544,7 @@ impl LocalCredentials {
             return self.token(&status, &Self::issuance(&bytes)?);
         }
         let now = self.clock.now_ms()?;
-        let issued_at = now / 1000;
-        let issuance = Issuance {
-            family_id: request.family_id,
-            issuance_id: request.renewal_id,
-            issued_at,
-            expires_at: issued_at
-                .checked_add(status.specification.lifetime_seconds)
-                .context("credential time overflow")?,
-            signer: Signers::read(&self.signer_file)?.active,
-        };
+        let issuance = self.next_issuance(&status, request.renewal_id, now)?;
         let token = self.token(&status, &issuance)?;
         let event = CredentialEvent {
             operation: "renew",
@@ -478,6 +559,87 @@ impl LocalCredentials {
                 Uuid::new_v4().as_bytes(),
                 serde_json::to_vec(&event)?,
             ),
+            Self::latest(&issuance)?,
+        ])?;
+        Ok(token)
+    }
+    /// Renew a family from its expired credential through the native
+    /// recovery method (docs/credential-lifetime.md). Under the writer lock
+    /// the family must be unrevoked and the credential expired within the
+    /// fixed window. A request naming an issuance that already exists replays
+    /// it exactly, as renewal does after a lost reply. Otherwise only the
+    /// family's latest issuance can recover it: a superseded credential, or a
+    /// family whose latest issuance this build never recorded, is refused.
+    pub(crate) fn recover(
+        &self,
+        proof: &RecoveryProof,
+        request: &RenewCredential,
+        actor: &str,
+    ) -> Result<IssuedCredential> {
+        ensure!(
+            !request.renewal_id.is_nil() && request.renewal_id != request.family_id,
+            Error::new(
+                ErrorCode::InvalidArgument,
+                "renewal requires a distinct identity"
+            )
+        );
+        ensure!(
+            request.family_id == proof.family_id,
+            Error::new(
+                ErrorCode::Forbidden,
+                "recovery requires the expired credential's own family"
+            )
+        );
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("credential writer poisoned"))?;
+        let status = self.status(request.family_id)?;
+        ensure!(
+            status.revoked_at_ms.is_none(),
+            Error::new(ErrorCode::Unauthorized, "credential family revoked")
+        );
+        let now = self.clock.now_ms()?;
+        check_recovery_window(proof.expires_at_ms, now)?;
+        let key = Self::issuance_key(request.family_id, request.renewal_id);
+        if let Some(bytes) = self.store.get_bounded(ISSUANCES, &key, MAX_RECORD)? {
+            return self.token(&status, &Self::issuance(&bytes)?);
+        }
+        let latest = self
+            .store
+            .get_bounded(LATEST, request.family_id.as_bytes(), MAX_RECORD)?
+            .ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unauthorized,
+                    "credential family has no recorded latest issuance; recover it with the stopped installation",
+                )
+            })?;
+        let latest: LatestIssuance =
+            decode_exact(&latest, MAX_RECORD, "latest credential issuance record")?;
+        ensure!(
+            latest.issuance_id == proof.issuance_id
+                && latest.expires_at.checked_mul(1000) == Some(proof.expires_at_ms),
+            Error::new(
+                ErrorCode::Unauthorized,
+                "credential was superseded by a later issuance of its family; only the latest can recover it"
+            )
+        );
+        let issuance = self.next_issuance(&status, request.renewal_id, now)?;
+        let token = self.token(&status, &issuance)?;
+        let event = RecoveryEvent {
+            operation: "recover",
+            actor,
+            family_id: request.family_id,
+            at_ms: now,
+            renewal_id: request.renewal_id,
+            recovered_issuance_id: proof.issuance_id,
+            recovered_expires_at_ms: proof.expires_at_ms,
+            client_certificate_sha256: hex::encode(proof.client_certificate),
+        };
+        self.store.write_batch(&[
+            WriteOp::put(ISSUANCES, key, encoded(&issuance)?),
+            WriteOp::put(EVENTS, Uuid::new_v4().as_bytes(), encoded(&event)?),
+            Self::latest(&issuance)?,
         ])?;
         Ok(token)
     }
@@ -887,6 +1049,333 @@ mod tests {
         assert_eq!(
             *audit.0.lock().unwrap(),
             [Succeeded, Denied, Denied, Repeated { requests: 1 }]
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    struct ManualWall(std::sync::atomic::AtomicU64);
+    impl kasumi_clock::WallClock for ManualWall {
+        fn now_ms(&self) -> anyhow::Result<u64> {
+            Ok(self.0.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingEvents(std::sync::Mutex<Vec<RequestAuditEvent>>);
+    #[async_trait::async_trait]
+    impl RequestAuditSink for RecordingEvents {
+        async fn record(&self, event: RequestAuditEvent) -> kasumi_types::Result<()> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn the_recovery_window_opens_at_expiry_and_closes_exactly_24_hours_later() {
+        let expiry = 1_800_000_000_000;
+        let window = kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS * 1000;
+        assert_eq!(window, 86_400_000);
+        assert_eq!(
+            check_recovery_window(expiry, expiry - 1).unwrap_err().code,
+            ErrorCode::InvalidArgument
+        );
+        check_recovery_window(expiry, expiry).unwrap();
+        check_recovery_window(expiry, expiry + window - 1).unwrap();
+        let closed = check_recovery_window(expiry, expiry + window).unwrap_err();
+        assert_eq!(closed.code, ErrorCode::Unauthorized);
+        assert!(closed.message.contains("24 hours"), "{}", closed.message);
+    }
+
+    /// The refusal of a recovery that must not issue a credential, which
+    /// is never formatted.
+    fn refusal(result: anyhow::Result<IssuedCredential>) -> anyhow::Error {
+        match result {
+            Ok(_) => panic!("recovery issued a credential it must refuse"),
+            Err(error) => error,
+        }
+    }
+
+    /// Online recovery renews only an unrevoked family's latest credential,
+    /// after it expired and within the window, replays a lost reply exactly,
+    /// and every refusal of a verified credential is recorded with its
+    /// identity while unverifiable ones identify nobody.
+    #[tokio::test]
+    async fn only_the_latest_expired_credential_recovers_within_its_window() {
+        use crate::auth::RequestAuditKind::{
+            AuthenticationDenied, AuthenticationSucceeded, CredentialRecovery,
+        };
+        use kasumi_types::SecurityOutcome;
+        use std::sync::atomic::Ordering::SeqCst;
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let private = root.path().join("operator");
+        private_files::create_directory(&private).unwrap();
+        let signer = private.join("signer.json");
+        initialize_signer(&signer).unwrap();
+        let keys = Arc::new(
+            FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
+        );
+        let physical =
+            crate::runtime_storage_fixtures::physical(root.path(), Default::default()).unwrap();
+        let node = physical
+            .create_new(
+                root.path().join("persistent/database"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            keys,
+            StorageAccess::security_audit(),
+        )
+        .await
+        .unwrap();
+        let config = AuthConfig {
+            issuer: "https://localhost/local".into(),
+            audience: "https://localhost/kasumi".into(),
+            source: AuthKeySource::Local {
+                signer_file: signer.clone(),
+            },
+            algorithms: vec![Algorithm::EdDSA],
+            access_token_types: BTreeSet::from(["at+jwt".into()]),
+        };
+        let start = EpochClock::system().unwrap().now_ms().unwrap();
+        let wall = Arc::new(ManualWall(std::sync::atomic::AtomicU64::new(start)));
+        let clock = Arc::new(
+            EpochClock::new(Arc::new(kasumi_clock::SystemLeaseClock), wall.clone()).unwrap(),
+        );
+        let manager = LocalCredentials::with_test_clock(
+            store.clone(),
+            signer,
+            config.issuer.clone(),
+            config.audience.clone(),
+            clock.clone(),
+        )
+        .unwrap();
+        let auth = Authenticator::with_test_clock(config, clock).unwrap();
+        let audit = Arc::new(RecordingEvents::default());
+        auth.install_audit(audit.clone()).unwrap();
+        auth.install_local_credentials(manager.clone()).unwrap();
+        let specification = |principal: &str| CreateCredential {
+            family_id: Uuid::new_v4(),
+            principal: principal.into(),
+            tenant: "tenant-a".into(),
+            resource: kasumi_types::CredentialResource::Database {
+                incarnation: Uuid::new_v4(),
+            },
+            scopes: BTreeSet::from([Action::Read, Action::Write]),
+            lifetime_seconds: 3600,
+        };
+        let bearer = |token: &str| format!("Bearer {token}");
+        let pin = Some([7u8; 32]);
+        let renewal = |family_id| RenewCredential {
+            family_id,
+            renewal_id: Uuid::new_v4(),
+        };
+        let created = manager
+            .create(specification("writer"), "initializer")
+            .unwrap();
+        let family = created.family_id;
+        // A live credential renews instead; without a client certificate
+        // nothing is verified at all.
+        assert_eq!(
+            auth.verify_recovery(&bearer(&created.token), pin)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::InvalidArgument
+        );
+        assert_eq!(
+            auth.verify_recovery(&bearer(&created.token), None)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        // Renewal halfway through supersedes the created credential.
+        wall.0.store(start + 1_800_000, SeqCst);
+        let renewed = manager.renew(&renewal(family), "writer").unwrap();
+        // Both have expired an hour later. The created one still verifies as
+        // an expired credential of the family, but cannot recover it.
+        wall.0.store(renewed.expires_at_ms + 3_600_000, SeqCst);
+        let superseded = auth
+            .verify_recovery(&bearer(&created.token), pin)
+            .await
+            .unwrap();
+        let recovery = renewal(family);
+        let refused = refusal(manager.recover(&superseded.proof, &recovery, "writer"));
+        assert_eq!(
+            refused.downcast_ref::<Error>().unwrap().code,
+            ErrorCode::Unauthorized
+        );
+        assert!(refused.to_string().contains("superseded"), "{refused}");
+        let latest = auth
+            .verify_recovery(&bearer(&renewed.token), pin)
+            .await
+            .unwrap();
+        assert_eq!(latest.context.principal, "writer");
+        assert_eq!(latest.context.tenant, "tenant-a");
+        assert_eq!(
+            latest.context.scopes,
+            BTreeSet::from([Action::Read, Action::Write])
+        );
+        assert_eq!(latest.proof.family_id, family);
+        assert_eq!(latest.proof.expires_at_ms, renewed.expires_at_ms);
+        latest.context.authorization.check_live().unwrap();
+        assert_eq!(
+            latest.context.authorization.credential_family(),
+            Some(family)
+        );
+        let recovered = manager.recover(&latest.proof, &recovery, "writer").unwrap();
+        assert_eq!(recovered.family_id, family);
+        // A full lifetime from the recovery, not from the expired credential.
+        let recovered_from = wall.0.load(SeqCst);
+        assert!(
+            (recovered_from + 3_599_000..recovered_from + 3_660_000)
+                .contains(&recovered.expires_at_ms)
+        );
+        let context = auth.authenticate(&bearer(&recovered.token)).await.unwrap();
+        assert_eq!(context.authorization.credential_family(), Some(family));
+        // A lost reply replays exactly; any other recovery from the same
+        // expired credential is refused, as the recovery superseded it.
+        assert_eq!(
+            manager
+                .recover(&latest.proof, &recovery, "writer")
+                .unwrap()
+                .token,
+            recovered.token
+        );
+        assert!(
+            refusal(manager.recover(&latest.proof, &renewal(family), "writer"))
+                .to_string()
+                .contains("superseded")
+        );
+        // A proof is valid only for its own family and a distinct identity.
+        let other = manager
+            .create(specification("other"), "initializer")
+            .unwrap();
+        for request in [
+            renewal(other.family_id),
+            RenewCredential {
+                family_id: family,
+                renewal_id: family,
+            },
+            RenewCredential {
+                family_id: family,
+                renewal_id: Uuid::nil(),
+            },
+        ] {
+            assert!(manager.recover(&latest.proof, &request, "writer").is_err());
+        }
+        // A family whose latest issuance no build recorded cannot recover:
+        // the latest credential is unknown.
+        let unrecorded = manager
+            .create(specification("unrecorded"), "initializer")
+            .unwrap();
+        store
+            .write_batch(&[WriteOp::delete(LATEST, unrecorded.family_id.as_bytes())])
+            .unwrap();
+        // Revocation refuses at verification, and under the writer lock for
+        // a credential verified before the revocation.
+        let revoked = manager
+            .create(specification("revoked"), "initializer")
+            .unwrap();
+        let raced = manager
+            .create(specification("raced"), "initializer")
+            .unwrap();
+        let all_expired = [&recovered, &unrecorded, &revoked, &raced]
+            .iter()
+            .map(|credential| credential.expires_at_ms)
+            .max()
+            .unwrap();
+        wall.0.store(all_expired + 1, SeqCst);
+        let unrecorded_proof = auth
+            .verify_recovery(&bearer(&unrecorded.token), pin)
+            .await
+            .unwrap();
+        assert!(
+            refusal(manager.recover(
+                &unrecorded_proof.proof,
+                &renewal(unrecorded.family_id),
+                "unrecorded"
+            ))
+            .to_string()
+            .contains("no recorded latest issuance")
+        );
+        let raced_proof = auth
+            .verify_recovery(&bearer(&raced.token), pin)
+            .await
+            .unwrap();
+        manager.revoke(revoked.family_id, "administrator").unwrap();
+        manager.revoke(raced.family_id, "administrator").unwrap();
+        assert_eq!(
+            auth.verify_recovery(&bearer(&revoked.token), pin)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        assert!(
+            refusal(manager.recover(&raced_proof.proof, &renewal(raced.family_id), "raced"))
+                .to_string()
+                .contains("revoked")
+        );
+        assert_eq!(
+            raced_proof
+                .context
+                .authorization
+                .check_live()
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        // The window closes 24 hours after expiry, for good.
+        wall.0.store(
+            recovered.expires_at_ms
+                + kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS * 1000,
+            SeqCst,
+        );
+        let closed = auth
+            .verify_recovery(&bearer(&recovered.token), pin)
+            .await
+            .unwrap_err();
+        assert_eq!(closed.code, ErrorCode::Unauthorized);
+        assert!(
+            closed.message.contains("window has closed"),
+            "{}",
+            closed.message
+        );
+        // A token this issuer never signed is refused as any bearer is.
+        let (signed, _) = recovered.token.rsplit_once('.').unwrap();
+        let (_, signature) = created.token.rsplit_once('.').unwrap();
+        let forged = format!("{signed}.{signature}");
+        assert_eq!(
+            auth.verify_recovery(&bearer(&forged), pin)
+                .await
+                .unwrap_err()
+                .code,
+            ErrorCode::Unauthorized
+        );
+        let events = audit
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|event| (event.kind.clone(), event.principal.clone()))
+            .collect::<Vec<_>>();
+        let denied = CredentialRecovery {
+            outcome: SecurityOutcome::Denied,
+        };
+        assert_eq!(
+            events,
+            [
+                (denied.clone(), Some("writer".to_owned())),
+                (AuthenticationDenied, None),
+                (AuthenticationSucceeded, Some("writer".to_owned())),
+                (denied.clone(), Some("revoked".to_owned())),
+                (denied, Some("writer".to_owned())),
+                (AuthenticationDenied, None),
+            ]
         );
         node.shutdown().await.unwrap();
     }

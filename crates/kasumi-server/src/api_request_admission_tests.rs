@@ -124,6 +124,47 @@ async fn native_bearer_is_verified_before_any_body_byte_is_read() {
 }
 
 #[tokio::test]
+async fn a_recovery_presentation_is_verified_before_its_body_and_never_as_a_bearer() {
+    let fixture = Fixture::new().await;
+    let router = admitted_native(&fixture, std::time::Duration::from_secs(60));
+    let live = fixture.token("person", "tenant-a", "kasumi:read");
+    // An unverifiable credential, a connection without a client certificate,
+    // and a live bearer of an external issuer are each refused before any
+    // body byte is read; none reaches a handler as an authenticated bearer.
+    for (authorization, certificate) in [
+        ("Bearer invalid", Some([1; 32])),
+        (live.as_str(), None),
+        (live.as_str(), Some([1; 32])),
+    ] {
+        let (body, polled) = StalledBody::body(None);
+        let mut request = HttpRequest::builder()
+            .method("POST")
+            .uri(crate::request_admission::RECOVER_CREDENTIAL_PATH)
+            .version(axum::http::Version::HTTP_2)
+            .header("content-type", "application/grpc")
+            .header("te", "trailers")
+            .header("authorization", authorization)
+            .body(body)
+            .unwrap();
+        if let Some(pin) = certificate {
+            request
+                .extensions_mut()
+                .insert(crate::tls::AuthenticatedTlsPeer::for_test(Some(pin)));
+        }
+        let response = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            router.clone().oneshot(request),
+        )
+        .await
+        .expect("a refused recovery does not wait for its body")
+        .unwrap();
+        assert_eq!(grpc_code(&response), Some(Code::Unauthenticated));
+        assert!(!polled.load(std::sync::atomic::Ordering::SeqCst));
+    }
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn a_connection_durably_records_a_tokens_first_success_and_counts_the_rest() {
     let fixture = Fixture::new().await;
     let router = admitted_native(&fixture, std::time::Duration::from_secs(60));

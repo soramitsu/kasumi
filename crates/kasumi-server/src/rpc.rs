@@ -951,6 +951,12 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         self.credential_rpc(request, credentials::CredentialOperation::Renew)
             .await
     }
+    async fn recover_credential(
+        &self,
+        request: Request<CredentialJsonRequest>,
+    ) -> Result<Response<CredentialJsonResponse>, Status> {
+        self.recover_credential_rpc(request).await
+    }
     async fn revoke_credential(
         &self,
         request: Request<CredentialJsonRequest>,

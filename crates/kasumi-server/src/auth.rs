@@ -26,6 +26,11 @@ pub enum RequestAuditKind {
     AuthenticationDenied,
     AccessDenied,
     TenantSealed,
+    /// One outcome of an online recovery of an expired local credential
+    /// (`Authenticator::verify_recovery`), named by its verified identity.
+    CredentialRecovery {
+        outcome: kasumi_types::SecurityOutcome,
+    },
 }
 
 /// Failed tokens never contribute claimed identity fields. This closed metadata
@@ -86,6 +91,35 @@ struct Claims {
     token_use: Option<String>,
     #[serde(default)]
     kasumi_family: Option<uuid::Uuid>,
+    /// Kept as any JSON value so that no external issuer's identifier
+    /// spelling can fail verification; only recovery reads it.
+    #[serde(default)]
+    jti: Option<serde_json::Value>,
+}
+
+/// An expired local credential the authenticator verified for online
+/// recovery of its own family, and the context that recovery runs under.
+#[derive(Clone, Debug)]
+pub(crate) struct VerifiedRecovery {
+    /// The family's verified identity and resource. Its authorization is
+    /// fenced by revocation and live only for `RECOVERY_REQUEST_MS` or until
+    /// the recovery window closes, whichever is first. Only the recovery
+    /// method receives it.
+    pub(crate) context: RequestContext,
+    pub(crate) proof: crate::local_auth::RecoveryProof,
+}
+
+/// How long the context of one verified recovery request stays live.
+const RECOVERY_REQUEST_MS: u64 = 60_000;
+
+/// A token's verified signed claims and the scopes they grant, with the
+/// trusted time observation captured before any key or signature work and
+/// the digest of the token bytes.
+struct CheckedClaims {
+    claims: Claims,
+    scopes: BTreeSet<Action>,
+    observation: kasumi_clock::ClockObservation,
+    digest: TokenDigest,
 }
 
 /// Tokens whose signed claims one key set has verified, at most this many.
@@ -729,9 +763,10 @@ impl Authenticator {
             .claims)
     }
 
-    /// The request context `authorization` grants, with the digest of its
-    /// token bytes.
-    async fn verify(&self, authorization: &str) -> Result<(RequestContext, TokenDigest)> {
+    /// The signed claims of `authorization`'s bearer token under the current
+    /// keys, with every check a request makes before expiry and liveness:
+    /// signed not-before time, token use, names and scope length.
+    async fn checked_claims(&self, authorization: &str) -> Result<CheckedClaims> {
         // Capture before JWKS/signature work. Delayed verification cannot renew
         // the absolute token lifetime or ignore time spent suspended.
         let observation = self.clock.observe().map_err(|_| unauthorized())?;
@@ -806,6 +841,23 @@ impl Authenticator {
                 _ => None,
             })
             .collect();
+        Ok(CheckedClaims {
+            claims,
+            scopes,
+            observation,
+            digest,
+        })
+    }
+
+    /// The request context `authorization` grants, with the digest of its
+    /// token bytes.
+    async fn verify(&self, authorization: &str) -> Result<(RequestContext, TokenDigest)> {
+        let CheckedClaims {
+            claims,
+            scopes,
+            observation,
+            digest,
+        } = self.checked_claims(authorization).await?;
         let expires_at = claims.exp.checked_mul(1000).ok_or_else(unauthorized)?;
         let authorization = match &self.config.source {
             AuthKeySource::Local { .. } => {
@@ -845,6 +897,119 @@ impl Authenticator {
         ))
     }
 
+    /// Verify an expired local credential presented, over a connection that
+    /// authenticated with `client_certificate`, to recover its own family
+    /// (docs/credential-lifetime.md). Signature, issuer, audience, type,
+    /// token use, names and the family's unrevoked exact claims are checked
+    /// as for any request; then it must have expired, and less than the
+    /// fixed window ago. Whether it is the family's latest issuance is
+    /// checked by the issuer under its writer lock. A refusal before the
+    /// claims verify identifies nobody, as any refused bearer; every later
+    /// refusal is recorded with the verified identity.
+    pub(crate) async fn verify_recovery(
+        &self,
+        authorization: &str,
+        client_certificate: Option<[u8; 32]>,
+    ) -> Result<VerifiedRecovery> {
+        let checked = async {
+            let client_certificate = client_certificate.ok_or_else(|| {
+                Error::new(
+                    ErrorCode::Unauthorized,
+                    "online credential recovery requires a client certificate",
+                )
+            })?;
+            if !matches!(self.config.source, AuthKeySource::Local { .. }) {
+                return Err(Error::new(
+                    ErrorCode::Unauthorized,
+                    "online credential recovery requires the local credential issuer",
+                ));
+            }
+            let CheckedClaims {
+                claims,
+                scopes,
+                observation,
+                ..
+            } = self.checked_claims(authorization).await?;
+            if claims.token_use.as_deref() != Some("access") {
+                return Err(unauthorized());
+            }
+            let proof = crate::local_auth::RecoveryProof {
+                family_id: claims.kasumi_family.ok_or_else(unauthorized)?,
+                issuance_id: claims
+                    .jti
+                    .as_ref()
+                    .and_then(serde_json::Value::as_str)
+                    .and_then(|jti| uuid::Uuid::parse_str(jti).ok())
+                    .ok_or_else(unauthorized)?,
+                expires_at_ms: claims.exp.checked_mul(1000).ok_or_else(unauthorized)?,
+                client_certificate,
+            };
+            Ok((claims, scopes, observation, proof))
+        };
+        let (claims, scopes, observation, proof) = match checked.await {
+            Ok(checked) => checked,
+            Err(error) => return Err(self.refuse(error).await),
+        };
+        let request_id = uuid::Uuid::new_v4().to_string();
+        let granted = (|| {
+            let guard = self.local_credentials()?.guard(
+                proof.family_id,
+                &claims.sub,
+                &claims.tenant,
+                &claims.scope,
+                &claims.kasumi_resource,
+            )?;
+            crate::local_auth::check_recovery_window(proof.expires_at_ms, observation.utc_ms())?;
+            let window_closes_at_ms = proof
+                .expires_at_ms
+                .saturating_add(kasumi_types::EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS * 1000);
+            RequestAuthorization::from_verified_credential_with_liveness(
+                window_closes_at_ms.min(observation.utc_ms().saturating_add(RECOVERY_REQUEST_MS)),
+                &observation,
+                claims.kasumi_resource.clone(),
+                guard,
+            )
+        })();
+        let context = RequestContext {
+            authorization: match granted {
+                Ok(authorization) => authorization,
+                Err(error) => {
+                    let _ = self
+                        .record(RequestAuditEvent {
+                            kind: RequestAuditKind::CredentialRecovery {
+                                outcome: recovery_outcome(error.code),
+                            },
+                            principal: Some(claims.sub),
+                            tenant: Some(claims.tenant),
+                            request_id,
+                        })
+                        .await;
+                    return Err(error);
+                }
+            },
+            principal: claims.sub,
+            tenant: claims.tenant,
+            scopes,
+            request_id,
+        };
+        Ok(VerifiedRecovery { context, proof })
+    }
+
+    /// Durably record one outcome of the recovery `context` was verified for.
+    pub(crate) async fn record_recovery(
+        &self,
+        context: &RequestContext,
+        outcome: kasumi_types::SecurityOutcome,
+    ) -> Result<()> {
+        self.record(RequestAuditEvent {
+            kind: RequestAuditKind::CredentialRecovery { outcome },
+            principal: Some(context.principal.clone()),
+            tenant: Some(context.tenant.clone()),
+            request_id: context.request_id.clone(),
+        })
+        .await
+    }
+
     /// Only an installed external authorization provider advertises discovery.
     pub fn protected_resource_metadata(&self, mcp_resource: &str) -> Option<serde_json::Value> {
         match &self.config.source {
@@ -861,6 +1026,17 @@ impl Authenticator {
 
 fn unauthorized() -> Error {
     Error::new(ErrorCode::Unauthorized, "invalid or missing access token")
+}
+/// A refused recovery was denied by policy, or failed for availability.
+pub(crate) fn recovery_outcome(code: ErrorCode) -> kasumi_types::SecurityOutcome {
+    match code {
+        ErrorCode::Unauthorized
+        | ErrorCode::Forbidden
+        | ErrorCode::InvalidArgument
+        | ErrorCode::NotFound
+        | ErrorCode::Sealed => kasumi_types::SecurityOutcome::Denied,
+        _ => kasumi_types::SecurityOutcome::Failed,
+    }
 }
 fn unavailable() -> Error {
     Error::new(

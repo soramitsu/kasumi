@@ -62,6 +62,10 @@ service KasumiAdmin {
   rpc SecurityAuditPrune(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc CreateCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc RenewCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
+  // Renews a local family from its expired latest credential, presented as
+  // the bearer, within the fixed window after it expired. Its listener
+  // verifies that credential instead of authenticating it as a bearer.
+  rpc RecoverCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc RevokeCredential(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc CredentialStatus(CredentialJsonRequest) returns (CredentialJsonResponse);
   rpc ReadCustody(RetirementReference) returns (CustodyStatusResponse);

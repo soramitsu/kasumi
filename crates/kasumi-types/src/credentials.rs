@@ -6,6 +6,11 @@ use std::collections::BTreeSet;
 use uuid::Uuid;
 
 pub const DEFAULT_CREDENTIAL_LIFETIME_SECONDS: u64 = 3600;
+/// How long after it expires a local family's latest credential may still
+/// renew that family online (`RecoverCredential`, docs/credential-lifetime.md).
+/// A hard bound: nothing configures it longer. Superseded or revoked
+/// credentials never recover, and a credential still live renews instead.
+pub const EXPIRED_CREDENTIAL_RECOVERY_WINDOW_SECONDS: u64 = 24 * 3600;
 fn lifetime() -> u64 {
     DEFAULT_CREDENTIAL_LIFETIME_SECONDS
 }

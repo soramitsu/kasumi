@@ -139,12 +139,21 @@ capacity-rejected cycle waits up to hours or a restart). It prints which
 databases accepted.
 
 `kasumid credential inspect <profile>` prints, offline and without verifying
-the token, when a profile's bearer expires. `credential watch` renews each
-credential at a random point between 50% and 70% of its remaining lifetime and
-retries every 3 to 8 seconds while the daemon is unavailable, so credentials
-issued together do not renew in the same second. A credential that expired
-while the daemon was down cannot renew itself: stop kasumid and run
-`kasumid recover-existing-credentials` for those profiles.
+the token, when a profile's bearer expires and when its online recovery window
+closes. `credential watch` renews each credential at a random point between 50%
+and 70% of its remaining lifetime and retries every 3 to 8 seconds while the
+daemon is unavailable, so credentials issued together do not renew in the same
+second. A credential that expired while the daemon was down recovers online
+when the daemon returns: the watcher presents it once more, and the daemon
+renews the family if that credential is the family's latest, the family is
+unrevoked, and the credential expired less than 24 hours ago. Each recovery is
+audited as `key_administration` under the family's identity
+([credential lifetime](credential-lifetime.md#online-recovery-of-credentials-that-expired-during-an-outage)
+has the rules and threat model). A refused recovery stops the watcher with the
+reason. For those profiles, stop kasumid and run
+`kasumid recover-existing-credentials`. After upgrading kasumid, restart the
+`credential watch` units so that they recover; each family becomes recoverable
+once the new build has renewed it.
 
 ## Placement, networking and credentials
 
