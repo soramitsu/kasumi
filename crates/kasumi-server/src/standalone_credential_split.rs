@@ -148,7 +148,7 @@ async fn apply(
     // certificate. Otherwise they stay unbound, like the family they replace,
     // so that MCP clients using the application's token keep working.
     let binding = |identity: &TlsFiles| -> Result<Option<String>> {
-        Ok(config
+        config
             .auth
             .require_certificate_binding
             .then(|| {
@@ -156,7 +156,7 @@ async fn apply(
                     .load()
                     .map(|loaded| hex::encode(loaded.certificate_pin()))
             })
-            .transpose()?)
+            .transpose()
     };
     let application_binding = binding(&TlsFiles::from(current.identity.clone()))?;
     let operator_binding = binding(&identities["operator-client"])?;
