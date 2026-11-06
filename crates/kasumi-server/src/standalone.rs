@@ -299,6 +299,11 @@ pub(crate) use operator::OperatorState;
 #[path = "standalone_audit_cache.rs"]
 mod audit_cache;
 pub use audit_cache::{TenantAuditCacheMove, move_tenant_audit_cache};
+#[path = "standalone_service_audit.rs"]
+mod service_audit;
+pub use service_audit::{
+    ServiceAuditExport, ServiceAuditPrune, export_service_audit, prune_service_audit,
+};
 
 /// Join local initialization, recovery and key-maintenance operations after
 /// admission has stopped. Completed replies contain no storage owners.

@@ -47,6 +47,10 @@ Backups, audit and recovery:
   audit export|archives <control-profile> <request.json> <output.json>
   audit verify <control-profile> <stream-uuid> <index>
   audit prune <control-profile> <export-page.json> <through-index> <output.json>
+  maintenance export-service-audit <configuration.json> <request.json> <new-directory>
+  maintenance prune-service-audit <configuration.json> <export-page.json> <through-index> <output.json>
+                                             export or prune a service audit that refuses
+                                             records (daemon stopped)
   control-recovery configuration-digest|start|status|resume|stop|phase <arguments>
   local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>
 

@@ -133,18 +133,32 @@ it is higher wherever a listener is reachable from a network.
    `..::a_prune_refuses_what_its_export_does_not_vouch_for_and_repeats_as_a_no_op`
    (kasumi-engine), and
    `runtime::audit_tests::audit_native_tls_prunes_exported_segments_through_the_cli`
+   (kasumi-server).
+
+   A node that already refuses records is now recovered offline. With
+   kasumid stopped, `kasumid maintenance export-service-audit` writes the
+   export pages and `kasumid maintenance prune-service-audit` prunes with the
+   same engine checks. The stopped installation's exclusive operator
+   ownership stands in for the Control credential. The prune's record, from
+   principal `offline-operator`, uses the reserve. The command then deletes
+   the pruned objects and archives the hot log, so the node starts and records
+   again. Test:
+   `standalone::service_audit::tests::a_full_service_audit_is_exported_and_pruned_offline_and_records_again_on_restart`
    (kasumi-server). What remains:
    - Pruning is operator-driven. Legitimate traffic still fills a fixed
      `archive_bytes` between prunes, so export and prune before it is full.
      Successful requests write one record per connection and token plus one
      count (since 1a0f7bc5), which slows that growth.
-   - A prune cannot rescue a node that already refuses records: the CLI's
-     own TLS accept and authentication need records first. Recovery is still
-     to raise the budgets and restart, then export and prune.
+   - A node that already refuses records cannot prune online: the CLI's own
+     TLS accept and authentication need records first, and kasumid cannot
+     record its own start. Recovery means stopping kasumid and running the
+     offline commands on the host.
    - S3 archive destinations are not pruned; the request is refused.
    - A Control administrator can remove exported history. The prune is
      recorded, and `security_audit.prune_minimum_age_days` (off by default)
-     keeps recent records out of reach of a stolen credential.
+     keeps recent records out of reach of a stolen credential. The operator
+     of a stopped installation, who holds its keys anyway, can prune too;
+     that prune is recorded and obeys the same floor.
    - Alert before the archive fills: for example when
      `kasumi_service_audit_archive_bytes` passes 80% of
      `kasumi_service_audit_archive_budget_bytes`, or when

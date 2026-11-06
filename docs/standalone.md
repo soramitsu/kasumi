@@ -219,6 +219,10 @@ The tenant audit cache move copies the installed cache to the configured
 the stored placements and only then removes the old directory. Its procedure,
 resume and rollback are in [operations](operations.md#moving-the-tenant-audit-archive-cache).
 
+`kasumid maintenance export-service-audit` and `prune-service-audit` export
+and prune a service audit that already refuses records; see
+[recovering a node whose audit refuses records](#recovering-a-node-whose-audit-refuses-records).
+
 Administrator recovery issues new private profiles for administrators in the current policies. It does not silently replace policy or change existing credential-family outcomes. It requires the installed encryption and signing keys. Run the renewal watcher for recovered profiles before their one-hour lifetime expires.
 
 The `operator` directory contains plaintext wrapping keys, signing keys, and the CA private key. It is separate from ordinary encrypted data backups. The key-backup command copies the exact installed file keyrings, signer, and CA material, including file keyrings stored outside the default operator directory. It publishes an owner-only manifest after copying every dependency and verifies every digest and wrapping-key generation inventory. Retain the returned manifest digest independently with key escrow; verification compares against this inventory and does not authenticate an untrusted replacement inventory. The command requires local file keyrings; external KMS keys require their provider’s backup procedure. Store this backup separately on a trusted encrypted host. Retain all generations needed by completed data backups. These facilities protect data against storage disclosure while trusting the host running Kasumi; possession of the operator keys and stopped installation is administrative authority.
@@ -319,7 +323,10 @@ Alert well before that on `kasumi_service_audit_archive_bytes` and
 
 ### Pruning exported archives
 
-Archives are pruned only by a Control administrator, after exporting them:
+Archives are pruned only after they are exported. A Control administrator
+prunes them online; the operator of a stopped installation can also prune them
+offline ([recovering a node whose audit refuses records](#recovering-a-node-whose-audit-refuses-records)).
+To prune online:
 
 1. Export the whole range with `kasumid audit export`, page by page, and keep
    every page somewhere safe.
@@ -391,16 +398,61 @@ because timestamps follow the host clock and need not increase with sequence.
 Changing the floor needs the configuration file and a restart, not just a
 credential.
 
-A prune cannot rescue a node that already refuses audit records: the CLI's own
-TLS accept and authentication need records before the request runs. Raise
-`archive_bytes`, and `hot_bytes` if the hot log is full, then restart. Once the
-hot log drains, export and prune, then lower the budgets again; reopening
-requires the bytes in use to fit them.
-
 Releases that predate pruning refuse to open a service audit whose hot log
 holds an `archive_pruned` record. Once that record is archived they open
 again, but they cannot export pruned history or resume an interrupted
 deletion.
+
+### Recovering a node whose audit refuses records
+
+`kasumid audit prune` cannot rescue a node whose audit already refuses
+records. The CLI's own TLS accept and authentication need records before the
+request runs, and kasumid cannot even record its own start. Stop kasumid, then
+export and prune offline:
+
+```sh
+kasumid maintenance export-service-audit /var/lib/kasumi/kasumi.json /secure/audit-request.json /secure/audit-export
+kasumid maintenance prune-service-audit /var/lib/kasumi/kasumi.json /secure/audit-export/page-00000041.json THROUGH_INDEX /secure/audit-prune.json
+```
+
+Like the other `maintenance` commands, both take the stopped installation's
+exclusive ownership and refuse to run while kasumid holds it. Unlike most of
+them, they also run while a local recovery is pending, because completing that
+recovery records audit events too. Their outputs need absolute paths beneath
+an existing owner-only directory, and are never overwritten.
+
+`export-service-audit` takes the request of `kasumid audit export`;
+`{"cursor":null,"limit":1024}` starts a new export. It writes every page of that
+range into a new owner-only directory, `page-00000000.json` onwards, in the
+format of `kasumid audit export`. Without a cursor, the export starts at the
+first retained record and ends at the last record when the command starts. The
+command prints the number of pages and records, the last page, and the
+`audit status` from its start. `THROUGH_INDEX` is at most that status's
+`archive_segments - 1`. The export reads only and records nothing, so it runs
+on a full log. If it stops early, run it again into a new directory, from the
+start or from the last page's cursor.
+
+`prune-service-audit` builds the request from the page as `kasumid audit prune`
+does, and runs the same checks before anything is deleted: the export's
+anchors, the chain of the pruned roots, the last pruned segment, and
+`prune_minimum_age_days`. The stopped installation's exclusive ownership
+stands in for the Control credential and is checked again just before the
+commit. The `archive_pruned` record names principal `offline-operator` and the
+Control tenant, and it fits in the 8 KiB of the hot log reserved for it. The
+result is published to the output in the format of `kasumid audit prune`.
+
+The command then deletes every pruned object and archives the hot log as the
+maintenance worker does, down to half its budget, so kasumid starts with room
+to record. It prints the result and the final status. If the freed archive bytes cannot hold the hot log's
+next segment, it fails after the prune has committed. Then either prune
+through a later index with a new output, or raise `archive_bytes`. After a
+crash, repeat the command with a new output: a range already pruned prunes
+nothing more, and deletion and archiving resume.
+
+Raising the budgets is the other way out, for example before the pages can be
+stored safely. Raise `archive_bytes`, and also `hot_bytes` if the hot log is
+full, then restart. Once the hot log drains, export and prune, then lower the
+budgets again. Reopening requires the bytes in use to fit them.
 
 ## Backup sessions
 

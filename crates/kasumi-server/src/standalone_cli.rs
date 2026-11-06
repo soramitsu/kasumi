@@ -142,6 +142,37 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 )?
             );
         }
+        [command, action, configuration, request, output]
+            if command == "maintenance" && action == "export-service-audit" =>
+        {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &crate::standalone::export_service_audit(
+                        Path::new(configuration),
+                        Path::new(request),
+                        Path::new(output)
+                    )
+                    .await?
+                )?
+            );
+        }
+        [command, action, configuration, exported, through, output]
+            if command == "maintenance" && action == "prune-service-audit" =>
+        {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &crate::standalone::prune_service_audit(
+                        Path::new(configuration),
+                        Path::new(exported),
+                        through.parse().context("invalid archive index")?,
+                        Path::new(output)
+                    )
+                    .await?
+                )?
+            );
+        }
         [command, action, configuration] if command == "maintenance" => match action.as_str() {
             "rotate-wrapping-keys" => {
                 crate::standalone::rotate_wrapping_keys(Path::new(configuration)).await?;
