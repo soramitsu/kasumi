@@ -79,8 +79,11 @@ async fn backup(
     for selected in [&mut profile, &mut operator] {
         selected.mcp_endpoint = config.mcp.protocol.public_url.clone();
         selected.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-        selected.administrative_members.get_mut(&1).unwrap().endpoint =
-            format!("https://localhost:{}", config.admin.listen.port());
+        selected
+            .administrative_members
+            .get_mut(&1)
+            .unwrap()
+            .endpoint = format!("https://localhost:{}", config.admin.listen.port());
     }
     private_files::replace(
         &installed.configuration,
