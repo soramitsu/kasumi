@@ -261,7 +261,9 @@ async fn prepare_exact_recovery_phase(
 // keep its marker, input, and pending phase fixed, and re-submit only the
 // identical *invalid* response until Control rejects it for the expected
 // reason. This never calls BeginEffect, consumes another external ticket, or
-// constructs a successful response.
+// constructs a successful response. Audited phase/status reads can also return
+// AuditUnavailable; retry those within this same window without treating them
+// as a negative proof. Dispatch must still return the expected definite rejection.
 async fn assert_rejected_recovery_response(
     f: &Fixture,
     operation: Uuid,
@@ -282,7 +284,12 @@ async fn assert_rejected_recovery_response(
                 .await
             {
                 Ok(observed) => observed,
-                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error)
+                    if uncertain_control_read(error.code)
+                        || error.code == ErrorCode::AuditUnavailable =>
+                {
+                    continue;
+                }
                 Err(error) => panic!("negative response phase read rejected: {error:?}"),
             };
             assert_eq!(observed.record().operation_id, operation);
@@ -314,7 +321,12 @@ async fn assert_rejected_recovery_response(
             drop(observed);
             let head = match current.recovery_status(context.clone(), operation).await {
                 Ok(head) => head,
-                Err(error) if uncertain_control_read(error.code) => continue,
+                Err(error)
+                    if uncertain_control_read(error.code)
+                        || error.code == ErrorCode::AuditUnavailable =>
+                {
+                    continue;
+                }
                 Err(error) => panic!("negative response status read rejected: {error:?}"),
             };
             assert_eq!(head.record().request.operation_id, operation);
