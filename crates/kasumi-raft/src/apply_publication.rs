@@ -244,7 +244,7 @@ pub(crate) struct ApplyPublication<'a> {
     repeated: bool,
     completion: Option<&'a crate::apply_failure::ApplyFailureSlot>,
     ordinary: Option<u64>,
-    input_retention: Option<&'a crate::ApplicationInputLoan>,
+    input_retentions: &'a [Option<crate::ApplicationInputLoan>],
 }
 
 impl<'a> ApplyPublication<'a> {
@@ -256,7 +256,7 @@ impl<'a> ApplyPublication<'a> {
             repeated: false,
             completion: None,
             ordinary: None,
-            input_retention: None,
+            input_retentions: &[],
         }
     }
 
@@ -267,7 +267,7 @@ impl<'a> ApplyPublication<'a> {
             repeated: false,
             completion: None,
             ordinary: None,
-            input_retention: None,
+            input_retentions: &[],
         }
     }
 
@@ -279,8 +279,9 @@ impl<'a> ApplyPublication<'a> {
         publication.completion = Some(slot);
         publication
     }
-    pub(crate) fn retain_input(&mut self, input: Option<&'a crate::ApplicationInputLoan>) {
-        self.input_retention = input;
+    /// The paid inputs of the entries this publication applies, in log order.
+    pub(crate) fn retain_inputs(&mut self, inputs: &'a [Option<crate::ApplicationInputLoan>]) {
+        self.input_retentions = inputs;
     }
     /// Stores backend ownership before any outer callback. Ordinary failure is
     /// returned as the already admitted diagnostic, never a new composite box.
@@ -495,7 +496,7 @@ impl ApplyPublisher for ApplyPublication<'_> {
             slot.completion().identity().expect("bound identity"),
             ordinal,
         )
-        .with_input_retention(self.input_retention);
+        .with_input_retentions(self.input_retentions);
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             action.run(&invocation, &mut CompletionPublisher { parent: self, slot })
         }));

@@ -14,7 +14,10 @@ use kasumi_types::{
     AdmittedDocumentOwner, Document, DocumentResolver, SharedDocument, StoredDocument,
 };
 use sha2::{Digest, Sha256};
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+};
 
 pub(crate) const BODIES: &str = "engine.document.bodies";
 pub(crate) const BLOBS: &str = "engine.document.blobs";
@@ -303,8 +306,27 @@ impl PreparedDocuments {
     }
 }
 
+/// A generation's stored-document resolver. One bounded read (a query page, a
+/// snapshot read, a lease scan page) can load all of its documents through a
+/// single source view instead of opening and retiring a view per document.
+pub(crate) trait GenerationDocuments: DocumentResolver {
+    /// `None`: this resolver opens no per-document source view to share.
+    fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
+        Ok(None)
+    }
+}
+
+/// One bounded read's loans through a single exact selected source view,
+/// opened by its first load. Each load still admits its own decode workspace
+/// and rechecks key access before lending its document. `finish` retires the
+/// view and fails if the view failed or key access ended.
+pub(crate) trait SharedRead: DocumentResolver {
+    fn finish(self: Box<Self>) -> Result<()>;
+}
+
 /// Each operation borrows the exact selected native source. It never opens
 /// latest and releases its native loan before returning an admitted body.
+#[derive(Clone)]
 pub(crate) struct SelectedDocuments {
     selected: SelectedApplication,
     roots: SourceRootsRef,
@@ -335,31 +357,16 @@ impl SelectedDocuments {
         let result = checked_completion(result, reader.check_access());
         checked_completion(result, reader.close())
     }
-}
 
-fn checked_completion<T>(result: Result<T>, completion: Result<()>) -> Result<T> {
-    match (result, completion) {
-        (result, Ok(())) => result,
-        (Ok(value), Err(error)) => {
-            drop(value);
-            Err(error)
+    pub(crate) fn shared_reader(&self) -> SelectedRead {
+        SelectedRead {
+            documents: self.clone(),
+            reader: Mutex::new(None),
         }
-        // Keep both original owners if decoding and source retirement fail.
-        (Err(original), Err(completion)) => Err(original.context(completion)),
     }
-}
-struct DecodedOwner {
-    document: Document,
-    // LAST: decoded backing dies before its actual admission is returned.
-    _reservation: DocumentWorkspace,
-}
-impl AdmittedDocumentOwner for DecodedOwner {
-    fn document(&self) -> &Document {
-        &self.document
-    }
-}
-impl DocumentResolver for SelectedDocuments {
-    fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+
+    /// Validate the descriptor and admit its wire workspace before any read.
+    fn prepare(&self, descriptor: &StoredDocument) -> Result<PreparedLoad> {
         descriptor.validate()?;
         let limits = limits(usize::try_from(descriptor.body_bytes)?)?;
         let manifest_bytes = usize::try_from(descriptor.body_object_bytes)?;
@@ -376,9 +383,29 @@ impl DocumentResolver for SelectedDocuments {
             )
             .and_then(|v| v.checked_add(descriptor.body_object_bytes.checked_mul(2)?))
             .context("document read workspace overflow")?;
-        let mut reservation =
-            DocumentWorkspace::new(self.roots.primary_installation().1, wire_floor)?;
-        let mut reader = self.selected.open_document_reader(&self.roots)?;
+        let reservation = DocumentWorkspace::new(self.roots.primary_installation().1, wire_floor)?;
+        Ok(PreparedLoad {
+            limits,
+            manifest_bytes,
+            wire_floor,
+            reservation,
+        })
+    }
+
+    /// Read and decode one body through `reader`, which the caller closes or
+    /// rechecks before lending the result.
+    fn decode(
+        &self,
+        descriptor: &StoredDocument,
+        prepared: PreparedLoad,
+        reader: &mut DocumentReader,
+    ) -> Result<Decoded> {
+        let PreparedLoad {
+            limits,
+            manifest_bytes,
+            wire_floor,
+            mut reservation,
+        } = prepared;
         let key = self.scope.key(descriptor.body_object);
         let manifest_wire = reader.with_record(
             &mut reservation,
@@ -455,15 +482,136 @@ impl DocumentResolver for SelectedDocuments {
         drop(canonical);
         drop(manifest);
         drop(manifest_wire);
-        reader.close()?;
+        Ok(Decoded {
+            document,
+            reservation,
+            decoded_work,
+        })
+    }
+}
+
+fn checked_completion<T>(result: Result<T>, completion: Result<()>) -> Result<T> {
+    match (result, completion) {
+        (result, Ok(())) => result,
+        (Ok(value), Err(error)) => {
+            drop(value);
+            Err(error)
+        }
+        // Keep both original owners if decoding and source retirement fail.
+        (Err(original), Err(completion)) => Err(original.context(completion)),
+    }
+}
+
+struct PreparedLoad {
+    limits: BodyLimits,
+    manifest_bytes: usize,
+    wire_floor: u64,
+    reservation: DocumentWorkspace,
+}
+
+struct Decoded {
+    document: Document,
+    // After the document: its backing dies before the admission is returned.
+    reservation: DocumentWorkspace,
+    decoded_work: u64,
+}
+impl Decoded {
+    fn into_shared(self) -> SharedDocument {
+        let Self {
+            document,
+            mut reservation,
+            decoded_work,
+        } = self;
         // The borrowed scan quotes serde's actual decode backing, including
-        // parser capacities. Wire/manifest/native read work has retired now.
+        // parser capacities. This body's wire, manifest and native read work
+        // has ended now.
         reservation.retain(decoded_work);
-        Ok(SharedDocument::from_admitted_owner(Arc::new(
-            DecodedOwner {
-                document,
-                _reservation: reservation,
-            },
-        )))
+        SharedDocument::from_admitted_owner(Arc::new(DecodedOwner {
+            document,
+            _reservation: reservation,
+        }))
+    }
+}
+
+struct DecodedOwner {
+    document: Document,
+    // LAST: decoded backing dies before its actual admission is returned.
+    _reservation: DocumentWorkspace,
+}
+impl AdmittedDocumentOwner for DecodedOwner {
+    fn document(&self) -> &Document {
+        &self.document
+    }
+}
+impl DocumentResolver for SelectedDocuments {
+    fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+        let prepared = self.prepare(descriptor)?;
+        let mut reader = self.selected.open_document_reader(&self.roots)?;
+        let decoded = self.decode(descriptor, prepared, &mut reader)?;
+        reader.close()?;
+        Ok(decoded.into_shared())
+    }
+}
+impl GenerationDocuments for SelectedDocuments {
+    fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
+        Ok(Some(Box::new(self.shared_reader())))
+    }
+}
+
+/// The selected source view one bounded read shares across its loads. It is
+/// the same exact child reader a single load opens, opened at the first load.
+/// A failed load drops it, as a per-document reader would have been dropped,
+/// and the next load opens another.
+pub(crate) struct SelectedRead {
+    documents: SelectedDocuments,
+    // Taken out while in use, so a failure or unwind never puts it back.
+    reader: Mutex<Option<DocumentReader>>,
+}
+impl SelectedRead {
+    fn with_reader<T>(&self, read: impl FnOnce(&mut DocumentReader) -> Result<T>) -> Result<T> {
+        let idle = self.reader.lock().unwrap_or_else(|p| p.into_inner()).take();
+        let mut reader = match idle {
+            Some(reader) => reader,
+            None => self
+                .documents
+                .selected
+                .open_document_reader(&self.documents.roots)?,
+        };
+        let result = read(&mut reader);
+        if result.is_ok() {
+            self.reader
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .get_or_insert(reader);
+        }
+        result
+    }
+
+    /// `SelectedDocuments::with_source` through the shared view.
+    pub(crate) fn with_source<T>(&self, read: impl FnOnce() -> Result<T>) -> Result<T> {
+        self.with_reader(|reader| reader.check_access())?;
+        let result = read();
+        checked_completion(result, self.with_reader(|reader| reader.check_access()))
+    }
+}
+impl DocumentResolver for SelectedRead {
+    fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+        let prepared = self.documents.prepare(descriptor)?;
+        self.with_reader(|reader| {
+            let decoded = self.documents.decode(descriptor, prepared, reader)?;
+            // A single load's close makes this check: decryption and JSON
+            // reconstruction may outlive a key lease.
+            reader.check_access()?;
+            Ok(decoded)
+        })
+        .map(Decoded::into_shared)
+    }
+}
+impl SharedRead for SelectedRead {
+    fn finish(self: Box<Self>) -> Result<()> {
+        match self.reader.into_inner().unwrap_or_else(|p| p.into_inner()) {
+            Some(reader) => reader.close(),
+            None => Ok(()),
+        }
     }
 }

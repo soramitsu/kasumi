@@ -6,7 +6,10 @@
 //! that row and stages only an object the store lacks or holds otherwise.
 use crate::{
     document_encoding::{self, BLOB_CHUNK_BYTES, BodyManifest},
-    document_store::{BLOBS, BODIES, DocumentMeasurement, Scope, limits},
+    document_store::{
+        BLOBS, BODIES, DocumentMeasurement, GenerationDocuments, Scope, SelectedRead, SharedRead,
+        limits,
+    },
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
@@ -1069,6 +1072,42 @@ impl DocumentResolver for BootstrapDocuments {
                 self.selected.load(descriptor)
             }
         })
+    }
+}
+impl GenerationDocuments for BootstrapDocuments {
+    fn shared_read(&self) -> Result<Option<Box<dyn SharedRead>>> {
+        let selected = self.selected.shared_reader();
+        Ok(Some(if self.bootstrap.has_bodies {
+            Box::new(BootstrapRead {
+                bootstrap: self.bootstrap.clone(),
+                selected,
+            })
+        } else {
+            Box::new(selected)
+        }))
+    }
+}
+
+/// `BootstrapDocuments` for one bounded read: both the native lookups and the
+/// access checks around staged bootstrap bodies use one shared selected view.
+struct BootstrapRead {
+    bootstrap: StagedDocuments,
+    selected: SelectedRead,
+}
+impl DocumentResolver for BootstrapRead {
+    fn load(&self, descriptor: &StoredDocument) -> Result<SharedDocument> {
+        self.selected.with_source(|| {
+            if self.bootstrap.contains(descriptor)? {
+                self.bootstrap.load(descriptor)
+            } else {
+                self.selected.load(descriptor)
+            }
+        })
+    }
+}
+impl SharedRead for BootstrapRead {
+    fn finish(self: Box<Self>) -> Result<()> {
+        SharedRead::finish(Box::new(self.selected))
     }
 }
 

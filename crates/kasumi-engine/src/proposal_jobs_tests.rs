@@ -34,6 +34,9 @@ async fn registry_is_bounded_and_uses_the_original_node_charge() {
         crate::test_utils::reserved_payload_bytes(&admission),
         BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1).unwrap()
             + kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().unwrap()
+            + std::mem::size_of::<super::super::proposal_group::Queued>() as u64
+                * MAX_PROPOSALS as u64
+                * 2
     );
     assert_eq!(admission.snapshot().inflight_operations, 0);
     let mut releases = Vec::new();
@@ -57,7 +60,11 @@ async fn registry_is_bounded_and_uses_the_original_node_charge() {
     for release in releases {
         release.send(()).unwrap();
     }
+    // Empty queue backing, like real completed proposals leave behind, must
+    // retire before a successful drain returns the registry's original charge.
+    jobs.queue.lock().unwrap().reserve(MAX_PROPOSALS);
     jobs.drain().await.unwrap();
+    assert_eq!(jobs.queue.lock().unwrap().capacity(), 0);
     assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     assert!(jobs.start_task(async { Ok(()) }).is_err());
 }

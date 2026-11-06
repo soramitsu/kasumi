@@ -610,16 +610,19 @@ impl LogStore {
             .collect()
     }
 
-    /// Validate one standalone entry and build its journal record, which the
-    /// entry's own publication then commits. Nothing is written here. The
+    /// Validate consecutive standalone entries and build their journal
+    /// records, which the entries' one publication then commits with the
+    /// committed cursor at the last of them. Nothing is written here. The
     /// returned owner holds this log's I/O gate, so no purge, truncation,
     /// read or other append runs until it is dropped, and the retained span
     /// changes only through [`Self::install_local_append`].
     pub(crate) async fn prepare_local_append(
         &self,
-        entry: &Entry<TypeConfig>,
+        entries: &[Entry<TypeConfig>],
     ) -> Result<PreparedLocalAppend> {
-        let entries = vec![entry.clone()];
+        let count = entries.len();
+        ensure!(count > 0, "standalone append has no entry");
+        let entries = entries.to_vec();
         let writes = self.entry_writes(&entries)?;
         let gate = self.io_gate.clone().lock_owned().await;
         let store = self.store.clone();
@@ -636,21 +639,23 @@ impl LogStore {
                 .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
             let mut batches = EntryBatches::new(previous, &entries)?;
             ensure!(
-                batches.next_range(&writes)? == Some(0..1)
+                batches.next_range(&writes)? == Some(0..count)
                     && batches.next_range(&writes)?.is_none()
                     && previous.is_none_or(|span| {
                         span.last.index.checked_add(1) == Some(entries[0].log_id.index)
                     }),
-                "standalone append must extend the retained journal by one entry"
+                "standalone append must extend the retained journal"
             );
             let next = RetainedSpan::including(previous, &entries)?;
-            let (application, mut custody) = writes
-                .into_iter()
-                .next()
-                .context("standalone append has no journal record")?;
-            custody.push(committed_write(entries[0].log_id)?);
+            let mut application = Vec::with_capacity(count);
+            let mut custody = Vec::new();
+            for (data, control) in writes {
+                application.extend(data);
+                custody.extend(control);
+            }
+            custody.push(committed_write(next.last)?);
             Ok(PreparedLocalAppend {
-                application: application.into_iter().collect(),
+                application,
                 custody,
                 next,
                 previous,
@@ -722,7 +727,7 @@ fn check_append(
     Ok(())
 }
 
-/// One standalone entry's journal record, prepared for its publication to
+/// Standalone entries' journal records, prepared for their publication to
 /// commit, with the log's I/O gate held until it is installed or dropped.
 pub(crate) struct PreparedLocalAppend {
     pub(crate) application: Vec<WriteOp>,
@@ -1807,6 +1812,15 @@ impl crate::local::LocalSnapshotBuilder for SnapshotBuilder {
     }
 }
 
+/// What became of a standalone group inside the serialized apply worker.
+pub(crate) enum GroupApplied {
+    /// Each entry's response, in order.
+    Applied(Vec<Vec<u8>>),
+    /// The one publication carrying every entry's journal record was refused
+    /// for capacity with no effect: no entry is journaled or applied.
+    Refused,
+}
+
 /// What became of one entry inside the serialized apply worker.
 pub(crate) enum EntryApplied {
     Applied(Vec<u8>),
@@ -1911,6 +1925,124 @@ impl StateMachine {
         })
         .await
     }
+
+    /// Whether this machine's backend applies standalone groups.
+    pub(crate) fn applies_groups(&self) -> bool {
+        self.backend.supports_group_apply()
+    }
+
+    /// [`Self::apply_joined`] for consecutive standalone application entries:
+    /// the backend applies them as it would one by one and publishes their
+    /// effects once, with every entry's journal record, in one transaction.
+    /// `Refused` leaves every entry unjournaled and unapplied.
+    pub(crate) async fn apply_joined_group(
+        &mut self,
+        entries: Vec<Entry<TypeConfig>>,
+        application: Vec<WriteOp>,
+        custody: Vec<WriteOp>,
+    ) -> Result<GroupApplied, StorageError<u64>> {
+        let gate = self.control_gate.clone();
+        self.apply_serialized(move |machine, state| {
+            ensure!(
+                entries.len() > 1
+                    && entries.iter().all(|entry| matches!(
+                        &entry.payload,
+                        EntryPayload::Normal(crate::RaftCommand::Application(_))
+                    )),
+                "a joined group has several application entries"
+            );
+            let deferred = kasumi_store::TenantStorageSet::defer_batch(
+                machine.domains.clone(),
+                application,
+                custody,
+                gate,
+            )?;
+            let outcome = apply_group(machine, state, entries, &deferred)?;
+            if matches!(outcome, Ok(GroupApplied::Refused)) {
+                ensure!(
+                    deferred.state() == kasumi_store::DeferredState::Carried,
+                    "a refused publication did not carry its journal records"
+                );
+            }
+            Ok(outcome)
+        })
+        .await
+    }
+}
+
+// Consecutive application entries on the serialized apply worker, published
+// once with their journal records.
+fn apply_group(
+    machine: &StateMachine,
+    state: &mut AppliedState,
+    entries: Vec<Entry<TypeConfig>>,
+    journal: &kasumi_store::DeferredBatch,
+) -> Result<std::result::Result<GroupApplied, crate::apply_failure::RetainedApplyFailure>> {
+    machine.domains.check_access()?;
+    let mut positions = Vec::with_capacity(entries.len());
+    let mut inputs = Vec::with_capacity(entries.len());
+    let mut retentions = Vec::with_capacity(entries.len());
+    let mut previous = state.log_id;
+    for entry in &entries {
+        let EntryPayload::Normal(command @ crate::RaftCommand::Application(input)) = &entry.payload
+        else {
+            anyhow::bail!("a joined group has only application entries");
+        };
+        ensure!(
+            command.custody_command()?.is_none() && command.seed()?.is_none(),
+            "a joined group has only ordinary application entries"
+        );
+        positions.push(AppliedEntryContext {
+            log_id: entry.log_id,
+            previous,
+            membership: state.membership.clone(),
+            command_sha256: sha256(command.bytes()),
+            retirement_seed: None,
+        });
+        inputs.push(command.bytes());
+        retentions.push(input.input_loan(entry.log_id)?);
+        previous = Some(entry.log_id);
+    }
+    let last = positions.last().context("empty joined group")?;
+    let sink = crate::apply_publication::EntryPublicationSink::new(
+        &machine.domains,
+        last,
+        Some(&machine.control_gate),
+        false,
+    );
+    let mut sink = sink.carrying(journal);
+    let mut publication = crate::apply_publication::ApplyPublication::new_bound(
+        &mut sink,
+        machine.snapshot_buffers.apply_slot(),
+    );
+    publication.retain_inputs(&retentions);
+    let backend = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        machine
+            .backend
+            .apply_group_with_publisher(&positions, &inputs, &mut publication)
+    }));
+    let finished = match publication.finish_observed(backend, || {}) {
+        Ok(finished) => finished,
+        Err(crate::apply_publication::FinishFailure::Single(error)) => return Err(error),
+        Err(crate::apply_publication::FinishFailure::Retained(failure)) => {
+            return Ok(Err(failure));
+        }
+        Err(crate::apply_publication::FinishFailure::Refused) => {
+            return Ok(Ok(GroupApplied::Refused));
+        }
+    };
+    let crate::apply_publication::FinishedPublication {
+        response,
+        acknowledgment,
+    } = finished;
+    let responses = crate::decode_group_responses(&response.data, entries.len())?;
+    ensure!(
+        response.retirement.is_none(),
+        "a joined group has no retirement"
+    );
+    state.log_id = Some(last.log_id);
+    crate::apply_publication::acknowledge_publication(acknowledgment);
+    Ok(Ok(GroupApplied::Applied(responses)))
 }
 
 // One entry, on the serialized apply worker. `journal` is the entry's
@@ -1984,7 +2116,7 @@ fn apply_entry(
         &mut sink,
         machine.snapshot_buffers.apply_slot(),
     );
-    publication.retain_input(input_retention.as_ref());
+    publication.retain_inputs(std::slice::from_ref(&input_retention));
     let backend = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         if retired_metadata {
             crate::ApplyPublisher::commit(

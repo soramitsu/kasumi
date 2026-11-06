@@ -64,7 +64,8 @@ pub struct Generation {
     pub(crate) application_selection:
         std::sync::OnceLock<crate::application_sources::SelectedApplication>,
     pub(crate) staged_documents: Option<crate::document_restore::StagedDocuments>,
-    pub(crate) document_sources: std::sync::OnceLock<Arc<dyn DocumentResolver>>,
+    pub(crate) document_sources:
+        std::sync::OnceLock<Arc<dyn crate::document_store::GenerationDocuments>>,
     _read_reservations: Vec<crate::admission::Reservation>,
 }
 impl Generation {
@@ -77,14 +78,28 @@ impl Generation {
     pub(crate) fn document_resolver(&self) -> Option<&dyn DocumentResolver> {
         self.document_sources
             .get()
-            .map(|resolver| resolver.as_ref())
+            .map(|resolver| resolver.as_ref() as &dyn DocumentResolver)
             .or_else(|| {
                 self.staged_documents
                     .as_ref()
                     .map(|documents| documents as &dyn DocumentResolver)
             })
     }
-    pub(crate) fn clone_document_sources(&self) -> std::sync::OnceLock<Arc<dyn DocumentResolver>> {
+    /// Loans for one bounded read through a single selected source view, or
+    /// `None` when this generation's loads open no per-document view.
+    pub(crate) fn shared_document_read(
+        &self,
+    ) -> anyhow::Result<Option<Box<dyn crate::document_store::SharedRead>>> {
+        Ok(self
+            .document_sources
+            .get()
+            .map(|resolver| resolver.shared_read())
+            .transpose()?
+            .flatten())
+    }
+    pub(crate) fn clone_document_sources(
+        &self,
+    ) -> std::sync::OnceLock<Arc<dyn crate::document_store::GenerationDocuments>> {
         self.document_sources
             .get()
             .cloned()
@@ -94,7 +109,7 @@ impl Generation {
         &self,
         roots: crate::application_sources::SourceRootsRef,
         selected: crate::application_sources::SelectedApplication,
-    ) -> anyhow::Result<Arc<dyn DocumentResolver>> {
+    ) -> anyhow::Result<Arc<dyn crate::document_store::GenerationDocuments>> {
         Ok(match &self.staged_documents {
             Some(staged) => Arc::new(crate::document_restore::BootstrapDocuments::new(
                 staged.clone(),
@@ -566,6 +581,29 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         }
         ordered_command::apply_ordinary(self, input, publisher)
     }
+    fn supports_group_apply(&self) -> bool {
+        self.application_sources.get().is_some()
+    }
+    fn apply_group_with_publisher(
+        &self,
+        positions: &[kasumi_raft::AppliedEntryContext],
+        inputs: &[&[u8]],
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let _native = self
+            .application_sources
+            .get()
+            .and_then(|sources| sources.enter_committed_apply());
+        if positions.len() <= 1 || positions.len() != inputs.len() {
+            return Err(anyhow::anyhow!("group positions and commands differ").into());
+        }
+        let commands = positions
+            .iter()
+            .zip(inputs)
+            .map(|(position, bytes)| ByteBoundCommand::check(position, bytes))
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        ordered_command::apply_ordinary_group(self, commands, publisher)
+    }
     fn capture_snapshot(
         &self,
     ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>
@@ -1025,10 +1063,20 @@ impl TenantEngine {
         command: &Command,
         proposal_bytes: Option<usize>,
     ) -> Result<bool> {
+        let (joined, quote) = self.quote_command_publication(command, proposal_bytes)?;
+        self.admit_publication_bytes(quote)?;
+        Ok(joined)
+    }
+
+    pub(crate) fn quote_command_publication(
+        &self,
+        command: &Command,
+        proposal_bytes: Option<usize>,
+    ) -> Result<(bool, u64)> {
         use anyhow::Context as _;
-        let Some(sources) = self.application_sources.get() else {
-            return Ok(false);
-        };
+        if self.application_sources.get().is_none() {
+            return Ok((false, 0));
+        }
         let mut joined = false;
         let quote = (|| -> anyhow::Result<u64> {
             if matches!(
@@ -1171,6 +1219,13 @@ impl TenantEngine {
                 format!("document proposal admission refused: {error}"),
             )
         })?;
+        Ok((joined, quote))
+    }
+
+    pub(crate) fn admit_publication_bytes(&self, quote: u64) -> Result<()> {
+        let Some(sources) = self.application_sources.get() else {
+            return Ok(());
+        };
         sources.admit_document_publication(quote).map_err(|error| {
             error
                 .chain()
@@ -1181,8 +1236,7 @@ impl TenantEngine {
                         "document publication admission unavailable",
                     )
                 })
-        })?;
-        Ok(joined)
+        })
     }
 
     /// Preparation, response encoding, and immutable row staging precede the
@@ -2611,6 +2665,7 @@ impl TenantEngine {
         Ok(())
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     fn prepare_snapshot_reader(
         &self,
         baseline: &ValidationBaseline<'_>,

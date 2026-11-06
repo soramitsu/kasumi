@@ -68,6 +68,7 @@ pub(crate) struct JoinedAppends {
     applied: AtomicU64,
     refused_before_publication: AtomicU64,
     refused_publication: AtomicU64,
+    groups: AtomicU64,
 }
 #[cfg(any(test, feature = "test-utils"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -79,6 +80,9 @@ pub struct JoinedAppendCounts {
     pub refused_before_publication: u64,
     /// The publication carrying the record was refused for capacity.
     pub refused_publication: u64,
+    /// Groups of several appends committed in one transaction; their entries
+    /// also count in `applied`.
+    pub groups: u64,
 }
 
 // What a snapshot task shares with its group.
@@ -129,6 +133,10 @@ enum Appended {
     Applied(Vec<u8>, LogId<u64>),
     Refused,
 }
+
+/// One command's result in a standalone group write: its response, or a
+/// capacity refusal that proves it reached neither the journal nor the state.
+pub(crate) type GroupMemberResult = std::result::Result<Vec<u8>, crate::LocalAppendCapacityDenied>;
 
 // Lives in the actual worker, including across a cancelled request waiter.
 // A panic or persistence failure fences the whole writer until recovery.
@@ -305,6 +313,7 @@ where
                 .refused_before_publication
                 .load(Ordering::Acquire),
             refused_publication: self.joined.refused_publication.load(Ordering::Acquire),
+            groups: self.joined.groups.load(Ordering::Acquire),
         }
     }
 
@@ -454,6 +463,96 @@ where
     pub(crate) async fn write_joined(&self, command: RaftCommand) -> Result<Vec<u8>> {
         self.append_payload(EntryPayload::Normal(command), true)
             .await
+    }
+
+    /// [`Self::write_joined`] for several commands, in order. A machine that
+    /// applies groups commits them as consecutive entries in one transaction
+    /// with their one publication, and a capacity refusal of it refuses every
+    /// command; otherwise each is written by itself. Any other failure fences
+    /// the writer, as one command's does.
+    pub(crate) async fn write_joined_group(
+        &self,
+        commands: Vec<RaftCommand>,
+    ) -> Result<Vec<GroupMemberResult>> {
+        self.check()?;
+        let mut worker = self.worker.lock().await;
+        self.finish_worker(&mut worker).await;
+        self.check()?;
+        let mut guard = self.state.clone().lock_owned().await;
+        self.check()?;
+        let metrics = self.metrics.clone();
+        let failed = self.failed.clone();
+        let snapshot = self.snapshot_work();
+        let (response, receive) = tokio::sync::oneshot::channel();
+        #[cfg(any(test, feature = "test-utils"))]
+        let before_apply = self.before_apply.lock().unwrap().take();
+        // As append_payload: the retained worker owns the serialization guard.
+        *worker = Some(tokio::spawn(async move {
+            let mut fence = WorkFence {
+                failed: failed.clone(),
+                complete: false,
+            };
+            let state = guard.as_mut().context("local writer has shut down")?;
+            #[cfg(any(test, feature = "test-utils"))]
+            if let Some(hook) = before_apply {
+                tokio::task::spawn_blocking(hook).await?;
+            }
+            let count = commands.len();
+            let mut results = Vec::with_capacity(count);
+            let mut applied = None;
+            if count > 1 && state.applies_groups() {
+                match state.append_group(commands).await? {
+                    GroupAppended::Applied(responses, last) => {
+                        results.extend(responses.into_iter().map(Ok));
+                        applied = Some(last);
+                    }
+                    GroupAppended::Refused => {
+                        results.extend((0..count).map(|_| Err(crate::LocalAppendCapacityDenied)));
+                    }
+                }
+            } else {
+                for command in commands {
+                    match state.append(EntryPayload::Normal(command), true).await? {
+                        Appended::Applied(data, position) => {
+                            results.push(Ok(data));
+                            applied = Some(position);
+                        }
+                        Appended::Refused => results.push(Err(crate::LocalAppendCapacityDenied)),
+                    }
+                }
+            }
+            if let Some(applied) = applied {
+                {
+                    let mut metrics = metrics.lock().unwrap_or_else(|p| p.into_inner());
+                    metrics.last_applied = Some(applied);
+                    metrics.last_log_index = Some(applied.index);
+                }
+                if state
+                    .next_index
+                    .saturating_sub(state.snapshot_index.map_or(0, |index| index + 1))
+                    >= state.snapshot_interval
+                {
+                    state.schedule_snapshot(&snapshot).await?;
+                }
+            }
+            fence.complete = true;
+            let _ = response.send(results);
+            Ok(())
+        }));
+        drop(worker);
+        match receive.await {
+            Ok(results) => Ok(results),
+            Err(_) => {
+                let mut worker = self.worker.lock().await;
+                self.finish_worker(&mut worker).await;
+                self.report
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .outcome(None)
+                    .map_err(anyhow::Error::from)?;
+                anyhow::bail!("local worker stopped before delivering its responses")
+            }
+        }
     }
 
     /// Append one Blank entry: the state machine applies it as metadata, so the
@@ -751,7 +850,11 @@ where
             )
             && let Some(machine) = self.machine.joined()
         {
-            let mut prepared = match self.log.prepare_local_append(&entry).await {
+            let mut prepared = match self
+                .log
+                .prepare_local_append(std::slice::from_ref(&entry))
+                .await
+            {
                 Ok(prepared) => prepared,
                 // Refused for capacity before anything was written.
                 Err(error) => {
@@ -796,4 +899,90 @@ where
         self.next_index = next;
         Ok(Appended::Applied(response, position))
     }
+
+    // Whether the next appends may commit as one joined group.
+    fn applies_groups(&mut self) -> bool {
+        self.next_index != 0
+            && self.log.serving()
+            && self
+                .machine
+                .joined()
+                .is_some_and(|machine| machine.applies_groups())
+    }
+
+    // Consecutive application entries whose journal records commit in their
+    // one publication's transaction (see `LocalGroup::write_joined_group`).
+    async fn append_group(&mut self, commands: Vec<RaftCommand>) -> Result<GroupAppended> {
+        let first = self.next_index;
+        let count = u64::try_from(commands.len())?;
+        let next = first
+            .checked_add(count)
+            .context("local journal index exhausted")?;
+        ensure!(
+            first != 0 && count > 1 && self.log.serving(),
+            "a joined group extends a serving journal"
+        );
+        let entries = commands
+            .into_iter()
+            .zip(first..next)
+            .map(|(command, index)| {
+                ensure!(
+                    matches!(command, RaftCommand::Application(_)),
+                    "a joined group has only application commands"
+                );
+                Ok(Entry {
+                    log_id: LogId::new(CommittedLeaderId::new(self.term, self.id), index),
+                    payload: EntryPayload::Normal(command),
+                    initialization: None,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let position = entries.last().context("empty joined group")?.log_id;
+        let mut prepared = match self.log.prepare_local_append(&entries).await {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                crate::capacity_refusal::take(error)?;
+                #[cfg(any(test, feature = "test-utils"))]
+                self.joined
+                    .refused_before_publication
+                    .fetch_add(count, Ordering::AcqRel);
+                return Ok(GroupAppended::Refused);
+            }
+        };
+        let application = std::mem::take(&mut prepared.application);
+        let custody = std::mem::take(&mut prepared.custody);
+        let machine = self
+            .machine
+            .joined()
+            .context("a joined group requires the serving machine")?;
+        match machine
+            .apply_joined_group(entries, application, custody)
+            .await?
+        {
+            crate::storage::GroupApplied::Applied(responses) => {
+                self.log.install_local_append(prepared)?;
+                #[cfg(any(test, feature = "test-utils"))]
+                {
+                    self.joined.applied.fetch_add(count, Ordering::AcqRel);
+                    self.joined.groups.fetch_add(1, Ordering::AcqRel);
+                }
+                self.next_index = next;
+                Ok(GroupAppended::Applied(responses, position))
+            }
+            crate::storage::GroupApplied::Refused => {
+                #[cfg(any(test, feature = "test-utils"))]
+                self.joined
+                    .refused_publication
+                    .fetch_add(count, Ordering::AcqRel);
+                Ok(GroupAppended::Refused)
+            }
+        }
+    }
+}
+
+// A group of appended entries, or a proof that capacity was refused before any
+// of them reached the journal.
+enum GroupAppended {
+    Applied(Vec<Vec<u8>>, LogId<u64>),
+    Refused,
 }

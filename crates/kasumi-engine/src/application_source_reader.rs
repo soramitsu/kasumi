@@ -14,6 +14,13 @@ impl SourceRoots {
     pub(crate) fn primary_installation(&self) -> (&Arc<TenantStorageSet>, &Arc<NodeAdmission>) {
         (&self.stores, &self.admission)
     }
+    /// Source cells prepared so far, and those still registered. Every
+    /// document reader takes one of its own.
+    #[cfg(test)]
+    pub(crate) fn reader_cells_for_test(&self) -> (u64, usize) {
+        let gate = self.gate.lock().unwrap_or_else(|p| p.into_inner());
+        (gate.next, gate.cells.len())
+    }
 }
 impl SelectedApplication {
     /// Validate the immutable owner pairing without opening a reader or
@@ -273,6 +280,11 @@ impl SourceReader {
         result
     }
     pub(crate) fn close(mut self) -> Result<()> {
+        // Keep the unique handle counted until this consuming close has claimed
+        // retirement. Otherwise a concurrent preparation's retirement sweep can
+        // take the zero-handle cell and make this close observe its in-progress
+        // native close as an incomplete read.
+        self.roots.retire(&self.cell, true);
         self.release();
         if self.cell.capture_failed()
             || self.cell.close_failure.get().is_some()
@@ -295,10 +307,13 @@ impl SourceReader {
             self.released = true;
             let previous = self.cell.handles.fetch_sub(1, Ordering::AcqRel);
             assert_eq!(previous, 1, "noncloneable primary reader handle");
+            #[cfg(test)]
+            close_test_hook::after_release();
             self.roots.retire(&self.cell, false);
         }
     }
 }
+
 impl Drop for SourceReader {
     fn drop(&mut self) {
         self.release();
@@ -452,6 +467,36 @@ impl DocumentReader {
                 }
             }
             borrowed => borrowed.check_access(),
+        }
+    }
+}
+
+#[cfg(test)]
+pub(super) mod close_test_hook {
+    use std::cell::RefCell;
+
+    thread_local! {
+        static RELEASE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+        static CLOSE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+    }
+
+    pub(crate) fn on_release(hook: impl FnOnce() + 'static) {
+        RELEASE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(crate) fn on_close(hook: impl FnOnce() + 'static) {
+        CLOSE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+    }
+
+    pub(super) fn after_release() {
+        if let Some(hook) = RELEASE.with(|slot| slot.borrow_mut().take()) {
+            hook();
+        }
+    }
+
+    pub(crate) fn before_native_close() {
+        if let Some(hook) = CLOSE.with(|slot| slot.borrow_mut().take()) {
+            hook();
         }
     }
 }

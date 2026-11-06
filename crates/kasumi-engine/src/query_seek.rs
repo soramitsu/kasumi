@@ -67,6 +67,7 @@ fn expired() -> Error {
 /// One seek page of `request` from `generation`, with its continuation.
 pub(super) fn seek_page(
     generation: &Arc<crate::Generation>,
+    reads: &DocumentReads,
     request: &QueryRequest,
     cancellation: &QueryCancellation,
     memory: &mut QueryMemory<Reservation>,
@@ -106,7 +107,7 @@ pub(super) fn seek_page(
     let page = generation
         .indexes
         .seek_page(
-            &generation.document_source(&request.collection)?,
+            &reads.source(&request.collection)?,
             request,
             cursor.as_ref().map(|cursor| cursor.after.as_slice()),
             &state.limits,

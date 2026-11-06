@@ -2,7 +2,9 @@
 //! These tests exercise the production document store, not a replacement cache.
 use super::completion_tests::{OrdinaryFixture, definition};
 use super::*;
-use crate::document_store::{BLOBS, BODIES, PreparedDocuments, SelectedDocuments};
+use crate::document_store::{
+    BLOBS, BODIES, GenerationDocuments, PreparedDocuments, SelectedDocuments,
+};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use kasumi_store::WriteOp;
 use kasumi_types::{Document, Mutation, MutationBatch, Operation, Precondition, WriteReceipt};
@@ -1362,6 +1364,288 @@ async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corru
     drop(native);
     drop(current_owner);
     drop(old_owner);
+    drop(staged);
+    drop(selected);
+    drop(bootstrap);
+    fixture.close().await
+}
+
+fn reader_cells(fixture: &Fixture) -> (u64, usize) {
+    fixture.roots.reader_cells_for_test()
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture retains the actual native failure custody."
+)]
+async fn document_store_native_close_cannot_be_stolen_by_a_retirement_sweep()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use super::super::reader::close_test_hook;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let fixture = Fixture::new().await?;
+    let selected = fixture.select()?;
+    let (_, open) = reader_cells(&fixture);
+    let reader = selected.open_document_reader(&fixture.roots)?;
+    let (resume, wait) = mpsc::channel();
+    let sweep = Arc::new(Mutex::new(None));
+    let worker = sweep.clone();
+    let roots = fixture.roots.clone();
+    // Give the ordinary sweep the first chance to retire immediately after the
+    // public reader releases its handle. If it can steal the close, keep that
+    // native close in progress until the public close has returned.
+    close_test_hook::on_release(move || {
+        let (observed, observe) = mpsc::channel();
+        *worker.lock().unwrap() = Some(std::thread::spawn(move || {
+            let started = observed.clone();
+            close_test_hook::on_close(move || {
+                started.send(()).unwrap();
+                wait.recv_timeout(Duration::from_secs(10)).unwrap();
+            });
+            roots.retry_retirements();
+            let _ = observed.send(());
+        }));
+        observe.recv_timeout(Duration::from_secs(10)).unwrap();
+    });
+    let closed = reader.close();
+    let _ = resume.send(());
+    sweep.lock().unwrap().take().unwrap().join().unwrap();
+    assert_eq!(reader_cells(&fixture).1, open);
+    drop(selected);
+    fixture.close().await?;
+    closed.context("retirement sweep stole a consuming reader close")?;
+    Ok(())
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_shared_read_loads_every_document_through_one_reader()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let bootstrap = fixture.select()?;
+    let inputs = [
+        document("shared-proof", 1, hex::encode(proof())),
+        document("shared-short", 2, "short".into()),
+        document("shared-base64", 3, STANDARD.encode(proof())),
+    ];
+    let mut prepared = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
+    let descriptors = inputs
+        .iter()
+        .map(|input| prepared.stage(input))
+        .collect::<Result<Vec<_>>>()?;
+    let (_, selected) = publish(&fixture, None, prepared.writes())?;
+    drop(prepared);
+    drop(bootstrap);
+    let documents = resolver(&fixture, &selected)?;
+    let (opened, open) = reader_cells(&fixture);
+    // A single load opens and retires a reader of its own.
+    for (descriptor, input) in descriptors.iter().zip(&inputs) {
+        assert_eq!(descriptor.load(&documents)?.as_ref(), input);
+    }
+    assert_eq!(reader_cells(&fixture), (opened + 3, open));
+    // A shared read opens one at its first load and keeps it until finished.
+    let shared = documents
+        .shared_read()?
+        .context("selected documents share their reader")?;
+    assert_eq!(reader_cells(&fixture), (opened + 3, open));
+    let before = fixture.storage.admission.snapshot().reserved_bytes;
+    let mut loaded = Vec::new();
+    for _ in 0..2 {
+        for (descriptor, input) in descriptors.iter().zip(&inputs) {
+            let document = descriptor.load(shared.as_ref())?;
+            assert_eq!(document.as_ref(), input);
+            loaded.push(document);
+        }
+    }
+    assert_eq!(reader_cells(&fixture), (opened + 4, open + 1));
+    // Every load still holds its own decode admission until its owner drops.
+    let charged = fixture.storage.admission.snapshot().reserved_bytes;
+    assert!(charged > before);
+    drop(loaded);
+    assert!(fixture.storage.admission.snapshot().reserved_bytes < charged);
+    shared.finish()?;
+    assert_eq!(reader_cells(&fixture), (opened + 4, open));
+    // An unfinished read, as after a failed or unwound worker, still retires.
+    let shared = documents
+        .shared_read()?
+        .context("selected documents share their reader")?;
+    assert_eq!(descriptors[0].load(shared.as_ref())?.as_ref(), &inputs[0]);
+    assert_eq!(reader_cells(&fixture), (opened + 5, open + 1));
+    drop(shared);
+    assert_eq!(reader_cells(&fixture), (opened + 5, open));
+    assert_eq!(fixture.storage.admission.snapshot().reserved_bytes, before);
+    drop(documents);
+    drop(selected);
+    fixture.close().await
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_shared_read_failure_drops_only_its_reader()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let bootstrap = fixture.select()?;
+    let broken = document("broken", 1, hex::encode(proof()));
+    let intact = document("intact", 1, "intact".into());
+    let mut prepared = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
+    let broken_descriptor = prepared.stage(&broken)?;
+    let intact_descriptor = prepared.stage(&intact)?;
+    let (key, mut value) = prepared
+        .writes()
+        .iter()
+        .find_map(|write| match write {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } if namespace == BLOBS => Some((key.clone(), value.clone())),
+            _ => None,
+        })
+        .context("proof chunk was not staged")?;
+    let (position, original) = publish(&fixture, None, prepared.writes())?;
+    drop(prepared);
+    // Fault injection is confined to this synthetic encrypted installation.
+    value[0] ^= 1;
+    let (_, changed) = publish(
+        &fixture,
+        Some(&position),
+        &[WriteOp::put(BLOBS, key, value)],
+    )?;
+    let documents = resolver(&fixture, &changed)?;
+    let shared = documents
+        .shared_read()?
+        .context("selected documents share their reader")?;
+    let (opened, open) = reader_cells(&fixture);
+    assert_eq!(intact_descriptor.load(shared.as_ref())?.as_ref(), &intact);
+    assert!(broken_descriptor.load(shared.as_ref()).is_err());
+    // The failed load dropped its reader, as a single load's is dropped.
+    assert_eq!(reader_cells(&fixture), (opened + 1, open));
+    assert_eq!(intact_descriptor.load(shared.as_ref())?.as_ref(), &intact);
+    assert_eq!(reader_cells(&fixture), (opened + 2, open + 1));
+    shared.finish()?;
+    assert_eq!(reader_cells(&fixture), (opened + 2, open));
+    // Neither the failure nor the shared read retired either generation's view.
+    assert_eq!(intact_descriptor.load(&documents)?.as_ref(), &intact);
+    assert_eq!(
+        broken_descriptor
+            .load(&resolver(&fixture, &original)?)?
+            .as_ref(),
+        &broken
+    );
+    drop(documents);
+    drop(changed);
+    drop(original);
+    drop(bootstrap);
+    fixture.close().await
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_shared_read_rechecks_its_source_through_finish()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let bootstrap = fixture.select()?;
+    let input = document("sealed-shared", 1, STANDARD.encode(proof()));
+    let mut prepared = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
+    let descriptor = prepared.stage(&input)?;
+    let (_, selected) = publish(&fixture, None, prepared.writes())?;
+    drop(prepared);
+    let documents = resolver(&fixture, &selected)?;
+    let finished = documents
+        .shared_read()?
+        .context("selected documents share their reader")?;
+    let loading = documents
+        .shared_read()?
+        .context("selected documents share their reader")?;
+    assert_eq!(descriptor.load(finished.as_ref())?.as_ref(), &input);
+    assert_eq!(descriptor.load(loading.as_ref())?.as_ref(), &input);
+    fixture.roots.seal_consumers();
+    // An open shared reader lends nothing more once its source is sealed,
+    assert!(descriptor.load(loading.as_ref()).is_err());
+    // and its final check fails a read that loaded everything before the seal.
+    assert!(finished.finish().is_err());
+    loading.finish()?;
+    drop(documents);
+    drop(selected);
+    drop(bootstrap);
+    fixture.close().await
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_bootstrap_shared_read_uses_one_selected_reader()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let bootstrap = fixture.select()?;
+    let staged_input = document("staged", 1, hex::encode(proof()));
+    let native_input = document("native", 1, "native".into());
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    let staged_descriptor = builder.push(&staged_input)?;
+    let staged = builder.finish()?;
+    let mut prepared = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
+    let native_descriptor = prepared.stage(&native_input)?;
+    let (_, selected) = publish(&fixture, None, prepared.writes())?;
+    drop(prepared);
+    let documents = crate::document_restore::BootstrapDocuments::new(
+        staged.clone(),
+        fixture.roots.clone(),
+        selected.clone(),
+        TENANT,
+        &incarnation(),
+    )?;
+    let (opened, open) = reader_cells(&fixture);
+    // A single load opens two readers: one around the staged lookup and one
+    // for the native body.
+    assert_eq!(native_descriptor.load(&documents)?.as_ref(), &native_input);
+    assert_eq!(reader_cells(&fixture), (opened + 2, open));
+    let shared = documents
+        .shared_read()?
+        .context("bootstrap documents share their selected reader")?;
+    for _ in 0..2 {
+        assert_eq!(
+            staged_descriptor.load(shared.as_ref())?.as_ref(),
+            &staged_input
+        );
+        assert_eq!(
+            native_descriptor.load(shared.as_ref())?.as_ref(),
+            &native_input
+        );
+    }
+    assert_eq!(reader_cells(&fixture), (opened + 3, open + 1));
+    shared.finish()?;
+    assert_eq!(reader_cells(&fixture), (opened + 3, open));
+    // Staged bodies stay governed by the selected source's access gate.
+    let shared = documents
+        .shared_read()?
+        .context("bootstrap documents share their selected reader")?;
+    assert_eq!(
+        staged_descriptor.load(shared.as_ref())?.as_ref(),
+        &staged_input
+    );
+    fixture.roots.seal_consumers();
+    assert!(staged_descriptor.load(shared.as_ref()).is_err());
+    assert!(native_descriptor.load(shared.as_ref()).is_err());
+    shared.finish()?;
+    drop(documents);
     drop(staged);
     drop(selected);
     drop(bootstrap);

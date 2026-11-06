@@ -1098,6 +1098,8 @@ impl SourceRoots {
             // No root/list/gate locks during native close or disposition work.
             let mut still_shared = None;
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                #[cfg(test)]
+                reader::close_test_hook::before_native_close();
                 view.map(|view| match view.try_unwrap() {
                     Ok(view) => view.consume(TenantStorageReadView::close),
                     Err(view) => {

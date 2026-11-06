@@ -64,6 +64,7 @@ async fn completed_scan_keeps_output_charged_after_lease_expiry_until_abandoned(
     let work = ScanWork {
         lease: input.handle,
         generation: input.generation,
+        deadline: std::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT,
         ids: input.scan_ids,
         has_more: input.scan_has_more,
         request,

@@ -17,12 +17,17 @@ const MAX_PROPOSALS: usize = 32;
 
 #[derive(Default)]
 pub(super) struct Jobs {
+    // Queue backing retires before State's exact metadata credit on drop.
+    // Detached children retain their own shared registry credit until finished.
+    queue: Arc<Mutex<std::collections::VecDeque<super::proposal_group::Queued>>>,
     state: Mutex<State>,
     entry_queue: tokio::sync::Mutex<()>,
     changed: tokio::sync::Notify,
     // Registration and terminal failure use the same short synchronous gate.
     // A failed child closes it before releasing its final poll, including panic.
     closed: Arc<Mutex<bool>>,
+    #[cfg(test)]
+    before_gate: Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
 }
 #[derive(Default)]
 struct State {
@@ -76,6 +81,10 @@ impl Drop for TerminalFence {
             *self.closed.lock().unwrap_or_else(|p| p.into_inner()) = true;
         }
     }
+}
+
+fn missing_response() -> anyhow::Error {
+    anyhow::anyhow!("proposal batch driver failed; its original failure is retained")
 }
 
 impl Jobs {
@@ -159,9 +168,16 @@ impl Jobs {
     }
     fn required_bytes() -> anyhow::Result<u64> {
         BackgroundWorkBudget::required_bytes(MAX_PROPOSALS, 1)?
-            .checked_add(kasumi_types::SharedBudgetCharge::required_bytes::<
-                Reservation,
-            >()?)
+            .checked_add(
+                std::mem::size_of::<super::proposal_group::Queued>() as u64
+                    * MAX_PROPOSALS as u64
+                    * 2,
+            )
+            .and_then(|bytes| {
+                bytes.checked_add(
+                    kasumi_types::SharedBudgetCharge::required_bytes::<Reservation>().ok()?,
+                )
+            })
             .ok_or_else(|| std::io::Error::from(std::io::ErrorKind::InvalidInput).into())
     }
 
@@ -232,25 +248,73 @@ impl Jobs {
 
     pub(super) fn start(
         &self,
-        mut work: ProposalWork,
+        work: ProposalWork,
         command: ProposalCommand,
         max_bytes: usize,
         entry: Option<Entry<'_>>,
     ) -> Result<Call<Response>> {
+        let queue = self.queue.clone();
+        let gate = work.admission_gate.clone();
+        #[cfg(test)]
+        let before_gate = self.before_gate.lock().unwrap().take();
         self.start_task_at(
             Box::pin(async move {
-                let bytes = work.run(command, max_bytes).await?;
-                work._reservation.retain_workspace();
-                Ok(Response {
-                    bytes,
-                    _reservation: work._reservation,
-                    _registration: work._registration,
-                })
+                let (send, mut receive) = tokio::sync::oneshot::channel();
+                queue.lock().unwrap_or_else(|p| p.into_inner()).push_back(
+                    super::proposal_group::Queued {
+                        work,
+                        command,
+                        max_bytes,
+                        send,
+                    },
+                );
+                #[cfg(test)]
+                if let Some(wait) = before_gate {
+                    let _ = wait.await;
+                }
+                // Caller cancellation never cancels this registered child. A
+                // driver owns every dequeued original through its response.
+                loop {
+                    // A prior driver can finish this original while its worker
+                    // waits for the gate. Unrelated later work must not delay
+                    // or replace that response.
+                    let guard = tokio::select! {
+                        biased;
+                        response = &mut receive => return response.map_err(|_| missing_response()),
+                        guard = gate.clone().lock_owned() => guard,
+                    };
+                    match receive.try_recv() {
+                        Ok(response) => return Ok(response),
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                            return Err(missing_response());
+                        }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                    }
+                    let batch = super::proposal_group::take(
+                        &mut queue.lock().unwrap_or_else(|p| p.into_inner()),
+                    );
+                    super::proposal_group::run(batch).await?;
+                    drop(guard);
+                    // Queue insertion and gate acquisition can occur in a
+                    // different order. This prefix may have answered only
+                    // earlier callers: keep driving until our own answer, even
+                    // if those earlier callers exit through their ready result.
+                }
             }),
             entry,
         )
     }
 
+    pub(super) fn response(work: ProposalWork, bytes: Vec<u8>) -> Response {
+        work._reservation.retain_workspace();
+        Response {
+            bytes,
+            _reservation: work._reservation,
+            _registration: work._registration,
+        }
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
     fn start_task<T: Send + 'static>(
         &self,
         task: impl Future<Output = anyhow::Result<T>> + Send + 'static,
@@ -347,6 +411,18 @@ impl Jobs {
     /// other requests concurrently. A prior completed slot cannot satisfy this
     /// boundary, and an initial Pending read is not mistaken for admission.
     #[cfg(test)]
+    pub(super) fn queued_for_test(&self) -> usize {
+        self.queue.lock().unwrap_or_else(|p| p.into_inner()).len()
+    }
+
+    #[cfg(test)]
+    pub(super) fn pause_next_before_gate_for_test(&self) -> tokio::sync::oneshot::Sender<()> {
+        let (release, wait) = tokio::sync::oneshot::channel();
+        assert!(self.before_gate.lock().unwrap().replace(wait).is_none());
+        release
+    }
+
+    #[cfg(test)]
     pub(super) async fn wait_for_admission<F: Future>(&self, mut request: std::pin::Pin<&mut F>) {
         let before = self
             .state
@@ -403,6 +479,12 @@ impl Jobs {
         }
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
         if retained.is_none() && state.report.issues().is_empty() {
+            let mut queue = self.queue.lock().unwrap_or_else(|p| p.into_inner());
+            assert!(
+                queue.is_empty(),
+                "drained proposal children left queued work"
+            );
+            *queue = std::collections::VecDeque::new();
             state.budget = None;
         }
         state.report.outcome(retained)

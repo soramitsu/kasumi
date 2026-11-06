@@ -308,6 +308,258 @@ pub(super) fn apply_ordinary(
     }
 }
 
+/// A standalone group's ordinary commands, each applied to the unpublished
+/// result of the ones before it exactly as applying them one by one would
+/// apply it, then published once at the last member's position.
+struct PreparedOrderedGroup<'engine, 'entry> {
+    positions: Vec<&'entry kasumi_raft::AppliedEntryContext>,
+    responses: Vec<Vec<u8>>,
+    first_revision: u64,
+    owner: OutcomeOwner<'engine>,
+}
+impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
+    fn prepare(
+        engine: &'engine TenantEngine,
+        inputs: Vec<ByteBoundCommand<'entry>>,
+        retained: Vec<Option<kasumi_raft::AdmittedApplicationInput>>,
+    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
+        let (mut apply, first_revision) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+            anyhow::ensure!(
+                inputs.len() > 1 && inputs.len() == retained.len(),
+                "standalone group members and inputs differ"
+            );
+            let first_revision = engine
+                .revision_base
+                .checked_add(inputs[0].position.log_id.index)
+                .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
+            let apply = ApplyOwner::lock(engine, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+            Ok((apply, first_revision))
+        })?;
+        let mut positions = Vec::with_capacity(inputs.len());
+        let mut responses = Vec::with_capacity(inputs.len());
+        let mut changed = ChangedIds::new();
+        let mut receipts = Vec::new();
+        let mut frozen = 0usize;
+        for (input, retention) in inputs.into_iter().zip(retained) {
+            let position = input.position;
+            let (command, applied) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+                let command = decode_committed_command(input.bytes)?;
+                anyhow::ensure!(
+                    position.retirement_seed.is_none()
+                        && matches!(command.operation, Operation::Mutate(_)),
+                    "a standalone group has only ordinary mutations"
+                );
+                let revision = engine
+                    .revision_base
+                    .checked_add(position.log_id.index)
+                    .ok_or_else(|| anyhow::anyhow!("logical revision exhausted"))?;
+                let applied = crate::staged_terminal::AppliedIdentity::ordered(
+                    &engine.incarnation,
+                    revision,
+                    command.timestamp_ms,
+                    position,
+                )?;
+                // Installed before preparation can allocate, as for one entry.
+                apply.retain_member_input(retention, position.log_id);
+                Ok((command, applied))
+            })?;
+            let prepared = engine.prepare_command_ordered(
+                &apply,
+                &command,
+                &applied,
+                &ApplyScope::Committed,
+            )?;
+            kasumi_store::ScratchOperationFailure::ordinary(|| {
+                responses.push(serde_json::to_vec(&prepared.outcome)?);
+                positions.push(position);
+                match prepared.generation {
+                    None => {
+                        anyhow::ensure!(
+                            prepared.receipt_publication.is_none(),
+                            "frozen group member has a receipt"
+                        );
+                        frozen += 1;
+                    }
+                    Some(mut candidate) => {
+                        for (name, ids) in prepared.changed {
+                            changed.entry(name).or_default().extend(ids);
+                        }
+                        if let Some(mut publication) = prepared.receipt_publication {
+                            // Later members read this pair before it is durable.
+                            let view = publication.chained_view()?;
+                            Arc::get_mut(&mut candidate)
+                                .ok_or_else(|| anyhow::anyhow!("group candidate escaped"))?
+                                .receipts = view;
+                            receipts.push(publication);
+                        }
+                        apply.chain(candidate)?;
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            let owner = if frozen == positions.len() {
+                OutcomeOwner::Frozen(apply)
+            } else {
+                anyhow::ensure!(
+                    frozen == 0,
+                    "a standalone group mixes frozen and applied members"
+                );
+                let mut candidate = apply.take_chained()?;
+                let last = Arc::get_mut(&mut candidate)
+                    .ok_or_else(|| anyhow::anyhow!("group candidate escaped"))?;
+                last.receipts = last.receipts.unchained();
+                OutcomeOwner::Candidate(
+                    apply
+                        .accept(candidate, changed)?
+                        .with_group_receipts(receipts)?,
+                )
+            };
+            Ok(Self {
+                positions,
+                responses,
+                first_revision,
+                owner,
+            })
+        })
+    }
+
+    fn publish(
+        self,
+        engine: &TenantEngine,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+        completion: &mut crate::application_sources::CompletionLoan<'_>,
+    ) -> anyhow::Result<()> {
+        let Self {
+            positions,
+            responses,
+            first_revision,
+            owner,
+        } = self;
+        let last = *positions.last().context("empty standalone group")?;
+        let response = kasumi_raft::AppliedResponse {
+            data: kasumi_raft::encode_group_responses(&responses)?,
+            retirement: None,
+        };
+        drop(responses);
+        match owner {
+            OutcomeOwner::Candidate(mut accepted) => {
+                accepted.require_publication(engine, Some(last))?;
+                let sources = engine
+                    .application_sources
+                    .get()
+                    .context("ordinary application sources absent")?;
+                let writes = accepted.prepare_group_publication_writes(
+                    sources,
+                    last,
+                    positions.len(),
+                    first_revision,
+                )?;
+                let candidate = accepted.candidate();
+                let Some(selection) = completion.publish_source(
+                    last,
+                    response,
+                    publisher,
+                    writes.writes(),
+                    candidate.state.retired,
+                )?
+                else {
+                    return Ok(());
+                };
+                let resolver =
+                    candidate.resolver_for_selection(sources.clone(), selection.clone())?;
+                candidate
+                    .document_sources
+                    .set(resolver)
+                    .map_err(|_| anyhow::anyhow!("candidate document source already installed"))?;
+                candidate
+                    .application_selection
+                    .set(selection)
+                    .map_err(|_| {
+                        anyhow::anyhow!("candidate application selection already installed")
+                    })?;
+                accepted.publish();
+                Ok(())
+            }
+            OutcomeOwner::Frozen(apply) => {
+                apply.require_engine(engine)?;
+                // The completion publisher keeps any original sink failure.
+                let _ = publisher.commit(response, &[]);
+                drop(apply);
+                Ok(())
+            }
+        }
+    }
+}
+
+struct OrdinaryGroupAction<'engine, 'entry> {
+    engine: &'engine TenantEngine,
+    inputs: Option<Vec<ByteBoundCommand<'entry>>>,
+    sources: &'engine crate::application_sources::SourceRootsRef,
+}
+impl kasumi_raft::CompletionAction for OrdinaryGroupAction<'_, '_> {
+    fn run(
+        &mut self,
+        invocation: &kasumi_raft::CompletionInvocation<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let mut completion = self.sources.completion()?.enter(invocation)?;
+        let inputs = self
+            .inputs
+            .take()
+            .context("ordinary group action repeated")?;
+        let mut retained = Vec::with_capacity(inputs.len());
+        for (index, input) in inputs.iter().enumerate() {
+            retained.push(match invocation.input_retention_at(index) {
+                Some(input_loan) => {
+                    let memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> =
+                        self.sources.memory_owner().clone();
+                    input_loan
+                        .require_memory(&memory)
+                        .map_err(|_| anyhow::anyhow!("apply input memory owner differs"))?;
+                    input_loan
+                        .require_bytes(input.position.log_id, input.bytes)
+                        .map_err(|_| {
+                            anyhow::anyhow!("apply input differs from its accepted encoded owner")
+                        })?;
+                    Some(input_loan.retained_input())
+                }
+                None => None,
+            });
+        }
+        let prepared = PreparedOrderedGroup::prepare(self.engine, inputs, retained)?;
+        prepared
+            .publish(self.engine, publisher, &mut completion)
+            .map_err(Into::into)
+    }
+}
+
+/// Apply a standalone group of ordinary commands through the installed
+/// ordinary completion, as one invocation with one publication.
+pub(super) fn apply_ordinary_group(
+    engine: &TenantEngine,
+    inputs: Vec<ByteBoundCommand<'_>>,
+    publisher: &mut dyn kasumi_raft::ApplyPublisher,
+) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+    let sources = engine
+        .application_sources
+        .get()
+        .context("a standalone group requires installed application sources")?;
+    let expected = sources.completion()?.identity();
+    let mut action = OrdinaryGroupAction {
+        engine,
+        inputs: Some(inputs),
+        sources,
+    };
+    match publisher.with_completion(expected, &mut action) {
+        Ok(()) | Err(kasumi_raft::CompletionCallError::Recorded) => Ok(()),
+        Err(error) => Err(kasumi_store::ScratchOperationFailure::Operation(
+            error.into(),
+        )),
+    }
+}
+
 #[cfg(test)]
 #[path = "ordered_command_publication_tests.rs"]
 mod publication_tests;

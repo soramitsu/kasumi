@@ -267,25 +267,28 @@ impl Database {
             queries: vec![],
             time_bounds: None,
         };
+        let generation = self
+            .hydrate_history(
+                input.generation,
+                &snapshot.documents,
+                &[],
+                &cancellation,
+                &mut input.memory,
+            )
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let work = SnapshotWork {
-            generation: self
-                .hydrate_history(
-                    input.generation,
-                    &snapshot.documents,
-                    &[],
-                    &cancellation,
-                    &mut input.memory,
-                )
-                .await?,
+            generation,
             request: snapshot,
             cancellation: cancellation.clone(),
+            deadline: deadline.into_std(),
             _permit: permit,
             memory: input.memory,
             registration,
         };
         let worker = tokio::task::spawn_blocking(move || work.run());
         let output = tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(5), worker) => result
+            result = tokio::time::timeout_at(deadline, worker) => result
                 .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot page deadline exceeded"))?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot page worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -411,17 +414,20 @@ impl Database {
             || input.generation.state.collections[&request.collection]
                 .definition
                 .strict_read_audit;
+        let generation = self
+            .hydrate_history(
+                input.generation,
+                &keys,
+                &[],
+                &cancellation,
+                &mut input.memory,
+            )
+            .await?;
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
         let work = ScanWork {
             lease: input.handle.clone(),
-            generation: self
-                .hydrate_history(
-                    input.generation,
-                    &keys,
-                    &[],
-                    &cancellation,
-                    &mut input.memory,
-                )
-                .await?,
+            generation,
+            deadline: deadline.into_std(),
             ids: input.scan_ids,
             has_more: input.scan_has_more,
             request: request.clone(),
@@ -432,7 +438,7 @@ impl Database {
         };
         let worker = tokio::task::spawn_blocking(move || work.run());
         let output = tokio::select! {
-            result = tokio::time::timeout(Duration::from_secs(5), worker) => result
+            result = tokio::time::timeout_at(deadline, worker) => result
                 .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot scan deadline exceeded"))?
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot scan worker failed"))?,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
@@ -452,6 +458,7 @@ impl Database {
 struct ScanWork {
     lease: Arc<LeaseHandle>,
     generation: Arc<crate::Generation>,
+    deadline: std::time::Instant,
     ids: Vec<String>,
     has_more: bool,
     request: ScanSnapshotPage,
@@ -480,17 +487,19 @@ impl ScanOutput {
 }
 impl ScanWork {
     fn run(mut self) -> ScanOutput {
-        let response = self.evaluate();
+        let generation = self.generation.clone();
+        let response =
+            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads));
         ScanOutput {
             response,
             memory: self.memory,
             _registration: self.registration,
         }
     }
-    fn evaluate(&mut self) -> Result<SnapshotScanPage> {
+    fn evaluate(&mut self, reads: &DocumentReads) -> Result<SnapshotScanPage> {
         let state = &self.generation.state;
         let collection = &state.collections[&self.request.collection];
-        let source = self.generation.document_source(&self.request.collection)?;
+        let source = reads.source(&self.request.collection)?;
         let request = &self.request;
         let cancellation = &self.cancellation;
         let ids = &self.ids;
