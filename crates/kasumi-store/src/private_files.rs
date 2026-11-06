@@ -84,6 +84,44 @@ pub fn read(path: &Path, maximum: usize) -> Result<Zeroizing<Vec<u8>>> {
     Ok(bytes)
 }
 
+/// Read a configuration, certificate or operator request file. These decide
+/// what the node trusts, so like operator material they must belong to this
+/// user (or root) and be writable by no one else. Unlike operator material
+/// they may be readable by others and may be reached through a symlink; the
+/// checks apply to the file actually opened.
+pub fn read_trusted(path: &Path, maximum: usize) -> Result<Vec<u8>> {
+    let file = File::open(path)?;
+    let metadata = file.metadata()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let owner = metadata.uid();
+        ensure!(
+            owner == unsafe { libc::geteuid() } || owner == 0,
+            "{} belongs to another user (uid {owner})",
+            path.display()
+        );
+        ensure!(
+            metadata.mode() & 0o022 == 0,
+            "{} is writable by its group or by others; remove that with chmod go-w",
+            path.display()
+        );
+    }
+    #[cfg(not(unix))]
+    anyhow::bail!("trusted configuration requires Unix file permissions");
+    ensure!(
+        metadata.len() <= maximum as u64,
+        "configuration/certificate file exceeds byte limit"
+    );
+    let mut bytes = Vec::new();
+    file.take(maximum as u64 + 1).read_to_end(&mut bytes)?;
+    ensure!(
+        bytes.len() <= maximum,
+        "configuration/certificate file exceeds byte limit"
+    );
+    Ok(bytes)
+}
+
 pub fn create(path: &Path, bytes: &[u8]) -> Result<()> {
     check_directory(path.parent().context("operator file has no parent")?)?;
     let mut file = options().write(true).create_new(true).open(path)?;
@@ -290,5 +328,34 @@ mod tests {
         assert_eq!(allocations, 1);
         assert_eq!(requested, material.len());
         assert!(read(&path, material.len() - 1).is_err());
+    }
+
+    #[test]
+    fn trusted_files_may_be_shared_for_reading_but_not_for_writing() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = crate::test_utils::private_tempdir().unwrap();
+        let path = root.path().join("ca.pem");
+        std::fs::write(&path, b"certificate").unwrap();
+        let mode = |mode| std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode));
+        for readable in [0o600, 0o640, 0o644, 0o444] {
+            mode(readable).unwrap();
+            assert_eq!(read_trusted(&path, 64).unwrap(), b"certificate");
+        }
+        let link = root.path().join("link.pem");
+        std::os::unix::fs::symlink(&path, &link).unwrap();
+        assert_eq!(read_trusted(&link, 64).unwrap(), b"certificate");
+        for writable in [0o620, 0o602, 0o664, 0o666] {
+            mode(writable).unwrap();
+            let error = read_trusted(&path, 64).unwrap_err().to_string();
+            assert!(
+                error.contains("writable by its group or by others"),
+                "{error}"
+            );
+            // A symlink cannot hide the file it reaches.
+            assert!(read_trusted(&link, 64).is_err());
+        }
+        mode(0o644).unwrap();
+        assert!(read_trusted(&path, 10).is_err());
+        assert!(read_trusted(&root.path().join("missing.pem"), 64).is_err());
     }
 }

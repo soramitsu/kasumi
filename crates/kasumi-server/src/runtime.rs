@@ -22,7 +22,6 @@ use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
 use std::{
     collections::{BTreeMap, BTreeSet},
-    io::Read,
     net::SocketAddr,
     path::{Path, PathBuf},
     sync::Arc,
@@ -815,19 +814,11 @@ pub(crate) fn file_secret(path: &str) -> Result<Zeroizing<String>> {
         .into()
     })
 }
+/// A configuration, certificate or operator request file, refused if another
+/// user owns it or it is writable by anyone but its owner.
 pub(crate) fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>> {
-    let file = std::fs::File::open(path).with_context(|| format!("opening {}", path.display()))?;
-    ensure!(
-        file.metadata()?.len() <= limit as u64,
-        "configuration/certificate file exceeds byte limit"
-    );
-    let mut bytes = Vec::new();
-    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
-    ensure!(
-        bytes.len() <= limit,
-        "configuration/certificate file exceeds byte limit"
-    );
-    Ok(bytes)
+    kasumi_store::private_files::read_trusted(path, limit)
+        .with_context(|| format!("opening {}", path.display()))
 }
 pub(crate) fn read_private_file(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>> {
     kasumi_store::private_files::read(path, limit)

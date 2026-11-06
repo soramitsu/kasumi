@@ -139,9 +139,15 @@ it is higher wherever a listener is reachable from a network.
 6. **The generated standalone profile is over-privileged (low-medium).** The
    default application credential carries read, write, admin and audit scopes.
    Recommended: separate application and administrator credentials.
-7. **Configuration and CA files are read without ownership checks (low).**
-   Secret files are checked; trust roots and the authentication configuration
-   are not. Recommended: the same owner and no-group/other-write check.
+7. **Fixed: configuration and CA files were read without ownership checks
+   (was low).** Secret files were checked; trust roots, the authentication
+   configuration and operator request files were not. They are all read
+   through `read_bounded` (`kasumi-server/src/runtime.rs`), which now
+   refuses a file that another user owns (root may own it) or that its group
+   or others may write (`kasumi_store::private_files::read_trusted`). Unlike
+   secrets they may stay readable by others and may be reached through a
+   symlink; the checks apply to the file actually opened. Covered by
+   `private_files::tests::trusted_files_may_be_shared_for_reading_but_not_for_writing`.
 
 Two lower-severity items affect replicated deployments only. The Raft peer
 listener buffers and parses a request body of up to 40 MiB before mapping the
