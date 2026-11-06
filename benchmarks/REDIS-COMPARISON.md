@@ -72,6 +72,12 @@ scans exactly 50 rows, and writes a successful receipt or `EXEC` reply.
   `SIGTERM` stop and after `SIGKILL`.
 - **Disk usage** is the allocated size of the data directory after the
   workloads.
+- **Compaction during a case** (Kasumi only) comes from the node database's
+  `kasumi_storage_*` metrics, read with the installation's Control profile
+  before and after each case: the compaction cycle and phase at both ends
+  and the bytes reclaimed and relocated in between. A cycle that runs inside
+  a write case slows it, so compare Kasumi builds only on cases with the same
+  compaction activity.
 
 ## Running it
 
@@ -102,7 +108,20 @@ and is deleted afterwards unless `--keep-work` is given. Add
 records the host, Redis version, arguments and load average in
 `results.jsonl`; nothing it writes contains credentials or document bodies.
 Kasumi credentials expire after an hour, so the script runs
-`kasumid credential watch` for the length of the run.
+`kasumid credential watch` on the tenant and Control profiles for the length
+of the run.
+
+A Kasumi compaction cycle starts once the retained files grow past a
+threshold, so where one falls depends on how much the earlier cases wrote,
+and a build that writes faster in one case can move a cycle into the next.
+`--compact-before start` requests a cycle just before every Kasumi workload
+case, so it runs inside the case; `--compact-before finish` requests one and
+waits until it completes, so the case starts on a freshly compacted store.
+Use one of them to compare builds on a change that is not about compaction;
+the default leaves compaction alone. On macOS a full flush (`F_FULLFSYNC`) is
+device-wide, so any other process flushing to the same device, such as a
+second benchmark, slows every Kasumi write case: run builds one after the
+other on an otherwise quiet device, never side by side.
 
 To profile a server during a workload on macOS, attach `sample PID 10` while
 the driver runs (Linux: `perf record -g -p PID`). The driver alone can also be
@@ -208,6 +227,17 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 7. **Token verification.** Ed25519 signature checking and claim decoding
    cost about 140-180 µs of CPU per request on this host. This is fixed:
    see [changes](#changes-measured-here).
+8. **Compaction cycles slow writes while they run.** On 10,000 documents a
+   cycle makes about 290 durable publications, because evacuation rewrites or
+   skips each directory leaf in a root publication of its own. It takes 4–12 s
+   on an idle node (31 s once) and 6–14 s under 16-client mixed load, and in
+   8 of 10 instrumented runs that load committed 15–65% fewer times per second
+   during the cycle than after it. The store's node worker also holds the
+   opening's lock, which every registered read and write takes to begin,
+   through each maintenance step and through its warm-up call's wait for an
+   in-flight commit. When single commits took 1–8 s under another benchmark's
+   flushes, that wait reached 6–7 s; in one such run a client's 5 s connection
+   deadline expired.
 
 ## Changes measured here
 
@@ -217,7 +247,8 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 | Unknown token key IDs no longer re-read the private signer file (security fix, same file) | committed, caf0d2a9 | every request naming an unknown `kid` re-parsed every signing key | at most one reload per replacement of the signer file |
 | Closing readers sleep on the database owner's lock instead of spinning on `yield_now` (`kasumi-store/src/storage_opening/reads.rs`) | committed, 1f375877 | server CPU per point read 2,318 µs, per range scan 32.9 ms (16 clients, release build without LTO, two alternating rounds) | 1,908 µs (−18%), 21.0 ms (−36%); throughput unchanged within noise |
 | Record a bearer token's success once per connection and count the later ones in one record when the connection changes token or closes; refusals are still recorded one by one (`kasumi-server/src/auth.rs`, `authenticate_on`) | committed, 1a0f7bc5 | 1-client point reads 20/s, p50 44 ms, 7.3 ms server CPU per read; 16 clients 117/s, p50 172 ms; range scans 7.3/s (1 client) and 15/s (16); mixed 90/10 16/s and 30/s | 2,015/s, p50 0.31 ms, 0.30 ms CPU per read; 6,900/s, p50 1.9 ms; 77/s and 56/s; 71/s and 58/s; writes unchanged within noise |
-| A commit releases the kv state mutex while it writes and flushes its root, so reads continue on the previous root. It records the cache identities it supersedes outside the cache and reconciles them once the root is durable; maintenance, warm-up, configuration and close wait on a separate commit gate (`kasumi-kv/src/core.rs`, `disk_state.rs`) | committed, 89e011ed | mixed 90/10: 189/s with 1 client (p99 47–138 ms) and 252/s with 16; point reads 4,431/s (1 client) and 9,569/s (16); profiled under 16-client mixed load, 93% of kv point-read samples waited for the mutex | 240/s (p99 34–60 ms) and 211/s, with two of five 16-client runs at 107–146/s while compaction ran; 4,809/s and 9,546/s; 64% |
+| A commit releases the kv state mutex while it writes and flushes its root, so reads continue on the previous root. It records the cache identities it supersedes outside the cache and reconciles them once the root is durable; maintenance, warm-up, configuration and close wait on a separate commit gate (`kasumi-kv/src/core.rs`, `disk_state.rs`) | committed, 89e011ed | mixed 90/10: 189/s with 1 client (p99 47–138 ms) and 252/s with 16; point reads 4,431/s (1 client) and 9,569/s (16); profiled under 16-client mixed load, 93% of kv point-read samples waited for the mutex | 240/s (p99 34–60 ms) and 211/s, a 16-client drop that did not reproduce once compaction was recorded or pinned (next row); 4,809/s and 9,546/s; 64% |
+| Record each Kasumi case's compaction cycle, phases and reclaimed bytes from the node's metrics, and pin the cycle with `--compact-before start` or `finish` (`benchmarks/redis-comparison/run.py`, `report.py`) | committed, c78efd57 | lock split, 16-client mixed 90/10: 252 → 211/s (−16%), two of five runs after the change at 107–146/s, with no record of which windows had a compaction cycle | the same sequence, recorded: in four more rounds the only 16-client window with a cycle was the old build's, at 50/s. Pinned, with no other benchmark on the device (medians of three rounds; the rounds of both builds overlap): 151 vs 151/s with the cycle in the window, 164 vs 208/s with it finished first. Both builds made 284–300 maintenance publications per cycle; the node worker ran 74–82% of its attempted steps before the change and 62–74% after |
 
 The per-connection row comes from a separate A/B run of two builds without
 LTO at 51f47f27 (10,000 documents of 1 KiB, 15 s per case, two alternating
@@ -245,9 +276,35 @@ documents of 1 KiB, 20 s per case, three to five alternating rounds per
 build, host load average 19–122, medians), plus a 15 s `sample` profile of
 each build under the 16-client mixed workload; the 89e011ed commit message
 has the ranges and the profile. The 16-client mixed case is bound by the serialized
-writes, and its slow runs coincided with an active compaction cycle. It is
-not settled whether the change lets the store's maintenance worker compete
-harder with foreground writes.
+writes, and its slow runs coincided with an active compaction cycle.
+
+The compaction row tested whether the change lets the store's maintenance
+worker compete harder with foreground writes ([raw
+results](results/redis-comparison-20261106/compaction-ab/), same host,
+harness, document count and durations). It does not. Where a cycle falls
+depends on how much the earlier cases wrote: the load of 10,000 documents
+leaves about 229 MB of retained files against a 268 MB trigger, so the first
+cycle starts in the first write case after it and the next once another
+256 MiB is retained, and the change made single-client `mixed`, the case
+before the 16-client one, 27% faster. Four more alternating rounds of the
+original `point-read,mixed` sequence with the original two builds put a
+cycle in one 16-client window only, the old build's (50/s against 138–219/s
+without). With the cycle pinned, two builds carrying temporary counters
+(0d3fb2d4 and 89e011ed) ran five alternating rounds of each condition. The
+medians come from the last three, which ran with no other benchmark on the
+device (another session's flush-heavy rounds overlapped most runs of the
+first two): with the cycle in the window 118–211/s before the change and
+83–212/s after, with it finished first 162–226/s and 122–236/s. Over all
+five rounds both builds made 284–300 durable maintenance publications per
+cycle, and maintenance held the writer gate for 3.1–5.4 s of each cycle
+before the change and 3.5–5.9 s after. The node worker found the gate free
+less often after the change (62–74% of its attempted steps against 74–82%),
+so more of the same work fell to the inline steps of writes. The 16-client
+difference of the original rounds did not reproduce. In the raw results,
+`sequence.jsonl`, `pinned.jsonl` (the original builds, two rounds) and
+`pinned-instrumented.jsonl` hold the harness lines, each with an `ab_run`
+naming its build, condition and round, and `instrumented-counters.jsonl`
+holds the counters of each case.
 
 ## Summary: where Kasumi stands against Redis
 
