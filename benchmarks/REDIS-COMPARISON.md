@@ -259,12 +259,17 @@ rounds per build for reads and four for writes and mixed, medians, host load
 average 90–510 from other work; [raw
 results](results/redis-comparison-20261106/per-connection-audit/), same host
 and harness), so compare it only with its own baseline column. Writes did
-not change beyond noise in that run. A point write costs about three kv
-commits and 18 device syncs (measured with one client after this change: the
-journal append, the apply publication and a third commit the trace did not
-attribute), and each commit issues six syncs on this host (three segment-log
-syncs, one directory sync, two root syncs), which the `sync-trace` build of
-`kasumi-store` counts directly. In some rounds of both builds, 16-client
+not change beyond noise in that run. A point write, like a batch of ten
+documents, costs two kv commits: the journal append and the apply
+publication. Each commit issues six syncs on this host (three segment-log
+syncs, one directory sync, two root syncs), so a write costs 12. The
+`sync-trace` build of `kasumi-store` counts them and, with
+`KASUMI_SYNC_TRACE_STACKS=1`, attributes each commit to its callers. A third
+commit per write appears only while a compaction cycle runs, when the node
+worker's maintenance publications interleave about one for one with
+foreground writes. A batch of more than 32 documents, such as the harness's
+100-document load batches, also stages its mutation receipt in a commit of
+its own. In some rounds of both builds, 16-client
 writes stalled for 16 to 111 seconds. Every stall fell inside a window in
 which another session was running flush-heavy Kasumi benchmarks on the same
 SSD, though not every overlapping phase stalled. Their `F_FULLFSYNC` calls
@@ -272,7 +277,10 @@ slow each of Kasumi's syncs and its buffered writes, and Kasumi applies one
 write at a time through its proposal gate with no group commit, so each of
 16 closed-loop clients waits behind the other 15 writes: about 16 times the
 slowed time of one write. Group commit, or fewer syncs per commit, would
-shrink that amplification.
+shrink that amplification. So would committing a write's journal entry
+together with its apply, which halves its syncs. That needs the apply to end
+cleanly when its one commit is refused for capacity, as the journal append
+does today.
 
 The lock-split row compares two builds without LTO at 47a37475 (10,000
 documents of 1 KiB, 20 s per case, three to five alternating rounds per

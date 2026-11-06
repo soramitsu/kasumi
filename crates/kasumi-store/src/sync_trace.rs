@@ -102,34 +102,98 @@ mod imp {
     static STACKS_ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
 
     fn caller_key() -> String {
-        let trace = std::backtrace::Backtrace::force_capture().to_string();
-        let mut frames = Vec::new();
+        caller_key_from(&std::backtrace::Backtrace::force_capture().to_string())
+    }
+
+    /// The innermost frames of a captured trace in the crates that request
+    /// durable writes, as "function crate/src/file.rs:line", followed by the
+    /// kv step that finished the transaction ("[complete_staged
+    /// disk_state.rs:1114]" for a foreground commit, a `disk_compact.rs` step
+    /// for compaction, also when it runs inline before a foreground write).
+    /// A frame's symbol line is followed by its "at path:line:column" line.
+    /// With `debug = line-tables-only` a symbol is a bare function name
+    /// ("{closure#0}") without its crate path, so the crate is read from the
+    /// source path. Commits with no caller frame (the node worker's
+    /// maintenance) are keyed by their outermost store frames instead.
+    pub(super) fn caller_key_from(trace: &str) -> String {
+        const CALLERS: [&str; 3] = ["kasumi-engine/", "kasumi-raft/", "kasumi-server/"];
+        const STORES: [&str; 2] = ["kasumi-store/", "kasumi-kv/"];
+        const KV_STEPS: &str = "kasumi-kv/src/disk_";
+        let mut callers: Vec<String> = Vec::new();
+        let mut stores: Vec<String> = Vec::new();
+        let mut step: Option<String> = None;
+        let mut symbol: Option<&str> = None;
         for line in trace.lines() {
-            let line = line.trim();
-            let Some((_, symbol)) = line.split_once(": ") else {
+            let line = line.trim_start();
+            let Some(location) = line.strip_prefix("at ") else {
+                symbol = Some(line.split_once(": ").map_or(line, |(_, name)| name));
                 continue;
             };
-            if !(symbol.starts_with("kasumi_engine::")
-                || symbol.starts_with("kasumi_raft::")
-                || symbol.starts_with("kasumi_server::")
-                || symbol.starts_with("<kasumi_engine::")
-                || symbol.starts_with("<kasumi_raft::"))
-            {
+            let Some(name) = symbol.take() else {
                 continue;
+            };
+            let Some((_, relative)) = location.rsplit_once("/crates/") else {
+                continue;
+            };
+            let relative = relative.rsplit_once(':').map_or(relative, |(path, _)| path);
+            let name = short_name(name);
+            if step.is_none()
+                && let Some(file) = relative.strip_prefix(KV_STEPS)
+            {
+                step = Some(format!("{name} disk_{file}"));
             }
-            let symbol = symbol.rsplit_once("::h").map_or(symbol, |(name, _)| name);
-            if frames.last() != Some(&symbol.to_owned()) {
-                frames.push(symbol.to_owned());
-            }
-            if frames.len() == 4 {
-                break;
+            let frame = format!("{name} {relative}");
+            if CALLERS.iter().any(|krate| relative.starts_with(krate)) {
+                if callers.last() != Some(&frame) {
+                    callers.push(frame);
+                }
+                if callers.len() == 4 {
+                    break;
+                }
+            } else if callers.is_empty() && STORES.iter().any(|krate| relative.starts_with(krate)) {
+                stores.push(frame);
             }
         }
-        if frames.is_empty() {
-            "unattributed".into()
+        let mut key = if !callers.is_empty() {
+            callers.join(" < ")
+        } else if !stores.is_empty() {
+            let outer = stores.len().saturating_sub(3);
+            format!("store: {}", stores[outer..].join(" < "))
         } else {
-            frames.join(" < ")
+            return "unattributed".into();
+        };
+        if let Some(step) = step {
+            key.push_str(&format!(" [{step}]"));
         }
+        key
+    }
+
+    // A symbol's trailing path segments up to its function, without generic
+    // arguments or impl qualifiers: "kasumi_raft::storage::LogStore::
+    // append_original::{{closure}}" becomes "append_original::{{closure}}",
+    // "<impl X>::step" becomes "step" and "poll<T>" becomes "poll".
+    fn short_name(name: &str) -> String {
+        let mut plain = String::with_capacity(name.len());
+        let mut depth = 0usize;
+        let mut previous = '\0';
+        for character in name.chars() {
+            match character {
+                '<' => depth += 1,
+                '>' if previous != '-' => depth = depth.saturating_sub(1),
+                _ if depth == 0 => plain.push(character),
+                _ => {}
+            }
+            previous = character;
+        }
+        let mut start = plain.len();
+        while let Some(separator) = plain[..start].rfind("::") {
+            let segment = &plain[separator + 2..start];
+            start = separator;
+            if !segment.is_empty() && !segment.starts_with('{') {
+                return plain[separator + 2..].to_owned();
+            }
+        }
+        plain
     }
     static LOCK_WAITS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
     static LOCK_WAIT_NANOS: [AtomicU64; 2] = [const { AtomicU64::new(0) }; 2];
@@ -299,7 +363,7 @@ mod imp {
                 .unwrap_or_else(|poison| poison.into_inner())
                 .clone();
             stacks.sort_by_key(|(_, count)| std::cmp::Reverse(*count));
-            for (stack, count) in stacks.iter().take(12) {
+            for (stack, count) in stacks.iter().take(24) {
                 let _ = writeln!(
                     std::io::stderr().lock(),
                     "kasumi-sync-trace-stack total={count} {stack}"
@@ -311,3 +375,89 @@ mod imp {
 }
 
 pub(crate) use imp::{commit, lock, site, skipped, sync};
+
+#[cfg(all(test, feature = "sync-trace"))]
+mod tests {
+    use super::imp::caller_key_from;
+
+    // Frame lines as `std::backtrace::Backtrace` prints them in a release
+    // build with `debug = line-tables-only`: bare function names, one
+    // source location each, innermost first.
+    fn trace(frames: &[(&str, &str)]) -> String {
+        frames
+            .iter()
+            .enumerate()
+            .map(|(index, (name, location))| {
+                format!("  {index:2}: {name}\n             at {location}:7:9\n")
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_foreground_commit_is_keyed_by_its_callers_and_kv_step() {
+        let trace = trace(&[
+            ("trace", "/rustc/x/library/std/src/backtrace.rs"),
+            ("commit", "/k/crates/kasumi-store/src/sync_trace.rs"),
+            (
+                "finish_transaction_plan",
+                "/k/crates/kasumi-store/src/node_file/segment_group/transaction.rs",
+            ),
+            (
+                "finish_transaction",
+                "/k/crates/kasumi-kv/src/checked_group.rs",
+            ),
+            ("complete_staged", "/k/crates/kasumi-kv/src/disk_state.rs"),
+            ("commit", "/k/crates/kasumi-kv/src/core.rs"),
+            ("{closure#1}", "/k/crates/kasumi-raft/src/storage.rs"),
+            (
+                "{closure#0}<kasumi_raft::storage::X>",
+                "/k/crates/kasumi-raft/src/storage.rs",
+            ),
+            ("poll<T>", "/r/tokio-1.53.1/src/runtime/blocking/task.rs"),
+        ]);
+        assert_eq!(
+            caller_key_from(&trace),
+            "{closure#1} kasumi-raft/src/storage.rs:7 < {closure#0} kasumi-raft/src/storage.rs:7 [complete_staged disk_state.rs:7]"
+        );
+    }
+
+    #[test]
+    fn full_symbols_keep_their_function_and_unindexed_frames_count() {
+        // With full debug info, or none, a symbol carries its whole path. A
+        // frame inlined into the same physical frame has no index.
+        let trace = "   3: kasumi_kv::disk_compact::<impl kasumi_kv::disk_state::DiskState>::finish_maintenance
+             at /src/crates/kasumi-kv/src/disk_compact.rs:983:13
+      kasumi_raft::storage::LogStore::append_original::{{closure}}::{{closure}}
+             at /src/crates/kasumi-raft/src/storage.rs:628:17
+   4: kasumi_engine::service::ProposalWork::run_staged
+             at /src/crates/kasumi-engine/src/service.rs:620:13
+";
+        assert_eq!(
+            caller_key_from(trace),
+            "append_original::{{closure}}::{{closure}} kasumi-raft/src/storage.rs:628 < run_staged kasumi-engine/src/service.rs:620 [finish_maintenance disk_compact.rs:983]"
+        );
+    }
+
+    #[test]
+    fn a_background_commit_is_keyed_by_its_outermost_store_frames() {
+        let trace = trace(&[
+            ("commit", "/k/crates/kasumi-store/src/sync_trace.rs"),
+            (
+                "finish_maintenance",
+                "/k/crates/kasumi-kv/src/disk_compact.rs",
+            ),
+            ("run_maintenance", "/k/crates/kasumi-kv/src/tables.rs"),
+            (
+                "run_maintenance",
+                "/k/crates/kasumi-store/src/storage_opening.rs",
+            ),
+            ("step", "/k/crates/kasumi-store/src/cache_warmer.rs"),
+            ("run", "/k/crates/kasumi-serving/src/background.rs"),
+        ]);
+        assert_eq!(
+            caller_key_from(&trace),
+            "store: run_maintenance kasumi-kv/src/tables.rs:7 < run_maintenance kasumi-store/src/storage_opening.rs:7 < step kasumi-store/src/cache_warmer.rs:7 [finish_maintenance disk_compact.rs:7]"
+        );
+        assert_eq!(caller_key_from("   0: main\n"), "unattributed");
+    }
+}
