@@ -32,6 +32,10 @@ Credentials and keys:
   backup-operator-keys <configuration.json> <new-private-directory>
   verify-operator-keys <private-directory>
   maintenance rotate-wrapping-keys|rotate-signer|rotate-certificates <configuration.json>
+  maintenance split-credentials <configuration.json>
+                                             give an installation from before the credential
+                                             split separate application and operator profiles
+                                             (daemon and default.json watcher stopped; resumable)
 
 Storage:
   maintenance move-tenant-audit-cache <configuration.json> <current-cache-directory>
@@ -39,10 +43,10 @@ Storage:
                                              tenant_audit_cache (daemon stopped; resumable)
 
 Backups, audit and recovery:
-  backup create <database-profile> <destination> <checkpoint.json>
-  backup status|verify <database-profile> <destination> <session-uuid>
-  backup abort <database-profile> <destination> <session-uuid> <reason>
-  backup cleanup <database-profile> <destination> <session-uuid> <max-objects>
+  backup create <operator-profile> <destination> <checkpoint.json>
+  backup status|verify <operator-profile> <destination> <session-uuid>
+  backup abort <operator-profile> <destination> <session-uuid> <reason>
+  backup cleanup <operator-profile> <destination> <session-uuid> <max-objects>
   audit status <control-profile>
   audit export|archives <control-profile> <request.json> <output.json>
   audit verify <control-profile> <stream-uuid> <index>

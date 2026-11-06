@@ -1,6 +1,8 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
 #[path = "standalone_credential_recovery.rs"]
 mod credential_recovery;
+#[path = "standalone_credential_split.rs"]
+mod credential_split;
 #[path = "standalone_tenant_staging.rs"]
 mod tenant_staging;
 use crate::{
@@ -12,6 +14,7 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
+pub use credential_split::{CredentialSplitReport, split_credentials};
 use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
 use kasumi_store::{
     DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,
@@ -286,11 +289,67 @@ impl From<ProfileTlsFiles> for TlsFiles {
     }
 }
 
+/// The files a new installation publishes. Each profile has its own family,
+/// principal and client certificate: `tenant_profile` (`profiles/default.json`)
+/// is the application, which reads and writes documents; `operator_profile`
+/// (`profiles/operator.json`) administers and audits that tenant and reads
+/// for schema assertions; `control_profile` administers Control.
 #[derive(Debug, Serialize)]
 pub struct InitializedInstallation {
     pub configuration: PathBuf,
     pub control_profile: PathBuf,
     pub tenant_profile: PathBuf,
+    pub operator_profile: PathBuf,
+}
+
+/// The principal of a new installation's application credential.
+pub const APPLICATION_PRINCIPAL: &str = "application";
+/// The principal that administers a tenant, and Control, in a new installation.
+pub const ADMINISTRATOR_PRINCIPAL: &str = "administrator";
+
+/// What a new installation's application may do: read and write documents.
+pub fn application_actions() -> BTreeSet<Action> {
+    BTreeSet::from([Action::Read, Action::Write])
+}
+
+/// What a new installation's tenant operator may do: administer and audit the
+/// tenant, and read, which schema activation's assertions require. It cannot
+/// write documents.
+pub fn tenant_operator_actions() -> BTreeSet<Action> {
+    BTreeSet::from([Action::Read, Action::Admin, Action::Audit])
+}
+
+/// Every action, held only by the Control administrator in a new installation.
+fn all_actions() -> BTreeSet<Action> {
+    BTreeSet::from([Action::Read, Action::Write, Action::Admin, Action::Audit])
+}
+
+/// A new installation's tenant policy: the operator administers, the
+/// application reads and writes, and neither holds the other's authority.
+pub fn tenant_policy() -> Policy {
+    Policy {
+        grants: vec![
+            Grant {
+                principal: ADMINISTRATOR_PRINCIPAL.into(),
+                collection: None,
+                actions: tenant_operator_actions(),
+            },
+            Grant {
+                principal: APPLICATION_PRINCIPAL.into(),
+                collection: None,
+                actions: application_actions(),
+            },
+        ],
+        strict_read_audit: false,
+    }
+}
+
+/// The certificate and key files of the generated identity `name`.
+pub(crate) fn identity_files(profiles: &Path, name: &str) -> TlsFiles {
+    TlsFiles {
+        certificate: profiles.join(format!("{name}.pem")),
+        private_key: profiles.join(format!("{name}-key.pem")),
+    }
 }
 
 #[path = "standalone_operator.rs"]
@@ -478,6 +537,14 @@ async fn recover_administrator_owned(
             .await?;
         let root = installation_root(&config)?;
         let source_profile = ClientProfile::load(&root.join("profiles/control.json"))?;
+        // A new installation's tenant operator has its own client certificate;
+        // an older installation's profiles all share the Control profile's.
+        let operator_profile = root.join("profiles/operator.json");
+        let operator_identity = if operator_profile.try_exists()? {
+            ClientProfile::load(&operator_profile)?.identity
+        } else {
+            source_profile.identity.clone()
+        };
         let mut recovered = Vec::new();
         let mut recovered_control_principal = None;
         for (
@@ -566,14 +633,16 @@ async fn recover_administrator_owned(
                 database
             };
             let generation = database.engine().generation()?;
-            let principal = generation
+            let administrator = generation
                 .policy()
                 .grants
                 .iter()
                 .find(|grant| grant.collection.is_none() && grant.actions.contains(&Action::Admin))
-                .context("installed administrator is missing")?
-                .principal
-                .clone();
+                .context("installed administrator is missing")?;
+            let principal = administrator.principal.clone();
+            // Recovery restores the administrator's own authority and no more:
+            // a new installation's tenant operator cannot write documents.
+            let scopes = administrator.actions.clone();
             if tenant == crate::runtime::CONTROL_TENANT {
                 recovered_control_principal = Some(principal.clone());
             }
@@ -583,12 +652,7 @@ async fn recover_administrator_owned(
                     principal: principal.clone(),
                     tenant: tenant.into(),
                     resource: resource.clone(),
-                    scopes: BTreeSet::from([
-                        Action::Read,
-                        Action::Write,
-                        Action::Admin,
-                        Action::Audit,
-                    ]),
+                    scopes,
                     lifetime_seconds: 3600,
                 },
                 "offline-administrator-recovery",
@@ -606,6 +670,11 @@ async fn recover_administrator_owned(
                 resource,
                 family_id: issued.family_id,
                 bearer_file: token_path,
+                identity: if tenant == crate::runtime::CONTROL_TENANT {
+                    source_profile.identity.clone()
+                } else {
+                    operator_identity.clone()
+                },
                 ..source_profile.clone()
             };
             let profile_path = output.join(format!("{name}.json"));
@@ -828,28 +897,17 @@ async fn rotate_certificates_owned(
             )?;
             let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
             let issuer = rcgen::Issuer::from_ca_cert_pem(std::str::from_utf8(&ca_pem)?, &ca_key)?;
-            let client = TlsFiles {
-                certificate: root.join("profiles/client.pem"),
-                private_key: root.join("profiles/client-key.pem"),
-            };
-            let mut replacements = Vec::with_capacity(4);
+            let clients = installed_client_identities(root)?;
+            let mut replacements = Vec::with_capacity(3 + clients.len());
             for (name, files, client_auth) in [
-                ("mcp", &config.mcp.tls, false),
-                ("native", &config.native.tls, false),
-                ("admin", &config.admin.tls, false),
-                ("client", &client, true),
-            ] {
-                let key = rcgen::KeyPair::generate()?;
-                let mut parameters = parameters(name, 365)?;
-                parameters.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
-                parameters.extended_key_usages = vec![if client_auth {
-                    rcgen::ExtendedKeyUsagePurpose::ClientAuth
-                } else {
-                    rcgen::ExtendedKeyUsagePurpose::ServerAuth
-                }];
-                let certificate = parameters.signed_by(&key, &issuer)?;
-                let key_pem = zeroize::Zeroizing::new(key.serialize_pem());
-                let certificate_pem = certificate.pem();
+                ("mcp".to_owned(), config.mcp.tls.clone(), false),
+                ("native".to_owned(), config.native.tls.clone(), false),
+                ("admin".to_owned(), config.admin.tls.clone(), false),
+            ]
+            .into_iter()
+            .chain(clients.into_iter().map(|(name, files)| (name, files, true)))
+            {
+                let (certificate_pem, key_pem) = leaf(&name, &issuer, client_auth)?;
                 let identity = kasumi_transport::TlsIdentity::from_pem(
                     certificate_pem.as_bytes(),
                     key_pem.as_bytes(),
@@ -858,7 +916,7 @@ async fn rotate_certificates_owned(
                     &identity,
                     kasumi_transport::ClientAuthentication::OAuth,
                 )?;
-                replacements.push((files.clone(), key_pem, certificate_pem));
+                replacements.push((files, key_pem, certificate_pem));
             }
             for (files, key_pem, certificate_pem) in replacements {
                 private_files::replace(&files.private_key, key_pem.as_bytes())?;
@@ -936,6 +994,37 @@ async fn rotate_certificates_owned(
     }
     .await;
     owner.finish(result).await
+}
+
+/// The generated client identities this installation's profiles use, by name:
+/// `profiles/client.pem` always, and each other identity in `profiles/` that a
+/// profile there names with the generated file names. An identity elsewhere
+/// is not the installation's to replace.
+fn installed_client_identities(root: &Path) -> Result<BTreeMap<String, TlsFiles>> {
+    let profiles = root.join("profiles");
+    let mut identities =
+        BTreeMap::from([("client".to_owned(), identity_files(&profiles, "client"))]);
+    for entry in std::fs::read_dir(&profiles)? {
+        let path = entry?.path();
+        if path
+            .extension()
+            .is_some_and(|extension| extension == "json")
+            && let Ok(profile) = ClientProfile::load(&path)
+            && let Some(name) = profile
+                .identity
+                .certificate
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+        {
+            let generated = identity_files(&profiles, name);
+            if profile.identity.certificate == generated.certificate
+                && profile.identity.private_key == generated.private_key
+            {
+                identities.insert(name.to_owned(), generated);
+            }
+        }
+    }
+    Ok(identities)
 }
 
 pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result<()> {
@@ -1362,19 +1451,22 @@ async fn initialize_owned(
         for name in ["mcp", "native", "admin"] {
             identities.insert(name, generate_identity(&tls, name, &ca, &ca_key, false)?);
         }
-        let client_identity = generate_identity(&profiles, "client", &ca, &ca_key, true)?;
+        // Each profile has its own client certificate, so that one profile's
+        // certificate can be revoked, and its credentials bound, on its own.
+        let mut client_identities = std::collections::BTreeMap::new();
+        for name in GENERATED_CLIENT_IDENTITIES {
+            client_identities.insert(
+                name,
+                generate_identity(&profiles, name, &ca, &ca_key, true)?,
+            );
+        }
         let native_pin = hex::encode(identities["native"].load()?.certificate_pin());
         let admin_pin = hex::encode(identities["admin"].load()?.certificate_pin());
-        let policy = Policy {
+        let control_policy = Policy {
             grants: vec![Grant {
-                principal: "administrator".into(),
+                principal: ADMINISTRATOR_PRINCIPAL.into(),
                 collection: None,
-                actions: BTreeSet::from([
-                    Action::Read,
-                    Action::Write,
-                    Action::Admin,
-                    Action::Audit,
-                ]),
+                actions: all_actions(),
             }],
             strict_read_audit: false,
         };
@@ -1433,14 +1525,14 @@ async fn initialize_owned(
         config.admin.client_ca = tls.join("ca.pem");
         config.control.keys = provider("control");
         config.control.custody_keys = provider("control-custody");
-        config.control.initial_policy = policy.clone();
+        config.control.initial_policy = control_policy;
         config.control.incarnation = Some(control_incarnation.to_string());
         config.security_audit.keys = provider("security");
         config.tenants[0].tenant = tenant.into();
         config.tenants[0].serving = TenantServingConfig::Standalone { installation_id };
         config.tenants[0].keys = provider("application");
         config.tenants[0].custody_keys = provider("custody");
-        config.tenants[0].initial_policy = policy;
+        config.tenants[0].initial_policy = tenant_policy();
         config.tenants[0].incarnation = Some(tenant_incarnation.to_string());
         #[cfg(test)]
         for name in expected.iter().filter(|name| {
@@ -1526,10 +1618,16 @@ async fn initialize_owned(
                 config.auth.issuer.clone(),
                 config.auth.audience.clone(),
             )?;
-            for (name, tenant, resource) in [
+            let database = CredentialResource::Database {
+                incarnation: tenant_incarnation,
+            };
+            for (name, tenant, principal, scopes, identity, resource) in [
                 (
                     "control",
                     crate::runtime::CONTROL_TENANT,
+                    ADMINISTRATOR_PRINCIPAL,
+                    all_actions(),
+                    "control-client",
                     CredentialResource::Control {
                         incarnation: control_incarnation,
                     },
@@ -1537,23 +1635,27 @@ async fn initialize_owned(
                 (
                     "default",
                     tenant,
-                    CredentialResource::Database {
-                        incarnation: tenant_incarnation,
-                    },
+                    APPLICATION_PRINCIPAL,
+                    application_actions(),
+                    "client",
+                    database.clone(),
+                ),
+                (
+                    "operator",
+                    tenant,
+                    ADMINISTRATOR_PRINCIPAL,
+                    tenant_operator_actions(),
+                    "operator-client",
+                    database,
                 ),
             ] {
                 let issued = credentials.create(
                     CreateCredential {
                         family_id: Uuid::new_v4(),
-                        principal: "administrator".into(),
+                        principal: principal.into(),
                         tenant: tenant.into(),
                         resource: resource.clone(),
-                        scopes: BTreeSet::from([
-                            Action::Read,
-                            Action::Write,
-                            Action::Admin,
-                            Action::Audit,
-                        ]),
+                        scopes,
                         lifetime_seconds: 3600,
                     },
                     "initializer",
@@ -1564,7 +1666,7 @@ async fn initialize_owned(
                     format: 2,
                     family_id: issued.family_id,
                     tenant: tenant.into(),
-                    principal: "administrator".into(),
+                    principal: principal.into(),
                     resource,
                     native_endpoint: format!("https://localhost:{}", network.native_listen.port()),
                     administrative_members: BTreeMap::from([(
@@ -1575,7 +1677,7 @@ async fn initialize_owned(
                         },
                     )]),
                     mcp_endpoint: network.mcp_public_url.clone(),
-                    identity: client_identity.clone().into(),
+                    identity: client_identities[identity].clone().into(),
                     server_ca: tls.join("ca.pem"),
                     native_certificate_pin: native_pin.clone(),
                     bearer_file,
@@ -1617,6 +1719,7 @@ async fn initialize_owned(
         configuration,
         control_profile: profiles.join("control.json"),
         tenant_profile: profiles.join("default.json"),
+        operator_profile: profiles.join("operator.json"),
     })
 }
 
@@ -1831,13 +1934,18 @@ fn generate_ca() -> Result<(rcgen::Certificate, rcgen::KeyPair)> {
     let key = rcgen::KeyPair::generate()?;
     Ok((parameters.self_signed(&key)?, key))
 }
-fn generate_identity(
-    directory: &Path,
+/// The client certificates a new installation generates in `profiles/`: the
+/// application's (`client`), the tenant operator's and the Control
+/// administrator's.
+const GENERATED_CLIENT_IDENTITIES: [&str; 3] = ["client", "operator-client", "control-client"];
+
+/// A one-year leaf named `name`, signed by the installation CA, for TLS
+/// clients or servers: its certificate PEM and its private key PEM.
+fn leaf(
     name: &str,
-    ca: &rcgen::Certificate,
-    ca_key: &rcgen::KeyPair,
+    issuer: &rcgen::Issuer<'_, impl rcgen::SigningKey>,
     client: bool,
-) -> Result<TlsFiles> {
+) -> Result<(String, zeroize::Zeroizing<String>)> {
     let mut parameters = parameters(name, 365)?;
     parameters.key_usages = vec![rcgen::KeyUsagePurpose::DigitalSignature];
     parameters.extended_key_usages = vec![if client {
@@ -1846,14 +1954,25 @@ fn generate_identity(
         rcgen::ExtendedKeyUsagePurpose::ServerAuth
     }];
     let key = rcgen::KeyPair::generate()?;
+    let certificate = parameters.signed_by(&key, issuer)?;
+    Ok((
+        certificate.pem(),
+        zeroize::Zeroizing::new(key.serialize_pem()),
+    ))
+}
+
+fn generate_identity(
+    directory: &Path,
+    name: &str,
+    ca: &rcgen::Certificate,
+    ca_key: &rcgen::KeyPair,
+    client: bool,
+) -> Result<TlsFiles> {
     let issuer = rcgen::Issuer::from_ca_cert_pem(&ca.pem(), ca_key)?;
-    let certificate = parameters.signed_by(&key, &issuer)?;
-    let files = TlsFiles {
-        certificate: directory.join(format!("{name}.pem")),
-        private_key: directory.join(format!("{name}-key.pem")),
-    };
-    private_files::create(&files.certificate, certificate.pem().as_bytes())?;
-    private_files::create(&files.private_key, key.serialize_pem().as_bytes())?;
+    let (certificate, key) = leaf(name, &issuer, client)?;
+    let files = identity_files(directory, name);
+    private_files::create(&files.certificate, certificate.as_bytes())?;
+    private_files::create(&files.private_key, key.as_bytes())?;
     Ok(files)
 }
 

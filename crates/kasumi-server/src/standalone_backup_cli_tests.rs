@@ -43,6 +43,7 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
     .unwrap();
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     let mut profile = ClientProfile::load(&installation.tenant_profile).unwrap();
+    let mut operator = ClientProfile::load(&installation.operator_profile).unwrap();
     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
@@ -55,7 +56,7 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
         config.mcp.listen.port()
     ))
     .unwrap();
-    for selected in [&mut profile, &mut control] {
+    for selected in [&mut profile, &mut operator, &mut control] {
         selected.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
         selected
             .administrative_members
@@ -70,6 +71,11 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
     )
     .unwrap();
     private_files::replace(
+        &installation.operator_profile,
+        &serde_json::to_vec(&operator).unwrap(),
+    )
+    .unwrap();
+    private_files::replace(
         &installation.control_profile,
         &serde_json::to_vec(&control).unwrap(),
     )
@@ -79,10 +85,11 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
     let output = installation
         .tenant_profile
         .with_file_name("backup-checkpoint.json");
+    // Backups are administration: the tenant operator's, not the application's.
     let create = vec![
         "backup".into(),
         "create".into(),
-        installation.tenant_profile.display().to_string(),
+        installation.operator_profile.display().to_string(),
         "local".into(),
         output.display().to_string(),
     ];
@@ -152,6 +159,19 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
     data.mutate(&profile.bearer().unwrap(), &write("before"))
         .await
         .unwrap();
+    // The application's credential cannot create a backup.
+    let mut application_backup = create.clone();
+    application_backup[2] = installation.tenant_profile.display().to_string();
+    application_backup[4] = installation
+        .tenant_profile
+        .with_file_name("application-checkpoint.json")
+        .display()
+        .to_string();
+    assert!(
+        crate::standalone_cli::command(&application_backup)
+            .await
+            .is_err()
+    );
     assert!(crate::standalone_cli::command(&create).await.unwrap());
     assert_eq!(private_files::read(&journal, 128 << 10).unwrap(), original);
     let checkpoint_bytes = private_files::read(&output, 128 << 10).unwrap();
@@ -171,7 +191,7 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
         vec![
             "backup".into(),
             action.into(),
-            installation.tenant_profile.display().to_string(),
+            installation.operator_profile.display().to_string(),
             "local".into(),
             session_id.to_string(),
         ]
@@ -218,8 +238,8 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
             &CreateCredential {
                 family_id: Uuid::new_v4(),
                 principal: "administrator".into(),
-                tenant: profile.tenant.clone(),
-                resource: profile.resource.clone(),
+                tenant: operator.tenant.clone(),
+                resource: operator.resource.clone(),
                 scopes: BTreeSet::from([Action::Admin]),
                 lifetime_seconds: 3600,
             },
@@ -230,16 +250,16 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
         .revoke_credential(
             &control.bearer().unwrap(),
             &CredentialReference {
-                family_id: profile.family_id,
+                family_id: operator.family_id,
             },
         )
         .await
         .unwrap();
-    private_files::replace(&profile.bearer_file, replacement.token.as_bytes()).unwrap();
-    profile.family_id = replacement.family_id;
+    private_files::replace(&operator.bearer_file, replacement.token.as_bytes()).unwrap();
+    operator.family_id = replacement.family_id;
     private_files::replace(
-        &installation.tenant_profile,
-        &serde_json::to_vec(&profile).unwrap(),
+        &installation.operator_profile,
+        &serde_json::to_vec(&operator).unwrap(),
     )
     .unwrap();
     assert!(crate::standalone_cli::command(&create).await.unwrap());

@@ -241,8 +241,8 @@ scrape_configs:
       credentials_file: /var/lib/kasumi/profiles/control.token
     tls_config:
       ca_file: /var/lib/kasumi/tls/ca.pem
-      cert_file: /var/lib/kasumi/profiles/client.pem
-      key_file: /var/lib/kasumi/profiles/client-key.pem
+      cert_file: /var/lib/kasumi/profiles/control-client.pem
+      key_file: /var/lib/kasumi/profiles/control-client-key.pem
       server_name: localhost
       min_version: TLS13
       max_version: TLS13

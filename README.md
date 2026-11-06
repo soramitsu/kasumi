@@ -108,37 +108,16 @@ target/release/kasumid serve "$DEMO/installation/kasumi.json"
 ~~~
 
 The installation writes owner-only client profiles under
-<code>$DEMO/installation/profiles/</code>. Before writing data, create a
-collection with an authorized tenant administrator. The generated
-<code>profiles/default.json</code> contains the administrative endpoint and
-trust material for the default tenant. <code>kasumictl example-config</code>
-prints the small client template; copy the matching endpoint, certificate, CA,
-pin, and token paths from that profile into
-<code>$DEMO/admin-client.json</code>, then keep the file owner-only.
+<code>$DEMO/installation/profiles/</code>, each with its own credential and
+client certificate:
 
-For a local demo, this derives the administrative config from the generated
-profile:
+- <code>default.json</code> is the application. It reads and writes documents
+  and cannot administer the database.
+- <code>operator.json</code> administers the tenant (collections, schema,
+  policy, backups). It reads but cannot write documents.
+- <code>control.json</code> administers the installation's Control group.
 
-~~~sh
-DEMO="/tmp/kasumi-demo"
-python3 - "$DEMO/installation/profiles/default.json" "$DEMO/admin-client.json" <<'PY'
-import json
-import pathlib
-import sys
-
-profile = json.loads(pathlib.Path(sys.argv[1]).read_text())
-member = next(iter(profile["administrative_members"].values()))
-admin = {
-    "endpoint": member["endpoint"],
-    "identity": profile["identity"],
-    "server_ca": profile["server_ca"],
-    "server_certificate_pins": sorted(member["certificate_pins"]),
-    "token_file": profile["bearer_file"],
-}
-pathlib.Path(sys.argv[2]).write_text(json.dumps(admin, indent=2) + "\n")
-PY
-chmod 600 "$DEMO/admin-client.json"
-~~~
+Before writing data, create a collection with the operator profile.
 
 Save this collection definition as <code>$DEMO/invoices.collection.json</code>:
 
@@ -166,7 +145,8 @@ Create it once through the separate administrative endpoint:
 
 ~~~sh
 DEMO="/tmp/kasumi-demo"
-target/release/kasumictl --config "$DEMO/admin-client.json" create-collection "$DEMO/invoices.collection.json"
+target/release/kasumictl --profile "$DEMO/installation/profiles/operator.json" \
+  create-collection "$DEMO/invoices.collection.json"
 ~~~
 
 The full schema and operator workflow are in the
@@ -197,12 +177,12 @@ script may retry across process restarts. Programs without a native client can
 use it as a subprocess for conditional batches, coherent
 <code>read-snapshot</code> reads and <code>resolve-mutation</code>; see the
 [command-line client](docs/api.md#command-line-client). Credentials expire after one hour;
-keep a profile renewed while the server is running:
+keep each profile you use renewed while the server is running:
 
 ~~~sh
 DEMO="/tmp/kasumi-demo"
-PROFILE="$DEMO/installation/profiles/default.json"
-target/release/kasumid credential watch "$PROFILE"
+target/release/kasumid credential watch "$DEMO/installation/profiles/default.json" &
+target/release/kasumid credential watch "$DEMO/installation/profiles/operator.json" &
 ~~~
 
 For a production-shaped installation, use the complete [standalone installation

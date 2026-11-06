@@ -2902,6 +2902,27 @@ impl AdminClientConfig {
         }
         Ok(())
     }
+    /// The administrative endpoint of an installed client profile, which must
+    /// name exactly one member: that member's origin and pins, and the
+    /// profile's client certificate, server CA and bearer file.
+    pub fn from_profile(profile: &kasumi_client::ClientProfile) -> Result<Self> {
+        profile.validate()?;
+        let member = profile.administrative_member()?;
+        let config = Self {
+            endpoint: member.endpoint.clone(),
+            identity: profile.identity.clone().into(),
+            server_ca: profile.server_ca.clone(),
+            server_certificate_pins: member.certificate_pins.iter().cloned().collect(),
+            token_file: profile
+                .bearer_file
+                .to_str()
+                .context("profile bearer file path is not UTF-8")?
+                .to_owned(),
+        };
+        config.validate()?;
+        Ok(config)
+    }
+
     pub async fn connect(
         &self,
     ) -> Result<(

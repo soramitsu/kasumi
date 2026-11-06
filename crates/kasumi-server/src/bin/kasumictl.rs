@@ -68,15 +68,62 @@ fn leader_hint(status: &tonic::Status) {
     }
 }
 
+/// Commands that use the administrative endpoint. After `--profile`, one of
+/// these selects administration through that installed profile; any other
+/// command after `--profile` is a data command.
+const ADMINISTRATIVE_OPERATIONS: [&str; 15] = [
+    "health",
+    "ready",
+    "metrics",
+    "compact",
+    "activate-schema",
+    "read-schema",
+    "read-policy-limits",
+    "schema-status",
+    "create-collection",
+    "replace-collection",
+    "set-policy",
+    "set-limits",
+    "suspend",
+    "resume",
+    "manage",
+];
+
+/// `--profile <profile.json> <administrative operation> ...`.
+fn selects_profile_administration(arguments: &[std::ffi::OsString]) -> bool {
+    matches!(
+        arguments,
+        [flag, _, operation, ..]
+            if flag == "--profile"
+                && operation
+                    .to_str()
+                    .is_some_and(|operation| ADMINISTRATIVE_OPERATIONS.contains(&operation))
+    )
+}
+
+/// The administrative client of `--config <client.json>` or of an installed
+/// `--profile <profile.json>`.
+fn admin_client(flag: &str, path: &str) -> Result<AdminClientConfig> {
+    match flag {
+        "--config" => AdminClientConfig::load(path),
+        "--profile" => AdminClientConfig::from_profile(
+            &kasumi_client::ClientProfile::load(std::path::Path::new(path))
+                .with_context(|| format!("loading installed profile {path}"))?,
+        ),
+        _ => bail!("first argument must be --config or --profile\n{USAGE}"),
+    }
+}
+
 fn main() -> std::process::ExitCode {
     kasumi_server::process_runtime::block_on(async_main)
 }
 
 async fn async_main() -> std::process::ExitCode {
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
-    if arguments
-        .first()
-        .is_some_and(|first| kasumi_server::data_cli::selects_data(first))
+    if !selects_profile_administration(&arguments)
+        && arguments
+            .first()
+            .is_some_and(|first| kasumi_server::data_cli::selects_data(first))
     {
         // Data commands print one JSON document and exit with its class
         // status, including for arguments that are not UTF-8.
@@ -107,17 +154,22 @@ Offline:
   schema-reference <operation.json>          canonical digest of a schema change
   example-config                             an admin client profile template
 
-Node status (admin client profile; prints the protected endpoint's body and
-exits 1 unless it answered 200):
+Every command below takes either an admin client file (--config <client.json>)
+or an installed client profile (--profile <profile.json>, such as a standalone
+installation's profiles/operator.json), except authority-maintenance, which
+takes --config only.
+
+Node status (prints the protected endpoint's body and exits 1 unless it
+answered 200):
   --config <client.json> health              startup completed and serving
   --config <client.json> ready               every local group covered and admitted
   --config <client.json> metrics             Prometheus text
 
-Storage (admin client profile):
+Storage:
   --config <client.json> compact             start a compaction cycle on every node database
                                              at its next step, clearing any deferral backoff
 
-Administration (admin client profile):
+Administration:
   --config <client.json> activate-schema|read-schema|read-policy-limits|schema-status <operation.json>
   --config <client.json> create-collection|replace-collection|set-policy|set-limits <operation.json>
   --config <client.json> suspend|resume
@@ -138,19 +190,19 @@ async fn run(arguments: &[String]) -> Result<()> {
         return Ok(());
     }
     if let [flag, path, operation] = arguments
-        && flag == "--config"
+        && matches!(flag.as_str(), "--config" | "--profile")
         && operation == "compact"
     {
-        let (status, body) = AdminClientConfig::load(path)?.request_compaction().await?;
+        let (status, body) = admin_client(flag, path)?.request_compaction().await?;
         println!("{body}");
         ensure!(status == 200, "compaction request answered HTTP {status}");
         return Ok(());
     }
     if let [flag, path, operation] = arguments
-        && flag == "--config"
+        && matches!(flag.as_str(), "--config" | "--profile")
         && matches!(operation.as_str(), "health" | "ready" | "metrics")
     {
-        let (status, body) = AdminClientConfig::load(path)?
+        let (status, body) = admin_client(flag, path)?
             .observe(&format!("/{operation}"))
             .await?;
         print!("{body}");
@@ -181,8 +233,15 @@ async fn run(arguments: &[String]) -> Result<()> {
     let [flag, path, operation, rest @ ..] = arguments else {
         bail!("{USAGE}");
     };
-    ensure!(flag == "--config", "first argument must be --config");
+    ensure!(
+        matches!(flag.as_str(), "--config" | "--profile"),
+        "first argument must be --config or --profile"
+    );
     if operation == "authority-maintenance" {
+        ensure!(
+            flag == "--config",
+            "authority-maintenance requires an authority client file (--config)"
+        );
         let [file] = rest else {
             bail!("authority-maintenance requires one typed request JSON file");
         };
@@ -243,7 +302,7 @@ async fn run(arguments: &[String]) -> Result<()> {
     } else {
         None
     };
-    let (mut client, authorization) = AdminClientConfig::load(path)?.connect().await?;
+    let (mut client, authorization) = admin_client(flag, path)?.connect().await?;
     if matches!(
         operation.as_str(),
         "read-schema" | "read-policy-limits" | "schema-status"
@@ -463,6 +522,62 @@ mod tests {
             ])
             .await
             .is_err()
+        );
+    }
+
+    #[test]
+    fn an_installed_profile_selects_administration_only_for_administrative_commands() {
+        let arguments = |line: &str| {
+            line.split(' ')
+                .map(std::ffi::OsString::from)
+                .collect::<Vec<_>>()
+        };
+        for administrative in [
+            "--profile /p/operator.json create-collection c.json",
+            "--profile /p/operator.json manage m.json",
+            "--profile /p/control.json metrics",
+            "--profile /p/operator.json suspend",
+        ] {
+            assert!(selects_profile_administration(&arguments(administrative)));
+        }
+        for data in [
+            "--profile /p/default.json collections",
+            "--profile /p/default.json get docs a",
+            "--profile /p/default.json --expect-tenant t get docs a",
+            "--expect-tenant t --profile /p/default.json create-collection c.json",
+            "--config /c.json create-collection c.json",
+            "--profile",
+        ] {
+            assert!(!selects_profile_administration(&arguments(data)), "{data}");
+        }
+    }
+
+    #[tokio::test]
+    async fn profile_administration_loads_the_profile_and_refuses_authority_maintenance() {
+        let error = run(&[
+            "--profile".into(),
+            "/nonexistent/operator.json".into(),
+            "suspend".into(),
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            format!("{error:#}").contains("/nonexistent/operator.json"),
+            "{error:#}"
+        );
+        let error = run(&[
+            "--profile".into(),
+            "/nonexistent/operator.json".into(),
+            "authority-maintenance".into(),
+            "/nonexistent/request.json".into(),
+        ])
+        .await
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("requires an authority client file"),
+            "{error:#}"
         );
     }
 

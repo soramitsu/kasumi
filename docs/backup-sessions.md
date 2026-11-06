@@ -159,16 +159,17 @@ temporary-disk admission remain unfinished.
 
 ## Operator commands
 
-Use an application database administrator profile on the native administrative
-listener. An initialized standalone installation supplies `profiles/default.json`
-and the `local` filesystem destination.
+Use a database administrator profile on the native administrative listener.
+An initialized standalone installation supplies the tenant operator's
+`profiles/operator.json` and the `local` filesystem destination. The
+application's `profiles/default.json` cannot create or manage backups.
 
 ```sh
-kasumid backup create /var/lib/kasumi/profiles/default.json local /secure/full-backup.json
-kasumid backup status /var/lib/kasumi/profiles/default.json local SESSION_UUID
-kasumid backup verify /var/lib/kasumi/profiles/default.json local SESSION_UUID
-kasumid backup abort /var/lib/kasumi/profiles/default.json local SESSION_UUID "operator cancellation"
-kasumid backup cleanup /var/lib/kasumi/profiles/default.json local SESSION_UUID 256
+kasumid backup create /var/lib/kasumi/profiles/operator.json local /secure/full-backup.json
+kasumid backup status /var/lib/kasumi/profiles/operator.json local SESSION_UUID
+kasumid backup verify /var/lib/kasumi/profiles/operator.json local SESSION_UUID
+kasumid backup abort /var/lib/kasumi/profiles/operator.json local SESSION_UUID "operator cancellation"
+kasumid backup cleanup /var/lib/kasumi/profiles/operator.json local SESSION_UUID 256
 ```
 
 Creation writes a private `*.backup-attempt.json` beside the requested checkpoint

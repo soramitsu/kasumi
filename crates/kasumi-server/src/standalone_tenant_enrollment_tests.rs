@@ -273,9 +273,11 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
         .context("create enrolled tenant collection")?;
     let mut admin =
         kasumi_client::KasumiAdminClient::connect(&control_profile.connection(true)?).await?;
+    // The staged tenant has the installation's tenant policy, where the
+    // application principal writes documents.
     let credential = CreateCredential {
         family_id: Uuid::new_v4(),
-        principal: "administrator".into(),
+        principal: APPLICATION_PRINCIPAL.into(),
         tenant: staged.tenant.clone(),
         resource: CredentialResource::Database {
             incarnation: staged.incarnation,

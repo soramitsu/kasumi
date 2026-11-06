@@ -145,7 +145,8 @@ class DevStandaloneTests(unittest.TestCase):
         for name in ("kasumid", "kasumictl"):
             binary = self.root / name
             binary.write_text("#!/bin/sh\ncase \"$1\" in\n"
-                              f"init) mkdir -p \"$4/profiles\" && cp {self.root}/profile.json \"$4/profiles/default.json\";;\n"
+                              f"init) mkdir -p \"$4/profiles\" && cp {self.root}/profile.json \"$4/profiles/default.json\" "
+                              f"&& cp {self.root}/profile.json \"$4/profiles/operator.json\";;\n"
                               f"serve) echo $$ > {self.root}/server.pid; "
                               f"echo ready > {self.root}/server.ready; exec sleep 30;;\n"
                               f"credential) echo $$ > {self.root}/watcher.pid; "

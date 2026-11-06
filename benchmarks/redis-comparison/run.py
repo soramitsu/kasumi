@@ -341,8 +341,11 @@ class Harness:
                 watchers.append(subprocess.Popen(
                     [str(binaries / "kasumid"), "credential", "watch", str(renewed)],
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, env=environment))
+        # Collections are the tenant operator's to create; the data profile
+        # is the application's and cannot administer.
         admin = directory / "admin-client.json"
-        dev_standalone.private_write(admin, dev_standalone.admin_client(dev_standalone.read_json(profile)))
+        dev_standalone.private_write(admin, dev_standalone.admin_client(
+            dev_standalone.read_json(installation / "profiles/operator.json")))
         control = directory / "control-client.json"
         dev_standalone.private_write(control, dev_standalone.admin_client(dev_standalone.read_json(control_profile)))
         self.observers[system] = (binaries / "kasumictl", control, environment)

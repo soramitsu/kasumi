@@ -141,7 +141,8 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
             &control.bearer().unwrap(),
             &CreateCredential {
                 family_id: Uuid::new_v4(),
-                principal: "administrator".into(),
+                // The installation's tenant policy lets the application write.
+                principal: crate::standalone::APPLICATION_PRINCIPAL.into(),
                 tenant: "tenant-a".into(),
                 resource: tenant.resource.clone(),
                 scopes: BTreeSet::from([Action::Read, Action::Write]),
@@ -190,8 +191,14 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
         !pending.is_finished(),
         "terminal MCP response escaped its release gate"
     );
+    // Receipts are the writer's to read: the application principal's.
+    let writer = RequestContext {
+        principal: crate::standalone::APPLICATION_PRINCIPAL.into(),
+        scopes: BTreeSet::from([Action::Read, Action::Write]),
+        ..service.clone()
+    };
     let receipt = database
-        .operation_receipt(&service, &key)
+        .operation_receipt(&writer, &key)
         .await
         .unwrap()
         .expect("mutation committed before terminal response release");

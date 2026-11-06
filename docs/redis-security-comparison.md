@@ -184,9 +184,34 @@ it is higher wherever a listener is reachable from a network.
    check and certificate rotation keeps the CA, so an old client certificate
    stays valid until it expires. Recommended: CRL support or a server-side
    allowlist of client certificate pins.
-6. **The generated standalone profile is over-privileged (low-medium).** The
-   default application credential carries read, write, admin and audit scopes.
-   Recommended: separate application and administrator credentials.
+6. **Fixed: the generated standalone profile was over-privileged (was
+   low-medium).** The default application credential carried read, write,
+   admin and audit scopes, so whoever held it could change the tenant's
+   policy, schema and backups. A new installation now writes three profiles,
+   each with its own credential family, principal and client certificate
+   (`kasumi-server/src/standalone.rs`, `initialize_owned`):
+   `profiles/default.json` is the `application` principal with read and
+   write; `profiles/operator.json` is the tenant `administrator` with read,
+   admin and audit (schema activation reads what it asserts) and no document
+   write; `profiles/control.json` keeps the Control administrator. The tenant
+   policy grants exactly that, so a token's scopes cannot widen either.
+   `kasumictl --profile operator.json <administrative command>` administers
+   through an installed profile. Administrator recovery issues only the
+   administrator grant's own actions, and certificate rotation replaces every
+   generated client certificate the installation's profiles use. Covered by
+   `standalone::credential_split::tests::a_new_installation_gives_each_profile_only_its_own_authority`
+   (the application writes and renews itself but cannot create collections,
+   activate schema, read the service audit or administer credentials; the
+   operator administers and activates schema with read assertions but cannot
+   write). An installation from before this change keeps its single
+   credential until the operator runs `kasumid maintenance split-credentials`
+   with the daemon stopped, which journals the new families, removes document
+   write from the tenant administrator's grant, publishes the split profiles,
+   and revokes the old family; a rerun finishes an interrupted split
+   (`..::a_pre_split_installation_is_split_once_and_finishes_after_an_interruption`).
+   What remains: the profiles sit under one operating-system account unless
+   the operator moves the operator and Control files elsewhere, and an
+   installation that never runs the migration keeps the old risk.
 7. **Fixed: configuration and CA files were read without ownership checks
    (was low).** Secret files were checked; trust roots, the authentication
    configuration and operator request files were not. They are all read

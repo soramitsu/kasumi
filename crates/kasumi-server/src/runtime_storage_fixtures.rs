@@ -99,3 +99,41 @@ pub(crate) fn physical(
     let (persistent, scratch) = kasumi_engine::test_utils::fixture_disk_configs(directory)?;
     kasumi_engine::test_utils::FixtureStorage::open(&persistent, &scratch, policy)
 }
+
+/// Move an initialized standalone installation's listeners, and every profile
+/// it generated, to fresh loopback ports, and commit the matching Control
+/// topology. Returns the configuration to serve.
+pub(crate) async fn retarget_standalone(
+    installation: &crate::standalone::InitializedInstallation,
+    storage: &RuntimeStorage,
+) -> Result<RuntimeConfig> {
+    let mut config = RuntimeConfig::load(&installation.configuration)?;
+    let listeners = (0..3)
+        .map(|_| std::net::TcpListener::bind("127.0.0.1:0"))
+        .collect::<std::io::Result<Vec<_>>>()?;
+    config.mcp.listen = listeners[0].local_addr()?;
+    config.native.listen = listeners[1].local_addr()?;
+    config.admin.listen = listeners[2].local_addr()?;
+    config.mcp.protocol = crate::mcp::McpConfig::new(format!(
+        "https://localhost:{}/mcp",
+        config.mcp.listen.port()
+    ))?;
+    for path in [
+        &installation.control_profile,
+        &installation.tenant_profile,
+        &installation.operator_profile,
+    ] {
+        let mut profile = crate::standalone::ClientProfile::load(path)?;
+        profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
+        profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
+        profile
+            .administrative_members
+            .get_mut(&1)
+            .context("generated administrative member")?
+            .endpoint = format!("https://localhost:{}", config.admin.listen.port());
+        kasumi_store::private_files::replace(path, &serde_json::to_vec_pretty(&profile)?)?;
+    }
+    crate::standalone::configure_test_topology(&config, storage.clone()).await;
+    drop(listeners);
+    Ok(config)
+}

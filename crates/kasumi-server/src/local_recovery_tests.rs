@@ -63,6 +63,8 @@ async fn backup(
     .unwrap();
     let mut config = RuntimeConfig::load(&installed.configuration).unwrap();
     let mut profile = ClientProfile::load(&installed.tenant_profile).unwrap();
+    // Backups are the tenant operator's; the application profile writes.
+    let mut operator = ClientProfile::load(&installed.operator_profile).unwrap();
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
         .collect::<Vec<_>>();
@@ -74,10 +76,12 @@ async fn backup(
         config.mcp.listen.port()
     ))
     .unwrap();
-    profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
-    profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
-    profile.administrative_members.get_mut(&1).unwrap().endpoint =
-        format!("https://localhost:{}", config.admin.listen.port());
+    for selected in [&mut profile, &mut operator] {
+        selected.mcp_endpoint = config.mcp.protocol.public_url.clone();
+        selected.native_endpoint = format!("https://localhost:{}", config.native.listen.port());
+        selected.administrative_members.get_mut(&1).unwrap().endpoint =
+            format!("https://localhost:{}", config.admin.listen.port());
+    }
     private_files::replace(
         &installed.configuration,
         &serde_json::to_vec_pretty(&config).unwrap(),
@@ -141,12 +145,12 @@ async fn backup(
     )
     .await
     .unwrap();
-    let mut admin = kasumi_client::KasumiAdminClient::connect(&profile.connection(true).unwrap())
+    let mut admin = kasumi_client::KasumiAdminClient::connect(&operator.connection(true).unwrap())
         .await
         .unwrap();
     let checkpoint = admin
         .create_backup_checkpoint(
-            &profile.bearer().unwrap(),
+            &operator.bearer().unwrap(),
             &CreateBackupCheckpoint {
                 session_id: uuid::Uuid::new_v4(),
                 destination: "local".into(),
@@ -158,7 +162,7 @@ async fn backup(
         .clone();
     let verified = admin
         .verify_backup_checkpoint(
-            &profile.bearer().unwrap(),
+            &operator.bearer().unwrap(),
             &VerifyBackupCheckpoint {
                 destination: "local".into(),
                 backup_id: checkpoint.backup_id,

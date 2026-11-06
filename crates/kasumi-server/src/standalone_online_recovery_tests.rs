@@ -242,7 +242,7 @@ async fn online_recovery_impl() -> Result<()> {
         if record.event.kind == SecurityEventKind::KeyAdministration
             && record.event.tenant.as_deref() == Some("tenant-a")
         {
-            ensure!(record.event.principal.as_deref() == Some("administrator"));
+            ensure!(record.event.principal.as_deref() == Some(tenant.principal.as_str()));
             recoveries
                 .entry(record.event.request_id)
                 .or_default()

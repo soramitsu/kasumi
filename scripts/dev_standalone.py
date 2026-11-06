@@ -257,7 +257,7 @@ def start(arguments):
         state["watcher"] = started["watcher"].pid
         save(directory, state)
         admin = directory / "admin-client.json"
-        private_write(admin, admin_client(read_json(profile)))
+        private_write(admin, admin_client(read_json(profile.with_name("operator.json"))))
         for definition in definitions:
             created = run([binaries / "kasumictl", "--config", admin, "create-collection", definition],
                           env=environment)

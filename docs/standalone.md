@@ -114,7 +114,27 @@ foreground growth. External processes can consume disk after a check, so storage
 failures remain possible.
 Protected health and metrics expose the scratch charges and filesystem sample.
 
-The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. `profiles/default.json` names the database credential; `profiles/control.json` names the separate Control administrator credential. Each token is bound to one explicit incarnation and purpose. A Control token cannot access the document API.
+The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. A new installation writes three profiles, each with its own credential family, principal and client certificate:
+
+| Profile | Principal | Scopes | Certificate | Use |
+| --- | --- | --- | --- | --- |
+| `profiles/default.json` | `application` | read, write | `profiles/client.pem` | Documents through the native API, MCP and `kasumictl --profile`. Renews itself. |
+| `profiles/operator.json` | `administrator` | read, admin, audit | `profiles/operator-client.pem` | The tenant's collections, schema activation (which reads what it asserts), policy, limits and backups. Cannot write documents. |
+| `profiles/control.json` | `administrator` | read, write, admin, audit | `profiles/control-client.pem` | Control: credentials, topology, service audit, metrics. |
+
+The tenant policy grants `application` read and write and `administrator` read, admin and audit, so neither credential can do the other's work however its token is scoped. Each token is bound to one explicit incarnation and purpose. A Control token cannot access the document API. Give the application only `default.json` and its files; keep `operator.json`, `control.json` and their certificates and tokens out of the application's reach, for example under another operating-system account. Separate files under one account do not keep them apart.
+
+Administer the tenant through the operator profile, for example `kasumictl --profile /var/lib/kasumi/profiles/operator.json create-collection invoices.json`. `kasumictl --profile` selects administration for an administrative command and the data CLI for any other; `--config <client.json>` still takes an explicit admin client file.
+
+### Installations from before the split
+
+An installation initialized before this change has one generated tenant credential: `profiles/default.json` is the tenant `administrator` with read, write, admin and audit, and every profile shares `profiles/client.pem`. It keeps working unchanged. To give it the layout above, stop `kasumid` and the `profiles/default.json` watcher, then run:
+
+```sh
+kasumid maintenance split-credentials /var/lib/kasumi/kasumi.json
+```
+
+The command removes document write from the tenant policy's tenant-wide `administrator` grant and grants `application` read and write; other grants are kept. It creates the application and operator families and the operator's and the Control profile's own client certificates, publishes `profiles/operator.json`, rewrites `profiles/default.json` and its token for the application (same certificate, so a client that rereads the token moves over without changes), moves `profiles/control.json` to its own certificate (its credential is unchanged), removes the stopped watcher's renewal journal and revokes the old family. It journals the new families in `profiles/credential-split.json` first, so rerunning it after any interruption finishes the same split; on an installation that is already split it changes nothing. Afterwards start `kasumid`, restart the `default.json` watcher, start one for `operator.json`, and move any administrative tooling that used `default.json` or its token (an `admin-client.json`, backup commands) to `operator.json`. Until it runs, the old installation keeps the old risk: whoever holds the application's credential administers the tenant.
 
 Generated client profiles use current `format: 2` with an explicit `principal`.
 Rust applications load them through `kasumi_client::ClientProfile`, compare the
@@ -124,12 +144,13 @@ runtime, and reread the separate bearer file for each request. See the
 rejected; issue current credentials and profiles before changing a consumer to
 this format. This does not alter an installed tenant or its stored documents.
 
-MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>` and the current MCP protocol headers. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
+MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>`, the application's, and the current MCP protocol headers. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
 
 Local credentials expire after one hour. Keep each client credential file renewed:
 
 ```sh
 kasumid credential watch /var/lib/kasumi/profiles/default.json
+kasumid credential watch /var/lib/kasumi/profiles/operator.json
 kasumid credential watch /var/lib/kasumi/profiles/control.json
 ```
 
@@ -456,10 +477,10 @@ budgets again. Reopening requires the bytes in use to fit them.
 
 ## Backup sessions
 
-Create a backup with the generated application administrator profile:
+Create a backup with the generated tenant operator profile:
 
 ```sh
-kasumid backup create /var/lib/kasumi/profiles/default.json local /secure/full-backup.json
+kasumid backup create /var/lib/kasumi/profiles/operator.json local /secure/full-backup.json
 ```
 
 The parent directory must already be private and owned by the operator. Keep the

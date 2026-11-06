@@ -646,11 +646,14 @@ class Runner:
         # Ports cannot be inherited by these binaries; a bind race is retained
         # as a failed startup, never repaired by silently changing identities.
         self.start("daemon-initial")
+        # The application profile cannot administer; the tenant operator's does.
+        operator_file = installation / "profiles/operator.json"
+        operator = read_json(operator_file)
         admin_file = self.output / "admin.json"
-        write_json(admin_file, {"endpoint": profile["administrative_members"]["1"]["endpoint"], "identity": profile["identity"],
-                               "server_ca": profile["server_ca"],
-                               "server_certificate_pins": profile["administrative_members"]["1"]["certificate_pins"],
-                               "token_file": profile["bearer_file"]})
+        write_json(admin_file, {"endpoint": operator["administrative_members"]["1"]["endpoint"],
+                               "identity": operator["identity"], "server_ca": operator["server_ca"],
+                               "server_certificate_pins": operator["administrative_members"]["1"]["certificate_pins"],
+                               "token_file": operator["bearer_file"]})
         self.command("create-collection", [self.binaries["kasumictl"], "--config", admin_file,
                                            "create-collection", self.output / "collection.json"])
         run_id = str(uuid.uuid4())
@@ -670,9 +673,9 @@ class Runner:
         self.verify("verify-renewed", corpus, digest)
         self.mcp(profile, "mcp-original", run_id)
         checkpoint_file = self.output / "checkpoint.json"
-        self.command("backup-create", [daemon, "backup", "create", profile_file, "local", checkpoint_file])
+        self.command("backup-create", [daemon, "backup", "create", operator_file, "local", checkpoint_file])
         checkpoint = read_json(checkpoint_file)
-        verified = read_json(self.command("backup-verify", [daemon, "backup", "verify", profile_file,
+        verified = read_json(self.command("backup-verify", [daemon, "backup", "verify", operator_file,
                                                            "local", checkpoint["backup_id"]]))
         require(verified == checkpoint, "verified backup differs from its exact completed checkpoint")
         self.stop()
