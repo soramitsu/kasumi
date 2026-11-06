@@ -1,4 +1,4 @@
-//! Reconcile only identities touched by a foreground mutation before refill.
+//! Reconcile only identities touched by a mutation before refill.
 //!
 //! The mutation records the identities it supersedes outside the cache, in a
 //! fixed record admitted with the capture and proof workspace before the
@@ -11,6 +11,14 @@
 //! The state lock then excludes new pins, mutations and physical reclamation
 //! until the scope is drained. Concurrent pin drops are safe: captures
 //! conservatively retain their old reachable identities for this pass.
+//!
+//! Maintenance publications (an evacuated leaf, a packed pair) record the
+//! paths they copy the same way and reconcile them right after installing,
+//! still under the state lock, before retaining their fresh pages. Each one
+//! replaces the root and the internal pages the previous one retained, so
+//! without this a cycle would leave about one dead path per publication
+//! cached until a warm pass or reclamation found it. Their record is
+//! optional: a refused admission skips only the cleanup.
 
 use super::auto_warming::{DeferredIdentity, DeferredWitness};
 use super::warming::{CachedIdentityProofWorkspace, CachedReach};
@@ -65,6 +73,35 @@ impl DiskState {
         &self,
         operations: usize,
     ) -> Result<Option<PublicationCache>, CoreError> {
+        let pages = operations
+            .checked_mul(usize::from(self.selected.height))
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        self.prepare_publication_record(pages, operations)
+    }
+
+    /// As `prepare_cache_publication`, for a maintenance publication that
+    /// copies `paths` root-to-leaf paths of the selected tree. Its record is
+    /// optional cleanup: a capacity refusal returns `None`, and the
+    /// publication then leaves the pages it replaces cached until a warm pass
+    /// or reclamation removes them.
+    pub(super) fn prepare_maintenance_publication(
+        &self,
+        paths: usize,
+    ) -> Result<Option<PublicationCache>, CoreError> {
+        let pages = paths
+            .checked_mul(usize::from(self.selected.height))
+            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        match pages.and_then(|pages| self.prepare_publication_record(pages, 0)) {
+            Err(error) if error.is_capacity_denied() => Ok(None),
+            result => result,
+        }
+    }
+
+    fn prepare_publication_record(
+        &self,
+        pages: usize,
+        values: usize,
+    ) -> Result<Option<PublicationCache>, CoreError> {
         self.owner.check()?;
         if self
             .cache
@@ -78,10 +115,7 @@ impl DiskState {
         }
         let capture = self.pins.capture()?;
         let proof = CachedIdentityProofWorkspace::new(&self.owner.admission)?;
-        let pages = operations
-            .checked_mul(usize::from(self.selected.height))
-            .ok_or(CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
-        let bytes = SupersededIdentities::backing_bytes(pages, operations)
+        let bytes = SupersededIdentities::backing_bytes(pages, values)
             .and_then(|bytes| {
                 bytes.checked_add(
                     crate::native_sync::mutex_backing_bytes()
@@ -95,10 +129,8 @@ impl DiskState {
             .admission
             .reserve_workspace(bytes as u64)
             .map(NativeResidentLease::new)?;
-        let superseded = crate::native_sync::mutex(
-            SupersededIdentities::with_capacity(pages, operations)?,
-            &charge,
-        );
+        let superseded =
+            crate::native_sync::mutex(SupersededIdentities::with_capacity(pages, values)?, &charge);
         Ok(Some(PublicationCache {
             cache: self.cache.clone(),
             capture,
@@ -107,6 +139,55 @@ impl DiskState {
             _superseded_charge: charge,
             active: false,
         }))
+    }
+
+    /// Open the single recorded step of a maintenance publication before its
+    /// mutation reads the selected tree: pages below the publication's first
+    /// append are the committed ones it copies.
+    pub(super) fn begin_maintenance_record(
+        &self,
+        publication: Option<&PublicationCache>,
+        fresh: AppendFloor,
+    ) -> Result<(), CoreError> {
+        let Some(publication) = publication else {
+            return Ok(());
+        };
+        // Without an active arena the first append rolls a fresh one, so
+        // every existing page is committed.
+        let floor = if fresh == AppendFloor::NONE {
+            let next = self
+                .owner
+                .lock()?
+                .last_directory_id()
+                .checked_add(1)
+                .ok_or(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "directory identifier overflow",
+                )))?;
+            AppendFloor::at(next, 0)
+        } else {
+            fresh
+        };
+        let mut record = lock_record(&publication.superseded)?;
+        record.set_floor(floor);
+        record.begin_step();
+        Ok(())
+    }
+
+    /// Once a maintenance publication is installed, drop the identities it
+    /// replaced that no root reaches; those a pinned root still reaches are
+    /// deferred like a foreground commit's. Call before retaining its fresh
+    /// pages, so old and new paths never compete for cache space.
+    pub(super) fn reconcile_maintenance(
+        &mut self,
+        publication: Option<PublicationCache>,
+    ) -> Result<(), CoreError> {
+        let Some(mut publication) = publication else {
+            return Ok(());
+        };
+        // The rewrite appended its whole path: every recorded page is copied.
+        lock_record(&publication.superseded)?.end_step(true);
+        self.begin_cache_publication(&mut publication)?;
+        self.reconcile_publication(&mut publication)
     }
 
     /// Recapture pins, begin the candidate scope and mark every recorded

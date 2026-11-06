@@ -598,6 +598,102 @@ fn relocated_snapshot_aliases_keep_one_fitting_payload_resident() {
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
 
+/// Every page reference `root` reaches.
+fn page_set(
+    state: &DiskState,
+    root: DirectoryRoot,
+) -> std::collections::HashSet<(u64, u64, [u8; 32])> {
+    let mut pages = std::collections::HashSet::new();
+    let mut walker = DirectoryWalker::new(root, state.owner.admission.clone()).unwrap();
+    loop {
+        let progress = walker
+            .step(
+                state.arena.as_ref(),
+                64,
+                |page| {
+                    pages.insert((page.arena_id, page.page_index, page.sha256));
+                    Ok(())
+                },
+                |_| Ok(()),
+            )
+            .unwrap();
+        if progress.complete {
+            return pages;
+        }
+    }
+}
+
+/// Cached directory pages that none of `roots` reaches.
+fn unreachable_cached_pages(state: &DiskState, roots: &[DirectoryRoot]) -> usize {
+    let reachable: std::collections::HashSet<_> = roots
+        .iter()
+        .flat_map(|&root| page_set(state, root))
+        .collect();
+    let mut keys = Vec::new();
+    let mut cursor = crate::cache::CacheCursor::default();
+    let cache = state.cache.lock().unwrap();
+    loop {
+        let step = cache.candidate_step(&mut cursor, usize::MAX).unwrap();
+        keys.extend(step.candidate.map(|candidate| candidate.key));
+        if step.complete {
+            break;
+        }
+    }
+    drop(cache);
+    keys.into_iter()
+        .filter(|key| match *key {
+            NativeIdentity::Page {
+                arena_id,
+                page_index,
+                sha256,
+                ..
+            } => !reachable.contains(&(arena_id, page_index, sha256)),
+            NativeIdentity::Value { .. } => false,
+        })
+        .count()
+}
+
+#[test]
+fn maintenance_releases_the_paths_it_replaces_once_no_pin_reaches_them() {
+    let reads = Reads::new(InMemoryGroup::new());
+    let config = CacheConfig {
+        byte_limit: 16 << 20,
+    };
+    let mut state = create(reads.clone(), Admission::new(64 << 20), config);
+    drop(populate_sparse_directory(&mut state, 160));
+    assert!(warm_all(&mut state).fully_resident);
+    assert!(state.selected.height >= 2, "the tree needs internal pages");
+    assert_eq!(unreachable_cached_pages(&state, &[state.selected]), 0);
+    // Evacuation rewrites every leaf with its path and density packing then
+    // rewrites sparse pairs, each a publication of its own, while a reader
+    // pins the root from before the cycle.
+    let pinned = state.snapshot().unwrap();
+    let totals = drive_cycle(&mut state, STEP);
+    assert!(totals.maintenance_commits > 2, "{totals:?}");
+    assert!(totals.density_commits > 0, "{totals:?}");
+    // Each publication dropped the path it replaced unless the pin reaches
+    // it, and every page the pin reaches stayed resident.
+    assert_eq!(
+        unreachable_cached_pages(&state, &[state.selected, pinned.root()]),
+        0
+    );
+    let before = reads.count();
+    for index in (0..160).step_by(2) {
+        assert_eq!(
+            value(&mut state, &pinned, &long_key(index)).unwrap(),
+            index.to_be_bytes()
+        );
+    }
+    assert_eq!(reads.count(), before, "the pinned version lost residency");
+    // Once the pin is gone, the next publication proves what only it reached
+    // unreachable and drops it.
+    drop(pinned);
+    state
+        .commit(&[Operation::put("accounts", long_key(0), b"next")])
+        .unwrap();
+    assert_eq!(unreachable_cached_pages(&state, &[state.selected]), 0);
+}
+
 #[test]
 fn foreground_changes_around_compaction_cursor_never_reintroduce_old_files() {
     let admission = Admission::new(8 << 20);

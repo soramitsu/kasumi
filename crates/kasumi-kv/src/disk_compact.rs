@@ -860,6 +860,10 @@ impl DiskState {
             .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_leaf_rewrite(self.owner.admission.clone())?;
+        // The rewrite replaces the leaf's whole path; record it before any
+        // effect. Relocated values need no record: their old locations share
+        // the moved payloads and leave with their segment's reclamation.
+        let publication = self.prepare_maintenance_publication(1)?;
         let witness = self.selection_witness();
         // A leaf rewrite replaces fixed-size locations: one edit's path.
         let space = self.reserve_maintenance_space(&plan.operations, 1)?;
@@ -890,9 +894,17 @@ impl DiskState {
             ))?);
         }
         let fresh = self.arena.append_floor();
-        let private = self.pages.maintenance_private_view();
+        let untracked = self.pages.maintenance_private_view();
+        let recording = publication
+            .as_ref()
+            .map(|publication| self.pages.recording_private_view(&publication.superseded));
+        let private: &dyn DirectoryBackend = match &recording {
+            Some(recording) => recording,
+            None => &untracked,
+        };
         let result = (|| {
-            let mut mutator = DirectoryMutator::new(&private, &mut directory_workspace)?;
+            self.begin_maintenance_record(publication.as_ref(), fresh)?;
+            let mut mutator = DirectoryMutator::new(private, &mut directory_workspace)?;
             let root = mutator.rewrite_leaf(
                 self.selected,
                 prepared.batch_seq(),
@@ -941,6 +953,8 @@ impl DiskState {
                     .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?
                     .copy_relocated(identity(*source)?, identity(destination)?)?;
             }
+            // Drop the old path no root reaches before retaining the new one.
+            self.reconcile_maintenance(publication)?;
             self.warm_maintenance_pages(root, fresh)
         })();
         retained.map_err(|error: CoreError| error.into_unknown_commit())?;

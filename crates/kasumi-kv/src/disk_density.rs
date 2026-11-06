@@ -135,6 +135,8 @@ impl DiskState {
             .map(NativeResidentLease::new)?;
         let mut directory_workspace =
             DirectoryWriteWorkspace::for_pack(self.owner.admission.clone())?;
+        // Packing replaces both neighbors' paths; record them before any effect.
+        let publication = self.prepare_maintenance_publication(2)?;
         let witness = self.selection_witness();
         // Packing two neighbors is bounded like two edits of the selected tree.
         let space = self.reserve_maintenance_space(&[MaintenanceOp::DirectoryOnly], 2)?;
@@ -154,9 +156,17 @@ impl DiskState {
         };
         self.owner.check()?;
         let fresh = self.arena.append_floor();
-        let private = self.pages.maintenance_private_view();
+        let untracked = self.pages.maintenance_private_view();
+        let recording = publication
+            .as_ref()
+            .map(|publication| self.pages.recording_private_view(&publication.superseded));
+        let private: &dyn crate::directory::DirectoryBackend = match &recording {
+            Some(recording) => recording,
+            None => &untracked,
+        };
         let result = (|| {
-            let mut mutator = DirectoryMutator::new(&private, &mut directory_workspace)?;
+            self.begin_maintenance_record(publication.as_ref(), fresh)?;
+            let mut mutator = DirectoryMutator::new(private, &mut directory_workspace)?;
             let root = mutator.pack_pair(self.selected, prepared.batch_seq(), plan)?;
             mutator.finish(root)
         })();
@@ -180,7 +190,8 @@ impl DiskState {
             }
         };
         self.finish_maintenance(witness, prepared, root, workspace, &space, cursor)?;
-        self.warm_maintenance_pages(root, fresh)
+        self.reconcile_maintenance(publication)
+            .and_then(|()| self.warm_maintenance_pages(root, fresh))
             .map_err(|error| error.into_unknown_commit())
     }
 }
