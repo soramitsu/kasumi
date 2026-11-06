@@ -44,24 +44,65 @@ class RedisComparisonFailureTests(unittest.TestCase):
     @staticmethod
     def compaction_status(cycle, idle, requested):
         return {"compaction_cycle": cycle, 'compaction_phase{phase="idle"}': idle,
-                "compaction_requested": requested}
+                "compaction_requested": requested, "status_age_seconds": 0}
 
     def test_compact_finish_accepts_a_request_consumed_by_the_running_cycle(self):
         result = self.compact_observations([
             self.compaction_status(7, 0, 0), self.compaction_status(7, 0, 1),
+            self.compaction_status(7, 1, 0),
             self.compaction_status(7, 1, 0)])
         self.assertEqual((result["cycle_before"], result["cycle_after"]), (7, 7))
 
     def test_compact_finish_waits_for_an_idle_request_to_be_consumed(self):
         result = self.compact_observations([
             self.compaction_status(7, 1, 0), self.compaction_status(7, 1, 1),
-            self.compaction_status(8, 0, 0), self.compaction_status(8, 1, 0)])
+            self.compaction_status(8, 0, 0), self.compaction_status(8, 1, 0),
+            self.compaction_status(8, 1, 0)])
         self.assertEqual(result["cycle_after"], 8)
 
     def test_compact_finish_accepts_no_eligible_older_files(self):
         result = self.compact_observations([
+            self.compaction_status(7, 1, 0),
             self.compaction_status(7, 1, 0), self.compaction_status(7, 1, 0)])
         self.assertEqual(result["cycle_after"], 7)
+
+    def test_compact_finish_rejects_stale_idle_and_requires_two_fresh_publications(self):
+        stale = self.compaction_status(7, 1, 0) | {"status_age_seconds": 3600}
+        result = self.compact_observations([
+            self.compaction_status(7, 1, 0), stale, self.compaction_status(7, 1, 0),
+            stale, self.compaction_status(7, 0, 0), self.compaction_status(7, 1, 0),
+            self.compaction_status(7, 1, 0)])
+        self.assertEqual(result["fresh_idle_publications"], 2)
+
+    def test_compact_finish_does_not_count_response_latency_as_publication_freshness(self):
+        self.harness.arguments.compact_before = "finish"
+        self.harness.arguments.recovery_timeout = 60
+        self.harness.observers["kasumi"] = ("kasumictl", "control", {})
+        clock = [0.0]
+        observations = []
+
+        def storage(system):
+            observations.append(clock[0])
+            status = self.compaction_status(7, 1, 0)
+            if len(observations) == 2:
+                # The server sampled an old status, then its response stalled.
+                # Its age exceeds elapsed time before the metrics request, but
+                # is less than elapsed time when the delayed response arrives.
+                clock[0] += 10
+                status["status_age_seconds"] = 6
+            return status
+
+        def sleep(seconds):
+            clock[0] += seconds
+
+        with patch.object(self.harness, "storage", side_effect=storage), \
+                patch.object(comparison.time, "monotonic", side_effect=lambda: clock[0]), \
+                patch.object(comparison.time, "sleep", side_effect=sleep), \
+                patch.object(comparison.dev_standalone, "run",
+                             return_value=subprocess.CompletedProcess([], 0, b"", b"")):
+            result = self.harness.compact("kasumi")
+        self.assertEqual(observations, [0.0, 1.0, 12.0, 13.0])
+        self.assertEqual(result["fresh_idle_publications"], 2)
 
     def test_failed_readiness_stops_the_server_before_setup_returns(self):
         server = MagicMock()

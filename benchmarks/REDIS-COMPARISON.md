@@ -136,6 +136,11 @@ waits until it completes, so the case starts on a freshly compacted store.
 Completion means the request has been consumed and maintenance is idle. A
 request can join a running cycle or find no eligible older files, so waiting
 for the cycle number to increase would hang in those cases.
+Because metrics cache the worker's last status, the harness also requires two
+distinct fresh idle publications after the request returns. That prevents an
+old idle snapshot from satisfying the wait. The retained follow-up runs below
+predate this final freshness guard; their raw rows keep cycle numbers, wait
+times and status ages.
 An [interrupted follow-up run](results/redis-comparison-20261106/dx-followup/interrupted-compaction-wait.jsonl)
 exposed that harness bug after its two point-write cases; it is retained
 separately and excluded from the paired summaries.

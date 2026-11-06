@@ -224,18 +224,35 @@ class Harness:
             raise RuntimeError("compaction request failed: " + requested.stderr.decode(errors="replace")[-1000:])
         if mode == "start":
             return {"mode": mode}
+        fresh_after = time.monotonic()
+        confirmed_idle = False
         while time.monotonic() - started < self.arguments.recovery_timeout:
             time.sleep(1)
+            observing = time.monotonic()
             figures = self.storage(system)
             # Requests can join a running cycle, or find no older files to
-            # compact. Neither requires the cycle counter to advance. The
-            # synchronous request publishes requested=1; maintenance clears it
-            # after consuming that request. Wait for both that acknowledgement
-            # and idle, including when a new cycle has already started.
-            if (figures.get("compaction_requested") == 0
+            # compact. Neither requires the cycle counter to advance.
+            # Maintenance clears requested after consuming the request. Metrics
+            # are a worker's cached copy, so require two fresh idle publications
+            # after the request returns. One old status could have been captured
+            # before the request and published afterwards by that worker.
+            # Compare age with elapsed time BEFORE asking for metrics: response
+            # latency must not make an old publication look fresh.
+            age = figures.get("status_age_seconds")
+            fresh = isinstance(age, (int, float)) and 0 <= age <= observing - fresh_after
+            if (fresh and figures.get("compaction_requested") == 0
                     and figures.get('compaction_phase{phase="idle"}') == 1):
+                if not confirmed_idle:
+                    confirmed_idle = True
+                    fresh_after = time.monotonic()
+                    continue
                 return {"mode": mode, "seconds": time.monotonic() - started,
-                        "cycle_before": cycle, "cycle_after": figures.get("compaction_cycle")}
+                        "cycle_before": cycle, "cycle_after": figures.get("compaction_cycle"),
+                        "fresh_idle_publications": 2}
+            if (figures.get('compaction_phase{phase="idle"}') != 1
+                    or figures.get("compaction_requested") != 0):
+                confirmed_idle = False
+                fresh_after = time.monotonic()
         raise RuntimeError(f"requested compaction did not finish within {self.arguments.recovery_timeout} s")
 
     @staticmethod
