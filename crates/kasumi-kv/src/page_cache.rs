@@ -8,9 +8,11 @@
 //! while a different arena, page address or digest cannot alias a hit.
 //!
 //! This cache only retains immutable bytes, each digest-verified once before
-//! it is returned or retained, so readers do not hash a hit again. Directory
-//! readers still validate the selected root, page generation and parent bounds
-//! on every hit.
+//! it is returned or retained, so readers do not hash a hit again. Views lend
+//! a hit (`lend_page`) instead of copying it, and a retained page carries the
+//! directory reader's first full validation of its bytes. Readers still check
+//! every hit against the selected root's group and generation ceiling and the
+//! parent's bounds, and validate in full whatever that record does not cover.
 //! Current authorization and key-access checks remain the enclosing reader's
 //! responsibility. The physical owner is checked before hits and after loads.
 //! Appends do not warm the cache. Mutators use the private view: existing
@@ -23,9 +25,9 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::cache::{CacheConfig, CacheLoadError, NativeCache};
 #[cfg(test)]
-use crate::cache::{CacheStats, CachedBytes};
+use crate::cache::CacheStats;
+use crate::cache::{CacheConfig, CacheLoadError, CachedBytes, NativeCache};
 use crate::core::{CoreError, StorageAdmission};
 use crate::directory::{
     AppendFloor, DIRECTORY_PAGE_BYTES, DirectoryBackend, DirectoryPageRef, PageCheck, page_digest,
@@ -301,11 +303,13 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
         Ok(())
     }
 
-    fn read_private_page(
+    /// Lend a retained committed page, or read an absent one into `out`
+    /// without retaining it or training admission policy.
+    fn lend_private_page(
         &self,
         reference: DirectoryPageRef,
         out: &mut [u8],
-    ) -> Result<(), CoreError> {
+    ) -> Result<Option<CachedBytes>, CoreError> {
         self.check_owner_live()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -320,11 +324,12 @@ impl<B: DirectoryBackend> CachedDirectoryBackend<B> {
                     "cached directory page identity differs",
                 )));
             }
-            out.copy_from_slice(page.as_bytes());
-            self.check_owner_live()
+            self.check_owner_live()?;
+            Ok(Some(page))
         } else {
             // Ends with the owner check after its physical read.
-            self.read_verified(reference, out)
+            self.read_verified(reference, out)?;
+            Ok(None)
         }
     }
 
@@ -359,7 +364,16 @@ pub(crate) struct PrivateDirectoryBackend<'a, B: DirectoryBackend> {
 
 impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
-        self.cached.read_private_page(reference, out)
+        copy_lent(self.lend_page(reference, out)?, out);
+        Ok(())
+    }
+
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        self.cached.lend_private_page(reference, out)
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
@@ -532,9 +546,18 @@ impl<B: DirectoryBackend> RecordingDirectoryBackend<'_, B> {
 
 impl<B: DirectoryBackend> DirectoryBackend for RecordingDirectoryBackend<'_, B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
-        self.cached.read_private_page(reference, out)?;
-        self.record()?.observe_read(reference);
+        copy_lent(self.lend_page(reference, out)?, out);
         Ok(())
+    }
+
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        let lent = self.cached.lend_private_page(reference, out)?;
+        self.record()?.observe_read(reference);
+        Ok(lent)
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
@@ -581,6 +604,15 @@ pub(crate) struct MaintenanceDirectoryBackend<'a, B: DirectoryBackend> {
 
 impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
+        copy_lent(self.lend_page(reference, out)?, out);
+        Ok(())
+    }
+
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
         self.cached.check_owner()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -604,15 +636,15 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
             self.cached.lock()?.peek(identity)
         };
         // A hit did no I/O since the entry check, and a load ended with the
-        // owner check after its read; the copy below is checked once more.
+        // owner check after its read; the lent page is checked once more.
         if let Some(page) = page {
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "cached directory page identity differs",
                 )));
             }
-            out.copy_from_slice(page.as_bytes());
-            self.cached.check_owner()
+            self.cached.check_owner()?;
+            Ok(Some(page))
         } else {
             if let Some(denied) = self.retention_denied {
                 denied.store(true, Ordering::Release);
@@ -621,7 +653,8 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
                 return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
             }
             // Ends with the owner check after its physical read.
-            self.cached.read_verified(reference, out)
+            self.cached.read_verified(reference, out)?;
+            Ok(None)
         }
     }
 
@@ -656,6 +689,15 @@ impl<B: DirectoryBackend> DirectoryBackend for MaintenanceDirectoryBackend<'_, B
 
 impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
+        copy_lent(self.lend_page(reference, out)?, out);
+        Ok(())
+    }
+
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
         self.check_owner_live()?;
         if out.len() != DIRECTORY_PAGE_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
@@ -675,7 +717,7 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
             })?;
         // A hit did no I/O since the entry check, and a fallback read ended
         // with the owner check after its read; one final check follows.
-        if let Some(page) = page {
+        if let Some(page) = &page {
             // Only digest-verified bytes enter the cache under a key carrying
             // that digest, so readers validate a hit without hashing it again.
             if page.as_bytes().len() != DIRECTORY_PAGE_BYTES {
@@ -683,9 +725,9 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
                     "cached directory page identity differs",
                 )));
             }
-            out.copy_from_slice(page.as_bytes());
         }
-        self.check_owner_live()
+        self.check_owner_live()?;
+        Ok(page)
     }
 
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
@@ -720,6 +762,13 @@ impl<B: DirectoryBackend> DirectoryBackend for CachedDirectoryBackend<B> {
 
     fn read_owner(&self) -> Option<&Arc<dyn StorageAdmission>> {
         Some(&self.admission)
+    }
+}
+
+/// `read_page` through a view's `lend_page`: a lent page is copied to `out`.
+fn copy_lent(lent: Option<CachedBytes>, out: &mut [u8]) {
+    if let Some(page) = lent {
+        out.copy_from_slice(page.as_bytes());
     }
 }
 

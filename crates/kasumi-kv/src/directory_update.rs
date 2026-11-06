@@ -405,12 +405,17 @@ impl Editor<'_> {
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-            self.backend.read_page(frame.reference, input)?;
+            let lent = self.backend.lend_page(frame.reference, input)?;
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-            let info =
-                validate_checked_page(input, root, frame.reference, self.backend.page_check())?;
+            let info = validate_into(
+                input,
+                lent,
+                root,
+                frame.reference,
+                self.backend.page_check(),
+            )?;
             if info != frame.info {
                 return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory parent changed during leaf rewrite",
@@ -675,12 +680,17 @@ impl Editor<'_> {
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-            self.backend.read_page(frame.reference, input)?;
+            let lent = self.backend.lend_page(frame.reference, input)?;
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-            let info =
-                validate_checked_page(input, root, frame.reference, self.backend.page_check())?;
+            let info = validate_into(
+                input,
+                lent,
+                root,
+                frame.reference,
+                self.backend.page_check(),
+            )?;
             // The complete immutable reference was checked against ancestor
             // ranges on descent. Re-reading it cannot change its canonical
             // body or child choices; reject inconsistent backend results.

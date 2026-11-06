@@ -10,15 +10,20 @@
 //!
 //! `DirectoryBackend` is the page-arena boundary. A backend may cache immutable
 //! pages under the installed cache budget; it must keep the incarnation and
-//! complete page reference in that cache identity. Writes are synchronized
-//! before `finish` returns, but only the owner's durable root publication
-//! makes those pages authoritative. Failed builds leave unreferenced pages.
+//! complete page reference in that cache identity. A cached page is lent to
+//! readers rather than copied, and carries its first full validation, which
+//! later roots of its group reuse (`validate_resident_page`). Writes are
+//! synchronized before `finish` returns, but only the owner's durable root
+//! publication makes those pages authoritative. Failed builds leave
+//! unreferenced pages.
 
 #[cfg(test)]
 use crate::core::ResidentLease;
 use std::cmp::Ordering;
+use std::num::NonZeroU32;
 use std::sync::Arc;
 
+use crate::cache::CachedBytes;
 use crate::core::{
     CoreError, MAX_KEY_BYTES, MAX_TABLE_BYTES, NativeResidentLease, StorageAdmission,
 };
@@ -126,8 +131,9 @@ impl DirectoryPageRef {
     }
 }
 
-/// What a backend's `read_page` has already verified for exactly the bytes
-/// it returns. Readers still check every page field against the selected root.
+/// What a backend's `read_page` or `lend_page` has already verified for
+/// exactly the bytes it returns. Readers still check every page field against
+/// the selected root, or reuse a lent page's recorded validation of them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum PageCheck {
     /// Nothing; the reader also verifies the digest.
@@ -142,6 +148,20 @@ pub(crate) enum PageCheck {
 /// The owner, not this codec, performs growth admission and failure fencing.
 pub(crate) trait DirectoryBackend: Send + Sync {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError>;
+    /// As `read_page`, except that a backend retaining immutable pages may
+    /// lend its retained page instead of copying it. `None` means `out` holds
+    /// the page; after `Some`, `out` is unspecified. A lent page has passed
+    /// the checks `page_check` reports, the same owner checks as `read_page`
+    /// surround its lookup, and it may carry its earlier directory validation
+    /// (`validate_resident_page`). The default reads into `out`.
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        self.read_page(reference, out)?;
+        Ok(None)
+    }
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError>;
     /// Append `bytes` whose SHA-256 the caller computed from this same,
     /// unmodified buffer. A backend that records page references may adopt
@@ -195,6 +215,13 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for &T {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         (**self).read_page(reference, out)
     }
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        (**self).lend_page(reference, out)
+    }
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
     }
@@ -223,6 +250,13 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for Arc<T> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         (**self).read_page(reference, out)
     }
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        (**self).lend_page(reference, out)
+    }
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
     }
@@ -250,6 +284,13 @@ impl<T: DirectoryBackend + ?Sized> DirectoryBackend for Arc<T> {
 impl<T: DirectoryBackend> DirectoryBackend for crate::native_owned_arc::NativeOwnedArc<T> {
     fn read_page(&self, reference: DirectoryPageRef, out: &mut [u8]) -> Result<(), CoreError> {
         (**self).read_page(reference, out)
+    }
+    fn lend_page(
+        &self,
+        reference: DirectoryPageRef,
+        out: &mut [u8],
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        (**self).lend_page(reference, out)
     }
     fn append_page(&self, bytes: &[u8]) -> Result<DirectoryPageRef, CoreError> {
         (**self).append_page(bytes)
@@ -883,6 +924,23 @@ struct PageInfo {
     used: usize,
     entries: u64,
     generation: u64,
+    /// Page offset of the final entry; validation found it, so a range check
+    /// reaches the page's maximum key without decoding every entry again.
+    last: u16,
+}
+
+impl PageInfo {
+    /// The header's fields, which full validation checked for these bytes.
+    fn header(bytes: &[u8], last: u16) -> Self {
+        Self {
+            generation: le_u64(&bytes[36..44]),
+            level: bytes[44],
+            count: le_u16(&bytes[46..48]) as usize,
+            used: le_u32(&bytes[48..52]) as usize,
+            entries: le_u64(&bytes[52..60]),
+            last,
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -959,13 +1017,7 @@ fn validate_checked_page(
             "directory page header is invalid",
         )));
     }
-    let info = PageInfo {
-        generation: le_u64(&bytes[36..44]),
-        level: bytes[44],
-        count: le_u16(&bytes[46..48]) as usize,
-        used: le_u32(&bytes[48..52]) as usize,
-        entries: le_u64(&bytes[52..60]),
-    };
+    let mut info = PageInfo::header(bytes, 0);
     if info.generation == 0
         || info.generation > root.generation
         || info.level as usize >= MAX_HEIGHT
@@ -1008,6 +1060,8 @@ fn validate_checked_page(
                 .ok_or(CoreError::new(crate::CoreErrorCause::Corrupt(
                     "directory entry count overflows",
                 )))?;
+        // `at` <= `used` <= DIRECTORY_PAGE_BYTES, which fits in u16.
+        info.last = at as u16;
         at = end;
     }
     if at != info.used || entries != info.entries {
@@ -1016,6 +1070,81 @@ fn validate_checked_page(
         )));
     }
     Ok(info)
+}
+
+/// Validate a page a retaining backend lent (`lend_page`), whose bytes are
+/// immutable and passed `check`. Their first full validation is recorded
+/// with them as the final entry's offset, which is past the header and so
+/// never zero. That validation depends on the root only through its group
+/// and generation ceiling, so it holds for every root of the page's group
+/// whose generation is at least the page's: such a root reuses it without
+/// decoding the page again. Any other root, and any page not yet validated,
+/// is validated in full, failing exactly as an unlent page would. Pages a
+/// backend reads from the device enter its retention unvalidated, so their
+/// first use always decodes them in full.
+fn validate_resident_page(
+    page: &CachedBytes,
+    root: DirectoryRoot,
+    reference: DirectoryPageRef,
+    check: PageCheck,
+) -> Result<PageInfo, CoreError> {
+    let bytes = page.as_bytes();
+    if let Some(last) = page.validated()
+        && let Ok(last) = u16::try_from(last.get())
+        && bytes.len() == DIRECTORY_PAGE_BYTES
+        && bytes[20..36] == root.group_id
+    {
+        let info = PageInfo::header(bytes, last);
+        if info.generation <= root.generation {
+            reference.validate()?;
+            return Ok(info);
+        }
+    }
+    let info = validate_checked_page(bytes, root, reference, check)?;
+    page.record_validated(
+        NonZeroU32::new(u32::from(info.last)).expect("an entry follows the header"),
+    );
+    Ok(info)
+}
+
+/// Validate what `lend_page` returned for `reference`, leaving the page in
+/// `out`: a lent page is checked by `validate_resident_page` and copied
+/// there, and anything else was read into `out` under `check`.
+fn validate_into(
+    out: &mut [u8],
+    lent: Option<CachedBytes>,
+    root: DirectoryRoot,
+    reference: DirectoryPageRef,
+    check: PageCheck,
+) -> Result<PageInfo, CoreError> {
+    let Some(page) = lent else {
+        return validate_checked_page(out, root, reference, check);
+    };
+    let info = validate_resident_page(&page, root, reference, check)?;
+    if out.len() != DIRECTORY_PAGE_BYTES {
+        return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+            "directory page output length differs",
+        )));
+    }
+    out.copy_from_slice(page.as_bytes());
+    Ok(info)
+}
+
+/// One validated page's bytes: lent by a retaining backend, or read into the
+/// reader's own buffer.
+enum PageBytes<'b> {
+    Lent(CachedBytes),
+    Buffer(&'b [u8]),
+}
+
+impl std::ops::Deref for PageBytes<'_> {
+    type Target = [u8];
+    fn deref(&self) -> &[u8] {
+        match self {
+            Self::Lent(page) => page.as_bytes(),
+            Self::Buffer(bytes) => bytes,
+        }
+    }
 }
 
 fn nth_entry(bytes: &[u8], info: PageInfo, index: usize) -> Result<Entry<'_>, CoreError> {
@@ -1071,13 +1200,39 @@ impl Bounds {
         info: PageInfo,
         index: usize,
     ) -> Result<DirectoryPageRef, CoreError> {
-        let entry = nth_entry(bytes, info, index)?;
+        if index >= info.count {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory child index exceeds page",
+            )));
+        }
+        let mut at = HEADER_BYTES;
+        for _ in 0..index {
+            at = page_entry(bytes, at, info.used)?.1;
+        }
+        self.child_at(bytes, info, index, at)
+    }
+
+    /// As `child`, for entry `index` at page offset `at`, which the caller
+    /// reached by walking this validated page's entries in order.
+    fn child_at(
+        &mut self,
+        bytes: &[u8],
+        info: PageInfo,
+        index: usize,
+        at: usize,
+    ) -> Result<DirectoryPageRef, CoreError> {
+        if index >= info.count {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "directory child index exceeds page",
+            )));
+        }
+        let (entry, end) = page_entry(bytes, at, info.used)?;
         self.lower_len = entry.key_bytes.len();
         self.lower[..self.lower_len].copy_from_slice(entry.key_bytes);
         // The last child retains its parent's upper limit. Earlier children
         // receive the next sibling's minimum instead.
         if index + 1 < info.count {
-            let next = nth_entry(bytes, info, index + 1)?;
+            let (next, _) = page_entry(bytes, end, info.used)?;
             self.upper_len = next.key_bytes.len();
             self.upper[..self.upper_len].copy_from_slice(next.key_bytes);
         }
@@ -1104,7 +1259,7 @@ impl Bounds {
             )));
         }
         if self.upper_len != 0
-            && nth_entry(bytes, info, info.count - 1)?.key
+            && page_entry(bytes, usize::from(info.last), info.used)?.0.key
                 >= decode_key(&self.upper[..self.upper_len])?.0
         {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
@@ -1314,6 +1469,28 @@ impl<'a> DirectoryReader<'a> {
         Self { backend, admission }
     }
 
+    /// `lend_page` under this reader's owner checks.
+    fn lend(
+        &self,
+        buffer: &mut [u8],
+        reference: DirectoryPageRef,
+    ) -> Result<Option<CachedBytes>, CoreError> {
+        let checked = read_checks_owner(&self.backend, &self.admission);
+        if !checked {
+            self.admission
+                .check_owner()
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        }
+        let lent = self.backend.lend_page(reference, buffer)?;
+        if !checked {
+            self.admission
+                .check_owner()
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        }
+        Ok(lent)
+    }
+
+    /// Load one page into `buffer`, validated against `root` and `bounds`.
     fn load(
         &self,
         buffer: &mut [u8],
@@ -1321,21 +1498,35 @@ impl<'a> DirectoryReader<'a> {
         reference: DirectoryPageRef,
         bounds: &Bounds,
     ) -> Result<PageInfo, CoreError> {
-        let checked = read_checks_owner(&self.backend, &self.admission);
-        if !checked {
-            self.admission
-                .check_owner()
-                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        }
-        self.backend.read_page(reference, buffer)?;
-        if !checked {
-            self.admission
-                .check_owner()
-                .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        }
-        let info = validate_checked_page(buffer, root, reference, self.backend.page_check())?;
+        let lent = self.lend(buffer, reference)?;
+        let info = validate_into(buffer, lent, root, reference, self.backend.page_check())?;
         bounds.check(buffer, info)?;
         Ok(info)
+    }
+
+    /// As `load`, but a page the backend lends is read in place rather than
+    /// copied into `buffer`.
+    fn view<'b>(
+        &self,
+        buffer: &'b mut [u8],
+        root: DirectoryRoot,
+        reference: DirectoryPageRef,
+        bounds: &Bounds,
+    ) -> Result<(PageBytes<'b>, PageInfo), CoreError> {
+        let lent = self.lend(buffer, reference)?;
+        let check = self.backend.page_check();
+        let (page, info) = match lent {
+            Some(page) => {
+                let info = validate_resident_page(&page, root, reference, check)?;
+                (PageBytes::Lent(page), info)
+            }
+            None => {
+                let info = validate_checked_page(buffer, root, reference, check)?;
+                (PageBytes::Buffer(buffer), info)
+            }
+        };
+        bounds.check(&page, info)?;
+        Ok((page, info))
     }
 
     /// Read selected pages created at or after `generation` through this
@@ -1557,11 +1748,11 @@ impl<'a> DirectoryReader<'a> {
     ) -> Result<Option<DirectoryValue>, CoreError> {
         let mut bounds = Bounds::root(root);
         loop {
-            let info = self.load(buffer, root, reference, &bounds)?;
+            let (page, info) = self.view(buffer, root, reference, &bounds)?;
             let mut selected = None;
             let mut at = HEADER_BYTES;
             for index in 0..info.count {
-                let (entry, end) = page_entry(buffer, at, info.used)?;
+                let (entry, end) = page_entry(&page, at, info.used)?;
                 match entry.key.cmp(&key) {
                     Ordering::Greater => break,
                     Ordering::Equal if info.level == 0 => {
@@ -1571,17 +1762,17 @@ impl<'a> DirectoryReader<'a> {
                             info.generation,
                         )?));
                     }
-                    _ => selected = Some(index),
+                    _ => selected = Some((index, at)),
                 }
                 at = end;
             }
             if info.level == 0 {
                 return Ok(None);
             }
-            let Some(index) = selected else {
+            let Some((index, at)) = selected else {
                 return Ok(None);
             };
-            reference = bounds.child(buffer, info, index)?;
+            reference = bounds.child_at(&page, info, index, at)?;
         }
     }
 
@@ -1614,11 +1805,11 @@ impl<'a> DirectoryReader<'a> {
         let mut next_key = [0; MAX_ENCODED_KEY];
         let mut next_len = 0;
         loop {
-            let info = self.load(&mut buffer, root, reference, &bounds)?;
+            let (page, info) = self.view(&mut buffer, root, reference, &bounds)?;
             if info.level == 0 {
                 let mut at = HEADER_BYTES;
                 for _ in 0..info.count {
-                    let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
+                    let (entry, end) = page_entry(&page, at, info.used)?;
                     if entry.key > lower || (!exclusive && entry.key == lower) {
                         let lease = reserve(
                             &self.admission,
@@ -1643,6 +1834,7 @@ impl<'a> DirectoryReader<'a> {
                     }
                     at = end;
                 }
+                drop(page);
                 if next_len == 0 {
                     return Ok(None);
                 }
@@ -1653,43 +1845,44 @@ impl<'a> DirectoryReader<'a> {
                 bounds = Bounds::root(root);
                 reference = root_page;
                 loop {
-                    let info = self.load(&mut buffer, root, reference, &bounds)?;
+                    let (page, info) = self.view(&mut buffer, root, reference, &bounds)?;
                     if info.level == 0 {
                         break;
                     }
-                    let mut selected = 0;
+                    let mut selected = (0, HEADER_BYTES);
                     let mut at = HEADER_BYTES;
                     for index in 0..info.count {
-                        let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
+                        let (entry, end) = page_entry(&page, at, info.used)?;
                         if entry.key > target {
                             break;
                         }
-                        selected = index;
+                        selected = (index, at);
                         at = end;
                     }
-                    reference = bounds.child(&buffer.bytes, info, selected)?;
+                    reference = bounds.child_at(&page, info, selected.0, selected.1)?;
                 }
                 // Reload and execute the leaf output path in the outer
                 // loop. A valid separator equals the reached leaf minimum.
                 next_len = 0;
                 continue;
             }
-            let mut selected = 0;
+            let (mut selected, mut selected_at) = (0, HEADER_BYTES);
             let mut at = HEADER_BYTES;
             for index in 0..info.count {
-                let (entry, end) = page_entry(&buffer.bytes, at, info.used)?;
+                let (entry, end) = page_entry(&page, at, info.used)?;
                 if entry.key > lower {
                     break;
                 }
-                selected = index;
+                (selected, selected_at) = (index, at);
                 at = end;
             }
             if selected + 1 < info.count {
-                let next = nth_entry(&buffer.bytes, info, selected + 1)?;
+                let (_, end) = page_entry(&page, selected_at, info.used)?;
+                let (next, _) = page_entry(&page, end, info.used)?;
                 next_len = next.key_bytes.len();
                 next_key[..next_len].copy_from_slice(next.key_bytes);
             }
-            reference = bounds.child(&buffer.bytes, info, selected)?;
+            reference = bounds.child_at(&page, info, selected, selected_at)?;
         }
     }
 }
@@ -2046,7 +2239,7 @@ mod tests {
             Some(value(2, 45))
         );
         // Every page on the path is now a hit, which the cache checks on
-        // entry and after its copy for this same owner.
+        // entry and after its lookup for this same owner, then lends.
         let before = checks();
         assert_eq!(
             shared.get(root, DirectoryKey::row("t", &key)).unwrap(),
@@ -2177,12 +2370,25 @@ mod tests {
         let (found, cold_digests, cold_parsed) = lookup(root);
         assert_eq!(found.unwrap(), Some(value(2, 45)));
         assert_eq!(cold_digests, root.height as usize);
-        // A hit is still fully validated against the root, without a digest.
+        // A hit reuses that page's first validation: it neither hashes the
+        // page again nor decodes the entries the lookup itself skips. The
+        // cold lookup decoded exactly every entry of each path page more.
         let (found, warm_digests, warm_parsed) = lookup(root);
         assert_eq!(found.unwrap(), Some(value(2, 45)));
         assert_eq!(warm_digests, 0);
-        assert_eq!(warm_parsed, cold_parsed);
-        // Hits still apply the selected root's group and generation ceiling.
+        assert_eq!(
+            cold_parsed - warm_parsed,
+            path_entries(&backend, root, DirectoryKey::row("t", &long_key(45)))
+        );
+        // So does any later root of the same group.
+        let (found, _, later_parsed) = lookup(DirectoryRoot {
+            generation: root.generation + 1,
+            ..root
+        });
+        assert_eq!(found.unwrap(), Some(value(2, 45)));
+        assert_eq!(later_parsed, warm_parsed);
+        // Hits still apply the selected root's group and generation ceiling,
+        // with the errors of a full validation.
         let (found, _, _) = lookup(DirectoryRoot {
             group_id: [9; 16],
             ..root
@@ -2197,6 +2403,164 @@ mod tests {
         assert!(
             matches!(&found, Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt("directory page bounds are invalid"))))
         );
+        // Those refusals recorded nothing: the selected root still reuses it.
+        let (found, _, parsed) = lookup(root);
+        assert_eq!(found.unwrap(), Some(value(2, 45)));
+        assert_eq!(parsed, warm_parsed);
+    }
+
+    /// Every entry of the pages on `key`'s root-to-leaf path.
+    fn path_entries(backend: &MemoryPages, root: DirectoryRoot, key: DirectoryKey<'_>) -> usize {
+        let pages = backend.pages.lock().unwrap();
+        let mut reference = root.page.unwrap();
+        let mut total = 0;
+        loop {
+            let bytes = &pages[reference.page_index as usize];
+            let info = validate_page(bytes, root, reference).unwrap();
+            total += info.count;
+            if info.level == 0 {
+                return total;
+            }
+            let mut selected = 0;
+            let mut at = HEADER_BYTES;
+            for index in 0..info.count {
+                let (entry, end) = page_entry(bytes, at, info.used).unwrap();
+                if entry.key > key {
+                    break;
+                }
+                selected = index;
+                at = end;
+            }
+            reference = Bounds::root(root).child(bytes, info, selected).unwrap();
+        }
+    }
+
+    #[test]
+    fn pages_read_from_the_device_are_validated_in_full_every_time() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        let backend = MemoryPages::default();
+        let admission = Admission::new(8 << 20);
+        let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 2).unwrap();
+        for id in 0..90 {
+            builder
+                .push(DirectoryKey::row("t", &long_key(id)), value(2, id as u64))
+                .unwrap();
+        }
+        let root = builder.finish().unwrap();
+        let key = long_key(45);
+        let parsed = |reader: &DirectoryReader<'_>| {
+            PARSED_ENTRIES.with(|count| count.set(Some(0)));
+            assert_eq!(
+                reader.get(root, DirectoryKey::row("t", &key)).unwrap(),
+                Some(value(2, 45))
+            );
+            PARSED_ENTRIES.with(|count| count.replace(None).unwrap())
+        };
+        let full = parsed(&DirectoryReader::new(&backend, admission.clone()));
+        // A cache that retains nothing reads each page from the device again.
+        let unretained = CachedDirectoryBackend::new(
+            &backend,
+            admission.clone(),
+            GROUP,
+            CacheConfig { byte_limit: 0 },
+        );
+        let reader = DirectoryReader::new(&unretained, admission.clone());
+        assert_eq!(parsed(&reader), full);
+        assert_eq!(parsed(&reader), full);
+        // A private view reads absent pages without retaining them.
+        let cached = CachedDirectoryBackend::new(
+            &backend,
+            admission.clone(),
+            GROUP,
+            CacheConfig {
+                byte_limit: 4 << 20,
+            },
+        );
+        let private = cached.private_view();
+        let reader = DirectoryReader::new(&private, admission.clone());
+        assert_eq!(parsed(&reader), full);
+        assert_eq!(parsed(&reader), full);
+        // A retaining view validates a page from the device once.
+        let reader = DirectoryReader::new(&cached, admission.clone());
+        assert_eq!(parsed(&reader), full);
+        assert!(parsed(&reader) < full);
+        // The private view then lends that same validated page.
+        let reader = DirectoryReader::new(&private, admission);
+        assert!(parsed(&reader) < full);
+    }
+
+    #[test]
+    fn cached_page_corruption_fails_closed_on_every_read() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        for corruption in 0..8 {
+            let backend = MemoryPages::default();
+            let admission = Admission::new(8 << 20);
+            let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1).unwrap();
+            builder
+                .push(
+                    DirectoryKey::table("t"),
+                    DirectoryValue::Table { birth_seq: 1 },
+                )
+                .unwrap();
+            builder
+                .push(DirectoryKey::row("t", b"k"), value(1, 3))
+                .unwrap();
+            let mut root = builder.finish().unwrap();
+            let mut pages = backend.pages.lock().unwrap();
+            let page = &mut pages[root.page.unwrap().page_index as usize];
+            match corruption {
+                0 => page[0] ^= 1,
+                1 => page[45] = 1,
+                2 => page[36..44].copy_from_slice(&2u64.to_le_bytes()),
+                3 => page[DIRECTORY_PAGE_BYTES - 1] = 1,
+                4 => page[HEADER_BYTES + 4] = 2,
+                5 => page[HEADER_BYTES + 6 + 8] = 1,
+                6 => page[52..60].copy_from_slice(&3u64.to_le_bytes()),
+                7 => page[44] = 1,
+                _ => unreachable!(),
+            }
+            // All but the first keep a matching digest, so the cache
+            // retains the corrupt bytes read from the device.
+            if corruption != 0 {
+                root.page.as_mut().unwrap().sha256 = page_digest(page);
+            }
+            drop(pages);
+            let cached = CachedDirectoryBackend::new(
+                &backend,
+                admission.clone(),
+                GROUP,
+                CacheConfig {
+                    byte_limit: 4 << 20,
+                },
+            );
+            let private = cached.private_view();
+            let maintenance = cached.maintenance_view();
+            for (view, backend) in [
+                ("cache", &cached as &dyn DirectoryBackend),
+                ("private", &private),
+                ("maintenance", &maintenance),
+                ("cache", &cached),
+            ] {
+                let reader = DirectoryReader::new(backend, admission.clone());
+                assert!(
+                    matches!(&(reader.get(root, DirectoryKey::row("t", b"k"))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
+                    "corruption {corruption} through the {view} view"
+                );
+                assert!(
+                    matches!(&(reader.next(root, DirectoryKey::table("t"), false)), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))),
+                    "corruption {corruption} through the {view} view"
+                );
+            }
+            assert_eq!(
+                cached.stats().unwrap().entries,
+                usize::from(corruption != 0),
+                "corruption {corruption}"
+            );
+        }
     }
 
     #[test]

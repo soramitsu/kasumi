@@ -365,22 +365,27 @@ impl DirectoryWalker {
     ) -> Result<(), CoreError> {
         self.check_owner()?;
         let buffer = self.buffer.as_mut().expect("nonempty root");
-        let check = if self.loaded != Some(key.page) {
-            backend.read_page(key.page, &mut buffer.bytes)?;
+        // This separator source was already fully validated on descent. Its
+        // complete SHA reference certifies those same parent bounds on reuse;
+        // canonical validation here rejects substitution or changed bytes,
+        // except what the backend just verified for a fresh read.
+        let info = if self.loaded != Some(key.page) {
+            let lent = backend.lend_page(key.page, &mut buffer.bytes)?;
             self.admission
                 .check_owner()
                 .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
             progress.work += 1;
             self.loaded = Some(key.page);
-            backend.page_check()
+            validate_into(
+                &mut buffer.bytes,
+                lent,
+                self.root,
+                key.page,
+                backend.page_check(),
+            )?
         } else {
-            PageCheck::Unchecked
+            validate_checked_page(&buffer.bytes, self.root, key.page, PageCheck::Unchecked)?
         };
-        // This separator source was already fully validated on descent. Its
-        // complete SHA reference certifies those same parent bounds on reuse;
-        // canonical validation here rejects substitution or changed bytes,
-        // except what the backend just verified for a fresh read.
-        let info = validate_checked_page(&buffer.bytes, self.root, key.page, check)?;
         let (entry, _) = page_entry(&buffer.bytes, key.at, info.used)?;
         if entry.key_bytes.len() != key.len {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(

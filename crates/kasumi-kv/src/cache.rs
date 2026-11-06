@@ -13,9 +13,10 @@ use crate::core::NativeResidentLease;
 use crate::{AdmissionError, StorageAdmission};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::{size_of, take};
+use std::num::NonZeroU32;
 use std::ops::Deref;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 
 #[path = "cache_pool.rs"]
 mod pool;
@@ -125,6 +126,9 @@ struct Payload {
     bytes: Vec<u8>,
     charge: u64,
     cache_owners: AtomicUsize,
+    // Zero, or the nonzero code with which a codec recorded validating
+    // these immutable bytes (`CachedBytes::validated`).
+    validated: AtomicU32,
     lease: PayloadLease,
 }
 
@@ -149,6 +153,21 @@ impl CachedBytes {
 
     pub fn charged_bytes(&self) -> u64 {
         self.payload().charge
+    }
+
+    /// What the codec of this payload's identity recorded after validating
+    /// these immutable bytes, if it has. A record may depend only on the
+    /// bytes themselves: every identity aliasing this payload shares it.
+    pub(crate) fn validated(&self) -> Option<NonZeroU32> {
+        NonZeroU32::new(self.payload().validated.load(Ordering::Acquire))
+    }
+
+    /// Record a validation of these bytes. Validation is deterministic, so
+    /// concurrent records of the same bytes store the same code.
+    pub(crate) fn record_validated(&self, code: NonZeroU32) {
+        self.payload()
+            .validated
+            .store(code.get(), Ordering::Release);
     }
 
     pub fn ptr_eq(left: &Self, right: &Self) -> bool {
@@ -1029,6 +1048,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             bytes,
             charge,
             cache_owners: AtomicUsize::new(0),
+            validated: AtomicU32::new(0),
             lease: PayloadLease::Pool(lease),
         });
         self.insert(Entry {
@@ -1170,6 +1190,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             bytes,
             charge,
             cache_owners: AtomicUsize::new(0),
+            validated: AtomicU32::new(0),
             lease,
         });
         if retain {
@@ -1237,6 +1258,7 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
                         bytes,
                         charge,
                         cache_owners: AtomicUsize::new(0),
+                        validated: AtomicU32::new(0),
                         lease: PayloadLease::Pool(credit),
                     });
                     self.insert(Entry {

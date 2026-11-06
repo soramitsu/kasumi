@@ -534,12 +534,13 @@ impl Context<'_> {
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        self.backend.read_page(frame.reference, self.input)?;
+        let lent = self.backend.lend_page(frame.reference, self.input)?;
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        let info = validate_checked_page(
+        let info = validate_into(
             self.input,
+            lent,
             self.root,
             frame.reference,
             self.backend.page_check(),
