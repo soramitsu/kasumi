@@ -1,0 +1,20 @@
+{
+  "base_commit": "9f0e8315303a40c13e411272c2452676682511fa",
+  "source_files": 1683,
+  "source_manifest_sha256": "42c449ea6003110b565fe4ca3f6ff62d809fd91fc5c7c4e2271b0f53c7c5b5fb",
+  "release_profile": {
+    "lto": false,
+    "codegen_units": 16,
+    "incremental": true,
+    "debug": "line-tables-only"
+  },
+  "binaries": {
+    "kasumi-bench-compare": "95931488dc734f9773aa6e7a8ac71ce2789beb63fc27b289b0838edcf6648ae8",
+    "kasumictl": "15bbd217984997400d79c52a460ca41b95eb83c8faf3c8658ba43375934c5b5d",
+    "kasumid": "8aef0762c49d6e42ef1c1eaa8d726c126997de0d1e7863d08a5302a090936cbe"
+  },
+  "final_source_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+  "difference_to_final_source": "test-only-clippy-cleanup.patch",
+  "difference_sha256": "a97971f1ffef00436ed64343a44ee8cc879390772f267ca7436125194d39fde5",
+  "difference_note": "Only relocates a cfg(test) hook module and removes four redundant borrows in a test. No production behavior changes. Binary and source hashes identify the pre-cleanup benchmark build."
+}

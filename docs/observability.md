@@ -173,7 +173,9 @@ Available metrics include:
   so alert before `kasumi_service_audit_archive_bytes` reaches
   `kasumi_service_audit_archive_budget_bytes`: a full archive stops the hot log
   from draining, and a full hot log fails every request that needs a record
-  with `audit_unavailable`.
+  with `audit_unavailable`. If online export or pruning already fails, stop the
+  daemon and use the [offline service-audit recovery commands](standalone.md#recovering-a-node-whose-audit-refuses-records)
+  to export and prune before restarting.
 - Per-group tenant-audit hot/archive bytes and budgets, sequence/pruning positions,
   segment counts, draining state, policy-due archive backlog bytes, and
   archive-worker failure/committed-segment counters where the original store

@@ -6,9 +6,9 @@ transport security. It exists to find where Kasumi is slower or heavier than
 Redis, fix what can be fixed, and state plainly what Kasumi's design costs.
 
 The servers do not offer the same guarantees, so read every row with the
-[settings table](#what-is-compared). Results come from a shared
-development Mac that usually runs at a load average of 70–150; every row
-records the load around it. These are development observations, not a launch
+[settings table](#what-is-compared). Results come from a heavily loaded,
+shared development Mac; every row records the load around it. These are
+development observations, not a launch
 SLA or capacity qualification.
 
 ## What is compared
@@ -56,15 +56,21 @@ scans exactly 50 rows, and writes a successful receipt or `EXEC` reply.
   clients, a warmup interval that is not recorded, then a fixed measured
   interval. Latency is the full client-observed call (nearest-rank p50, p90,
   p99, p99.9). Operations in flight at the end finish inside the interval.
-- **Server CPU** is user+system CPU seconds of the server process during the
-  measured run (`proc_pid_rusage` on macOS, `/proc/PID/stat` on Linux),
-  reported per operation. Under host load this is steadier than throughput.
+- **Server CPU** is user+system CPU seconds of the server process across the
+  whole driver invocation (`proc_pid_rusage` on macOS, `/proc/PID/stat` on
+  Linux), divided by successful measured operations. This includes connection
+  setup, warmup and shutdown of the driver; it is an overhead-inclusive ratio,
+  not CPU sampled only inside the throughput interval. Keep warmup and duration
+  identical when comparing runs, and inspect error counts.
 - **Memory** is the server's resident set (`ri_resident_size` / `VmRSS`),
   sampled every 250 ms; macOS also reports the physical footprint.
 - **Write amplification** is the bytes the server process wrote to the device
   during the run (`ri_diskio_byteswritten` / `write_bytes`) divided by the
   logical bytes the clients wrote (document id plus JSON body). The logical
-  variant uses bytes passed to `write(2)` instead.
+  variant uses bytes passed to `write(2)` instead. As with CPU, the numerator
+  covers the whole driver invocation, including warmup; the denominator covers
+  successful measured operations. Warmup writes and concurrent maintenance can
+  therefore increase this ratio. Raw rows label this as `resource_window`.
 - **Idle cost** is server CPU and device writes over 10 s with the data loaded
   and no requests (`--idle-seconds`).
 - **Startup and recovery** are timed from spawning the server process to the
@@ -107,6 +113,16 @@ and is deleted afterwards unless `--keep-work` is given. Add
 `kasumi-audited` to `--systems` to measure strict read auditing. The script
 records the host, Redis version, arguments and load average in
 `results.jsonl`; nothing it writes contains credentials or document bodies.
+Any load or workload that reports request errors fails the run after retaining
+its measurement. Setup failures stop the server and any credential watchers
+already started; a failed system does not prevent the other systems from
+recording their results. Failed runs retain the server log and daemon failure
+diagnostics under the output directory before removing the installation.
+Use `--kasumi-cache-bytes 8388608` to compare an 8 MiB persistent native cache
+cap with the generated default. The override is recorded in the run arguments
+and changes only that new installation's cache cap; admission budgets, scratch
+storage and durability settings keep their generated values. Compare both RSS
+and read CPU/latency before choosing a smaller cap.
 Kasumi credentials expire after an hour, so the script runs
 `kasumid credential watch` on the tenant and Control profiles for the length
 of the run.
@@ -117,6 +133,12 @@ and a build that writes faster in one case can move a cycle into the next.
 `--compact-before start` requests a cycle just before every Kasumi workload
 case, so it runs inside the case; `--compact-before finish` requests one and
 waits until it completes, so the case starts on a freshly compacted store.
+Completion means the request has been consumed and maintenance is idle. A
+request can join a running cycle or find no eligible older files, so waiting
+for the cycle number to increase would hang in those cases.
+An [interrupted follow-up run](results/redis-comparison-20261106/dx-followup/interrupted-compaction-wait.jsonl)
+exposed that harness bug after its two point-write cases; it is retained
+separately and excluded from the paired summaries.
 Use one of them to compare builds on a change that is not about compaction;
 the default leaves compaction alone. On macOS a full flush (`F_FULLFSYNC`) is
 device-wide, so any other process flushing to the same device slows every
@@ -340,13 +362,14 @@ that case and a few writes waited about 3 s behind it, while in the base
 rounds that case only started its cycle and the worst stalls fell in the
 16-client batch rounds, two of which collapsed to 4.7 and 5.9/s.
 
-## Summary: where Kasumi stands against Redis
+## Interpreting the original baseline
 
-On this host, matched for TLS 1.3 with client certificates and for durable
-acknowledgements, Redis is faster and lighter than Kasumi on every workload
-measured here, by two to three orders of magnitude on reads. Most of the gap
-is not data structures or encryption but four design decisions, each of
-which buys a guarantee Redis does not offer:
+In the original 6ff7734d baseline above, matched for TLS 1.3 with client
+certificates and durable acknowledgements, Redis was faster and lighter on
+every measured workload, by two to three orders of magnitude on reads.
+Later changes must be assessed using their own paired measurements; those
+baseline ratios do not describe the current implementation. Profiles of the
+baseline identified four substantial costs:
 
 - **Durable authentication audit.** In the baseline every request, read or
   write, waited for a flushed service-audit record: the floor under Kasumi's
@@ -370,11 +393,12 @@ which buys a guarantee Redis does not offer:
   estimated 2,500 entries in 22.9 s, roughly 9 ms each; Redis loaded its AOF in
   under a second.
 
-Kasumi is ahead of Redis on what that cost buys: encryption at rest, exactly
-once mutations with durable receipts, schema validation and declared indexes
-maintained in the same commit, per-request authorization and revocation, an
-encrypted hash-linked service audit, and no configuration in which an acknowledged
-write can be lost (`everysec` can lose about a second). It also spreads
+Kasumi supplies encryption at rest, idempotent mutations with durable
+receipts, schema validation and declared indexes maintained in the same
+commit, per-request authorization and revocation, and an encrypted
+hash-linked service audit. These are differences in the compared server
+configurations, not an overall security ranking. Redis `always` also flushes
+before acknowledgement; `everysec` has a weaker durability contract. Kasumi spreads
 requests over many cores where Redis serves commands on one thread, which
 starts to matter once reads stop waiting for flushes: recording
 authentication once per connection made 16-client reads 59 times faster
@@ -391,9 +415,163 @@ workload those are now what readers wait for. On Linux all six of a commit's
 syncs are `fdatasync` calls (on macOS only the last is a full flush), so
 fewer syncs per commit is the larger lever there.
 
-To approach Redis on throughput Kasumi would still need, in order of
-measured effect: stop holding the storage mutex across a commit's log and
-directory flushes and maintenance I/O, so reads proceed during them; group
-concurrent proposals into one commit; reduce
-the syncs per commit; and batch journal replay. Each is described in [where
-Kasumi's time goes](#where-kasumis-time-goes).
+Remaining candidates for measurement include releasing the storage mutex
+across log and directory flushes and maintenance I/O, reducing syncs per
+commit, and batching journal replay. The current grouped-write path combines
+already queued, independent small standalone mutations in one publication;
+the original baseline and journal-only measurements above predate it.
+
+## Developer-experience follow-up
+
+The follow-up adds bounded shared document readers and standalone group
+commit. A query or snapshot page reuses a registered reader within its
+bounded worker and closes it before releasing the result; it does not keep
+that reader across cursor pages. Groups contain at most 16 queued requests
+and 32 operations, with each request limited to 16 operations and 64 KiB.
+Conflicting targets, repeated principal/idempotency-key pairs, administrative
+commands and replicated writes keep the sequential path. A lone request
+does not wait for a batching timer. Journal records remain individual
+entries, with each request retaining its receipt and audit record.
+
+Two correctness fixes accompany those changes:
+
+- A reader-close race let a retirement sweep take responsibility for native
+  close after the last handle was released but before explicit retirement.
+  A diagnostic replay captured seven `primary reader close incomplete`
+  errors in 442,331 successful point reads. Retirement now precedes that
+  release, and a deterministic test pauses the competing sweep at the
+  boundary. A subsequent 60-second replay completed 477,811 point reads with
+  zero errors; the same reader build completed 18,179 batch reads and 2,273
+  scans without errors. These establish a regression check, not a general
+  availability guarantee or a throughput improvement under changing load.
+  [Raw replays](results/redis-comparison-20261106/dx-followup/reader-replays.jsonl)
+  include the failed baseline rows;
+  [binary hashes](results/redis-comparison-20261106/dx-followup/reader-builds.json)
+  identify this intermediate reader build, which precedes the final grouped
+  receipt-credit lifetime fix.
+- A durable publication held the tenant key-state read lock while waiting
+  for device flushes, preventing lease renewal from installing a new
+  deadline. Commit `9f0e8315` limits the lock to encryption and keeps access
+  checks before and after commit. Its manual-clock test renews the lease
+  while root sync is paused, then completes the write after the old lease
+  would have expired. The store suite passed 926 tests, with six ignored.
+
+The inherited compaction investigation supports device-flush contention as
+a trigger for long write stalls. Its later 100,000-key diagnostic load
+failed at offset 50,700 before reaching the planned measured batch-write
+case, so it is not a throughput result. The independent 4 KiB full-flush
+probe already had a 918 ms p99 before the first lease-expiry warning. The
+available stack sample preceded that warning by nearly twelve minutes and
+does not identify the terminal stall. Maintenance and warmup still hold an
+opening lock needed by reader registration; the lease fix does not establish
+a bound on those waits or on an operating system device flush.
+The retained [probe samples](results/redis-comparison-20261106/dx-followup/compaction-flush-probe.txt)
+and [warning/percentile summary](results/redis-comparison-20261106/dx-followup/compaction-diagnosis.json)
+preserve the timing distinction.
+
+### Paired standalone writes
+
+Two alternating baseline/candidate rounds used fresh 10,000-key installations,
+1,024-byte documents, two loaders, 3 seconds of warmup, 10 seconds measured,
+and `--compact-before finish`. The baseline is `e4d920eb`; the candidate is
+the production change in `26c33731` with the lease fix in `9f0e8315`. Both
+use release builds without LTO, 16 codegen units and line-table debug data.
+The frozen candidate precedes a test-only lint cleanup; its [build identity
+and exact delta](results/redis-comparison-20261106/dx-followup/final-build.json)
+are retained. All sixteen measured write cases completed without request
+errors. The table gives medians, **baseline / candidate**.
+
+| Workload | Clients | Throughput (ops/s) | Server CPU/op (ms) | p99 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Point write | 1 | 30.0 / 29.2 | 13.36 / 13.28 | 104.5 / 101.1 |
+| Point write | 16 | 39.4 / 110.6 | 13.41 / 6.22 | 619.4 / 1,343.5 |
+| Batch write | 1 | 27.6 / 21.1 | 23.05 / 23.56 | 97.6 / 129.8 |
+| Batch write | 16 | 22.6 / 28.4 | 25.26 / 20.87 | 1,234.8 / 1,098.5 |
+
+Queued point writes show the clearest improvement: higher throughput and
+about half the server CPU per operation. Device bytes per measured logical
+byte fell from 503 to 282 in that case, including warmup in the numerator.
+This does not establish better tail latency. Both candidate 16-client point
+cases triggered another automatic compaction cycle, while their baseline
+counterparts did not; one candidate p99 reached 2.30 seconds. Later cases
+also saw different retained history because the candidate completed more
+writes. Host load averages ranged from 60 to 561. The [paired raw
+results](results/redis-comparison-20261106/dx-followup/write-pairs.jsonl)
+keep compaction activity and all lower-performing rows.
+
+The lower single-client batch result prompted a separate baseline/candidate/
+candidate/baseline sequence, with a fresh installation and only batch writes
+in each run. That sequence did not reproduce the slowdown: median throughput
+was 28.6 / 30.4 operations/s and CPU was 21.14 / 20.21 ms per operation.
+Individual throughput ranges overlapped (22.9–34.4 / 26.7–34.1); each build
+had one case with an automatic compaction cycle and one without. These short
+runs do not prove equal performance, but they do not support attributing the
+earlier 24% drop to single-client execution overhead. [Isolated batch
+results](results/redis-comparison-20261106/dx-followup/batch-isolation.jsonl)
+retain all four runs.
+
+### Updated matched-TLS matrix
+
+The candidate and Redis 8.10.3 then ran all six workloads at 1 and 16 clients
+on fresh 10,000-key installations. Settings were the same as the paired
+writes, with both Redis durability modes interleaved after each Kasumi case.
+Host load averages were 28–61. All 36 workload cases and all six graceful
+restart/crash-recovery checks passed without request errors. This smaller
+dataset is a new comparison, not a replacement measurement for the original
+100,000-key baseline.
+
+| Workload | Clients | Kasumi ops/s | Redis always ops/s | Redis everysec ops/s |
+| --- | ---: | ---: | ---: | ---: |
+| Point read | 1 | 2,138 | 13,142 | 14,957 |
+| Point write | 1 | 44 | 95 | 3,680 |
+| Mixed | 1 | 79 | 676 | 11,388 |
+| Batch read | 1 | 402 | 11,835 | 6,109 |
+| Batch write | 1 | 30 | 88 | 4,744 |
+| Range scan | 1 | 318 | 5,007 | 4,737 |
+| Point read | 16 | 9,210 | 62,305 | 32,923 |
+| Point write | 16 | 92 | 867 | 26,831 |
+| Mixed | 16 | 971 | 1,147 | 42,186 |
+| Batch read | 16 | 2,017 | 24,865 | 39,784 |
+| Batch write | 16 | 41 | 741 | 7,331 |
+| Range scan | 16 | 437 | 5,566 | 5,923 |
+
+Redis remained faster in every throughput row. Peak RSS across workload
+cases was 217 MiB for Kasumi, 28 MiB for Redis always and 46 MiB for Redis
+everysec. Kasumi's graceful and crash restart times were 4.96 and 5.04 seconds;
+Redis always took 0.07 and 0.04 seconds, and everysec took 0.12 and 0.10 seconds.
+Kasumi's 16-client batch-write p99 was 2.12 seconds versus 47.7 ms for Redis
+always. These results show remaining latency, memory and recovery costs;
+they do not show that Kasumi has caught up with Redis. `everysec` retains its
+weaker acknowledgement durability, as specified above.
+
+The [full tables](results/redis-comparison-20261106/dx-followup/matrix-summary.md)
+include p50/p99/p99.9, CPU, memory, write amplification, idle cost, disk usage
+and compaction; the [raw matrix](results/redis-comparison-20261106/dx-followup/matrix.jsonl)
+retains per-case settings and load. CPU and write-cost ratios include warmup,
+while throughput uses the measured interval.
+
+### Smaller native cache
+
+The same intermediate reader build was restarted on the same 10,000-document
+installation for twelve read-only cases: default 1 GiB cap, 8 MiB, 8 MiB,
+then default, with all three workloads in each round. Each case used 16
+clients, 3 seconds of warmup and 10 seconds measured. All 376,046 operations
+completed without errors. Values below are the medians of two cases for each
+cap; paired values are **default / 8 MiB**.
+
+| Workload | Peak RSS (MiB) | Server CPU/op (µs) | Throughput (ops/s) | p99 (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Point read | 112.9 / 85.9 | 237 / 252 | 7,131 / 7,799 | 19.4 / 16.4 |
+| Batch read | 112.9 / 82.5 | 887 / 1,035 | 1,855 / 1,350 | 31.9 / 41.8 |
+| Range scan | 110.9 / 82.9 | 5,903 / 7,270 | 201 / 171 | 263.5 / 298.3 |
+
+The smaller cap saved 27–30 MiB of resident memory here, with higher measured
+CPU per operation and slower batch reads and scans. Host load averages were
+423–597, so these short runs do not establish precise throughput differences.
+Rust builds also ran during these read experiments; flush-heavy test execution
+was held until after the benchmark work.
+The default cap is a maximum, not a reserved GiB: RSS stayed near 113 MiB.
+The result does not justify reducing the generated default. CPU covers the
+whole driver invocation as described above. [Raw cache
+replays](results/redis-comparison-20261106/dx-followup/cache-replays.jsonl)
+include the sampled peaks and per-case load.

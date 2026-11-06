@@ -1,0 +1,96 @@
+--- a/crates/kasumi-engine/src/application_source_reader.rs
++++ b/crates/kasumi-engine/src/application_source_reader.rs
+@@ -314,35 +314,6 @@
+     }
+ }
+ 
+-#[cfg(test)]
+-pub(super) mod close_test_hook {
+-    use std::cell::RefCell;
+-
+-    thread_local! {
+-        static RELEASE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+-        static CLOSE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
+-    }
+-
+-    pub(crate) fn on_release(hook: impl FnOnce() + 'static) {
+-        RELEASE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+-    }
+-
+-    pub(crate) fn on_close(hook: impl FnOnce() + 'static) {
+-        CLOSE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
+-    }
+-
+-    pub(super) fn after_release() {
+-        if let Some(hook) = RELEASE.with(|slot| slot.borrow_mut().take()) {
+-            hook();
+-        }
+-    }
+-
+-    pub(crate) fn before_native_close() {
+-        if let Some(hook) = CLOSE.with(|slot| slot.borrow_mut().take()) {
+-            hook();
+-        }
+-    }
+-}
+ impl Drop for SourceReader {
+     fn drop(&mut self) {
+         self.release();
+@@ -499,3 +470,33 @@
+         }
+     }
+ }
++
++#[cfg(test)]
++pub(super) mod close_test_hook {
++    use std::cell::RefCell;
++
++    thread_local! {
++        static RELEASE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
++        static CLOSE: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) };
++    }
++
++    pub(crate) fn on_release(hook: impl FnOnce() + 'static) {
++        RELEASE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
++    }
++
++    pub(crate) fn on_close(hook: impl FnOnce() + 'static) {
++        CLOSE.with(|slot| *slot.borrow_mut() = Some(Box::new(hook)));
++    }
++
++    pub(super) fn after_release() {
++        if let Some(hook) = RELEASE.with(|slot| slot.borrow_mut().take()) {
++            hook();
++        }
++    }
++
++    pub(crate) fn before_native_close() {
++        if let Some(hook) = CLOSE.with(|slot| slot.borrow_mut().take()) {
++            hook();
++        }
++    }
++}
+--- a/crates/kasumi-engine/src/service_group_commit_tests.rs
++++ b/crates/kasumi-engine/src/service_group_commit_tests.rs
+@@ -435,7 +435,7 @@
+         .zip(&responses)
+     {
+         assert_eq!(
+-            &db.operation_receipt(&context, key)
++            &db.operation_receipt(context, key)
+                 .await
+                 .unwrap()
+                 .unwrap()
+@@ -445,9 +445,9 @@
+     }
+     assert_eq!(db.mutate(context.clone(), first).await, responses[0]);
+     assert_eq!(db.mutate(context.clone(), second).await, responses[1]);
+-    assert!(db.get(&context, "docs", "a").await.unwrap().is_some());
+-    assert!(db.get(&context, "docs", "b").await.unwrap().is_some());
+-    assert!(db.get(&context, "docs", "c").await.unwrap().is_none());
++    assert!(db.get(context, "docs", "a").await.unwrap().is_some());
++    assert!(db.get(context, "docs", "b").await.unwrap().is_some());
++    assert!(db.get(context, "docs", "c").await.unwrap().is_none());
+     fixture.close().await;
+ }
+ 
