@@ -31,23 +31,29 @@ impl TenantStore {
         if let Some(source) = source.as_deref() {
             source.require_prepared_store(self)?;
         }
-        let state = self.state.read();
-        self.require_access(&state)?;
-        let catalog = self.catalog.read();
         self.node.with_registered_write(
             &mut source,
             |tx, source| {
                 if let Some(source) = source.as_deref() {
                     source.require_prepared_store(self)?;
                 }
-                write_domain(tx, self, &state, &catalog, operations)?;
-                self.require_access(&state)
+                // Key access is needed to encrypt, not while waiting for the
+                // writer or synchronizing its publication. Holding it through
+                // those waits prevents a successful live probe from renewing
+                // the lease on a slow disk.
+                {
+                    let state = self.state.read();
+                    self.require_access(&state)?;
+                    let catalog = self.catalog.read();
+                    write_domain(tx, self, &state, &catalog, operations)?;
+                }
+                self.check_access()
             },
             |source| {
                 if let Some(source) = source.as_deref_mut() {
                     source.capture_published_store(self)?;
                 }
-                self.require_access(&state).context(
+                self.check_access().context(
                     "batch committed but key access was lost before acknowledgment; outcome unknown",
                 )
             },
