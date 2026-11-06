@@ -927,6 +927,140 @@ async fn standalone_snapshot_over_an_archived_history_reopens_without_copying_th
     Ok(())
 }
 
+/// Every published document object, by namespace and key.
+fn document_objects(
+    stores: &TenantStorageSet,
+) -> anyhow::Result<BTreeSet<(&'static str, Vec<u8>)>> {
+    let mut objects = BTreeSet::new();
+    let view = stores.application().read_view()?;
+    for namespace in [crate::document_store::BODIES, crate::document_store::BLOBS] {
+        view.visit(namespace, 32 << 20, |key, _| {
+            objects.insert((namespace, key.to_vec()));
+            Ok(())
+        })?;
+    }
+    view.close()?;
+    Ok(objects)
+}
+
+/// A standalone reopen reads its snapshot's documents from the objects its
+/// store already published: each document reads back, and the objects only a
+/// replaced version named are swept while every other object stays.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn a_standalone_reopen_serves_its_snapshot_documents_and_sweeps_replaced_objects()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use anyhow::Context as _;
+    let fixture = Installation::new().await?;
+    // The feed keeps one event, so a snapshot names only current versions.
+    let limits = Limits {
+        history: kasumi_types::HistoryLimits {
+            max_feed_events: 1,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let database = open_local_with_incarnation(
+        fixture.stores.clone(),
+        policy(),
+        limits,
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    let context = RequestContext {
+        authorization: RequestAuthorization::service_identity(),
+        tenant: "tenant".into(),
+        principal: "owner".into(),
+        scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
+        request_id: "document-reopen".into(),
+    };
+    database
+        .administer(
+            context.clone(),
+            Operation::CreateCollection(CollectionDefinition {
+                name: "docs".into(),
+                write_mode: CollectionWriteMode::Mutable,
+                retention_class: CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type": "object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await?;
+    // Hex proofs this long are stored as separate chunk objects.
+    let proof = |seed: u8| {
+        hex::encode(
+            (0..70_013u32)
+                .map(|index| (index % 251) as u8 ^ seed)
+                .collect::<Vec<_>>(),
+        )
+    };
+    let put = |id: &str, seed: u8| {
+        MutationBatch::new().upsert("docs", id, serde_json::json!({"proof": proof(seed)}))
+    };
+    database.mutate(context.clone(), put("replaced", 1)).await?;
+    let replaced = document_objects(&fixture.stores)?;
+    assert!(!replaced.is_empty());
+    // A periodic snapshot covers the current versions; anything after it is
+    // replayed.
+    let group = database.raft_group().clone();
+    group.fixture_local_snapshot_interval(2).await?;
+    let before = group.metrics().snapshot;
+    for (id, seed) in [("replaced", 2), ("kept", 3)] {
+        database.mutate(context.clone(), put(id, seed)).await?;
+        group.fixture_local_snapshot_settled().await?;
+    }
+    assert!(
+        group.metrics().snapshot > before,
+        "no periodic snapshot was published"
+    );
+    let published = document_objects(&fixture.stores)?;
+    database.shutdown().await?;
+    drop(group);
+    drop(database);
+
+    let fixture = fixture.reopen().await?;
+    let reopened = open_existing_local(
+        fixture.stores.clone(),
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await
+    .map_err(
+        |original| crate::test_fixture_failure::FixtureFailure::SnapshotContext {
+            context: "document reopen",
+            original,
+        },
+    )?;
+    for (id, seed) in [("replaced", 2), ("kept", 3)] {
+        assert_eq!(
+            reopened
+                .get(&context, "docs", id)
+                .await?
+                .context("reopen lost a document")?
+                .body,
+            serde_json::json!({"proof": proof(seed)})
+        );
+    }
+    let kept = document_objects(&fixture.stores)?;
+    assert!(kept.is_subset(&published));
+    assert_eq!(
+        published
+            .difference(&kept)
+            .cloned()
+            .collect::<BTreeSet<_>>(),
+        replaced
+    );
+    reopened.shutdown().await?;
+    drop(reopened);
+    fixture.shutdown().await;
+    Ok(())
+}
+
 #[tokio::test]
 #[allow(
     clippy::result_large_err,

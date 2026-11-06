@@ -691,6 +691,149 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     fixture.close().await
 }
 
+/// A reopening decode, as the codec runs it for a replica's own snapshot when
+/// its restore publishes the selected sources.
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+fn reopening(
+    fixture: &Fixture,
+    documents: &[&Document],
+) -> crate::test_fixture_failure::FixtureResult<crate::document_restore::StagedDocuments> {
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    builder.compare_published(fixture.stores.application(), TENANT, &incarnation())?;
+    for document in documents {
+        builder.push(document)?;
+    }
+    Ok(builder.finish()?)
+}
+
+#[tokio::test]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn document_store_native_reopen_compares_published_objects_instead_of_staging()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new().await?;
+    let store = fixture.stores.application();
+    let files = fixture.image.disk().snapshot().live_files;
+    let first = document("compare-hex", 1, hex::encode(proof()));
+    let second = document("compare-base64", 2, STANDARD.encode(proof()));
+    // What the replica published when it applied both documents.
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    let first_descriptor = builder.push(&first)?;
+    let second_descriptor = builder.push(&second)?;
+    let staged = builder.finish()?;
+    staged.reconcile(store)?;
+    drop(staged);
+    let expected = published_objects(store)?;
+
+    // Its own snapshot names only published objects: nothing is staged, and
+    // both documents load from the rows the decode compared.
+    let reopened = reopening(&fixture, &[&first, &second])?;
+    assert!(reopened.reads_published());
+    assert_eq!(reopened.object_counts()?, (0, 0));
+    assert_eq!(first_descriptor.load(&reopened)?.as_ref(), &first);
+    assert_eq!(second_descriptor.load(&reopened)?.as_ref(), &second);
+    assert!(reopened.contains(&first_descriptor)?);
+    // Rows that only later documents name are swept; named rows stay.
+    let scope = crate::document_store::Scope::new(TENANT, &incarnation())?;
+    let later = |ordinal: u8, namespace| {
+        let bytes = vec![ordinal; 64];
+        let digest = <sha2::Sha256 as sha2::Digest>::digest(&bytes).into();
+        WriteOp::put(namespace, scope.key(digest), bytes)
+    };
+    store.write_batch(&[later(1, BODIES), later(2, BLOBS)])?;
+    reopened.reconcile(store)?;
+    assert_eq!(published_objects(store)?, expected);
+
+    // A store that lacks one object and holds another with other bytes: the
+    // decode stages exactly those two, loads them from staging, and the
+    // publication writes both back.
+    let mut keys = expected.keys();
+    let (damaged_namespace, damaged) = keys.next().unwrap().clone();
+    let (missing_namespace, missing) = keys.next().unwrap().clone();
+    store.write_batch(&[
+        WriteOp::put(damaged_namespace, damaged.clone(), b"damaged".to_vec()),
+        WriteOp::delete(missing_namespace, missing.clone()),
+    ])?;
+    let repaired = reopening(&fixture, &[&first, &second])?;
+    let (bodies, blobs) = repaired.object_counts()?;
+    assert_eq!(bodies + blobs, 2);
+    assert_eq!(first_descriptor.load(&repaired)?.as_ref(), &first);
+    assert_eq!(second_descriptor.load(&repaired)?.as_ref(), &second);
+    repaired.reconcile(store)?;
+    assert_eq!(published_objects(store)?, expected);
+
+    // A named row that changes or disappears between decoding and
+    // publication fails it instead of being trusted.
+    for change in [
+        WriteOp::put(damaged_namespace, damaged.clone(), b"changed".to_vec()),
+        WriteOp::delete(missing_namespace, missing.clone()),
+    ] {
+        let decoded = reopening(&fixture, &[&first, &second])?;
+        assert_eq!(decoded.object_counts()?, (0, 0));
+        store.write_batch(&[change])?;
+        let error = decoded
+            .reconcile(store)
+            .expect_err("a changed row must fail");
+        assert!(format!("{error:#}").contains("after decoding"), "{error:#}");
+        // The decode that staged both rows restores them.
+        repaired.reconcile(store)?;
+        assert_eq!(published_objects(store)?, expected);
+    }
+
+    // Only objects its own snapshot names are served, even when the store
+    // publishes another document's.
+    let third = document("compare-third", 3, hex::encode(vec![7; 4096]));
+    let mut builder = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    let third_descriptor = builder.push(&third)?;
+    let other = builder.finish()?;
+    other.write_missing(store)?;
+    assert!(third_descriptor.load(&reopened).is_err());
+    assert!(!reopened.contains(&third_descriptor)?);
+    // A reopened decode keeps its own scope and store.
+    assert!(
+        reopened
+            .rebind_scope(TENANT, "another-incarnation")
+            .is_err()
+    );
+    let mut foreign = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &incarnation(),
+    )?;
+    assert!(
+        foreign
+            .compare_published(store, "another-tenant", &incarnation())
+            .is_err()
+    );
+    drop(foreign);
+    drop(other);
+    drop(repaired);
+    drop(reopened);
+    assert_eq!(fixture.image.disk().snapshot().live_files, files);
+    fixture.close().await
+}
+
 /// 512 KiB of per-document text that is neither hex nor base64, so each
 /// 48 KiB chunk is a distinct object.
 fn reopen_text(ordinal: u64) -> String {

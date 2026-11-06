@@ -1,15 +1,17 @@
 //! One-row-at-a-time logical snapshot materialization into encrypted bodies.
 //! Scratch tables are unpublished and private until the complete snapshot is
 //! verified; its restore then brings both published object namespaces to the
-//! snapshot's objects in bounded batches.
+//! snapshot's objects in bounded batches. A reopening replica's own snapshot
+//! names objects its store already published: decoding compares each with
+//! that row and stages only an object the store lacks or holds otherwise.
 use crate::{
     document_encoding::{self, BLOB_CHUNK_BYTES, BodyManifest},
     document_store::{BLOBS, BODIES, DocumentMeasurement, Scope, limits},
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
-    DiskMemoryLease, EncryptedTable, EncryptedTableBatch, NodeDiskMemoryAdmission, ScratchDisk,
-    TenantStore, WriteOp,
+    DiskMemoryLease, EncryptedTable, EncryptedTableBatch, NodeDiskMemoryAdmission, PlaintextValue,
+    ScratchDisk, ScratchTableValue, TenantReadView, TenantStore, WriteOp,
 };
 use kasumi_types::{
     AdmittedDocumentOwner, Document, DocumentResolver, SharedDocument, StoredDocument,
@@ -28,6 +30,11 @@ const CORRECTION_BYTES: usize = 8 << 20;
 /// A published manifest never exceeds the staged table's own row cap; a chunk
 /// never exceeds `BLOB_CHUNK_BYTES`. Each visited row reserves its full bound.
 const MAX_OBJECT_BYTES: usize = 32 << 20;
+/// Objects a reopening decode compared most recently: a chunk repeated within
+/// nearby documents needs no second point read.
+const RECENT: usize = 16;
+/// Digests a reopened snapshot's name set first admits, then doubles.
+const NAMES_GROWTH: usize = 4096;
 
 /// Only read-side decode admission constructs this error. Keep its original
 /// provider observation separate from native I/O and retirement failures.
@@ -125,13 +132,18 @@ struct Tables {
 }
 
 /// Immutable after the builder has been consumed. Clones share encrypted
-/// backing, never a map of decoded payloads or a growing proof digest set.
+/// backing, never a map of decoded payloads. Only a reopened snapshot keeps
+/// the sorted digests of the objects it names, until its publication.
 #[derive(Clone)]
 pub(crate) struct StagedDocuments {
     tables: Arc<Tables>,
     // Established by the consumed builder; these private tables never gain
     // objects after finish. Empty bootstraps need no membership point reads.
+    // Whether the snapshot names any body, staged or published.
     has_bodies: bool,
+    // A reopened snapshot: the objects it names that were not staged are the
+    // rows its store held with the same bytes when decoded.
+    published: Option<Arc<Published>>,
 }
 
 pub(crate) struct Builder {
@@ -140,7 +152,165 @@ pub(crate) struct Builder {
     documents_since_flush: usize,
     has_bodies: bool,
     tables: Arc<Tables>,
+    comparing: Option<Comparing>,
     failed: bool,
+}
+
+/// Digests of the objects a reopened snapshot names in one namespace, and of
+/// those it staged because the store lacked them or held other bytes. Each
+/// buffer grows only under an admitted grant; sealing sorts both.
+#[derive(Default)]
+struct Names {
+    all: Vec<[u8; 32]>,
+    staged: Vec<[u8; 32]>,
+    // LAST: the buffers retire before the credit that admitted them.
+    grant: Option<DiskMemoryLease>,
+}
+impl Names {
+    fn push(
+        &mut self,
+        memory: &Arc<dyn NodeDiskMemoryAdmission>,
+        digest: [u8; 32],
+        staged: bool,
+    ) -> Result<()> {
+        let grow_all = self.all.len() == self.all.capacity();
+        let grow_staged = staged && self.staged.len() == self.staged.capacity();
+        if grow_all || grow_staged {
+            let all = if grow_all {
+                self.all.capacity().saturating_mul(2).max(NAMES_GROWTH)
+            } else {
+                self.all.capacity()
+            };
+            let staged = if grow_staged {
+                self.staged.capacity().saturating_mul(2).max(16)
+            } else {
+                self.staged.capacity()
+            };
+            let bytes = all
+                .checked_add(staged)
+                .and_then(|digests| digests.checked_mul(32))
+                .context("document name set overflow")?;
+            // The previous grant still covers each buffer a reallocation
+            // copies from, until both have grown.
+            let previous = self
+                .grant
+                .replace(memory.clone().reserve_installed(u64::try_from(bytes)?)?);
+            self.all.try_reserve_exact(all - self.all.len())?;
+            self.staged.try_reserve_exact(staged - self.staged.len())?;
+            drop(previous);
+        }
+        self.all.push(digest);
+        if staged {
+            self.staged.push(digest);
+        }
+        Ok(())
+    }
+    fn seal(&mut self) {
+        for digests in [&mut self.all, &mut self.staged] {
+            digests.sort_unstable();
+            digests.dedup();
+        }
+    }
+    fn names(&self, digest: &[u8; 32]) -> bool {
+        self.all.binary_search(digest).is_ok()
+    }
+    fn staged(&self, digest: &[u8; 32]) -> bool {
+        self.staged.binary_search(digest).is_ok()
+    }
+}
+
+/// A reopened snapshot's objects in its own store: every object it names,
+/// each of which that store held with the same bytes when decoded unless it
+/// is staged instead.
+struct Published {
+    store: Arc<TenantStore>,
+    bodies: Names,
+    blobs: Names,
+}
+impl Published {
+    fn names(&self, body: bool) -> &Names {
+        if body { &self.bodies } else { &self.blobs }
+    }
+}
+
+/// A reopening decode's comparison with the rows its store already published,
+/// through one view held until the builder finishes.
+struct Comparing {
+    published: Published,
+    view: TenantReadView,
+    recent: [Option<(bool, [u8; 32])>; RECENT],
+    next: usize,
+}
+impl Comparing {
+    /// Record `digest` as named, and whether the store already holds exactly
+    /// `bytes` under its key. A row with other bytes is replaced by the
+    /// staged copy when the restore publishes.
+    fn holds(
+        &mut self,
+        memory: &Arc<dyn NodeDiskMemoryAdmission>,
+        body: bool,
+        digest: [u8; 32],
+        key: &[u8; 64],
+        bytes: &[u8],
+    ) -> Result<bool> {
+        let held = if self.recent.contains(&Some((body, digest))) {
+            true
+        } else {
+            let (namespace, bound) = if body {
+                (BODIES, MAX_OBJECT_BYTES)
+            } else {
+                (BLOBS, BLOB_CHUNK_BYTES)
+            };
+            let held = self
+                .view
+                .get(namespace, key, bound)?
+                .is_some_and(|published| published.as_bytes() == bytes);
+            if held {
+                self.recent[self.next] = Some((body, digest));
+                self.next = (self.next + 1) % RECENT;
+            }
+            held
+        };
+        let names = if body {
+            &mut self.published.bodies
+        } else {
+            &mut self.published.blobs
+        };
+        names.push(memory, digest, !held)?;
+        Ok(held)
+    }
+    fn finish(self) -> Result<Published> {
+        let Self {
+            mut published,
+            view,
+            ..
+        } = self;
+        view.close()?;
+        published.bodies.seal();
+        published.blobs.seal();
+        Ok(published)
+    }
+}
+
+/// One object's bytes: its staged copy, or the published row a reopened
+/// snapshot names.
+enum ObjectBytes {
+    Staged(ScratchTableValue),
+    Published(PlaintextValue),
+}
+impl AsRef<[u8]> for ObjectBytes {
+    fn as_ref(&self) -> &[u8] {
+        match self {
+            Self::Staged(value) => value.as_bytes(),
+            Self::Published(value) => value.as_bytes(),
+        }
+    }
+}
+
+/// The digest of a content-addressed row of `scope`, if it is one.
+fn scoped_digest(scope: &[u8; 64], key: &[u8]) -> Option<[u8; 32]> {
+    (key.len() == 64 && key[..32] == scope[..32])
+        .then(|| key[32..].try_into().expect("checked object key width"))
 }
 
 struct KnownObject {
@@ -265,8 +435,41 @@ impl Builder {
                 max_table_bytes,
                 _metadata: metadata,
             }),
+            comparing: None,
             failed: false,
         })
+    }
+
+    /// For a reopening replica's own snapshot only, before the first push:
+    /// compare each object with the row `store` already published under its
+    /// content address and stage only an object it lacks or holds otherwise.
+    /// The restore must publish a store-backed resolver, so these objects are
+    /// never read from this staging after their reconciliation.
+    pub(crate) fn compare_published(
+        &mut self,
+        store: &Arc<TenantStore>,
+        tenant: &str,
+        incarnation: &str,
+    ) -> Result<()> {
+        ensure!(
+            !self.failed && !self.has_bodies && self.comparing.is_none(),
+            "document comparison must precede every object"
+        );
+        ensure!(
+            store.tenant() == tenant && Scope::new(tenant, incarnation)? == self.tables.scope,
+            "reopened document store scope differs"
+        );
+        self.comparing = Some(Comparing {
+            published: Published {
+                store: store.clone(),
+                bodies: Names::default(),
+                blobs: Names::default(),
+            },
+            view: store.read_view()?,
+            recent: [None; RECENT],
+            next: 0,
+        });
+        Ok(())
     }
 
     /// The caller already owns/admitted this single decoded snapshot record.
@@ -305,13 +508,19 @@ impl Builder {
             <[u8; 32]>::from(Sha256::digest(bytes)) == digest,
             "document restore object digest differs"
         );
+        let key = self.tables.scope.key(digest);
+        if let Some(comparing) = &mut self.comparing
+            && comparing.holds(self.tables.disk.memory(), body, digest, &key, bytes)?
+        {
+            self.has_bodies |= body;
+            return Ok(());
+        }
         let backing = self.tables.backing.as_ref().expect("builder table backing");
         let (table, batch) = if body {
             (&backing.bodies, &mut self.bodies)
         } else {
             (&backing.blobs, &mut self.blobs)
         };
-        let key = self.tables.scope.key(digest);
         batch.put(table, self.tables.disk.memory(), key, bytes)?;
         self.has_bodies |= body;
         Ok(())
@@ -324,9 +533,16 @@ impl Builder {
         self.failed = true;
         self.bodies.flush()?;
         self.blobs.flush()?;
+        let published = self
+            .comparing
+            .take()
+            .map(Comparing::finish)
+            .transpose()?
+            .map(Arc::new);
         Ok(StagedDocuments {
             tables: self.tables,
             has_bodies: self.has_bodies,
+            published,
         })
     }
 }
@@ -441,7 +657,43 @@ impl StagedDocuments {
                 _metadata: metadata,
             }),
             has_bodies: false,
+            published: None,
         })
+    }
+
+    /// Whether this reopened snapshot reads the objects it did not stage from
+    /// its store's published rows.
+    pub(crate) fn reads_published(&self) -> bool {
+        self.published.is_some()
+    }
+
+    /// One object this snapshot names: its staged copy, or the published row
+    /// a reopened snapshot found with the same bytes. `None` if it names no
+    /// such object. A published row is bounded by the object's own length.
+    fn object(&self, body: bool, digest: [u8; 32], bytes: usize) -> Result<Option<ObjectBytes>> {
+        let key = self.tables.scope.key(digest);
+        if let Some(published) = &self.published {
+            let names = published.names(body);
+            if !names.names(&digest) {
+                return Ok(None);
+            }
+            if !names.staged(&digest) {
+                let namespace = if body { BODIES } else { BLOBS };
+                return Ok(published
+                    .store
+                    .get_bounded(namespace, &key, bytes)?
+                    .map(ObjectBytes::Published));
+            }
+        }
+        let Some(backing) = &self.tables.backing else {
+            return Ok(None);
+        };
+        let table = if body {
+            &backing.bodies
+        } else {
+            &backing.blobs
+        };
+        Ok(table.get(&key)?.map(ObjectBytes::Staged))
     }
 
     fn read_grant(&self, bytes: u64) -> Result<DiskMemoryLease> {
@@ -466,6 +718,13 @@ impl StagedDocuments {
         if target_scope == self.tables.scope {
             return Ok(self.clone());
         }
+        kasumi_store::ScratchOperationFailure::ordinary(|| {
+            ensure!(
+                self.published.is_none(),
+                "a reopened snapshot keeps its own document scope"
+            );
+            Ok(())
+        })?;
         let Some(backing) = &self.tables.backing else {
             return Ok(Self::empty(
                 &self.tables.disk,
@@ -524,29 +783,22 @@ impl StagedDocuments {
             return Ok(false);
         }
         let _lookup = self.read_grant(FLOOR)?;
-        let Some(wire) = self
-            .tables
-            .backing
-            .as_ref()
-            .context("staged document manifest missing")?
-            .bodies
-            .get(&self.tables.scope.key(descriptor.body_object))?
-        else {
+        let Some(wire) = self.object(true, descriptor.body_object, expected)? else {
             return Ok(false);
         };
+        let wire = wire.as_ref();
         ensure!(
             wire.len() == expected
-                && <[u8; 32]>::from(Sha256::digest(wire.as_bytes())) == descriptor.body_object,
+                && <[u8; 32]>::from(Sha256::digest(wire)) == descriptor.body_object,
             "staged document membership manifest identity differs"
         );
-        let work =
-            crate::snapshot_codec::inspect_external_json_work(wire.as_bytes(), &mut || Ok(()))?;
+        let work = crate::snapshot_codec::inspect_external_json_work(wire, &mut || Ok(()))?;
         ensure!(
             work == descriptor.body_manifest_work,
             "staged document manifest workspace differs"
         );
         let _decode = self.read_grant(work)?;
-        let manifest = BodyManifest::from_bytes(wire.as_bytes(), limits)?;
+        let manifest = BodyManifest::from_bytes(wire, limits)?;
         ensure!(
             manifest.canonical_bytes == descriptor.body_bytes
                 && manifest.canonical_sha256 == descriptor.body_sha256,
@@ -618,6 +870,9 @@ impl StagedDocuments {
     /// captures the store: replay and later applies check object presence
     /// against that selection.
     pub(crate) fn reconcile(&self, store: &Arc<TenantStore>) -> Result<()> {
+        if let Some(published) = &self.published {
+            return self.reconcile_published(store, published);
+        }
         let memory = self.tables.disk.memory();
         for (namespace, table, max_bytes) in self.namespaces() {
             let mut correction = Correction::new(store, memory, namespace)?;
@@ -647,6 +902,55 @@ impl StagedDocuments {
             })?;
             // Every kept row is one distinct staged object.
             if kept != staged {
+                correction.write_missing(table)?;
+            }
+        }
+        Ok(())
+    }
+
+    /// A reopened snapshot's reconciliation. Its store already holds every
+    /// object it names with the same bytes, except the objects decoding
+    /// staged: delete each row it does not name, then write the staged ones.
+    /// A named row that changed since decoding fails instead of being kept.
+    fn reconcile_published(&self, store: &Arc<TenantStore>, published: &Published) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(store, &published.store),
+            "reopened documents belong to another store"
+        );
+        let memory = self.tables.disk.memory();
+        let scope = self.tables.scope.key([0; 32]);
+        for (namespace, table, max_bytes) in self.namespaces() {
+            let names = published.names(namespace == BODIES);
+            let mut correction = Correction::new(store, memory, namespace)?;
+            let mut held = 0usize;
+            let view = store.read_view()?;
+            view.visit(namespace, max_bytes, |key, value| {
+                if let Some(digest) = scoped_digest(&scope, key)
+                    && names.names(&digest)
+                {
+                    if !names.staged(&digest) {
+                        ensure!(
+                            <[u8; 32]>::from(Sha256::digest(value)) == digest,
+                            "reopened document object changed after decoding"
+                        );
+                        held += 1;
+                    }
+                    return Ok(());
+                }
+                correction.delete(key)
+            })?;
+            view.close()?;
+            // Every named object decoding did not stage is still published.
+            ensure!(
+                held == names.all.len() - names.staged.len(),
+                "reopened document object disappeared after decoding"
+            );
+            correction.flush()?;
+            // Rewrites a named row held with other bytes, and writes a
+            // missing one.
+            if !names.staged.is_empty()
+                && let Some(table) = table
+            {
                 correction.write_missing(table)?;
             }
         }
@@ -819,11 +1123,6 @@ impl StagedDocuments {
             manifest_bytes > 0 && manifest_bytes <= limits.manifest_bytes,
             "staged document manifest exceeds bound"
         );
-        let backing = self
-            .tables
-            .backing
-            .as_ref()
-            .context("staged document manifest missing")?;
         let wire_bytes = descriptor
             .body_bytes
             .checked_mul(2)
@@ -831,26 +1130,25 @@ impl StagedDocuments {
             .and_then(|bytes| bytes.checked_add(FLOOR))
             .context("staged document wire workspace overflow")?;
         let wire_grant = self.read_grant(wire_bytes)?;
-        let manifest_wire = backing
-            .bodies
-            .get(&self.tables.scope.key(descriptor.body_object))?
+        let manifest_wire = self
+            .object(true, descriptor.body_object, manifest_bytes)?
             .context("staged document manifest missing")?;
         ensure!(
-            manifest_wire.len() == manifest_bytes
-                && <[u8; 32]>::from(Sha256::digest(manifest_wire.as_bytes()))
+            manifest_wire.as_ref().len() == manifest_bytes
+                && <[u8; 32]>::from(Sha256::digest(manifest_wire.as_ref()))
                     == descriptor.body_object,
             "staged document manifest identity differs"
         );
-        let manifest_work = crate::snapshot_codec::inspect_external_json_work(
-            manifest_wire.as_bytes(),
-            &mut || check(),
-        )?;
+        let manifest_work =
+            crate::snapshot_codec::inspect_external_json_work(manifest_wire.as_ref(), &mut || {
+                check()
+            })?;
         ensure!(
             manifest_work == descriptor.body_manifest_work,
             "staged document manifest workspace differs"
         );
         let manifest_grant = self.read_grant(manifest_work)?;
-        let manifest = BodyManifest::from_bytes(manifest_wire.as_bytes(), limits)?;
+        let manifest = BodyManifest::from_bytes(manifest_wire.as_ref(), limits)?;
         ensure!(
             manifest.canonical_bytes == descriptor.body_bytes
                 && manifest.canonical_sha256 == descriptor.body_sha256,
@@ -858,9 +1156,8 @@ impl StagedDocuments {
         );
         let canonical = document_encoding::reconstruct_body(&manifest, limits, |reference| {
             check()?;
-            let blob = backing
-                .blobs
-                .get(&self.tables.scope.key(reference.sha256))?
+            let blob = self
+                .object(false, reference.sha256, usize::try_from(reference.bytes)?)?
                 .context("staged document proof chunk missing")?;
             check()?;
             Ok(blob)

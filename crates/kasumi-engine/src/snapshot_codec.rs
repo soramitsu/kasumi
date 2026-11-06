@@ -1012,6 +1012,10 @@ pub(crate) struct Decoded {
 pub(crate) struct ReopenRows<'a> {
     pub(crate) store: &'a Arc<kasumi_store::TenantStore>,
     pub(crate) checkpoint_sha256: &'a str,
+    /// Compare document objects with the store's published rows too. Only a
+    /// restore that publishes a store-backed document resolver may: its
+    /// objects are then never read from this decode after publication.
+    pub(crate) documents: bool,
 }
 enum ReceiptSink {
     Staged(crate::mutation_receipt::Builder),
@@ -1126,6 +1130,14 @@ pub(crate) fn read_reopening(
                 &state.tenant,
                 &state.incarnation,
             )?);
+            if let Some(rows) = reopen.filter(|rows| rows.documents) {
+                kasumi_store::ScratchOperationFailure::ordinary(|| {
+                    documents
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
+                        .compare_published(rows.store, &state.tenant, &state.incarnation)
+                })?;
+            }
         }
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let state = state

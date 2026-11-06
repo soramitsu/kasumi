@@ -600,6 +600,8 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 &crate::snapshot_codec::ReopenRows {
                     store,
                     checkpoint_sha256: &checkpoint_sha256,
+                    // Publication then switches to the selected sources.
+                    documents: selection.is_some(),
                 },
             )?
         } else {
@@ -748,6 +750,10 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         // held apply owner admits no other capture. A failure leaves the
         // restart to redo it.
         if let Some(documents) = &generation.staged_documents {
+            anyhow::ensure!(
+                selection.is_some() || !documents.reads_published(),
+                "reopened documents need the selected sources that replace them"
+            );
             documents.reconcile(store)?;
         }
         if let Some(selection) = selection {
