@@ -36,6 +36,8 @@ async fn native_grpc_channel_uses_pinned_tls13_and_http2_with_no_plaintext_fallb
         },
         algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
         access_token_types: BTreeSet::from(["at+jwt".into()]),
+        mcp_audience: None,
+        require_certificate_binding: false,
     })?;
     let listener = TcpListener::bind("127.0.0.1:0").await?;
     let endpoint = format!("https://{}", listener.local_addr()?);

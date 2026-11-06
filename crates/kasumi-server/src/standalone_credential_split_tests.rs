@@ -241,6 +241,8 @@ async fn check_profile_authority(
                             resource: profile.resource.clone(),
                             scopes: all_actions(),
                             lifetime_seconds: 3600,
+                            client_certificate_sha256: None,
+                            audience: Default::default(),
                         },
                     )
                     .await
@@ -326,14 +328,22 @@ fn a_new_installation_gives_each_profile_only_its_own_authority() -> Result<()> 
 }
 
 /// Rewrite a new installation into the layout every installation had before
-/// the split: `default.json` is the tenant administrator with every scope,
-/// the tenant policy has no application, and every profile shares
-/// `profiles/client.pem`. Returns the legacy family and its token.
+/// the split, which also predates certificate binding: `default.json` is the
+/// tenant administrator with every scope, the tenant policy has no
+/// application, every profile shares `profiles/client.pem`, no family is
+/// bound, there is no MCP profile and nothing requires binding. Returns the
+/// legacy family and its token.
 async fn install_pre_split_layout(
     installation: &InitializedInstallation,
     storage: &crate::runtime_memory::RuntimeStorage,
 ) -> Result<(Uuid, String)> {
-    let config = RuntimeConfig::load(&installation.configuration)?;
+    let mut config = RuntimeConfig::load(&installation.configuration)?;
+    config.auth.mcp_audience = None;
+    config.auth.require_certificate_binding = false;
+    private_files::replace(
+        &installation.configuration,
+        &serde_json::to_vec_pretty(&config)?,
+    )?;
     let mut owner = OperatorState::open(&config, storage.clone()).await?;
     let result = async {
         let application = ClientProfile::load(&installation.tenant_profile)?;
@@ -366,6 +376,8 @@ async fn install_pre_split_layout(
                 resource: application.resource.clone(),
                 scopes: all_actions(),
                 lifetime_seconds: 3600,
+                client_certificate_sha256: None,
+                audience: Default::default(),
             },
             "initializer",
         )?;
@@ -380,12 +392,24 @@ async fn install_pre_split_layout(
             &installation.tenant_profile,
             &serde_json::to_vec_pretty(&legacy_profile)?,
         )?;
+        // The Control family as an unbound one on the shared certificate.
         let mut control = ClientProfile::load(&installation.control_profile)?;
+        let mut specification = owner.credentials.status(control.family_id)?.specification;
+        owner.credentials.revoke(control.family_id, "fixture")?;
+        specification.family_id = Uuid::new_v4();
+        specification.client_certificate_sha256 = None;
+        let unbound = owner.credentials.create(specification, "initializer")?;
+        private_files::replace(&control.bearer_file, unbound.token.as_bytes())?;
+        control.family_id = unbound.family_id;
         control.identity = application.identity.clone();
         private_files::replace(
             &installation.control_profile,
             &serde_json::to_vec_pretty(&control)?,
         )?;
+        let mcp = ClientProfile::load(&installation.mcp_profile)?;
+        owner.credentials.revoke(mcp.family_id, "fixture")?;
+        std::fs::remove_file(&mcp.bearer_file)?;
+        std::fs::remove_file(&installation.mcp_profile)?;
         let operator = ClientProfile::load(&installation.operator_profile)?;
         owner.credentials.revoke(operator.family_id, "fixture")?;
         let directory = installation.operator_profile.parent().context("profiles")?;

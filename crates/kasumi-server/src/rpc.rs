@@ -88,7 +88,13 @@ async fn verified<T>(auth: &Authenticator, request: &Request<T>) -> Result<Reque
         .and_then(|value| value.to_str().ok())
         .unwrap_or("");
     let authorization = if values.next().is_some() { "" } else { first };
-    auth.authenticate(authorization).await.map_err(status)
+    let certificate = request
+        .extensions()
+        .get::<crate::tls::AuthenticatedTlsPeer>()
+        .and_then(crate::tls::AuthenticatedTlsPeer::certificate_pin);
+    auth.authenticate_presented(authorization, certificate)
+        .await
+        .map_err(status)
 }
 async fn routed(
     registry: &DatabaseRegistry,

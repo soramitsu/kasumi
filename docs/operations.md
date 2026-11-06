@@ -153,7 +153,9 @@ has the rules and threat model). A refused recovery stops the watcher with the
 reason. For those profiles, stop kasumid and run
 `kasumid recover-existing-credentials`. After upgrading kasumid, restart the
 `credential watch` units so that they recover; each family becomes recoverable
-once the new build has renewed it.
+once the new build has renewed it. An MCP credential (`profiles/mcp.json`)
+cannot reach the administrative listener, so its unit names the Control
+profile too: `kasumid credential watch profiles/mcp.json profiles/control.json`.
 
 ## Placement, networking and credentials
 

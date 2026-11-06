@@ -38,6 +38,8 @@ async fn authenticator() -> (Arc<Authenticator>, EncodingKey) {
             },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         },
         keys,
     )

@@ -147,6 +147,9 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
                 resource: tenant.resource.clone(),
                 scopes: BTreeSet::from([Action::Read, Action::Write]),
                 lifetime_seconds: 12,
+                // Used on MCP, which takes only MCP credentials.
+                client_certificate_sha256: None,
+                audience: kasumi_types::CredentialAudience::Mcp,
             },
         )
         .await
@@ -205,9 +208,11 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
     assert!(receipt.outcome.is_ok());
 
     tokio::time::sleep(Duration::from_secs(4)).await;
+    // An MCP credential cannot reach the administrative listener; the
+    // Control administrator renews it.
     let renewed = admin
         .renew_credential(
-            &short.token,
+            &control.bearer().unwrap(),
             &RenewCredential {
                 family_id: short.family_id,
                 renewal_id: Uuid::new_v4(),

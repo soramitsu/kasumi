@@ -196,6 +196,8 @@ impl Fixture {
                 },
                 algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
                 access_token_types: BTreeSet::from(["at+jwt".into()]),
+                mcp_audience: None,
+                require_certificate_binding: false,
             },
             native: MutualTlsEndpoint {
                 listen: "127.0.0.1:49540".parse()?,

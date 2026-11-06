@@ -496,7 +496,9 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         401
     );
     assert_eq!(
-        client
+        // The tenant's token is bound to its own certificate: authenticated
+        // from there, then refused as no Control credential.
+        http(&tenant, true)
             .get(&metrics)
             .bearer_auth(&*tenant.bearer().unwrap())
             .send()
@@ -541,7 +543,9 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         401
     );
     assert_eq!(
-        client
+        // The tenant's token is bound to its own certificate: authenticated
+        // from there, then refused as no Control credential.
+        http(&tenant, true)
             .get(&recovery)
             .bearer_auth(&*tenant.bearer().unwrap())
             .send()
@@ -908,6 +912,11 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         resource: control.resource.clone(),
         scopes,
         lifetime_seconds: seconds,
+        // Presented over the Control profile's own connection.
+        client_certificate_sha256: Some(hex::encode(
+            control.identity.load().unwrap().certificate_pin(),
+        )),
+        audience: Default::default(),
     };
     let reader = admin
         .create_credential(
@@ -1345,7 +1354,9 @@ async fn protected_archive_outage_and_due_backlog() {
         control.administrative_member().unwrap().endpoint
     );
     assert_eq!(
-        client
+        // The tenant's token is bound to its own certificate: authenticated
+        // from there, then refused as no Control credential.
+        http(&tenant, true)
             .get(&metrics)
             .bearer_auth(&*tenant.bearer().unwrap())
             .send()
@@ -2142,7 +2153,9 @@ async fn protected_metrics_under_pressure() {
     let node = management.node_for_enrollment_test();
     let before = node.storage_maintenance_status().unwrap();
     assert_eq!(
-        client
+        // The tenant's token is bound to its own certificate: authenticated
+        // from there, then refused as no Control credential.
+        http(&tenant, true)
             .post(&compaction)
             .bearer_auth(&*tenant.bearer().unwrap())
             .send()
@@ -2201,6 +2214,11 @@ async fn protected_metrics_under_pressure() {
                 resource: control.resource.clone(),
                 scopes: BTreeSet::from([Action::Admin]),
                 lifetime_seconds: 2,
+                // Presented over the Control profile's own connection.
+                client_certificate_sha256: Some(hex::encode(
+                    control.identity.load().unwrap().certificate_pin(),
+                )),
+                audience: Default::default(),
             },
         )
         .await

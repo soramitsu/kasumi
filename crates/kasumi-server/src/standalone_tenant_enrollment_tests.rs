@@ -284,6 +284,11 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
         },
         scopes: BTreeSet::from([Action::Read, Action::Write]),
         lifetime_seconds: 3600,
+        // Bound to the application certificate the new profile presents.
+        client_certificate_sha256: Some(hex::encode(
+            original_profile.identity.load()?.certificate_pin(),
+        )),
+        audience: Default::default(),
     };
     let wrong = CreateCredential {
         family_id: Uuid::new_v4(),
@@ -307,6 +312,16 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
         installed.control_profile.to_string_lossy().into_owned(),
         request_file.to_string_lossy().into_owned(),
         output.to_string_lossy().into_owned(),
+        original_profile
+            .identity
+            .certificate
+            .to_string_lossy()
+            .into_owned(),
+        original_profile
+            .identity
+            .private_key
+            .to_string_lossy()
+            .into_owned(),
     ])
     .await
     .context("create enrolled tenant credential")?;
@@ -345,7 +360,27 @@ async fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_surviv
             &profile.server_ca,
         )?)?)
         .build()?;
-    let mcp = http.post(&profile.mcp_endpoint).bearer_auth(profile.bearer()?.as_str()).header("accept", "application/json, text/event-stream").header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/call").header("mcp-name", "kasumi_get").json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"tenant-enrollment-tests","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}},"name":"kasumi_get","arguments":{"collection":"docs","id":"first"}}})).send().await?;
+    // MCP refuses the bound native credential and takes the tenant's own
+    // MCP credential, which a Control administrator issues.
+    let mcp_credential = admin
+        .create_credential(
+            &control_profile.bearer()?,
+            &CreateCredential {
+                family_id: Uuid::new_v4(),
+                client_certificate_sha256: None,
+                audience: CredentialAudience::Mcp,
+                ..credential.clone()
+            },
+        )
+        .await?;
+    let mcp_call = |token: &str| {
+        http.post(&profile.mcp_endpoint).bearer_auth(token).header("accept", "application/json, text/event-stream").header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/call").header("mcp-name", "kasumi_get").json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"tenant-enrollment-tests","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}},"name":"kasumi_get","arguments":{"collection":"docs","id":"first"}}}))
+    };
+    assert_eq!(
+        mcp_call(profile.bearer()?.as_str()).send().await?.status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    let mcp = mcp_call(&mcp_credential.token).send().await?;
     assert!(mcp.status().is_success());
     assert!(mcp.text().await?.contains("explicit standalone enrollment"));
     let status = admin

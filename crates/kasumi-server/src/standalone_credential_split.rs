@@ -10,7 +10,7 @@
 //! A journal written before anything it names is created lets a rerun after
 //! any interruption finish the same split with the same families.
 use super::*;
-use kasumi_types::{IssuedCredential, Operation, RenewCredential};
+use kasumi_types::{Operation, RenewCredential};
 
 const MAX_JOURNAL: usize = 16 << 10;
 
@@ -144,6 +144,22 @@ async fn apply(
     let root = installation_root(config)?;
     let identities = client_identities(config, root, profiles)?;
     restrict_tenant_policy(config, owner, journal).await?;
+    // A binding installation binds each new family to its profile's own
+    // certificate. Otherwise they stay unbound, like the family they replace,
+    // so that MCP clients using the application's token keep working.
+    let binding = |identity: &TlsFiles| -> Result<Option<String>> {
+        Ok(config
+            .auth
+            .require_certificate_binding
+            .then(|| {
+                identity
+                    .load()
+                    .map(|loaded| hex::encode(loaded.certificate_pin()))
+            })
+            .transpose()?)
+    };
+    let application_binding = binding(&TlsFiles::from(current.identity.clone()))?;
+    let operator_binding = binding(&identities["operator-client"])?;
     let application = live_credential(
         &owner.credentials,
         CreateCredential {
@@ -153,7 +169,10 @@ async fn apply(
             resource: journal.resource.clone(),
             scopes: application_actions(),
             lifetime_seconds: 3600,
+            client_certificate_sha256: application_binding,
+            audience: Default::default(),
         },
+        "credential-split",
     )?;
     let operator = live_credential(
         &owner.credentials,
@@ -164,7 +183,10 @@ async fn apply(
             resource: journal.resource.clone(),
             scopes: tenant_operator_actions(),
             lifetime_seconds: 3600,
+            client_certificate_sha256: operator_binding,
+            audience: Default::default(),
         },
+        "credential-split",
     )?;
     let operator_token = profiles.join("operator.token");
     private_files::replace(&operator_token, operator.token.as_bytes())?;
@@ -351,26 +373,6 @@ fn split_policy(policy: &Policy) -> Result<Policy> {
         grants,
         strict_read_audit: policy.strict_read_audit,
     })
-}
-
-/// A rerun replays the family's original issuance, which may have expired.
-fn live_credential(
-    credentials: &LocalCredentials,
-    specification: CreateCredential,
-) -> Result<IssuedCredential> {
-    let family_id = specification.family_id;
-    let issued = credentials.create(specification, "credential-split")?;
-    let now = kasumi_clock::EpochClock::system()?.now_ms()?;
-    if issued.expires_at_ms > now.saturating_add(300_000) {
-        return Ok(issued);
-    }
-    credentials.renew(
-        &RenewCredential {
-            family_id,
-            renewal_id: Uuid::new_v4(),
-        },
-        "credential-split",
-    )
 }
 
 #[cfg(test)]

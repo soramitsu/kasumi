@@ -342,6 +342,8 @@ impl Fixture {
                 },
                 algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
                 access_token_types: BTreeSet::from(["at+jwt".into()]),
+                mcp_audience: None,
+                require_certificate_binding: false,
             };
             let target = Uuid::new_v4();
             let source_token = credentials.token(

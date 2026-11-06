@@ -195,6 +195,14 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                     crate::standalone::rotate_certificates(Path::new(configuration)).await?
                 );
             }
+            "bind-credentials" => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(
+                        &crate::standalone::bind_credentials(Path::new(configuration)).await?
+                    )?
+                );
+            }
             "split-credentials" => {
                 println!(
                     "{}",
@@ -303,15 +311,23 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 })
             );
         }
-        [command, action, path]
-            if command == "credential" && (action == "renew" || action == "watch") =>
+        [command, action, path, control @ ..]
+            if command == "credential"
+                && (action == "renew" || action == "watch")
+                && control.len() <= 1 =>
         {
             let profile = ClientProfile::load(Path::new(path))?;
+            // An MCP credential cannot reach the administrative listener, so a
+            // Control administrator renews it.
+            let control = control
+                .first()
+                .map(|control| ClientProfile::load(Path::new(control)))
+                .transpose()?;
             let _lock = private_files::ExclusiveLock::acquire(
                 &profile.bearer_file.with_extension("watch.lock"),
             )?;
             loop {
-                match renew(&profile).await {
+                match renew(&profile, control.as_ref()).await {
                     Ok(expiry) => {
                         if action == "renew" {
                             println!(
@@ -335,13 +351,52 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 }
             }
         }
-        [command, action, profile_path, request_path, output_path]
-            if command == "credential" && action == "create" =>
+        [
+            command,
+            action,
+            profile_path,
+            request_path,
+            output_path,
+            identity @ ..,
+        ] if command == "credential"
+            && action == "create"
+            && (identity.is_empty() || identity.len() == 2) =>
         {
             let profile = ClientProfile::load(Path::new(profile_path))?;
-            let request: kasumi_types::CreateCredential = serde_json::from_slice(
+            let mut request: kasumi_types::CreateCredential = serde_json::from_slice(
                 &crate::runtime::read_bounded(Path::new(request_path), 128 << 10)?,
             )?;
+            // A native credential is bound to the certificate its own profile
+            // presents, named here, and never to the administrator's.
+            let identity = match identity {
+                [certificate, private_key] => {
+                    let files = kasumi_client::ProfileTlsFiles {
+                        certificate: certificate.into(),
+                        private_key: private_key.into(),
+                    };
+                    let pin = hex::encode(files.load()?.certificate_pin());
+                    ensure!(
+                        request.audience.is_native(),
+                        "an MCP credential is not bound to a client certificate"
+                    );
+                    ensure!(
+                        request
+                            .client_certificate_sha256
+                            .as_ref()
+                            .is_none_or(|bound| *bound == pin),
+                        "the request binds another client certificate than the one named"
+                    );
+                    request.client_certificate_sha256 = Some(pin);
+                    files
+                }
+                _ => {
+                    ensure!(
+                        request.client_certificate_sha256.is_none(),
+                        "name the certificate and private key the new profile presents: credential create <control-profile> <request.json> <output-profile> <certificate.pem> <private-key.pem>"
+                    );
+                    profile.identity.clone()
+                }
+            };
             request.validate()?;
             let output = Path::new(output_path);
             ensure!(
@@ -389,6 +444,7 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                 tenant: request.tenant,
                 principal: request.principal,
                 resource: request.resource,
+                identity,
                 bearer_file,
                 ..profile
             };
@@ -657,7 +713,7 @@ impl std::error::Error for RecoveryRefused {}
 /// the daemon refuses is presented for online recovery with the same identity:
 /// only the family's latest credential recovers, and only within the fixed
 /// window after it expired (docs/credential-lifetime.md).
-async fn renew(profile: &ClientProfile) -> Result<u64> {
+async fn renew(profile: &ClientProfile, control: Option<&ClientProfile>) -> Result<u64> {
     let journal = profile.bearer_file.with_extension("renewal.json");
     // A replayed issuance whose reply was lost until after it expired becomes
     // the bearer, since only the family's latest credential can recover it;
@@ -677,12 +733,15 @@ async fn renew(profile: &ClientProfile) -> Result<u64> {
             request.family_id == profile.family_id,
             "renewal journal belongs to another credential"
         );
+        // A Control administrator renews another family with its own
+        // connection and bearer; nothing expired needs recovering then.
+        let presenter = control.unwrap_or(profile);
         let mut client =
-            kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-        let bearer = profile.bearer()?;
+            kasumi_client::KasumiAdminClient::connect(&presenter.connection(true)?).await?;
+        let bearer = presenter.bearer()?;
         let issued = match client.renew_credential(&bearer, &request).await {
             Err(kasumi_client::ClientError::Transport(status))
-                if status.code() == tonic::Code::Unauthenticated =>
+                if status.code() == tonic::Code::Unauthenticated && control.is_none() =>
             {
                 tracing::warn!(
                     family_id = %profile.family_id,
@@ -700,9 +759,10 @@ async fn renew(profile: &ClientProfile) -> Result<u64> {
             "renewed credential family differs"
         );
         let expired = issued.expires_at_ms <= kasumi_clock::EpochClock::system()?.now_ms()?;
+        let current = profile.bearer()?;
         ensure!(
             !expired
-                || bearer_expiry_ms(&bearer).is_ok_and(|current| current <= issued.expires_at_ms),
+                || bearer_expiry_ms(&current).is_ok_and(|current| current <= issued.expires_at_ms),
             "renewal journal issuance has expired; stopped-installation credential recovery is required"
         );
         private_files::replace(&profile.bearer_file, issued.token.as_bytes())?;

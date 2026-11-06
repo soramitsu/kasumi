@@ -201,11 +201,11 @@ pub(crate) async fn admit(
         } else {
             first.unwrap_or("")
         };
+        let client_certificate = request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(crate::tls::AuthenticatedTlsPeer::certificate_pin);
         if grpc && request.uri().path() == RECOVER_CREDENTIAL_PATH {
-            let client_certificate = request
-                .extensions()
-                .get::<crate::tls::AuthenticatedTlsPeer>()
-                .and_then(crate::tls::AuthenticatedTlsPeer::certificate_pin);
             match auth
                 .verify_recovery(authorization, client_certificate)
                 .await
@@ -225,9 +225,16 @@ pub(crate) async fn admit(
                 .extensions()
                 .get::<Arc<ConnectionAuthentications>>()
                 .cloned();
+            // A certificate-bound token must arrive with its own certificate.
             let authenticated = match &connection {
-                Some(connection) => auth.authenticate_on(authorization, connection).await,
-                None => auth.authenticate(authorization).await,
+                Some(connection) => {
+                    auth.authenticate_on(authorization, connection, client_certificate)
+                        .await
+                }
+                None => {
+                    auth.authenticate_presented(authorization, client_certificate)
+                        .await
+                }
             };
             match authenticated {
                 Ok(context) => {

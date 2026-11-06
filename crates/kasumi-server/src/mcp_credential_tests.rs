@@ -265,6 +265,8 @@ impl Fixture {
             },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         };
         let credentials = LocalCredentials::with_test_clock(
             security_store,
@@ -375,6 +377,8 @@ impl Fixture {
                     },
                     scopes: BTreeSet::from([Action::Read, Action::Write]),
                     lifetime_seconds: DEFAULT_CREDENTIAL_LIFETIME_SECONDS,
+                    client_certificate_sha256: None,
+                    audience: Default::default(),
                 },
                 "initializer",
             )
@@ -1531,6 +1535,8 @@ async fn native_admin_change_refused_at_its_acknowledgement_fence_is_unknown_out
                 },
                 scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
                 lifetime_seconds: DEFAULT_CREDENTIAL_LIFETIME_SECONDS,
+                client_certificate_sha256: None,
+                audience: Default::default(),
             },
             "initializer",
         )

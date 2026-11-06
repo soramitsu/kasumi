@@ -87,6 +87,8 @@ mod tests {
             },
             scopes: BTreeSet::from([Action::Read, Action::Admin]),
             lifetime_seconds: 3600,
+            client_certificate_sha256: None,
+            audience: Default::default(),
         }
     }
 

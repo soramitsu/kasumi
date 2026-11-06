@@ -5,8 +5,8 @@ use jsonwebtoken::{Algorithm, EncodingKey, Header, encode, jwk::JwkSet};
 use kasumi_clock::EpochClock;
 use kasumi_store::{NamespaceEpoch, TenantStore, WriteOp, private_files};
 use kasumi_types::{
-    Action, CreateCredential, CredentialLiveness, CredentialStatus, Error, ErrorCode,
-    IssuedCredential, RenewCredential, exact_json::decode_exact,
+    Action, CreateCredential, CredentialAudience, CredentialLiveness, CredentialStatus, Error,
+    ErrorCode, IssuedCredential, RenewCredential, exact_json::decode_exact,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -192,6 +192,15 @@ struct Claims<'a> {
     jti: Uuid,
     kasumi_family: Uuid,
     token_use: &'static str,
+    /// RFC 8705 confirmation of a certificate-bound family's client certificate.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cnf: Option<Confirmation>,
+}
+#[derive(Serialize)]
+struct Confirmation {
+    /// Base64url SHA-256 of the client certificate's DER.
+    #[serde(rename = "x5t#S256")]
+    x5t_s256: String,
 }
 #[derive(Serialize)]
 struct CredentialEvent<'a> {
@@ -262,7 +271,11 @@ pub struct LocalCredentials {
     store: Arc<TenantStore>,
     signer_file: PathBuf,
     issuer: String,
+    /// The audience of native families' tokens.
     audience: String,
+    /// The audience of MCP families' tokens, when the installation separates
+    /// them (`AuthConfig::mcp_audience`).
+    mcp_audience: Option<String>,
     clock: Arc<EpochClock>,
     mutation: Mutex<()>,
     statuses: StatusCache,
@@ -344,10 +357,20 @@ impl LocalCredentials {
             signer_file,
             issuer,
             audience,
+            mcp_audience: None,
             clock: EpochClock::system()?,
             mutation: Mutex::new(()),
             statuses,
         }))
+    }
+
+    /// Issue MCP families' tokens for `audience`. Without one, an MCP family
+    /// cannot be created or issued.
+    pub fn with_mcp_audience(mut self: Arc<Self>, audience: Option<String>) -> Result<Arc<Self>> {
+        Arc::get_mut(&mut self)
+            .context("new credential manager was shared")?
+            .mcp_audience = audience;
+        Ok(self)
     }
     pub fn status(&self, family: Uuid) -> Result<CredentialStatus> {
         let (epoch, cached) = self.statuses.get(family);
@@ -395,9 +418,20 @@ impl LocalCredentials {
         header.kid = Some(signers.kid(issuance.signer));
         header.typ = Some("at+jwt".into());
         let specification = &status.specification;
+        // Audience and binding come from the family, so every creation,
+        // renewal, recovery and replay issues them unchanged.
+        let audience = match specification.audience {
+            CredentialAudience::Native => self.audience.as_str(),
+            CredentialAudience::Mcp => self.mcp_audience.as_deref().ok_or_else(|| {
+                Error::new(
+                    ErrorCode::InvalidArgument,
+                    "this installation has no MCP audience for MCP credentials",
+                )
+            })?,
+        };
         let claims = Claims {
             iss: &self.issuer,
-            aud: &self.audience,
+            aud: audience,
             sub: &specification.principal,
             tenant: &specification.tenant,
             kasumi_resource: &specification.resource,
@@ -408,6 +442,9 @@ impl LocalCredentials {
             jti: issuance.issuance_id,
             kasumi_family: specification.family_id,
             token_use: "access",
+            cnf: specification.certificate_binding().map(|pin| Confirmation {
+                x5t_s256: URL_SAFE_NO_PAD.encode(pin),
+            }),
         };
         Ok(IssuedCredential {
             family_id: specification.family_id,
@@ -670,6 +707,10 @@ impl LocalCredentials {
         ])?;
         Ok(status)
     }
+    /// The family's liveness, if its record has exactly these signed claims:
+    /// `binding` is the token's confirmed client certificate and `audience`
+    /// the listener audience that verified it.
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn guard(
         self: &Arc<Self>,
         family: Uuid,
@@ -677,6 +718,8 @@ impl LocalCredentials {
         tenant: &str,
         scope: &str,
         resource: &kasumi_types::CredentialResource,
+        binding: Option<[u8; 32]>,
+        audience: CredentialAudience,
     ) -> kasumi_types::Result<Arc<dyn CredentialLiveness>> {
         let status = self.authorization_status(family)?;
         let specification = &status.specification;
@@ -684,7 +727,9 @@ impl LocalCredentials {
             && specification.principal == principal
             && specification.tenant == tenant
             && &specification.resource == resource
-            && scopes(&specification.scopes) == scope)
+            && scopes(&specification.scopes) == scope
+            && specification.certificate_binding() == binding
+            && specification.audience == audience)
         {
             return Err(Error::new(
                 ErrorCode::Unauthorized,
@@ -811,6 +856,8 @@ mod tests {
             },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         };
         let manager = LocalCredentials::open(
             store.clone(),
@@ -831,6 +878,8 @@ mod tests {
             },
             scopes: BTreeSet::from([Action::Read, Action::Write, Action::Admin]),
             lifetime_seconds: 3600,
+            client_certificate_sha256: None,
+            audience: Default::default(),
         };
         let issued = manager
             .create(specification.clone(), "initializer")
@@ -1002,6 +1051,8 @@ mod tests {
             },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         };
         let manager = LocalCredentials::open(
             store,
@@ -1025,20 +1076,26 @@ mod tests {
                     },
                     scopes: BTreeSet::from([Action::Read]),
                     lifetime_seconds: 3600,
+                    client_certificate_sha256: None,
+                    audience: Default::default(),
                 },
                 "initializer",
             )
             .unwrap();
         let bearer = format!("Bearer {}", issued.token);
         let connection = crate::auth::ConnectionAuthentications::default();
-        auth.authenticate_on(&bearer, &connection).await.unwrap();
-        auth.authenticate_on(&bearer, &connection).await.unwrap();
+        auth.authenticate_on(&bearer, &connection, None)
+            .await
+            .unwrap();
+        auth.authenticate_on(&bearer, &connection, None)
+            .await
+            .unwrap();
         // Revocation reaches the next request on the same connection: its
         // token is checked again, refused, and the refusal recorded alone.
         manager.revoke(issued.family_id, "administrator").unwrap();
         for _ in 0..2 {
             assert_eq!(
-                auth.authenticate_on(&bearer, &connection)
+                auth.authenticate_on(&bearer, &connection, None)
                     .await
                     .unwrap_err()
                     .code,
@@ -1138,6 +1195,8 @@ mod tests {
             },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         };
         let start = EpochClock::system().unwrap().now_ms().unwrap();
         let wall = Arc::new(ManualWall(std::sync::atomic::AtomicU64::new(start)));
@@ -1165,6 +1224,8 @@ mod tests {
             },
             scopes: BTreeSet::from([Action::Read, Action::Write]),
             lifetime_seconds: 3600,
+            client_certificate_sha256: None,
+            audience: Default::default(),
         };
         let bearer = |token: &str| format!("Bearer {token}");
         let pin = Some([7u8; 32]);
@@ -1457,6 +1518,8 @@ mod tests {
             },
             scopes: BTreeSet::from([Action::Read, Action::Admin]),
             lifetime_seconds: 3600,
+            client_certificate_sha256: None,
+            audience: Default::default(),
         };
         let family = specification.family_id;
         let issued = manager
@@ -1563,7 +1626,9 @@ mod tests {
                         "administrator",
                         "tenant-a",
                         "kasumi:read kasumi:admin",
-                        &resource
+                        &resource,
+                        None,
+                        CredentialAudience::Native,
                     )
                     .is_err()
             );
@@ -1646,6 +1711,380 @@ mod tests {
         manager.renew(&fresh(), "administrator").unwrap();
         drop(manager);
         store.shutdown().await.unwrap();
+        drop(store);
+        node.shutdown().await.unwrap();
+    }
+
+    /// A security store, signer and issuer under `root`, with an MCP audience
+    /// when `mcp` is set.
+    async fn binding_fixture(
+        root: &Path,
+        mcp: bool,
+    ) -> (
+        kasumi_store::NodeStore,
+        Arc<TenantStore>,
+        PathBuf,
+        AuthConfig,
+    ) {
+        let private = root.join("operator");
+        private_files::create_directory(&private).unwrap();
+        let signer = private.join("signer.json");
+        initialize_signer(&signer).unwrap();
+        let keys = Arc::new(
+            FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
+        );
+        let physical = crate::runtime_storage_fixtures::physical(root, Default::default()).unwrap();
+        let node = physical
+            .create_new(
+                root.join("persistent/database"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            keys,
+            StorageAccess::security_audit(),
+        )
+        .await
+        .unwrap();
+        let config = AuthConfig {
+            issuer: "https://localhost/local".into(),
+            audience: "https://localhost/kasumi/api".into(),
+            source: AuthKeySource::Local {
+                signer_file: signer.clone(),
+            },
+            algorithms: vec![Algorithm::EdDSA],
+            access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: mcp.then(|| "https://localhost/kasumi/mcp".into()),
+            require_certificate_binding: mcp,
+        };
+        (node, store, signer, config)
+    }
+
+    fn token_claims(token: &str) -> serde_json::Value {
+        serde_json::from_slice(
+            &URL_SAFE_NO_PAD
+                .decode(token.split('.').nth(1).unwrap())
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn bound_and_mcp_families_keep_audience_and_binding_through_every_issuance() {
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let (node, store, signer, config) = binding_fixture(root.path(), true).await;
+        let manager = LocalCredentials::open(
+            store.clone(),
+            signer.clone(),
+            config.issuer.clone(),
+            config.audience.clone(),
+        )
+        .unwrap()
+        .with_mcp_audience(config.mcp_audience.clone())
+        .unwrap();
+        let native = Authenticator::new(config.clone()).unwrap();
+        let mcp = Authenticator::mcp(config.clone()).unwrap();
+        for auth in [&native, &mcp] {
+            auth.install_audit(Arc::new(Audit)).unwrap();
+            auth.install_local_credentials(manager.clone()).unwrap();
+        }
+        let (mine, other) = ([7; 32], [8; 32]);
+        let bound = CreateCredential {
+            family_id: Uuid::new_v4(),
+            principal: "application".into(),
+            tenant: "tenant-a".into(),
+            resource: kasumi_types::CredentialResource::Database {
+                incarnation: Uuid::new_v4(),
+            },
+            scopes: BTreeSet::from([Action::Read, Action::Write]),
+            lifetime_seconds: 3600,
+            client_certificate_sha256: Some(hex::encode(mine)),
+            audience: CredentialAudience::Native,
+        };
+        let created = manager.create(bound.clone(), "initializer").unwrap();
+        let renewal = RenewCredential {
+            family_id: bound.family_id,
+            renewal_id: Uuid::new_v4(),
+        };
+        let renewed = manager.renew(&renewal, "application").unwrap();
+        // Creation, renewal and their replays all confirm the same certificate
+        // for the native audience.
+        for token in [
+            &created.token,
+            &renewed.token,
+            &manager.create(bound.clone(), "initializer").unwrap().token,
+            &manager.renew(&renewal, "application").unwrap().token,
+        ] {
+            let claims = token_claims(token);
+            assert_eq!(claims["aud"], serde_json::json!(config.audience));
+            assert_eq!(
+                claims["cnf"],
+                serde_json::json!({"x5t#S256": URL_SAFE_NO_PAD.encode(mine)})
+            );
+            let bearer = format!("Bearer {token}");
+            native
+                .authenticate_presented(&bearer, Some(mine))
+                .await
+                .unwrap();
+            assert!(
+                native
+                    .authenticate_presented(&bearer, Some(other))
+                    .await
+                    .is_err()
+            );
+            assert!(mcp.authenticate_presented(&bearer, None).await.is_err());
+        }
+        // A family whose record differs from the token's confirmation is
+        // refused even when the presented certificate matches the token.
+        assert!(
+            manager
+                .guard(
+                    bound.family_id,
+                    &bound.principal,
+                    &bound.tenant,
+                    "kasumi:read kasumi:write",
+                    &bound.resource,
+                    None,
+                    CredentialAudience::Native,
+                )
+                .is_err()
+        );
+        // An MCP family is unbound and for the MCP audience only.
+        let mcp_family = CreateCredential {
+            family_id: Uuid::new_v4(),
+            client_certificate_sha256: None,
+            audience: CredentialAudience::Mcp,
+            ..bound.clone()
+        };
+        let issued = manager.create(mcp_family.clone(), "initializer").unwrap();
+        let renewed = manager
+            .renew(
+                &RenewCredential {
+                    family_id: mcp_family.family_id,
+                    renewal_id: Uuid::new_v4(),
+                },
+                "administrator",
+            )
+            .unwrap();
+        for token in [&issued.token, &renewed.token] {
+            let claims = token_claims(token);
+            assert_eq!(claims["aud"], serde_json::json!(config.mcp_audience));
+            assert!(claims.get("cnf").is_none());
+            let bearer = format!("Bearer {token}");
+            mcp.authenticate_presented(&bearer, None).await.unwrap();
+            for presented in [None, Some(mine)] {
+                assert!(
+                    native
+                        .authenticate_presented(&bearer, presented)
+                        .await
+                        .is_err()
+                );
+            }
+        }
+        // MCP families are never bound, and need an installation MCP audience.
+        assert!(
+            CreateCredential {
+                client_certificate_sha256: Some(hex::encode(mine)),
+                ..mcp_family.clone()
+            }
+            .validate()
+            .is_err()
+        );
+        let without_mcp = LocalCredentials::open(
+            store.clone(),
+            signer.clone(),
+            config.issuer.clone(),
+            config.audience.clone(),
+        )
+        .unwrap();
+        let orphan = CreateCredential {
+            family_id: Uuid::new_v4(),
+            ..mcp_family
+        };
+        assert!(without_mcp.create(orphan.clone(), "initializer").is_err());
+        assert!(without_mcp.status(orphan.family_id).is_err());
+        drop((native, mcp, manager, without_mcp));
+        drop(store);
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn an_expired_bound_credential_recovers_only_from_its_own_certificate() {
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let (node, store, signer, config) = binding_fixture(root.path(), true).await;
+        let now = EpochClock::system().unwrap().now_ms().unwrap();
+        let past = LocalCredentials::with_test_clock(
+            store.clone(),
+            signer.clone(),
+            config.issuer.clone(),
+            config.audience.clone(),
+            Arc::new(
+                EpochClock::new(
+                    Arc::new(kasumi_clock::SystemLeaseClock),
+                    Arc::new(PastClock(now - 7_200_000)),
+                )
+                .unwrap(),
+            ),
+        )
+        .unwrap();
+        let (mine, other) = ([7; 32], [8; 32]);
+        let specification = CreateCredential {
+            family_id: Uuid::new_v4(),
+            principal: "application".into(),
+            tenant: "tenant-a".into(),
+            resource: kasumi_types::CredentialResource::Database {
+                incarnation: Uuid::new_v4(),
+            },
+            scopes: BTreeSet::from([Action::Read]),
+            lifetime_seconds: 3600,
+            client_certificate_sha256: Some(hex::encode(mine)),
+            audience: CredentialAudience::Native,
+        };
+        let expired = format!(
+            "Bearer {}",
+            past.create(specification.clone(), "initializer")
+                .unwrap()
+                .token
+        );
+        drop(past);
+        let manager = LocalCredentials::open(
+            store.clone(),
+            signer,
+            config.issuer.clone(),
+            config.audience.clone(),
+        )
+        .unwrap()
+        .with_mcp_audience(config.mcp_audience.clone())
+        .unwrap();
+        let auth = Authenticator::new(config.clone()).unwrap();
+        auth.install_audit(Arc::new(Audit)).unwrap();
+        auth.install_local_credentials(manager.clone()).unwrap();
+        assert!(auth.verify_recovery(&expired, Some(other)).await.is_err());
+        let verified = auth.verify_recovery(&expired, Some(mine)).await.unwrap();
+        let recovered = manager
+            .recover(
+                &verified.proof,
+                &RenewCredential {
+                    family_id: specification.family_id,
+                    renewal_id: Uuid::new_v4(),
+                },
+                "application",
+            )
+            .unwrap();
+        assert_eq!(
+            token_claims(&recovered.token)["cnf"],
+            serde_json::json!({"x5t#S256": URL_SAFE_NO_PAD.encode(mine)})
+        );
+        auth.authenticate_presented(&format!("Bearer {}", recovered.token), Some(mine))
+            .await
+            .unwrap();
+        drop((auth, manager));
+        drop(store);
+        node.shutdown().await.unwrap();
+    }
+
+    struct PastClock(u64);
+    impl kasumi_clock::WallClock for PastClock {
+        fn now_ms(&self) -> Result<u64> {
+            Ok(self.0)
+        }
+    }
+
+    #[tokio::test]
+    async fn a_family_written_before_binding_keeps_its_exact_record_and_renews_unbound() {
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let (node, store, signer, config) = binding_fixture(root.path(), false).await;
+        let manager = LocalCredentials::open(
+            store.clone(),
+            signer.clone(),
+            config.issuer.clone(),
+            config.audience.clone(),
+        )
+        .unwrap();
+        let auth = Authenticator::new(config.clone()).unwrap();
+        auth.install_audit(Arc::new(Audit)).unwrap();
+        auth.install_local_credentials(manager.clone()).unwrap();
+        // The bytes the writer before certificate binding committed: no
+        // binding and no audience member.
+        let family = Uuid::new_v4();
+        let incarnation = Uuid::new_v4();
+        let issued_at = EpochClock::system().unwrap().now_ms().unwrap() / 1000;
+        let signer_generation = Signers::read(&signer).unwrap().active;
+        let legacy = format!(
+            r#"{{"specification":{{"family_id":"{family}","principal":"administrator","tenant":"tenant-a","resource":{{"kind":"database","incarnation":"{incarnation}"}},"scopes":["read","write","admin","audit"],"lifetime_seconds":3600}},"created_at_ms":{},"revoked_at_ms":null}}"#,
+            issued_at * 1000
+        );
+        let issuance = format!(
+            r#"{{"family_id":"{family}","issuance_id":"{family}","issued_at":{issued_at},"expires_at":{},"signer":{signer_generation}}}"#,
+            issued_at + 3600
+        );
+        store
+            .write_batch(&[
+                WriteOp::put(FAMILIES, family.as_bytes(), legacy.as_bytes().to_vec()),
+                WriteOp::put(
+                    ISSUANCES,
+                    LocalCredentials::issuance_key(family, family),
+                    issuance.as_bytes().to_vec(),
+                ),
+            ])
+            .unwrap();
+        let status = manager.status(family).unwrap();
+        assert_eq!(status.specification.client_certificate_sha256, None);
+        assert_eq!(status.specification.audience, CredentialAudience::Native);
+        assert_eq!(encoded(&status).unwrap(), legacy.as_bytes());
+        // Its replayed creation and its renewal stay unbound and native.
+        let replayed = manager
+            .create(status.specification.clone(), "initializer")
+            .unwrap();
+        let renewed = manager
+            .renew(
+                &RenewCredential {
+                    family_id: family,
+                    renewal_id: Uuid::new_v4(),
+                },
+                "administrator",
+            )
+            .unwrap();
+        for token in [&replayed.token, &renewed.token] {
+            let claims = token_claims(token);
+            assert!(claims.get("cnf").is_none());
+            assert_eq!(claims["aud"], serde_json::json!(config.audience));
+            let bearer = format!("Bearer {token}");
+            auth.authenticate_presented(&bearer, Some([9; 32]))
+                .await
+                .unwrap();
+            auth.authenticate(&bearer).await.unwrap();
+        }
+        // An equivalent spelling that names the defaults is not the writer's.
+        let family_bytes = |text: String| {
+            store
+                .write_batch(&[WriteOp::put(FAMILIES, family.as_bytes(), text.into_bytes())])
+                .unwrap();
+            LocalCredentials::open(
+                store.clone(),
+                signer.clone(),
+                config.issuer.clone(),
+                config.audience.clone(),
+            )
+            .unwrap()
+            .status(family)
+        };
+        for respelled in [
+            legacy.replace(
+                r#""lifetime_seconds":3600"#,
+                r#""lifetime_seconds":3600,"audience":"native""#,
+            ),
+            legacy.replace(
+                r#""lifetime_seconds":3600"#,
+                r#""lifetime_seconds":3600,"client_certificate_sha256":null"#,
+            ),
+        ] {
+            assert!(family_bytes(respelled).is_err());
+        }
+        assert!(family_bytes(legacy).is_ok());
+        drop((auth, manager));
         drop(store);
         node.shutdown().await.unwrap();
     }

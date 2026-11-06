@@ -510,6 +510,8 @@ impl Operator {
                     kasumi_types::Action::Audit,
                 ]),
                 lifetime_seconds: 3600,
+                client_certificate_sha256: None,
+                audience: Default::default(),
             },
             "offline-recovery",
         )?;
@@ -1672,6 +1674,22 @@ impl Operator {
                     kasumi_types::Action::Audit,
                 ]),
                 lifetime_seconds: 3600,
+                // A binding installation binds it to the certificate the
+                // published profile presents.
+                client_certificate_sha256: self
+                    .config
+                    .auth
+                    .require_certificate_binding
+                    .then(|| {
+                        crate::runtime::TlsFiles {
+                            certificate: root.join("profiles/client.pem"),
+                            private_key: root.join("profiles/client-key.pem"),
+                        }
+                        .load()
+                        .map(|identity| hex::encode(identity.certificate_pin()))
+                    })
+                    .transpose()?,
+                audience: Default::default(),
             },
             "offline-recovery-profile",
         )?;

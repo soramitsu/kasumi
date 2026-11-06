@@ -126,6 +126,9 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     let mut config = RuntimeConfig::load(&installation.configuration).unwrap();
     let mut control = ClientProfile::load(&installation.control_profile).unwrap();
     let mut tenant = ClientProfile::load(&installation.tenant_profile).unwrap();
+    let operator_identity = ClientProfile::load(&installation.operator_profile)
+        .unwrap()
+        .identity;
     let listeners = (0..3)
         .map(|_| std::net::TcpListener::bind("127.0.0.1:0").unwrap())
         .collect::<Vec<_>>();
@@ -267,6 +270,12 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     let mut admin = kasumi_client::KasumiAdminClient::connect(&control.connection(true).unwrap())
         .await
         .unwrap();
+    // The application's token is bound to its own certificate, so it renews
+    // itself over the application's connection, not the Control profile's.
+    let mut tenant_admin =
+        kasumi_client::KasumiAdminClient::connect(&tenant.connection(true).unwrap())
+            .await
+            .unwrap();
     let bearer = tenant.bearer().unwrap();
     let mutation = MutationBatch {
         idempotency_key: Uuid::new_v4().to_string(),
@@ -312,7 +321,24 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         assert_eq!(denied.status(), reqwest::StatusCode::UNAUTHORIZED);
         assert_eq!(denied.headers()["www-authenticate"], "Bearer");
     }
-    let mcp = http.post(&tenant.mcp_endpoint).bearer_auth(bearer.as_str()).header("accept", "application/json, text/event-stream").header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/call").header("mcp-name", "kasumi_get")
+    // The application's native token is bound to its certificate, which MCP
+    // never sees; MCP takes the application's separate MCP credential.
+    let mcp_profile = ClientProfile::load(&installation.mcp_profile).unwrap();
+    let mcp_call = |token: &str| {
+        http.post(&tenant.mcp_endpoint).bearer_auth(token).header("accept", "application/json, text/event-stream").header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/call").header("mcp-name", "kasumi_get")
+        .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"standalone-tests","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}},"name":"kasumi_get","arguments":{"collection":"docs","id":"first"}}}))
+    };
+    assert_eq!(
+        mcp_call(bearer.as_str()).send().await.unwrap().status(),
+        reqwest::StatusCode::UNAUTHORIZED
+    );
+    assert!(
+        data.mutate(&mcp_profile.bearer().unwrap(), &mutation)
+            .await
+            .is_err(),
+        "the MCP credential is refused on the native listener"
+    );
+    let mcp = http.post(&tenant.mcp_endpoint).bearer_auth(mcp_profile.bearer().unwrap().as_str()).header("accept", "application/json, text/event-stream").header("mcp-protocol-version", "2026-07-28").header("mcp-method", "tools/call").header("mcp-name", "kasumi_get")
         .json(&serde_json::json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"_meta":{"io.modelcontextprotocol/protocolVersion":"2026-07-28","io.modelcontextprotocol/clientInfo":{"name":"standalone-tests","version":"1"},"io.modelcontextprotocol/clientCapabilities":{}},"name":"kasumi_get","arguments":{"collection":"docs","id":"first"}}}))
         .send().await.unwrap();
     assert!(mcp.status().is_success(), "{}", mcp.status());
@@ -327,9 +353,16 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         family_id: tenant.family_id,
         renewal_id: Uuid::new_v4(),
     };
-    let renewed = admin.renew_credential(&bearer, &renewal).await.unwrap();
+    let renewed = tenant_admin
+        .renew_credential(&bearer, &renewal)
+        .await
+        .unwrap();
+    assert!(
+        admin.renew_credential(&bearer, &renewal).await.is_err(),
+        "the application's token is refused from the Control certificate"
+    );
     assert_eq!(
-        admin
+        tenant_admin
             .renew_credential(&bearer, &renewal)
             .await
             .unwrap()
@@ -343,6 +376,11 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         resource: tenant.resource.clone(),
         scopes: BTreeSet::from([Action::Read]),
         lifetime_seconds: 3600,
+        // An administrator names the certificate the new profile presents.
+        client_certificate_sha256: Some(hex::encode(
+            operator_identity.load().unwrap().certificate_pin(),
+        )),
+        audience: Default::default(),
     };
     let restricted = admin
         .create_credential(&control.bearer().unwrap(), &new_request)
@@ -359,13 +397,19 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         .unwrap()
         .join("profiles/reader.json");
     private_files::create(&request_file, &serde_json::to_vec(&new_request).unwrap()).unwrap();
-    let command = vec![
+    let mut command = vec![
         "credential".into(),
         "create".into(),
         installation.control_profile.to_string_lossy().into_owned(),
         request_file.to_string_lossy().into_owned(),
         output_profile.to_string_lossy().into_owned(),
     ];
+    // A binding request without the certificate's files is refused.
+    assert!(crate::standalone_cli::command(&command).await.is_err());
+    command.extend([
+        operator_identity.certificate.to_string_lossy().into_owned(),
+        operator_identity.private_key.to_string_lossy().into_owned(),
+    ]);
     crate::standalone_cli::command(&command).await.unwrap();
     crate::standalone_cli::command(&command).await.unwrap();
     assert_eq!(
@@ -391,7 +435,10 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         renewal_id: Uuid::new_v4(),
     };
     private_files::create(&renewal_journal, &serde_json::to_vec(&lost_reply).unwrap()).unwrap();
-    let original_issuance = admin.renew_credential(&bearer, &lost_reply).await.unwrap();
+    let original_issuance = tenant_admin
+        .renew_credential(&bearer, &lost_reply)
+        .await
+        .unwrap();
     let renewal_command = vec![
         "credential".into(),
         "renew".into(),
@@ -462,7 +509,7 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     watcher.abort();
     assert!(watcher.await.unwrap_err().is_cancelled());
     assert!(tenant.bearer().unwrap().as_str() == committed.token);
-    let replayed = admin
+    let replayed = tenant_admin
         .renew_credential(&bearer, &cancelled_request)
         .await
         .unwrap();

@@ -41,6 +41,8 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
             },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         },
         jwks,
     )

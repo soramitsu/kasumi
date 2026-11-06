@@ -671,7 +671,9 @@ class Runner:
         self.record["renewal"] = {"family_id": renewal["family_id"], "expires_at_ms": renewal["expires_at_ms"],
                                    "before_file_sha256": before, "after_file_sha256": sha256(profile["bearer_file"])}
         self.verify("verify-renewed", corpus, digest)
-        self.mcp(profile, "mcp-original", run_id)
+        # Native tokens are bound to their certificates and refused on MCP;
+        # the installation's MCP credential has MCP's own audience.
+        self.mcp(read_json(installation / "profiles/mcp.json"), "mcp-original", run_id)
         checkpoint_file = self.output / "checkpoint.json"
         self.command("backup-create", [daemon, "backup", "create", operator_file, "local", checkpoint_file])
         checkpoint = read_json(checkpoint_file)
@@ -709,7 +711,17 @@ class Runner:
         write_json(restored_corpus, capacity_config(recovered, run_id))
         self.start("daemon-restored")
         self.verify("verify-restored", restored_corpus, digest)
-        self.mcp(recovered, "mcp-restored", run_id)
+        # The recovered profile is native; a Control administrator issues the
+        # restored database's MCP credential.
+        mcp_request_file = self.output / "restored-mcp-request.json"
+        write_json(mcp_request_file, {
+            "family_id": str(uuid.uuid4()), "principal": "application", "tenant": tenant["tenant"],
+            "resource": {"kind": "database", "incarnation": request["target_incarnation"]},
+            "scopes": ["read"], "lifetime_seconds": 3600, "audience": "mcp"})
+        restored_mcp_file = installation / "profiles/restored-mcp.json"
+        self.command("restored-mcp-credential", [daemon, "credential", "create", control_file,
+                                                 mcp_request_file, restored_mcp_file])
+        self.mcp(read_json(restored_mcp_file), "mcp-restored", run_id)
         claims = public_claims(bearer(profile["bearer_file"]))
         require(claims.get("kasumi_resource") == profile["resource"] and claims.get("exp", 0) > time.time() + 30,
                 "old-resource negative check requires the original still-unexpired JWT")

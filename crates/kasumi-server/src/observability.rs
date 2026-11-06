@@ -839,26 +839,31 @@ impl Service {
         &self,
         request: axum::extract::Request,
     ) -> Result<(kasumi_types::RequestContext, Arc<kasumi_engine::Database>), Failure> {
-        let authenticated_peer = request
+        let certificate = request
             .extensions()
             .get::<crate::tls::AuthenticatedTlsPeer>()
-            .is_some_and(|peer| peer.certificate_pin().is_some());
+            .and_then(crate::tls::AuthenticatedTlsPeer::certificate_pin);
         let bearer = bearer(request.headers()).to_owned();
         drop(request);
-        if !authenticated_peer {
+        let Some(certificate) = certificate else {
             self.auth.anonymous_denial().await;
             return Err(Failure::Generic(ErrorCode::Unauthorized));
-        }
-        let context = self.auth.authenticate(&bearer).await.map_err(|error| {
-            if kasumi_types::credential_expired(&error) {
-                Failure::Expired
-            } else if error.code == ErrorCode::AuditUnavailable {
-                // Only a verified credential reaches its success record.
-                Failure::Classified(ErrorCode::AuditUnavailable, Reason::AuditUnavailable)
-            } else {
-                Failure::Generic(error.code)
-            }
-        })?;
+        };
+        // A certificate-bound bearer must come from its own certificate.
+        let context = self
+            .auth
+            .authenticate_presented(&bearer, Some(certificate))
+            .await
+            .map_err(|error| {
+                if kasumi_types::credential_expired(&error) {
+                    Failure::Expired
+                } else if error.code == ErrorCode::AuditUnavailable {
+                    // Only a verified credential reaches its success record.
+                    Failure::Classified(ErrorCode::AuditUnavailable, Reason::AuditUnavailable)
+                } else {
+                    Failure::Generic(error.code)
+                }
+            })?;
         self.auth
             .audit_result(
                 &context,

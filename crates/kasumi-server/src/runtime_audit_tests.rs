@@ -789,6 +789,11 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
                     resource: control.resource.clone(),
                     scopes,
                     lifetime_seconds: 3600,
+                    // Presented over the Control profile's own connection.
+                    client_certificate_sha256: Some(hex::encode(
+                        control.identity.load().unwrap().certificate_pin(),
+                    )),
+                    audience: Default::default(),
                 },
             )
             .await
@@ -807,6 +812,11 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
         resource: control.resource.clone(),
         scopes: BTreeSet::from([Action::Admin]),
         lifetime_seconds: seconds,
+        // Presented over the Control profile's own connection.
+        client_certificate_sha256: Some(hex::encode(
+            control.identity.load().unwrap().certificate_pin(),
+        )),
+        audience: Default::default(),
     };
     let revoked = admin
         .create_credential(&operator, &create(3600))

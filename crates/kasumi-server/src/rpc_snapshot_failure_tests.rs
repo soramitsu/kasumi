@@ -22,6 +22,8 @@ async fn auth() -> Arc<Authenticator> {
             },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         },
         serde_json::from_value(serde_json::json!({"keys":[]})).unwrap(),
     )

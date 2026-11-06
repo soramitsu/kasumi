@@ -115,7 +115,8 @@ impl OperatorState {
                 signer_file.clone(),
                 config.auth.issuer.clone(),
                 config.auth.audience.clone(),
-            )?;
+            )?
+            .with_mcp_audience(config.auth.mcp_audience.clone())?;
             Ok::<_, anyhow::Error>((node, audit, credentials, installed_owner))
         }
         .await;

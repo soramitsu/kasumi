@@ -24,8 +24,12 @@ Installation and configuration:
   tenant stage-status <configuration.json> <operation-uuid>
 
 Credentials and keys:
-  credential create <control-profile> <request.json> <output-profile>
+  credential create <control-profile> <request.json> <output-profile> [<certificate.pem> <private-key.pem>]
+                                             a native credential is bound to the named
+                                             certificate, which its new profile presents
   credential renew|watch|inspect <profile>
+  credential renew|watch <mcp-profile> <control-profile>
+                                             a Control administrator renews an MCP credential
   credential status|revoke <control-profile> <family-uuid>
   recover-existing-credentials <configuration.json> <private-manifest.json>
   recover-administrator <configuration.json> <new-private-directory>
@@ -38,6 +42,10 @@ Credentials and keys:
                                              admit only listed client certificates on the
                                              native and administrative listeners; apply
                                              with SIGHUP (enable: at the next start)
+  maintenance bind-credentials <configuration.json>
+                                             bind every profile's native credential to its own
+                                             client certificate and give MCP its own audience and
+                                             profile (daemon and watchers stopped; resumable)
   maintenance split-credentials <configuration.json>
                                              give an installation from before the credential
                                              split separate application and operator profiles

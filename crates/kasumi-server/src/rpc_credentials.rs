@@ -52,6 +52,25 @@ impl NativeAdmin {
             let specification: kasumi_types::CreateCredential =
                 decode_json(&payload).map_err(status)?;
             specification.validate().map_err(status)?;
+            // The administrator names the recipient's certificate; a native
+            // credential is never bound to the administrator's own connection.
+            if specification.audience.is_native()
+                && specification.client_certificate_sha256.is_none()
+                && self.auth.config().require_certificate_binding
+            {
+                return Err(status(
+                    self.auth
+                        .audit_result::<()>(
+                            &context,
+                            Err(kasumi_types::Error::new(
+                                kasumi_types::ErrorCode::InvalidArgument,
+                                "this installation binds native credentials to a client certificate; name it in client_certificate_sha256",
+                            )),
+                        )
+                        .await
+                        .unwrap_err(),
+                ));
+            }
             if let kasumi_types::CredentialResource::Database { incarnation } =
                 &specification.resource
             {
@@ -98,11 +117,21 @@ impl NativeAdmin {
                 }
                 CredentialOperation::Renew => {
                     let renewal: kasumi_types::RenewCredential = decode_json(&payload)?;
+                    // An MCP credential cannot reach this listener, so a
+                    // Control administrator renews it explicitly.
+                    let renewable = own_family == Some(renewal.family_id)
+                        || (control
+                            && manager
+                                .status(renewal.family_id)
+                                .is_ok_and(|status| {
+                                    status.specification.audience
+                                        == kasumi_types::CredentialAudience::Mcp
+                                }));
                     anyhow::ensure!(
-                        own_family == Some(renewal.family_id),
+                        renewable,
                         kasumi_types::Error::new(
                             kasumi_types::ErrorCode::Forbidden,
-                            "renewal requires the original live credential family"
+                            "renewal requires the original live credential family, or a Control administrator for an MCP credential"
                         )
                     );
                     Ok(encode_json(&manager.renew(&renewal, &caller.principal)?)?)

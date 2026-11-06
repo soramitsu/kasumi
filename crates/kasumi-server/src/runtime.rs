@@ -373,7 +373,7 @@ impl RuntimeConfig {
         self.admin.validate()?;
         crate::mcp::validate(
             self.mcp.protocol.clone(),
-            Authenticator::new(self.auth.clone())?,
+            Authenticator::mcp(self.auth.clone())?,
         )?;
         ensure!(
             (!self.tenants.is_empty() || self.target_recovery.is_some())
@@ -1337,6 +1337,14 @@ impl NodeRuntime {
         }?;
         #[cfg(not(test))]
         let auth = Authenticator::new(config.auth.clone())?;
+        // MCP verifies its own audience, never a native token's.
+        #[cfg(test)]
+        let mcp_auth = match &auth_clock {
+            Some(clock) => Authenticator::mcp_with_test_clock(config.auth.clone(), clock.clone()),
+            None => Authenticator::mcp(config.auth.clone()),
+        }?;
+        #[cfg(not(test))]
+        let mcp_auth = Authenticator::mcp(config.auth.clone())?;
         let registry = DatabaseRegistry::default();
         registry.set_approved_nodes(
             config
@@ -1449,33 +1457,34 @@ impl NodeRuntime {
             .open(security_store, admission.clone())?;
         pending.audits.push(audit.clone());
         auth.install_audit(audit.clone())?;
+        mcp_auth.install_audit(audit.clone())?;
         if let crate::auth::AuthKeySource::Local { signer_file } = &config.auth.source {
             #[cfg(test)]
-            {
-                let credentials = match &auth_clock {
-                    Some(clock) => crate::local_auth::LocalCredentials::with_test_clock(
-                        audit.store().clone(),
-                        signer_file.clone(),
-                        config.auth.issuer.clone(),
-                        config.auth.audience.clone(),
-                        clock.clone(),
-                    ),
-                    None => crate::local_auth::LocalCredentials::open(
-                        audit.store().clone(),
-                        signer_file.clone(),
-                        config.auth.issuer.clone(),
-                        config.auth.audience.clone(),
-                    ),
-                }?;
-                auth.install_local_credentials(credentials)?;
-            }
+            let credentials = match &auth_clock {
+                Some(clock) => crate::local_auth::LocalCredentials::with_test_clock(
+                    audit.store().clone(),
+                    signer_file.clone(),
+                    config.auth.issuer.clone(),
+                    config.auth.audience.clone(),
+                    clock.clone(),
+                ),
+                None => crate::local_auth::LocalCredentials::open(
+                    audit.store().clone(),
+                    signer_file.clone(),
+                    config.auth.issuer.clone(),
+                    config.auth.audience.clone(),
+                ),
+            }?;
             #[cfg(not(test))]
-            auth.install_local_credentials(crate::local_auth::LocalCredentials::open(
+            let credentials = crate::local_auth::LocalCredentials::open(
                 audit.store().clone(),
                 signer_file.clone(),
                 config.auth.issuer.clone(),
                 config.auth.audience.clone(),
-            )?)?;
+            )?;
+            let credentials = credentials.with_mcp_audience(config.auth.mcp_audience.clone())?;
+            auth.install_local_credentials(credentials.clone())?;
+            mcp_auth.install_local_credentials(credentials)?;
         }
         if let Some(cluster) = &cluster {
             cluster.install_audit(audit.clone())?;
@@ -1739,7 +1748,7 @@ impl NodeRuntime {
             let mcp = crate::mcp::router(
                 config.mcp.protocol.clone(),
                 registry.clone(),
-                auth.clone(),
+                mcp_auth.clone(),
                 admission.clone(),
             )?;
             // Native bearers are verified, and bodies admitted, before decoding.
@@ -2852,6 +2861,8 @@ pub fn example_config(
             },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         },
         mcp: McpEndpoint {
             listen: "127.0.0.1:9443".parse().unwrap(),

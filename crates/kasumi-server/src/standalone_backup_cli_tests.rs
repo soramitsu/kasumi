@@ -242,6 +242,11 @@ async fn backup_cli_persists_session_before_connect_and_resolves_original_comple
                 resource: operator.resource.clone(),
                 scopes: BTreeSet::from([Action::Admin]),
                 lifetime_seconds: 3600,
+                // The operator profile presents this certificate.
+                client_certificate_sha256: Some(hex::encode(
+                    operator.identity.load().unwrap().certificate_pin(),
+                )),
+                audience: Default::default(),
             },
         )
         .await

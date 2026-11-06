@@ -14,6 +14,7 @@ measured in the [Redis comparison](../benchmarks/REDIS-COMPARISON.md).
 | Transport encryption | TLS 1.3 only on every listener and outbound client, 0-RTT off (`kasumi-transport/src/lib.rs`). No plaintext listener exists. | Optional. TLS 1.2 and 1.3 by default; the plaintext port stays open unless `port 0`. |
 | Client certificates | Required on the native data and administrative listeners, issued by the installation CA and, on new installations, listed in a revocable pin allowlist. MCP uses server TLS plus a bearer token. | Optional (`tls-auth-clients`, default `yes` once TLS is on). |
 | Server identity | Clients pin the server's exact certificate SHA-256 in their profile. | CA verification only; no pinning in the server's protocol. |
+| Token binding | New installations bind each native token to its profile's client certificate (RFC 8705) and give MCP its own audience; a copied token fails from any other certificate and on MCP. | None: `AUTH` passwords work from any connection. |
 | Authentication | Ed25519 access tokens (or an external OAuth issuer with allowlisted asymmetric algorithms), `typ: at+jwt`, exact issuer and audience, zero leeway, lifetime ≤ 1 hour against a suspend-aware clock; revocable credential families checked on every request and again before the response is released. After expiry a credential can do one thing, for at most 24 hours: renew its own unrevoked family over a client-certificate connection, if it is that family's latest issuance, audited each time (`docs/credential-lifetime.md`). | ACL users with passwords (`AUTH`), checked once per connection. The default user has no password unless configured; no expiry or revocation of a connection that already authenticated. |
 | Authorization | Default deny. Scopes in the token must intersect a per-principal, optionally per-collection grant; re-checked during ordered apply and before release. Tenant comes only from the verified token. | ACL command categories and key patterns per user. |
 | Tenant isolation | Separate keys, policies, credentials, audit and (replicated) Raft groups per tenant. | Logical databases share one keyspace process; isolation is by ACL key pattern. |
@@ -176,10 +177,39 @@ it is higher wherever a listener is reachable from a network.
    `tls::lifecycle_tests::one_address_cannot_hold_more_than_its_handshakes`.
    What remains: many addresses together can still fill the slots, and the
    handshake timeout is not shorter than before.
-4. **Bearer tokens are not bound to a client certificate (medium-low).** All
-   listeners share one audience, and MCP requires no client certificate, so a
-   token copied from a native client works on MCP. Recommended: a distinct
-   audience per listener or certificate-bound tokens (RFC 8705).
+4. **Fixed: bearer tokens were not bound to a client certificate (was
+   medium-low).** All listeners shared one audience, and MCP requires no
+   client certificate, so a token copied from a native client worked on MCP,
+   and from any other client certificate the CA issued. A new installation's
+   native tokens now carry `cnf.x5t#S256` (RFC 8705), the base64url SHA-256 of
+   their profile's client certificate, from the family record, so creation,
+   renewal, recovery and replay keep it. The authenticator checks it on every
+   request against the certificate the connection's handshake verified,
+   including verified-token cache hits and the successes `authenticate_on`
+   counts (`kasumi-server/src/auth.rs`, `check_binding`), on the native,
+   administrative and observability paths. `auth.require_certificate_binding`
+   refuses unbound native tokens, and a Control administrator must name the
+   recipient's certificate to create one. MCP has its own audience
+   (`auth.mcp_audience`) and authenticator: native tokens are refused there,
+   and MCP tokens on the native listeners. MCP families are unbound and
+   renewed by a Control administrator. Family records written before binding
+   keep their exact bytes and renew unbound. Covered by
+   `auth::tests::a_bound_token_is_accepted_only_from_its_own_certificate_on_every_request`,
+   `..::a_malformed_or_unknown_confirmation_is_refused`,
+   `..::a_binding_installation_refuses_unbound_tokens_on_connections`,
+   `local_auth::tests::bound_and_mcp_families_keep_audience_and_binding_through_every_issuance`,
+   `..::an_expired_bound_credential_recovers_only_from_its_own_certificate` and
+   `..::a_family_written_before_binding_keeps_its_exact_record_and_renews_unbound`,
+   and on a served installation by
+   `standalone::credential_binding::tests::a_new_installation_binds_native_credentials_and_separates_mcp`.
+   What remains: binding does not help against theft of a token together
+   with its certificate's private key. An installation from before this
+   change keeps unbound tokens, usable on MCP and from any admitted
+   certificate, until the operator runs `kasumid maintenance bind-credentials`
+   (`..::bind_credentials_rebinds_every_profile_once_and_finishes_after_an_interruption`);
+   profiles outside `profiles/` need new bound credentials. External OAuth
+   issuers' tokens are bound only if the issuer adds `cnf`; set
+   `require_certificate_binding` to refuse those that do not.
 5. **Fixed: client certificates could not be revoked (was low-medium).**
    There was no CRL check and certificate rotation keeps the CA, so an old
    client certificate stayed valid until it expired, up to a year. The native

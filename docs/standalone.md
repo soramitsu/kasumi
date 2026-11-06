@@ -114,13 +114,14 @@ foreground growth. External processes can consume disk after a check, so storage
 failures remain possible.
 Protected health and metrics expose the scratch charges and filesystem sample.
 
-The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. A new installation writes three profiles, each with its own credential family, principal and client certificate:
+The native endpoints require TLS 1.3, a client certificate issued by the installed CA, an exact installed server certificate pin, and a bearer token. A new installation writes four profiles. Each native profile has its own credential family, principal and client certificate, and its family is bound to that certificate: its tokens carry the certificate's thumbprint (`cnf.x5t#S256`, RFC 8705) and are refused from any other certificate, on every request (docs/credential-lifetime.md):
 
 | Profile | Principal | Scopes | Certificate | Use |
 | --- | --- | --- | --- | --- |
-| `profiles/default.json` | `application` | read, write | `profiles/client.pem` | Documents through the native API, MCP and `kasumictl --profile`. Renews itself. |
+| `profiles/default.json` | `application` | read, write | `profiles/client.pem` | Documents through the native API and `kasumictl --profile`. Renews itself. |
 | `profiles/operator.json` | `administrator` | read, admin, audit | `profiles/operator-client.pem` | The tenant's collections, schema activation (which reads what it asserts), policy, limits and backups. Cannot write documents. |
 | `profiles/control.json` | `administrator` | read, write, admin, audit | `profiles/control-client.pem` | Control: credentials, topology, service audit, metrics. |
+| `profiles/mcp.json` | `application` | read, write | none | MCP only: its token is for the separate MCP audience and unbound, since MCP takes no client certificate. The Control profile renews it. |
 
 The tenant policy grants `application` read and write and `administrator` read, admin and audit, so neither credential can do the other's work however its token is scoped. Each token is bound to one explicit incarnation and purpose. A Control token cannot access the document API. Give the application only `default.json` and its files; keep `operator.json`, `control.json` and their certificates and tokens out of the application's reach, for example under another operating-system account. Separate files under one account do not keep them apart.
 
@@ -135,6 +136,16 @@ kasumid maintenance split-credentials /var/lib/kasumi/kasumi.json
 ```
 
 The command removes document write from the tenant policy's tenant-wide `administrator` grant and grants `application` read and write; other grants are kept. It creates the application and operator families and the operator's and the Control profile's own client certificates, publishes `profiles/operator.json`, rewrites `profiles/default.json` and its token for the application (same certificate, so a client that rereads the token moves over without changes), moves `profiles/control.json` to its own certificate (its credential is unchanged), removes the stopped watcher's renewal journal and revokes the old family. It journals the new families in `profiles/credential-split.json` first, so rerunning it after any interruption finishes the same split; on an installation that is already split it changes nothing. Afterwards start `kasumid`, restart the `default.json` watcher, start one for `operator.json`, and move any administrative tooling that used `default.json` or its token (an `admin-client.json`, backup commands) to `operator.json`. Until it runs, the old installation keeps the old risk: whoever holds the application's credential administers the tenant.
+
+### Installations from before certificate binding
+
+An installation initialized before certificate binding accepts its native tokens from any admitted client certificate and on MCP. It keeps working unchanged. To bind it, stop `kasumid` and every credential watcher of a profile in `profiles/`, then run:
+
+```sh
+kasumid maintenance bind-credentials /var/lib/kasumi/kasumi.json
+```
+
+For every profile in `profiles/` whose family is native and unbound, the command creates a family with the same specification bound to the certificate that profile presents, publishes its token and profile in place, removes a stopped watcher's renewal journal of the old family and revokes the old family. It writes `profiles/mcp.json` and `profiles/mcp.token` with an MCP credential for the application's principal, then sets `auth.mcp_audience` and `auth.require_certificate_binding` in `kasumi.json`. It journals every family in `profiles/credential-binding.json` first, so rerunning it after any interruption finishes the same migration; on a binding installation it changes nothing. Afterwards start `kasumid` and the watchers (the MCP watcher with the Control profile), and give MCP clients `profiles/mcp.token`. Profiles outside `profiles/`, and copies of profiles, still name unbound families that the binding installation now refuses: issue them bound credentials with `credential create` and revoke the old families. Until the command runs, the installation keeps the old risk: a copied token works from any certificate the CA issued, and a native token works on MCP.
 
 ### Client certificate admission
 
@@ -163,7 +174,7 @@ runtime, and reread the separate bearer file for each request. See the
 rejected; issue current credentials and profiles before changing a consumer to
 this format. This does not alter an installed tenant or its stored documents.
 
-MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/default.token>`, the application's, and the current MCP protocol headers. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
+MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/mcp.token>` and the current MCP protocol headers. MCP tokens have their own audience (`auth.mcp_audience`): MCP refuses native tokens, and the native listeners refuse MCP tokens. A Control administrator issues further MCP credentials with `credential create` and a request whose `audience` is `mcp`. On an installation from before audience separation, MCP takes the application's native token (`profiles/default.token`) until `maintenance bind-credentials` runs. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
 
 Local credentials expire after one hour. Keep each client credential file renewed:
 
@@ -171,17 +182,22 @@ Local credentials expire after one hour. Keep each client credential file renewe
 kasumid credential watch /var/lib/kasumi/profiles/default.json
 kasumid credential watch /var/lib/kasumi/profiles/operator.json
 kasumid credential watch /var/lib/kasumi/profiles/control.json
+kasumid credential watch /var/lib/kasumi/profiles/mcp.json /var/lib/kasumi/profiles/control.json
 ```
+
+An MCP token cannot reach the administrative listener, so the Control profile, the second argument, renews it.
 
 The watcher saves a renewal identity before dispatch and atomically replaces the token file after a verified native response. It retries uncertain transport outcomes with the same identity. A restarted watcher renews immediately. A credential that expired while kasumid was down recovers online with the same identity when kasumid returns, if it is the family's latest credential, the family is unrevoked, and it expired less than 24 hours ago ([credential lifetime](credential-lifetime.md#online-recovery-of-credentials-that-expired-during-an-outage)). Otherwise the watcher exits and names `recover-existing-credentials`. Clients must reread token files per request. Renewal does not extend any existing request's deadline. Stopping a watcher does not revoke its family; use the explicit revocation command.
 
 Create a credential from a private Control profile and a JSON specification:
 
 ```sh
-kasumid credential create /var/lib/kasumi/profiles/control.json /path/create-credential.json /var/lib/kasumi/profiles/application.json
+kasumid credential create /var/lib/kasumi/profiles/control.json /path/create-credential.json /var/lib/kasumi/profiles/reporting.json /path/reporting-client.pem /path/reporting-client-key.pem
 kasumid credential status /var/lib/kasumi/profiles/control.json FAMILY_UUID
 kasumid credential revoke /var/lib/kasumi/profiles/control.json FAMILY_UUID
 ```
+
+The certificate and key name the client certificate the new profile presents. A native credential is bound to it: the CLI sets `client_certificate_sha256` to its SHA-256, or checks that the request already names it. On a binding installation a native credential without a binding is refused, so the administrator names the recipient's certificate and never binds the credential to its own connection. Enroll a new certificate in the client pin allowlist first. An MCP request (`"audience": "mcp"`) takes no certificate.
 
 The specification contains `family_id`, `principal`, `tenant`, `resource`, `scopes`, and `lifetime_seconds` (1–3600, default 3600). Use a new UUID for `family_id`. Read the exact resource from the generated tenant profile. Scopes are `read`, `write`, `admin`, and `audit`; current database RBAC still determines effective access. Reusing a family UUID with different specifications is rejected. Revocation is permanent and fences already-running requests at their subsequent authorization or response-release checks. Revoking the credential used for the operation can suppress its own acknowledgement; another Control credential can inspect the durable result.
 

@@ -308,9 +308,16 @@ async fn authenticate(State(state): State<HttpAuth>, mut request: Request, next:
         .extensions()
         .get::<Arc<crate::auth::ConnectionAuthentications>>()
         .cloned();
+    // MCP takes no client certificate, so a certificate-bound token, such as
+    // a native one, is refused here.
     let context = match &connection {
-        Some(connection) => state.auth.authenticate_on(authorization, connection).await,
-        None => state.auth.authenticate(authorization).await,
+        Some(connection) => {
+            state
+                .auth
+                .authenticate_on(authorization, connection, None)
+                .await
+        }
+        None => state.auth.authenticate_presented(authorization, None).await,
     };
     match context {
         Ok(context) => {

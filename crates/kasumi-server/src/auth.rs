@@ -1,7 +1,11 @@
 //! OAuth resource-server authentication. Token-provided URLs are never fetched.
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header, jwk::JwkSet};
 use kasumi_clock::EpochClock;
-use kasumi_types::{Action, Error, ErrorCode, RequestAuthorization, RequestContext, Result};
+use kasumi_transport::CertificatePin;
+use kasumi_types::{
+    Action, CredentialAudience, Error, ErrorCode, RequestAuthorization, RequestContext, Result,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
@@ -63,6 +67,51 @@ pub struct AuthConfig {
     /// Default deployment uses RFC 9068 "at+jwt"; issuer-specific profiles must
     /// configure this explicitly and use a dedicated resource audience.
     pub access_token_types: BTreeSet<String>,
+    /// The audience of MCP tokens. When set, the MCP listener accepts tokens
+    /// only for it and the native listeners never do. Absent: MCP shares
+    /// `audience`, as installations from before audience separation do.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mcp_audience: Option<String>,
+    /// Refuse a native token that is not bound to the presenting connection's
+    /// client certificate (RFC 8705 `cnf.x5t#S256`). A bound token is refused
+    /// from any other certificate whether or not this is set.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub require_certificate_binding: bool,
+}
+
+/// Who presented a bearer, as far as its certificate binding is concerned.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum Presenter {
+    /// A request on a TLS connection, with the SHA-256 of the client's leaf
+    /// certificate if it presented one.
+    Connection(Option<CertificatePin>),
+    /// Trusted code in this process, such as an offline operator command,
+    /// presenting a token it issued itself.
+    InProcess,
+}
+
+/// The client certificate a token's RFC 7800 confirmation names. Only
+/// `x5t#S256` (RFC 8705) is understood; a token confirmed any other way, or
+/// with a malformed or `null` confirmation, is refused.
+fn confirmed_certificate(cnf: Option<&serde_json::Value>) -> Result<Option<CertificatePin>> {
+    let Some(cnf) = cnf else {
+        return Ok(None);
+    };
+    let Some(cnf) = cnf.as_object() else {
+        return Err(unauthorized());
+    };
+    let (1, Some(serde_json::Value::String(thumbprint))) = (cnf.len(), cnf.get("x5t#S256")) else {
+        return Err(unauthorized());
+    };
+    if thumbprint.len() != 43 {
+        return Err(unauthorized());
+    }
+    let pin: CertificatePin = URL_SAFE_NO_PAD
+        .decode(thumbprint)
+        .map_err(|_| unauthorized())?
+        .try_into()
+        .map_err(|_| unauthorized())?;
+    Ok(Some(pin))
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -95,6 +144,17 @@ struct Claims {
     /// spelling can fail verification; only recovery reads it.
     #[serde(default)]
     jti: Option<serde_json::Value>,
+    /// RFC 7800 confirmation; see `confirmed_certificate`. Present even when
+    /// `null`, which is refused rather than read as no confirmation.
+    #[serde(default, deserialize_with = "present")]
+    cnf: Option<serde_json::Value>,
+}
+
+/// A claim that is present, whatever its value, including `null`.
+fn present<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> std::result::Result<Option<serde_json::Value>, D::Error> {
+    serde_json::Value::deserialize(deserializer).map(Some)
 }
 
 /// An expired local credential the authenticator verified for online
@@ -295,6 +355,8 @@ struct RefreshState {
 
 pub struct Authenticator {
     config: AuthConfig,
+    /// The audience this authenticator's listener serves.
+    audience_kind: CredentialAudience,
     clock: Arc<EpochClock>,
     client: reqwest::Client,
     cache: RwLock<Option<CachedKeys>>,
@@ -321,8 +383,43 @@ impl Authenticator {
         Self::new_with_clock(config, EpochClock::system()?)
     }
 
+    /// The MCP listener's authenticator: for `mcp_audience` when the
+    /// configuration separates it, otherwise for the shared audience. MCP
+    /// takes no client certificate, so it never requires a binding, and a
+    /// certificate-bound token is refused there.
+    pub fn mcp(config: AuthConfig) -> anyhow::Result<Arc<Self>> {
+        Self::mcp_with_clock(config, EpochClock::system()?)
+    }
+
+    fn mcp_with_clock(mut config: AuthConfig, clock: Arc<EpochClock>) -> anyhow::Result<Arc<Self>> {
+        let separated = config.mcp_audience.take();
+        let kind = if let Some(audience) = separated {
+            config.audience = audience;
+            CredentialAudience::Mcp
+        } else {
+            CredentialAudience::Native
+        };
+        config.require_certificate_binding = false;
+        let mut authenticator = Self::new_with_clock(config, clock)?;
+        Arc::get_mut(&mut authenticator)
+            .expect("new authenticator is not shared")
+            .audience_kind = kind;
+        Ok(authenticator)
+    }
+
     fn new_with_clock(config: AuthConfig, clock: Arc<EpochClock>) -> anyhow::Result<Arc<Self>> {
         let mut urls = vec![("issuer", &config.issuer), ("audience", &config.audience)];
+        if let Some(mcp) = &config.mcp_audience {
+            anyhow::ensure!(
+                *mcp != config.audience,
+                "the MCP audience must differ from the native audience"
+            );
+            urls.push(("mcp_audience", mcp));
+        }
+        anyhow::ensure!(
+            !config.require_certificate_binding || config.mcp_audience.is_some(),
+            "certificate-bound native tokens require a separate MCP audience"
+        );
         match &config.source {
             AuthKeySource::ExternalOAuth { jwks_uri, .. } => urls.push(("jwks_uri", jwks_uri)),
             AuthKeySource::Local { signer_file } => {
@@ -387,6 +484,7 @@ impl Authenticator {
         let client = client.build()?;
         Ok(Arc::new(Self {
             config,
+            audience_kind: CredentialAudience::Native,
             clock,
             client,
             cache: RwLock::new(None),
@@ -498,6 +596,14 @@ impl Authenticator {
         clock: Arc<EpochClock>,
     ) -> anyhow::Result<Arc<Self>> {
         Self::new_with_clock(config, clock)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mcp_with_test_clock(
+        config: AuthConfig,
+        clock: Arc<EpochClock>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Self::mcp_with_clock(config, clock)
     }
 
     #[cfg(test)]
@@ -637,9 +743,31 @@ impl Authenticator {
         Ok(())
     }
 
-    /// Authenticate one request, durably recording its success or refusal.
+    /// Authenticate a token presented by trusted code in this process (see
+    /// `Presenter::InProcess`), durably recording its success or refusal.
     pub async fn authenticate(&self, authorization: &str) -> Result<RequestContext> {
-        let context = match self.verify(authorization).await {
+        self.authenticate_as(authorization, Presenter::InProcess)
+            .await
+    }
+
+    /// Authenticate one request that arrived on a TLS connection whose client
+    /// presented `certificate` (its leaf's SHA-256), durably recording its
+    /// success or refusal.
+    pub async fn authenticate_presented(
+        &self,
+        authorization: &str,
+        certificate: Option<CertificatePin>,
+    ) -> Result<RequestContext> {
+        self.authenticate_as(authorization, Presenter::Connection(certificate))
+            .await
+    }
+
+    async fn authenticate_as(
+        &self,
+        authorization: &str,
+        presenter: Presenter,
+    ) -> Result<RequestContext> {
+        let context = match self.verify(authorization, presenter).await {
             Ok((context, _)) => context,
             Err(error) => return Err(self.refuse(error).await),
         };
@@ -662,8 +790,13 @@ impl Authenticator {
         self: &Arc<Self>,
         authorization: &str,
         connection: &ConnectionAuthentications,
+        certificate: Option<CertificatePin>,
     ) -> Result<RequestContext> {
-        let (context, digest) = match self.verify(authorization).await {
+        // The binding is checked here for every request, counted or not.
+        let (context, digest) = match self
+            .verify(authorization, Presenter::Connection(certificate))
+            .await
+        {
             Ok(verified) => verified,
             Err(error) => return Err(self.refuse(error).await),
         };
@@ -849,15 +982,37 @@ impl Authenticator {
         })
     }
 
-    /// The request context `authorization` grants, with the digest of its
-    /// token bytes.
-    async fn verify(&self, authorization: &str) -> Result<(RequestContext, TokenDigest)> {
+    /// A token confirmed for `binding` may be presented only over a connection
+    /// with that client certificate; an unconfirmed one is refused on a
+    /// connection when the configuration requires binding.
+    fn check_binding(&self, binding: Option<CertificatePin>, presenter: Presenter) -> Result<()> {
+        match (binding, presenter) {
+            (Some(bound), Presenter::Connection(Some(presented))) if bound == presented => Ok(()),
+            (Some(_), _) => Err(unauthorized()),
+            (None, Presenter::Connection(_)) if self.config.require_certificate_binding => {
+                Err(unauthorized())
+            }
+            (None, _) => Ok(()),
+        }
+    }
+
+    /// The request context `authorization` grants to `presenter`, with the
+    /// digest of its token bytes.
+    async fn verify(
+        &self,
+        authorization: &str,
+        presenter: Presenter,
+    ) -> Result<(RequestContext, TokenDigest)> {
         let CheckedClaims {
             claims,
             scopes,
             observation,
             digest,
         } = self.checked_claims(authorization).await?;
+        // Runs for every request: the verified-token cache holds the signed
+        // claims, never the result of a binding check.
+        let binding = confirmed_certificate(claims.cnf.as_ref())?;
+        self.check_binding(binding, presenter)?;
         let expires_at = claims.exp.checked_mul(1000).ok_or_else(unauthorized)?;
         let authorization = match &self.config.source {
             AuthKeySource::Local { .. } => {
@@ -871,6 +1026,8 @@ impl Authenticator {
                     &claims.tenant,
                     &claims.scope,
                     &claims.kasumi_resource,
+                    binding,
+                    self.audience_kind,
                 )?;
                 RequestAuthorization::from_verified_credential_with_liveness(
                     expires_at,
@@ -933,6 +1090,8 @@ impl Authenticator {
             if claims.token_use.as_deref() != Some("access") {
                 return Err(unauthorized());
             }
+            let binding = confirmed_certificate(claims.cnf.as_ref())?;
+            self.check_binding(binding, Presenter::Connection(Some(client_certificate)))?;
             let proof = crate::local_auth::RecoveryProof {
                 family_id: claims.kasumi_family.ok_or_else(unauthorized)?,
                 issuance_id: claims
@@ -944,9 +1103,9 @@ impl Authenticator {
                 expires_at_ms: claims.exp.checked_mul(1000).ok_or_else(unauthorized)?,
                 client_certificate,
             };
-            Ok((claims, scopes, observation, proof))
+            Ok((claims, scopes, observation, proof, binding))
         };
-        let (claims, scopes, observation, proof) = match checked.await {
+        let (claims, scopes, observation, proof, binding) = match checked.await {
             Ok(checked) => checked,
             Err(error) => return Err(self.refuse(error).await),
         };
@@ -958,6 +1117,8 @@ impl Authenticator {
                 &claims.tenant,
                 &claims.scope,
                 &claims.kasumi_resource,
+                binding,
+                self.audience_kind,
             )?;
             crate::local_auth::check_recovery_window(proof.expires_at_ms, observation.utc_ms())?;
             let window_closes_at_ms = proof
@@ -1071,6 +1232,8 @@ mod tests {
             },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         }
     }
 
@@ -1510,21 +1673,32 @@ mod tests {
         expired["exp"] = serde_json::json!(1);
         let expired = bearer(&key, &expired, "at+jwt");
         let connection = ConnectionAuthentications::default();
-        let first = auth.authenticate_on(&token, &connection).await.unwrap();
+        let first = auth
+            .authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
         for _ in 0..2 {
-            let later = auth.authenticate_on(&token, &connection).await.unwrap();
+            let later = auth
+                .authenticate_on(&token, &connection, None)
+                .await
+                .unwrap();
             assert_ne!(later.request_id, first.request_id);
             assert_eq!(later.principal, "person");
         }
         assert_eq!(audit.recorded(), [(Succeeded, first.request_id.clone())]);
         // Another token closes the first one's account before its own first
         // success is recorded.
-        let second = auth.authenticate_on(&renewed, &connection).await.unwrap();
-        auth.authenticate_on(&renewed, &connection).await.unwrap();
+        let second = auth
+            .authenticate_on(&renewed, &connection, None)
+            .await
+            .unwrap();
+        auth.authenticate_on(&renewed, &connection, None)
+            .await
+            .unwrap();
         // Refusals are recorded one by one and leave the account alone.
         for _ in 0..2 {
             assert_eq!(
-                auth.authenticate_on(&expired, &connection)
+                auth.authenticate_on(&expired, &connection, None)
                     .await
                     .unwrap_err()
                     .code,
@@ -1554,7 +1728,7 @@ mod tests {
         // connection, record their own successes.
         audit.events.lock().unwrap().clear();
         let other = ConnectionAuthentications::default();
-        auth.authenticate_on(&token, &other).await.unwrap();
+        auth.authenticate_on(&token, &other, None).await.unwrap();
         auth.authenticate(&token).await.unwrap();
         auth.authenticate(&token).await.unwrap();
         assert!(audit.recorded().iter().all(|(kind, _)| *kind == Succeeded));
@@ -1573,27 +1747,32 @@ mod tests {
         // A first success that cannot be recorded is refused and not counted.
         audit.fail(true);
         assert_eq!(
-            auth.authenticate_on(&token, &connection)
+            auth.authenticate_on(&token, &connection, None)
                 .await
                 .unwrap_err()
                 .code,
             ErrorCode::AuditUnavailable
         );
         audit.fail(false);
-        let first = auth.authenticate_on(&token, &connection).await.unwrap();
-        auth.authenticate_on(&token, &connection).await.unwrap();
+        let first = auth
+            .authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
+        auth.authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
         // Any failed write, here a refusal's, stops the counting: the
         // connection's next success must be recorded, so the outage refuses it.
         audit.fail(true);
         assert_eq!(
-            auth.authenticate_on("Bearer invalid", &connection)
+            auth.authenticate_on("Bearer invalid", &connection, None)
                 .await
                 .unwrap_err()
                 .code,
             ErrorCode::Unauthorized
         );
         assert_eq!(
-            auth.authenticate_on(&token, &connection)
+            auth.authenticate_on(&token, &connection, None)
                 .await
                 .unwrap_err()
                 .code,
@@ -1602,7 +1781,7 @@ mod tests {
         // Another token must first record the counted successes; that fails
         // too, and the count is kept.
         assert_eq!(
-            auth.authenticate_on(&renewed(&key), &connection)
+            auth.authenticate_on(&renewed(&key), &connection, None)
                 .await
                 .unwrap_err()
                 .code,
@@ -1610,8 +1789,13 @@ mod tests {
         );
         audit.fail(false);
         // The first success after the outage is recorded and resumes counting.
-        let recovered = auth.authenticate_on(&token, &connection).await.unwrap();
-        auth.authenticate_on(&token, &connection).await.unwrap();
+        let recovered = auth
+            .authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
+        auth.authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
         connection.close().await.unwrap();
         assert_eq!(
             audit.recorded(),
@@ -1623,8 +1807,8 @@ mod tests {
         );
         // A count that cannot be recorded at close is lost, not retried.
         let closing = ConnectionAuthentications::default();
-        auth.authenticate_on(&token, &closing).await.unwrap();
-        auth.authenticate_on(&token, &closing).await.unwrap();
+        auth.authenticate_on(&token, &closing, None).await.unwrap();
+        auth.authenticate_on(&token, &closing, None).await.unwrap();
         audit.fail(true);
         assert_eq!(
             closing.close().await.unwrap_err().code,
@@ -1642,9 +1826,9 @@ mod tests {
         let token = bearer(&key, &claims(), "at+jwt");
         let connection = ConnectionAuthentications::default();
         let (first, second, third) = tokio::join!(
-            auth.authenticate_on(&token, &connection),
-            auth.authenticate_on(&token, &connection),
-            auth.authenticate_on(&token, &connection),
+            auth.authenticate_on(&token, &connection, None),
+            auth.authenticate_on(&token, &connection, None),
+            auth.authenticate_on(&token, &connection, None),
         );
         let ids =
             [first.unwrap(), second.unwrap(), third.unwrap()].map(|context| context.request_id);
@@ -1667,11 +1851,19 @@ mod tests {
         *other.cache.write().await = Some(CachedKeys::new(keys, other.clock.elapsed_clock().now()));
         let token = bearer(&key, &claims(), "at+jwt");
         let connection = ConnectionAuthentications::default();
-        let first = auth.authenticate_on(&token, &connection).await.unwrap();
-        auth.authenticate_on(&token, &connection).await.unwrap();
+        let first = auth
+            .authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
+        auth.authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
         // The same token through another authenticator is recorded in that
         // authenticator's audit, after this one's count.
-        let elsewhere = other.authenticate_on(&token, &connection).await.unwrap();
+        let elsewhere = other
+            .authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
         connection.close().await.unwrap();
         assert_eq!(
             audit.recorded(),
@@ -1708,14 +1900,19 @@ mod tests {
         auth.install_audit(audit.clone()).unwrap();
         let token = bearer(&key, &claims, "at+jwt");
         let connection = ConnectionAuthentications::default();
-        let first = auth.authenticate_on(&token, &connection).await.unwrap();
-        auth.authenticate_on(&token, &connection).await.unwrap();
+        let first = auth
+            .authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
+        auth.authenticate_on(&token, &connection, None)
+            .await
+            .unwrap();
         // The token's success is recorded on this connection, yet each later
         // request checks its expiry again and is refused, and recorded, alone.
         elapsed.0.store(10_000, Ordering::SeqCst);
         for _ in 0..2 {
             assert_eq!(
-                auth.authenticate_on(&token, &connection)
+                auth.authenticate_on(&token, &connection, None)
                     .await
                     .unwrap_err()
                     .code,
@@ -1820,6 +2017,8 @@ mod tests {
             },
             algorithms: vec![Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         })
         .unwrap();
         let kid = |generation: usize| {
@@ -1935,5 +2134,152 @@ mod tests {
         auth.refresh_keys(&second).await.unwrap();
         assert_eq!(begun(&auth), 4);
         assert!(auth.cached(&first).await.unwrap() && auth.cached(&second).await.unwrap());
+    }
+
+    fn bound(claims: &serde_json::Value, certificate: &CertificatePin) -> serde_json::Value {
+        let mut claims = claims.clone();
+        claims["cnf"] = serde_json::json!({"x5t#S256": URL_SAFE_NO_PAD.encode(certificate)});
+        claims
+    }
+
+    #[tokio::test]
+    async fn a_bound_token_is_accepted_only_from_its_own_certificate_on_every_request() {
+        let (auth, key) = fixture().await;
+        let (mine, other) = ([7; 32], [8; 32]);
+        let token = bearer(&key, &bound(&claims(), &mine), "at+jwt");
+        auth.authenticate_presented(&token, Some(mine))
+            .await
+            .unwrap();
+        // The token's claims are now cached by its digest; the binding is
+        // checked again for each request, whoever presents it.
+        for presented in [Some(other), None] {
+            assert_eq!(
+                auth.authenticate_presented(&token, presented)
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Unauthorized
+            );
+        }
+        assert!(
+            auth.authenticate(&token).await.is_err(),
+            "an in-process caller presents no certificate"
+        );
+        auth.authenticate_presented(&token, Some(mine))
+            .await
+            .unwrap();
+        // A connection counts later successes of its recorded token, and still
+        // checks each one's certificate.
+        let connection = ConnectionAuthentications::default();
+        auth.authenticate_on(&token, &connection, Some(mine))
+            .await
+            .unwrap();
+        auth.authenticate_on(&token, &connection, Some(mine))
+            .await
+            .unwrap();
+        assert!(
+            auth.authenticate_on(&token, &connection, Some(other))
+                .await
+                .is_err()
+        );
+        assert!(
+            auth.authenticate_on(&token, &connection, None)
+                .await
+                .is_err()
+        );
+        // An unbound token is accepted from any connection while binding is
+        // not required.
+        let unbound = bearer(&key, &claims(), "at+jwt");
+        auth.authenticate_presented(&unbound, Some(other))
+            .await
+            .unwrap();
+        auth.authenticate_presented(&unbound, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_malformed_or_unknown_confirmation_is_refused() {
+        let (auth, key) = fixture().await;
+        let certificate = [7; 32];
+        let thumbprint = URL_SAFE_NO_PAD.encode(certificate);
+        for cnf in [
+            serde_json::json!({}),
+            serde_json::json!({"jkt": thumbprint}),
+            serde_json::json!({"x5t#S256": thumbprint, "jkt": thumbprint}),
+            serde_json::json!({"x5t#S256": hex::encode(certificate)}),
+            serde_json::json!({"x5t#S256": URL_SAFE_NO_PAD.encode([7; 31])}),
+            serde_json::json!({"x5t#S256": format!("{thumbprint}=")}),
+            serde_json::json!({"x5t#S256": 7}),
+            serde_json::json!("x5t#S256"),
+            serde_json::json!(null),
+        ] {
+            let mut claims = claims();
+            claims["cnf"] = cnf.clone();
+            assert_eq!(
+                auth.authenticate_presented(&bearer(&key, &claims, "at+jwt"), Some(certificate))
+                    .await
+                    .unwrap_err()
+                    .code,
+                ErrorCode::Unauthorized,
+                "{cnf}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_binding_installation_refuses_unbound_tokens_on_connections() {
+        let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+        let keys: JwkSet = serde_json::from_value(serde_json::json!({"keys":[{"kty":"OKP","crv":"Ed25519","alg":"EdDSA","use":"sig","kid":"key-1","x":URL_SAFE_NO_PAD.encode(key.public_key_raw())}]})).unwrap();
+        let encoding = EncodingKey::from_ed_pem(key.serialize_pem().as_bytes()).unwrap();
+        let native = AuthConfig {
+            audience: "https://kasumi.example/api".into(),
+            mcp_audience: Some("https://kasumi.example/mcp".into()),
+            require_certificate_binding: true,
+            ..config()
+        };
+        // Binding needs MCP to have its own audience, which must differ.
+        assert!(
+            Authenticator::new(AuthConfig {
+                mcp_audience: None,
+                ..native.clone()
+            })
+            .is_err()
+        );
+        assert!(
+            Authenticator::new(AuthConfig {
+                mcp_audience: Some(native.audience.clone()),
+                ..native.clone()
+            })
+            .is_err()
+        );
+        let auth = Authenticator::with_test_keys(native.clone(), keys.clone()).await;
+        auth.install_audit(Arc::new(TestAudit::default())).unwrap();
+        let mcp = Authenticator::mcp(native.clone()).unwrap();
+        *mcp.cache.write().await = Some(CachedKeys::new(keys, mcp.clock.elapsed_clock().now()));
+        mcp.install_audit(Arc::new(TestAudit::default())).unwrap();
+        let certificate = [7; 32];
+        let mut native_claims = claims();
+        native_claims["aud"] = serde_json::json!(native.audience);
+        let mcp_claims = claims();
+        let unbound = bearer(&encoding, &native_claims, "at+jwt");
+        let bound_native = bearer(&encoding, &bound(&native_claims, &certificate), "at+jwt");
+        let mcp_token = bearer(&encoding, &mcp_claims, "at+jwt");
+        // Native listeners: only a bound native token, from its certificate.
+        auth.authenticate_presented(&bound_native, Some(certificate))
+            .await
+            .unwrap();
+        for (token, presented) in [
+            (&unbound, Some(certificate)),
+            (&unbound, None),
+            (&mcp_token, Some(certificate)),
+        ] {
+            assert!(auth.authenticate_presented(token, presented).await.is_err());
+        }
+        // Trusted in-process callers may present an unbound token they issued.
+        auth.authenticate(&unbound).await.unwrap();
+        // MCP: only an MCP token; a native one, bound or not, is refused.
+        mcp.authenticate_presented(&mcp_token, None).await.unwrap();
+        for token in [&unbound, &bound_native] {
+            assert!(mcp.authenticate_presented(token, None).await.is_err());
+        }
     }
 }

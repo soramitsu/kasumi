@@ -122,7 +122,11 @@ pub(crate) async fn retarget_standalone(
         &installation.control_profile,
         &installation.tenant_profile,
         &installation.operator_profile,
+        &installation.mcp_profile,
     ] {
+        if !path.try_exists()? {
+            continue;
+        }
         let mut profile = crate::standalone::ClientProfile::load(path)?;
         profile.mcp_endpoint = config.mcp.protocol.public_url.clone();
         profile.native_endpoint = format!("https://localhost:{}", config.native.listen.port());

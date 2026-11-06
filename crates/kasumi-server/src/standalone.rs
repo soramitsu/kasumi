@@ -1,4 +1,6 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
+#[path = "standalone_credential_binding.rs"]
+mod credential_binding;
 #[path = "standalone_credential_recovery.rs"]
 mod credential_recovery;
 #[path = "standalone_credential_split.rs"]
@@ -13,6 +15,7 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
+pub use credential_binding::{CredentialBindingReport, bind_credentials};
 pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
 pub use credential_split::{CredentialSplitReport, split_credentials};
 use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
@@ -21,7 +24,8 @@ use kasumi_store::{
     TenantStore, private_files,
 };
 use kasumi_types::{
-    Action, CreateCredential, CredentialResource, Grant, Policy, TrustVerifierIdentity,
+    Action, CreateCredential, CredentialAudience, CredentialResource, Grant, Policy,
+    TrustVerifierIdentity,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -300,6 +304,9 @@ pub struct InitializedInstallation {
     pub control_profile: PathBuf,
     pub tenant_profile: PathBuf,
     pub operator_profile: PathBuf,
+    /// The application's MCP credential (`profiles/mcp.json`): unbound, for
+    /// the MCP audience only, renewed with the Control profile.
+    pub mcp_profile: PathBuf,
 }
 
 /// The principal of a new installation's application credential.
@@ -646,6 +653,14 @@ async fn recover_administrator_owned(
             if tenant == crate::runtime::CONTROL_TENANT {
                 recovered_control_principal = Some(principal.clone());
             }
+            let identity = if tenant == crate::runtime::CONTROL_TENANT {
+                source_profile.identity.clone()
+            } else {
+                operator_identity.clone()
+            };
+            // The recovered credential is bound to the certificate its
+            // profile presents.
+            let binding = hex::encode(TlsFiles::from(identity.clone()).load()?.certificate_pin());
             let issued = credentials.create(
                 CreateCredential {
                     family_id: Uuid::new_v4(),
@@ -654,6 +669,8 @@ async fn recover_administrator_owned(
                     resource: resource.clone(),
                     scopes,
                     lifetime_seconds: 3600,
+                    client_certificate_sha256: Some(binding),
+                    audience: Default::default(),
                 },
                 "offline-administrator-recovery",
             )?;
@@ -670,11 +687,7 @@ async fn recover_administrator_owned(
                 resource,
                 family_id: issued.family_id,
                 bearer_file: token_path,
-                identity: if tenant == crate::runtime::CONTROL_TENANT {
-                    source_profile.identity.clone()
-                } else {
-                    operator_identity.clone()
-                },
+                identity,
                 ..source_profile.clone()
             };
             let profile_path = output.join(format!("{name}.json"));
@@ -1007,6 +1020,29 @@ async fn rotate_certificates_owned(
     }
     .await;
     owner.finish(result).await
+}
+
+/// Create `specification`'s family, or replay its original issuance, and
+/// renew it when that issuance has expired or soon will: a rerun of an
+/// interrupted migration publishes a live token for the same family.
+fn live_credential(
+    credentials: &LocalCredentials,
+    specification: CreateCredential,
+    actor: &str,
+) -> Result<kasumi_types::IssuedCredential> {
+    let family_id = specification.family_id;
+    let issued = credentials.create(specification, actor)?;
+    let now = kasumi_clock::EpochClock::system()?.now_ms()?;
+    if issued.expires_at_ms > now.saturating_add(300_000) {
+        return Ok(issued);
+    }
+    credentials.renew(
+        &kasumi_types::RenewCredential {
+            family_id,
+            renewal_id: Uuid::new_v4(),
+        },
+        actor,
+    )
 }
 
 /// The generated client identities this installation's profiles use, by name:
@@ -1534,6 +1570,10 @@ async fn initialize_owned(
             },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            // MCP tokens have their own audience, and native tokens must
+            // arrive with the client certificate they are bound to.
+            mcp_audience: Some(format!("https://localhost/kasumi/{installation_id}/mcp")),
+            require_certificate_binding: true,
         };
         config.mcp.listen = network.mcp_listen;
         config.mcp.tls = identities["mcp"].clone();
@@ -1640,11 +1680,14 @@ async fn initialize_owned(
                 signer,
                 config.auth.issuer.clone(),
                 config.auth.audience.clone(),
-            )?;
+            )?
+            .with_mcp_audience(config.auth.mcp_audience.clone())?;
             let database = CredentialResource::Database {
                 incarnation: tenant_incarnation,
             };
-            for (name, tenant, principal, scopes, identity, resource) in [
+            // Each native family is bound to its own profile's certificate;
+            // the MCP family is unbound, since MCP takes no client certificate.
+            for (name, tenant, principal, scopes, identity, resource, audience) in [
                 (
                     "control",
                     crate::runtime::CONTROL_TENANT,
@@ -1654,6 +1697,7 @@ async fn initialize_owned(
                     CredentialResource::Control {
                         incarnation: control_incarnation,
                     },
+                    CredentialAudience::Native,
                 ),
                 (
                     "default",
@@ -1662,6 +1706,7 @@ async fn initialize_owned(
                     application_actions(),
                     "client",
                     database.clone(),
+                    CredentialAudience::Native,
                 ),
                 (
                     "operator",
@@ -1669,9 +1714,25 @@ async fn initialize_owned(
                     ADMINISTRATOR_PRINCIPAL,
                     tenant_operator_actions(),
                     "operator-client",
+                    database.clone(),
+                    CredentialAudience::Native,
+                ),
+                (
+                    "mcp",
+                    tenant,
+                    APPLICATION_PRINCIPAL,
+                    application_actions(),
+                    "client",
                     database,
+                    CredentialAudience::Mcp,
                 ),
             ] {
+                let binding = match audience {
+                    CredentialAudience::Native => Some(hex::encode(
+                        client_identities[identity].load()?.certificate_pin(),
+                    )),
+                    CredentialAudience::Mcp => None,
+                };
                 let issued = credentials.create(
                     CreateCredential {
                         family_id: Uuid::new_v4(),
@@ -1680,6 +1741,8 @@ async fn initialize_owned(
                         resource: resource.clone(),
                         scopes,
                         lifetime_seconds: 3600,
+                        client_certificate_sha256: binding,
+                        audience,
                     },
                     "initializer",
                 )?;
@@ -1743,6 +1806,7 @@ async fn initialize_owned(
         control_profile: profiles.join("control.json"),
         tenant_profile: profiles.join("default.json"),
         operator_profile: profiles.join("operator.json"),
+        mcp_profile: profiles.join("mcp.json"),
     })
 }
 

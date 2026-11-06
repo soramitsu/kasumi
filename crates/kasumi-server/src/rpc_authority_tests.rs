@@ -97,6 +97,8 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
             },
             algorithms: vec![jsonwebtoken::Algorithm::EdDSA],
             access_token_types: BTreeSet::from(["at+jwt".into()]),
+            mcp_audience: None,
+            require_certificate_binding: false,
         },
         keys,
     )

@@ -260,6 +260,8 @@ fn manifest_shape_and_current_policy_are_strict() -> Result<()> {
         },
         scopes: BTreeSet::from([Action::Read, Action::Write]),
         lifetime_seconds: 3600,
+        client_certificate_sha256: None,
+        audience: Default::default(),
     };
     let mut policy = Policy {
         grants: vec![Grant {
