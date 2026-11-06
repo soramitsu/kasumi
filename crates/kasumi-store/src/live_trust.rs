@@ -83,6 +83,7 @@ impl EncryptedTrust {
         next: &LocalSignerTrustRecord,
         receipt: Option<&SignerTrustReceipt>,
     ) -> Result<()> {
+        crate::deferred_batch::before_write(&self.store.node)?;
         let _access = AccessGuard(&self.store);
         next.validate()?;
         ensure!(

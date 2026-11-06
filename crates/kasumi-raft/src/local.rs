@@ -44,6 +44,8 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     before_snapshot: FixtureHook,
     #[cfg(any(test, feature = "test-utils"))]
     refuse_next_blank: AtomicBool,
+    #[cfg(any(test, feature = "test-utils"))]
+    joined: Arc<JoinedAppends>,
 }
 
 struct LocalState<M: RaftStateMachine<TypeConfig>> {
@@ -54,6 +56,29 @@ struct LocalState<M: RaftStateMachine<TypeConfig>> {
     id: u64,
     snapshot_index: Option<u64>,
     snapshot_interval: u64,
+    #[cfg(any(test, feature = "test-utils"))]
+    joined: Arc<JoinedAppends>,
+}
+
+/// Standalone appends that asked to join their journal record to their
+/// publication, by outcome, since this writer opened.
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Default)]
+pub(crate) struct JoinedAppends {
+    applied: AtomicU64,
+    refused_before_publication: AtomicU64,
+    refused_publication: AtomicU64,
+}
+#[cfg(any(test, feature = "test-utils"))]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JoinedAppendCounts {
+    /// Committed and applied in one transaction (or, if an ahead write
+    /// committed the record first, in that order).
+    pub applied: u64,
+    /// Refused for capacity while preparing the record; nothing was written.
+    pub refused_before_publication: u64,
+    /// The publication carrying the record was refused for capacity.
+    pub refused_publication: u64,
 }
 
 // What a snapshot task shares with its group.
@@ -76,6 +101,19 @@ pub(crate) enum LocalSnapshot {
     /// applied state and the journal are unchanged; staged chunks are
     /// crash-equivalent and removed by the next build or open.
     Deferred,
+}
+
+/// A machine whose application entries can commit their journal record in
+/// their own publication's transaction. Others append, then apply.
+pub(crate) trait LocalJoinedApply {
+    fn joined(&mut self) -> Option<&mut crate::StateMachine> {
+        None
+    }
+}
+impl LocalJoinedApply for crate::StateMachine {
+    fn joined(&mut self) -> Option<&mut crate::StateMachine> {
+        Some(self)
+    }
 }
 
 /// A state machine's snapshot builder as the standalone writer runs it.
@@ -121,7 +159,7 @@ pub(crate) fn check_membership(membership: &Membership<u64, BasicNode>, id: u64)
 
 impl<M> LocalGroup<M>
 where
-    M: RaftStateMachine<TypeConfig> + Send + Sync + 'static,
+    M: RaftStateMachine<TypeConfig> + LocalJoinedApply + Send + Sync + 'static,
     M::SnapshotBuilder: LocalSnapshotBuilder,
 {
     pub(crate) async fn open(
@@ -205,12 +243,20 @@ where
             id,
             snapshot_index: applied.map(|log| log.index),
             snapshot_interval: SNAPSHOT_INTERVAL,
+            #[cfg(any(test, feature = "test-utils"))]
+            joined: Default::default(),
         };
+        #[cfg(any(test, feature = "test-utils"))]
+        let joined = state.joined.clone();
         if committed.is_none() {
             let appended = state
-                .append(EntryPayload::Membership(Membership::from(BTreeMap::from(
-                    [(id, BasicNode::new("local"))],
-                ))))
+                .append(
+                    EntryPayload::Membership(Membership::from(BTreeMap::from([(
+                        id,
+                        BasicNode::new("local"),
+                    )]))),
+                    false,
+                )
                 .await?;
             // A refused first entry leaves an empty journal to initialize again.
             ensure!(
@@ -245,7 +291,21 @@ where
             before_snapshot: Default::default(),
             #[cfg(any(test, feature = "test-utils"))]
             refuse_next_blank: AtomicBool::new(false),
+            #[cfg(any(test, feature = "test-utils"))]
+            joined,
         })
+    }
+
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn joined_appends(&self) -> JoinedAppendCounts {
+        JoinedAppendCounts {
+            applied: self.joined.applied.load(Ordering::Acquire),
+            refused_before_publication: self
+                .joined
+                .refused_before_publication
+                .load(Ordering::Acquire),
+            refused_publication: self.joined.refused_publication.load(Ordering::Acquire),
+        }
     }
 
     pub(crate) fn ended(&self) -> bool {
@@ -384,16 +444,31 @@ where
     }
 
     pub(crate) async fn write(&self, command: RaftCommand) -> Result<Vec<u8>> {
-        self.append_payload(EntryPayload::Normal(command)).await
+        self.append_payload(EntryPayload::Normal(command), false)
+            .await
+    }
+
+    /// An application command whose apply publishes through the installed
+    /// ordinary completion and stages nothing durable before that
+    /// publication: its journal record commits in the same transaction.
+    pub(crate) async fn write_joined(&self, command: RaftCommand) -> Result<Vec<u8>> {
+        self.append_payload(EntryPayload::Normal(command), true)
+            .await
     }
 
     /// Append one Blank entry: the state machine applies it as metadata, so the
     /// journal and the applied position advance with no application command.
     pub(crate) async fn append_blank(&self) -> Result<()> {
-        self.append_payload(EntryPayload::Blank).await.map(drop)
+        self.append_payload(EntryPayload::Blank, false)
+            .await
+            .map(drop)
     }
 
-    async fn append_payload(&self, payload: EntryPayload<TypeConfig>) -> Result<Vec<u8>> {
+    async fn append_payload(
+        &self,
+        payload: EntryPayload<TypeConfig>,
+        joined: bool,
+    ) -> Result<Vec<u8>> {
         self.check()?;
         let mut worker = self.worker.lock().await;
         self.finish_worker(&mut worker).await;
@@ -426,7 +501,7 @@ where
             let appended = if refused {
                 Appended::Refused
             } else {
-                state.append(payload).await?
+                state.append(payload, joined).await?
             };
             let (data, applied) = match appended {
                 Appended::Applied(data, applied) => (data, applied),
@@ -567,7 +642,7 @@ async fn finish_task(
 
 impl<M> LocalState<M>
 where
-    M: RaftStateMachine<TypeConfig> + Send + Sync + 'static,
+    M: RaftStateMachine<TypeConfig> + LocalJoinedApply + Send + Sync + 'static,
     M::SnapshotBuilder: LocalSnapshotBuilder,
 {
     async fn schedule_snapshot(&mut self, work: &SnapshotWork) -> Result<()> {
@@ -646,7 +721,11 @@ where
         Ok(())
     }
 
-    async fn append(&mut self, payload: EntryPayload<TypeConfig>) -> Result<Appended> {
+    async fn append(
+        &mut self,
+        payload: EntryPayload<TypeConfig>,
+        joined: bool,
+    ) -> Result<Appended> {
         let next = self
             .next_index
             .checked_add(1)
@@ -661,6 +740,50 @@ where
             initialization: None,
         };
         let position = entry.log_id;
+        // The first entry, and any entry the serving machine cannot apply
+        // with its journal record, keeps two commits: append, then apply.
+        if joined
+            && self.next_index != 0
+            && self.log.serving()
+            && matches!(
+                &entry.payload,
+                EntryPayload::Normal(RaftCommand::Application(_))
+            )
+            && let Some(machine) = self.machine.joined()
+        {
+            let mut prepared = match self.log.prepare_local_append(&entry).await {
+                Ok(prepared) => prepared,
+                // Refused for capacity before anything was written.
+                Err(error) => {
+                    crate::capacity_refusal::take(error)?;
+                    #[cfg(any(test, feature = "test-utils"))]
+                    self.joined
+                        .refused_before_publication
+                        .fetch_add(1, Ordering::AcqRel);
+                    return Ok(Appended::Refused);
+                }
+            };
+            let application = std::mem::take(&mut prepared.application);
+            let custody = std::mem::take(&mut prepared.custody);
+            return match machine.apply_joined(entry, application, custody).await? {
+                crate::storage::EntryApplied::Applied(response) => {
+                    self.log.install_local_append(prepared)?;
+                    #[cfg(any(test, feature = "test-utils"))]
+                    self.joined.applied.fetch_add(1, Ordering::AcqRel);
+                    self.next_index = next;
+                    Ok(Appended::Applied(response, position))
+                }
+                // Neither the record nor the entry took effect; the retained
+                // span, the position and the applied state are unchanged.
+                crate::storage::EntryApplied::Refused => {
+                    #[cfg(any(test, feature = "test-utils"))]
+                    self.joined
+                        .refused_publication
+                        .fetch_add(1, Ordering::AcqRel);
+                    Ok(Appended::Refused)
+                }
+            };
+        }
         if let LocalAppend::Refused = self.log.append_local(entry.clone()).await? {
             return Ok(Appended::Refused);
         }

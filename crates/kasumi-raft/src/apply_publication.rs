@@ -27,6 +27,11 @@ pub enum AppliedInput<'a> {
 pub enum PublishCallError {
     Failed,
     Repeated,
+    /// Capacity refused the publication before it, and the standalone journal
+    /// record it carried, took any effect. Only an ordinary completion sees
+    /// this: its entry is not applied, and its action releases its candidate
+    /// and returns without publishing anything else.
+    Refused,
 }
 
 impl fmt::Display for PublishCallError {
@@ -34,6 +39,7 @@ impl fmt::Display for PublishCallError {
         formatter.write_str(match self {
             Self::Failed => "application publication failed; publisher retains its error",
             Self::Repeated => "application publication was already attempted",
+            Self::Refused => "application publication refused for capacity; nothing was published",
         })
     }
 }
@@ -147,6 +153,10 @@ impl std::error::Error for ApplyPublicationFailure {
 type PlainSink<'a> = dyn FnMut(&AppliedResponse, &[WriteOp]) -> Result<()> + 'a;
 pub(crate) enum SinkFailure {
     Unproven(anyhow::Error),
+    // Only the actual Entry sink constructs this, after the store proved that
+    // capacity refused the publication carrying the entry's journal record
+    // with no effect. Neither the record nor the publication is durable.
+    Refused(RefusedPublication),
     // Only the actual Entry sink's access check before planner entry constructs
     // this disposition. It does not classify arbitrary preparation errors.
     UnenteredAccessDenied(UnenteredAccessDenied),
@@ -162,6 +172,13 @@ impl SinkFailure {
     pub(crate) fn into_parts(self) -> (anyhow::Error, bool) {
         match self {
             Self::Unproven(error) => (error, false),
+            // Outside an ordinary completion nothing releases the backend's
+            // prepared work on a refusal, so the apply still fails.
+            Self::Refused(_) => (
+                anyhow::Error::new(PublishCallError::Refused)
+                    .context("publication refused outside an ordinary completion"),
+                false,
+            ),
             Self::UnenteredAccessDenied(denied) => (denied.original, true),
             Self::RetiredPlannerAccessDenied(denied) => (denied.original, true),
             Self::CommittedAccessDenied(denied) => (denied.into_error(), true),
@@ -173,7 +190,7 @@ impl SinkFailure {
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn refusal_stage(&self) -> Option<ApplyRefusalStage> {
         match self {
-            Self::Unproven(_) => None,
+            Self::Unproven(_) | Self::Refused(_) => None,
             Self::UnenteredAccessDenied(_) => Some(ApplyRefusalStage::Unentered),
             Self::RetiredPlannerAccessDenied(_) => Some(ApplyRefusalStage::PlannerRetired),
             Self::CommittedAccessDenied(_) => Some(ApplyRefusalStage::Committed),
@@ -190,6 +207,11 @@ pub(crate) struct UnenteredAccessDenied {
 // Only the controlled Entry planner return below constructs this witness.
 pub(crate) struct RetiredPlannerAccessDenied {
     original: anyhow::Error,
+}
+// Only the Entry sink constructs this, after `capacity_refusal::take` proved
+// the carrying publication had no effect and retired its writer.
+pub(crate) struct RefusedPublication {
+    _proved: (),
 }
 
 #[cfg(any(test, feature = "test-utils"))]
@@ -274,15 +296,19 @@ impl<'a> ApplyPublication<'a> {
                 after_backend();
                 slot.completion().finish(ordinal)
             }));
-            let positive = match finished {
-                Ok(positive) => positive,
+            let finished = match finished {
+                Ok(finished) => finished,
                 Err(payload) => {
                     slot.completion().finish_panic(payload);
-                    false
+                    crate::CompletionVerdict::Failed
                 }
             };
-            if !positive {
-                return Err(FinishFailure::Retained(slot.diagnostic()));
+            match finished {
+                crate::CompletionVerdict::Success => {}
+                crate::CompletionVerdict::Refused => return Err(FinishFailure::Refused),
+                crate::CompletionVerdict::Failed => {
+                    return Err(FinishFailure::Retained(slot.diagnostic()));
+                }
             }
             return Ok(FinishedPublication {
                 response: slot.completion().take_response(ordinal),
@@ -416,6 +442,10 @@ impl ApplyPublisher for CompletionPublisher<'_, '_> {
 pub(crate) enum FinishFailure {
     Single(anyhow::Error),
     Retained(crate::apply_failure::RetainedApplyFailure),
+    /// The ordinary completion settled a capacity-refused publication that
+    /// carried the entry's journal record: the entry is neither journaled
+    /// nor applied, and nothing failed.
+    Refused,
 }
 pub(crate) struct FinishedPublication {
     pub(crate) response: AppliedResponse,
@@ -565,6 +595,9 @@ pub(crate) struct EntryPublicationSink<'env> {
     position: &'env crate::AppliedEntryContext,
     gate: Option<&'env std::sync::Mutex<()>>,
     metadata: bool,
+    // A standalone entry's journal record, waiting for this publication to
+    // carry it in the same transaction.
+    journal: Option<&'env kasumi_store::DeferredBatch>,
 }
 impl<'env> EntryPublicationSink<'env> {
     pub(crate) fn new(
@@ -578,6 +611,32 @@ impl<'env> EntryPublicationSink<'env> {
             position,
             gate,
             metadata,
+            journal: None,
+        }
+    }
+    /// The publication also commits `journal`, unless another write of this
+    /// apply already committed it by itself.
+    pub(crate) fn carrying(mut self, journal: &'env kasumi_store::DeferredBatch) -> Self {
+        self.journal = Some(journal);
+        self
+    }
+    // A refusal proves no effect only when this publication carried the
+    // journal record: otherwise the record is durable and the entry committed.
+    fn publish(
+        &self,
+        prepared: crate::control::PreparedApplied,
+        writes: &[WriteOp],
+    ) -> SinkResult<()> {
+        let carried = self.journal.and_then(kasumi_store::DeferredBatch::take);
+        let fused = carried.is_some();
+        match prepared.publish_outcome_carrying(self.stores, writes, carried) {
+            Ok(outcome) => publication_outcome(outcome),
+            Err(error) if fused && crate::capacity_refusal::refused(&error) => {
+                crate::capacity_refusal::take(error)
+                    .map_err(|error| self.entered_failure(EntryFailureStage::Publication, error))?;
+                Err(SinkFailure::Refused(RefusedPublication { _proved: () }))
+            }
+            Err(error) => Err(self.entered_failure(EntryFailureStage::Publication, error)),
         }
     }
     fn run<T>(
@@ -590,6 +649,11 @@ impl<'env> EntryPublicationSink<'env> {
                 "metadata publication has an application response or retirement"
             )
             .into());
+        }
+        // From here only this publication may commit the journal record, and
+        // nothing else may write while this thread holds the control gate.
+        if let Some(journal) = self.journal {
+            journal.seal();
         }
         let _guard = self
             .gate
@@ -655,11 +719,7 @@ impl PublicationSink for EntryPublicationSink<'_> {
                 response.retirement.as_ref(),
             )
             .map_err(|error| self.entered_failure(EntryFailureStage::Planner, error))?;
-            publication_outcome(
-                prepared
-                    .publish_outcome(self.stores, writes)
-                    .map_err(|error| self.entered_failure(EntryFailureStage::Publication, error))?,
-            )
+            self.publish(prepared, writes)
         })
     }
     fn selected<'call>(
@@ -688,11 +748,7 @@ impl PublicationSink for EntryPublicationSink<'_> {
             preparer
                 .prepare(&plan, points)
                 .map_err(|error| self.entered_failure(EntryFailureStage::Preparer, error))?;
-            publication_outcome(
-                prepared
-                    .publish_outcome(self.stores, writes)
-                    .map_err(|error| self.entered_failure(EntryFailureStage::Publication, error))?,
-            )?;
+            self.publish(prepared, writes)?;
             Ok(receipt.mint())
         })
     }
@@ -945,6 +1001,8 @@ pub fn with_application_publisher_bound_observed_for_test(
         }
         Err(FinishFailure::Retained(failure)) => Err(failure.into()),
         Err(FinishFailure::Single(error)) => Err(buffers.retain_apply_failure(error).into()),
+        // This fixture sink carries no journal record, so it never refuses.
+        Err(FinishFailure::Refused) => Err(anyhow::anyhow!("fixture publication refused")),
     }
 }
 

@@ -156,6 +156,11 @@ pub trait CompletionAction {
 pub enum CompletionVerdict {
     Success,
     Failed,
+    /// Capacity refused the entry's publication, which also carried its
+    /// standalone journal record, before either took effect. The entry is not
+    /// applied: release this invocation's prepared work as after success.
+    /// Nothing was captured and no response is taken.
+    Refused,
 }
 /// Created only by real outer finish, after original verdict custody is stored.
 pub struct CompletionFinalization<'a> {

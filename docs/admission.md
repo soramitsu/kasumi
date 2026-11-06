@@ -205,9 +205,17 @@ selected Generation, which includes every in-flight request's Generation and
 every snapshot lease, and one per transient planner or capture reader).
 
 The standalone writer's own storage work runs outside any committed apply and
-spends no escrow: the journal append before an entry commits, and the periodic
-snapshot (every 5000 entries) that builds beside later appends. Admission may
-refuse either, and a refusal does not close the tenant. Only a typed proof that
+spends no escrow: the journal append (or, for a write that joins its journal
+entry to its publication, preparing that entry) before an entry commits, and
+the periodic snapshot (every 5000 entries) that builds beside later appends.
+Admission may refuse either, and a refusal does not close the tenant. A joined
+write, an ordinary mutation of at most 16 operations and 64 KiB, commits its
+journal entry inside its apply, in its publication's transaction; its escrow
+also covers the entry's native leases, so native traffic or RSS pressure after
+the proposal cannot refuse it, but a disk allowance or census refusal of that
+transaction can, and it ends the same way as a refused append: the completion
+releases the queued source preparation and candidate, and nothing is applied
+or journaled. Only a typed proof that
 the refused operation had no effect counts: an admission refusal for native
 memory, a disk allowance or a census slot, returned before any reader, writer,
 file or transaction exists; an Engine `ResourceExhausted`; a registered write

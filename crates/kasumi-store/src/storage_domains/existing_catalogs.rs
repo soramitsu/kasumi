@@ -312,6 +312,8 @@ async fn prepare(
                 let binding = validate(&custody.store, Some(&held.store), &tenant)?;
                 Opened::Pair(Arc::new(TenantStorageSet {
                     shutdown_report: AsyncMutex::new(DrainReport::default()),
+                    #[cfg(any(test, feature = "test-utils"))]
+                    deferred_flushes: Default::default(),
                     application: held.store.clone(),
                     custody: Arc::new(CustodyStore {
                         store: custody.store.clone(),

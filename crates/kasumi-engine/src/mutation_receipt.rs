@@ -207,6 +207,20 @@ pub(crate) struct View {
     source: Option<Arc<Source>>,
     head: MutationReceiptHead,
 }
+impl View {
+    /// Whether this view's next receipt pair joins its publication, as
+    /// `Pending::prepare_publication` would choose for a row of at most
+    /// `PreparedPublication::MAX_ROW` bytes.
+    pub(crate) fn joins_publication(&self) -> Result<bool> {
+        Ok(match self.source.as_deref() {
+            Some(Source::Durable(storage)) => {
+                storage.store.record_encryption_overhead()?
+                    <= PreparedPublication::MAX_ENCRYPTION_OVERHEAD
+            }
+            _ => false,
+        })
+    }
+}
 impl std::fmt::Debug for View {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MutationReceiptView")

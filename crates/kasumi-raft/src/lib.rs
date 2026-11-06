@@ -94,6 +94,8 @@ pub use initialization_association::{
 };
 mod lifetime;
 mod local;
+#[cfg(any(test, feature = "test-utils"))]
+pub use local::JoinedAppendCounts;
 mod network;
 mod quorum;
 mod scratch_failure_inventory;
@@ -871,6 +873,16 @@ impl RaftGroup {
             .fixture_before_snapshot(hook)
     }
 
+    /// This standalone writer's joined appends by outcome since it opened.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_local_joined_appends(&self) -> Result<JoinedAppendCounts> {
+        Ok(self
+            .local
+            .as_ref()
+            .context("joined appends require a standalone group")?
+            .joined_appends())
+    }
+
     /// Refuse the standalone writer's next Blank append for capacity, exactly as a
     /// full journal store refuses an append: nothing reaches the journal and the
     /// writer serves on. Commands are unaffected.
@@ -1094,16 +1106,37 @@ impl RaftGroup {
     /// groups additionally require quorum persistence before application.
     /// Timeout/cancellation does not imply rollback: retry with an application idempotency key.
     pub async fn write(&self, command: ApplicationProposal) -> Result<Vec<u8>> {
+        self.write_application(command, false).await
+    }
+
+    /// [`Self::write`] for a command whose apply publishes through the
+    /// installed ordinary completion and stages nothing durable before that
+    /// publication. A standalone group commits its journal record in the
+    /// same transaction as that publication, so the write costs one durable
+    /// commit; a capacity refusal of it still rejects only this command.
+    /// Replicated groups ignore the distinction.
+    pub async fn write_joined(&self, command: ApplicationProposal) -> Result<Vec<u8>> {
+        self.write_application(command, true).await
+    }
+
+    async fn write_application(
+        &self,
+        command: ApplicationProposal,
+        joined: bool,
+    ) -> Result<Vec<u8>> {
         self.check_proposal()
             .inspect_err(|error| self.report_write_failure("check_proposal", error))?;
         let command = command
             .admit(self.store.application(), &self.proposal_storage_lease)
             .inspect_err(|error| self.report_write_failure("application_admit", error))?;
         if let Some(local) = &self.local {
-            let response = local
-                .write(RaftCommand::Application(command))
-                .await
-                .inspect_err(|error| self.report_write_failure("local_write", error))?;
+            let command = RaftCommand::Application(command);
+            let response = if joined {
+                local.write_joined(command).await
+            } else {
+                local.write(command).await
+            }
+            .inspect_err(|error| self.report_write_failure("local_write", error))?;
             self.check_access().context(PostCommitAccessLost)?;
             return Ok(response);
         }

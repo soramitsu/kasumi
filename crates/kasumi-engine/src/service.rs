@@ -572,11 +572,15 @@ impl ProposalWork {
             return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
         }
         phase!("publication_admission");
-        if let Err(error) = self.source_engine.admit_document_publication(command) {
+        let joined = match self
+            .source_engine
+            .admit_command_publication(command, Some(bytes.len()))
+        {
+            Ok(joined) => joined,
             // Nothing was proposed. The committed entry's own source capacity is
             // admitted here, so local pressure can only reject this request.
-            return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?);
-        }
+            Err(error) => return Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(error))?),
+        };
         // A leadership change during admission can leave the checks above
         // reading applied state another term's leader has not caught up with.
         if self.group.current_term() != admission_term {
@@ -619,9 +623,12 @@ impl ProposalWork {
                 .finish()
                 .unwrap_or_else(|_| unreachable!("original input installed once"));
             phase!("consensus_write");
-            self.group
-                .write(kasumi_raft::ApplicationProposal::admitted_input(input))
-                .await
+            let proposal = kasumi_raft::ApplicationProposal::admitted_input(input);
+            if joined {
+                self.group.write_joined(proposal).await
+            } else {
+                self.group.write(proposal).await
+            }
         };
         phase!("consensus_returned");
         match response {

@@ -320,9 +320,22 @@ impl CompletionCustody for CompletionRef {
         {
             return Err(CompletionSettleError::Protocol);
         }
-        if finalization.verdict() == CompletionVerdict::Failed {
-            state.phase = Phase::Retained;
-            return Err(CompletionSettleError::Retained);
+        match finalization.verdict() {
+            CompletionVerdict::Failed => {
+                state.phase = Phase::Retained;
+                return Err(CompletionSettleError::Retained);
+            }
+            // A capacity-refused publication carried the entry's journal
+            // record, so nothing of this invocation is durable. Its queued
+            // preparation is released exactly as after success; `clean`
+            // still retains it unless its source positively retired.
+            CompletionVerdict::Refused => {
+                if state.phase != Phase::Entered || state.selected.is_some() {
+                    state.phase = Phase::Retained;
+                    return Err(CompletionSettleError::Protocol);
+                }
+            }
+            CompletionVerdict::Success => {}
         }
         let result = self.clean(&mut state);
         drop(state);

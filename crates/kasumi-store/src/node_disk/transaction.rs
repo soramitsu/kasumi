@@ -90,6 +90,18 @@ impl NodeDisk {
         if state.phase != NodeDiskPhase::Open || live_descriptors > descriptor_peak {
             return Err(io::ErrorKind::InvalidInput.into());
         }
+        #[cfg(any(test, feature = "test-utils"))]
+        if work == DiskWork::Foreground && take_fixture_refusal() {
+            let refusal = CapacityRefusal {
+                check: CapacityCheck::PersistentFilesystemFloor,
+                requested: bytes,
+                in_use: 0,
+                limit: 0,
+                min_free: 0,
+                filesystem: None,
+            };
+            return Err(NodeDisk::refused(&mut state, refusal));
+        }
         let parent = Identity(parent.0, parent.1);
         let directory = state
             .accounted
@@ -425,3 +437,25 @@ impl Drop for TransactionSpace {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(any(test, feature = "test-utils"))]
+thread_local! {
+    static FIXTURE_REFUSALS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+#[cfg(any(test, feature = "test-utils"))]
+fn take_fixture_refusal() -> bool {
+    FIXTURE_REFUSALS.with(|count| {
+        let left = count.get();
+        count.set(left.saturating_sub(1));
+        left != 0
+    })
+}
+impl NodeDisk {
+    /// Refuse the next `count` foreground transaction reservations that this
+    /// thread makes, with the typed floor refusal a full filesystem returns.
+    /// Nothing is reserved or changed by a refused reservation.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_refuse_transactions_on_this_thread(count: u64) {
+        FIXTURE_REFUSALS.with(|left| left.set(count));
+    }
+}

@@ -8,7 +8,12 @@ do not reinitialize them to adopt this execution path. Replicated installations
 cannot be reopened as standalone.
 
 Each local journal entry and its commit cursor share one durable transaction;
-the application state is applied before the write succeeds. Snapshot serialization
+the application state is applied before the write succeeds. A mutation of at
+most 16 operations and 64 KiB also publishes its applied state in that same
+transaction, so it costs one durable commit; other entries, larger batches
+included, publish in a second commit after the journal entry. If anything the
+mutation writes ahead of its publication would precede that transaction, the
+journal entry commits first, by itself. Snapshot serialization
 can overlap later writes, and compaction is triggered by journal growth rather
 than a consensus timer. Idle audit maintenance checks the retained backlog before
 acquiring command or archive capacity. Retired standalone custody also uses the

@@ -171,6 +171,7 @@ impl TenantStore {
         replacements: &[NamespaceReplacement<'_>],
         operations: &[WriteOp],
     ) -> Result<()> {
+        crate::deferred_batch::before_write(&self.node)?;
         validate_replacements(replacements, operations)?;
         reject_unpaired_identity_ops(operations)?;
         let _access = AccessGuard(self);

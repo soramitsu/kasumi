@@ -24,6 +24,9 @@ pub enum ApplyObservationRef<'a> {
     NotEntered,
     Running,
     Returned,
+    /// The sink's publication, with the journal record it carried, was
+    /// refused for capacity before any effect.
+    CapacityRefused,
     Error(&'a anyhow::Error),
     AdmissionRefused(kasumi_store::ScratchAdmissionRefusal),
     Creation(&'a kasumi_store::ScratchCreationFailure),
@@ -74,6 +77,7 @@ pub(crate) enum Observation {
     NotEntered,
     Running,
     Returned,
+    CapacityRefused,
     Error(anyhow::Error),
     AdmissionRefused(kasumi_store::ScratchAdmissionRefusal),
     Creation(kasumi_store::ScratchCreationFailure),
@@ -86,6 +90,7 @@ impl Observation {
             Self::NotEntered => ApplyObservationRef::NotEntered,
             Self::Running => ApplyObservationRef::Running,
             Self::Returned => ApplyObservationRef::Returned,
+            Self::CapacityRefused => ApplyObservationRef::CapacityRefused,
             Self::Error(e) => ApplyObservationRef::Error(e),
             Self::AdmissionRefused(original) => ApplyObservationRef::AdmissionRefused(*original),
             Self::Creation(original) => ApplyObservationRef::Creation(original),
@@ -362,6 +367,13 @@ impl CompletionState {
                 state.sink = Observation::Returned;
                 Ok(value)
             }
+            Ok(Err(Some(crate::apply_publication::SinkFailure::Refused(_)))) => {
+                // Nothing is durable and no failure is latched: outer finish
+                // settles this invocation as refused once the action and the
+                // backend have returned.
+                state.sink = Observation::CapacityRefused;
+                Err(crate::PublishCallError::Refused)
+            }
             Ok(Err(Some(failure))) => {
                 #[cfg(any(test, feature = "test-utils"))]
                 {
@@ -410,8 +422,12 @@ impl CompletionState {
         }
     }
     /// Actual outer finish; original backend has already moved into this owner.
-    pub(crate) fn finish(&self, ordinal: u64) -> bool {
-        let success = {
+    /// `Refused` means the sink's publication, carrying the entry's journal
+    /// record, was refused for capacity, the action and backend returned, and
+    /// the owner released its prepared work: the slot is settled again with
+    /// no response, and the entry was not applied.
+    pub(crate) fn finish(&self, ordinal: u64) -> CompletionVerdict {
+        let verdict = {
             let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
             assert_eq!(state.ordinal, ordinal);
             if matches!(state.sink, Observation::NotEntered) {
@@ -420,18 +436,24 @@ impl CompletionState {
             if self.repeated.load(Ordering::Acquire) {
                 state.violation = Some(CompletionViolation::Repeated)
             }
-            let success = !self.failed()
+            let returned = !self.failed()
                 && state.violation.is_none()
-                && state.sink.returned()
                 && state.action.returned()
                 && state.backend.returned();
-            if !success {
+            let verdict = if returned && state.sink.returned() {
+                CompletionVerdict::Success
+            } else if returned && matches!(state.sink, Observation::CapacityRefused) {
+                CompletionVerdict::Refused
+            } else {
+                CompletionVerdict::Failed
+            };
+            if verdict == CompletionVerdict::Failed {
                 self.fail();
             } else {
                 self.phase.store(FINISHING, Ordering::Release);
             }
             state.cleanup = Observation::Running;
-            success
+            verdict
         };
         let binding = self.binding.get().expect("entered binding");
         // No mutable report guard across external completion cleanup.
@@ -439,11 +461,7 @@ impl CompletionState {
             binding.settle(CompletionFinalization::new(
                 binding.identity(),
                 ordinal,
-                if success {
-                    CompletionVerdict::Success
-                } else {
-                    CompletionVerdict::Failed
-                },
+                verdict,
             ))
         }));
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
@@ -453,12 +471,17 @@ impl CompletionState {
             Err(p) => Observation::Unwound(p),
         };
         state.finish = Observation::Returned;
-        if !success || !state.cleanup.returned() {
+        if verdict == CompletionVerdict::Failed || !state.cleanup.returned() {
             self.fail();
-            false
-        } else {
-            true
+            return CompletionVerdict::Failed;
         }
+        if verdict == CompletionVerdict::Refused {
+            // The refused publication's response is never released. The next
+            // entry may begin, exactly as after an acknowledged success.
+            drop(state.response.take());
+            self.phase.store(SETTLED, Ordering::Release);
+        }
+        verdict
     }
     pub(crate) fn finish_panic(&self, payload: Box<dyn Any + Send>) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());

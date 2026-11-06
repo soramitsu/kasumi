@@ -87,6 +87,7 @@ fn observation(stage: &'static str, value: ApplyObservationRef<'_>) {
         ApplyObservationRef::NotEntered => "not_entered",
         ApplyObservationRef::Running => "running",
         ApplyObservationRef::Returned => "returned",
+        ApplyObservationRef::CapacityRefused => "capacity_refused",
         ApplyObservationRef::Error(error) => {
             eprintln!(
                 "Kasumi retained apply observation: stage={stage} state=error class={:?}",

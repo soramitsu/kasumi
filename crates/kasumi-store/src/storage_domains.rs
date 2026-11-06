@@ -351,6 +351,9 @@ pub struct TenantStorageSet {
     application: Arc<TenantStore>,
     custody: Arc<CustodyStore>,
     shutdown_report: AsyncMutex<DrainReport>,
+    // Deferred batches another write committed ahead of their publication.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) deferred_flushes: std::sync::atomic::AtomicU64,
 }
 
 /// One immutable native generation for the installed deployment descriptor,
@@ -864,6 +867,8 @@ impl TenantStorageSet {
         drop(_app_mutation);
         let result = Arc::new(Self {
             shutdown_report: AsyncMutex::new(DrainReport::default()),
+            #[cfg(any(test, feature = "test-utils"))]
+            deferred_flushes: Default::default(),
             application: application.clone(),
             custody: Arc::new(CustodyStore {
                 store: custody.clone(),
@@ -1002,6 +1007,22 @@ impl TenantStorageSet {
         )
     }
 
+    pub(crate) fn publish_carrying(
+        &self,
+        carried: Option<&crate::CarriedBatch>,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+    ) -> Result<DomainPublicationOutcome> {
+        self.publish_inner(
+            carried,
+            application_ops,
+            custody_ops,
+            &[],
+            &[],
+            PublicationMode::Ordinary,
+        )
+    }
+
     fn publish(
         &self,
         application_ops: &[WriteOp],
@@ -1010,12 +1031,41 @@ impl TenantStorageSet {
         custody_replacements: &[NamespaceReplacement<'_>],
         mode: PublicationMode<'_>,
     ) -> Result<DomainPublicationOutcome> {
+        self.publish_inner(
+            None,
+            application_ops,
+            custody_ops,
+            application_replacements,
+            custody_replacements,
+            mode,
+        )
+    }
+
+    // `carried` commits in the same transaction, ahead of the operations in
+    // each domain. Its records were validated when they were deferred.
+    fn publish_inner(
+        &self,
+        carried: Option<&crate::CarriedBatch>,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+        application_replacements: &[NamespaceReplacement<'_>],
+        custody_replacements: &[NamespaceReplacement<'_>],
+        mode: PublicationMode<'_>,
+    ) -> Result<DomainPublicationOutcome> {
+        crate::deferred_batch::before_write(&self.application.node)?;
         let initialize = matches!(&mode, PublicationMode::Initialize);
         let mut source = match mode {
             PublicationMode::Capture(source) => Some(source),
             PublicationMode::Initialize | PublicationMode::Ordinary => None,
         };
-        validate_batch(&[application_ops, custody_ops])?;
+        let carried_application = carried.map_or(&[][..], crate::CarriedBatch::application);
+        let carried_custody = carried.map_or(&[][..], crate::CarriedBatch::custody);
+        validate_batch(&[
+            carried_application,
+            application_ops,
+            carried_custody,
+            custody_ops,
+        ])?;
         validate_paired_initial_identity(application_ops, custody_ops)?;
         crate::read_view::validate_replacements(application_replacements, application_ops)?;
         crate::read_view::validate_replacements(custody_replacements, custody_ops)?;
@@ -1032,6 +1082,14 @@ impl TenantStorageSet {
         let _custody_fence = custody
             .cached_rows
             .fence_replacing(custody_replacements, custody_ops);
+        let _carried_fences = carried.map(|_| {
+            (
+                application
+                    .cached_rows
+                    .fence_operations(carried_application),
+                custody.cached_rows.fence_operations(carried_custody),
+            )
+        });
         if let Some(source) = source.as_deref() {
             source.require_prepared_store(application)?;
             source.require_prepared_store(custody)?;
@@ -1069,6 +1127,7 @@ impl TenantStorageSet {
                     let state = application.state.read();
                     application.require_access(&state)?;
                     let catalog = application.catalog.read();
+                    write_domain(tx, application, &state, &catalog, carried_application)?;
                     write_domain(tx, application, &state, &catalog, application_ops)?;
                 }
                 crate::read_view::replace_domain(tx, custody, custody_replacements)?;
@@ -1076,6 +1135,7 @@ impl TenantStorageSet {
                     let state = custody.state.read();
                     custody.require_access(&state)?;
                     let catalog = custody.catalog.read();
+                    write_domain(tx, custody, &state, &catalog, carried_custody)?;
                     write_domain(tx, custody, &state, &catalog, custody_ops)?;
                 }
                 self.check_access()

@@ -484,6 +484,44 @@ fn capture_tenant_snapshot(
     })
 }
 
+/// Whether a standalone write of `command`, `proposal_bytes` long, may commit
+/// its journal record in the same transaction as its publication. That record
+/// must not be preceded by anything durable that only replaying it could
+/// reproduce, so this admits only mutations whose apply provably stages no
+/// receipt pair ahead of its publication: at most 16 operations and 64 KiB of
+/// proposal and of patched stored bodies keep every after-image write, the
+/// receipt pair and the cursor inside `PreparedPublication::can_join`'s 32
+/// writes and 1 MiB with room to spare, and the receipt store must take the
+/// pair inline. Anything else appends its record first, as before. The store's
+/// deferred-batch barrier still commits the record ahead of any other write.
+fn joins_journal(
+    generation: &Generation,
+    command: &Command,
+    proposal_bytes: usize,
+    patched: u64,
+) -> anyhow::Result<bool> {
+    const MAX_OPERATIONS: usize = 16;
+    const MAX_BYTES: u64 = 64 << 10;
+    let Operation::Mutate(batch) = &command.operation else {
+        return Ok(false);
+    };
+    Ok(batch.operations.len() <= MAX_OPERATIONS
+        && u64::try_from(proposal_bytes)? <= MAX_BYTES
+        && patched <= MAX_BYTES
+        && generation.receipts.joins_publication()?)
+}
+
+/// Native leases of a joined write's journal record inside its publication:
+/// the encoded entry (the proposal and a small frame), its header and the
+/// commit cursor, each encrypted in turn, and the native transaction's
+/// staging of them.
+fn journal_record_bytes(proposal_bytes: usize) -> Option<u64> {
+    u64::try_from(proposal_bytes)
+        .ok()?
+        .checked_mul(2)?
+        .checked_add(256 << 10)
+}
+
 impl kasumi_raft::StateMachineBackend for TenantEngine {
     fn close_application(&self) {
         self.seal();
@@ -807,6 +845,12 @@ impl TenantEngine {
             .reference
             .store(enabled, std::sync::atomic::Ordering::Release);
     }
+    #[cfg(test)]
+    pub(crate) fn application_sources_for_test(
+        &self,
+    ) -> Option<&crate::application_sources::SourceRootsRef> {
+        self.application_sources.get()
+    }
     pub(crate) fn install_application_sources(
         &self,
         sources: crate::application_sources::SourceRootsRef,
@@ -967,11 +1011,25 @@ impl TenantEngine {
     /// A conservative structural bound admitted before consensus. Existing
     /// bodies contribute their compact exact structural quotes; no whole-collection decode
     /// or persistent body cache is created to calculate the allowance.
+    #[cfg(test)]
     pub(crate) fn admit_document_publication(&self, command: &Command) -> Result<()> {
+        self.admit_command_publication(command, None).map(drop)
+    }
+    /// [`Self::admit_document_publication`] for a command proposed with
+    /// `proposal_bytes` of encoded input. `true` means a standalone writer may
+    /// commit the command's journal record in its publication's transaction
+    /// (see [`joins_journal`]); the admitted escrow then covers that record
+    /// too, so a refusal here still proposes nothing.
+    pub(crate) fn admit_command_publication(
+        &self,
+        command: &Command,
+        proposal_bytes: Option<usize>,
+    ) -> Result<bool> {
         use anyhow::Context as _;
         let Some(sources) = self.application_sources.get() else {
-            return Ok(());
+            return Ok(false);
         };
+        let mut joined = false;
         let quote = (|| -> anyhow::Result<u64> {
             if matches!(
                 command.operation,
@@ -1055,6 +1113,12 @@ impl TenantEngine {
                     }
                 }
             }
+            joined = match proposal_bytes {
+                Some(proposal_bytes) => {
+                    joins_journal(&generation, command, proposal_bytes, patched)?
+                }
+                None => false,
+            };
             // Ordinary mutations inspect only their bounded target set. Schema,
             // history and lifecycle commands can scan sources, one loan at a time.
             if !matches!(
@@ -1093,6 +1157,12 @@ impl TenantEngine {
                         0
                     })
                 })
+                .and_then(|n| match (joined, proposal_bytes) {
+                    (true, Some(proposal_bytes)) => {
+                        n.checked_add(journal_record_bytes(proposal_bytes)?)
+                    }
+                    _ => Some(n),
+                })
                 .context("document proposal workspace overflow")
         })();
         let quote = quote.map_err(|error| {
@@ -1111,7 +1181,8 @@ impl TenantEngine {
                         "document publication admission unavailable",
                     )
                 })
-        })
+        })?;
+        Ok(joined)
     }
 
     /// Preparation, response encoding, and immutable row staging precede the

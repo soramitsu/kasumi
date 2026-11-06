@@ -32,6 +32,13 @@ pub struct Backend {
     pub data: Mutex<BTreeMap<u64, Vec<u8>>>,
     pub fail_apply: AtomicBool,
     pub fail_snapshot: AtomicBool,
+    /// The filesystem refuses the next command's publication transaction.
+    pub refuse_publication: AtomicBool,
+    /// The next command fails after its publication returned.
+    pub fail_after_publication: AtomicBool,
+    /// Each command first writes a row of its own to this application store,
+    /// ahead of its publication, as an immutable receipt pair is staged.
+    pub ahead: Mutex<Option<Arc<kasumi_store::TenantStore>>>,
 }
 
 impl Backend {
@@ -90,12 +97,26 @@ impl StateMachineBackend for Backend {
         );
         let mut prepared = data.clone();
         prepared.insert(index, command.to_vec());
+        if let Some(store) = self.ahead.lock().unwrap().as_ref() {
+            store.write_batch(&[kasumi_store::WriteOp::put(
+                "test.ahead",
+                index.to_be_bytes(),
+                command.to_vec(),
+            )])?;
+        }
+        if self.refuse_publication.swap(false, Ordering::AcqRel) {
+            kasumi_store::NodeDisk::fixture_refuse_transactions_on_this_thread(1);
+        }
         publisher
             .commit(
                 kasumi_raft::AppliedResponse::application(command.to_vec()),
                 &[],
             )
             .map_err(anyhow::Error::from)?;
+        ensure!(
+            !self.fail_after_publication.swap(false, Ordering::AcqRel),
+            "injected failure after publication"
+        );
         *data = prepared;
         Ok(())
     }

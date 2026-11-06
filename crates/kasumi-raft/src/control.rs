@@ -1194,15 +1194,21 @@ impl PreparedApplied {
     }
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn publish(self, domains: &TenantStorageSet, application: &[WriteOp]) -> Result<()> {
-        self.publish_outcome(domains, application)?.into_result()
+        self.publish_outcome_carrying(domains, application, None)?
+            .into_result()
     }
-    pub(crate) fn publish_outcome(
+    /// Publish the applied cursor with `application`, and with a standalone
+    /// entry's deferred journal record in the same transaction when given.
+    pub(crate) fn publish_outcome_carrying(
         self,
         domains: &TenantStorageSet,
         application: &[WriteOp],
+        journal: Option<kasumi_store::CarriedBatch>,
     ) -> Result<kasumi_store::DomainPublicationOutcome> {
         let custody = self.custody_writes();
-        if application.is_empty() && custody.is_empty() {
+        if let Some(journal) = journal {
+            domains.write_batch_replacing_outcome_carrying(journal, application, custody)
+        } else if application.is_empty() && custody.is_empty() {
             domains.check_access()?;
             Ok(kasumi_store::DomainPublicationOutcome::Acknowledged)
         } else {

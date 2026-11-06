@@ -281,6 +281,9 @@ impl crate::local::LocalSnapshotBuilder for CustodySnapshotBuilder {
         ))
     }
 }
+// Retired custody carries no application entries; each appends, then applies.
+impl crate::local::LocalJoinedApply for CustodyMachine {}
+
 impl RaftStateMachine<TypeConfig> for CustodyMachine {
     type SnapshotBuilder = CustodySnapshotBuilder;
     async fn applied_state(

@@ -21,6 +21,7 @@ impl TenantStore {
         operations: &[WriteOp],
         mut source: Option<&mut crate::PreparedRegisteredSource>,
     ) -> Result<()> {
+        crate::deferred_batch::before_write(&self.node)?;
         let _access = AccessGuard(self);
         validate_batch(&[operations])?;
         reject_unpaired_identity_ops(operations)?;

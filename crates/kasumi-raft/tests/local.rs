@@ -408,3 +408,379 @@ async fn installed_local_snapshot_repairs_legacy_missing_commit_cursor() -> Fixt
     reopened.shutdown().await?;
     Ok(())
 }
+
+fn generated(value: &str) -> ApplicationProposal {
+    ApplicationProposal::generated(value.as_bytes().to_vec())
+}
+
+fn values(backend: &common::Backend) -> Vec<String> {
+    backend
+        .values()
+        .into_iter()
+        .map(|value| String::from_utf8(value).unwrap())
+        .collect()
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+fn committed(
+    stores: &kasumi_store::TenantStorageSet,
+) -> FixtureResult<Option<kasumi_raft::LogId<u64>>> {
+    let Some(bytes) = stores.custody().store().get("raft.meta", b"committed")? else {
+        return Ok(None);
+    };
+    Ok(serde_json::from_slice::<Option<kasumi_raft::LogId<u64>>>(
+        &bytes,
+    )?)
+}
+
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn open_local(
+    stores: &Arc<kasumi_store::TenantStorageSet>,
+    backend: &Arc<common::Backend>,
+) -> FixtureResult<RaftGroup> {
+    Ok(RaftGroup::local(
+        1,
+        GROUP.into(),
+        stores.clone(),
+        backend.clone(),
+        common::snapshot_owner(),
+    )
+    .await?)
+}
+
+/// A failed apply keeps its store's duplicate-open fence until the process
+/// drains it. Shut the stores down and open them again from their file.
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn reopen_failed(
+    local: RaftGroup,
+    stores: Arc<kasumi_store::TenantStorageSet>,
+    path: &std::path::Path,
+    disk: &Arc<kasumi_store::ScratchDisk>,
+) -> FixtureResult<Arc<kasumi_store::TenantStorageSet>> {
+    assert!(local.shutdown().await.is_err());
+    drop(local);
+    kasumi_store::test_utils::shutdown_owned_stores_fixture(&stores).await?;
+    drop(stores);
+    common::store(path, false, disk.clone(), 1, GROUP).await
+}
+
+/// A reopened journal replays each entry since the last snapshot exactly once
+/// and in order: every acknowledged write, joined or not, and nothing else.
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn reopened_values(
+    stores: &Arc<kasumi_store::TenantStorageSet>,
+) -> FixtureResult<(RaftGroup, Vec<String>)> {
+    let backend = Arc::new(common::Backend::default());
+    let reopened = open_local(stores, &backend).await?;
+    let metrics = reopened.metrics();
+    assert_eq!(committed(stores)?, metrics.last_applied);
+    assert_eq!(
+        metrics.last_log_index,
+        metrics.last_applied.map(|id| id.index)
+    );
+    Ok((reopened, values(&backend)))
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_writes_commit_their_records_with_their_effects() -> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let stores = common::store(&directory.path().join("joined.kv"), true, disk, 1, GROUP).await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.write(generated("appended")).await?;
+    for value in ["joined-0", "joined-1", "joined-2"] {
+        local.write_joined(generated(value)).await?;
+        // The record and the applied position committed together.
+        let metrics = local.metrics();
+        assert_eq!(committed(&stores)?, metrics.last_applied);
+        assert_eq!(
+            metrics.last_log_index,
+            metrics.last_applied.map(|id| id.index)
+        );
+    }
+    assert_eq!(
+        local.fixture_local_joined_appends()?,
+        kasumi_raft::JoinedAppendCounts {
+            applied: 3,
+            ..Default::default()
+        }
+    );
+    assert_eq!(stores.deferred_flushes_for_test(), 0);
+    assert_eq!(
+        values(&backend),
+        ["appended", "joined-0", "joined-1", "joined-2"]
+    );
+    local.shutdown().await?;
+    drop(local);
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, ["appended", "joined-0", "joined-1", "joined-2"]);
+    reopened.write_joined(generated("after-reopen")).await?;
+    reopened.shutdown().await?;
+    drop(reopened);
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(
+        replayed,
+        [
+            "appended",
+            "joined-0",
+            "joined-1",
+            "joined-2",
+            "after-reopen"
+        ]
+    );
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+/// A joined write that fails before its publication fences the writer and
+/// leaves no record: reopen never sees it, and its index is reused.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_write_failing_before_publication_fences_and_leaves_no_record() -> FixtureResult<()>
+{
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let path = directory.path().join("joined-failed.kv");
+    let stores = common::store(&path, true, disk.clone(), 1, GROUP).await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.write_joined(generated("kept")).await?;
+    let kept = local.metrics().last_applied;
+    backend
+        .fail_apply
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(local.write_joined(generated("lost")).await.is_err());
+    assert!(local.write(generated("fenced")).await.is_err());
+    assert_eq!(committed(&stores)?, kept);
+    let stores = reopen_failed(local, stores, &path, &disk).await?;
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, ["kept"]);
+    assert_eq!(reopened.metrics().last_applied, kept);
+    reopened.write_joined(generated("next")).await?;
+    assert_eq!(
+        reopened.metrics().last_applied.map(|id| id.index),
+        kept.map(|id| id.index + 1)
+    );
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+/// A joined write that fails after its one transaction committed is applied
+/// and journaled: the fenced writer reopens with it, replayed exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_write_failing_after_publication_fences_and_reopens_applied() -> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let path = directory.path().join("joined-late.kv");
+    let stores = common::store(&path, true, disk.clone(), 1, GROUP).await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.write_joined(generated("first")).await?;
+    let first = local.metrics().last_applied;
+    backend
+        .fail_after_publication
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(local.write_joined(generated("published")).await.is_err());
+    assert!(local.write(generated("fenced")).await.is_err());
+    assert_eq!(
+        committed(&stores)?.map(|id| id.index),
+        first.map(|id| id.index + 1)
+    );
+    let stores = reopen_failed(local, stores, &path, &disk).await?;
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, ["first", "published"]);
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+/// Outside an ordinary completion nothing can release a backend's prepared
+/// work, so a refused joined publication fails the apply. Its record was in
+/// that refused transaction, so reopen does not see the entry either.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_publication_refused_outside_ordinary_completion_fences_without_a_record()
+-> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let path = directory.path().join("joined-refused.kv");
+    let stores = common::store(&path, true, disk.clone(), 1, GROUP).await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.write_joined(generated("kept")).await?;
+    let kept = local.metrics().last_applied;
+    backend
+        .refuse_publication
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(local.write_joined(generated("refused")).await.is_err());
+    assert!(local.write(generated("fenced")).await.is_err());
+    assert_eq!(committed(&stores)?, kept);
+    let stores = reopen_failed(local, stores, &path, &disk).await?;
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, ["kept"]);
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+/// A two-commit store can hold a committed entry whose apply never published.
+/// Opening replays and applies it before any joined append.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn committed_unapplied_entry_replays_before_joined_appends() -> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let path = directory.path().join("legacy-unapplied.kv");
+    let stores = common::store(&path, true, disk.clone(), 1, GROUP).await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.write(generated("applied")).await?;
+    let applied = local.metrics().last_applied;
+    // The two-commit path journals the entry, then fails its apply.
+    backend
+        .fail_apply
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(local.write(generated("unapplied")).await.is_err());
+    assert_eq!(
+        committed(&stores)?.map(|id| id.index),
+        applied.map(|id| id.index + 1)
+    );
+    let stores = reopen_failed(local, stores, &path, &disk).await?;
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, ["applied", "unapplied"]);
+    reopened.write_joined(generated("joined")).await?;
+    reopened.shutdown().await?;
+    drop(reopened);
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, ["applied", "unapplied", "joined"]);
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+/// Periodic snapshot builds and their journal purges run beside joined
+/// appends, which hold the log's I/O gate from preparing their record until
+/// it commits. The retained span always ends at the last applied entry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn snapshots_and_purges_run_beside_joined_appends() -> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let stores = common::store(
+        &directory.path().join("joined-snapshots.kv"),
+        true,
+        disk,
+        1,
+        GROUP,
+    )
+    .await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.fixture_local_snapshot_interval(3).await?;
+    let mut written = Vec::new();
+    for number in 0..24 {
+        let value = format!("joined-{number}");
+        local.write_joined(generated(&value)).await?;
+        written.push(value);
+        let metrics = local.metrics();
+        assert_eq!(
+            metrics.last_log_index,
+            metrics.last_applied.map(|id| id.index)
+        );
+        assert!(metrics.snapshot <= metrics.last_applied);
+    }
+    local.fixture_local_snapshot_settled().await?;
+    let metrics = local.metrics();
+    assert!(metrics.snapshot.is_some(), "no periodic snapshot was built");
+    assert!(metrics.purged <= metrics.snapshot);
+    assert_eq!(committed(&stores)?, metrics.last_applied);
+    assert_eq!(local.fixture_local_joined_appends()?.applied, 24);
+    assert_eq!(stores.deferred_flushes_for_test(), 0);
+    local.shutdown().await?;
+    drop(local);
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, written);
+    reopened.shutdown().await?;
+    Ok(())
+}
+
+/// A write the apply makes ahead of its publication first commits the joined
+/// entry's record by itself, so the old order (record, then anything else)
+/// holds. A refusal of the publication after that is an ordinary failure, as
+/// an apply-commit refusal is today: the entry is journaled with its ahead
+/// row, a reopen replays it (see the committed-unapplied test above), and the
+/// refused writer stays retained for the process to drain.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn ahead_writes_commit_the_joined_record_first() -> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let stores = common::store(
+        &directory.path().join("joined-ahead.kv"),
+        true,
+        disk.clone(),
+        1,
+        GROUP,
+    )
+    .await?;
+    let backend = Arc::new(common::Backend::default());
+    *backend.ahead.lock().unwrap() = Some(stores.application().clone());
+    let local = open_local(&stores, &backend).await?;
+    local.write_joined(generated("ahead")).await?;
+    assert_eq!(stores.deferred_flushes_for_test(), 1);
+    let metrics = local.metrics();
+    assert_eq!(committed(&stores)?, metrics.last_applied);
+    let ahead = metrics.last_applied.unwrap().index;
+    let row = |index: u64| -> FixtureResult<Option<Vec<u8>>> {
+        Ok(stores
+            .application()
+            .get("test.ahead", &index.to_be_bytes())?
+            .map(|row| row.to_vec()))
+    };
+    assert_eq!(row(ahead)?, Some(b"ahead".to_vec()));
+    backend
+        .refuse_publication
+        .store(true, std::sync::atomic::Ordering::Release);
+    assert!(local.write_joined(generated("refused-late")).await.is_err());
+    assert!(local.write(generated("fenced")).await.is_err());
+    assert_eq!(stores.deferred_flushes_for_test(), 2);
+    assert_eq!(committed(&stores)?.map(|id| id.index), Some(ahead + 1));
+    assert_eq!(row(ahead + 1)?, Some(b"refused-late".to_vec()));
+    assert_eq!(values(&backend), ["ahead"]);
+    backend.ahead.lock().unwrap().take();
+    assert!(local.shutdown().await.is_err());
+    Ok(())
+}

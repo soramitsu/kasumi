@@ -147,6 +147,9 @@ fn diagnose_observation(phase: &str, observation: kasumi_raft::ApplyObservationR
         }
         kasumi_raft::ApplyObservationRef::Running => eprintln!("conformance {phase}: running"),
         kasumi_raft::ApplyObservationRef::Returned => eprintln!("conformance {phase}: returned"),
+        kasumi_raft::ApplyObservationRef::CapacityRefused => {
+            eprintln!("conformance {phase}: capacity refused");
+        }
         kasumi_raft::ApplyObservationRef::Error(original) => diagnose_original(phase, original),
         kasumi_raft::ApplyObservationRef::AdmissionRefused(original) => {
             eprintln!("conformance {phase}: admission refused {original:?}");

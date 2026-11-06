@@ -1,11 +1,17 @@
 //! The standalone writer's own storage work runs outside any committed apply:
-//! the journal append before its entry commits, and the periodic snapshot
-//! beside later appends. Native Resident traffic can hold every byte and ledger
-//! slot, and RSS above the high-water mark refuses every new reservation, while
-//! that work runs. A refusal may reject the one write whose entry never reached
-//! the journal, or defer the snapshot while the journal keeps every entry, but
-//! it must never close the tenant.
+//! preparing an entry's journal record before its entry commits, and the
+//! periodic snapshot beside later appends. Native Resident traffic can hold
+//! every byte and ledger slot, and RSS above the high-water mark refuses every
+//! new reservation, while that work runs. A refusal may reject the one write
+//! whose entry never reached the journal, or defer the snapshot while the
+//! journal keeps every entry, but it must never close the tenant.
+//!
+//! An ordinary write's record commits in its publication's own transaction.
+//! That publication spends the escrow its proposer admitted, so native traffic
+//! or RSS pressure inside the apply cannot refuse it; a full filesystem can,
+//! and must then reject only that write too.
 use crate::admission::{AdmissionConfig, MemorySource, NodeAdmission, Reservation};
+use crate::application_sources::completion::{CompletionCheckpoint, CompletionFault};
 use crate::test_fixture_failure::FixtureResult;
 use kasumi_store::{TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
@@ -193,6 +199,23 @@ impl Fixture {
         self.database.raft_group()
     }
 
+    fn joined(&self) -> kasumi_raft::JoinedAppendCounts {
+        self.group().fixture_local_joined_appends().unwrap()
+    }
+
+    /// Run `work` on the applying thread just before the next ordinary
+    /// publication, once its planner has run and its source read is queued.
+    fn before_next_publication(&self, work: impl FnOnce() + Send + 'static) {
+        self.database
+            .engine()
+            .application_sources_for_test()
+            .expect("installed application sources")
+            .arm_completion_fault_for_test(
+                CompletionCheckpoint::Queued,
+                CompletionFault::Window(Box::new(work)),
+            );
+    }
+
     #[allow(
         clippy::result_large_err,
         reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
@@ -268,6 +291,46 @@ impl Fixture {
     }
 }
 
+/// The publication of `key` commits inside the apply whatever native traffic
+/// or RSS pressure began after its proposal: its journal record and its
+/// effects both come from the escrow admitted before proposal. Reading the
+/// document back needs new capacity, so it waits for `release`.
+async fn admitted_write_commits(
+    fixture: &Fixture,
+    ran: &AtomicBool,
+    key: &str,
+    release: impl FnOnce() + Send + 'static,
+) -> FixtureResult<()> {
+    let journal = fixture.group().metrics().last_log_index;
+    let revision = fixture.database.engine().generation()?.state.revision;
+    let joined = fixture.joined();
+    fixture.database.mutate(context(key), put(key, key)).await?;
+    assert!(
+        ran.load(Ordering::SeqCst),
+        "the publication window did not run"
+    );
+    assert_eq!(fixture.database.serving_failure_class(), None);
+    assert_eq!(
+        fixture.group().metrics().last_log_index,
+        journal.map(|index| index + 1)
+    );
+    assert_eq!(
+        fixture.database.engine().generation()?.state.revision,
+        revision + 1
+    );
+    assert_eq!(
+        fixture.joined(),
+        kasumi_raft::JoinedAppendCounts {
+            applied: joined.applied + 1,
+            ..joined
+        }
+    );
+    tokio::task::spawn_blocking(release).await?;
+    assert_eq!(fixture.document(key)?, Some(json!({"id": key, "key": key})));
+    assert_eq!(fixture.database.stores().deferred_flushes_for_test(), 0);
+    Ok(())
+}
+
 /// The write whose append was refused reached neither the journal nor the
 /// engine; it is a definite rejection that its idempotency key can retry.
 async fn refused_append_rejects_only_its_write(
@@ -306,6 +369,9 @@ async fn refused_append_rejects_only_its_write(
         fixture.document("refused")?,
         Some(json!({"id": "refused", "key": "refused"}))
     );
+    // Every ordinary write here joins its journal record to its publication,
+    // and no write of theirs had to commit that record ahead of it.
+    assert_eq!(fixture.database.stores().deferred_flushes_for_test(), 0);
     Ok(())
 }
 
@@ -316,6 +382,7 @@ async fn refused_append_rejects_only_its_write(
 )]
 async fn journal_append_refused_for_native_capacity_rejects_only_its_write() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
+    let joined = fixture.joined();
     let held = Arc::new(Mutex::new(Vec::new()));
     let ran = Arc::new(AtomicBool::new(false));
     let (window, flag, admission) = (held.clone(), ran.clone(), fixture.admission.clone());
@@ -328,6 +395,14 @@ async fn journal_append_refused_for_native_capacity_rejects_only_its_write() -> 
             flag.store(true, Ordering::SeqCst);
         }))?;
     refused_append_rejects_only_its_write(&fixture, &ran, || held.lock().unwrap().clear()).await?;
+    // Preparing the record read control state under ordinary admission and
+    // was refused before anything was written; the retry then joined.
+    let after = fixture.joined();
+    assert_eq!(
+        after.refused_before_publication,
+        joined.refused_before_publication + 1
+    );
+    assert_eq!(after.applied, joined.applied + 1);
     fixture.finish().await
 }
 
@@ -338,6 +413,7 @@ async fn journal_append_refused_for_native_capacity_rejects_only_its_write() -> 
 )]
 async fn journal_append_refused_under_rss_pressure_rejects_only_its_write() -> FixtureResult<()> {
     let fixture = Fixture::open().await?;
+    let joined = fixture.joined();
     let ran = Arc::new(AtomicBool::new(false));
     let (flag, rss, admission) = (ran.clone(), fixture.rss.clone(), fixture.admission.clone());
     // The process crosses its RSS high-water mark after the write was
@@ -351,6 +427,81 @@ async fn journal_append_refused_under_rss_pressure_rejects_only_its_write() -> F
     let (rss, admission) = (fixture.rss.clone(), fixture.admission.clone());
     refused_append_rejects_only_its_write(&fixture, &ran, move || rss.press(&admission, false))
         .await?;
+    let after = fixture.joined();
+    assert_eq!(
+        after.refused_before_publication,
+        joined.refused_before_publication + 1
+    );
+    assert_eq!(after.applied, joined.applied + 1);
+    fixture.finish().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_publication_refused_for_disk_capacity_rejects_only_its_write() -> FixtureResult<()>
+{
+    let fixture = Fixture::open().await?;
+    let joined = fixture.joined();
+    let ran = Arc::new(AtomicBool::new(false));
+    let flag = ran.clone();
+    // The entry's record is prepared and its effects are planned; the
+    // filesystem then refuses the one transaction that would commit both.
+    fixture.before_next_publication(move || {
+        kasumi_store::NodeDisk::fixture_refuse_transactions_on_this_thread(1);
+        flag.store(true, Ordering::SeqCst);
+    });
+    refused_append_rejects_only_its_write(&fixture, &ran, || {}).await?;
+    let after = fixture.joined();
+    assert_eq!(after.refused_publication, joined.refused_publication + 1);
+    assert_eq!(after.applied, joined.applied + 1);
+    fixture.finish().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_publication_spends_its_escrow_under_native_exhaustion() -> FixtureResult<()> {
+    let fixture = Fixture::open().await?;
+    let held = Arc::new(Mutex::new(Vec::new()));
+    let ran = Arc::new(AtomicBool::new(false));
+    let (window, flag, admission) = (held.clone(), ran.clone(), fixture.admission.clone());
+    fixture.before_next_publication(move || {
+        *window.lock().unwrap() = exhaust_native(&admission);
+        flag.store(true, Ordering::SeqCst);
+    });
+    let release = held.clone();
+    admitted_write_commits(&fixture, &ran, "held", move || {
+        // Only new work is refused while that traffic holds the capacity.
+        assert!(!release.lock().unwrap().is_empty());
+        release.lock().unwrap().clear();
+    })
+    .await?;
+    fixture.finish().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn joined_publication_spends_its_escrow_under_rss_pressure() -> FixtureResult<()> {
+    let fixture = Fixture::open().await?;
+    let ran = Arc::new(AtomicBool::new(false));
+    let (flag, rss, admission) = (ran.clone(), fixture.rss.clone(), fixture.admission.clone());
+    fixture.before_next_publication(move || {
+        rss.press(&admission, true);
+        flag.store(true, Ordering::SeqCst);
+    });
+    let (rss, admission) = (fixture.rss.clone(), fixture.admission.clone());
+    admitted_write_commits(&fixture, &ran, "pressed", move || {
+        rss.press(&admission, false)
+    })
+    .await?;
     fixture.finish().await
 }
 

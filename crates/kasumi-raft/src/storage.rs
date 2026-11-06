@@ -260,6 +260,11 @@ impl LogStore {
         .await
     }
 
+    /// Whether this log belongs to a serving domain pair.
+    pub(crate) fn serving(&self) -> bool {
+        self.domains.serving().is_some()
+    }
+
     pub(crate) async fn bind_group(&self, group: String) -> Result<(), StorageError<u64>> {
         self.mutate(move |store| {
             let saved = load::<String>(store, META, b"group")?
@@ -516,14 +521,50 @@ impl LogStore {
         if commit_local {
             ensure!(entries.len() == 1, "local append requires one entry");
         }
-        for entry in &entries {
+        let writes = self.entry_writes(&entries)?;
+        let retained = self.retained.clone();
+        let domains = self.domains.clone();
+        self.mutate_original(move |store| {
+            check_append(store, &domains, &entries, commit_local)?;
+            let mut retained = retained
+                .lock()
+                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
+            let mut batches = EntryBatches::new(*retained, &entries)?;
+            // Commit the overlap/suffix forward, then a prepended prefix
+            // backward. Every durable chunk remains contiguous after crash,
+            // including physical logs repopulated below a snapshot.
+            while let Some(range) = batches.next_range(&writes)? {
+                let mut data = Vec::new();
+                let mut control = Vec::new();
+                for (application, custody) in &writes[range.clone()] {
+                    data.extend(application.iter().cloned());
+                    control.extend(custody.iter().cloned());
+                }
+                let next = RetainedSpan::including(*retained, &entries[range])?;
+                if commit_local {
+                    // The local WAL entry and commit cursor share the same
+                    // durable transaction. There is no quorum to wait for.
+                    control.push(committed_write(entries[0].log_id)?);
+                }
+                domains.write_batch(&data, &control)?;
+                *retained = Some(next);
+            }
+            Ok(())
+        })
+        .await
+    }
+
+    // Each entry's journal record: its application-domain body write and its
+    // header, seed and custody-log writes. Nothing is written here.
+    fn entry_writes(&self, entries: &[Entry<TypeConfig>]) -> Result<Vec<EntryWrites>> {
+        for entry in entries {
             if let EntryPayload::Normal(crate::RaftCommand::Application(input)) = &entry.payload {
                 input.bind_input(entry.log_id)?;
             }
         }
         let bootstrap_sha256 = load::<String>(&self.store, META, b"application_bootstrap_sha256")?;
         let storage_binding_sha256 = self.domains.custody().binding().digest()?;
-        let writes = entries
+        entries
             .iter()
             .map(|entry| {
                 crate::initialization_association::validate_entry(self.domains.custody(), entry)?;
@@ -566,72 +607,129 @@ impl LogStore {
                 };
                 Ok((application, control))
             })
-            .collect::<Result<Vec<_>>>()?;
-        let retained = self.retained.clone();
+            .collect()
+    }
+
+    /// Validate one standalone entry and build its journal record, which the
+    /// entry's own publication then commits. Nothing is written here. The
+    /// returned owner holds this log's I/O gate, so no purge, truncation,
+    /// read or other append runs until it is dropped, and the retained span
+    /// changes only through [`Self::install_local_append`].
+    pub(crate) async fn prepare_local_append(
+        &self,
+        entry: &Entry<TypeConfig>,
+    ) -> Result<PreparedLocalAppend> {
+        let entries = vec![entry.clone()];
+        let writes = self.entry_writes(&entries)?;
+        let gate = self.io_gate.clone().lock_owned().await;
+        let store = self.store.clone();
         let domains = self.domains.clone();
-        self.mutate_original(move |store| {
-            // OpenRaft may repopulate physical logs beneath a snapshot.
-            // That does not change the separately committed snapshot. Only
-            // an exact accepted retirement identity is immutable here.
-            if let Some(boundary) = crate::control::retired_boundary(domains.custody())? {
-                for entry in &entries {
-                    if entry.log_id.index > boundary.position.log_id.index
-                        && let EntryPayload::Normal(command) = &entry.payload
-                    {
-                        ensure!(
-                            command.custody_command()?.is_some(),
-                            "application log entry after permanent retirement"
-                        );
-                    }
-                }
-                for entry in entries
-                    .iter()
-                    .filter(|entry| entry.log_id.index == boundary.position.log_id.index)
-                {
-                    let retained: RetainedSeed =
-                        load(store, SEEDS, &entry.log_id.index.to_be_bytes())?
-                            .context("accepted retirement seed absent")?;
-                    retained.header.check_entry(entry, &encode_entry(entry)?)?;
-                }
-            }
-            if commit_local {
-                let previous = load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten();
-                ensure!(
-                    Some(entries[0].log_id) > previous,
-                    "local committed cursor must advance"
-                );
-            }
-            let mut retained = retained
+        let retained = self.retained.clone();
+        let control = self.control_gate.clone();
+        tokio::task::spawn_blocking(move || {
+            let _control = control
+                .lock()
+                .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+            check_append(&store, &domains, &entries, true)?;
+            let previous = *retained
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
-            let mut batches = EntryBatches::new(*retained, &entries)?;
-            // Commit the overlap/suffix forward, then a prepended prefix
-            // backward. Every durable chunk remains contiguous after crash,
-            // including physical logs repopulated below a snapshot.
-            while let Some(range) = batches.next_range(&writes)? {
-                let mut data = Vec::new();
-                let mut control = Vec::new();
-                for (application, custody) in &writes[range.clone()] {
-                    data.extend(application.iter().cloned());
-                    control.extend(custody.iter().cloned());
-                }
-                let next = RetainedSpan::including(*retained, &entries[range])?;
-                if commit_local {
-                    // The local WAL entry and commit cursor share the same
-                    // durable transaction. There is no quorum to wait for.
-                    control.push(put(
-                        META,
-                        b"committed",
-                        serde_json::to_vec(&Some(entries[0].log_id))?,
-                    ));
-                }
-                domains.write_batch(&data, &control)?;
-                *retained = Some(next);
-            }
-            Ok(())
+            let mut batches = EntryBatches::new(previous, &entries)?;
+            ensure!(
+                batches.next_range(&writes)? == Some(0..1)
+                    && batches.next_range(&writes)?.is_none()
+                    && previous.is_none_or(|span| {
+                        span.last.index.checked_add(1) == Some(entries[0].log_id.index)
+                    }),
+                "standalone append must extend the retained journal by one entry"
+            );
+            let next = RetainedSpan::including(previous, &entries)?;
+            let (application, mut custody) = writes
+                .into_iter()
+                .next()
+                .context("standalone append has no journal record")?;
+            custody.push(committed_write(entries[0].log_id)?);
+            Ok(PreparedLocalAppend {
+                application: application.into_iter().collect(),
+                custody,
+                next,
+                previous,
+                _gate: gate,
+            })
         })
-        .await
+        .await?
     }
+
+    /// Publish the span of an entry whose journal record committed with its
+    /// publication. The same I/O gate has been held since it was prepared.
+    pub(crate) fn install_local_append(&self, prepared: PreparedLocalAppend) -> Result<()> {
+        let mut retained = self
+            .retained
+            .lock()
+            .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
+        ensure!(
+            *retained == prepared.previous,
+            "raft retained span changed during a standalone append"
+        );
+        *retained = Some(prepared.next);
+        Ok(())
+    }
+}
+
+type EntryWrites = (Option<WriteOp>, Vec<WriteOp>);
+
+fn committed_write(id: LogId<u64>) -> Result<WriteOp> {
+    Ok(put(META, b"committed", serde_json::to_vec(&Some(id))?))
+}
+
+// Under the I/O and control gates, before any of the entries' writes.
+fn check_append(
+    store: &TenantStore,
+    domains: &crate::domains::Domains,
+    entries: &[Entry<TypeConfig>],
+    commit_local: bool,
+) -> Result<()> {
+    // OpenRaft may repopulate physical logs beneath a snapshot.
+    // That does not change the separately committed snapshot. Only
+    // an exact accepted retirement identity is immutable here.
+    if let Some(boundary) = crate::control::retired_boundary(domains.custody())? {
+        for entry in entries {
+            if entry.log_id.index > boundary.position.log_id.index
+                && let EntryPayload::Normal(command) = &entry.payload
+            {
+                ensure!(
+                    command.custody_command()?.is_some(),
+                    "application log entry after permanent retirement"
+                );
+            }
+        }
+        for entry in entries
+            .iter()
+            .filter(|entry| entry.log_id.index == boundary.position.log_id.index)
+        {
+            let retained: RetainedSeed = load(store, SEEDS, &entry.log_id.index.to_be_bytes())?
+                .context("accepted retirement seed absent")?;
+            retained.header.check_entry(entry, &encode_entry(entry)?)?;
+        }
+    }
+    if commit_local {
+        let previous = load::<Option<LogId<u64>>>(store, META, b"committed")?.flatten();
+        ensure!(
+            Some(entries[0].log_id) > previous,
+            "local committed cursor must advance"
+        );
+    }
+    Ok(())
+}
+
+/// One standalone entry's journal record, prepared for its publication to
+/// commit, with the log's I/O gate held until it is installed or dropped.
+pub(crate) struct PreparedLocalAppend {
+    pub(crate) application: Vec<WriteOp>,
+    pub(crate) custody: Vec<WriteOp>,
+    next: RetainedSpan,
+    previous: Option<RetainedSpan>,
+    _gate: tokio::sync::OwnedMutexGuard<()>,
 }
 
 impl RaftLogStorage<TypeConfig> for LogStore {
@@ -1706,6 +1804,224 @@ impl crate::local::LocalSnapshotBuilder for SnapshotBuilder {
     }
 }
 
+/// What became of one entry inside the serialized apply worker.
+pub(crate) enum EntryApplied {
+    Applied(Vec<u8>),
+    /// Its publication, carrying its journal record, was refused for capacity
+    /// with no effect: the entry is neither journaled nor applied.
+    Refused,
+}
+
+impl StateMachine {
+    // The apply worker's serialization, fence and failure custody, around
+    // `work` over the applied state. `work` returns its retained failure
+    // owner instead of an error once a publication has failed.
+    async fn apply_serialized<T: Send + 'static>(
+        &self,
+        work: impl FnOnce(
+            &StateMachine,
+            &mut AppliedState,
+        )
+            -> Result<std::result::Result<T, crate::apply_failure::RetainedApplyFailure>>
+        + Send
+        + 'static,
+    ) -> Result<T, StorageError<u64>> {
+        let machine = self.clone();
+        tokio::task::spawn_blocking(move || -> std::result::Result<T, ApplyWorkerError> {
+            // Recheck the terminal fence only after serialization. A queued
+            // worker must not create a second independent failure owner.
+            let (mut state, poisoned) = match machine.state.lock() {
+                Ok(state) => (state, false),
+                Err(poisoned) => (poisoned.into_inner(), true),
+            };
+            if let Some(failure) = machine.snapshot_buffers.apply_failure() {
+                return Err(ApplyWorkerError::Retained(failure));
+            }
+            if machine.failed() {
+                return Err(ApplyWorkerError::Fenced);
+            }
+            let failure = StorageWorkFailure::new(machine.failure_flag());
+            let outcome = (|| {
+                ensure!(!poisoned, "state machine lock poisoned");
+                machine.snapshot_buffers.check()?;
+                machine.domains.check_access()?;
+                work(&machine, &mut state)
+            })();
+            match outcome {
+                Ok(Err(retained)) => {
+                    machine.failed.store(true, Ordering::Release);
+                    Err(ApplyWorkerError::Retained(retained))
+                }
+                Ok(Ok(output)) => {
+                    failure.complete();
+                    Ok(output)
+                }
+                Err(error) => {
+                    machine.failed.store(true, Ordering::Release);
+                    Err(ApplyWorkerError::Retained(
+                        machine.snapshot_buffers.retain_apply_failure(error),
+                    ))
+                }
+            }
+        })
+        .await
+        .map_err(|error| self.storage_failure(error))?
+        .map_err(|error| self.storage_failure(error))
+    }
+
+    /// Apply one standalone application entry whose journal record, `journal`,
+    /// is committed by the entry's own publication in the same transaction.
+    /// `Refused` means capacity refused that publication before either took
+    /// effect: the applied state, its position and this machine are unchanged
+    /// and serving goes on. Any other failure fences, as `apply`'s does; the
+    /// entry is then durable in both its record and its effects, or in
+    /// neither, unless another write of this apply committed the record first.
+    pub(crate) async fn apply_joined(
+        &mut self,
+        entry: Entry<TypeConfig>,
+        application: Vec<WriteOp>,
+        custody: Vec<WriteOp>,
+    ) -> Result<EntryApplied, StorageError<u64>> {
+        let gate = self.control_gate.clone();
+        self.apply_serialized(move |machine, state| {
+            ensure!(
+                matches!(
+                    &entry.payload,
+                    EntryPayload::Normal(crate::RaftCommand::Application(_))
+                ),
+                "only an application entry joins its journal record"
+            );
+            let deferred = kasumi_store::TenantStorageSet::defer_batch(
+                machine.domains.clone(),
+                application,
+                custody,
+                gate,
+            )?;
+            let outcome = apply_entry(machine, state, entry, Some(&deferred))?;
+            if matches!(outcome, Ok(EntryApplied::Refused)) {
+                ensure!(
+                    deferred.state() == kasumi_store::DeferredState::Carried,
+                    "a refused publication did not carry its journal record"
+                );
+            }
+            Ok(outcome)
+        })
+        .await
+    }
+}
+
+// One entry, on the serialized apply worker. `journal` is the entry's
+// deferred journal record when its publication carries it.
+fn apply_entry(
+    machine: &StateMachine,
+    state: &mut AppliedState,
+    entry: Entry<TypeConfig>,
+    journal: Option<&kasumi_store::DeferredBatch>,
+) -> Result<std::result::Result<EntryApplied, crate::apply_failure::RetainedApplyFailure>> {
+    machine.domains.check_access()?;
+    let (command_sha256, retirement_seed) = match &entry.payload {
+        EntryPayload::Normal(command) => (sha256(command.bytes()), command.seed()?),
+        _ => (sha256(&encode_entry(&entry)?), None),
+    };
+    let membership = match &entry.payload {
+        EntryPayload::Membership(membership) => {
+            StoredMembership::new(Some(entry.log_id), membership.clone())
+        }
+        _ => state.membership.clone(),
+    };
+    let position = AppliedEntryContext {
+        log_id: entry.log_id,
+        previous: state.log_id,
+        membership,
+        command_sha256,
+        retirement_seed,
+    };
+    let input = match &entry.payload {
+        EntryPayload::Normal(command) => {
+            if let Some(closed) = command.custody_command()? {
+                ensure!(
+                    journal.is_none(),
+                    "a custody command does not join its journal record"
+                );
+                let _control = machine
+                    .control_gate
+                    .lock()
+                    .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                let data =
+                    crate::control::apply_custody(machine.domains.custody(), &position, &closed)?;
+                state.log_id = Some(entry.log_id);
+                return Ok(Ok(EntryApplied::Applied(data)));
+            }
+            crate::AppliedInput::Command(command.bytes())
+        }
+        _ => crate::AppliedInput::Metadata,
+    };
+    let metadata = matches!(input, crate::AppliedInput::Metadata);
+    let retired_metadata =
+        metadata && crate::control::retired_boundary(machine.domains.custody())?.is_some();
+    let sink = crate::apply_publication::EntryPublicationSink::new(
+        &machine.domains,
+        &position,
+        Some(&machine.control_gate),
+        metadata,
+    );
+    let mut sink = match journal {
+        Some(journal) => sink.carrying(journal),
+        None => sink,
+    };
+    // Keep the publisher and its original failure outside the
+    // catcher. A backend may panic after a failed callback.
+    let input_retention = match &entry.payload {
+        EntryPayload::Normal(crate::RaftCommand::Application(input)) => {
+            input.input_loan(entry.log_id)?
+        }
+        _ => None,
+    };
+    let mut publication = crate::apply_publication::ApplyPublication::new_bound(
+        &mut sink,
+        machine.snapshot_buffers.apply_slot(),
+    );
+    publication.retain_input(input_retention.as_ref());
+    let backend = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        if retired_metadata {
+            crate::ApplyPublisher::commit(
+                &mut publication,
+                crate::AppliedResponse::application(Vec::new()),
+                &[],
+            )
+            .map_err(anyhow::Error::from)?;
+            Ok(())
+        } else {
+            machine
+                .backend
+                .apply_with_publisher(&position, input, &mut publication)
+        }
+    }));
+    let finished = match publication.finish_observed(backend, || {}) {
+        Ok(finished) => finished,
+        Err(crate::apply_publication::FinishFailure::Single(error)) => return Err(error),
+        Err(crate::apply_publication::FinishFailure::Retained(failure)) => {
+            return Ok(Err(failure));
+        }
+        // Neither the entry nor its record took effect; the position and
+        // membership stay where they were.
+        Err(crate::apply_publication::FinishFailure::Refused) => {
+            return Ok(Ok(EntryApplied::Refused));
+        }
+    };
+    let crate::apply_publication::FinishedPublication {
+        response,
+        acknowledgment,
+    } = finished;
+    // Backend preparation/guard has been released only after
+    // successful joint publication. Failed metadata cannot
+    // advance either this membership or its cursor.
+    state.membership = position.membership;
+    state.log_id = Some(entry.log_id);
+    crate::apply_publication::acknowledge_publication(acknowledgment);
+    Ok(Ok(EntryApplied::Applied(response.data)))
+}
+
 impl RaftStateMachine<TypeConfig> for StateMachine {
     type SnapshotBuilder = SnapshotBuilder;
 
@@ -1732,140 +2048,21 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
         I::IntoIter: OptionalSend,
     {
         let entries = entries.into_iter().collect::<Vec<_>>();
-        let machine = self.clone();
-        tokio::task::spawn_blocking(
-            move || -> std::result::Result<Vec<Vec<u8>>, ApplyWorkerError> {
-                // Recheck the terminal fence only after serialization. A queued
-                // worker must not create a second independent failure owner.
-                let (mut state, poisoned) = match machine.state.lock() {
-                    Ok(state) => (state, false),
-                    Err(poisoned) => (poisoned.into_inner(), true),
-                };
-                if let Some(failure) = machine.snapshot_buffers.apply_failure() {
-                    return Err(ApplyWorkerError::Retained(failure));
-                }
-                if machine.failed() {
-                    return Err(ApplyWorkerError::Fenced);
-                }
-                let failure = StorageWorkFailure::new(machine.failure_flag());
-                let outcome = (|| -> Result<std::result::Result<Vec<Vec<u8>>,crate::apply_failure::RetainedApplyFailure>> {
-                    ensure!(!poisoned, "state machine lock poisoned");
-                    machine.snapshot_buffers.check()?;
-                    machine.domains.check_access()?;
-                    let mut responses = Vec::with_capacity(entries.len());
-                    for entry in entries {
-                        machine.domains.check_access()?;
-                        let (command_sha256, retirement_seed) = match &entry.payload {
-                            EntryPayload::Normal(command) => {
-                                (sha256(command.bytes()), command.seed()?)
-                            }
-                            _ => (sha256(&encode_entry(&entry)?), None),
-                        };
-                        let membership = match &entry.payload {
-                            EntryPayload::Membership(membership) => {
-                                StoredMembership::new(Some(entry.log_id), membership.clone())
-                            }
-                            _ => state.membership.clone(),
-                        };
-                        let position = AppliedEntryContext {
-                            log_id: entry.log_id,
-                            previous: state.log_id,
-                            membership,
-                            command_sha256,
-                            retirement_seed,
-                        };
-                        let input = match &entry.payload {
-                            EntryPayload::Normal(command) => {
-                                if let Some(closed) = command.custody_command()? {
-                                    let _control = machine.control_gate.lock().map_err(|_| {
-                                        anyhow::anyhow!("control publication lock poisoned")
-                                    })?;
-                                    let data = crate::control::apply_custody(
-                                        machine.domains.custody(),
-                                        &position,
-                                        &closed,
-                                    )?;
-                                    state.log_id = Some(entry.log_id);
-                                    responses.push(data);
-                                    continue;
-                                }
-                                crate::AppliedInput::Command(command.bytes())
-                            }
-                            _ => crate::AppliedInput::Metadata,
-                        };
-                        let metadata = matches!(input, crate::AppliedInput::Metadata);
-                        let retired_metadata = metadata
-                            && crate::control::retired_boundary(machine.domains.custody())?
-                                .is_some();
-                        let mut sink = crate::apply_publication::EntryPublicationSink::new(
-                            &machine.domains,
-                            &position,
-                            Some(&machine.control_gate),
-                            metadata,
-                        );
-                        // Keep the publisher and its original failure outside the
-                        // catcher. A backend may panic after a failed callback.
-                        let input_retention = match &entry.payload {
-                            EntryPayload::Normal(crate::RaftCommand::Application(input)) =>
-                                input.input_loan(entry.log_id)?,
-                            _ => None,
-                        };
-                        let mut publication =
-                            crate::apply_publication::ApplyPublication::new_bound(
-                                &mut sink, machine.snapshot_buffers.apply_slot(),
-                            );
-                        publication.retain_input(input_retention.as_ref());
-                        let backend =
-                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                if retired_metadata {
-                                    crate::ApplyPublisher::commit(
-                                        &mut publication,
-                                        crate::AppliedResponse::application(Vec::new()),
-                                        &[],
-                                    ).map_err(anyhow::Error::from)?;
-                                    Ok(())
-                                } else {
-                                    machine.backend.apply_with_publisher(
-                                        &position,
-                                        input,
-                                        &mut publication,
-                                    )
-                                }
-                            }));
-                        let finished=match publication.finish_observed(backend,||{}) {
-                            Ok(finished)=>finished,
-                            Err(crate::apply_publication::FinishFailure::Single(error))=>return Err(error),
-                            Err(crate::apply_publication::FinishFailure::Retained(failure))=>return Ok(Err(failure)),
-                        };
-                        let crate::apply_publication::FinishedPublication{response,acknowledgment}=finished;
-                        // Backend preparation/guard has been released only after
-                        // successful joint publication. Failed metadata cannot
-                        // advance either this membership or its cursor.
-                        state.membership = position.membership;
-                        state.log_id = Some(entry.log_id);
-                        responses.push(response.data);
-                        crate::apply_publication::acknowledge_publication(acknowledgment);
+        self.apply_serialized(move |machine, state| {
+            let mut responses = Vec::with_capacity(entries.len());
+            for entry in entries {
+                match apply_entry(machine, state, entry, None)? {
+                    Ok(EntryApplied::Applied(data)) => responses.push(data),
+                    // Only a publication carrying a journal record is refused.
+                    Ok(EntryApplied::Refused) => {
+                        anyhow::bail!("publication without a journal record was refused")
                     }
-                    Ok(Ok(responses))
-                })();
-                match outcome {
-                    Ok(Err(retained))=>{machine.failed.store(true,Ordering::Release);Err(ApplyWorkerError::Retained(retained))},
-                    Ok(Ok(responses)) => {
-                        failure.complete();
-                        Ok(responses)
-                    }
-                    Err(error) => {
-                        machine.failed.store(true, Ordering::Release);
-                        Err(ApplyWorkerError::Retained(
-                            machine.snapshot_buffers.retain_apply_failure(error),
-                        ))
-                    }
+                    Err(retained) => return Ok(Err(retained)),
                 }
-            },
-        )
+            }
+            Ok(Ok(responses))
+        })
         .await
-        .map_err(|error| self.storage_failure(error))?
-        .map_err(|error| self.storage_failure(error))
     }
 
     async fn get_snapshot_builder(&mut self) -> Self::SnapshotBuilder {

@@ -58,6 +58,7 @@ pub(crate) fn retained_apply_diagnostic(
                     ApplyObservationRef::NotEntered => text.push_str("not entered"),
                     ApplyObservationRef::Running => text.push_str("running"),
                     ApplyObservationRef::Returned => text.push_str("returned"),
+                    ApplyObservationRef::CapacityRefused => text.push_str("capacity refused"),
                     ApplyObservationRef::Error(error) => {
                         let _ = write!(&mut text, "original error: {error:#}");
                     }
