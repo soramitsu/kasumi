@@ -145,6 +145,59 @@ kasumid credential revoke /var/lib/kasumi/profiles/control.json FAMILY_UUID
 
 The specification contains `family_id`, `principal`, `tenant`, `resource`, `scopes`, and `lifetime_seconds` (1–3600, default 3600). Use a new UUID for `family_id`. Read the exact resource from the generated tenant profile. Scopes are `read`, `write`, `admin`, and `audit`; current database RBAC still determines effective access. Reusing a family UUID with different specifications is rejected. Revocation is permanent and fences already-running requests at their subsequent authorization or response-release checks. Revoking the credential used for the operation can suppress its own acknowledgement; another Control credential can inspect the durable result.
 
+# Snapshot archive form
+
+A standalone tenant's periodic snapshot (every 5,000 journal entries) stores its
+logical state and refers to the audit archive chain that state depends on. Two
+forms exist:
+
+| Form | Written by | Read by | Archive chain |
+|---|---|---|---|
+| `KASUMIL1` (by reference) | `serve` by default | this release and later, when the tenant reopens its own snapshot | verified in place in `tenant-audit-archives/` |
+| `KASUMID1` (embedded) | `serve --local-snapshot-archive embedded`, and every earlier release | every release | copied into each snapshot |
+
+```sh
+kasumid serve /var/lib/kasumi/kasumi.json [--local-snapshot-archive reference|embedded] [--storage-compaction-growth-percent 101-200]
+```
+
+Options may come in any order. `serve` logs the form it stores in its
+`serve_options` event. Every other `kasumid` command (maintenance rotations,
+credential and administrator recovery, local recovery, tenant staging, the
+audit-cache move) keeps each tenant's stored form: it converts nothing in
+either direction, so it is safe at any point below.
+
+With `KASUMIL1` the tenant archive cache, `tenant-audit-archives/` under the
+persistent directory (or the configured `tenant_audit_cache`), is part of what
+a reopen needs. Never delete or move files there by hand; use
+`kasumid maintenance move-tenant-audit-cache`. A missing or corrupt segment
+makes that tenant's reopen fail closed, rewriting nothing, until the segment is
+restored from the tenant's external archive destination or a copy of the
+persistent directory.
+
+For a deliberate two-step rollout, first install this release with
+`--local-snapshot-archive embedded`: stored snapshots stay `KASUMID1` and going
+back is a plain binary swap. Then drop the option, and each tenant's next
+snapshot is `KASUMIL1`.
+
+To roll back to a release that cannot read `KASUMIL1`:
+
+1. Start `serve` once with `--local-snapshot-archive embedded`. Each tenant that
+   reopens from a `KASUMIL1` snapshot appends one Blank entry (its revision
+   advances by one) and durably publishes a `KASUMID1` snapshot before it
+   serves, logging `embedded_snapshot_replaced_reference`. This needs free disk
+   for one embedded snapshot per such tenant and runs outside the bootstrap
+   gate, so other tenants open meanwhile. If capacity refuses it, the tenant
+   serves on its `KASUMIL1` snapshot and logs `embedded_snapshot_not_published`.
+2. Wait until every tenant serves and has logged the conversion, with no
+   `embedded_snapshot_not_published`. Only then stop and install the older
+   release.
+
+A release that cannot read `KASUMIL1` refuses such a tenant at open
+(`unsupported tenant snapshot bundle format`) and rewrites nothing: reinstall
+this release and repeat step 1. A crash during the conversion leaves the
+`KASUMIL1` snapshot current until the `KASUMID1` one is published, and this
+release reopens either.
+
 # Operator maintenance
 
 Stop the standalone server and drain clients before the following commands. They require exclusive installation and database ownership and record their operations in encrypted security storage:

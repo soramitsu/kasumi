@@ -104,6 +104,20 @@ digest; missing dependencies, extra records and logical-only transport are
 rejected. The aggregate Raft disk quota must cover the logical image, retained
 audit ciphertext and framing.
 
+A standalone (`local-v1`) group's own snapshot is `KASUMIL1` when its process
+stores the archive by reference, which `kasumid serve` does by default (see
+[standalone](standalone.md#snapshot-archive-form)). It has the same header,
+logical frames and terminator, then the final record directly: no archive
+record. The chain its logical state names stays in this node's tenant archive
+cache, which never deletes a segment, and both the write and every reopen
+verify that exact chain there. Only the group that stored it reads it, when it
+reopens its own stored snapshot. A Raft install, `validate_snapshot` and the
+public restore API refuse it, a replicated group never captures it, and the
+public snapshot API and full backups still write `KASUMID1`. Releases before it
+refuse the magic (`unsupported tenant snapshot bundle format`) and rewrite
+nothing. Re-embedding the chain in every periodic snapshot copied one tenant's
+whole 7.7 GB archive into node.kv each time (2026-11-04).
+
 Capture retains only immutable generation and storage handles. Materialization
 reads one local archive at a time and verifies its original source purpose,
 restore lineage, wrapping-key dependency and AEAD. The receiver applies the same
