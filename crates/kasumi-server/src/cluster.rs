@@ -601,6 +601,18 @@ async fn bound_request(
     request: Request<axum::body::Body>,
     next: Next,
 ) -> Response {
+    // Every handler refuses a certificate that belongs to no installed peer.
+    // Refuse it here, before the node buffers and parses up to
+    // `max_rpc_bytes` of a body that any other certificate from the
+    // installation CA could send.
+    let installed_peer = request
+        .extensions()
+        .get::<AuthenticatedTlsPeer>()
+        .and_then(AuthenticatedTlsPeer::certificate_pin)
+        .is_some_and(|pin| network.certificate_nodes.contains_key(&pin));
+    if !installed_peer {
+        return network.denied(None, "").await;
+    }
     let Ok(_permit) = network.incoming.clone().try_acquire_owned() else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };

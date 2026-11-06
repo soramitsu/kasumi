@@ -234,6 +234,8 @@ pub struct AuthorityRuntime {
     native_tls: kasumi_transport::ReloadableServerConfig,
     tls_reload: crate::tls_reload::RuntimeTlsReload,
     auth: Arc<Authenticator>,
+    /// Charges and bounds native request bodies, as on the data listeners.
+    admission: Arc<kasumi_engine::admission::NodeAdmission>,
 }
 impl AuthorityRuntime {
     pub fn tls_reload_handle(&self) -> crate::tls_reload::RuntimeTlsReload {
@@ -494,6 +496,7 @@ impl AuthorityRuntime {
                 cluster: Some(cluster),
                 native_tls,
                 auth,
+                admission,
             })
         })
         .await;
@@ -587,7 +590,16 @@ impl AuthorityRuntime {
                     .with_operational_signer_file(self.config.operational_signer_file.clone())
                     .service(),
             )
-            .into_axum_router();
+            .into_axum_router()
+            // Verify the bearer and admit the body before decoding, as on the
+            // data listeners, so a trickled body cannot hold a slot unbounded.
+            .layer(axum::middleware::from_fn_with_state(
+                crate::request_admission::RequestAdmission::native(
+                    self.admission.clone(),
+                    self.auth.clone(),
+                ),
+                crate::request_admission::admit,
+            ));
             tasks.spawn_listener(tls::serve_tls(
                 self.native.take().expect("native listener starts once"),
                 self.native_tls.clone(),

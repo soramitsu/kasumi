@@ -123,11 +123,18 @@ it is higher wherever a listener is reachable from a network.
      `kasumi_service_audit_archive_budget_bytes`, or when
      `kasumi_service_audit_hot_bytes` stays above 75% of
      `kasumi_service_audit_hot_budget_bytes` (archives are not draining).
-3. **Connection slots can be held during TLS handshakes (medium).** Each
-   listener admits 128 connections and holds a slot through a 5 s handshake
-   timeout and its audit write, with no per-source cap
-   (`kasumi-server/src/tls.rs`, `ListenerLimits`). Recommended: a separate,
-   shorter pre-handshake budget and per-source limits.
+3. **Fixed: one address could hold every connection slot during TLS
+   handshakes (was medium).** Each listener admits 128 connections and holds
+   a slot through a handshake of up to 5 s and its audit write
+   (`kasumi-server/src/tls.rs`, `ListenerLimits`), so one address that
+   opened connections and never finished their handshakes could hold every
+   slot. Since this change one remote address may have at most 16 handshakes
+   in progress (`max_handshakes_per_source`); a further connection from it
+   is closed before it takes a slot, and a finished or failed handshake
+   frees its claim at once. Loopback clients are exempt. Covered by
+   `tls::lifecycle_tests::one_address_cannot_hold_more_than_its_handshakes`.
+   What remains: many addresses together can still fill the slots, and the
+   handshake timeout is not shorter than before.
 4. **Bearer tokens are not bound to a client certificate (medium-low).** All
    listeners share one audience, and MCP requires no client certificate, so a
    token copied from a native client works on MCP. Recommended: a distinct
@@ -149,11 +156,14 @@ it is higher wherever a listener is reachable from a network.
    symlink; the checks apply to the file actually opened. Covered by
    `private_files::tests::trusted_files_may_be_shared_for_reading_but_not_for_writing`.
 
-Two lower-severity items affect replicated deployments only. The Raft peer
-listener buffers and parses a request body of up to 40 MiB before mapping the
-peer certificate to a node (`kasumi-server/src/cluster.rs`), and that memory
-is not charged to node admission. The `kasumi-authority` native listener has
-no request admission, so a slowly trickled body can hold a connection slot
-(`kasumi-server/src/authority_runtime.rs`). Recommended: check the peer pin
-before reading the body, and wrap the authority listener in
-`RequestAdmission::native`.
+Two lower-severity items affected replicated deployments only, and both are
+fixed. The Raft peer listener buffered and parsed a request body of up to 40
+MiB before mapping the peer certificate to a node
+(`kasumi-server/src/cluster.rs`); it now refuses a certificate that no
+installed peer uses before reading any of the body
+(`maintenance_tests::peer_listener_refuses_an_uninstalled_certificate_before_reading_its_body`).
+The `kasumi-authority` native listener had no request admission, so a slowly
+trickled body could hold a connection slot
+(`kasumi-server/src/authority_runtime.rs`); it now verifies the bearer and
+admits the body before decoding, through the same `RequestAdmission::native`
+as the data listeners.

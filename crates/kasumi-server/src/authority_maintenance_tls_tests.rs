@@ -392,3 +392,80 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         node.shutdown().await.unwrap();
     }
 }
+
+/// A body that records whether it was polled and never finishes.
+struct StalledBody(Arc<std::sync::atomic::AtomicBool>);
+impl hyper::body::Body for StalledBody {
+    type Data = axum::body::Bytes;
+    type Error = std::convert::Infallible;
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<std::result::Result<hyper::body::Frame<Self::Data>, Self::Error>>>
+    {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+        std::task::Poll::Pending
+    }
+}
+
+#[tokio::test]
+async fn peer_listener_refuses_an_uninstalled_certificate_before_reading_its_body() {
+    use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
+    use tower::ServiceExt;
+    let (ca, identities) = certificates();
+    let network = ClusterNetwork::new(
+        1,
+        &identities[0],
+        ca.as_bytes(),
+        (0..2)
+            .map(|index| PeerConfig {
+                node_id: index as u64 + 1,
+                endpoint: "https://localhost:1".into(),
+                certificate_pins: BTreeSet::from([identities[index].certificate_pin()]),
+            })
+            .collect(),
+        PeerLimits::default(),
+    )
+    .unwrap();
+    network.install_audit(Arc::new(TestAudit)).unwrap();
+    let polled = Arc::new(AtomicBool::new(false));
+    let request = |pin| {
+        let mut request = Request::builder()
+            .method("POST")
+            .uri(RPC_PATH)
+            .header("content-type", "application/json")
+            .body(axum::body::Body::new(StalledBody(polled.clone())))
+            .unwrap();
+        request
+            .extensions_mut()
+            .insert(AuthenticatedTlsPeer::for_test(pin));
+        request
+    };
+    // No client certificate, and a certificate from the same CA that no
+    // installed peer uses: refused without reading any of the body.
+    for uninstalled in [None, Some(identities[2].certificate_pin())] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(10),
+            network.router().oneshot(request(uninstalled)),
+        )
+        .await
+        .expect("an uninstalled certificate waited for its body")
+        .unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        assert!(!polled.load(SeqCst));
+    }
+    // An installed peer's request goes on to read its body.
+    let installed = tokio::spawn(
+        network
+            .router()
+            .oneshot(request(Some(identities[1].certificate_pin()))),
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while !polled.load(SeqCst) {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("an installed peer's body was never read");
+    installed.abort();
+}

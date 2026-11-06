@@ -10,7 +10,7 @@ use hyper_util::{
 use kasumi_transport::{CertificatePin, certificate_digest};
 #[cfg(test)]
 use kasumi_transport::{ClientAuthentication, TlsIdentity, server_config};
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{collections::HashMap, future::Future, net::IpAddr, sync::Arc, time::Duration};
 use tokio::{
     net::TcpListener,
     sync::{Semaphore, watch},
@@ -25,6 +25,11 @@ pub struct AuthenticatedTlsPeer {
 }
 
 impl AuthenticatedTlsPeer {
+    #[cfg(test)]
+    pub(crate) fn for_test(certificate_pin: Option<CertificatePin>) -> Self {
+        Self { certificate_pin }
+    }
+
     pub fn certificate_pin(&self) -> Option<CertificatePin> {
         self.certificate_pin
     }
@@ -40,6 +45,53 @@ pub struct ListenerLimits {
     /// its first request, is closed gracefully. A silent or vanished peer would
     /// otherwise hold one of `max_connections` forever.
     pub idle_timeout: Duration,
+    /// TLS handshakes one remote address may have in progress at once. Each
+    /// holds one of `max_connections` for up to `handshake_timeout`, so
+    /// without this cap one address that never finishes its handshakes could
+    /// hold every slot. Loopback clients are exempt unless
+    /// `limit_loopback_handshakes` is set.
+    pub max_handshakes_per_source: usize,
+    pub limit_loopback_handshakes: bool,
+}
+
+/// Handshakes in progress per remote address, on one listener.
+type Handshaking = Arc<std::sync::Mutex<HashMap<IpAddr, usize>>>;
+
+/// One remote address's TLS handshake in progress; dropping it ends the claim.
+struct HandshakeClaim(Option<(Handshaking, IpAddr)>);
+impl HandshakeClaim {
+    /// None when `source` already has its limit of handshakes in progress.
+    fn new(handshaking: &Handshaking, source: IpAddr, limits: &ListenerLimits) -> Option<Self> {
+        let source = source.to_canonical();
+        if source.is_loopback() && !limits.limit_loopback_handshakes {
+            return Some(Self(None));
+        }
+        let mut counts = handshaking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let count = counts.entry(source).or_insert(0);
+        if *count >= limits.max_handshakes_per_source {
+            return None;
+        }
+        *count += 1;
+        Some(Self(Some((handshaking.clone(), source))))
+    }
+}
+impl Drop for HandshakeClaim {
+    fn drop(&mut self) {
+        let Some((handshaking, source)) = self.0.take() else {
+            return;
+        };
+        let mut counts = handshaking
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(count) = counts.get_mut(&source) {
+            *count -= 1;
+            if *count == 0 {
+                counts.remove(&source);
+            }
+        }
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
@@ -103,6 +155,8 @@ impl Default for ListenerLimits {
             handshake_timeout: Duration::from_secs(5),
             drain_timeout: Duration::from_secs(10),
             idle_timeout: Duration::from_secs(60),
+            max_handshakes_per_source: 16,
+            limit_loopback_handshakes: false,
         }
     }
 }
@@ -231,6 +285,7 @@ async fn serve_tls_source(
             && !limits.handshake_timeout.is_zero()
             && !limits.drain_timeout.is_zero()
             && !limits.idle_timeout.is_zero()
+            && limits.max_handshakes_per_source > 0
             && limits
                 .max_connections
                 .checked_mul(limits.max_http2_streams as usize)
@@ -243,6 +298,7 @@ async fn serve_tls_source(
     // Bumped when a connection is refused for want of a slot, so idle
     // connections close at once and a retry finds room.
     let (pressure, pressure_signal) = watch::channel(0u64);
+    let handshaking = Arc::new(std::sync::Mutex::new(HashMap::new()));
     let tasks = inventory.connections.clone();
     let connection_shutdown = inventory.stop.subscribe();
     let mut task_failure = tasks.failure();
@@ -264,6 +320,12 @@ async fn serve_tls_source(
                 let (socket, address) = match connection {
                     Ok(connection) => connection,
                     Err(error) => { outcome = Err(error.into()); break; },
+                };
+                // Refused before it takes a slot: this address already has
+                // its limit of handshakes in progress.
+                let Some(handshake) = HandshakeClaim::new(&handshaking, address.ip(), &limits) else {
+                    drop(socket);
+                    continue;
                 };
                 let Ok(permit) = connections.clone().try_acquire_owned() else {
                     drop(socket);
@@ -287,10 +349,14 @@ async fn serve_tls_source(
                     // and audits that connection; it must not stop the listener.
                     if configure_socket(&socket).is_err() {
                         drop(socket);
+                        drop(handshake);
                         let _ = audit_handshake(audit.as_ref(), address, None, TlsHandshakeOutcome::Rejected, limits.handshake_timeout).await;
                         return;
                     }
-                    let stream = match tokio::time::timeout(limits.handshake_timeout, acceptor.accept(socket)).await {
+                    let accepted = tokio::time::timeout(limits.handshake_timeout, acceptor.accept(socket)).await;
+                    // The handshake is over, finished or not, before any audit write.
+                    drop(handshake);
+                    let stream = match accepted {
                         Ok(Ok(stream)) => stream,
                         outcome => {
                             let outcome = if outcome.is_err() { TlsHandshakeOutcome::TimedOut } else { TlsHandshakeOutcome::Rejected };
@@ -823,6 +889,98 @@ mod lifecycle_tests {
             assert!(matches!(closed, Ok(0) | Err(_)));
             let response = client.post(&url).send().await.unwrap();
             assert_eq!(response.text().await.unwrap(), "served");
+            stop.send_replace(true);
+            tokio::time::timeout(Duration::from_secs(10), server)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn one_address_cannot_hold_more_than_its_handshakes() {
+        use tokio::io::AsyncReadExt;
+
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let identity = TlsIdentity::from_pem(
+            cert.pem().as_bytes(),
+            signing_key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        // Loopback is exempt by default; `limited` applies the cap to it as it
+        // applies to every remote address.
+        for limited in [true, false] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let (events, _records) = tokio::sync::mpsc::unbounded_channel();
+            let (stop, shutdown) = watch::channel(false);
+            let server = tokio::spawn(serve_tls_source(
+                listener,
+                server_config(&identity, ClientAuthentication::OAuth).unwrap(),
+                Router::new().route("/request", post(|| async { "served" })),
+                Arc::new(RecordingAudit(events)),
+                shutdown,
+                |socket| socket.set_nodelay(true),
+                Arc::new(ListenerInventory::new(ListenerLimits {
+                    max_connections: 8,
+                    handshake_timeout: Duration::from_secs(60),
+                    max_handshakes_per_source: 2,
+                    limit_loopback_handshakes: limited,
+                    ..ListenerLimits::default()
+                })),
+            ));
+            // Connections that never send a ClientHello hold their handshakes.
+            let mut stalled = Vec::new();
+            for _ in 0..2 {
+                stalled.push(tokio::net::TcpStream::connect(address).await.unwrap());
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+            let client = reqwest::Client::builder()
+                .no_proxy()
+                .http1_only()
+                .add_root_certificate(
+                    reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap(),
+                )
+                .timeout(Duration::from_secs(10))
+                .build()
+                .unwrap();
+            let url = format!("https://localhost:{}/request", address.port());
+            let mut third = tokio::net::TcpStream::connect(address).await.unwrap();
+            if limited {
+                // A third handshake from the address is closed at once, without
+                // a slot, and so is a real client's.
+                let closed = tokio::time::timeout(Duration::from_secs(10), third.read(&mut [0; 1]))
+                    .await
+                    .expect("the listener closes a handshake over the address's limit");
+                assert!(matches!(closed, Ok(0) | Err(_)));
+                assert!(client.post(&url).send().await.is_err());
+                // Ending one stalled handshake makes room for the client.
+                drop(stalled.pop());
+                let response = tokio::time::timeout(Duration::from_secs(10), async {
+                    loop {
+                        if let Ok(response) = client.post(&url).send().await {
+                            break response;
+                        }
+                        tokio::time::sleep(Duration::from_millis(20)).await;
+                    }
+                })
+                .await
+                .expect("a finished handshake releases its claim");
+                assert_eq!(response.text().await.unwrap(), "served");
+            } else {
+                let response = client.post(&url).send().await.unwrap();
+                assert_eq!(response.text().await.unwrap(), "served");
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(300), third.read(&mut [0; 1]))
+                        .await
+                        .is_err(),
+                    "an exempt loopback handshake is not closed"
+                );
+            }
+            drop(third);
+            drop(stalled);
             stop.send_replace(true);
             tokio::time::timeout(Duration::from_secs(10), server)
                 .await
