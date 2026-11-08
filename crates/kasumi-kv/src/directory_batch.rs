@@ -22,6 +22,25 @@ impl DirectoryMutator<'_> {
         generation: u64,
         edits: &[DirectoryEdit<'_>],
     ) -> Result<Option<(DirectoryRoot, usize)>, CoreError> {
+        self.validate_edit_batch(root, generation, edits)?;
+        let editor = Editor {
+            backend: self.backend,
+            admission: self.admission,
+        };
+        let (input, output) = self.buffers.split_at_mut(DIRECTORY_PAGE_BYTES);
+        let mut output = PendingPage::borrowed(output);
+        let result = editor.merge_leaf_batch(root, generation, edits, input, &mut output);
+        if result.is_err() {
+            self.failed = true;
+        }
+        result
+    }
+    pub(super) fn validate_edit_batch(
+        &mut self,
+        root: DirectoryRoot,
+        generation: u64,
+        edits: &[DirectoryEdit<'_>],
+    ) -> Result<(), CoreError> {
         if self.failed {
             return Err(CoreError::new(crate::CoreErrorCause::OwnerFailed));
         }
@@ -59,18 +78,7 @@ impl DirectoryMutator<'_> {
         }
         // The caller owns the borrowed input array. Its prepared write owner
         // already admits the merge/path state, split carries and both pages.
-        self.require_mode(WriteMode::Edits)?;
-        let editor = Editor {
-            backend: self.backend,
-            admission: self.admission,
-        };
-        let (input, output) = self.buffers.split_at_mut(DIRECTORY_PAGE_BYTES);
-        let mut output = PendingPage::borrowed(output);
-        let result = editor.merge_leaf_batch(root, generation, edits, input, &mut output);
-        if result.is_err() {
-            self.failed = true;
-        }
-        result
+        self.require_mode(WriteMode::Edits)
     }
 }
 impl Editor<'_> {

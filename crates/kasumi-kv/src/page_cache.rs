@@ -409,8 +409,9 @@ impl<B: DirectoryBackend> DirectoryBackend for PrivateDirectoryBackend<'_, B> {
 /// that loads stay possible until the commit's publication marks them.
 ///
 /// Pages: a mutation proceeds in steps that each consume at least one
-/// operation and descend to one leaf before their first append. Only those
-/// descent reads are recorded, and only for pages below the mutation's
+/// operation. A step descends to one leaf, or preflights each changed sibling
+/// leaf of a height-two batch, before its first append. Only those descent
+/// reads are recorded, and only for pages below the mutation's
 /// append floor. The descent copies them unless the step changes nothing,
 /// in which case the step's record is dropped. A path holds one page per
 /// level of the selected tree, so `operations * height` pages bound the

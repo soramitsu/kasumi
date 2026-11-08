@@ -996,6 +996,23 @@ impl DiskState {
                         lock_record(record)?.record_value(identity);
                     }
                 }
+                if root.height == 2
+                    && count >= 2
+                    && edits[..count].iter().all(|edit| edit.value.is_some())
+                {
+                    if let Some(next) =
+                        mutator.try_set_branch_puts(root, generation, &edits[..count])?
+                    {
+                        end_step(true)?;
+                        root = next;
+                        index += count;
+                        continue;
+                    }
+                    // The branch preflight may have inspected an untouched
+                    // sibling. Discard those observations before recording the
+                    // ordinary single-path editor's actual superseded pages.
+                    end_step(false)?;
+                }
                 let mut applied = 0;
                 while applied < count {
                     begin_step()?;

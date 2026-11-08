@@ -808,3 +808,45 @@ fn append_and_sync_failures_poison_only_the_private_batch_and_preserve_old_root(
         }
     }
 }
+
+#[test]
+fn branch_puts_refuse_a_late_split_before_writing_and_fence_partial_appends() {
+    let backend = FaultPages::default();
+    let admission = Admission::new(256 << 10);
+    let model = long_model(6);
+    let root = build_model(&backend, &model);
+    assert_eq!(root.height, 2);
+    let keys = [long_key(10), long_key(13), long_key(16)];
+    let edits = keys.each_ref().map(|key| DirectoryEdit {
+        key: DirectoryKey::row("t", key),
+        value: Some(value(2, 90)),
+    });
+    let mut ws = DirectoryWriteWorkspace::for_edits(admission.clone()).unwrap();
+    let mut writer = DirectoryMutator::new(&backend, &mut ws).unwrap();
+    let before = backend.inner.pages.lock().unwrap().len();
+    // The first two puts replace rows in separate leaves. The final insert
+    // would overflow the second leaf after the first was found to fit.
+    assert!(
+        writer
+            .try_set_branch_puts(root, 2, &edits)
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(backend.inner.pages.lock().unwrap().len(), before);
+    backend.append.store(2, AtomicOrdering::Relaxed);
+    let error = writer
+        .try_set_branch_puts(root, 2, &edits[..2])
+        .unwrap_err();
+    assert!(matches!(
+        error.rejected_cause(),
+        Some(crate::CoreErrorCause::Io(_))
+    ));
+    assert_eq!(backend.inner.pages.lock().unwrap().len(), before + 1);
+    assert!(matches!(
+        writer.finish(root).unwrap_err().rejected_cause(),
+        Some(crate::CoreErrorCause::OwnerFailed)
+    ));
+    backend.append.store(0, AtomicOrdering::Relaxed);
+    drop(ws);
+    assert_directory_model(&backend, admission.clone(), root, &model);
+}

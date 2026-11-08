@@ -46,7 +46,9 @@ The serialized writer performs these durability steps:
 Operation records retain the caller's order. While building the private
 directory, the writer orders up to 16 distinct row edits together to copy each
 fitting leaf and its ancestors once. Interleaved row keys can therefore share
-pages. Repeated keys and table creation delimit runs. Sequential inserts that
+pages. For a two-level directory, distinct puts that fit across sibling
+leaves copy each affected leaf once and their shared root once. Repeated keys
+and table creation delimit runs. Sequential inserts that
 reach a leaf boundary publish the fitting prefix before splitting the leaf.
 
 Operation records may span segments; an individual value never does. Record

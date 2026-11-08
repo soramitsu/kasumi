@@ -8,6 +8,8 @@ use super::*;
 
 #[path = "directory_batch.rs"]
 mod batch;
+#[path = "directory_branch_puts.rs"]
+mod branch_puts;
 pub(crate) use batch::{DirectoryEdit, MAX_DIRECTORY_BATCH_EDITS};
 
 // A parent replaces one entry with at most two entries. Its payload can
@@ -449,7 +451,7 @@ impl Editor<'_> {
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
-        let reference = self.backend.append_page(input)?;
+        let reference = self.backend.append_digested_page(input, digest)?;
         self.admission
             .check_owner()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;

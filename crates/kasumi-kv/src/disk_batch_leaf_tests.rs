@@ -330,3 +330,65 @@ fn batch_runs_preserve_repeated_descending_and_create_table_operation_order() {
     drop((current, reopened));
     assert_eq!(admission.used.load(Ordering::Acquire), 0);
 }
+
+#[test]
+fn dispersed_puts_copy_each_leaf_and_the_shared_root_once() {
+    let reads = Reads::new(InMemoryGroup::new());
+    let admission = Admission::new(32 << 20);
+    let mut state = create(reads.clone(), admission.clone(), LARGE_CACHE);
+    let mut setup = vec![Operation::create_table("accounts")];
+    // Gaps allow inserts in front of an existing key that is also replaced.
+    for id in (0..256u32).step_by(2) {
+        setup.push(Operation::put("accounts", padded_key(id), [id as u8; 16]));
+    }
+    state.commit(&setup).unwrap();
+    let old = state.snapshot().unwrap();
+    assert_eq!(old.root().height, 2);
+    let changed = [197u32, 2, 113, 114, 56, 1, 198];
+    let operations: Vec<_> = changed
+        .iter()
+        .map(|&id| Operation::put("accounts", padded_key(id), id.to_be_bytes()))
+        .collect();
+    let before = state.arena.stats().unwrap();
+    state.commit(&operations).unwrap();
+    let after = state.arena.stats().unwrap();
+    let pages = after.pages_written - before.pages_written;
+    eprintln!("dispersed 7-put commit: {pages} directory pages");
+    assert_eq!(pages, 5);
+    assert_eq!(after.syncs - before.syncs, 1);
+    let current = state.snapshot().unwrap();
+    assert_eq!(current.root().entries, old.root().entries + 3);
+    for &id in &changed {
+        assert_eq!(
+            value(&mut state, &old, &padded_key(id)),
+            (id % 2 == 0).then(|| vec![id as u8; 16])
+        );
+        assert_eq!(
+            value(&mut state, &current, &padded_key(id)).unwrap(),
+            id.to_be_bytes()
+        );
+    }
+    let expected = current.root();
+    drop((old, current, state));
+    let mut reopened = DiskState::open(
+        Arc::new(reads.group.crash()),
+        admission.clone(),
+        GROUP,
+        LARGE_CACHE,
+    )
+    .unwrap();
+    let current = reopened.snapshot().unwrap();
+    assert_eq!(current.root(), expected);
+    for id in 0..256u32 {
+        let expected = if changed.contains(&id) {
+            Some(id.to_be_bytes().to_vec())
+        } else if id % 2 == 0 {
+            Some(vec![id as u8; 16])
+        } else {
+            None
+        };
+        assert_eq!(value(&mut reopened, &current, &padded_key(id)), expected);
+    }
+    drop((current, reopened));
+    assert_eq!(admission.used.load(Ordering::Acquire), 0);
+}
