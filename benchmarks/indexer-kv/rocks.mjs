@@ -115,8 +115,10 @@ if (writer) {
   const latest = rows.filter(row => row.key.subarray(0, lower.length).equals(lower)).reverse().slice(0, 24);
   if (latest.length) {
     const digest = createHash('sha256');
+    const samples = [];
     started = now();
-    for (let round = 0; round < 16; ++round) {
+    for (let round = 0; round < 64; ++round) {
+      const pageStart = now();
       let offset = 0;
       const options = {start:upper,end:lower,reverse:true,limit:24};
       for (const {key, value} of db.getRange(options)) {
@@ -134,8 +136,11 @@ if (writer) {
         ++offset;
       }
       assert.equal(offset, latest.length);
+      samples.push(elapsed(pageStart));
     }
-    report.latest_blocks = {ns:elapsed(started),pages:16,documents_per_page:latest.length,
+    const total = elapsed(started);
+    samples.sort((a,b) => a-b);
+    report.latest_blocks = {ns:total,pages:samples.length,p50_ns:samples[31],p95_ns:samples[60],documents_per_page:latest.length,
       page_sha256:digest.digest('hex')};
   } else report.latest_blocks = null;
   let pos = 0;
@@ -145,6 +150,11 @@ if (writer) {
   }
   assert.equal(pos, rows.length);
   report.verified_rows = pos;
+}
+if (writer) {
+  report.allocated_before_close = fs.readdirSync(dbPath, {recursive:true})
+    .map(name => fs.lstatSync(path.join(dbPath,name)))
+    .filter(stat => stat.isFile()).reduce((sum,stat) => sum + stat.blocks * 512, 0);
 }
 started = now();
 db.close();

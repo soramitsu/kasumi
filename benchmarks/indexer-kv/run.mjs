@@ -61,6 +61,10 @@ try {
       .find(item => item.target?.name === 'kasumi_store' && item.executable)?.executable;
   }
   assert(harness, 'could not find the Kasumi test binary');
+  const frozen = path.join(trial,'kasumi-test');
+  fs.copyFileSync(harness, frozen);
+  fs.chmodSync(frozen, 0o700);
+  const harnessSha = createHash('sha256').update(fs.readFileSync(frozen)).digest('hex');
   const usage = path.join(trial, 'process-usage');
   run(process.env.CC || 'cc', ['-O2',path.join(here,'process-usage.c'),'-o',usage]);
   const sync = path.join(trial,'sync.node');
@@ -80,7 +84,7 @@ try {
         const usagePath = path.join(trial, 'usage.json');
         const command = engine === 'rocksdb'
           ? [process.execPath,path.join(here,'rocks.mjs')]
-          : [harness,'paired_indexer_storage','--ignored','--nocapture','--test-threads=1'];
+          : [frozen,'paired_indexer_storage','--ignored','--nocapture','--test-threads=1'];
         run(usage,[usagePath,...command],{env});
         const resources = JSON.parse(fs.readFileSync(usagePath));
         fs.unlinkSync(usagePath);
@@ -89,6 +93,7 @@ try {
         report[phase].footprint = footprint(db);
         report[phase].process_usage = resources;
       }
+      process.stderr.write(`round ${round + 1}/${rounds} ${engine}: ${report.read.verified_rows} verified rows; ${(report.write.ingest_ns / 1e9).toFixed(2)}s ingest; ${report.maintenance.footprint.allocated} bytes after maintenance\n`);
       results.push(report);
       fs.rmSync(directory, {recursive:true});
     }
@@ -104,7 +109,7 @@ try {
     trace_sha256:createHash('sha256').update(fixture).digest('hex'),
     batches:blocks.length, operations:operationCount, logical_input_bytes:inputBytes,
     system:[os.type(), os.release(), os.arch()], node:process.version,
-    rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
+    kasumi_test_sha256:harnessSha, rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
     point_reads:1024, ranges_per_direction:64, max_rows_per_range:8, results,
   },null,2)+'\n');
 } finally {

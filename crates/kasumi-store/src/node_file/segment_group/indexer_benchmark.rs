@@ -46,17 +46,42 @@ fn read_trace() -> (Vec<Vec<Operation>>, BTreeMap<Bytes, Bytes>) {
     (batches, expected)
 }
 
+#[derive(Clone, Copy)]
+enum RangeMode {
+    Seek(ScanDirection),
+    DescendingCursor,
+}
+
 fn measure_ranges(
     snapshot: &ReadSnapshot,
     rows: &[(&Bytes, &Bytes)],
     max_value: usize,
-    direction: ScanDirection,
+    mode: RangeMode,
 ) -> u128 {
     let width = rows.len().min(8);
     let started = Instant::now();
     for index in 0..64 {
         let first = (index * 197) % (rows.len() - width + 1);
         let window = &rows[first..first + width];
+        let direction = match mode {
+            RangeMode::Seek(direction) => direction,
+            RangeMode::DescendingCursor => {
+                let mut cursor = snapshot
+                    .descending_cursor(
+                        TABLE,
+                        Bound::Included(window[0].0),
+                        Bound::Included(window[width - 1].0),
+                        max_value,
+                    )
+                    .unwrap();
+                for (key, value) in window.iter().rev() {
+                    let (found, actual) = cursor.next_row().unwrap().expect("range ended early");
+                    assert_eq!(found.as_bytes(), key.as_slice());
+                    assert_eq!(actual.as_bytes(), value.as_slice());
+                }
+                continue;
+            }
+        };
         let mut last = None;
         let ascending = matches!(direction, ScanDirection::Ascending);
         for offset in 0..width {
@@ -94,6 +119,7 @@ fn latest_block_page(
     snapshot: &ReadSnapshot,
     expected: &BTreeMap<Bytes, Bytes>,
     max: usize,
+    streaming: bool,
 ) -> Option<serde_json::Value> {
     let prefix = b"x\0networkSnapshots\0y-t\0BLOCK\0".as_slice();
     let upper = b"x\0networkSnapshots\0y-t\0BLOCK\x01".as_slice();
@@ -106,21 +132,30 @@ fn latest_block_page(
         return None;
     }
     let mut digest = Sha256::new();
+    let mut samples = [0u128; 64];
     let started = Instant::now();
-    for round in 0..16 {
+    for (round, sample) in samples.iter_mut().enumerate() {
+        let page_start = Instant::now();
+        let mut cursor = streaming.then(|| {
+            snapshot
+                .descending_cursor(TABLE, Bound::Included(prefix), Bound::Excluded(upper), max)
+                .unwrap()
+        });
         let mut last: Option<kasumi_kv::AdmittedValue> = None;
         for (want_index, want_marker) in &rows {
             let high = last.as_ref().map_or(upper, |k| k.as_bytes());
-            let (index, marker) = snapshot
-                .seek_admitted(
+            let (index, marker) = match &mut cursor {
+                Some(cursor) => cursor.next_row(),
+                None => snapshot.seek_admitted(
                     TABLE,
                     Bound::Included(prefix),
                     Bound::Excluded(high),
                     ScanDirection::Descending,
                     max,
-                )
-                .unwrap()
-                .unwrap();
+                ),
+            }
+            .unwrap()
+            .unwrap();
             assert_eq!(index.as_bytes(), *want_index);
             assert_eq!(marker.as_bytes(), *want_marker);
             let id = index.as_bytes().rsplit(|&b| b == 0).next().unwrap();
@@ -138,9 +173,13 @@ fn latest_block_page(
             }
             last = Some(index);
         }
+        *sample = page_start.elapsed().as_nanos();
     }
+    let elapsed = started.elapsed().as_nanos();
+    samples.sort_unstable();
     Some(serde_json::json!({
-        "ns": started.elapsed().as_nanos(), "pages": 16, "documents_per_page": rows.len(),
+        "ns": elapsed, "pages": samples.len(), "p50_ns": samples[31],
+        "p95_ns": samples[60], "documents_per_page": rows.len(),
         "page_sha256": hex::encode(digest.finalize()),
     }))
 }
@@ -166,10 +205,13 @@ fn compact(core: &Core) -> serde_json::Value {
         if let Some(reason) = progress.deferred {
             break format!("deferred: {reason:?}");
         }
-        if status.phase == kasumi_kv::StorageCompactionPhase::Idle
-            && (status.cycle > before.cycle || progress.idle)
-        {
-            break "idle".to_owned();
+        if status.phase == kasumi_kv::StorageCompactionPhase::Idle && !status.requested {
+            if status.cycles_completed > before.cycles_completed {
+                break "cycle_completed".to_owned();
+            }
+            if progress.idle {
+                break "nothing_eligible".to_owned();
+            }
         }
         if start.elapsed().as_secs() >= 60 || steps >= 100_000 {
             break "budget".to_owned();
@@ -177,7 +219,9 @@ fn compact(core: &Core) -> serde_json::Value {
     };
     serde_json::json!({"maintenance_ns":start.elapsed().as_nanos(), "reason":reason,
         "steps":steps, "mutations":mutations, "reclaimed_bytes":reclaimed,
-        "phase":core.maintenance_status().unwrap().phase.as_str()})
+        "phase":core.maintenance_status().unwrap().phase.as_str(),
+        "initial_completed_cycles": before.cycles_completed,
+        "final_completed_cycles": core.maintenance_status().unwrap().cycles_completed})
 }
 
 #[test]
@@ -233,9 +277,26 @@ fn paired_indexer_storage() {
                 assert_eq!(actual.as_bytes(), value);
             }
             let point_ns = started.elapsed().as_nanos();
-            let forward_ns = measure_ranges(&snapshot, &rows, max_value, ScanDirection::Ascending);
-            let reverse_ns = measure_ranges(&snapshot, &rows, max_value, ScanDirection::Descending);
-            let latest = latest_block_page(&core, &snapshot, &expected, max_value);
+            let forward_ns = measure_ranges(
+                &snapshot,
+                &rows,
+                max_value,
+                RangeMode::Seek(ScanDirection::Ascending),
+            );
+            let reverse_ns = measure_ranges(
+                &snapshot,
+                &rows,
+                max_value,
+                RangeMode::Seek(ScanDirection::Descending),
+            );
+            let reverse_cursor_ns =
+                measure_ranges(&snapshot, &rows, max_value, RangeMode::DescendingCursor);
+            let latest_seek = latest_block_page(&core, &snapshot, &expected, max_value, false);
+            let latest = latest_block_page(&core, &snapshot, &expected, max_value, true);
+            assert_eq!(
+                latest_seek.as_ref().map(|v| &v["page_sha256"]),
+                latest.as_ref().map(|v| &v["page_sha256"])
+            );
             // Compare every row and ensure there are no unanticipated extra rows.
             let mut prior: Option<kasumi_kv::AdmittedValue> = None;
             for (key, value) in &rows {
@@ -268,11 +329,19 @@ fn paired_indexer_storage() {
                 core,
                 serde_json::json!({
                     "open_ns": open_ns, "point_ns": point_ns, "forward_ns": forward_ns,
-                    "reverse_ns": reverse_ns, "verified_rows": rows.len(), "latest_blocks": latest,
+                    "reverse_seek_ns": reverse_ns, "reverse_ns": reverse_cursor_ns, "latest_seek": latest_seek, "verified_rows": rows.len(), "latest_blocks": latest,
                 }),
             )
         }
     };
+    if phase == "write" {
+        use std::os::unix::fs::MetadataExt;
+        let bytes: u64 = crate::test_utils::node_group_files(&path)
+            .iter()
+            .map(|file| fs::metadata(file).unwrap().blocks() * 512)
+            .sum();
+        report["allocated_before_close"] = serde_json::json!(bytes);
+    }
     let started = Instant::now();
     core.close().into_result().unwrap();
     assert!(core.into_disposal().dispose().complete());
