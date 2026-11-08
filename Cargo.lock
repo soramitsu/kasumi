@@ -1849,6 +1849,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "kasumi-frozen-run"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "lz4_flex",
+ "serde_json",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "kasumi-kv"
 version = "0.1.0"
 dependencies = [

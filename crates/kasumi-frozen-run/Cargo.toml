@@ -1,0 +1,17 @@
+[package]
+name = "kasumi-frozen-run"
+description = "Authenticated immutable sorted runs for finalized Kasumi history"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+lz4_flex = { version = "0.13.1", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
+sha2.workspace = true
+tempfile.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+serde_json.workspace = true
