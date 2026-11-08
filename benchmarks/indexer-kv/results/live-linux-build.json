@@ -56,5 +56,13 @@
     "host": "Apple M4 Max, macOS arm64, Virtualization.framework",
     "vcpus": 4,
     "memory_gib": 6
+  },
+  "native_control": {
+    "rocksdb_oci_manifest": "sha256:b92716899b018ecd64d1c75d8f7b212b5329064ffbcfca28780ce0e30fa65ca6",
+    "rocksdb_layer_digest": "sha256:84c243b567cdc3890b3d5ce2a4717cab24107062cc31dcdac45d2966fe60054e",
+    "rocksdb_layer_size": 16844302,
+    "toolchain": "Debian g++ 14 with matching 11.1.2 bottle headers",
+    "gflags": "2.3.1",
+    "kasumi_cli_sha256": "d4fac7d85c110ed17c12240142a27252945144b071b4573a4bdc1e756e0f2b69"
   }
 }

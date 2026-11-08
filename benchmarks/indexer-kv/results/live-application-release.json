@@ -1,0 +1,52 @@
+{
+  "compiled_modules_sha256": {
+    "dist/src/soraIdentity.js": "0061c1fd19e214ddbeb6838ee5372c9f2036aaa257e97ab116ec0802caa91f89",
+    "dist/src/tonswap-burn.js": "46c32d55075e3d778105d913499eb6e877bb081d5d88d65ecb51b1d9b4556c8d",
+    "dist/src/burn-recovery.js": "52b32d3eaf5a479785e57d882f54ddd26a960a5ba4f077cee97e22848a8e98bc",
+    "dist/src/repository/types.js": "561ed124f52ab96a6b67fcf7e2ee9d32cc4f3f4a641d1b35e0f84edd9cd9aab7",
+    "dist/src/repository/validation.js": "c0bd0ebc97bc9a00de212d8211bf4d56ee006ad8837ec9651d2b7f3a5dd32fcc",
+    "dist/src/recovery-hold.js": "2fcf190f7b1595c08307aad40727015748ba0f8faa361283814bb0635ef52f1a",
+    "dist/src/stats-recovery.js": "c68670f9c5119cc359a4a1cd73686814041475b7b5d7ba31082c69127daef0c3",
+    "dist/src/points-recovery.js": "c8d88c7c8eb5ca445645c7fdb991277de11997d855415a03d358334f38674bdf",
+    "dist/src/account-activity.js": "3695651934c1bc6c761d63d6a2491689ef98269f91044cdbbf12af4505d53ab8",
+    "dist/src/cache-weight.js": "ebb3ba71bb057838b2ad8e305ab21ce64a5b05c9645376af77d9988e0624d078",
+    "dist/src/metrics.js": "a5a176a81393cf575c1b657faf7562676d62e8181e948e5ca6a91df742966198",
+    "dist/src/worker/status.js": "acc8a5e829ef2fea316c63e3b7f1af0dd8540d675078a0989a5e7585eb487a12",
+    "dist/src/readiness.js": "d013a084cccd61573d52319e1623cf9ccc944d94b87af79be3f73159709a5734",
+    "dist/src/graphql/checkpoint-view.js": "bc7c84dccd907225701eb083c5560b76b4dd3810c99662931429e4ff3fa89f06",
+    "dist/src/graphql/order.js": "1d6b14ab09e7b38e7af67efb27f59592f998c85a3edc839f35f66cd96dee9eb7",
+    "dist/src/lexical.js": "a68cf6e91ef972ac8c74f96b9272ecdcb033138ea578dd56c18c3c563d9bb9b2",
+    "dist/src/decimal-number.js": "8a7b5c6e99bb4cf9b1fb5fae409aab4b0ab7f7f16589847eb0ffb85949d0b0ba",
+    "dist/src/repository/cursor.js": "5dec7b1a88b10df12d99ba9e210962826d02397cbbaffc24e6c49e4ef9179202",
+    "dist/src/graphql/filter.js": "4cc3887538ff3b85884fc456b7800fb4e9a975a698139b349a307c732677d108",
+    "dist/src/graphql/query-policy.js": "c1a1ea548504fcc27a530f520279151ee0c1f1fb68590df517ed898d863a5061",
+    "dist/src/graphql/scalars.js": "8bfd5e42d31f3fb6d09262b9f61eb54cfe0755cde1d0f06969fae5712b1f3547",
+    "dist/src/graphql/schema.js": "30de65d3e92a7fdedab8cddaca20e776f18a04fa33f133f34cb2557410a7cb3b",
+    "dist/src/graphql/network-flow.js": "d5c174c769aa82a3d701cbdd9285e5d7587b57f2040c365322e90b1029f14da9",
+    "dist/src/worker/hourly-history.js": "9eab59fbb76a85b1212ab8eabadb405761ca6b6166ede1a6162b0d6a02af52f6",
+    "dist/src/graphql/hourly-history.js": "3d672b6a99348e285d6225ee2d75075814dc0dbe198bee78ffb3bbcccc254bf1",
+    "dist/src/graphql/stats-core-cursor.js": "324bc3c2dad25e060987c677faae592abc7d52e69089f8fc4d54c59dc18b6011",
+    "dist/src/graphql/resolvers.js": "577327ef20ea096397d388e9d832fe36a319c3ef39c4afd17c7884748143ba5e",
+    "dist/src/scripts/postgres-rocksdb-capture.js": "e58dbd11260522c9e1d951706e4d70f88f12599396c3a72f5d2d054e8a3f0c9c",
+    "dist/src/scripts/rocksdb-migration-state.js": "0bc060543cc0f20a59216617f6526e4f8584cd668ab53aa49b28048a0a2dee82",
+    "dist/src/repository/rocksdb-document.js": "d6c2097f58498881304143b5a1cefe31739a7d6ccc57341ed318476ae616a996",
+    "dist/src/repository/watch-queue.js": "e9b28ad2304b7ce51deb2cad1f62510453aa5f7ac32fa8a82e35695e3ce11192",
+    "dist/src/repository/rocksdb.js": "d949f3cb054910c7299494e00c852cc84bb7585deebcf9d70c11cbe0fdfa8726",
+    "dist/tests/pinned-network-volume-fixture.js": "8fb367d77efa3976a5d35c50e1fd16090359081a05b6349144e46b33e3bc2193"
+  },
+  "runtime_closure": [
+    "dist/src/graphql/resolvers.js",
+    "dist/src/repository/rocksdb.js",
+    "dist/src/repository/rocksdb-document.js",
+    "dist/tests/pinned-network-volume-fixture.js"
+  ],
+  "network": "local guest with no externally connected interface during replay",
+  "package_versions": {
+    "@harperfast/rocksdb-js": "2.4.0",
+    "rocksdb": "11.1.2",
+    "graphql": "16.14.2",
+    "msgpackr": "2.0.4",
+    "ordered-binary": "1.6.1"
+  },
+  "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd"
+}

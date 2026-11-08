@@ -1,0 +1,26 @@
+{
+  "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+  "addon_sha256": "38d8afb88dff9ce16588fc3d65ee2360ea639229ad4270dc2a4c4905432360b1",
+  "modules": {
+    "src/graphql/resolvers.js": "577327ef20ea096397d388e9d832fe36a319c3ef39c4afd17c7884748143ba5e",
+    "src/repository/rocksdb.js": "d949f3cb054910c7299494e00c852cc84bb7585deebcf9d70c11cbe0fdfa8726",
+    "src/repository/rocksdb-document.js": "d6c2097f58498881304143b5a1cefe31739a7d6ccc57341ed318476ae616a996"
+  },
+  "blocks": 4096,
+  "verified": {
+    "PolkaswapNetworkBlockFeesQuery": {
+      "query_sha256": "89d056d91e86528c74e28285b21136c8d8295bc84705c7c12a204fe0ee87d713",
+      "rows": 7,
+      "response_sha256": "69ef001cfa8f24b440cb5897caeac76a6abab35d0d576759f5f4f98974620b71"
+    },
+    "PolkaswapNetworkBlockVolumeQuery": {
+      "query_sha256": "54548dd439f5a63b927374067c225e322ecfdf1acd465699e27c3014bb9fd0a0",
+      "rows": 1,
+      "response_sha256": "7c38cc034bddec8a1f76ffc3dec7627e3df9cb07c106415b44249614ff2a9431"
+    }
+  },
+  "kasumi_reads": {
+    "primaryReads": 8192,
+    "reverseIndexRows": 8192
+  }
+}

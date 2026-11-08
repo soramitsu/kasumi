@@ -1,8 +1,44 @@
 # Polkaswap Stats storage comparison — 9 November 2026
 
-The opt-in compact live engine on Kasumi master is measured below. All comparisons use the [same 4,096 finalized BLOCK snapshots](fixtures/README.md). These measure raw durable KV ingestion and local reads; they exclude chain RPC, GraphQL, other collections and the production worker. The [previous mutable formats](#packed-directories-with-inline-maintenance) and [sealed-only archive](#sealed-historical-data) are distinct engines.
+The opt-in compact live engine on Kasumi master is measured below. All comparisons use the [same 4,096 finalized BLOCK snapshots](fixtures/README.md). The storage replays measure durable KV ingestion and local reads. The application replay separately exercises the indexer's repository and Stats GraphQL resolvers. Neither measures chain RPC, unrelated collections or the full production worker. The [previous mutable formats](#packed-directories-with-inline-maintenance) and [sealed-only archive](#sealed-historical-data) are distinct engines.
 
 ## Live writer
+
+### Actual Stats repository writes and GraphQL reads
+
+**Kasumi won all four application rounds on Linux ext4.** The real indexer
+`RocksRepository.upsertMany([document])` ingested 4,096 consecutive finalized
+network BLOCK documents per engine per round. Its own validation, document
+codec, secondary index updates, counter reads/writes and transaction callback
+ran on each backend. Each block was acknowledged after full WAL durability.
+The harness alternated the first writer in adjacent 64-block windows and
+rotated that order between rounds; it never combined several upserts into one
+acknowledgement. The raw storage replay below measures a separate workload.
+
+| Application result, four fresh rounds | Kasumi (Node) | Indexer's RocksDB (Node) |
+|---|---:|---:|
+| Durable documents/s, total documents / total ingest time | **4,364** | **3,657** |
+| Documents/s including writer close and explicit reopen, compaction and close | 4,339 | 3,577 |
+| Median allocated bytes with writer open | 462,848 | 21,037,056 |
+| Median allocated bytes after writer close | 462,848 | 1,687,552 |
+| Median allocated bytes after explicit compaction | **159,744** | **1,732,608** |
+
+Kasumi was **19.3% faster** on the ingest path, used **72.6% less disk** after
+writer close, and **90.8% less** after compaction. Every round compared
+all 16,389 recovered key/value rows between engines (including bootstrap
+metadata), checked the 16,387 trace rows against source values, then executed
+the wallet’s pinned BLOCK fee and volume queries through the indexer’s real
+GraphQL resolver and repository. Both produced identical bytes, ordered
+results and cursors; the fixture has seven positive fee rows and one positive
+volume row. Each engine received the same decoded documents. Creation, input
+decoding and GraphQL verification are outside the timed ingest interval.
+
+This is an offline qualification of the Stats document write path with a
+scoped Kasumi storage adapter, not a live production cutover, chain RPC
+benchmark or certification of other collections and entitlement history.
+[Raw application rounds and binary/source hashes (gzip)](results/live-application-linux.json.gz) ·
+[Release module hashes](results/live-application-release.json) ·
+[Reproduction instructions](README.md) · [Independent query replay on macOS](results/application-stats-macos.json).
 
 ### Default live engine on master (`cc719b23`)
 
@@ -26,6 +62,8 @@ The 12+12 rounds were fixed before starting, with a fresh database per round and
 The new default persists a 4 MiB budget instead of flushing at 512 KiB. Linux uses a full-integrity synchronized write for each single block where the filesystem supports it; on macOS Kasumi uses `F_FULLFSYNC`. Both keep a separate recoverable WAL frame for every logical block. The indexer's JS RocksDB package exposes a synchronous JS transaction but does not request a device flush for every transaction by default. For equal durability the comparator synchronizes the actual WAL before acknowledgement. Rates are for that contract, not the package's less durable default or production chain-processing throughput.
 
 On the same Apple M4 Max host running macOS directly, the final Node [single-block comparison](results/live-default-macos-x1.json) favored Kasumi in both rounds, **145.9 vs 137.6 blocks/s** in aggregate (6.0% faster). Compacted allocation was 159,744 vs 1,765,376 median bytes. The [eight-block macOS test](results/live-default-macos-x8.json) split one win each and was **slower for Kasumi overall**: 741 vs 1,020 blocks/s. Relative speed varies with storage, OS and commit mode. The Linux host was a local four-vCPU Debian 13 arm64 VM on this Mac, using ext4 on its own virtual block device, not the production server.
+
+A separate [four-way Linux matrix](results/live-default-linux-four-way.json.gz) rotated each worker through all four positions in isolation. The final Node result held: median 5,668 vs 4,808 blocks/s and aggregate 5,596 vs 4,302. Against native C++ RocksDB 11.1.2/LZ4 with 32 KiB blocks, Rust Kasumi was faster at the **median** (5,768 vs 5,348 blocks/s), but a 1.285 s Kasumi run reversed the **aggregate** (4,866 vs 5,363 blocks/s). The native comparison does not establish a universal speed win. Compacted native allocation was consistently **159,744 vs 335,872 bytes**, and the latest-page p95 medians were 4.02 vs 20.83 µs. Native RocksDB was faster at individual point lookups. Linux OS write-byte counters were unavailable; they were not treated as zero.
 
 ### Earlier compact live engine: 512 KiB budget
 

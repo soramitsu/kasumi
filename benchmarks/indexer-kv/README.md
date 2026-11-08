@@ -130,3 +130,17 @@ The script creates two disposable local databases, seeds both with the same 4,09
 The macOS run returned seven positive fee rows and one positive volume row. Kasumi visited 8,192 descending index rows and hydrated 8,192 primary documents across the two queries. The compiled resolver, repository and document codec in the retained indexer build matched the SHA-256 digests of those files in the fixture’s source release `4c604157bd68d1f5175d88f4ebaaf1de4a4b3ebe`. The output records the exact addon, module, query and GraphQL response digests. [Recorded application result](results/application-stats-macos.json)
 
 This check covers the BLOCK Stats read paths over an already materialized local slice. Whole-worker block processing, production repository selection, entitlement recovery and a live database migration require separate validation.
+
+### Repository ingestion timing
+
+The opt-in upsert mode decodes each original BLOCK document and calls the release’s actual `RocksRepository.upsertMany([document])` once per block on each backend. This exercises document normalization, validation, replacement checks, primary encoding, secondary indexes, index counters and collection counts. The code alternates the first writer in 64-block windows and reverses the starting order on each fresh round.
+
+```sh
+node benchmarks/indexer-kv/application-stats.mjs \
+  /path/to/built/polkaswap-indexer /absolute/path/to/kasumi_live_node.node \
+  --upsert 4096 4 > application-upsert.json
+```
+
+A short smoke can use `--upsert 16 1`. Supply a C compiler and Node headers (`CC` and `NODE_INCLUDE` are optional), or set `INDEXER_KV_SYNC` to a compiled copy of the supplied `sync.c` Node addon. Each block receives its own durable acknowledgement on both stores. The Rocks binding performs its real transaction, followed by a full-device WAL flush inside the repository transaction promise. Kasumi stages the repository callback’s ordered writes and serves its point reads from the pending transaction or native store. It completes one native durable commit before that callback’s caller resumes. The opt-in adapter supports the transaction operations reached by this fixture and refuses transactional scans after a staged write.
+
+Every round reports ingest nanoseconds, writer-close nanoseconds, and maintenance reopen/compact/close times. `paid_ns` sums those components for each backend. Directory file allocation is measured before closing writers, after closing them, and after explicit maintenance closes. Separate final reads verify the complete physical key/value state, including bootstrap metadata, and compare all fixture values independently after MessagePack decoding. Both published Stats GraphQL queries then run against freshly reopened repositories. Verification and setup are outside the reported write and maintenance times.

@@ -27,3 +27,10 @@ uses RocksDB's normal flush and compaction policies during ingest. Later
 processes verify the resulting rows, flush and compact, and verify the rows
 again. The macOS bottle used for measurement contains RocksDB's
 `HAVE_FULLFSYNC` implementation for the WAL device barrier. [Upstream POSIX file implementation](https://github.com/facebook/rocksdb/blob/v11.1.2/env/io_posix.cc#L1555-L1567)
+
+The November 9 native Linux control used the official Homebrew RocksDB 11.1.2
+ARM64 Linux bottle (verified layer SHA-256
+`84c243b567cdc3890b3d5ce2a4717cab24107062cc31dcdac45d2966fe60054e`).
+The same worker compiled against its matching headers with Debian g++ 14;
+the dynamic library used LZ4 and gflags 2.3.1. Its raw replay and the hashes
+of both native workers are in the [four-way Linux results](results/live-default-linux-four-way.json.gz).

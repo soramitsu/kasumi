@@ -42,6 +42,7 @@ export function durableRocksWriter(db, dbPath, syncFile) {
     size = next;
   }
   return {
+    confirm,
     commit(batch) { append(batch); confirm(); },
     // Each original block remains a separate RocksDB transaction. As with Kasumi,
     // all blocks are ready up front and none is acknowledged until this barrier.
