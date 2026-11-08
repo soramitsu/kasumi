@@ -1,4 +1,4 @@
-// node paired-node.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE KASUMI_ADDON [SYNC_ADDON|auto] [ROUNDS]
+// node paired-node.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE KASUMI_ADDON [SYNC_ADDON|auto] [ROUNDS] [BLOCKS_PER_SYNC]
 // With "auto", CC and NODE_INCLUDE control the compiler and Node-API headers for sync.c.
 import assert from 'node:assert/strict';
 import {execFileSync} from 'node:child_process';
@@ -11,9 +11,9 @@ import {fileURLToPath} from 'node:url';
 import {readTrace} from './live-js-replay.mjs';
 import {durableRocksWriter} from './rocks-durable.mjs';
 
-const [traceArg, rocksArg, addonArg, syncArg = 'auto', roundsArg = '1', ...extra] = process.argv.slice(2);
+const [traceArg, rocksArg, addonArg, syncArg = 'auto', roundsArg = '1', groupArg = '1', ...extra] = process.argv.slice(2);
 if (!traceArg || !rocksArg || !addonArg || extra.length)
-  throw Error('usage: paired-node.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE KASUMI_ADDON [SYNC_ADDON|auto] [ROUNDS]');
+  throw Error('usage: paired-node.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE KASUMI_ADDON [SYNC_ADDON|auto] [ROUNDS] [BLOCKS_PER_SYNC]');
 const rounds = Number(roundsArg);
 assert(Number.isSafeInteger(rounds) && rounds >= 1 && rounds <= 100);
 const trace = fs.realpathSync(traceArg);
@@ -29,6 +29,9 @@ let LiveDatabase;
 const {batches, rows} = readTrace(trace);
 assert(rows.length && batches.length, 'expected a nonempty trace with final rows');
 const windowSize = 64;
+const blocksPerSync = Number(groupArg);
+assert(Number.isInteger(blocksPerSync) && blocksPerSync > 0 && windowSize % blocksPerSync === 0,
+  'blocks per sync must be a positive divisor of 64');
 const now = process.hrtime.bigint;
 const elapsed = start => Number(now() - start);
 const shaFile = file => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
@@ -104,6 +107,8 @@ function runRound(directory, round, syncFile) {
   fs.mkdirSync(directory);
   const windows = [];
   const totals = {kasumi:0, rocks:0};
+  const beforeClose = {};
+  const writerClose = {kasumi:0, rocks:0};
   const kasumi = LiveDatabase.create(dirs.kasumi);
   try {
     const rocks = RocksDatabase.open(dirs.rocks, rocksOptions);
@@ -116,7 +121,15 @@ function runRound(directory, round, syncFile) {
           const window = {first_batch:first, batches:end - first, order};
           for (const kind of order) {
             const started = now();
-            if (kind === 'kasumi') {
+            if (blocksPerSync > 1) {
+              for (let i = first; i < end; i += blocksPerSync) {
+                const group = batches.slice(i, Math.min(i + blocksPerSync, end));
+                if (kind === 'kasumi') {
+                  kasumi.commitGroup(group.map(batch => batch.map(([key, value]) =>
+                    value === undefined ? {key} : {key, value})));
+                } else durable.commitGroup(group);
+              }
+            } else if (kind === 'kasumi') {
               for (let i = first; i < end; i++)
                 kasumi.commit(batches[i].map(([key, value]) => value === undefined ? {key} : {key, value}));
             } else {
@@ -130,13 +143,27 @@ function runRound(directory, round, syncFile) {
         }
         durable.verify();
         assert.equal(kasumi.sequence(), BigInt(batches.length));
-      } finally { durable.close(); }
-    } finally { rocks.close(); }
-  } finally { kasumi.close(); }
+        for (const [kind, dir] of Object.entries(dirs)) beforeClose[kind] = footprint(dir);
+      } finally {
+        const start = now();
+        durable.close();
+        writerClose.rocks += elapsed(start);
+      }
+    } finally {
+      const start = now();
+      rocks.close();
+      writerClose.rocks += elapsed(start);
+    }
+  } finally {
+    const start = now();
+    kasumi.close();
+    writerClose.kasumi = elapsed(start);
+  }
   const engines = {};
   for (const kind of ['kasumi','rocks']) {
     const dbPath = dirs[kind];
-    const engine = {ingest_ns:totals[kind], after_close:footprint(dbPath)};
+    const engine = {ingest_ns:totals[kind], before_close:beforeClose[kind],
+      write_close_ns:writerClose[kind], after_close:footprint(dbPath)};
     engine.reopened = recover(dbPath, kind);
     const db = kind === 'kasumi' ? LiveDatabase.open(dbPath) : RocksDatabase.open(dbPath, rocksOptions);
     try {
@@ -144,7 +171,11 @@ function runRound(directory, round, syncFile) {
       if (kind === 'kasumi') db.checkpoint();
       else { db.flushSync(); db.compactSync(); }
       engine.maintenance_ns = elapsed(started);
-    } finally { db.close(); }
+    } finally {
+      const start = now();
+      db.close();
+      engine.maintenance_close_ns = elapsed(start);
+    }
     engine.after_maintenance = footprint(dbPath);
     engine.after_maintenance_reopened = recover(dbPath, kind);
     engines[kind] = engine;
@@ -175,7 +206,7 @@ try {
     node:process.version, platform:process.platform, arch:process.arch,
     rocksdb_js:packageInfo.version, rocksdb:packageInfo.rocksdb.version,
     trace_sha256:shaFile(trace), addon_sha256:shaFile(frozenAddon), rocks_addon_sha256:shaFile(rocksBinary), sync_sha256:shaFile(sync),
-    window_size:windowSize, batches:batches.length, expected_rows:rows.length,
+    window_size:windowSize, blocks_per_sync:blocksPerSync, batches:batches.length, expected_rows:rows.length,
     expected_state_sha256:expectedDigest, results,
   }, null, 2));
 } finally { fs.rmSync(trial, {recursive:true, force:true}); }

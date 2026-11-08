@@ -28,12 +28,23 @@ holds both handles open and alternates which writes first in each 64-block
 window. Each block is acknowledged separately with the same durability as
 in the isolated worker. The paired run records a duration for every window
 and checks the entire database in both directions after reopen and compaction.
+The optional last argument (default 1) sets how many **already available**
+blocks share a durable acknowledgement. Use 1 for single arrivals or 8 for
+catch-up. Every original block is a separate WAL frame or RocksDB transaction;
+neither writer acknowledges any input in the group until its whole group is
+synchronized. Do not compare an eight-block result with a single-block result.
+The script does not wait to fill a group or measure incoming chain latency.
 
 ```sh
 node benchmarks/indexer-kv/paired-node.mjs /tmp/kasumi-block-stats.jsonl \
   /path/to/polkaswap-indexer/node_modules/@harperfast/rocksdb-js \
   "$PWD/target/release/kasumi_live_node.node" auto 2 > paired.json
 ```
+
+Use `node benchmarks/indexer-kv/summarize-paired.mjs FILE.json[.gz] ...` to check
+every reported round, both recovered state digests and the aggregate throughput.
+When close counters are present it also charges explicit compaction and both
+closes; allocation is reported before close, after close and after compaction.
 
 The process observer samples regular-file allocation in each engine's private
 directory about every 50 milliseconds and at exit. Its peak is a sampled
@@ -97,6 +108,25 @@ database per engine per round.
 
 With two engines the run alternates their order. The writer, reader, maintenance worker and final reader use separate OS processes. Each reader checks every surviving key and value in order against an independent replay and rejects extra rows. Read timings cover 1,024 point lookups and 64 bounded pages of up to eight rows in each direction. For a Polkaswap network snapshot trace they also cover 64 timed reverse pages of the most recent 24 BLOCK timestamp index entries followed by their primary document reads. Each page includes row checks, and the first also computes its SHA-256 digest. The output includes nearest-rank median and p95 page latency. Kasumi additionally times its seek-per-row implementation against its descending cursor. The runners compare the ordered document digest before and after maintenance.
 
-Kasumi uses the real NodeDisk segment group, persistent files, authenticated data, transaction admission and synchronization path. TestDiskMemory supplies bounded memory admission and the disk installation uses test quotas. Each batch calls Core::commit once. RocksDB uses its installed transactional JS wrapper in binary key/value mode, with the WAL enabled. The binding defaults to asynchronous WAL durability despite the synchronous JS commit. The writer persists database initialization, then syncs the same WAL descriptor after every batch using F_FULLFSYNC on Apple and fsync on Linux. It checks each appended WAL length and rejects WAL rotation. This comparison is limited to traces that fit in one active RocksDB WAL. Both engines use an 8 MiB block/page cache. They run without competing writers.
+Kasumi uses the real NodeDisk segment group, persistent files, authenticated data, transaction admission and synchronization path. TestDiskMemory supplies bounded memory admission and the disk installation uses test quotas. Each batch calls Core::commit once. RocksDB uses its installed transactional JS wrapper in binary key/value mode, with the WAL enabled. The binding defaults to asynchronous WAL durability despite the synchronous JS commit. The writer persists database initialization, then syncs the same WAL descriptor after every batch using F_FULLFSYNC on Apple and fsync on Linux. It checks each appended WAL length and rejects WAL rotation. This comparison is limited to traces that fit in one active RocksDB WAL. The historical fixed-page and RocksDB controls use an 8 MiB block/page cache.
+The compact engine uses its own bounded per-run decoded caches and its
+persisted live-write budget. Runs are serial; isolated trials open one
+engine, while the paired test keeps both open and writes to one at a time.
 
 The per-phase footprint sums logical lengths and allocated file blocks. It includes database metadata, log files and any retained arenas. Ingest reports allocation while the writer is open as well as after clean close. The RocksDB binding flushes memtables on close. After ingestion and the first verified reopen, the runner requests one native Kasumi compaction cycle, bounded to 60 seconds or 100,000 steps, and explicitly flushes and compacts RocksDB. The maintenance result records completion, deferral or exhaustion and a fresh process verifies the remaining data. The OS process write counters cover the entire worker including open and close. They measure kernel-attributed I/O and do not measure physical-device wear. Timings include each engine's API handling and row validation; they exclude input decoding and process startup, except for the separate whole-worker CPU counters. OS page caches remain warm. Raw replay excludes GraphQL, chain fetching, cryptographic signing and production traffic.
+
+## Offline Stats GraphQL check
+
+Build the Kasumi Node addon and copy the platform library to a `.node` file as described in the [binding guide](../../crates/kasumi-live-node/README.md). Supply a built Polkaswap indexer release with its native dependencies and compiled `dist/tests/pinned-network-volume-fixture.js`. Node 26 ran the retained check.
+
+```sh
+node benchmarks/indexer-kv/application-stats.mjs \
+  /path/to/built/polkaswap-indexer \
+  /absolute/path/to/kasumi_live_node.node
+```
+
+The script creates two disposable local databases, seeds both with the same 4,096 finalized BLOCK snapshots and index entries, compacts them, and reopens them. It executes the published wallet BLOCK fees and volume queries through the indexer’s GraphQL schema, repository query planner and document codec. For Kasumi, a test-only read adapter supplies the ordered binary secondary-index scans and MessagePack primary reads used by the real repository. It holds no copy of the expected results. Each query must issue native reverse index reads and native document reads, match the independently decoded fixture amounts in descending order, and return the same GraphQL page and cursor as RocksDB.
+
+The macOS run returned seven positive fee rows and one positive volume row. Kasumi visited 8,192 descending index rows and hydrated 8,192 primary documents across the two queries. The compiled resolver, repository and document codec in the retained indexer build matched the SHA-256 digests of those files in the fixture’s source release `4c604157bd68d1f5175d88f4ebaaf1de4a4b3ebe`. The output records the exact addon, module, query and GraphQL response digests. [Recorded application result](results/application-stats-macos.json)
+
+This check covers the BLOCK Stats read paths over an already materialized local slice. Whole-worker block processing, production repository selection, entitlement recovery and a live database migration require separate validation.

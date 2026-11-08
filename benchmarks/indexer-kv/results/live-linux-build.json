@@ -1,0 +1,60 @@
+{
+  "branch": "master",
+  "base_head": "cc719b23fe3fb547f37ae02ccdd0aa0140a00b1f",
+  "rustc": "rustc 1.97.1 (8bab26f4f 2026-07-14)",
+  "target": "aarch64-unknown-linux-gnu.2.36",
+  "source_sha256": {
+    "Cargo.lock": "258488cff10d3b3fc1d8edbc14da73bbb583cd7ad6b50b36480948c786309bd1",
+    "Cargo.toml": "ee9ccdff89892ffe984de739c95c8400d4117dab788460ac717cb1192cdf36a5",
+    "benchmarks/indexer-kv/live-js-replay.mjs": "54608b2bb513f0cfc5c1d0dc3d5a8bbcd6d305284cf5f89481ed339bae3de7cc",
+    "benchmarks/indexer-kv/paired-node.mjs": "a208655b6213f23f03eac4e1dccf486bbb00e766484d6432509fc5e9f9dc640f",
+    "benchmarks/indexer-kv/rocks-durable.mjs": "6c534a5de0cb74356b81ecf2b82f9399f51448fd864bd930e607c6729816a6ef",
+    "benchmarks/indexer-kv/sync.c": "2e34234f8bff48cdd049e9a3d90a56a7ec1e0a58671d0ef1f8d2fa5104c8e764",
+    "crates/kasumi-frozen-run/Cargo.toml": "960ac57f6ee41947e729e4a28cfe0978e42ea87765009bca44f58cdcb879534b",
+    "crates/kasumi-frozen-run/src/lib.rs": "866b384b43415c0979e04c9115bbd6c7a793f4d329d3f880c85fd416e9a778cd",
+    "crates/kasumi-frozen-run/src/live.rs": "d5db93a4f51328f01c6f3f56ee6b05d0faaf6ef6cf2cbdf179c81b343578adbf",
+    "crates/kasumi-frozen-run/src/live_files.rs": "f3082eec82fe26b9b561b270046b84867a810239024b458a7f9f161d8f2e6744",
+    "crates/kasumi-frozen-run/src/live_group.rs": "1376c7960c8d6f9d429eb74871281834d22e40309b2863ff38187cffeb3c7837",
+    "crates/kasumi-frozen-run/src/live_levels.rs": "4581f9878f9a0d36d55503c5022c7179bde44b422ad8bba7c15be0e281567aa6",
+    "crates/kasumi-frozen-run/src/live_levels_cursor.rs": "49c4e022455ffeadf8d2ac0fb5d65b8b7f2affa21366103e41031b0b13ca8b15",
+    "crates/kasumi-frozen-run/src/live_levels_index.rs": "ae63cc453cb0523c9a6cd7be0a6fd6b65ebe4e0563cb261806fe2c23ce819b6c",
+    "crates/kasumi-frozen-run/src/live_levels_tests.rs": "8048b7a583084ceb267d09269a5ac83afa1afd4d0c01592667a478ca93e0ca9b",
+    "crates/kasumi-frozen-run/src/live_merge.rs": "8525016163d2f8e68b28d8a2e6ee7dc9e8bbaf2c25b35b2ed9bf77901cfe5f84",
+    "crates/kasumi-frozen-run/src/live_tests.rs": "6875704cbc9991d6efacdd1f54d74cfae10ba2b8adecc6739770f692afa12e8d",
+    "crates/kasumi-frozen-run/src/live_wal.rs": "2dff588f2eeae090cedbe4425303103db5a0b4cf0c4abe4ebe156cec1e9cb281",
+    "crates/kasumi-frozen-run/src/live_wal_group.rs": "f9dd224a121defae7b3f4d8c956b923a5e8d8624d91bfa15020bdd2d2f45c8b9",
+    "crates/kasumi-frozen-run/src/live_wal_serial.rs": "68bc49d68b1f808c394290671b92fd4d85f5e4e141a431d94de18e5284b3c4f3",
+    "crates/kasumi-frozen-run/src/live_wal_tests.rs": "9d932d351deace603b586eb01ad7539f406d210f15b741683af3217898549d04",
+    "crates/kasumi-frozen-run/src/prefix.rs": "5727925fdfc714ee64c28b6fdedd509f3a2cf75ad7e0ef4a403a8d963150fb3f",
+    "crates/kasumi-frozen-run/src/read.rs": "69f0d4267a64cb2cffa977fd0e6f7f54334ad959773ddf57fe85811325e35700",
+    "crates/kasumi-frozen-run/src/tests.rs": "642f57a9e3bca4006e1c4f375619ca13e5178086be3c72d10c14190e0c5468eb",
+    "crates/kasumi-frozen-run/src/write.rs": "0424fef94888f004922bcc848e3a8a3f11846db3ef0426cc032e23e08b1b4e40",
+    "crates/kasumi-live-node/Cargo.toml": "e5a84e0f0bed21a973b532fc40d7d6e42ca453518c34e2f8e4143426f7e7acc7",
+    "crates/kasumi-live-node/README.md": "e9e2d91ff875429d429ea1b82609c10d696b5cf96ba52340fd1bafb4f456604d",
+    "crates/kasumi-live-node/build.rs": "9cfe8e72b7d7d83bfac5ab2f935a45efa6a1d288740442ef68a9dd3efcbaeb98",
+    "crates/kasumi-live-node/src/lib.rs": "d6246d89615d9c3e4a26b7788d3915669358b51650b91c149f0abacf5aa86c6e",
+    "crates/kasumi-live-node/tests/live.mjs": "3122a2aa90f1a4d65b3c827f4a3c191f040f6137269a59fb16e1d325a21b2e56"
+  },
+  "kasumi_addon_sha256": "cf4780a4ab2e744ba7a0c636249f59e05b0179bdfac800a8337f1fbade5d02c2",
+  "sync_sha256": "e3c7dde04668a98e781d94384b81aea292175df7e3c0381079b589e5dd404583",
+  "verified_source_commit": null,
+  "mismatches_to_cc719b23": [
+    "benchmarks/indexer-kv/paired-node.mjs",
+    "benchmarks/indexer-kv/rocks-durable.mjs"
+  ],
+  "verified_engine_commit": "cc719b23fe3fb547f37ae02ccdd0aa0140a00b1f",
+  "bench_driver_status": "Worktree hashes captured separately.",
+  "verification_driver_sha256": [
+    "ad95d9c13c83c79b92a30d5baa796099a3826d18e12b64ccb5a2ca3de17d31ea  harness/paired-node.mjs",
+    "6c534a5de0cb74356b81ecf2b82f9399f51448fd864bd930e607c6729816a6ef  harness/rocks-durable.mjs",
+    "54608b2bb513f0cfc5c1d0dc3d5a8bbcd6d305284cf5f89481ed339bae3de7cc  harness/live-js-replay.mjs"
+  ],
+  "vm": {
+    "guest": "Debian 13 arm64",
+    "kernel": "6.12.111+deb13-cloud-arm64",
+    "filesystem": "ext4 (/dev/vda1)",
+    "host": "Apple M4 Max, macOS arm64, Virtualization.framework",
+    "vcpus": 4,
+    "memory_gib": 6
+  }
+}

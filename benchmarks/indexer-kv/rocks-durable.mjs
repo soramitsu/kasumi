@@ -27,18 +27,27 @@ export function durableRocksWriter(db, dbPath, syncFile) {
   let size;
   try { size = fs.fstatSync(wal).size; }
   catch (error) { fs.closeSync(wal); throw error; }
+  function append(batch) {
+    db.transactionSync(tx => {
+      for (const [key, value] of batch) {
+        if (value === undefined) tx.removeSync(key);
+        else tx.putSync(key, value);
+      }
+    });
+  }
+  function confirm() {
+    syncFile(wal);
+    const next = fs.fstatSync(wal).size;
+    assert(next > size, 'buffered, missing or rotated WAL write');
+    size = next;
+  }
   return {
-    commit(batch) {
-      db.transactionSync(tx => {
-        for (const [key, value] of batch) {
-          if (value === undefined) tx.removeSync(key);
-          else tx.putSync(key, value);
-        }
-      });
-      syncFile(wal);
-      const next = fs.fstatSync(wal).size;
-      assert(next > size, 'buffered, missing or rotated WAL write');
-      size = next;
+    commit(batch) { append(batch); confirm(); },
+    // Each original block remains a separate RocksDB transaction. As with Kasumi,
+    // all blocks are ready up front and none is acknowledged until this barrier.
+    commitGroup(group) {
+      for (const batch of group) append(batch);
+      if (group.length) confirm();
     },
     verify() { assert.equal(walName(), originalWal, 'active WAL changed during the run'); },
     close() { fs.closeSync(wal); },

@@ -1,0 +1,1408 @@
+{
+  "node": "v26.13.0",
+  "platform": "linux",
+  "arch": "arm64",
+  "rocksdb_js": "2.4.0",
+  "rocksdb": "11.1.2",
+  "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+  "addon_sha256": "cf4780a4ab2e744ba7a0c636249f59e05b0179bdfac800a8337f1fbade5d02c2",
+  "rocks_addon_sha256": "ca9cfbc2f4d62270acc87b68a80f344dc36f7fca6871380b9d9de53482661840",
+  "sync_sha256": "e3c7dde04668a98e781d94384b81aea292175df7e3c0381079b589e5dd404583",
+  "window_size": 64,
+  "blocks_per_sync": 8,
+  "batches": 4096,
+  "expected_rows": 16387,
+  "expected_state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605",
+  "results": [
+    {
+      "round": 0,
+      "windows": [
+        {
+          "first_batch": 0,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2023704,
+          "rocks_ns": 3239443
+        },
+        {
+          "first_batch": 64,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2701717,
+          "kasumi_ns": 1648262
+        },
+        {
+          "first_batch": 128,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2478685,
+          "rocks_ns": 2434603
+        },
+        {
+          "first_batch": 192,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2578097,
+          "kasumi_ns": 1696885
+        },
+        {
+          "first_batch": 256,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1700093,
+          "rocks_ns": 2500684
+        },
+        {
+          "first_batch": 320,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2374772,
+          "kasumi_ns": 1580515
+        },
+        {
+          "first_batch": 384,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3204320,
+          "rocks_ns": 2529891
+        },
+        {
+          "first_batch": 448,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2567431,
+          "kasumi_ns": 1919125
+        },
+        {
+          "first_batch": 512,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1674636,
+          "rocks_ns": 4068324
+        },
+        {
+          "first_batch": 576,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2339024,
+          "kasumi_ns": 1585015
+        },
+        {
+          "first_batch": 640,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1667262,
+          "rocks_ns": 4179278
+        },
+        {
+          "first_batch": 704,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2414271,
+          "kasumi_ns": 1621555
+        },
+        {
+          "first_batch": 768,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1637512,
+          "rocks_ns": 2452602
+        },
+        {
+          "first_batch": 832,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2319942,
+          "kasumi_ns": 3054327
+        },
+        {
+          "first_batch": 896,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1566724,
+          "rocks_ns": 2363773
+        },
+        {
+          "first_batch": 960,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2297026,
+          "kasumi_ns": 1548600
+        },
+        {
+          "first_batch": 1024,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1550475,
+          "rocks_ns": 2361232
+        },
+        {
+          "first_batch": 1088,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2395146,
+          "kasumi_ns": 1670595
+        },
+        {
+          "first_batch": 1152,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1691052,
+          "rocks_ns": 2365440
+        },
+        {
+          "first_batch": 1216,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2361273,
+          "kasumi_ns": 1890585
+        },
+        {
+          "first_batch": 1280,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1617639,
+          "rocks_ns": 2374439
+        },
+        {
+          "first_batch": 1344,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2374397,
+          "kasumi_ns": 1648304
+        },
+        {
+          "first_batch": 1408,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1752841,
+          "rocks_ns": 2311692
+        },
+        {
+          "first_batch": 1472,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2274277,
+          "kasumi_ns": 1587765
+        },
+        {
+          "first_batch": 1536,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 9246893,
+          "rocks_ns": 2482642
+        },
+        {
+          "first_batch": 1600,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2506642,
+          "kasumi_ns": 7617254
+        },
+        {
+          "first_batch": 1664,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 9951279,
+          "rocks_ns": 2431395
+        },
+        {
+          "first_batch": 1728,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 7105734,
+          "kasumi_ns": 6915326
+        },
+        {
+          "first_batch": 1792,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1722176,
+          "rocks_ns": 2468351
+        },
+        {
+          "first_batch": 1856,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 7177107,
+          "kasumi_ns": 1752258
+        },
+        {
+          "first_batch": 1920,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1782423,
+          "rocks_ns": 7271436
+        },
+        {
+          "first_batch": 1984,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2390272,
+          "kasumi_ns": 1665011
+        },
+        {
+          "first_batch": 2048,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1680844,
+          "rocks_ns": 2447394
+        },
+        {
+          "first_batch": 2112,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 7535716,
+          "kasumi_ns": 1809588
+        },
+        {
+          "first_batch": 2176,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 11688078,
+          "rocks_ns": 9980652
+        },
+        {
+          "first_batch": 2240,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2719007,
+          "kasumi_ns": 1790506
+        },
+        {
+          "first_batch": 2304,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 6941492,
+          "rocks_ns": 2759005
+        },
+        {
+          "first_batch": 2368,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3260318,
+          "kasumi_ns": 7984363
+        },
+        {
+          "first_batch": 2432,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1800256,
+          "rocks_ns": 9405593
+        },
+        {
+          "first_batch": 2496,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2774339,
+          "kasumi_ns": 8225186
+        },
+        {
+          "first_batch": 2560,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2218654,
+          "rocks_ns": 8967446
+        },
+        {
+          "first_batch": 2624,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2753340,
+          "kasumi_ns": 1890585
+        },
+        {
+          "first_batch": 2688,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1990581,
+          "rocks_ns": 2815920
+        },
+        {
+          "first_batch": 2752,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2669926,
+          "kasumi_ns": 6623922
+        },
+        {
+          "first_batch": 2816,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2019163,
+          "rocks_ns": 2892041
+        },
+        {
+          "first_batch": 2880,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2808462,
+          "kasumi_ns": 1816796
+        },
+        {
+          "first_batch": 2944,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1786381,
+          "rocks_ns": 2692092
+        },
+        {
+          "first_batch": 3008,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 9942029,
+          "kasumi_ns": 2066786
+        },
+        {
+          "first_batch": 3072,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2007288,
+          "rocks_ns": 2988163
+        },
+        {
+          "first_batch": 3136,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 8290475,
+          "kasumi_ns": 11369217
+        },
+        {
+          "first_batch": 3200,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1967331,
+          "rocks_ns": 5968284
+        },
+        {
+          "first_batch": 3264,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 9022485,
+          "kasumi_ns": 6622047
+        },
+        {
+          "first_batch": 3328,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 14895398,
+          "rocks_ns": 8983821
+        },
+        {
+          "first_batch": 3392,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3186279,
+          "kasumi_ns": 2247070
+        },
+        {
+          "first_batch": 3456,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2626845,
+          "rocks_ns": 7970072
+        },
+        {
+          "first_batch": 3520,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3342023,
+          "kasumi_ns": 1908043
+        },
+        {
+          "first_batch": 3584,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 6715418,
+          "rocks_ns": 11515628
+        },
+        {
+          "first_batch": 3648,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2977663,
+          "kasumi_ns": 1883794
+        },
+        {
+          "first_batch": 3712,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1713509,
+          "rocks_ns": 9656250
+        },
+        {
+          "first_batch": 3776,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 10996942,
+          "kasumi_ns": 10945735
+        },
+        {
+          "first_batch": 3840,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3824626,
+          "rocks_ns": 8313474
+        },
+        {
+          "first_batch": 3904,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2909832,
+          "kasumi_ns": 6627297
+        },
+        {
+          "first_batch": 3968,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1777548,
+          "rocks_ns": 2942498
+        },
+        {
+          "first_batch": 4032,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 8714373,
+          "kasumi_ns": 1788464
+        }
+      ],
+      "engines": {
+        "kasumi": {
+          "ingest_ns": 225921907,
+          "after_close": {
+            "allocated": 462848,
+            "apparent": 452038,
+            "files": 3
+          },
+          "reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          },
+          "maintenance_ns": 4712550,
+          "after_maintenance": {
+            "allocated": 159744,
+            "apparent": 151526,
+            "files": 3
+          },
+          "after_maintenance_reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          }
+        },
+        "rocks": {
+          "ingest_ns": 280213895,
+          "after_close": {
+            "allocated": 1679360,
+            "apparent": 1658481,
+            "files": 8
+          },
+          "reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          },
+          "maintenance_ns": 469022,
+          "after_maintenance": {
+            "allocated": 1757184,
+            "apparent": 1730586,
+            "files": 11
+          },
+          "after_maintenance_reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          }
+        }
+      }
+    },
+    {
+      "round": 1,
+      "windows": [
+        {
+          "first_batch": 0,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2891918,
+          "kasumi_ns": 2105619
+        },
+        {
+          "first_batch": 64,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1733384,
+          "rocks_ns": 3738757
+        },
+        {
+          "first_batch": 128,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2901044,
+          "kasumi_ns": 5211278
+        },
+        {
+          "first_batch": 192,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1803923,
+          "rocks_ns": 2570432
+        },
+        {
+          "first_batch": 256,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2670761,
+          "kasumi_ns": 1927293
+        },
+        {
+          "first_batch": 320,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1747051,
+          "rocks_ns": 2597514
+        },
+        {
+          "first_batch": 384,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3303152,
+          "kasumi_ns": 1919377
+        },
+        {
+          "first_batch": 448,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1945500,
+          "rocks_ns": 2617431
+        },
+        {
+          "first_batch": 512,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2861003,
+          "kasumi_ns": 2640179
+        },
+        {
+          "first_batch": 576,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1887795,
+          "rocks_ns": 8230525
+        },
+        {
+          "first_batch": 640,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3495893,
+          "kasumi_ns": 2048080
+        },
+        {
+          "first_batch": 704,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1870587,
+          "rocks_ns": 2778174
+        },
+        {
+          "first_batch": 768,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2843671,
+          "kasumi_ns": 1972624
+        },
+        {
+          "first_batch": 832,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3102410,
+          "rocks_ns": 2782799
+        },
+        {
+          "first_batch": 896,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2791132,
+          "kasumi_ns": 1873629
+        },
+        {
+          "first_batch": 960,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1883211,
+          "rocks_ns": 2773466
+        },
+        {
+          "first_batch": 1024,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3842962,
+          "kasumi_ns": 2070954
+        },
+        {
+          "first_batch": 1088,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1715677,
+          "rocks_ns": 2769632
+        },
+        {
+          "first_batch": 1152,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2799631,
+          "kasumi_ns": 1902252
+        },
+        {
+          "first_batch": 1216,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1975958,
+          "rocks_ns": 2757341
+        },
+        {
+          "first_batch": 1280,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2957791,
+          "kasumi_ns": 1745592
+        },
+        {
+          "first_batch": 1344,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3770215,
+          "rocks_ns": 2820297
+        },
+        {
+          "first_batch": 1408,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2873503,
+          "kasumi_ns": 2876586
+        },
+        {
+          "first_batch": 1472,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3775798,
+          "rocks_ns": 2902085
+        },
+        {
+          "first_batch": 1536,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2953667,
+          "kasumi_ns": 1929918
+        },
+        {
+          "first_batch": 1600,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1843630,
+          "rocks_ns": 2879794
+        },
+        {
+          "first_batch": 1664,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2955291,
+          "kasumi_ns": 6177196
+        },
+        {
+          "first_batch": 1728,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 4630803,
+          "rocks_ns": 4486560
+        },
+        {
+          "first_batch": 1792,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3042371,
+          "kasumi_ns": 1946376
+        },
+        {
+          "first_batch": 1856,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3289360,
+          "rocks_ns": 3174616
+        },
+        {
+          "first_batch": 1920,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3083952,
+          "kasumi_ns": 1929210
+        },
+        {
+          "first_batch": 1984,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1805007,
+          "rocks_ns": 4339191
+        },
+        {
+          "first_batch": 2048,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3010289,
+          "kasumi_ns": 1840505
+        },
+        {
+          "first_batch": 2112,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1913335,
+          "rocks_ns": 3200905
+        },
+        {
+          "first_batch": 2176,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2966374,
+          "kasumi_ns": 1994915
+        },
+        {
+          "first_batch": 2240,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1880962,
+          "rocks_ns": 2895502
+        },
+        {
+          "first_batch": 2304,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2891585,
+          "kasumi_ns": 2188573
+        },
+        {
+          "first_batch": 2368,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2369233,
+          "rocks_ns": 2916793
+        },
+        {
+          "first_batch": 2432,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2916043,
+          "kasumi_ns": 1691637
+        },
+        {
+          "first_batch": 2496,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1848505,
+          "rocks_ns": 2834547
+        },
+        {
+          "first_batch": 2560,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2831046,
+          "kasumi_ns": 3263861
+        },
+        {
+          "first_batch": 2624,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1703636,
+          "rocks_ns": 4575805
+        },
+        {
+          "first_batch": 2688,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2825922,
+          "kasumi_ns": 1808215
+        },
+        {
+          "first_batch": 2752,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1863379,
+          "rocks_ns": 2803839
+        },
+        {
+          "first_batch": 2816,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3012997,
+          "kasumi_ns": 1764550
+        },
+        {
+          "first_batch": 2880,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1824631,
+          "rocks_ns": 3037621
+        },
+        {
+          "first_batch": 2944,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2873670,
+          "kasumi_ns": 3177532
+        },
+        {
+          "first_batch": 3008,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3900125,
+          "rocks_ns": 2901294
+        },
+        {
+          "first_batch": 3072,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2910377,
+          "kasumi_ns": 1802048
+        },
+        {
+          "first_batch": 3136,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1718302,
+          "rocks_ns": 2909626
+        },
+        {
+          "first_batch": 3200,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3136242,
+          "kasumi_ns": 1854463
+        },
+        {
+          "first_batch": 3264,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1799632,
+          "rocks_ns": 2829922
+        },
+        {
+          "first_batch": 3328,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2840171,
+          "kasumi_ns": 10410765
+        },
+        {
+          "first_batch": 3392,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 3663969,
+          "rocks_ns": 2912876
+        },
+        {
+          "first_batch": 3456,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2908085,
+          "kasumi_ns": 2435771
+        },
+        {
+          "first_batch": 3520,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1794716,
+          "rocks_ns": 2865003
+        },
+        {
+          "first_batch": 3584,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2925959,
+          "kasumi_ns": 3427896
+        },
+        {
+          "first_batch": 3648,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1798424,
+          "rocks_ns": 3961290
+        },
+        {
+          "first_batch": 3712,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 3025496,
+          "kasumi_ns": 1919918
+        },
+        {
+          "first_batch": 3776,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 1912002,
+          "rocks_ns": 3040204
+        },
+        {
+          "first_batch": 3840,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 2888211,
+          "kasumi_ns": 1959916
+        },
+        {
+          "first_batch": 3904,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2528850,
+          "rocks_ns": 2803673
+        },
+        {
+          "first_batch": 3968,
+          "batches": 64,
+          "order": [
+            "rocks",
+            "kasumi"
+          ],
+          "rocks_ns": 5189238,
+          "kasumi_ns": 1947833
+        },
+        {
+          "first_batch": 4032,
+          "batches": 64,
+          "order": [
+            "kasumi",
+            "rocks"
+          ],
+          "kasumi_ns": 2114118,
+          "rocks_ns": 2819713
+        }
+      ],
+      "engines": {
+        "kasumi": {
+          "ingest_ns": 157178689,
+          "after_close": {
+            "allocated": 462848,
+            "apparent": 452038,
+            "files": 3
+          },
+          "reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          },
+          "maintenance_ns": 5150656,
+          "after_maintenance": {
+            "allocated": 159744,
+            "apparent": 151526,
+            "files": 3
+          },
+          "after_maintenance_reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          }
+        },
+        "rocks": {
+          "ingest_ns": 200946674,
+          "after_close": {
+            "allocated": 1675264,
+            "apparent": 1655216,
+            "files": 8
+          },
+          "reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          },
+          "maintenance_ns": 346152,
+          "after_maintenance": {
+            "allocated": 1753088,
+            "apparent": 1727321,
+            "files": 11
+          },
+          "after_maintenance_reopened": {
+            "rows": 16387,
+            "reverse_rows": 16387,
+            "state_sha256": "927fa30fb0f6f25c6d60817c53af531d8b93833da091982dd291ca72a6c8d605"
+          }
+        }
+      }
+    }
+  ]
+}
