@@ -89,11 +89,11 @@ function digestPage(page) {
   return digest.digest('hex');
 }
 
-function latestPage(db) {
+function latestPage(db, start = indexEnd) {
   // Copy iterator buffers before advancing and closing the iterator. Hydration
   // begins only after the bounded index page has been read.
   const ids = [];
-  for (const { key } of db.getRange({ start: indexEnd, end: indexPrefix, reverse: true, limit: 24 })) {
+  for (const { key } of db.getRange({ start, end: indexPrefix, reverse: true, limit: 24 })) {
     assert(key.subarray(0, indexPrefix.length).equals(indexPrefix));
     ids.push(Buffer.from(key.subarray(key.lastIndexOf(0) + 1)));
   }
@@ -152,14 +152,15 @@ if (phase === 'write') {
       assert(actual.equals(wanted.value));
     }
     report.points = timings(pointSamples);
-    const indexRows = rows.filter(row => row.key.subarray(0, indexPrefix.length).equals(indexPrefix)).reverse().slice(0, 24);
-    const wantPage = indexRows.map(({ key }) => expected.get(
+    const indexRows = rows.filter(row => row.key.subarray(0, indexPrefix.length).equals(indexPrefix)).reverse();
+    const documents = cursor => indexRows.slice(cursor, cursor + 24).map(({ key }) => expected.get(
       Buffer.concat([documentPrefix, key.subarray(key.lastIndexOf(0) + 1)]).toString('hex'),
     ));
-    const verifyPage = page => {
-      assert.equal(page.length, wantPage.length);
+    const wantPage = documents(0);
+    const verifyPage = (page, wanted = wantPage) => {
+      assert.equal(page.length, wanted.length);
       for (let i = 0; i < page.length; i++) {
-        assert(page[i].key.equals(wantPage[i].key) && page[i].value.equals(wantPage[i].value));
+        assert(page[i].key.equals(wanted[i].key) && page[i].value.equals(wanted[i].value));
       }
     };
     verifyPage(latestPage(db));
@@ -176,6 +177,19 @@ if (phase === 'write') {
       page_sha256: digestPage(page),
     };
     assert.equal(report.latest_blocks.page_sha256, digestPage(wantPage));
+    const history = [];
+    const historyDigest = createHash('sha256');
+    for (let i = 0; i < 64; i++) {
+      const cursor = Math.floor(i * (indexRows.length - 24) / 63);
+      const wanted = documents(cursor);
+      const start = now();
+      const found = latestPage(db, indexRows[cursor].key);
+      history.push(elapsed(start));
+      verifyPage(found, wanted);
+      for (const {key,value} of found) addRow(historyDigest,key,value);
+    }
+    report.historical_pages = timings(history);
+    report.history_sha256 = historyDigest.digest('hex');
   } finally { db.close(); }
 }
 report.footprint = footprint(database);
