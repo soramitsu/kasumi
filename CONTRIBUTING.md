@@ -12,6 +12,11 @@ Install the toolchain selected by `rust-toolchain.toml`. Use a separate worktree
 and Cargo target directory for each independently changing checkout; generated
 Protobuf from a shared target can otherwise outlive its source checkout.
 
+The Python tooling requires Python 3.11 or newer (including the standard-library
+`tomllib` module). Check `python3 --version` before running the gate; macOS's
+Xcode-provided Python may be older. Use an installed `python3.12` or newer
+explicitly when necessary.
+
 Run focused tests while developing, then the complete gate:
 
 ```sh
@@ -20,6 +25,12 @@ cargo clippy --workspace --all-features --all-targets --locked --no-deps -- -D w
 cargo fmt --all --check
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
+
+On a shared or heavily loaded machine, append `-- --test-threads=2` to the
+test command and keep durable-store tests separate from benchmark runs. Some
+tests start several Raft nodes; concurrent fixtures can contend for full
+device flushes and trigger leader changes or deadlines. Preserve failed runs
+and check failures in isolation before attributing them to a code change.
 
 Changes to durability, authorization, recovery or ownership require meaningful
 failure and restart tests. Do not replace an unknown outcome with a claimed

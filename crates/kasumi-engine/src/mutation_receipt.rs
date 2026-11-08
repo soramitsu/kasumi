@@ -168,6 +168,16 @@ struct DurableRows {
 enum Source {
     Durable(DurableRows),
     Staged(Arc<EncryptedTable>),
+    /// The receipt pairs earlier members of one unpublished standalone group
+    /// prepared, over the durable rows that group's publication joins: its
+    /// later members read exactly what applying them one by one would read.
+    Chained {
+        // Row aliases retire before prior sources and their original credits.
+        rows: std::collections::BTreeMap<Vec<u8>, Arc<[u8]>>,
+        base: Arc<Source>,
+        // Last: this map's backing and new row bytes precede their paid owner.
+        _workspace: Arc<crate::admission::DocumentWorkspace>,
+    },
 }
 impl Source {
     fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
@@ -179,6 +189,12 @@ impl Source {
             Self::Staged(table) => table
                 .get(key)?
                 .map(crate::materialization_row::MaterializationRow::Staged),
+            Self::Chained { base, rows, .. } => match rows.get(key) {
+                Some(row) => Some(crate::materialization_row::MaterializationRow::Pending(
+                    row.clone(),
+                )),
+                None => return base.get(key),
+            },
         };
         ensure!(
             result
@@ -187,6 +203,20 @@ impl Source {
             "receipt physical row exceeds bound"
         );
         Ok(result)
+    }
+    fn durable(&self) -> Option<&DurableRows> {
+        match self {
+            Self::Durable(rows) => Some(rows),
+            Self::Chained { base, .. } => base.durable(),
+            Self::Staged(_) => None,
+        }
+    }
+    // The source a chained one reads through to, or this one.
+    fn base(source: &Arc<Self>) -> Arc<Self> {
+        match source.as_ref() {
+            Self::Chained { base, .. } => Self::base(base),
+            _ => source.clone(),
+        }
     }
 }
 pub(crate) enum Lookup {
@@ -212,13 +242,21 @@ impl View {
     /// `Pending::prepare_publication` would choose for a row of at most
     /// `PreparedPublication::MAX_ROW` bytes.
     pub(crate) fn joins_publication(&self) -> Result<bool> {
-        Ok(match self.source.as_deref() {
-            Some(Source::Durable(storage)) => {
+        Ok(match self.source.as_deref().and_then(Source::durable) {
+            Some(storage) => {
                 storage.store.record_encryption_overhead()?
                     <= PreparedPublication::MAX_ENCRYPTION_OVERHEAD
             }
-            _ => false,
+            None => false,
         })
+    }
+    /// This view without the unpublished pairs of a standalone group's earlier
+    /// members: what the group publishes once those pairs are durable.
+    pub(crate) fn unchained(&self) -> Self {
+        Self {
+            source: self.source.as_ref().map(Source::base),
+            head: self.head.clone(),
+        }
     }
 }
 impl std::fmt::Debug for View {
@@ -840,8 +878,9 @@ pub(crate) struct PreparedPublication {
     source: Arc<Source>,
     head: MutationReceiptHead,
     tenant: String,
+    retained: u64,
     // Last: all encoded row/key/vector backing retires before its real credit.
-    _workspace: crate::admission::DocumentWorkspace,
+    _workspace: Arc<crate::admission::DocumentWorkspace>,
 }
 impl PreparedPublication {
     const MAX_ROW: usize = 64 << 10;
@@ -862,6 +901,71 @@ impl PreparedPublication {
             "private receipt publication differs from candidate"
         );
         Ok(())
+    }
+
+    pub(crate) fn head(&self) -> &MutationReceiptHead {
+        &self.head
+    }
+
+    /// Whether `view` reads the durable rows this pair joins.
+    pub(crate) fn joins_rows_of(&self, view: &View) -> bool {
+        view.source
+            .as_ref()
+            .is_some_and(|source| Arc::ptr_eq(&Source::base(source), &Source::base(&self.source)))
+    }
+
+    /// The view the next member of the same unpublished standalone group
+    /// reads: this pair's prospective head, with this pair and the earlier
+    /// members' pairs visible before the group's publication commits them.
+    /// Their copies are charged to this pair's own workspace.
+    pub(crate) fn chained_view(&mut self) -> Result<View> {
+        use kasumi_query::QueryWorkspace as _;
+        // Reserve the new map's cloned keys, node backing and new row bytes
+        // before allocating them. Existing row bodies remain shared by Arc.
+        let mut copied = 4096u64;
+        if let Source::Chained { rows, .. } = self.source.as_ref() {
+            for key in rows.keys() {
+                copied = copied
+                    .checked_add(u64::try_from(key.len())?)
+                    .and_then(|bytes| bytes.checked_add(256))
+                    .context("receipt overlay size overflow")?;
+            }
+        }
+        for write in &self.writes {
+            let WriteOp::Put { key, value, .. } = write else {
+                anyhow::bail!("receipt publication deletes a row");
+            };
+            copied = copied
+                .checked_add(u64::try_from(key.len() + value.len())?)
+                .and_then(|bytes| bytes.checked_add(256))
+                .context("receipt overlay size overflow")?;
+        }
+        let retained = self
+            .retained
+            .checked_add(copied)
+            .context("receipt overlay size overflow")?;
+        Arc::get_mut(&mut self._workspace)
+            .context("receipt overlay workspace was already shared")?
+            .ensure_peak(retained)?;
+        self.retained = retained;
+        let mut rows = match self.source.as_ref() {
+            Source::Chained { rows, .. } => rows.clone(),
+            _ => std::collections::BTreeMap::new(),
+        };
+        for write in &self.writes {
+            let WriteOp::Put { key, value, .. } = write else {
+                unreachable!("validated receipt put")
+            };
+            rows.insert(key.clone(), Arc::from(value.as_slice()));
+        }
+        Ok(View {
+            source: Some(Arc::new(Source::Chained {
+                rows,
+                base: self.source.clone(),
+                _workspace: self._workspace.clone(),
+            })),
+            head: self.head.clone(),
+        })
     }
 
     /// A deliberately bounded optimization, not a new acceptance limit.
@@ -902,6 +1006,47 @@ impl PreparedPublication {
         bytes.is_some_and(|bytes| bytes <= 1 << 20)
     }
 
+    /// [`Self::can_join`] for the publication of a standalone group of
+    /// `members` ordinary entries ending at `position`: up to each member's
+    /// share of body puts and bytes, so the transaction, with every member's
+    /// receipt pair, journal record and the cursor, stays as far below the
+    /// store's transaction bounds as one entry's does.
+    pub(crate) fn can_join_group(
+        position: &kasumi_raft::AppliedEntryContext,
+        documents: &[WriteOp],
+        members: usize,
+    ) -> bool {
+        if members == 0
+            || members > 16
+            || position.retirement_seed.is_some()
+            || *position.membership.log_id() == Some(position.log_id)
+            || documents.len() > 32 * members
+        {
+            return false;
+        }
+        let bytes = documents.iter().try_fold(0usize, |bytes, operation| {
+            let WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } = operation
+            else {
+                return None;
+            };
+            if !matches!(
+                namespace.as_str(),
+                crate::document_store::BODIES | crate::document_store::BLOBS
+            ) {
+                return None;
+            }
+            bytes
+                .checked_add(namespace.len())?
+                .checked_add(key.len())?
+                .checked_add(value.len())
+        });
+        bytes.is_some_and(|bytes| bytes <= members << 20)
+    }
+
     pub(crate) fn append_to(&mut self, writes: &mut Vec<WriteOp>) -> Result<()> {
         // The <=32-entry destination's reallocation/shell overlap is covered
         // by this owner's 64 KiB floor. Payloads move once, never clone.
@@ -911,12 +1056,12 @@ impl PreparedPublication {
     }
 
     pub(crate) fn stage_separately(self) -> Result<()> {
-        let Source::Durable(storage) = self.source.as_ref() else {
+        let Some(storage) = self.source.durable() else {
             anyhow::bail!("private receipt publication lacks durable storage");
         };
         storage.store.write_batch(&self.writes)?;
         View {
-            source: Some(self.source.clone()),
+            source: Some(Source::base(&self.source)),
             head: self.head.clone(),
         }
         .check_head(&self.tenant)
@@ -990,7 +1135,7 @@ impl Pending {
             self.rows.len() == 1,
             "ordinary receipt publication has multiple rows"
         );
-        let Some(Source::Durable(storage)) = self.previous.source.as_deref() else {
+        let Some(storage) = self.previous.source.as_deref().and_then(Source::durable) else {
             return Ok((self.stage()?, None));
         };
         ensure!(
@@ -1066,7 +1211,8 @@ impl Pending {
             source: source.clone(),
             head: self.head.clone(),
             tenant,
-            _workspace: workspace,
+            retained: 2 * length as u64 + (64 << 10),
+            _workspace: Arc::new(workspace),
         };
         let view = View {
             source: self.previous.source,
@@ -1087,7 +1233,10 @@ impl Pending {
             anyhow::bail!("receipt append storage is not installed");
         };
         match source.as_ref() {
-            Source::Durable(storage) => {
+            Source::Durable(_) | Source::Chained { .. } => {
+                let storage = source
+                    .durable()
+                    .context("receipt append storage is not durable")?;
                 let namespace = storage.binding.namespace();
                 for row in &self.rows {
                     let id = id_key(&row.key);

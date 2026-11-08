@@ -161,7 +161,7 @@ fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
     let mut continuation = pagination_continuation_owner(&node, &cursor, &cancellation);
     let admitted = node.snapshot();
     let page = continuation
-        .copy_page(1, 7, usize::MAX, &cancellation)
+        .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
         .unwrap();
     assert_eq!(page, pagination_page(&rows, 1..2));
     assert_eq!(
@@ -197,7 +197,7 @@ fn pagination_memory_continuation_copy_admits_its_page_before_cursor_handoff() {
     let admitted = node.snapshot();
     assert_eq!(
         continuation
-            .copy_page(1, 7, usize::MAX, &cancellation)
+            .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
             .unwrap_err()
             .code,
         ErrorCode::ResourceExhausted
@@ -265,10 +265,12 @@ fn pagination_memory_concurrent_continuations_use_independent_page_charges() {
     drop((owner, first_page));
     let mut first = pagination_continuation_owner(&node, &cursor, &cancellation);
     let mut second = pagination_continuation_owner(&node, &cursor, &cancellation);
-    let first_page = first.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
+    let first_page = first
+        .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
+        .unwrap();
     assert_eq!(
         second
-            .copy_page(1, 7, usize::MAX, &cancellation)
+            .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
             .unwrap_err()
             .code,
         ErrorCode::ResourceExhausted
@@ -292,7 +294,9 @@ fn pagination_memory_concurrent_continuations_use_independent_page_charges() {
     ));
     drop(first_page);
     drop(first);
-    let second_page = second.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
+    let second_page = second
+        .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
+        .unwrap();
     assert_eq!(second_page, pagination_page(&rows, 1..2));
     drop(cursor);
     assert!(
@@ -312,7 +316,9 @@ async fn pagination_memory_await_cancellation_and_unwind_drain_payload_before_ch
     let (mut owner, first_page, fence, _) = pagination_fresh_owner(&node, &cancellation);
     let weak = Arc::downgrade(&owner.rows);
     let mut pending = Box::pin(async move {
-        let page = owner.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
+        let page = owner
+            .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
+            .unwrap();
         std::future::pending::<()>().await;
         drop((page, first_page));
         drop(owner);
@@ -340,7 +346,9 @@ async fn pagination_memory_await_cancellation_and_unwind_drain_payload_before_ch
     let weak = Arc::downgrade(&owner.rows);
     let unwind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(move || {
         let _first_page = first_page;
-        let _page = owner.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
+        let _page = owner
+            .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
+            .unwrap();
         panic!("injected pagination release panic");
     }));
     assert!(unwind.is_err());
@@ -410,7 +418,13 @@ fn pagination_memory_completed_pages_release_only_their_operation_slots() {
     drop(owner);
     let mut continuation = pagination_continuation_owner(&node, &cursor, &cancellation);
     let next_page = continuation
-        .copy_page(cursor.offset, cursor.revision, usize::MAX, &cancellation)
+        .copy_page(
+            cursor.offset,
+            cursor.revision,
+            usize::MAX,
+            &cancellation,
+            read_deadline(),
+        )
         .unwrap();
     let pending = node.snapshot();
     continuation.prepare_page_handoff().unwrap();
@@ -472,7 +486,9 @@ fn pagination_memory_continuation_release_error_keeps_its_request_charged() {
     let cursor = pagination_cursor(&mut original, 1);
     drop((original, first_page));
     let mut full = pagination_continuation_owner(&node, &cursor, &cancellation);
-    let page = full.copy_page(1, 7, usize::MAX, &cancellation).unwrap();
+    let page = full
+        .copy_page(1, 7, usize::MAX, &cancellation, read_deadline())
+        .unwrap();
     full.prepare_page_handoff().unwrap();
     let page_charge = Arc::downgrade(full.page_charge.as_ref().unwrap());
     let retained = node.snapshot();
@@ -785,6 +801,8 @@ async fn pagination_native_continuation_keeps_worker_and_decode_charge_after_can
         entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         released: Mutex<std::sync::mpsc::Receiver<()>>,
     }
+    // Loads through this wrapper, one view each, so it can pause one.
+    impl crate::document_store::GenerationDocuments for PausedNativeDocument {}
     impl DocumentResolver for PausedNativeDocument {
         fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
             // Resolve the actual encrypted selected body and hold its original
@@ -905,4 +923,8 @@ async fn pagination_native_continuation_keeps_worker_and_decode_charge_after_can
     drop(held_slots);
     assert_eq!(fixture.db.query_slots.available_permits(), 4);
     fixture.close().await;
+}
+
+fn read_deadline() -> std::time::Instant {
+    std::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT
 }

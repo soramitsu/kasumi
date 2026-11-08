@@ -145,7 +145,10 @@ impl Candidate {
             terminals: generation.terminals.clone(),
             targets: generation.target_resolutions.clone(),
             documents: generation.staged_documents.clone(),
-            resolver: generation.document_sources.get().cloned(),
+            resolver: generation
+                .document_sources
+                .get()
+                .map(|resolver| resolver.clone() as Arc<dyn kasumi_types::DocumentResolver>),
         }
     }
     fn prepare(

@@ -83,6 +83,47 @@ fn code<T>(result: ReadResult<T, DocumentSourceFailure>) -> ErrorCode {
 }
 
 #[test]
+fn bounded_reads_stop_lending_after_deadline_without_retiring_generation() {
+    let generation = fixture();
+    let mut reads = DocumentReads::new(
+        &generation,
+        Instant::now() + std::time::Duration::from_secs(60),
+    )
+    .unwrap();
+    reads
+        .source("docs")
+        .unwrap()
+        .with_record("a", Some(1), &token(), |record| {
+            assert_eq!(record.unwrap().version(), 1);
+            Ok(())
+        })
+        .unwrap();
+    reads.deadline = Instant::now();
+    let source = reads.source("docs").unwrap();
+    assert_eq!(
+        code::<()>(source.with_record("a", None, &token(), |_| {
+            panic!("expired read lent a record")
+        })),
+        ErrorCode::ResourceExhausted
+    );
+    assert_eq!(
+        code(source.visit_records(|_, _| panic!("expired read visited a record"))),
+        ErrorCode::ResourceExhausted
+    );
+    drop(source);
+    reads.finish().unwrap();
+    // Expiring one page never expires the generation retained by a cursor.
+    generation
+        .document_source("docs")
+        .unwrap()
+        .with_record("a", Some(1), &token(), |record| {
+            assert_eq!(record.unwrap().version(), 1);
+            Ok(())
+        })
+        .unwrap();
+}
+
+#[test]
 fn identity_retains_actual_generation_collection_and_exact_indexes() {
     let generation = fixture();
     let weak = Arc::downgrade(&generation);

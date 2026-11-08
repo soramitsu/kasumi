@@ -32,6 +32,7 @@ Nothing written here contains credentials or document bodies.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import platform
@@ -211,7 +212,7 @@ class Harness:
 
     def compact(self, system):
         """Apply --compact-before to a Kasumi case: request a cycle, and with
-        `finish` wait until the node database is idle in a later cycle."""
+        `finish` wait until the node database has consumed the request and is idle."""
         mode = self.arguments.compact_before
         if mode == "none" or system not in self.observers:
             return None
@@ -223,11 +224,35 @@ class Harness:
             raise RuntimeError("compaction request failed: " + requested.stderr.decode(errors="replace")[-1000:])
         if mode == "start":
             return {"mode": mode}
+        fresh_after = time.monotonic()
+        confirmed_idle = False
         while time.monotonic() - started < self.arguments.recovery_timeout:
             time.sleep(1)
+            observing = time.monotonic()
             figures = self.storage(system)
-            if figures.get("compaction_cycle", 0) > cycle and figures.get('compaction_phase{phase="idle"}') == 1:
-                return {"mode": mode, "seconds": time.monotonic() - started}
+            # Requests can join a running cycle, or find no older files to
+            # compact. Neither requires the cycle counter to advance.
+            # Maintenance clears requested after consuming the request. Metrics
+            # are a worker's cached copy, so require two fresh idle publications
+            # after the request returns. One old status could have been captured
+            # before the request and published afterwards by that worker.
+            # Compare age with elapsed time BEFORE asking for metrics: response
+            # latency must not make an old publication look fresh.
+            age = figures.get("status_age_seconds")
+            fresh = isinstance(age, (int, float)) and 0 <= age <= observing - fresh_after
+            if (fresh and figures.get("compaction_requested") == 0
+                    and figures.get('compaction_phase{phase="idle"}') == 1):
+                if not confirmed_idle:
+                    confirmed_idle = True
+                    fresh_after = time.monotonic()
+                    continue
+                return {"mode": mode, "seconds": time.monotonic() - started,
+                        "cycle_before": cycle, "cycle_after": figures.get("compaction_cycle"),
+                        "fresh_idle_publications": 2}
+            if (figures.get('compaction_phase{phase="idle"}') != 1
+                    or figures.get("compaction_requested") != 0):
+                confirmed_idle = False
+                fresh_after = time.monotonic()
         raise RuntimeError(f"requested compaction did not finish within {self.arguments.recovery_timeout} s")
 
     @staticmethod
@@ -262,6 +287,7 @@ class Harness:
         cost = procstat.delta(before, after)
         storage_after = self.storage(system)
         entry = {**report, "driver_system": report["system"], "system": system, "phase": phase,
+                 "resource_window": "whole_driver_invocation_including_warmup",
                  "server": {**cost, "rss_bytes_after": after["rss_bytes"],
                             "footprint_bytes_after": after["footprint_bytes"],
                             "peak_rss_bytes_sampled": peak.peak_rss,
@@ -279,6 +305,8 @@ class Harness:
             entry["write_amplification_physical"] = cost["disk_bytes_written"] / report["logical_bytes_written"]
             entry["write_amplification_logical"] = cost["logical_bytes_written"] / report["logical_bytes_written"]
         self.record(entry)
+        if report["errors"]:
+            raise RuntimeError(f"{system} {workload} reported errors: {report.get('first_error')}")
         return entry
 
     def probe(self, base, ping, started, timeout):
@@ -289,7 +317,7 @@ class Harness:
 
     # ------------------------------------------------------------ systems
 
-    def kasumi(self, system):
+    def kasumi(self, system, cleanup):
         directory = self.work / system
         directory.mkdir(mode=0o700)
         (directory / "tmp").mkdir(mode=0o700)
@@ -315,10 +343,18 @@ class Harness:
         if init.returncode != 0:
             raise RuntimeError("kasumid init failed: " + init.stderr.decode(errors="replace")[-3000:])
         init_seconds = time.monotonic() - started
+        if self.arguments.kasumi_cache_bytes is not None:
+            configuration = installation / "kasumi.json"
+            settings = json.loads(configuration.read_text())
+            settings["persistent_disk"]["native_storage"]["byte_limit"] = self.arguments.kasumi_cache_bytes
+            configured = installation / "kasumi-benchmark.json"
+            dev_standalone.private_write(configured, settings)
+            configured.replace(configuration)
         profile = installation / "profiles/default.json"
         server = Server(system, [str(binaries / "kasumid"), "serve", str(installation / "kasumi.json")],
                         environment, directory / "server.log")
         started = time.monotonic()
+        cleanup.callback(server.stop)
         server.start()
         # Wait for an authenticated call before creating the collection.
         deadline = time.monotonic() + 600
@@ -341,6 +377,7 @@ class Harness:
                 watchers.append(subprocess.Popen(
                     [str(binaries / "kasumid"), "credential", "watch", str(renewed)],
                     stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True, env=environment))
+                cleanup.callback(self.stop_watcher, watchers[-1])
         # Collections are the tenant operator's to create; the data profile
         # is the application's and cannot administer.
         admin = directory / "admin-client.json"
@@ -366,7 +403,7 @@ class Harness:
                 "data_directory": str(installation / "data"), "installation": str(installation)}
         return server, base, info, watchers
 
-    def redis(self, system):
+    def redis(self, system, cleanup):
         directory = self.work / system
         directory.mkdir(mode=0o700)
         data = directory / "data"
@@ -395,6 +432,7 @@ class Harness:
                 "--redis-cert", tls["client"], "--redis-key", tls["client_key"], "--redis-user", "bench",
                 "--redis-password-file", str(password_file), "--redis-index", "true"]
         started = time.monotonic()
+        cleanup.callback(server.stop)
         server.start()
         return server, base, {"data_directory": str(data), "appendfsync": fsync, "started": started}, []
 
@@ -403,27 +441,23 @@ class Harness:
     def setup_system(self, system):
         """Install, start and load one system; returns its running state."""
         print(f"== {system}", flush=True)
-        if system.startswith("kasumi"):
-            server, base, info, watchers = self.kasumi(system)
-            # Kasumi's first readiness was observed with kasumictl during install.
-            self.record({"system": system, "phase": "install", **info,
-                         "load_average": procstat.load_average()})
-        else:
-            server, base, info, watchers = self.redis(system)
-            seconds, _ = self.probe(base, True, info.pop("started"), 120)
-            self.record({"system": system, "phase": "cold-start-empty", "seconds": seconds, **info,
-                         "load_average": procstat.load_average()})
-        state = {"system": system, "server": server, "base": base, "info": info, "watchers": watchers}
-        try:
-            loaded = self.measured(system, server, base, "load", self.arguments.load_clients, phase="load")
-            if loaded["errors"]:
-                raise RuntimeError(f"{system} load reported errors: {loaded['first_error']}")
+        with contextlib.ExitStack() as cleanup:
+            if system.startswith("kasumi"):
+                server, base, info, watchers = self.kasumi(system, cleanup)
+                # Kasumi's readiness was observed with kasumictl during install.
+                self.record({"system": system, "phase": "install", **info,
+                             "load_average": procstat.load_average()})
+            else:
+                server, base, info, watchers = self.redis(system, cleanup)
+                seconds, _ = self.probe(base, True, info.pop("started"), 120)
+                self.record({"system": system, "phase": "cold-start-empty", "seconds": seconds, **info,
+                             "load_average": procstat.load_average()})
+            state = {"system": system, "server": server, "base": base, "info": info, "watchers": watchers}
+            self.measured(system, server, base, "load", self.arguments.load_clients, phase="load")
             if self.arguments.idle_seconds:
                 self.idle(system, server)
-        except BaseException:
-            self.stop_system(state)
-            raise
-        return state
+            state["cleanup"] = cleanup.pop_all()
+            return state
 
     def idle(self, system, server):
         """CPU and memory of a loaded server that receives no requests."""
@@ -459,16 +493,31 @@ class Harness:
                          "load_average": procstat.load_average()})
 
     @staticmethod
+    def stop_watcher(watcher):
+        if watcher.poll() is None:
+            watcher.send_signal(signal.SIGINT)
+            try:
+                watcher.wait(timeout=30)
+            except subprocess.TimeoutExpired:
+                watcher.kill()
+                watcher.wait()
+
+    @staticmethod
     def stop_system(state):
-        state["server"].stop(signal.SIGTERM)
-        for watcher in state["watchers"]:
-            if watcher.poll() is None:
-                watcher.send_signal(signal.SIGINT)
-                try:
-                    watcher.wait(timeout=30)
-                except subprocess.TimeoutExpired:
-                    watcher.kill()
-                    watcher.wait()
+        # ExitStack attempts every cleanup even if one process fails to stop.
+        state["cleanup"].close()
+
+    def retain_failure_logs(self, system):
+        directory = self.work / system
+        logs = [directory / "server.log", *sorted((directory / "tmp").glob("kasumi-daemon-*.log"))]
+        retained = []
+        for source in logs:
+            if source.is_file():
+                destination = self.output / system / source.name
+                destination.parent.mkdir(mode=0o700, exist_ok=True)
+                shutil.copy2(source, destination)
+                retained.append(str(destination.relative_to(self.output)))
+        return retained
 
     def run(self):
         self.work.mkdir(mode=0o700)
@@ -514,8 +563,16 @@ class Harness:
                         failed(state, error)
         finally:
             for state in running:
-                self.stop_system(state)
-        import contextlib
+                try:
+                    self.stop_system(state)
+                except Exception as error:
+                    failed(state, error)
+        for system in dict.fromkeys(failures):
+            try:
+                logs = self.retain_failure_logs(system)
+                self.record({"system": system, "phase": "diagnostics", "logs": logs})
+            except OSError as error:
+                self.record({"system": system, "phase": "diagnostics", "error": str(error)})
         import report
         with (self.output / "summary.md").open("w") as summary, contextlib.redirect_stdout(summary):
             report.main([str(self.results)])
@@ -546,6 +603,8 @@ def main(argv=None):
     parser.add_argument("--recovery-timeout", type=int, default=1800)
     parser.add_argument("--call-timeout", type=int, default=60,
                         help="Kasumi per-call deadline in seconds, including SDK resends")
+    parser.add_argument("--kasumi-cache-bytes", type=int,
+                        help="override Kasumi's persistent native cache cap for a memory comparison")
     parser.add_argument("--idle-seconds", type=int, default=10,
                         help="measure each loaded server's idle CPU for this long (0 skips)")
     parser.add_argument("--compact-before", choices=["none", "start", "finish"], default="none",
@@ -554,6 +613,8 @@ def main(argv=None):
     parser.add_argument("--skip-restart", action="store_true")
     parser.add_argument("--keep-work", action="store_true")
     arguments = parser.parse_args(argv)
+    if arguments.kasumi_cache_bytes is not None and arguments.kasumi_cache_bytes < 0:
+        parser.error("--kasumi-cache-bytes must be nonnegative")
     arguments.systems = [s for s in arguments.systems.split(",") if s]
     arguments.workloads = [w for w in arguments.workloads.split(",") if w]
     arguments.clients = [int(c) for c in arguments.clients.split(",") if c]

@@ -1,6 +1,7 @@
 use crate::admission::{
     CancelOnDrop, NodeAdmission, ProposalBudget, Reservation, WorkFence, WorkRegistration,
 };
+use crate::document_source::DocumentReads;
 use crate::output::{AdmittedOutput, OUTPUT_CHARGE_BYTES};
 use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, TenantEngine};
 #[path = "audit_maintenance_service.rs"]
@@ -18,6 +19,8 @@ pub(crate) mod control_topology_service;
 mod database_worker_outcome_tests;
 #[path = "database_workers.rs"]
 mod database_workers;
+#[path = "proposal_group.rs"]
+mod proposal_group;
 #[path = "proposal_input.rs"]
 pub(crate) mod proposal_input;
 #[path = "proposal_jobs.rs"]
@@ -286,6 +289,26 @@ fn document_load_error(error: anyhow::Error) -> Error {
     }
 }
 
+/// Run one bounded read through `reads`, then retire its shared document view
+/// before the result leaves the worker. A failed view or ended key access
+/// fails the read, as each document's own close did before.
+fn with_document_reads<T>(
+    generation: &Arc<crate::Generation>,
+    deadline: std::time::Instant,
+    read: impl FnOnce(&DocumentReads) -> Result<T>,
+) -> Result<T> {
+    let reads = DocumentReads::new(generation, deadline).map_err(document_load_error)?;
+    let result = read(&reads);
+    match (result, reads.finish()) {
+        (result, Ok(())) => result,
+        (Ok(value), Err(error)) => {
+            drop(value);
+            Err(document_load_error(error))
+        }
+        (Err(error), Err(_)) => Err(error),
+    }
+}
+
 /// How long ordered admission waits for a new leader to apply its own term's
 /// first entry, the quorum read barrier's bound.
 const APPLIED_TERM_DEADLINE: Duration = Duration::from_secs(5);
@@ -451,7 +474,7 @@ impl ProposalWork {
         // The background proposal owns this gate; caller timeout/cancellation
         // cannot let later commands overtake an unresolved write. Time is
         // sampled only after the previous write has finished.
-        let _guard = self.admission_gate.clone().lock_owned().await;
+        // The proposal queue's driver holds admission_gate through this call.
         phase!("applied_term");
         // Every check below reads applied state. A new leader admits nothing
         // until that state covers what earlier leaders committed: a proposal
@@ -631,37 +654,41 @@ impl ProposalWork {
             }
         };
         phase!("consensus_returned");
-        match response {
-            Err(error) if kasumi_raft::is_application_write_capacity_denied(&error) => {
-                // This typed API rejection precedes log publication. It is a
-                // recoverable request result, never a failed custody child or
-                // a rejection manufactured while applying a committed entry.
-                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "replication task capacity is exhausted",
-                )))?)
-            }
-            Err(error) if kasumi_raft::is_application_write_redirect(&error) => {
-                // Leadership changes are request outcomes. Preserve the existing
-                // uncertain-write contract: only original identity resolution
-                // settles whether an earlier attempt committed.
-                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "write leadership changed; resolve or retry with the same idempotency key",
-                )))?)
-            }
-            Err(error) if kasumi_raft::is_post_commit_access_loss(&error) => {
-                // The entry committed and applied; only its result release lost
-                // access. That is the documented uncertain outcome, not a failed
-                // custody child. The lost access itself still closes the tenant
-                // through its own gate, and no result data is released here.
-                Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
-                    ErrorCode::UnknownOutcome,
-                    "write committed before access was lost; resolve or retry with the same idempotency key",
-                )))?)
-            }
-            outcome => outcome,
+        proposal_response(response)
+    }
+}
+
+fn proposal_response(response: anyhow::Result<Vec<u8>>) -> anyhow::Result<Vec<u8>> {
+    match response {
+        Err(error) if kasumi_raft::is_application_write_capacity_denied(&error) => {
+            // This typed API rejection precedes log publication. It is a
+            // recoverable request result, never a failed custody child or
+            // a rejection manufactured while applying a committed entry.
+            Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                ErrorCode::ResourceExhausted,
+                "replication task capacity is exhausted",
+            )))?)
         }
+        Err(error) if kasumi_raft::is_application_write_redirect(&error) => {
+            // Leadership changes are request outcomes. Preserve the existing
+            // uncertain-write contract: only original identity resolution
+            // settles whether an earlier attempt committed.
+            Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                ErrorCode::UnknownOutcome,
+                "write leadership changed; resolve or retry with the same idempotency key",
+            )))?)
+        }
+        Err(error) if kasumi_raft::is_post_commit_access_loss(&error) => {
+            // The entry committed and applied; only its result release lost
+            // access. That is the documented uncertain outcome, not a failed
+            // custody child. The lost access itself still closes the tenant
+            // through its own gate, and no result data is released here.
+            Ok(serde_json::to_vec(&Err::<WriteReceipt, _>(Error::new(
+                ErrorCode::UnknownOutcome,
+                "write committed before access was lost; resolve or retry with the same idempotency key",
+            )))?)
+        }
+        outcome => outcome,
     }
 }
 
@@ -717,6 +744,7 @@ struct QueryWork {
     generation: Arc<crate::Generation>,
     request: QueryRequest,
     cancellation: QueryCancellation,
+    deadline: std::time::Instant,
     _permit: tokio::sync::OwnedSemaphorePermit,
     memory: QueryMemory<Reservation>,
     // Registration must outlive every captured input, including on unwinding.
@@ -743,9 +771,16 @@ impl QueryWork {
             bytes: limits.max_result_bytes,
         };
         if self.request.paging == Paging::Seek {
-            let response =
-                query_seek::seek_page(generation, &self.request, cancellation, &mut self.memory)
-                    .map(|page| (page, PinnedRows::default()));
+            let response = with_document_reads(generation, self.deadline, |reads| {
+                query_seek::seek_page(
+                    generation,
+                    reads,
+                    &self.request,
+                    cancellation,
+                    &mut self.memory,
+                )
+            })
+            .map(|page| (page, PinnedRows::default()));
             return QueryOutput {
                 response,
                 request: self.request,
@@ -753,31 +788,30 @@ impl QueryWork {
                 _registration: self.registration.clone(),
             };
         }
-        let response = generation
-            .document_source(&self.request.collection)
-            .and_then(|source| {
-                generation
-                    .indexes
-                    .execute_page(
-                        &source,
-                        &self.request,
-                        limits,
-                        bound,
-                        cancellation,
-                        &mut self.memory,
-                        |remaining, memory| {
-                            pin_rows(
-                                remaining,
-                                generation,
-                                &self.request.collection,
-                                limits.max_cursor_bytes,
-                                cancellation,
-                                memory,
-                            )
-                        },
-                    )
-                    .map_err(source_read_error)
-            });
+        let response = with_document_reads(generation, self.deadline, |reads| {
+            let source = reads.source(&self.request.collection)?;
+            generation
+                .indexes
+                .execute_page(
+                    &source,
+                    &self.request,
+                    limits,
+                    bound,
+                    cancellation,
+                    &mut self.memory,
+                    |remaining, memory| {
+                        pin_rows(
+                            remaining,
+                            generation,
+                            &self.request.collection,
+                            limits.max_cursor_bytes,
+                            cancellation,
+                            memory,
+                        )
+                    },
+                )
+                .map_err(source_read_error)
+        });
         QueryOutput {
             response,
             request: self.request,
@@ -826,6 +860,7 @@ impl QueryResultOwner {
         revision: u64,
         max_result_bytes: usize,
         cancellation: &QueryCancellation,
+        deadline: std::time::Instant,
     ) -> Result<QueryResponse> {
         let bound = kasumi_query::PageBound {
             rows: self.request.page_size(),
@@ -837,20 +872,23 @@ impl QueryResultOwner {
                 "cursor selected generation is missing",
             )
         })?;
-        let source = generation.document_source(&self.request.collection)?;
-        let rows = kasumi_query::copy_page_from_source(
-            &source,
-            self.rows.rows[offset.min(self.rows.rows.len())..]
-                .iter()
-                .map(|row| (row.document.id(), row.document.version(), row.score)),
-            &self.request.select,
-            bound,
-            cancellation,
-            self.memory
-                .as_mut()
-                .expect("query page keeps its operation ledger"),
-        )
-        .map_err(source_read_error)?;
+        // Each continuation page opens its own shared view; the cursor
+        // retains only the generation, never a view, between pages.
+        let rows = with_document_reads(generation, deadline, |reads| {
+            kasumi_query::copy_page_from_source(
+                &reads.source(&self.request.collection)?,
+                self.rows.rows[offset.min(self.rows.rows.len())..]
+                    .iter()
+                    .map(|row| (row.document.id(), row.document.version(), row.score)),
+                &self.request.select,
+                bound,
+                cancellation,
+                self.memory
+                    .as_mut()
+                    .expect("query page keeps its operation ledger"),
+            )
+            .map_err(source_read_error)
+        })?;
         Ok(QueryResponse {
             revision,
             rows,
@@ -916,6 +954,7 @@ struct SnapshotWork {
     generation: Arc<crate::Generation>,
     request: ReadSnapshotRequest,
     cancellation: QueryCancellation,
+    deadline: std::time::Instant,
     _permit: tokio::sync::OwnedSemaphorePermit,
     memory: QueryMemory<Reservation>,
     registration: Arc<WorkRegistration>,
@@ -950,7 +989,9 @@ impl SnapshotOutput {
 }
 impl SnapshotWork {
     fn run(mut self) -> SnapshotOutput {
-        let response = self.evaluate();
+        let generation = self.generation.clone();
+        let response =
+            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads));
         SnapshotOutput {
             response,
             memory: self.memory,
@@ -958,7 +999,7 @@ impl SnapshotWork {
         }
     }
 
-    fn evaluate(&mut self) -> Result<SnapshotReadResponse> {
+    fn evaluate(&mut self, reads: &DocumentReads) -> Result<SnapshotReadResponse> {
         let state = &self.generation.state;
         let generation = &self.generation;
         let request = &self.request;
@@ -991,7 +1032,7 @@ impl SnapshotWork {
             };
             for key in &request.documents {
                 cancellation.check()?;
-                let source = generation.document_source(&key.collection)?;
+                let source = reads.source(&key.collection)?;
                 source
                     .with_record(&key.id, None, cancellation, |record| {
                         let document = match record {
@@ -1025,7 +1066,7 @@ impl SnapshotWork {
             }
             for query in &request.queries {
                 cancellation.check()?;
-                let source = generation.document_source(&query.collection)?;
+                let source = reads.source(&query.collection)?;
                 // Snapshot queries are complete: no cursor follows their page.
                 let bound = kasumi_query::PageBound {
                     rows: query.page_size(),
@@ -2759,6 +2800,7 @@ impl Database {
             generation: generation.clone(),
             request: input.request,
             cancellation: cancellation.clone(),
+            deadline: deadline.into_std(),
             _permit: permit,
             memory: input.memory,
             registration,
@@ -3393,9 +3435,16 @@ impl Database {
             // Stored cursor rows require synchronous native reads and decode.
             // The actual worker keeps the selected generation, page charge,
             // registration and permit if the caller times out or disconnects.
+            let worker_deadline = deadline.into_std();
             let worker = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                let page = full.copy_page(offset, revision, max_result_bytes, &worker_cancellation);
+                let page = full.copy_page(
+                    offset,
+                    revision,
+                    max_result_bytes,
+                    &worker_cancellation,
+                    worker_deadline,
+                );
                 (page, full)
             });
             let (page, full) = tokio::select! {
@@ -3412,6 +3461,7 @@ impl Database {
                 generation: generation.clone(),
                 request: input.request,
                 cancellation: cancellation.clone(),
+                deadline: deadline.into_std(),
                 _permit: permit,
                 memory: input.memory,
                 registration: registration.clone(),
@@ -3689,6 +3739,7 @@ mod tests {
     include!("service_snapshot_admission_tests.rs");
     include!("service_credential_tests.rs");
     include!("service_proposal_tests.rs");
+    include!("service_group_commit_tests.rs");
     include!("service_topology_input_tests.rs");
     include!("service_mutation_receipt_tests.rs");
     include!("service_serving_tests.rs");
@@ -3696,6 +3747,7 @@ mod tests {
     include!("service_query_pagination_memory_tests.rs");
     include!("service_change_feed_memory_tests.rs");
     include!("service_point_memory_tests.rs");
+    include!("service_shared_document_read_tests.rs");
     include!("service_retirement_tests.rs");
     include!("service_custody_tests.rs");
     use super::*;
@@ -4079,6 +4131,7 @@ mod tests {
             }))
             .unwrap(),
             cancellation,
+            deadline: std::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT,
             _permit: slots.clone().try_acquire_owned().unwrap(),
             memory: QueryMemory::new(admission.reserve(1024, None).unwrap(), 0).unwrap(),
             registration,

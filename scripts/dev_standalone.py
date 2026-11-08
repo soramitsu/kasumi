@@ -42,15 +42,17 @@ supervisor stops the watchers and exits.
 Keep-awake: on macOS the supervisor holds `caffeinate -i -s -w <its PID>`
 while it runs. That prevents idle sleep, and system sleep on AC power.
 Closing the lid on battery, or choosing Sleep, still sleeps the Mac. kasumid
-then exits on wake and is restarted. Credentials expire after one hour, and
-one that expired while kasumid was down can need `kasumid
-recover-existing-credentials` (docs/standalone.md). Pass --allow-sleep to
+then exits on wake and is restarted. Credentials expire after one hour. The
+watchers recover the latest, unrevoked credential online within 24 hours of
+expiry; older credentials need `kasumid recover-existing-credentials`
+(docs/standalone.md). Pass --allow-sleep to
 hold no assertion.
 
 Credentials stay in owner-only files under DIRECTORY and are never printed or
 passed as arguments. The processes' temporary files, including startup
-diagnostics, also stay under DIRECTORY. The generated profile is the tenant
-administrator; this is a development installation, not a release deployment.
+diagnostics, also stay under DIRECTORY. The default profile is the read/write
+application; operator.json administers the tenant. This is a development
+installation, not a release deployment.
 Failures go to stderr with exit status 1.
 """
 from __future__ import annotations

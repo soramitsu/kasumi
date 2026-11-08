@@ -1,5 +1,47 @@
 # macOS validation evidence
 
+## Developer-experience follow-up (2026-11-06 UTC)
+
+The [validation record](../benchmarks/results/redis-comparison-20261106/dx-followup/validation.json)
+covers the grouped-write, bounded shared-reader and key-lease corrections on
+macOS arm64 with Rust 1.97.1. It records source fingerprints, binary and log
+hashes, every target's result and the follow-up checks. The production changes
+end at `26c33731`; the two later test-fixture corrections are in `a0990d53`.
+
+The full all-feature/all-target workspace command, using two test threads and
+`--no-fail-fast`, **failed**: 3,788 passed, seven failed and 17 were ignored.
+All 67 targets and all 3,812 test names were accounted for. Every enabled case
+has a passing result across that run and the follow-ups; this is not a clean
+full-workspace command result. The failed logs remain retained.
+
+Five of the seven failures passed with unchanged binaries in serial reruns.
+The two lifecycle failures passed in the complete 16-test target after its
+observation helper was corrected to retry audited-read unavailability within
+the existing 40-second window. Its rejection and unchanged-state checks remain.
+The native issuer test also passed after its shutdown assertion was corrected
+to require complete draining while accepting only the exact retained diagnostic
+from a deliberately abandoned authority waiter whose receipt had been resolved.
+The serial authority target had one additional setup failure (80 passed, one
+failed); that case then passed unchanged in an exact retry.
+
+The large proof-restore case passed with the original binary, dataset and
+deadline: admitted preparation took 255.844 seconds within its 600-second
+budget, and the complete test took 750.78 seconds. All 256 document, feed and
+receipt checks and storage shutdown completed. These reruns do not establish
+the root cause of the earlier timing or election failures on this shared host.
+Production limits, deadlines, data sizes, stack settings and the 17 pre-existing
+ignored cases were unchanged.
+
+Final workspace compilation, strict Clippy and formatting passed, as did all
+336 Python tests without skips. Gitleaks 8.30.1 scans found no leaks in the
+recorded tree and history scopes; raw logs are retained privately and their
+hashes are in the validation record. The separate
+[Redis comparison](../benchmarks/REDIS-COMPARISON.md#developer-experience-follow-up)
+contains the completed 36-case matrix, six restart checks and the measurement
+limitations. Redis remains faster in every throughput row of that matrix.
+
+## Earlier listener gate
+
 The listener correction passed on frozen source
 `28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`:
 188 all-feature/all-target workspace test entries, zero failures, strict Clippy,

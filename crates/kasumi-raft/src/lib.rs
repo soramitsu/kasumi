@@ -322,6 +322,25 @@ pub trait StateMachineBackend: Send + Sync + 'static {
         input: AppliedInput<'_>,
         publisher: &mut dyn ApplyPublisher,
     ) -> std::result::Result<(), ScratchOperationFailure>;
+    /// Whether [`Self::apply_group_with_publisher`] can apply a standalone
+    /// group of ordinary application entries.
+    fn supports_group_apply(&self) -> bool {
+        false
+    }
+    /// Apply `inputs`, the commands of consecutive ordinary application
+    /// entries at `positions`, exactly as applying them one by one would, and
+    /// publish their combined effects with one `commit` at the last position.
+    /// Its response is [`encode_group_responses`] of each entry's own response,
+    /// in order. Outer errors fence this replica, as one entry's do.
+    fn apply_group_with_publisher(
+        &self,
+        positions: &[AppliedEntryContext],
+        inputs: &[&[u8]],
+        publisher: &mut dyn ApplyPublisher,
+    ) -> std::result::Result<(), ScratchOperationFailure> {
+        let _ = (positions, inputs, publisher);
+        Err(anyhow::anyhow!("state machine does not apply groups").into())
+    }
     fn capture_snapshot(&self) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure>;
     /// The snapshot a standalone (`local-v1`) group stores for its own reopen only.
     /// It may reference immutable dependencies this node already retains instead of
@@ -355,6 +374,39 @@ pub trait StateMachineBackend: Send + Sync + 'static {
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
+}
+
+/// The response of a group apply: each entry's own response, in order, each
+/// prefixed by its length as a big-endian `u32`.
+pub fn encode_group_responses(responses: &[Vec<u8>]) -> Result<Vec<u8>> {
+    let bytes = responses.iter().try_fold(0usize, |bytes, response| {
+        bytes.checked_add(4)?.checked_add(response.len())
+    });
+    let mut encoded = Vec::new();
+    encoded.try_reserve_exact(bytes.context("group response size overflow")?)?;
+    for response in responses {
+        let length = u32::try_from(response.len()).context("group member response too large")?;
+        encoded.extend_from_slice(&length.to_be_bytes());
+        encoded.extend_from_slice(response);
+    }
+    Ok(encoded)
+}
+
+/// Split a group apply's response into its `count` entry responses.
+pub fn decode_group_responses(mut encoded: &[u8], count: usize) -> Result<Vec<Vec<u8>>> {
+    let mut responses = Vec::with_capacity(count);
+    for _ in 0..count {
+        let (length, rest) = encoded
+            .split_first_chunk::<4>()
+            .context("group response truncated")?;
+        let length = usize::try_from(u32::from_be_bytes(*length))?;
+        ensure!(rest.len() >= length, "group response truncated");
+        let (response, rest) = rest.split_at(length);
+        responses.push(response.to_vec());
+        encoded = rest;
+    }
+    ensure!(encoded.is_empty(), "group response has trailing bytes");
+    Ok(responses)
 }
 
 /// The membership a readiness probe certifies for the local node, in addition
@@ -416,6 +468,18 @@ impl StateMachineBackend for OwnedBackend {
         publisher: &mut dyn ApplyPublisher,
     ) -> std::result::Result<(), ScratchOperationFailure> {
         self.inner.apply_with_publisher(position, input, publisher)
+    }
+    fn supports_group_apply(&self) -> bool {
+        self.inner.supports_group_apply()
+    }
+    fn apply_group_with_publisher(
+        &self,
+        positions: &[AppliedEntryContext],
+        inputs: &[&[u8]],
+        publisher: &mut dyn ApplyPublisher,
+    ) -> std::result::Result<(), ScratchOperationFailure> {
+        self.inner
+            .apply_group_with_publisher(positions, inputs, publisher)
     }
     fn capture_snapshot(&self) -> std::result::Result<CapturedSnapshot, ScratchOperationFailure> {
         self.inner.capture_snapshot()
@@ -1117,6 +1181,48 @@ impl RaftGroup {
     /// Replicated groups ignore the distinction.
     pub async fn write_joined(&self, command: ApplicationProposal) -> Result<Vec<u8>> {
         self.write_application(command, true).await
+    }
+
+    /// [`Self::write_joined`] for several commands of a standalone group, in
+    /// order. Their journal records and their one publication commit in a
+    /// single transaction, so the group costs one durable commit; each command
+    /// is still applied, and answered, exactly as it would be by itself. A
+    /// capacity refusal of that transaction refuses each command
+    /// ([`is_application_write_capacity_denied`]) with nothing written.
+    pub async fn write_joined_group(
+        &self,
+        commands: Vec<ApplicationProposal>,
+    ) -> Result<Vec<Result<Vec<u8>>>> {
+        ensure!(
+            !commands.is_empty() && commands.len() <= 16,
+            "a joined group contains between one and sixteen commands"
+        );
+        self.check_proposal()
+            .inspect_err(|error| self.report_write_failure("check_proposal", error))?;
+        let local = self
+            .local
+            .as_ref()
+            .context("only a standalone group writes joined groups")?;
+        let commands = commands
+            .into_iter()
+            .map(|command| {
+                command
+                    .admit(self.store.application(), &self.proposal_storage_lease)
+                    .map(RaftCommand::Application)
+            })
+            .collect::<Result<Vec<_>>>()
+            .inspect_err(|error| self.report_write_failure("application_admit", error))?;
+        let results = local
+            .write_joined_group(commands)
+            .await
+            .inspect_err(|error| self.report_write_failure("local_write", error))?;
+        if results.iter().any(std::result::Result::is_ok) {
+            self.check_access().context(PostCommitAccessLost)?;
+        }
+        Ok(results
+            .into_iter()
+            .map(|result| result.map_err(anyhow::Error::from))
+            .collect())
     }
 
     async fn write_application(

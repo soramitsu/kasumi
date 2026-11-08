@@ -525,6 +525,8 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
         entered: Mutex<Option<tokio::sync::oneshot::Sender<()>>>,
         released: Mutex<std::sync::mpsc::Receiver<()>>,
     }
+    // Loads through this wrapper, one view each, so it can pause one.
+    impl crate::document_store::GenerationDocuments for PausedNativeDocument {}
     impl DocumentResolver for PausedNativeDocument {
         fn load(&self, descriptor: &StoredDocument) -> anyhow::Result<SharedDocument> {
             let document = self.original.load(descriptor)?;

@@ -227,7 +227,7 @@ struct ActualWorkerPanic(u64);
 // this does not introduce a production disk source or claim source accounting.
 struct DiskSource {
     view: Option<TenantReadView>,
-    selected: GenerationDocumentSource,
+    selected: GenerationDocumentSource<'static>,
     gate: Arc<Gate>,
     mode: Mode,
 }

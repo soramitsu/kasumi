@@ -1,0 +1,1666 @@
+{
+  "status": "complete_with_failed_workspace_attempt",
+  "recorded_at": "2026-11-06T18:16:04.186079+00:00",
+  "scope": "Kasumi developer experience follow-up; implementation, benchmark harness and final validation",
+  "source": {
+    "head": "a0990d53763d5fa5b9577cf49f31419661cd6088",
+    "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+    "rust_and_build_input_files": 1683,
+    "rust_and_build_input_sha256": "7631aaaaf2a31ce9396ed6d97f8937413692e960a9a279e9c29cf6649d9a3540",
+    "fingerprint_encoding": "SHA-256 of compact, sorted-key JSON array of {path,sha256}, sorted by repository-relative path",
+    "scratch_matches_main": true,
+    "input_selection": {
+      "tracked_extensions": [
+        ".rs",
+        ".proto"
+      ],
+      "tracked_basenames": [
+        "Cargo.toml",
+        "Cargo.lock",
+        "rust-toolchain",
+        "rust-toolchain.toml"
+      ]
+    },
+    "base_rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c",
+    "test_only_changes": [
+      {
+        "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+        "before_sha256": "33eeece9ac5bfcb3ba80f0077dd35ddf6117d5c2220f4ac8c664b8c2496868c1",
+        "after_sha256": "bacd20b916836bd31cf2c0460ced522f1a9966514da9360f133722ab7493e45b"
+      },
+      {
+        "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+        "before_sha256": "ce4fffb9d9fab341ca31cfae4fd7da48390d3673fa2d962fb339e24887c3b25b",
+        "after_sha256": "adb59dea899ce047304e50f54f1ec6cd809fd689d8cba4e665894896beddfdc6"
+      }
+    ],
+    "test_only_delta_status": "Both fixture contract corrections validated: full lifecycle 16/16 and exact native issuer 1/1; full strict Clippy and formatting passed.",
+    "fixture_commit": "a0990d53763d5fa5b9577cf49f31419661cd6088",
+    "test_only_delta": {
+      "base_commit": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+      "commit": "a0990d53763d5fa5b9577cf49f31419661cd6088",
+      "git_diff_binary_sha256": "3074de475ee62d157ce8a8925c78bc1d2345c91073501ab69aa2bc92c7d9b55d"
+    }
+  },
+  "environment": {
+    "platform": "macOS arm64",
+    "rust_toolchain": "1.97.1",
+    "shared_host": true,
+    "RUST_MIN_STACK": null,
+    "production_limits_unchanged": true,
+    "test_deadlines_and_datasets_unchanged": true,
+    "stack_configuration_unchanged": true,
+    "existing_lifecycle_recovery_fixture_stack_bytes": 16777216
+  },
+  "full_workspace": {
+    "status": "failed",
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--no-fail-fast",
+      "--",
+      "--test-threads=2"
+    ],
+    "expected_targets": 67,
+    "expected_tests_including_ignored": 3812,
+    "targets": [
+      {
+        "executable": "kasumi_authority-1369fd229b561c4d",
+        "expected_tests": 81,
+        "status": "FAILED",
+        "failed_tests": [
+          "service::tests::issuer_tests::lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history",
+          "service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart"
+        ],
+        "ignored_tests": [],
+        "passed": 79,
+        "failed": 2,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 232.49,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_bench-0ac2ec350bd3caac",
+        "expected_tests": 2,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_bench-8d93959e9a2af7de",
+        "expected_tests": 7,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 5.38,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_bench_capacity-37e280013e6de49f",
+        "expected_tests": 4,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.07,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_bench_compare-e744670988f18ffc",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_bench_loopback-50a2fbcdb27eb758",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_bench_network-ad9141dbac3ca01d",
+        "expected_tests": 5,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.02,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_client-da04d00155689ddc",
+        "expected_tests": 79,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 79,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 3.93,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_clock-eafa2c13cf20f525",
+        "expected_tests": 6,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_engine-b96e522ce89d1d58",
+        "expected_tests": 757,
+        "status": "FAILED",
+        "failed_tests": [
+          "state::snapshot_bundle::tests::proof_documents::repeated_proof_restore_keeps_real_grant_and_streams_more_data_than_resident_workspace"
+        ],
+        "ignored_tests": [
+          "bootstrap::existing_tests::cross_version_rollback_harness_writes_a_converted_and_a_by_reference_store",
+          "mutation_receipt::tests::receipt_staging_streamed_history_preserves_rows_across_native_reclamation",
+          "state::mutation_apply::tests::verified_point_history_crosses_former_count_limit_before_a_real_new_mutation"
+        ],
+        "passed": 753,
+        "failed": 1,
+        "ignored": 3,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 2179.82,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "admission-18d84afadb3be9b2",
+        "expected_tests": 2,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.55,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "backup_checkpoint-96efc80df4c9c2d4",
+        "expected_tests": 13,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 13,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 438.25,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "concurrent_pagination-e9ae229aced8dafa",
+        "expected_tests": 2,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 24.6,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "contracts-3ad4c4da4283b9e4",
+        "expected_tests": 30,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 30,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 14.93,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "control-f535381c54ff63ca",
+        "expected_tests": 2,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.69,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "embedded_audit-8f354c4787981df1",
+        "expected_tests": 3,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 4.03,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "fixture_epoch_clock-b99286143ebba3db",
+        "expected_tests": 3,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 2.01,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "guarded_staging-861ed00e2f0f264e",
+        "expected_tests": 11,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 15.76,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "history-553a6ea71f61295e",
+        "expected_tests": 6,
+        "status": "FAILED",
+        "failed_tests": [
+          "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects"
+        ],
+        "ignored_tests": [],
+        "passed": 5,
+        "failed": 1,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 56.23,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "idle_selection_rebase-989c5d129817c9fe",
+        "expected_tests": 3,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 43.51,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "lifecycle-4956dc69c49f0fe3",
+        "expected_tests": 16,
+        "status": "FAILED",
+        "failed_tests": [
+          "recovery_control::recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion",
+          "recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup"
+        ],
+        "ignored_tests": [],
+        "passed": 14,
+        "failed": 2,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 737.02,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "replicated-53ef72cf83380f05",
+        "expected_tests": 3,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 17.6,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "response_release-c003a12504e57423",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.48,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "restore_deadline-10492b73f119d303",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.38,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "retirement-1e23cc0130e70762",
+        "expected_tests": 10,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 30.7,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "schema_activation-7b39e6519e4975a2",
+        "expected_tests": 18,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [
+          "pinned_boi_collection_files_activate_as_one_native_schema_bundle",
+          "pinned_fi_auth_collection_files_activate_as_one_native_schema_bundle",
+          "pinned_fi_governance_collection_files_activate_as_one_native_schema_bundle",
+          "pinned_kyc_collection_files_activate_as_one_native_schema_bundle"
+        ],
+        "passed": 14,
+        "failed": 0,
+        "ignored": 4,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 35.81,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "seek_paging-97b1c8badfdba6b8",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 40.89,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "shutdown-31a05aa148087508",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 3.43,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "snapshot_budget-a042a65ed9672d70",
+        "expected_tests": 5,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 3.62,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "staged_transactions-208b2146cae273b4",
+        "expected_tests": 11,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 26.09,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "strict_read_apply_capacity-0a31912237869ccf",
+        "expected_tests": 3,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 3.59,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "map_sharing-209018ccc6025fcd",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_kv-30c1b36178146835",
+        "expected_tests": 709,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 709,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 283.45,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "cache_allocation-282668f99145b44f",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.09,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "commit_allocation-5d7edfbe66ceb317",
+        "expected_tests": 4,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 345.37,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "crash_recovery-d78bdd2114e58978",
+        "expected_tests": 11,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 11,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 226.46,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "owner_fencing-3ef6782d1bc3a235",
+        "expected_tests": 9,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 9,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.74,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "transaction_rollback-480272257fe23099",
+        "expected_tests": 8,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 8,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.99,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_private_evidence-76737fb43444c7d3",
+        "expected_tests": 34,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 34,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.59,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "collection_definitions-3a3c8f9c75cb3375",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_query-a302e24ae7f91382",
+        "expected_tests": 93,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [
+          "bench_tests::bench_per_row_costs",
+          "bench_tests::bench_query_planner_and_materialization"
+        ],
+        "passed": 91,
+        "failed": 0,
+        "ignored": 2,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.4,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "output_allocation-b8b8687ffaefa65a",
+        "expected_tests": 4,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.02,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "validate_collection_documents-ea1ec175c5478335",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_raft-b14dacb16a2e0a85",
+        "expected_tests": 220,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 220,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 580.36,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "applied_term-6e7deb433c807f85",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 4.87,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "cluster-ff242d05e66a4d10",
+        "expected_tests": 7,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 22.9,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "local-9120220571244027",
+        "expected_tests": 17,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 17,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 11.38,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "read_barrier-088a45a814f2a811",
+        "expected_tests": 5,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 5,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 14.74,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "shutdown-814a1fa3c49e68af",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 2.15,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "storage_conformance-aa9574a7f6824284",
+        "expected_tests": 10,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 10,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 58.84,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_server-2215f33c829f5bf6",
+        "expected_tests": 501,
+        "status": "FAILED",
+        "failed_tests": [
+          "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery"
+        ],
+        "ignored_tests": [
+          "api::tests::hundred_private_evidence_workflows_recover_retained_quota_refusals_over_native_tls"
+        ],
+        "passed": 499,
+        "failed": 1,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 2650.63,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_authority-f04997a35168e50c",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumictl-e612f8896fe04c85",
+        "expected_tests": 6,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.02,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumid-0b3f666763aa9465",
+        "expected_tests": 0,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "cluster_transport-c64b1899154a64fc",
+        "expected_tests": 2,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 2,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 3.31,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumictl_data_process-331a3cbe594a0ac9",
+        "expected_tests": 3,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 3,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 1.36,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "tls_listener-d9b3be1d5894d107",
+        "expected_tests": 4,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 4,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.16,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_serving-bec9adca566b6728",
+        "expected_tests": 29,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 29,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.2,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_store-a910ad2ba623e2bb",
+        "expected_tests": 935,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [
+          "backup::minio_live::actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denial",
+          "node_disk::filesystems_tests::a_mount_inside_a_root_is_refused_with_the_supported_layout",
+          "node_disk::filesystems_tests::roots_on_two_real_filesystems_keep_separate_ledgers",
+          "node_file::segment_group::tests::crash_child",
+          "node_file::tests::crash_child",
+          "storage_opening::catalog_put::tests::catalog_capacity_child"
+        ],
+        "passed": 929,
+        "failed": 0,
+        "ignored": 6,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 213.13,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "openbao_live-1ce7cdc3e00e3464",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [
+          "actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation"
+        ],
+        "passed": 0,
+        "failed": 0,
+        "ignored": 1,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_taira_journal-c030c2d04de78a65",
+        "expected_tests": 7,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 4.21,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_transport-bdbd04598655c1b1",
+        "expected_tests": 6,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.4,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "kasumi_types-4ecae5f3dabc2cb7",
+        "expected_tests": 88,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 88,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.07,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "canonical_json-1330f99512a92961",
+        "expected_tests": 7,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 7,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.02,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "control_topology_memory-5476edf44b9ae727",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.02,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "control_url_workspace-ca4c48cf896bdb03",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.12,
+        "unreported_inventory_names": []
+      },
+      {
+        "executable": "drain_issue_retirement-58328b9315edb2bc",
+        "expected_tests": 1,
+        "status": "ok",
+        "failed_tests": [],
+        "ignored_tests": [],
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "measured": 0,
+        "filtered": 0,
+        "elapsed_seconds": 0.0,
+        "unreported_inventory_names": []
+      }
+    ],
+    "log": {
+      "name": "kasumi-full-workspace-tests2.log",
+      "sha256": "69efb62a8207e615221f73272817d1522d4a30c60e5ed757334885d36b76cc2f",
+      "bytes": 731427,
+      "complete": true
+    },
+    "exit_code": 101,
+    "started_at": "2026-11-06T15:07:51.924674+00:00",
+    "finished_at": "2026-11-06T17:27:14.710956+00:00",
+    "totals": {
+      "passed": 3788,
+      "failed": 7,
+      "ignored": 17,
+      "filtered": 0,
+      "measured": 0
+    },
+    "all_inventory_targets_executed": true,
+    "all_inventory_test_names_accounted_for": true,
+    "aborted_targets": 0,
+    "source": {
+      "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+      "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+    }
+  },
+  "serial_triage": {
+    "status": "complete",
+    "order": [
+      "history_serial",
+      "authority_serial",
+      "lifecycle_serial",
+      "native_issuer_unchanged_serial",
+      "authority_target_stop_exact",
+      "native_issuer_fixed_serial",
+      "proof_restore_exact"
+    ],
+    "runs": [
+      {
+        "command": [
+          "../target/debug/deps/history-553a6ea71f61295e",
+          "--test-threads=1"
+        ],
+        "started_at": "2026-11-06T17:28:19.370489+00:00",
+        "finished_at": "2026-11-06T17:30:49.455648+00:00",
+        "exit_code": 0,
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "8540eb22d0f317ed7b6b1bcba43e47cacdca8c35998ec9395ea5bbe5f3628f74",
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "id": "history_serial",
+        "status": "passed",
+        "source": {
+          "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+          "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+        },
+        "same_binary_as_full_workspace": true,
+        "passed": 6,
+        "failed": 0,
+        "ignored": 0,
+        "elapsed_seconds": 149.98,
+        "log": {
+          "name": "kasumi-history-serial.log",
+          "sha256": "951000eb71f095dd147a9a663055266d1e5763b7f817f8a8a88ad4958a652ee3",
+          "bytes": 638,
+          "complete": true
+        }
+      },
+      {
+        "command": [
+          "../target/debug/deps/kasumi_authority-1369fd229b561c4d",
+          "--test-threads=1"
+        ],
+        "started_at": "2026-11-06T17:31:18.463288+00:00",
+        "finished_at": "2026-11-06T17:36:52.477400+00:00",
+        "exit_code": 101,
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "4acc42b98c6460bd2e0b920002cfdb0cef7226f5ae40eb5c82cfaf96615ddd8b",
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "id": "authority_serial",
+        "status": "failed",
+        "source": {
+          "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+          "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+        },
+        "same_binary_as_full_workspace": true,
+        "passed": 80,
+        "failed": 1,
+        "ignored": 0,
+        "failed_tests": [
+          "service::tests::target_stop_history_exceeds_former_record_ceiling_and_current_fences_are_explicit"
+        ],
+        "elapsed_seconds": 333.93,
+        "log": {
+          "name": "kasumi-authority-serial.log",
+          "sha256": "592ae04e391e2892620fcaa3e70f8ef83651d7518e63d0b3d6b745bde4102ac1",
+          "bytes": 11026,
+          "complete": true
+        }
+      },
+      {
+        "command": [
+          "../target/debug/deps/lifecycle-4956dc69c49f0fe3",
+          "--test-threads=1"
+        ],
+        "started_at": "2026-11-06T17:40:23.099836+00:00",
+        "finished_at": "2026-11-06T17:48:45.165297+00:00",
+        "exit_code": 0,
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "3ca9cfff58176ce759dd3dd232edda228315c44e81a82aebcaab8f17dcd3f2df",
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "tracked_worktree_diff_sha256": "d8cbff320acbbdbeebf2af0c8aff69c76e4d752312e39f80681e4a08cc33a8d8",
+        "tracked_worktree_changed_paths": [
+          "crates/kasumi-engine/tests/common/recovery_control.rs"
+        ],
+        "id": "lifecycle_serial",
+        "status": "passed",
+        "source": {
+          "base": {
+            "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+            "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+          },
+          "rust_and_build_input_sha256": "9e4b37ebea67a447f427924ba6b37524817870b4f120b5361c606acd2666e19b",
+          "test_only_changes": [
+            {
+              "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+              "before_sha256": "33eeece9ac5bfcb3ba80f0077dd35ddf6117d5c2220f4ac8c664b8c2496868c1",
+              "after_sha256": "bacd20b916836bd31cf2c0460ced522f1a9966514da9360f133722ab7493e45b"
+            }
+          ]
+        },
+        "same_binary_as_full_workspace": false,
+        "passed": 16,
+        "failed": 0,
+        "ignored": 0,
+        "elapsed_seconds": 500.63,
+        "log": {
+          "name": "kasumi-lifecycle-serial.log",
+          "sha256": "f507d4734730c271e6a83e237734a2a60f8594aacf82e7c5ff0662c0feec6429",
+          "bytes": 1886,
+          "complete": true
+        }
+      },
+      {
+        "command": [
+          "../target/debug/deps/kasumi_server-2215f33c829f5bf6",
+          "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery",
+          "--exact",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "started_at": "2026-11-06T17:49:16.122299+00:00",
+        "finished_at": "2026-11-06T17:49:34.597542+00:00",
+        "exit_code": 0,
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "5f935d147e98187bb07c14eb9105f81a365045bcfc3e3b4fb2eaaf47fbf1e616",
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "tracked_worktree_diff_sha256": "d8cbff320acbbdbeebf2af0c8aff69c76e4d752312e39f80681e4a08cc33a8d8",
+        "tracked_worktree_changed_paths": [
+          "crates/kasumi-engine/tests/common/recovery_control.rs"
+        ],
+        "id": "native_issuer_unchanged_serial",
+        "status": "passed",
+        "source": {
+          "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+          "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+        },
+        "same_binary_as_full_workspace": true,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 500,
+        "elapsed_seconds": 16.2,
+        "log": {
+          "name": "kasumi-native-issuer-serial.log",
+          "sha256": "74ed7b9ea9f658246f6d7082ad70531c79af2168013b93cdce4cd08c3dc7acad",
+          "bytes": 227,
+          "complete": true
+        },
+        "note": "The lifecycle-only fixture delta was present in the checkout but does not compile into this unchanged server test binary. The later native_issuer_fixed_serial run validates the final shutdown-contract assertion."
+      },
+      {
+        "command": [
+          "../target/debug/deps/kasumi_authority-1369fd229b561c4d",
+          "service::tests::target_stop_history_exceeds_former_record_ceiling_and_current_fences_are_explicit",
+          "--exact",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "started_at": "2026-11-06T17:50:45.244070+00:00",
+        "finished_at": "2026-11-06T17:50:56.779405+00:00",
+        "exit_code": 0,
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "4acc42b98c6460bd2e0b920002cfdb0cef7226f5ae40eb5c82cfaf96615ddd8b",
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "tracked_worktree_diff_sha256": "d8cbff320acbbdbeebf2af0c8aff69c76e4d752312e39f80681e4a08cc33a8d8",
+        "tracked_worktree_changed_paths": [
+          "crates/kasumi-engine/tests/common/recovery_control.rs"
+        ],
+        "id": "authority_target_stop_exact",
+        "status": "passed",
+        "source": {
+          "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+          "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+        },
+        "same_binary_as_full_workspace": true,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 80,
+        "elapsed_seconds": 11.45,
+        "log": {
+          "name": "kasumi-authority-target-stop-exact.log",
+          "sha256": "1c292eeff3268d5eb4c05843b6b1eb871972180663217ad1b1932e8c106e959c",
+          "bytes": 510,
+          "complete": true
+        },
+        "note": "The lifecycle integration-test delta was present in the checkout but does not compile into this unchanged authority binary."
+      },
+      {
+        "command": [
+          "../target/debug/deps/kasumi_server-2215f33c829f5bf6",
+          "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery",
+          "--exact",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "started_at": "2026-11-06T17:56:24.239328+00:00",
+        "finished_at": "2026-11-06T17:56:42.446283+00:00",
+        "exit_code": 0,
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "0dc5644e84e837d023a1b998dd9bf812f2d5bb96f0a0fd34327e146fe22d1371",
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "tracked_worktree_diff_sha256": "3074de475ee62d157ce8a8925c78bc1d2345c91073501ab69aa2bc92c7d9b55d",
+        "tracked_worktree_changed_paths": [
+          "crates/kasumi-engine/tests/common/recovery_control.rs",
+          "crates/kasumi-server/src/rpc_authority_tests.rs"
+        ],
+        "id": "native_issuer_fixed_serial",
+        "status": "passed",
+        "source": {
+          "base": {
+            "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+            "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+          },
+          "rust_and_build_input_sha256": "7631aaaaf2a31ce9396ed6d97f8937413692e960a9a279e9c29cf6649d9a3540",
+          "test_only_changes": [
+            {
+              "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+              "before_sha256": "33eeece9ac5bfcb3ba80f0077dd35ddf6117d5c2220f4ac8c664b8c2496868c1",
+              "after_sha256": "bacd20b916836bd31cf2c0460ced522f1a9966514da9360f133722ab7493e45b"
+            },
+            {
+              "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+              "before_sha256": "ce4fffb9d9fab341ca31cfae4fd7da48390d3673fa2d962fb339e24887c3b25b",
+              "after_sha256": "adb59dea899ce047304e50f54f1ec6cd809fd689d8cba4e665894896beddfdc6"
+            }
+          ]
+        },
+        "same_binary_as_full_workspace": false,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 500,
+        "elapsed_seconds": 15.39,
+        "log": {
+          "name": "kasumi-native-issuer-fixed.log",
+          "sha256": "93fd23bb96f232f83b37c041d48a5d85137722a62ff253a16be3107d0eecc871",
+          "bytes": 227,
+          "complete": true
+        }
+      },
+      {
+        "started_at": "2026-11-06T17:56:47.762071+00:00",
+        "command": [
+          "../target/debug/deps/kasumi_engine-b96e522ce89d1d58",
+          "state::snapshot_bundle::tests::proof_documents::repeated_proof_restore_keeps_real_grant_and_streams_more_data_than_resident_workspace",
+          "--exact",
+          "--test-threads=1",
+          "--nocapture"
+        ],
+        "main_head": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce",
+        "RUST_MIN_STACK": null,
+        "binary_sha256": "4b618b0d37ab402548ec81522340a1f99ae130b78e5548d656eabb7a3ce12bfa",
+        "tracked_worktree_diff_sha256": "3074de475ee62d157ce8a8925c78bc1d2345c91073501ab69aa2bc92c7d9b55d",
+        "tracked_worktree_changed_paths": [
+          "crates/kasumi-engine/tests/common/recovery_control.rs",
+          "crates/kasumi-server/src/rpc_authority_tests.rs"
+        ],
+        "finished_at": "2026-11-06T18:09:18.653355+00:00",
+        "exit_code": 0,
+        "id": "proof_restore_exact",
+        "status": "passed",
+        "source": {
+          "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+          "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+        },
+        "same_binary_as_full_workspace": true,
+        "passed": 1,
+        "failed": 0,
+        "ignored": 0,
+        "filtered_out": 756,
+        "elapsed_seconds": 750.78,
+        "log": {
+          "name": "kasumi-proof-restore-exact.log",
+          "sha256": "d100be8fbb67a7b830c76d882a727762388337f85d31bce5288fc15ca88ad025",
+          "bytes": 627,
+          "complete": true
+        },
+        "note": "Both test-only fixture deltas were present in the checkout but neither compiles into this unchanged engine library test binary. No concurrent build or test was run by this task; unrelated shared-host activity remained.",
+        "stages_ms": {
+          "capture": 80775,
+          "unbounded_inspect": 29276,
+          "denied_prepare": 28586,
+          "admitted_prepare": 255844,
+          "explicit_read_and_checks": 355565
+        },
+        "admitted_prepare_deadline_ms": 600000,
+        "documents": 256,
+        "logical_current_bytes": 134224276,
+        "resident_workspace_bytes": 109564260
+      }
+    ],
+    "resolved_by_unchanged_serial_rerun": [
+      "chunked_full_backup_restores_cold_history_and_permanent_identity_without_source_objects",
+      "service::tests::issuer_tests::lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snapshot_history",
+      "service::tests::issuer_tests::target_materialization_tests::activated_target_keeps_operational_suspension_and_membership_across_restart",
+      "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery",
+      "state::snapshot_bundle::tests::proof_documents::repeated_proof_restore_keeps_real_grant_and_streams_more_data_than_resident_workspace"
+    ],
+    "additional_failures": [
+      {
+        "test": "service::tests::target_stop_history_exceeds_former_record_ceiling_and_current_fences_are_explicit",
+        "run_id": "authority_serial",
+        "status": "passed_unchanged_exact_serial_rerun",
+        "observation": "Fixture enrollment returned UnknownOutcome before target-stop-history assertions; source and limits unchanged.",
+        "resolved_run_id": "authority_target_stop_exact"
+      }
+    ],
+    "resolved_by_fixture_correction": [
+      "recovery_control::recovery_planned_retirement_freezes_its_exact_request_only_after_target_completion",
+      "recovery_control::recovery_uncertain_activation_requires_permanent_stop_before_target_cleanup",
+      "rpc::authority_tests::actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_recovery"
+    ],
+    "coverage": {
+      "enabled_test_cases": 3795,
+      "cases_with_subsequent_or_full_run_pass": 3795,
+      "ignored_cases_unchanged": 17,
+      "full_run_failures_with_passing_followup": 7,
+      "additional_serial_failures_with_passing_followup": 1,
+      "observed_failed_cases_without_a_passing_followup": [],
+      "clean_full_workspace_command": false
+    },
+    "fixture_corrections": [
+      {
+        "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+        "change": "Retry AuditUnavailable only while observing phase/status after a rejected recovery response, within the original 40-second observation window. Preserve the definitive rejection, unchanged state and pending-command checks.",
+        "validated_by": "lifecycle_serial"
+      },
+      {
+        "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+        "change": "Require complete shutdown and accept only the exact retained authority-acknowledgement UnknownOutcome diagnostic from the deliberately abandoned waiter after exact receipt resolution. Preserve all functional checks and reject other drain issues.",
+        "validated_by": "native_issuer_fixed_serial"
+      }
+    ]
+  },
+  "clippy": {
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "environment": {
+      "CARGO_TARGET_DIR": "../target",
+      "CARGO_BUILD_JOBS": "2"
+    },
+    "exit_code": 0,
+    "completion_observed_at": "2026-11-06T17:56:23.990284+00:00",
+    "elapsed_as_reported": "3m 10s (includes waiting for the no-run build lock)",
+    "status": "passed",
+    "source": {
+      "base": {
+        "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+        "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+      },
+      "rust_and_build_input_sha256": "7631aaaaf2a31ce9396ed6d97f8937413692e960a9a279e9c29cf6649d9a3540",
+      "test_only_changes": [
+        {
+          "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+          "before_sha256": "33eeece9ac5bfcb3ba80f0077dd35ddf6117d5c2220f4ac8c664b8c2496868c1",
+          "after_sha256": "bacd20b916836bd31cf2c0460ced522f1a9966514da9360f133722ab7493e45b"
+        },
+        {
+          "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+          "before_sha256": "ce4fffb9d9fab341ca31cfae4fd7da48390d3673fa2d962fb339e24887c3b25b",
+          "after_sha256": "adb59dea899ce047304e50f54f1ec6cd809fd689d8cba4e665894896beddfdc6"
+        }
+      ]
+    },
+    "log": {
+      "name": "kasumi-final-triage-clippy.log",
+      "sha256": "5db2751bf9eead271332814a88701049163f6462ac879bbe19d65aaf60614695",
+      "bytes": 1610,
+      "complete": true
+    }
+  },
+  "python": {
+    "status": "passed",
+    "interpreter": "Python 3.14",
+    "command": [
+      "python3.14",
+      "-m",
+      "unittest",
+      "discover",
+      "-s",
+      "scripts",
+      "-p",
+      "test_*.py"
+    ],
+    "tests": 336,
+    "skipped": 0,
+    "elapsed_seconds": 86.697,
+    "gitleaks_version": "8.30.1",
+    "log": {
+      "name": "kasumi-python-all-336-final.log",
+      "sha256": "18631df7c654b748a4fd3bd9927a1946c9b9c57a0ee832a572b923cbbbcb8a93",
+      "bytes": 887,
+      "complete": true
+    },
+    "source_commit": "dc3e8e98ccc4a3e25f849d4c4c307872b62d3bce"
+  },
+  "benchmark_evidence": [
+    "matrix.jsonl",
+    "matrix-summary.md",
+    "final-build.json",
+    "write-pairs.jsonl",
+    "batch-isolation.jsonl",
+    "reader-replays.jsonl",
+    "reader-builds.json",
+    "cache-replays.jsonl",
+    "compaction-diagnosis.json"
+  ],
+  "interpretation": "The full workspace command exited 101 with 3,788 passed, seven failed and 17 ignored cases. All 67 targets and 3,812 test names are accounted for. Every enabled case has passing coverage across that run and the recorded follow-ups, including the extra authority setup failure from its serial run. Five original failures passed with unchanged binaries; the two lifecycle failures passed after the narrow fixture correction. The native issuer passed both before and after its separate shutdown-contract fixture correction. The unchanged large proof-restore binary completed its admitted prepare in 255.844 seconds within the original 600-second deadline. Final strict Clippy, formatting, compilation, all 336 Python tests and the recorded secret scans passed. This is not a clean full-workspace command result, and passing reruns do not establish the root cause of earlier timing or election failures. Production limits, test deadlines, data sizes, ignored cases and stack settings were not changed.",
+  "earlier_clippy": {
+    "status": "passed_before_test_only_fixture_changes",
+    "command": [
+      "cargo",
+      "clippy",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--no-deps",
+      "--",
+      "-D",
+      "warnings"
+    ],
+    "log": {
+      "name": "kasumi-full-workspace-clippy2.log",
+      "sha256": "093543f765a7c83b6da71e49ce0c55574d5622f18cc21df436a3fc95e65070c2",
+      "bytes": 3592,
+      "complete": true
+    },
+    "source": {
+      "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+      "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+    }
+  },
+  "formatting": {
+    "started_at": "2026-11-06T17:53:19.619750+00:00",
+    "commands": [
+      {
+        "command": [
+          "cargo",
+          "fmt",
+          "--all",
+          "--check"
+        ],
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "exit_code": 0
+      }
+    ],
+    "finished_at": "2026-11-06T17:53:23.093784+00:00",
+    "status": "passed",
+    "source": {
+      "base": {
+        "production_commit": "26c33731f99883140aa9e894afd4b623f8b8f6bd",
+        "rust_and_build_input_sha256": "81a9987e1ef7f68d18fbf69965f1bdd3aa86a50f0dfd21fcfa9f4e8f1310180c"
+      },
+      "rust_and_build_input_sha256": "7631aaaaf2a31ce9396ed6d97f8937413692e960a9a279e9c29cf6649d9a3540",
+      "test_only_changes": [
+        {
+          "path": "crates/kasumi-engine/tests/common/recovery_control.rs",
+          "before_sha256": "33eeece9ac5bfcb3ba80f0077dd35ddf6117d5c2220f4ac8c664b8c2496868c1",
+          "after_sha256": "bacd20b916836bd31cf2c0460ced522f1a9966514da9360f133722ab7493e45b"
+        },
+        {
+          "path": "crates/kasumi-server/src/rpc_authority_tests.rs",
+          "before_sha256": "ce4fffb9d9fab341ca31cfae4fd7da48390d3673fa2d962fb339e24887c3b25b",
+          "after_sha256": "adb59dea899ce047304e50f54f1ec6cd809fd689d8cba4e665894896beddfdc6"
+        }
+      ]
+    },
+    "log": {
+      "name": "kasumi-final-triage-fmt-diff-check.log",
+      "sha256": "b26d57de17c81eda4ddd0e1e4ba13184332c497d92488ae964de111d61343089",
+      "bytes": 69,
+      "complete": true
+    }
+  },
+  "secret_scans": {
+    "status": "passed_for_recorded_scopes",
+    "gitleaks_version": "8.30.1",
+    "exceptions_unchanged": true,
+    "inline_suppression_disabled": true,
+    "root_gitleaksignore_absent": true,
+    "runs": [
+      {
+        "status": "passed",
+        "scope": "Prior complete local history: 854 commits, including merge diffs.",
+        "log": {
+          "name": "kasumi-gitleaks-history-final.log",
+          "sha256": "fc92483e9a2bfc0353e9ced5370c1edba8f982d414ec94ad8dc4a80c2e625d6f",
+          "bytes": 379,
+          "complete": true
+        }
+      },
+      {
+        "status": "passed",
+        "scope": "Two subsequent implementation/developer-guidance commits: 26c33731 and dde9de20.",
+        "log": {
+          "name": "kasumi-gitleaks-new-commits.log",
+          "sha256": "0242994efd94c3a51b3bd8b6a078b33abf2872a5e178d2f88e3e73b1c5680eae",
+          "bytes": 178,
+          "complete": true
+        }
+      },
+      {
+        "status": "passed",
+        "scope": "Benchmark freshness correction: dc3e8e98.",
+        "log": {
+          "name": "kasumi-gitleaks-freshness-commit.log",
+          "sha256": "815e63126b6d3c3914b474eeba06eb68626185f4142ef0096c2ff72c338983ca",
+          "bytes": 174,
+          "complete": true
+        }
+      },
+      {
+        "status": "passed",
+        "scope": "Current tree including both fixture corrections and the then-current validation draft, before the final documentation update.",
+        "log": {
+          "name": "kasumi-final-fixture-tree-secret-scan.log",
+          "sha256": "f2842b98917f7e791191ffb3c8eebdd7a5c71bc0e45af18461342aa0c09bdce6",
+          "bytes": 146,
+          "complete": true
+        },
+        "started_at": "2026-11-06T18:11:11.838866+00:00",
+        "finished_at": "2026-11-06T18:11:14.686511+00:00",
+        "exit_code": 0
+      },
+      {
+        "status": "passed",
+        "scope": "Committed fixture correction: dc3e8e98..a0990d53, including merge diffs.",
+        "log": {
+          "name": "kasumi-fixture-commit-secret-scan.log",
+          "sha256": "3e445da9b3b7bd337d947425d5c02889eb2e9eb19b96f57de354e26c689fe9c9",
+          "bytes": 171,
+          "complete": true
+        },
+        "started_at": "2026-11-06T18:15:07.627308+00:00",
+        "finished_at": "2026-11-06T18:15:08.023686+00:00",
+        "exit_code": 0
+      }
+    ],
+    "scope_note": "These records cover the implementation tree and committed history through the fixture commit. The final evidence/documentation tree and its publication commit are scanned separately, with those logs retained in the private archive to avoid a self-referential record."
+  },
+  "raw_logs": {
+    "retention": "Private local archive; this public record includes hashes and reviewed summaries, not raw log contents.",
+    "archive_label": "codex-dx-validation-final-20261106"
+  },
+  "final_compile": {
+    "command": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--all-features",
+      "--all-targets",
+      "--locked",
+      "--no-run"
+    ],
+    "environment": {
+      "CARGO_TARGET_DIR": "../target",
+      "CARGO_BUILD_JOBS": "2"
+    },
+    "exit_code": 0,
+    "completion_observed_at": "2026-11-06T17:54:59.199912+00:00",
+    "listed_executables": 67,
+    "elapsed_as_reported": "2m 40s",
+    "status": "passed",
+    "source": {
+      "fixture_commit": "a0990d53763d5fa5b9577cf49f31419661cd6088",
+      "rust_and_build_input_sha256": "7631aaaaf2a31ce9396ed6d97f8937413692e960a9a279e9c29cf6649d9a3540"
+    },
+    "log": {
+      "name": "kasumi-native-issuer-rebuild.log",
+      "sha256": "f2c117b8081a2c76f343d3738b7c42281ac7b1c14db956b4a86ad40a9bc5ab51",
+      "bytes": 8070,
+      "complete": true
+    }
+  }
+}

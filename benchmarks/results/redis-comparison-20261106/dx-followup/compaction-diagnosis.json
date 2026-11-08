@@ -1,0 +1,40 @@
+{
+  "probe_columns": [
+    "unix_seconds_after_flush",
+    "pwrite_plus_fullfsync_ms"
+  ],
+  "probe_method": "One 4096-byte pwrite at offset zero plus F_FULLFSYNC, aiming for one probe per second on the same device. Nearest-rank percentiles.",
+  "first_lease_warning": {
+    "timestamp": "2026-11-06T12:24:00.385133Z",
+    "level": "WARN",
+    "fields": {
+      "message": "native credential family status unavailable",
+      "failure_class": "key_access_unavailable",
+      "retirement": "None",
+      "io_error_kind": "None",
+      "key_lease_failure_class": "completed_after_expiry"
+    },
+    "target": "kasumi_server::local_auth"
+  },
+  "summary": {
+    "before_first_warning": {
+      "samples": 725,
+      "p50_ms": 9.4,
+      "p99_ms": 917.6,
+      "max_ms": 1933.6
+    },
+    "after_first_warning": {
+      "samples": 429,
+      "p50_ms": 13.6,
+      "p99_ms": 1192.6,
+      "max_ms": 2481.1
+    },
+    "all": {
+      "samples": 1154,
+      "p50_ms": 10.6,
+      "p99_ms": 1055.8,
+      "max_ms": 2481.1
+    }
+  },
+  "scope": "Inherited M0 100000-key diagnostic load failed at offset50700 before any measured batch-write workload. An early stack sample precedes the lease warning by almost twelve minutes; no terminal-stall stack is available. Probe tails do not identify the contending process or isolate maintenance from scheduler/device delay."
+}

@@ -1143,6 +1143,66 @@ async fn rewrap_preserves_documents_after_retiring_old_wrapping_versions() {
     );
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn lease_renewal_does_not_wait_for_a_single_store_commit_flush() {
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let scratch = crate::ScratchDisk::fixture(directory.path(), memory);
+    let backend = FaultBackend::new();
+    let node = NodeStore::create_with_backend(
+        backend.clone(),
+        crate::test_utils::storage_admission(),
+        scratch,
+    )
+    .unwrap();
+    let clock = Arc::new(ManualClock::new());
+    let store = TenantStore::initialize_catalog_fixture_with_clock(
+        node,
+        "renew-during-flush".into(),
+        Arc::new(LocalKeyProvider::new([51; 32])),
+        clock.clone(),
+    )
+    .await
+    .unwrap();
+    let (started, resume) = backend.pause_next_root_sync();
+    let writer = {
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            store.write_batch(&[WriteOp::put("docs", b"a", b"durable")])
+        })
+    };
+    tokio::task::spawn_blocking(move || started.recv_timeout(Duration::from_secs(10)))
+        .await
+        .unwrap()
+        .unwrap();
+    clock.advance(Duration::from_secs(20));
+    let mut renewal = {
+        let store = store.clone();
+        tokio::spawn(async move { store.refresh_lease().await })
+    };
+    let renewed = tokio::time::timeout(Duration::from_secs(5), &mut renewal).await;
+    // Advance past the original lease while disk publication is still held.
+    // Always release the writer before asserting, including on regression.
+    clock.advance(Duration::from_secs(41));
+    resume.send(()).unwrap();
+    let written = writer.await.unwrap();
+    if renewed.is_err() {
+        let _ = renewal.await;
+    }
+    renewed
+        .expect("key renewal waited for the disk flush")
+        .unwrap()
+        .unwrap();
+    written.unwrap();
+    assert_eq!(
+        store.get("docs", b"a").unwrap().as_deref(),
+        Some(b"durable".as_slice())
+    );
+    assert_eq!(store.key_lease_failure_class(), None);
+    store.shutdown().await.unwrap();
+    store.node.shutdown().await.unwrap();
+}
+
 #[tokio::test]
 async fn every_injected_commit_failure_recovers_whole_batch_or_previous_state() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);

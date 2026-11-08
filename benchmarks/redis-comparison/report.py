@@ -55,6 +55,12 @@ def main(argv=None):
     if host:
         print(f"Host: {host.get('platform')} ({host.get('cpus')} CPUs), {host.get('redis_server', '')}. "
               f"Load average at start: {host.get('load_average')}.\n")
+    if any(entry.get("resource_window") == "whole_driver_invocation_including_warmup"
+           for entry in entries):
+        print("Server CPU/op and disk write amplification include connection setup, warmup and "
+              "driver shutdown in their resource totals; their denominators count successful "
+              "measured operations or logical bytes. Throughput and latency use the measured "
+              "interval. Keep warmup and duration identical when comparing these ratios.\n")
     cases = [entry for entry in entries if entry.get("phase") in ("workload", "load")]
     for clients in sorted({entry["clients"] for entry in cases}):
         print(f"#### {clients} client{'s' if clients != 1 else ''}\n")

@@ -51,28 +51,37 @@ impl From<CompletionCallError> for kasumi_store::ScratchOperationFailure {
 pub struct CompletionInvocation<'a> {
     identity: &'a CompletionIdentity,
     ordinal: u64,
-    input_retention: Option<&'a crate::ApplicationInputLoan>,
+    // One per entry of the invocation, in log order.
+    input_retentions: &'a [Option<crate::ApplicationInputLoan>],
 }
 impl<'a> CompletionInvocation<'a> {
     pub(crate) fn new(identity: &'a CompletionIdentity, ordinal: u64) -> Self {
         Self {
             identity,
             ordinal,
-            input_retention: None,
+            input_retentions: &[],
         }
     }
-    pub(crate) fn with_input_retention(
+    pub(crate) fn with_input_retentions(
         mut self,
-        input: Option<&'a crate::ApplicationInputLoan>,
+        inputs: &'a [Option<crate::ApplicationInputLoan>],
     ) -> Self {
-        self.input_retention = input;
+        self.input_retentions = inputs;
         self
     }
-    /// Same already paid encoded input/control. None identifies an unsupported
-    /// input producer (transport/replay/stored/retirement/metadata). This is not
-    /// reducer/candidate credit, native admission or a completion verdict.
+    /// Same already paid encoded input/control of a one-entry invocation. None
+    /// identifies an unsupported input producer (transport/replay/stored/
+    /// retirement/metadata), or a group. This is not reducer/candidate credit,
+    /// native admission or a completion verdict.
     pub fn input_retention(&self) -> Option<&crate::ApplicationInputLoan> {
-        self.input_retention
+        match self.input_retentions {
+            [input] => input.as_ref(),
+            _ => None,
+        }
+    }
+    /// The same paid input of a group invocation's `index`th entry.
+    pub fn input_retention_at(&self, index: usize) -> Option<&crate::ApplicationInputLoan> {
+        self.input_retentions.get(index).and_then(Option::as_ref)
     }
     pub fn ordinal(&self) -> u64 {
         self.ordinal

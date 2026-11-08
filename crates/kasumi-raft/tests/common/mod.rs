@@ -120,6 +120,58 @@ impl StateMachineBackend for Backend {
         *data = prepared;
         Ok(())
     }
+    fn supports_group_apply(&self) -> bool {
+        true
+    }
+    fn apply_group_with_publisher(
+        &self,
+        positions: &[kasumi_raft::AppliedEntryContext],
+        inputs: &[&[u8]],
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        ensure!(
+            positions.len() == inputs.len() && positions.len() > 1,
+            "group positions and inputs differ"
+        );
+        ensure!(
+            !self.fail_apply.load(Ordering::Acquire),
+            "injected application allocation failure"
+        );
+        let mut data = self.data.lock().unwrap();
+        let mut prepared = data.clone();
+        let mut responses = Vec::new();
+        let mut previous = positions[0].previous;
+        for (position, command) in positions.iter().zip(inputs) {
+            let index = position.log_id.index;
+            ensure!(
+                position.previous == previous
+                    && prepared
+                        .last_key_value()
+                        .is_none_or(|(&last, _)| last < index),
+                "group entry out of order"
+            );
+            prepared.insert(index, command.to_vec());
+            responses.push(command.to_vec());
+            previous = Some(position.log_id);
+        }
+        if self.refuse_publication.swap(false, Ordering::AcqRel) {
+            kasumi_store::NodeDisk::fixture_refuse_transactions_on_this_thread(1);
+        }
+        publisher
+            .commit(
+                kasumi_raft::AppliedResponse::application(kasumi_raft::encode_group_responses(
+                    &responses,
+                )?),
+                &[],
+            )
+            .map_err(anyhow::Error::from)?;
+        ensure!(
+            !self.fail_after_publication.swap(false, Ordering::AcqRel),
+            "injected failure after publication"
+        );
+        *data = prepared;
+        Ok(())
+    }
     fn capture_snapshot(
         &self,
     ) -> std::result::Result<kasumi_raft::CapturedSnapshot, kasumi_store::ScratchOperationFailure>

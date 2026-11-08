@@ -1221,3 +1221,58 @@ fn receipt_joint_publication_requires_the_bounded_ordinary_shape() {
         &[WriteOp::put("other", b"key", b"value")]
     ));
 }
+
+#[test]
+fn chained_receipt_views_keep_original_credit_after_publications_drop() {
+    let scratch = crate::codec_fixture::ScratchScope::new(
+        kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+    )
+    .unwrap();
+    let state = state();
+    let base = View::empty(&state.tenant, &state.incarnation)
+        .unwrap()
+        .fixture_owner(&scratch.disk, &state)
+        .unwrap();
+    let admission =
+        crate::admission::NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0).unwrap();
+    let baseline = admission.snapshot().reserved_bytes;
+    let publication = |view: &View, key: &'static [u8]| {
+        let workspace = crate::admission::DocumentWorkspace::new(&admission, 64 << 10).unwrap();
+        PreparedPublication {
+            writes: vec![WriteOp::put("receipt-fixture", key, vec![7; 4096])],
+            source: view.source.as_ref().unwrap().clone(),
+            head: view.head.clone(),
+            tenant: state.tenant.clone(),
+            retained: 64 << 10,
+            _workspace: Arc::new(workspace),
+        }
+    };
+    let mut first = publication(&base, b"first");
+    let first_view = first.chained_view().unwrap();
+    let first_charge = admission.snapshot().reserved_bytes;
+    assert!(first_charge > baseline);
+    drop(first);
+    assert_eq!(admission.snapshot().reserved_bytes, first_charge);
+
+    let mut second = publication(&first_view, b"second");
+    let second_view = second.chained_view().unwrap();
+    let both_charges = admission.snapshot().reserved_bytes;
+    assert!(both_charges > first_charge);
+    drop(first_view);
+    drop(second);
+    assert_eq!(admission.snapshot().reserved_bytes, both_charges);
+    for key in [b"first".as_slice(), b"second".as_slice()] {
+        assert!(
+            second_view
+                .source
+                .as_ref()
+                .unwrap()
+                .get(key)
+                .unwrap()
+                .unwrap()
+                == vec![7; 4096]
+        );
+    }
+    drop(second_view);
+    assert_eq!(admission.snapshot().reserved_bytes, baseline);
+}

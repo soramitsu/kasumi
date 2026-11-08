@@ -4,6 +4,9 @@ use std::ops::Deref;
 pub(crate) enum MaterializationRow {
     Stored(kasumi_store::PlaintextValue),
     Staged(kasumi_store::ScratchTableValue),
+    /// A row an earlier member of the same unpublished standalone group
+    /// prepared; its group's publication commits it.
+    Pending(std::sync::Arc<[u8]>),
 }
 impl Deref for MaterializationRow {
     type Target = [u8];
@@ -11,6 +14,7 @@ impl Deref for MaterializationRow {
         match self {
             Self::Stored(value) => value.as_bytes(),
             Self::Staged(value) => value,
+            Self::Pending(value) => value,
         }
     }
 }

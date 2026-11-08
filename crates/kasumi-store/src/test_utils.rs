@@ -1056,8 +1056,19 @@ struct FaultState {
     operations: usize,
     syncs: usize,
     advance_on_sync: Option<(std::sync::Arc<ManualClock>, Duration)>,
+    #[cfg(test)]
+    pause_on_sync: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
 impl FaultBackend {
+    #[cfg(test)]
+    pub(crate) fn pause_next_root_sync(
+        &self,
+    ) -> (std::sync::mpsc::Receiver<()>, std::sync::mpsc::Sender<()>) {
+        let (started, receive) = std::sync::mpsc::channel();
+        let (resume, wait) = std::sync::mpsc::channel();
+        self.state.lock().pause_on_sync = Some((started, wait));
+        (receive, resume)
+    }
     pub fn new() -> Self {
         Self::default()
     }
@@ -1131,6 +1142,16 @@ impl kasumi_kv::SegmentGroupBackend for FaultBackend {
     fn sync_root(&self) -> std::io::Result<()> {
         self.mutate()?;
         self.backend.sync_root()?;
+        #[cfg(test)]
+        {
+            let pause = self.state.lock().pause_on_sync.take();
+            if let Some((started, resume)) = pause {
+                let _ = started.send(());
+                resume
+                    .recv_timeout(Duration::from_secs(30))
+                    .map_err(std::io::Error::other)?;
+            }
+        }
         let mut state = self.state.lock();
         state.syncs += 1;
         if let Some((clock, elapsed)) = state.advance_on_sync.take() {

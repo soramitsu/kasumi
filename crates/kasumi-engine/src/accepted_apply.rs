@@ -9,6 +9,9 @@ pub(super) type ChangedIds = BTreeMap<String, BTreeSet<String>>;
 pub(super) struct ApplyOwner<'engine> {
     engine: &'engine TenantEngine,
     previous: Arc<Generation>,
+    // A standalone group's last unpublished candidate, which its next member
+    // applies to as it would to that candidate published.
+    chained: Option<Arc<Generation>>,
     // This inline slot receives the same original input/budget alias BEFORE
     // the known tree factory allocates. It is unset for early/idempotent exits.
     _mutation_change_tree: std::sync::OnceLock<kasumi_raft::MutationChangeTreeRetention>,
@@ -16,6 +19,12 @@ pub(super) struct ApplyOwner<'engine> {
     // Exact input plus optional known change-tree recipe only. Generation,
     // reducer/body clones, indexes and response remain the separate M03 model.
     _input_retention: Option<kasumi_raft::AdmittedApplicationInput>,
+    // Earlier group members' trees and inputs, each tree before its input, kept
+    // through the group's one publication and visible swap.
+    _earlier_inputs: Vec<(
+        std::sync::OnceLock<kasumi_raft::MutationChangeTreeRetention>,
+        Option<kasumi_raft::AdmittedApplicationInput>,
+    )>,
     // Last: the exact previous owner retires while the apply mutex is held.
     _guard: std::sync::MutexGuard<'engine, ()>,
 }
@@ -30,9 +39,11 @@ impl<'engine> ApplyOwner<'engine> {
         Ok(Self {
             engine,
             previous,
+            chained: None,
             _mutation_change_tree: std::sync::OnceLock::new(),
             input_position: None,
             _input_retention: None,
+            _earlier_inputs: Vec::new(),
             _guard: guard,
         })
     }
@@ -46,11 +57,61 @@ impl<'engine> ApplyOwner<'engine> {
         Ok(Self {
             engine,
             previous,
+            chained: None,
             _mutation_change_tree: std::sync::OnceLock::new(),
             input_position: None,
             _input_retention: None,
+            _earlier_inputs: Vec::new(),
             _guard: guard,
         })
+    }
+
+    /// The next member of a standalone group: keep the previous member's
+    /// input and change tree, and retain this member's as `retain_input` does.
+    pub(super) fn retain_member_input(
+        &mut self,
+        input: Option<kasumi_raft::AdmittedApplicationInput>,
+        position: kasumi_raft::LogId<u64>,
+    ) {
+        if self.input_position.is_some() || self._mutation_change_tree.get().is_some() {
+            self._earlier_inputs.push((
+                std::mem::take(&mut self._mutation_change_tree),
+                self._input_retention.take(),
+            ));
+        }
+        self.retain_input(input, position);
+    }
+
+    /// Apply the next group member to `candidate`, the unpublished result of
+    /// the members before it. Its stored documents are the published
+    /// generation's, so it reads them through that generation's resolver.
+    pub(super) fn chain(&mut self, mut candidate: Arc<Generation>) -> anyhow::Result<()> {
+        let next = Arc::get_mut(&mut candidate)
+            .ok_or_else(|| anyhow::anyhow!("chained group candidate escaped"))?;
+        anyhow::ensure!(
+            next.application_selection.get().is_none() && next._read_reservations.is_empty(),
+            "chained group candidate is already selected or is a read view"
+        );
+        if let Some(resolver) = self.previous.document_sources.get() {
+            next.document_sources
+                .set(resolver.clone())
+                .map_err(|_| anyhow::anyhow!("chained group candidate already has a resolver"))?;
+        }
+        self.chained = Some(candidate);
+        Ok(())
+    }
+
+    /// The last chained candidate, which the group publishes.
+    pub(super) fn take_chained(&mut self) -> anyhow::Result<Arc<Generation>> {
+        let mut candidate = self
+            .chained
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("standalone group has no candidate"))?;
+        // Publication installs the selected resolver itself.
+        let last = Arc::get_mut(&mut candidate)
+            .ok_or_else(|| anyhow::anyhow!("chained group candidate escaped"))?;
+        last.document_sources = std::sync::OnceLock::new();
+        Ok(candidate)
     }
 
     pub(super) fn retain_input(
@@ -104,8 +165,9 @@ impl<'engine> ApplyOwner<'engine> {
     }
 
     // No clonable Arc or selected-source handle escapes through this borrow.
+    // Within a standalone group, the members before this one have applied.
     pub(super) fn current(&self) -> &Generation {
-        &self.previous
+        self.chained.as_deref().unwrap_or(&self.previous)
     }
 
     /// Genesis membership is log index zero, the same logical revision as
@@ -148,7 +210,7 @@ impl<'engine> ApplyOwner<'engine> {
             delta: PrimaryDelta {
                 changed: ChangedIds::new(),
             },
-            receipt_publication: None,
+            receipt_publications: Vec::new(),
             owner: self,
         })
     }
@@ -158,6 +220,10 @@ impl<'engine> ApplyOwner<'engine> {
         candidate: Arc<Generation>,
         changed: ChangedIds,
     ) -> anyhow::Result<AcceptedGeneration<'engine>> {
+        anyhow::ensure!(
+            self.chained.is_none(),
+            "a chained group candidate is accepted only as the last"
+        );
         let old = &self.previous.state;
         let new = &candidate.state;
         anyhow::ensure!(
@@ -187,7 +253,7 @@ impl<'engine> ApplyOwner<'engine> {
         Ok(AcceptedGeneration {
             candidate,
             delta,
-            receipt_publication: None,
+            receipt_publications: Vec::new(),
             owner: self,
         })
     }
@@ -199,7 +265,8 @@ impl<'engine> ApplyOwner<'engine> {
 pub(super) struct AcceptedGeneration<'engine> {
     candidate: Arc<Generation>,
     delta: PrimaryDelta,
-    receipt_publication: Option<crate::mutation_receipt::PreparedPublication>,
+    // One per member whose receipt pair joins the publication, in log order.
+    receipt_publications: Vec<crate::mutation_receipt::PreparedPublication>,
     // Last: candidate/map destruction and visibility transfer stay serialized.
     owner: ApplyOwner<'engine>,
 }
@@ -213,10 +280,43 @@ impl AcceptedGeneration<'_> {
             publication.require_view(&self.candidate.receipts)?;
         }
         anyhow::ensure!(
-            self.receipt_publication.is_none(),
+            self.receipt_publications.is_empty(),
             "receipt publication already attached"
         );
-        self.receipt_publication = publication;
+        self.receipt_publications.extend(publication);
+        Ok(self)
+    }
+
+    /// The receipt pairs of a standalone group's members, in log order. Each
+    /// follows the one before it, and the last is the candidate's own head.
+    pub(super) fn with_group_receipts(
+        mut self,
+        publications: Vec<crate::mutation_receipt::PreparedPublication>,
+    ) -> anyhow::Result<Self> {
+        anyhow::ensure!(
+            self.receipt_publications.is_empty(),
+            "receipt publication already attached"
+        );
+        let receipts = &self.candidate.receipts;
+        for pair in publications.windows(2) {
+            anyhow::ensure!(
+                pair[0].head().count < pair[1].head().count,
+                "group receipt pairs are out of order"
+            );
+        }
+        if let Some(last) = publications.last() {
+            anyhow::ensure!(
+                last.head() == receipts.head(),
+                "group receipt head differs from candidate"
+            );
+        }
+        anyhow::ensure!(
+            publications
+                .iter()
+                .all(|publication| publication.joins_rows_of(receipts)),
+            "group receipt pair belongs to other rows"
+        );
+        self.receipt_publications = publications;
         Ok(self)
     }
 
@@ -225,11 +325,39 @@ impl AcceptedGeneration<'_> {
         roots: &crate::application_sources::SourceRootsRef,
         position: &kasumi_raft::AppliedEntryContext,
     ) -> anyhow::Result<PreparedApplicationWrites> {
-        let mut documents = self.prepare_documents(roots)?;
-        let mut receipt = self.receipt_publication.take();
-        if receipt.is_some()
-            && !crate::mutation_receipt::PreparedPublication::can_join(
-                position,
+        let revision = self.candidate.state.revision;
+        self.prepare_writes(roots, revision, |documents| {
+            crate::mutation_receipt::PreparedPublication::can_join(position, documents)
+        })
+    }
+
+    /// [`Self::prepare_publication_writes`] for a standalone group of
+    /// `members` entries, the first applied at `first_revision`, publishing at
+    /// the last member's `position`.
+    pub(super) fn prepare_group_publication_writes(
+        &mut self,
+        roots: &crate::application_sources::SourceRootsRef,
+        position: &kasumi_raft::AppliedEntryContext,
+        members: usize,
+        first_revision: u64,
+    ) -> anyhow::Result<PreparedApplicationWrites> {
+        self.prepare_writes(roots, first_revision, |documents| {
+            crate::mutation_receipt::PreparedPublication::can_join_group(
+                position, documents, members,
+            )
+        })
+    }
+
+    fn prepare_writes(
+        &mut self,
+        roots: &crate::application_sources::SourceRootsRef,
+        first_revision: u64,
+        can_join: impl FnOnce(&[kasumi_store::WriteOp]) -> bool,
+    ) -> anyhow::Result<PreparedApplicationWrites> {
+        let mut documents = self.prepare_documents_since(roots, first_revision)?;
+        let mut receipts = std::mem::take(&mut self.receipt_publications);
+        if !receipts.is_empty()
+            && !can_join(
                 documents
                     .as_ref()
                     .map_or(&[][..], |documents| documents.writes()),
@@ -237,46 +365,64 @@ impl AcceptedGeneration<'_> {
         {
             // This is the original immutable pair commit, before the publisher
             // is entered. No publisher/capacity error is caught or retried.
-            receipt
-                .take()
-                .expect("checked receipt")
-                .stage_separately()?;
+            for receipt in receipts.drain(..) {
+                receipt.stage_separately()?;
+            }
         }
         let mut writes = documents
             .as_mut()
             .map_or_else(Vec::new, |documents| documents.take_writes());
-        if let Some(receipt) = &mut receipt {
+        for receipt in &mut receipts {
             receipt.append_to(&mut writes)?;
         }
         Ok(PreparedApplicationWrites {
             writes,
             _documents: documents,
-            _receipt: receipt,
+            _receipts: receipts,
         })
     }
 
-    /// Stage each changed after-image once. The same compact handle is retained
-    /// by both the current document map and its complete change-feed event.
-    pub(super) fn prepare_documents(
+    /// Stage each changed after-image once, retaining the same compact handle
+    /// in the current document map and its complete change-feed event. Include
+    /// every revision since `first_revision`, including earlier group members.
+    fn prepare_documents_since(
         &mut self,
         roots: &crate::application_sources::SourceRootsRef,
+        first_revision: u64,
     ) -> anyhow::Result<Option<crate::document_store::PreparedDocuments>> {
         // Metadata, rejection, replay and deletion-only publications have no
         // new after-image. They must not obtain a new body grant after commit.
-        let pending = self.delta.changed.iter().any(|(name, ids)| {
-            self.candidate
-                .state
-                .collections
-                .get(name)
-                .is_some_and(|collection| {
-                    ids.iter().any(|id| {
-                        collection
-                            .documents
-                            .get(id)
-                            .is_some_and(|slot| matches!(slot.as_ref(), DocumentSlot::Pending(_)))
-                    })
+        let feed = &self.candidate.state.change_feed.commits;
+        let events = feed
+            .iter()
+            .rev()
+            .take_while(|(_, commit)| commit.revision >= first_revision)
+            .map(|(key, _)| *key)
+            .collect::<Vec<_>>();
+        let superseded = events.iter().any(|key| {
+            feed.get(key).is_some_and(|commit| {
+                commit.records.iter().any(|record| {
+                    record
+                        .document
+                        .as_ref()
+                        .is_some_and(|slot| matches!(slot.as_ref(), DocumentSlot::Pending(_)))
                 })
+            })
         });
+        let pending = superseded
+            || self.delta.changed.iter().any(|(name, ids)| {
+                self.candidate
+                    .state
+                    .collections
+                    .get(name)
+                    .is_some_and(|collection| {
+                        ids.iter().any(|id| {
+                            collection.documents.get(id).is_some_and(|slot| {
+                                matches!(slot.as_ref(), DocumentSlot::Pending(_))
+                            })
+                        })
+                    })
+            });
         if !pending {
             return Ok(None);
         }
@@ -294,6 +440,10 @@ impl AcceptedGeneration<'_> {
         )?;
         let candidate = Arc::get_mut(&mut self.candidate)
             .ok_or_else(|| anyhow::anyhow!("unpublished document candidate escaped"))?;
+        // Each staged after-image, by the pending slot it replaced; that slot
+        // stays allocated until every event is resolved.
+        let mut staged = std::collections::BTreeMap::new();
+        let mut replaced = Vec::new();
         for (name, ids) in &self.delta.changed {
             let collection = candidate
                 .state
@@ -306,35 +456,45 @@ impl AcceptedGeneration<'_> {
                 };
                 if let DocumentSlot::Pending(document) = slot.as_ref() {
                     let descriptor = prepared.stage(document)?;
-                    collection
-                        .documents
-                        .insert(id.clone(), Arc::new(DocumentSlot::Stored(descriptor)));
+                    let stored = Arc::new(DocumentSlot::Stored(descriptor));
+                    staged.insert(Arc::as_ptr(slot), stored.clone());
+                    replaced.push(slot.clone());
+                    collection.documents.insert(id.clone(), stored);
                 }
             }
         }
-        let latest_key = candidate
-            .state
-            .change_feed
-            .commits
-            .get_max()
-            .map(|(key, _)| *key);
-        if let Some(latest) =
-            latest_key.and_then(|key| candidate.state.change_feed.commits.get_mut(&key))
-            && latest.revision == candidate.state.revision
-        {
-            for record in &mut Arc::make_mut(latest).records {
-                if record.document.is_some() {
-                    let slot = candidate
-                        .state
-                        .collections
-                        .get(&record.collection)
-                        .and_then(|collection| collection.documents.get(&record.id))
-                        .ok_or_else(|| anyhow::anyhow!("new change-feed after-image absent"))?;
-                    slot.stored()?;
-                    record.document = Some(slot.clone());
-                }
+        for key in events.into_iter().rev() {
+            let commit = candidate
+                .state
+                .change_feed
+                .commits
+                .get_mut(&key)
+                .ok_or_else(|| anyhow::anyhow!("change-feed event vanished"))?;
+            anyhow::ensure!(
+                commit.revision <= candidate.state.revision,
+                "change-feed event follows its candidate"
+            );
+            for record in &mut Arc::make_mut(commit).records {
+                let Some(slot) = record.document.take() else {
+                    continue;
+                };
+                let stored = match staged.get(&Arc::as_ptr(&slot)) {
+                    Some(stored) => stored.clone(),
+                    None => match slot.as_ref() {
+                        DocumentSlot::Pending(document) => {
+                            let stored = Arc::new(DocumentSlot::Stored(prepared.stage(document)?));
+                            staged.insert(Arc::as_ptr(&slot), stored.clone());
+                            stored
+                        }
+                        DocumentSlot::Stored(_) => slot.clone(),
+                    },
+                };
+                stored.stored()?;
+                replaced.push(slot);
+                record.document = Some(stored);
             }
         }
+        drop(replaced);
         Ok(Some(prepared))
     }
 
@@ -362,13 +522,13 @@ impl AcceptedGeneration<'_> {
         // Check before destructuring: unwinding must retire candidate/payload
         // owners before releasing the apply guard, in the struct's field order.
         assert!(
-            self.receipt_publication.is_none(),
+            self.receipt_publications.is_empty(),
             "unpublished receipt pair reached visibility"
         );
         let Self {
             candidate,
             delta,
-            receipt_publication: _,
+            receipt_publications: _,
             owner,
         } = self;
         owner.engine.publish_generation(Some(candidate));
@@ -381,7 +541,7 @@ impl AcceptedGeneration<'_> {
 pub(super) struct PreparedApplicationWrites {
     writes: Vec<kasumi_store::WriteOp>,
     _documents: Option<crate::document_store::PreparedDocuments>,
-    _receipt: Option<crate::mutation_receipt::PreparedPublication>,
+    _receipts: Vec<crate::mutation_receipt::PreparedPublication>,
 }
 impl PreparedApplicationWrites {
     pub(super) fn writes(&self) -> &[kasumi_store::WriteOp] {

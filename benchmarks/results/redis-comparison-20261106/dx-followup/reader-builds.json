@@ -1,0 +1,22 @@
+{
+  "baseline_commit": "e4d920ebcf6c11b57d89138eb411ba78643eb1f2",
+  "readerfix_note": "Intermediate combined candidate with reader retirement fix and group queue fixes; before final chained receipt credit lifetime fix. Read-path diagnostic only.",
+  "release_profile": {
+    "lto": false,
+    "codegen_units": 16,
+    "incremental": true,
+    "debug": "line-tables-only"
+  },
+  "binaries": {
+    "baseline": {
+      "kasumid": "7679678b20893ef19ad9810b2d6a9754ed70a07bf33cf6ed3ec070fdfcdbd964",
+      "kasumictl": "439bed5291747ce5aab4f9f6e757f7227cd6aa03576bae8cd0e8dc1854b941cf",
+      "kasumi-bench-compare": "8623f1b059e8fba7543ac8051df72ba63e20f43ecb296d8829d1fa0c5d1d2eea"
+    },
+    "readerfix": {
+      "kasumid": "a378cf57692eedeffd006152071b1c9505f6257634bfe71f2e73d461957c4dea",
+      "kasumictl": "9ea7d22a6a99001b270bb05660654f4a2b7bf59b86c8d6ceb5b44c880faaae15",
+      "kasumi-bench-compare": "95931488dc734f9773aa6e7a8ac71ce2789beb63fc27b289b0838edcf6648ae8"
+    }
+  }
+}

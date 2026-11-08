@@ -156,6 +156,7 @@ fn run(
         generation,
         request,
         cancellation,
+        deadline: std::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT,
         _permit: permit,
         memory,
         registration,

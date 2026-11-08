@@ -3,34 +3,35 @@
 This compares the controls a standalone `kasumid` enforces with those of an
 open-source Redis 8 server, and lists the concrete weaknesses a review of
 Kasumi's code found. Kasumi references are to source as of this document;
-Redis statements describe its documented open-source behavior and were not
-re-verified in this repository. The performance cost of each Kasumi control is
+Redis statements describe its documented open-source behavior; the linked TLS,
+ACL and persistence references were checked on 2026-11-06. The performance cost of each Kasumi control is
 measured in the [Redis comparison](../benchmarks/REDIS-COMPARISON.md).
 
 ## Controls side by side
 
 | Control | Kasumi standalone | Redis 8 (open source) |
 | --- | --- | --- |
-| Transport encryption | TLS 1.3 only on every listener and outbound client, 0-RTT off (`kasumi-transport/src/lib.rs`). No plaintext listener exists. | Optional. TLS 1.2 and 1.3 by default; the plaintext port stays open unless `port 0`. |
+| Transport encryption | TLS 1.3 only on every listener and outbound client, 0-RTT off (`kasumi-transport/src/lib.rs`). No plaintext listener exists. | Optional and configurable; `port 0` disables the plaintext listener. [Redis TLS](https://redis.io/docs/latest/operate/oss_and_stack/management/security/encryption/). |
 | Client certificates | Required on the native data and administrative listeners, issued by the installation CA and, on new installations, listed in a revocable pin allowlist. MCP uses server TLS plus a bearer token. | Optional (`tls-auth-clients`, default `yes` once TLS is on). |
 | Server identity | Clients pin the server's exact certificate SHA-256 in their profile. | CA verification only; no pinning in the server's protocol. |
 | Token binding | New installations bind each native token to its profile's client certificate (RFC 8705) and give MCP its own audience; a copied token fails from any other certificate and on MCP. | None: `AUTH` passwords work from any connection. |
-| Authentication | Ed25519 access tokens (or an external OAuth issuer with allowlisted asymmetric algorithms), `typ: at+jwt`, exact issuer and audience, zero leeway, lifetime ≤ 1 hour against a suspend-aware clock; revocable credential families checked on every request and again before the response is released. After expiry a credential can do one thing, for at most 24 hours: renew its own unrevoked family over a client-certificate connection, if it is that family's latest issuance, audited each time (`docs/credential-lifetime.md`). | ACL users with passwords (`AUTH`), checked once per connection. The default user has no password unless configured; no expiry or revocation of a connection that already authenticated. |
+| Authentication | Ed25519 access tokens (or an external OAuth issuer with allowlisted asymmetric algorithms), `typ: at+jwt`, exact issuer and audience, zero leeway, lifetime ≤ 1 hour against a suspend-aware clock; revocable credential families checked on every request and again before the response is released. After expiry a credential can do one thing, for at most 24 hours: renew its own unrevoked family over a client-certificate connection, if it is that family's latest issuance, audited each time (`docs/credential-lifetime.md`). | ACL passwords authenticate a connection. Setting a user `off` blocks new authentication; existing connections require `CLIENT KILL USER` or deletion with `ACL DELUSER`. [Redis user management](https://redis.io/docs/latest/commands/acl-setuser/), [user deletion](https://redis.io/docs/latest/commands/acl-deluser/). |
 | Authorization | Default deny. Scopes in the token must intersect a per-principal, optionally per-collection grant; re-checked during ordered apply and before release. Tenant comes only from the verified token. | ACL command categories and key patterns per user. |
 | Tenant isolation | Separate keys, policies, credentials, audit and (replicated) Raft groups per tenant. | Logical databases share one keyspace process; isolation is by ACL key pattern. |
 | Encryption at rest | Every record sealed with XChaCha20-Poly1305 under per-tenant data keys wrapped by a file keyring or OpenBao/Vault Transit; record keys are keyed HMACs; backups and spools are encrypted (`kasumi-store/src/lib.rs`). | None. RDB and AOF files are plaintext. |
 | Audit | Durable, encrypted, hash-linked service audit of transport accept/deny, every authentication denial, each bearer token's first success on a connection with a count of its later successes, access denials, key, backup and recovery operations, with repeated events that identify no client kept as exact counts per peer and minute; tenant audit of every mutation and, with `strict_read_audit`, every read before release. | No audit log. `ACL LOG` keeps a small in-memory list of recent denials. |
 | Idempotency / exactly-once | Every mutation has a durable receipt keyed by its idempotency key. | None; a retried command applies twice. |
-| Durability of acknowledged writes | Always flushed before the reply. | Configurable: `appendfsync always`, `everysec` (≤ ~1 s loss) or `no`. |
+| Durability of acknowledged writes | Always flushed before the reply. | Configurable: `appendfsync always` flushes before replying and supports group commit; `everysec` can lose about one second of writes. [Redis persistence](https://redis.io/docs/latest/management/persistence/). |
 | Server-side code | None. | Lua and functions; the Lua sandbox has had memory-safety CVEs (for example CVE-2025-49844). |
-| Secrets on disk | Secret files must be owner-only, are read without following links into zeroizing buffers; logs use fixed labels only. | `requirepass`/ACL passwords in the config or ACL file. |
+| Secrets on disk | Secret files must be owner-only, are read without following links into zeroizing buffers; logs use fixed labels only. | Config and ACL files require protection; ACL rules support SHA-256 password hashes. [ACL password rules](https://redis.io/docs/latest/commands/acl-setuser/). |
 | Resource limits | 8 MiB requests, 16 MiB responses, authentication before body reads, memory admission with a high-water mark, per-tenant quotas, 32 HTTP/2 streams and 128 connections per listener, 60 s idle close. | `maxclients` 10000, `timeout 0` (idle clients never closed), `maxmemory` optional. |
 | Replication security | Raft peers authenticate with mTLS and certificate pins bound to node IDs. | Replication and cluster-bus TLS optional. |
 
-Kasumi is stricter in every row. What it does not have, and Redis does not
-either: no rate limiting of failed authentication, and no signatures or
-external anchoring on the audit chain (whoever holds the audit key could
-rewrite it).
+Kasumi requires several controls that Redis makes configurable. These controls
+alone do not establish overall security superiority: deployment, operational
+practices and implementation correctness also matter. Kasumi still has no
+rate limit on failed authentication and no signatures or external anchoring
+on its audit chain; possession of the audit key permits rewriting that chain.
 
 ## What the controls cost
 

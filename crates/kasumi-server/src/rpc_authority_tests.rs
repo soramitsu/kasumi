@@ -1759,8 +1759,28 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     follower_task.await.unwrap().unwrap();
     stop.send_replace(true);
     serving.await.unwrap().unwrap();
+    // The ambiguous enrollment and signer-maintenance starts were resolved
+    // above through their exact permanent receipts. Receipt replay does not
+    // claim the original timed-out waiter, whose acknowledgement diagnostic
+    // may remain after custody fully drains. Reject every other drain failure.
     for service in services {
-        service.shutdown().await.unwrap();
+        if let Err(failure) = service.shutdown().await {
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete,
+                "{failure:?}"
+            );
+            assert!(!failure.issues().is_empty());
+            for issue in failure.issues() {
+                assert_eq!(issue.component(), "authority request outcome");
+                let error = issue.error().downcast_ref::<kasumi_types::Error>().unwrap();
+                assert_eq!(error.code, kasumi_types::ErrorCode::UnknownOutcome);
+                assert_eq!(
+                    error.message,
+                    "authority acknowledgement unavailable; resolve the exact permanent command identity"
+                );
+            }
+        }
     }
     for storage in stores {
         storage.shutdown().await.unwrap();
