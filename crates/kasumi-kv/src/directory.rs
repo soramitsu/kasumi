@@ -927,18 +927,21 @@ struct PageInfo {
     /// Page offset of the final entry; validation found it, so a range check
     /// reaches the page's maximum key without decoding every entry again.
     last: u16,
+    /// Offset of entry count / 2, found during the same validation pass.
+    middle: u16,
 }
 
 impl PageInfo {
     /// The header's fields, which full validation checked for these bytes.
-    fn header(bytes: &[u8], last: u16) -> Self {
+    fn header(bytes: &[u8], offsets: u32) -> Self {
         Self {
             generation: le_u64(&bytes[36..44]),
             level: bytes[44],
             count: le_u16(&bytes[46..48]) as usize,
             used: le_u32(&bytes[48..52]) as usize,
             entries: le_u64(&bytes[52..60]),
-            last,
+            last: offsets as u16,
+            middle: (offsets >> 16) as u16,
         }
     }
 }
@@ -1033,7 +1036,7 @@ fn validate_checked_page(
     let mut at = HEADER_BYTES;
     let mut previous = None;
     let mut entries = 0u64;
-    for _ in 0..info.count {
+    for index in 0..info.count {
         let (entry, end) = page_entry(bytes, at, info.used)?;
         if previous.is_some_and(|previous| previous >= entry.key) {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
@@ -1061,6 +1064,9 @@ fn validate_checked_page(
                     "directory entry count overflows",
                 )))?;
         // `at` <= `used` <= DIRECTORY_PAGE_BYTES, which fits in u16.
+        if index == info.count / 2 {
+            info.middle = at as u16;
+        }
         info.last = at as u16;
         at = end;
     }
@@ -1074,8 +1080,8 @@ fn validate_checked_page(
 
 /// Validate a page a retaining backend lent (`lend_page`), whose bytes are
 /// immutable and passed `check`. Their first full validation is recorded
-/// with them as the final entry's offset, which is past the header and so
-/// never zero. That validation depends on the root only through its group
+/// with them as the middle and final entries' offsets, which are past the
+/// header and never zero. That validation depends on the root only through its group
 /// and generation ceiling, so it holds for every root of the page's group
 /// whose generation is at least the page's: such a root reuses it without
 /// decoding the page again. Any other root, and any page not yet validated,
@@ -1089,12 +1095,11 @@ fn validate_resident_page(
     check: PageCheck,
 ) -> Result<PageInfo, CoreError> {
     let bytes = page.as_bytes();
-    if let Some(last) = page.validated()
-        && let Ok(last) = u16::try_from(last.get())
+    if let Some(offsets) = page.validated()
         && bytes.len() == DIRECTORY_PAGE_BYTES
         && bytes[20..36] == root.group_id
     {
-        let info = PageInfo::header(bytes, last);
+        let info = PageInfo::header(bytes, offsets.get());
         if info.generation <= root.generation {
             reference.validate()?;
             return Ok(info);
@@ -1102,7 +1107,8 @@ fn validate_resident_page(
     }
     let info = validate_checked_page(bytes, root, reference, check)?;
     page.record_validated(
-        NonZeroU32::new(u32::from(info.last)).expect("an entry follows the header"),
+        NonZeroU32::new(u32::from(info.middle) << 16 | u32::from(info.last))
+            .expect("an entry follows the header"),
     );
     Ok(info)
 }
@@ -1750,8 +1756,21 @@ impl<'a> DirectoryReader<'a> {
         loop {
             let (page, info) = self.view(buffer, root, reference, &bounds)?;
             let mut selected = None;
-            let mut at = HEADER_BYTES;
-            for index in 0..info.count {
+            // Warm point lookups can skip half a variable-width page using the
+            // offset saved by validation. Keep tiny pages and table markers on
+            // the simple path; a marker is commonly the first entry.
+            let (start, stop, mut at) = if key.row.is_some() && info.count >= 16 {
+                let mid = info.count / 2;
+                let offset = usize::from(info.middle);
+                if page_entry(&page, offset, info.used)?.0.key <= key {
+                    (mid, info.count, offset)
+                } else {
+                    (0, mid, HEADER_BYTES)
+                }
+            } else {
+                (0, info.count, HEADER_BYTES)
+            };
+            for index in start..stop {
                 let (entry, end) = page_entry(&page, at, info.used)?;
                 match entry.key.cmp(&key) {
                     Ordering::Greater => break,
@@ -2375,6 +2394,57 @@ mod tests {
             MemoryPages::default().append_digested_page(&page, [0; 32]),
             Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::Corrupt(_)))
         ));
+    }
+
+    #[test]
+    fn warm_point_reads_skip_half_a_variable_width_page() {
+        use crate::cache::CacheConfig;
+        use crate::page_cache::CachedDirectoryBackend;
+
+        let backend = MemoryPages::default();
+        let admission = Admission::new(4 << 20);
+        let cached = CachedDirectoryBackend::new(
+            &backend,
+            admission.clone(),
+            GROUP,
+            CacheConfig {
+                byte_limit: 1 << 20,
+            },
+        );
+        let key = |i: u16| {
+            let mut row = (2 * i).to_be_bytes().to_vec();
+            row.resize(2 + usize::from(i % 11), b'x');
+            row
+        };
+        let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1).unwrap();
+        for i in 0..192u16 {
+            builder
+                .push(DirectoryKey::row("t", &key(i)), value(1, i.into()))
+                .unwrap();
+        }
+        let root = builder.finish().unwrap();
+        assert_eq!(root.height, 1);
+        let reader = DirectoryReader::new(&cached, admission);
+        for i in 0..192u16 {
+            assert_eq!(
+                reader.get(root, DirectoryKey::row("t", &key(i))).unwrap(),
+                Some(value(1, i.into()))
+            );
+            assert!(
+                reader
+                    .get(root, DirectoryKey::row("t", &(2 * i + 1).to_be_bytes()))
+                    .unwrap()
+                    .is_none()
+            );
+        }
+        PARSED_ENTRIES.with(|count| count.set(Some(0)));
+        let last = reader.get(root, DirectoryKey::row("t", &key(191))).unwrap();
+        let parsed = PARSED_ENTRIES.with(|count| count.replace(None).unwrap());
+        assert_eq!(last, Some(value(1, 191)));
+        assert!(
+            parsed <= 98,
+            "parsed {parsed} entries for the final key of 192"
+        );
     }
 
     #[test]
