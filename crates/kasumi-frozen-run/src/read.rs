@@ -22,8 +22,15 @@ struct Decoded {
     offsets: Vec<u32>,
 }
 
+#[cfg(test)]
+std::thread_local! {
+    pub(super) static ROW_PROBES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 impl Decoded {
     fn row(&self, offset: u32) -> (&[u8], &[u8]) {
+        #[cfg(test)]
+        ROW_PROBES.with(|count| count.set(count.get() + 1));
         let record = &self.bytes[offset as usize..];
         let key_len = u16::from_le_bytes(record[..2].try_into().unwrap()) as usize;
         let value_len = u32::from_le_bytes(record[2..6].try_into().unwrap()) as usize;
@@ -247,24 +254,44 @@ impl FrozenRun {
             Bound::Excluded(end) => key >= end,
             Bound::Unbounded => false,
         };
-        let start = self.blocks.partition_point(|b| below(&b.last));
-        let end = self.blocks.partition_point(|b| !above(&b.first));
+        if limit == 0 {
+            return Ok(0);
+        }
+        let start = match lower {
+            Bound::Unbounded => 0,
+            _ => self.blocks.partition_point(|b| below(&b.last)),
+        };
+        let end = match upper {
+            Bound::Unbounded => self.blocks.len(),
+            _ => self.blocks.partition_point(|b| !above(&b.first)),
+        };
         let mut seen = 0;
         for step in 0..end.saturating_sub(start) {
             if seen == limit {
                 break;
             }
-            let block = self.block(if reverse {
+            let id = if reverse {
                 end - 1 - step
             } else {
                 start + step
-            })?;
-            let lo = block
-                .offsets
-                .partition_point(|&offset| below(block.row(offset).0));
-            let hi = block
-                .offsets
-                .partition_point(|&offset| !above(block.row(offset).0));
+            };
+            let cut_lower = id == start && below(&self.blocks[id].first);
+            let cut_upper = id + 1 == end && above(&self.blocks[id].last);
+            let block = self.block(id)?;
+            let lo = if cut_lower {
+                block
+                    .offsets
+                    .partition_point(|&offset| below(block.row(offset).0))
+            } else {
+                0
+            };
+            let hi = if cut_upper {
+                block
+                    .offsets
+                    .partition_point(|&offset| !above(block.row(offset).0))
+            } else {
+                block.offsets.len()
+            };
             let take = hi.saturating_sub(lo).min(limit - seen);
             for index in 0..take {
                 let i = if reverse { hi - 1 - index } else { lo + index };

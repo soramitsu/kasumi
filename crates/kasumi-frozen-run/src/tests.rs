@@ -192,3 +192,40 @@ fn authenticated_malformed_lengths_order_and_boundaries_are_rejected() {
         }
     }
 }
+
+#[test]
+fn mid_block_seek_is_logarithmic_and_interior_blocks_only_probe_returned_rows() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("run");
+    let root = seal(&path, (0..16000u32).map(|id| (id.to_be_bytes(), b""))).unwrap();
+    let mut run = FrozenRun::open(&path, root).unwrap();
+
+    // 3,276 ten-byte rows fit a block. This window ends near its midpoint.
+    read::ROW_PROBES.with(|probes| probes.set(0));
+    let mut visited = 0;
+    let end = 1500u32.to_be_bytes();
+    run.visit_reverse(Unbounded, Excluded(&end), 8, |key, _| {
+        assert_eq!(key, (1499u32 - visited).to_be_bytes());
+        visited += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(visited, 8);
+    assert!(read::ROW_PROBES.with(|probes| probes.get()) <= 8 + 13);
+
+    read::ROW_PROBES.with(|probes| probes.set(0));
+    let lo = 500u32.to_be_bytes();
+    let hi = 14500u32.to_be_bytes();
+    let count = run
+        .visit_forward(Included(&lo), Excluded(&hi), usize::MAX, |_, _| Ok(()))
+        .unwrap();
+    assert_eq!(count, 14_000);
+    assert!(read::ROW_PROBES.with(|probes| probes.get()) <= count + 2 * 13);
+
+    read::ROW_PROBES.with(|probes| probes.set(0));
+    let count = run
+        .visit_reverse(Unbounded, Unbounded, usize::MAX, |_, _| Ok(()))
+        .unwrap();
+    assert_eq!(count, 16_000);
+    assert_eq!(read::ROW_PROBES.with(|probes| probes.get()), count);
+}
