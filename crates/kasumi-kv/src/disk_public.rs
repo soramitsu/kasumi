@@ -1,6 +1,7 @@
 //! Admitted public outputs and directory-only decisions for the Core facade.
 use super::*;
-use crate::core::{AdmittedValue, CommittedPosition};
+use crate::core::{AdmittedValue, CommittedPosition, ScanDirection};
+use std::ops::{Bound, RangeBounds};
 
 impl DiskState {
     pub(crate) fn generation(&self) -> Result<u64, CoreError> {
@@ -152,37 +153,92 @@ impl DiskState {
         })
     }
 
-    pub(crate) fn next_key_admitted(
+    // Called inside run, which checks the owner before and after the read.
+    fn bounded_record(
+        &self,
+        pin: &SnapshotPin,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        direction: ScanDirection,
+    ) -> Result<Option<DirectoryRecord>, CoreError> {
+        use Bound::{Excluded, Included, Unbounded};
+        for bound in [lower, upper] {
+            if matches!(bound, Included(key) | Excluded(key) if key.len() > crate::MAX_KEY_BYTES) {
+                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                    "range key exceeds storage limit",
+                )));
+            }
+        }
+        let root = self.check_snapshot(pin)?;
+        let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
+        if reader.get(root, DirectoryKey::table(table))?.is_none() {
+            return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
+        }
+        let record = match direction {
+            ScanDirection::Ascending => {
+                let key = match lower {
+                    Included(key) | Excluded(key) => key,
+                    Unbounded => &[],
+                };
+                reader.next(
+                    root,
+                    DirectoryKey::row(table, key),
+                    matches!(lower, Excluded(_)),
+                )?
+            }
+            ScanDirection::Descending => {
+                // The largest permitted byte key belongs to the interval, including
+                // when that exact all-FF key is itself stored in the table.
+                const LAST: &[u8] = &[0xff; crate::MAX_KEY_BYTES];
+                let key = match upper {
+                    Included(key) | Excluded(key) => key,
+                    Unbounded => LAST,
+                };
+                reader.previous(
+                    root,
+                    DirectoryKey::row(table, key),
+                    matches!(upper, Excluded(_)),
+                )?
+            }
+        };
+        Ok(record.filter(|record| {
+            let key = record.key();
+            key.table == table && key.row.is_some_and(|row| (lower, upper).contains(row))
+        }))
+    }
+
+    pub(crate) fn seek_key_admitted(
         &mut self,
         pin: &SnapshotPin,
         table: &str,
-        start: &[u8],
-        after: Option<&[u8]>,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        direction: ScanDirection,
     ) -> Result<Option<AdmittedValue>, CoreError> {
         self.run(|state| {
-            let root = state.check_snapshot(pin)?;
-            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
-            if reader.get(root, DirectoryKey::table(table))?.is_none() {
-                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
-            }
-            let (lower, exclusive) = after
-                .filter(|after| *after >= start)
-                .map_or((start, false), |after| (after, true));
-            let record = reader.next(root, DirectoryKey::row(table, lower), exclusive)?;
-            match record {
-                Some(record) if record.key().table == table => {
-                    let key = record.key();
-                    match (key.row, record.value) {
-                        (Some(row), DirectoryValue::Row { .. }) => {
-                            AdmittedValue::copy(&state.owner.admission, row).map(Some)
-                        }
-                        _ => Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                            "row successor returned a table",
-                        ))),
-                    }
-                }
-                _ => Ok(None),
-            }
+            let Some(record) = state.bounded_record(pin, table, lower, upper, direction)? else {
+                return Ok(None);
+            };
+            let key = record.key().row.expect("bounded record is a row");
+            AdmittedValue::copy(&state.owner.admission, key).map(Some)
+        })
+    }
+
+    pub(crate) fn seek_admitted(
+        &mut self,
+        pin: &SnapshotPin,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        direction: ScanDirection,
+        max_value_bytes: usize,
+    ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
+        self.run(|state| {
+            let Some(record) = state.bounded_record(pin, table, lower, upper, direction)? else {
+                return Ok(None);
+            };
+            state.admit_record(record, table, max_value_bytes).map(Some)
         })
     }
 
@@ -198,16 +254,25 @@ impl DiskState {
             let Some(record) = state.next_record(pin, table, prefix, after)? else {
                 return Ok(None);
             };
-            let key = record.key();
-            let (Some(key), DirectoryValue::Row { value, .. }) = (key.row, record.value) else {
-                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
-                    "row successor returned a table",
-                )));
-            };
-            let output_key = AdmittedValue::copy(&state.owner.admission, key)?;
-            let output_value = state.value_admitted(value, table, key, max_value_bytes)?;
-            Ok(Some((output_key, output_value)))
+            state.admit_record(record, table, max_value_bytes).map(Some)
         })
+    }
+
+    fn admit_record(
+        &self,
+        record: DirectoryRecord,
+        table: &str,
+        max_value_bytes: usize,
+    ) -> Result<(AdmittedValue, AdmittedValue), CoreError> {
+        let (Some(key), DirectoryValue::Row { value, .. }) = (record.key().row, record.value)
+        else {
+            return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                "row seek returned a table",
+            )));
+        };
+        let output_key = AdmittedValue::copy(&self.owner.admission, key)?;
+        let output_value = self.value_admitted(value, table, key, max_value_bytes)?;
+        Ok((output_key, output_value))
     }
 
     // Called only inside `run`, which verifies the owner around the whole read.

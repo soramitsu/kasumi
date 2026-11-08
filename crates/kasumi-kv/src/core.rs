@@ -13,6 +13,7 @@ use crate::snapshot_pins::SnapshotPin;
 use std::any::Any;
 use std::fmt;
 use std::io;
+use std::ops::Bound;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
@@ -21,6 +22,13 @@ pub const MAX_VALUE_BYTES: usize = 40 << 20;
 pub const MAX_BATCH_BYTES: usize = 96 << 20;
 pub const MAX_KEY_BYTES: usize = 4096;
 pub const MAX_TABLE_BYTES: usize = 1024;
+
+/// Traversal order of the encoded keys within a table.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanDirection {
+    Ascending,
+    Descending,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BackendNativeDisposition {
@@ -775,11 +783,44 @@ impl ReadSnapshot {
         start: &[u8],
         after: Option<&[u8]>,
     ) -> Result<Option<AdmittedValue>, CoreError> {
+        let lower = after
+            .filter(|after| *after >= start)
+            .map_or(Bound::Included(start), Bound::Excluded);
+        self.seek_key_admitted(table, lower, Bound::Unbounded, ScanDirection::Ascending)
+    }
+
+    /// Seek the first key in the requested order within a bytewise interval.
+    /// Continue forward by excluding the returned key as the next lower bound,
+    /// or backward by excluding it as the next upper bound.
+    pub fn seek_key_admitted(
+        &self,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        direction: ScanDirection,
+    ) -> Result<Option<AdmittedValue>, CoreError> {
         self.shared.run(CoreError::panicked, |state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
-                .next_key_admitted(&self.pin, table, start, after)
+                .seek_key_admitted(&self.pin, table, lower, upper, direction)
+        })
+    }
+
+    /// Seek and read one row from this snapshot using the same directory lookup.
+    pub fn seek_admitted(
+        &self,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        direction: ScanDirection,
+        max_value_bytes: usize,
+    ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state
+                .disk()?
+                .seek_admitted(&self.pin, table, lower, upper, direction, max_value_bytes)
         })
     }
 }

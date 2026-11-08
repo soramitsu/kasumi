@@ -140,6 +140,14 @@ serializes writers and stages a bounded batch before the durable Core commit.
 A staging capacity denial rolls back the whole staged writer and releases its
 gate; uncertain ownership retains the transaction for terminal custody.
 
+For recent-first queries, use
+`table.range_with_bounds(Included(oldest), Included(newest), ScanDirection::Descending)?.take(limit)`.
+Continue on the same read transaction with `Excluded(last_key)` as the upper
+bound. Ascending pages continue by excluding the last key as the lower bound.
+Either end accepts `Unbounded`. Bounds use the table codec's encoded order.
+The reverse seek descends directly to the preceding leaf row. A snapshot range
+reads each selected value using its directory location.
+
 `CacheConfig::byte_limit` bounds retained value and directory-page allocations,
 including metadata and evicted payloads still held by readers. Zero disables
 retention. Reads above the bound use disk and separately admitted request

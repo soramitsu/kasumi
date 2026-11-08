@@ -1776,6 +1776,68 @@ impl<'a> DirectoryReader<'a> {
         }
     }
 
+    fn record(&self, entry: Entry<'_>, generation: u64) -> Result<DirectoryRecord, CoreError> {
+        let lease = reserve(
+            &self.admission,
+            entry.key_bytes.len() + std::mem::size_of::<DirectoryRecord>() + ALLOCATION_ALLOWANCE,
+        )?;
+        let mut key = Vec::new();
+        key.try_reserve_exact(entry.key_bytes.len())
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+        if key.capacity() != entry.key_bytes.len() {
+            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
+        }
+        key.extend_from_slice(entry.key_bytes);
+        let value = DirectoryValue::decode(entry.key, entry.value, generation)?;
+        Ok(DirectoryRecord {
+            key,
+            value,
+            _lease: lease,
+        })
+    }
+
+    /// Branch separators are the exact minima of their subtrees. The last
+    /// admissible separator therefore leads straight to the predecessor,
+    /// even when the upper bound falls in the gap between two leaves.
+    pub(crate) fn previous(
+        &self,
+        root: DirectoryRoot,
+        upper: DirectoryKey<'_>,
+        exclusive: bool,
+    ) -> Result<Option<DirectoryRecord>, CoreError> {
+        self.admission
+            .check_owner_live()
+            .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
+        root.validate()?;
+        upper.validate()?;
+        let Some(mut reference) = root.page else {
+            return Ok(None);
+        };
+        let _workspace = reserve(&self.admission, std::mem::size_of::<Bounds>())?;
+        let mut buffer = PageBuffer::new(&self.admission)?;
+        let mut bounds = Bounds::root(root);
+        loop {
+            let (page, info) = self.view(&mut buffer, root, reference, &bounds)?;
+            let mut selected = None;
+            let mut at = HEADER_BYTES;
+            for index in 0..info.count {
+                let (entry, end) = page_entry(&page, at, info.used)?;
+                if entry.key > upper || (exclusive && entry.key == upper) {
+                    break;
+                }
+                selected = Some((index, at, entry));
+                at = end;
+            }
+            let Some((index, at, entry)) = selected else {
+                return Ok(None);
+            };
+            if info.level == 0 {
+                return self.record(entry, info.generation).map(Some);
+            }
+            reference = bounds.child_at(&page, info, index, at)?;
+        }
+    }
+
     /// Find the first key >= `lower`, or > it when `exclusive`. Successor
     /// search uses a single page buffer and re-descends from the root at the
     /// first known next-subtree boundary, keeping workspace independent of
@@ -1811,26 +1873,7 @@ impl<'a> DirectoryReader<'a> {
                 for _ in 0..info.count {
                     let (entry, end) = page_entry(&page, at, info.used)?;
                     if entry.key > lower || (!exclusive && entry.key == lower) {
-                        let lease = reserve(
-                            &self.admission,
-                            entry.key_bytes.len()
-                                + std::mem::size_of::<DirectoryRecord>()
-                                + ALLOCATION_ALLOWANCE,
-                        )?;
-                        let mut key = Vec::new();
-                        key.try_reserve_exact(entry.key_bytes.len())
-                            .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
-                        if key.capacity() != entry.key_bytes.len() {
-                            return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied));
-                        }
-                        key.extend_from_slice(entry.key_bytes);
-                        let value =
-                            DirectoryValue::decode(entry.key, entry.value, info.generation)?;
-                        return Ok(Some(DirectoryRecord {
-                            key,
-                            value,
-                            _lease: lease,
-                        }));
+                        return self.record(entry, info.generation).map(Some);
                     }
                     at = end;
                 }
@@ -3368,7 +3411,8 @@ mod tests {
     }
 
     #[test]
-    fn ordered_successors_match_model_across_tables_and_missing_keys() {
+    fn ordered_seeks_match_model_across_tables_and_missing_keys() {
+        use std::ops::Bound;
         let backend = MemoryPages::default();
         let admission = Admission::new(256 << 10);
         let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 5).unwrap();
@@ -3398,33 +3442,36 @@ mod tests {
             ] {
                 for exclusive in [false, true] {
                     let bound = (table.to_owned(), key.clone());
-                    let expected = model.iter().find(|(entry, _)| {
-                        if exclusive {
-                            *entry > &bound
-                        } else {
-                            *entry >= &bound
-                        }
-                    });
-                    let result = reader
-                        .next(
-                            root,
-                            DirectoryKey {
-                                table,
-                                row: key.as_deref(),
-                            },
-                            exclusive,
-                        )
-                        .unwrap();
-                    assert_eq!(
-                        result.as_ref().map(|entry| (
-                            (
-                                entry.key().table.to_owned(),
-                                entry.key().row.map(<[u8]>::to_vec)
-                            ),
-                            entry.value
-                        )),
-                        expected.map(|(key, value)| (key.clone(), *value))
+                    let probe = DirectoryKey {
+                        table,
+                        row: key.as_deref(),
+                    };
+                    let lower = if exclusive {
+                        Bound::Excluded(&bound)
+                    } else {
+                        Bound::Included(&bound)
+                    };
+                    let ascending = model.range((lower, Bound::Unbounded)).next();
+                    let descending = model.range((Bound::Unbounded, lower)).next_back();
+                    let next = reader.next(root, probe, exclusive).unwrap();
+                    let reads = backend.reads.load(AtomicOrdering::Relaxed);
+                    let prev = reader.previous(root, probe, exclusive).unwrap();
+                    assert!(
+                        backend.reads.load(AtomicOrdering::Relaxed) - reads
+                            <= usize::from(root.height)
                     );
+                    for (result, expected) in [(next, ascending), (prev, descending)] {
+                        assert_eq!(
+                            result.as_ref().map(|entry| (
+                                (
+                                    entry.key().table.to_owned(),
+                                    entry.key().row.map(<[u8]>::to_vec)
+                                ),
+                                entry.value,
+                            )),
+                            expected.map(|(key, value)| (key.clone(), *value)),
+                        );
+                    }
                 }
             }
         }

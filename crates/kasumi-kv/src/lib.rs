@@ -37,7 +37,7 @@ pub use core::{
     Core, CoreError, CoreErrorCause, CoreErrorDisposition, CoreOpenCleanup, CoreOpenFailure,
     CorePanic, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES,
     NativeDisposalReport, NativeOpenFailure, NativeOwnedDisposal, Operation, OwnerFailed,
-    PreparedPointRead, ReadSnapshot, ResidentLease, StorageAdmission,
+    PreparedPointRead, ReadSnapshot, ResidentLease, ScanDirection, StorageAdmission,
 };
 pub use disk_state::{
     MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,

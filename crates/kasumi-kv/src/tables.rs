@@ -12,7 +12,7 @@ use crate::core::ResidentLease;
 use crate::core::{
     AdmittedValue, BackendCloseEntry, BackendCloseOutcome, BackendNativeDisposition, Core,
     CoreError, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_VALUE_BYTES, NativeResidentLease, Operation,
-    ReadSnapshot, StorageAdmission,
+    ReadSnapshot, ScanDirection, StorageAdmission,
 };
 use crate::core::{CacheWarmup, CacheWarmupStatus};
 use crate::group::SegmentGroupBackend;
@@ -2203,22 +2203,21 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
     }
 
     pub fn range(&self, range: RangeFrom<K::Input<'_>>) -> Result<TableRange<K, V>, TableError> {
-        check_key_bound::<K>(range.start)?;
-        self.step(|| {
-            lock(&self.staged).ensure_active()?;
-            K::with_encoded(range.start, |start| {
-                TableRange::new(
-                    self.inner.clone(),
-                    self.snapshot.clone(),
-                    Some(self.staged.clone()),
-                    self.name.clone(),
-                    start,
-                )
-            })
-        })
+        self.range_with_bounds(
+            Bound::Included(range.start),
+            Bound::Unbounded,
+            ScanDirection::Ascending,
+        )
     }
 
-    pub fn iter(&self) -> Result<TableRange<K, V>, TableError> {
+    /// Scan the encoded key interval in the requested order, merging staged
+    /// inserts, updates and deletes. An empty interval yields no rows.
+    pub fn range_with_bounds(
+        &self,
+        lower: Bound<K::Input<'_>>,
+        upper: Bound<K::Input<'_>>,
+        direction: ScanDirection,
+    ) -> Result<TableRange<K, V>, TableError> {
         self.step(|| {
             lock(&self.staged).ensure_active()?;
             TableRange::new(
@@ -2226,9 +2225,15 @@ impl<K: TableCodec, V: TableCodec> Table<K, V> {
                 self.snapshot.clone(),
                 Some(self.staged.clone()),
                 self.name.clone(),
-                &[],
+                lower,
+                upper,
+                direction,
             )
         })
+    }
+
+    pub fn iter(&self) -> Result<TableRange<K, V>, TableError> {
+        self.range_with_bounds(Bound::Unbounded, Bound::Unbounded, ScanDirection::Ascending)
     }
 
     /// Retain rows whose encoded keys start with `prefix` according to `keep`.
@@ -2277,26 +2282,34 @@ impl<K: TableCodec, V: TableCodec> ReadOnlyTable<K, V> {
     }
 
     pub fn range(&self, range: RangeFrom<K::Input<'_>>) -> Result<TableRange<K, V>, TableError> {
-        check_key_bound::<K>(range.start)?;
-        K::with_encoded(range.start, |start| {
-            TableRange::new(
-                self.inner.clone(),
-                self.snapshot.clone(),
-                None,
-                self.name.clone(),
-                start,
-            )
-        })
+        self.range_with_bounds(
+            Bound::Included(range.start),
+            Bound::Unbounded,
+            ScanDirection::Ascending,
+        )
     }
 
-    pub fn iter(&self) -> Result<TableRange<K, V>, TableError> {
+    /// Seek to either end of the encoded key interval and stream rows from
+    /// this snapshot. Exclude the last returned key to resume a page.
+    pub fn range_with_bounds(
+        &self,
+        lower: Bound<K::Input<'_>>,
+        upper: Bound<K::Input<'_>>,
+        direction: ScanDirection,
+    ) -> Result<TableRange<K, V>, TableError> {
         TableRange::new(
             self.inner.clone(),
             self.snapshot.clone(),
             None,
             self.name.clone(),
-            &[],
+            lower,
+            upper,
+            direction,
         )
+    }
+
+    pub fn iter(&self) -> Result<TableRange<K, V>, TableError> {
+        self.range_with_bounds(Bound::Unbounded, Bound::Unbounded, ScanDirection::Ascending)
     }
 }
 
@@ -2312,6 +2325,9 @@ pub struct TableRange<K: TableCodec, V: TableCodec> {
     staged: Option<SharedPending>,
     table: SharedTableName,
     start: OwnedKeyBytes,
+    start_exclusive: bool,
+    end: Bound<OwnedKeyBytes>,
+    direction: ScanDirection,
     prefix_only: bool,
     after: Option<OwnedKeyBytes>,
     done: bool,
@@ -2351,27 +2367,106 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
         snapshot: SnapshotHandle,
         staged: Option<SharedPending>,
         table: SharedTableName,
-        start: &[u8],
+        lower: Bound<K::Input<'_>>,
+        upper: Bound<K::Input<'_>>,
+        direction: ScanDirection,
     ) -> Result<Self, TableError> {
+        use Bound::{Excluded, Included, Unbounded};
+        if let Included(key) | Excluded(key) = lower {
+            check_key_bound::<K>(key)?;
+        }
+        if let Included(key) | Excluded(key) = upper {
+            check_key_bound::<K>(key)?;
+        }
         inner.core.check_read_owner()?;
-        let charge = start.len().saturating_add(table.len()).saturating_add(256);
-        let start = OwnedKeyBytes::copy(&inner.core, start, charge as u64)?;
+        let copy_start = |bytes: &[u8]| {
+            let charge = bytes.len().saturating_add(table.len()).saturating_add(256);
+            OwnedKeyBytes::copy(&inner.core, bytes, charge as u64)
+        };
+        let start = match lower {
+            Included(key) | Excluded(key) => K::with_encoded(key, copy_start)?,
+            Unbounded => copy_start(&[])?,
+        };
+        let copy_end = |key| {
+            K::with_encoded(key, |bytes| {
+                OwnedKeyBytes::copy(&inner.core, bytes, (bytes.len() + 128) as u64)
+            })
+        };
+        let end = match upper {
+            Included(key) => Included(copy_end(key)?),
+            Excluded(key) => Excluded(copy_end(key)?),
+            Unbounded => Unbounded,
+        };
+        let start_exclusive = matches!(lower, Excluded(_));
+        let done = match &end {
+            Included(end) => {
+                start.bytes > end.bytes || (start_exclusive && start.bytes == end.bytes)
+            }
+            Excluded(end) => start.bytes >= end.bytes,
+            Unbounded => false,
+        };
         Ok(Self {
             inner,
             snapshot,
             staged,
             table,
             start,
+            start_exclusive,
+            end,
+            direction,
             prefix_only: false,
             after: None,
-            done: false,
+            done,
             _codec: PhantomData,
         })
+    }
+
+    fn bounds(&self) -> (Bound<&[u8]>, Bound<&[u8]>) {
+        let mut lower = if self.start_exclusive {
+            Bound::Excluded(self.start.as_bytes())
+        } else {
+            Bound::Included(self.start.as_bytes())
+        };
+        let mut upper = self.end.as_ref().map(OwnedKeyBytes::as_bytes);
+        if let Some(after) = &self.after {
+            match self.direction {
+                ScanDirection::Ascending => lower = Bound::Excluded(after.as_bytes()),
+                ScanDirection::Descending => upper = Bound::Excluded(after.as_bytes()),
+            }
+        }
+        (lower, upper)
+    }
+
+    fn advance(&mut self, key: &[u8]) -> Result<(), TableError> {
+        self.after = Some(OwnedKeyBytes::copy(
+            &self.inner.core,
+            key,
+            (key.len() + 128) as u64,
+        )?);
+        Ok(())
     }
 
     fn next_entry(&mut self) -> Result<Option<TableRow<K, V>>, TableError> {
         loop {
             self.inner.core.check_read_owner()?;
+            let (lower, upper) = self.bounds();
+            if self.staged.is_none() && !self.prefix_only {
+                let Some((key, value)) = self.snapshot.seek_admitted(
+                    &self.table,
+                    lower,
+                    upper,
+                    self.direction,
+                    MAX_TABLE_VALUE_BYTES,
+                )?
+                else {
+                    return Ok(None);
+                };
+                self.advance(key.as_bytes())?;
+                return Ok(Some((
+                    AccessGuard::decode_admitted(key, &self.snapshot)?,
+                    AccessGuard::decode_admitted(value, &self.snapshot)?,
+                )));
+            }
             let new_table = self
                 .staged
                 .as_ref()
@@ -2380,11 +2475,7 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                 None
             } else {
                 self.snapshot
-                    .next_key_admitted(
-                        &self.table,
-                        self.start.as_bytes(),
-                        self.after.as_ref().map(OwnedKeyBytes::as_bytes),
-                    )?
+                    .seek_key_admitted(&self.table, lower, upper, self.direction)?
                     .map(AdmittedValue::into_parts)
                     .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()))
             };
@@ -2394,14 +2485,16 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
             let (key, staged_for_key) = if let Some(staged) = &self.staged {
                 let pending = lock(staged);
                 pending.ensure_active()?;
-                let start = match self.after.as_ref().map(OwnedKeyBytes::as_bytes) {
-                    Some(after) if after >= self.start.as_bytes() => Bound::Excluded(after),
-                    _ => Bound::Included(self.start.as_bytes()),
-                };
                 let staged_row = pending
                     .writes
                     .get(&*self.table)
-                    .and_then(|writes| writes.range::<[u8], _>((start, Bound::Unbounded)).next())
+                    .and_then(|writes| {
+                        let mut rows = writes.range::<[u8], _>((lower, upper));
+                        match self.direction {
+                            ScanDirection::Ascending => rows.next(),
+                            ScanDirection::Descending => rows.next_back(),
+                        }
+                    })
                     .filter(|(key, _)| !self.prefix_only || key.starts_with(self.start.as_bytes()));
                 let staged_value = |value: &Option<Vec<u8>>| {
                     value
@@ -2412,7 +2505,12 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                 match (base_key, staged_row) {
                     (None, None) => return Ok(None),
                     (Some(base), None) => (base, None),
-                    (Some(base), Some((key, _))) if base.0.as_slice() < key.as_slice() => {
+                    (Some(base), Some((key, _)))
+                        if match self.direction {
+                            ScanDirection::Ascending => base.0.as_slice() < key.as_slice(),
+                            ScanDirection::Descending => base.0.as_slice() > key.as_slice(),
+                        } =>
+                    {
                         (base, None)
                     }
                     (Some(base), Some((key, value))) if base.0.as_slice() == key.as_slice() => {
@@ -2424,17 +2522,12 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
                     ),
                 }
             } else {
-                match base_key {
-                    Some(base) => (base, None),
-                    None => return Ok(None),
-                }
+                let Some(base) = base_key else {
+                    return Ok(None);
+                };
+                (base, None)
             };
-            let cursor = OwnedKeyBytes::copy(
-                &self.inner.core,
-                &key.0,
-                key.0.len().saturating_add(128) as u64,
-            )?;
-            self.after = Some(cursor);
+            self.advance(&key.0)?;
             let value = match staged_for_key {
                 Some(value) => value,
                 _ => self
@@ -3359,6 +3452,157 @@ mod tests {
             read.open_table(BYTES),
             Err(TableError::DoesNotExist(_))
         ));
+    }
+
+    #[test]
+    fn bounded_scans_preserve_snapshot_and_overlay_order_in_both_directions() {
+        use Bound::{Excluded, Included, Unbounded};
+        use ScanDirection::{Ascending, Descending};
+        let backend = InMemoryGroup::new();
+        let first = database(backend.clone());
+        let write = first.begin_write().unwrap();
+        {
+            let mut table = write.open_table(INTEGERS).unwrap();
+            for key in (0..800).step_by(2) {
+                table.insert(key, key).unwrap();
+            }
+        }
+        write.commit().unwrap();
+        first.close().unwrap();
+
+        let reopened = Database::builder(Arc::new(AllowAll), GROUP, CacheConfig::default())
+            .open_with_backend(backend.crash())
+            .unwrap();
+        let read = reopened.begin_read().unwrap();
+        let base = read.open_table(INTEGERS).unwrap();
+        let pairs = |rows: TableRange<u64, u64>| {
+            rows.map(|row| {
+                let (key, value) = row.unwrap();
+                (key.value(), value.value())
+            })
+            .collect::<Vec<_>>()
+        };
+        // These disjoint reverse pages start and end between stored keys.
+        // A continuation at exactly the last row must never return it twice.
+        let mut upper = Excluded(651);
+        let mut keys = Vec::new();
+        loop {
+            let rows = base
+                .range_with_bounds(Excluded(379), upper, Descending)
+                .unwrap();
+            let page = rows
+                .take(13)
+                .map(|row| row.unwrap().0.value())
+                .collect::<Vec<_>>();
+            let Some(last) = page.last().copied() else {
+                break;
+            };
+            keys.extend(page);
+            upper = Excluded(last);
+        }
+        assert_eq!(keys, (380..=650).rev().step_by(2).collect::<Vec<_>>());
+
+        let write = reopened.begin_write().unwrap();
+        {
+            let mut overlay = write.open_table(INTEGERS).unwrap();
+            overlay.delete_key(400).unwrap();
+            overlay.insert(399, 11).unwrap();
+            overlay.insert(402, 22).unwrap();
+            for direction in [Ascending, Descending] {
+                let mut expected = vec![(398, 398), (399, 11), (402, 22)];
+                if direction == Descending {
+                    expected.reverse();
+                }
+                assert_eq!(
+                    pairs(
+                        overlay
+                            .range_with_bounds(Included(398), Excluded(404), direction)
+                            .unwrap()
+                    ),
+                    expected
+                );
+                for (lower, upper) in [
+                    (Included(5), Included(4)),
+                    (Excluded(4), Excluded(4)),
+                    (Excluded(4), Included(4)),
+                ] {
+                    assert!(
+                        pairs(overlay.range_with_bounds(lower, upper, direction).unwrap())
+                            .is_empty()
+                    );
+                }
+                assert_eq!(
+                    pairs(
+                        overlay
+                            .range_with_bounds(Included(402), Included(402), direction)
+                            .unwrap()
+                    ),
+                    [(402, 22)]
+                );
+            }
+        }
+        write.commit().unwrap();
+        assert_eq!(
+            pairs(
+                base.range_with_bounds(Excluded(397), Included(402), Ascending)
+                    .unwrap()
+            ),
+            [(398, 398), (400, 400), (402, 402)]
+        );
+        assert_eq!(
+            base.range_with_bounds(Unbounded, Unbounded, Descending)
+                .unwrap()
+                .next()
+                .unwrap()
+                .unwrap()
+                .0
+                .value(),
+            798
+        );
+    }
+
+    #[test]
+    fn descending_scan_includes_maximum_key_and_never_crosses_table_markers() {
+        use Bound::{Excluded, Included, Unbounded};
+        let db = database(InMemoryGroup::new());
+        let max = vec![0xff; MAX_KEY_BYTES];
+        let adjacent: TableDefinition<&[u8], &[u8]> = TableDefinition::new("recordsa");
+        let write = db.begin_write().unwrap();
+        write
+            .open_table(adjacent)
+            .unwrap()
+            .insert(b"", b"other")
+            .unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            table.insert(b"", b"first").unwrap();
+            table.insert(&max, b"last").unwrap();
+        }
+        write.commit().unwrap();
+        let read = db.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        let values = |lower, upper| {
+            table
+                .range_with_bounds(lower, upper, ScanDirection::Descending)
+                .unwrap()
+                .map(|row| row.unwrap().1.value().to_vec())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            values(Unbounded, Unbounded),
+            [b"last".to_vec(), b"first".to_vec()]
+        );
+        assert_eq!(
+            values(Included(&[][..]), Excluded(&max[..])),
+            [b"first".to_vec()]
+        );
+        assert!(values(Unbounded, Excluded(&[][..])).is_empty());
+        let oversized = vec![0; MAX_KEY_BYTES + 1];
+        assert!(
+            table
+                .range_with_bounds(Unbounded, Included(&oversized), ScanDirection::Descending)
+                .is_err()
+        );
     }
 
     #[test]
