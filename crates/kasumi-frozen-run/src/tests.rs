@@ -229,3 +229,124 @@ fn mid_block_seek_is_logarithmic_and_interior_blocks_only_probe_returned_rows() 
     assert_eq!(count, 16_000);
     assert_eq!(read::ROW_PROBES.with(|probes| probes.get()), count);
 }
+
+#[test]
+fn valid_v1_rows_open_with_the_original_trusted_digest() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("legacy");
+    // One V1 block. The directory has no representation flag or intermediate length.
+    let raw = [1, 0, 1, 0, 0, 0, 1, 0xff, 1, 0, 0, 0, 0, 0, 2];
+    let packed = lz4_flex::block::compress(&raw);
+    malformed(
+        &path,
+        &raw,
+        (packed.len() as u32, raw.len() as u32),
+        1,
+        2,
+        1,
+    );
+    let mut image = fs::read(&path).unwrap();
+    let at = packed.len();
+    let end = image.len();
+    image[at..at + 8].copy_from_slice(DIRECTORY_MAGIC_V1);
+    image[end - 8..].copy_from_slice(FOOTER_MAGIC_V1);
+    let root = Sha256::digest(&image[at..end - 16]).into();
+    fs::write(&path, &image).unwrap();
+    let mut run = FrozenRun::open(&path, root).unwrap();
+    assert_eq!(run.get(&[1]).unwrap(), Some(vec![255]));
+    assert_eq!(run.get(&[2]).unwrap(), Some(vec![]));
+    let mut scanned = Vec::new();
+    run.visit_reverse(Unbounded, Unbounded, usize::MAX, |k, v| {
+        scanned.push((k.to_vec(), v.to_vec()));
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(scanned, vec![(vec![2], vec![]), (vec![1], vec![255])]);
+    image[end - 8..].copy_from_slice(FOOTER_MAGIC);
+    fs::write(&path, image).unwrap();
+    assert!(FrozenRun::open(&path, root).is_err());
+}
+
+#[test]
+fn authenticated_invalid_prefixes_cannot_reach_the_row_visitor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad");
+    // Valid first key "a", followed by a purported backreference.
+    let first = [0, 0, 1, 0, 0, 0, 0, 0, b'a'];
+    for (encoded, raw) in [
+        (vec![1, 0, 1, 0, 0, 0, 0, 0, b'a'], 7u32), // first row references a previous block
+        (
+            [first.as_slice(), &[2, 0, 1, 0, 0, 0, 0, 0, b'b']].concat(),
+            16,
+        ), // prior key too short
+        (
+            [first.as_slice(), &[1, 0, 1, 0, 0, 0, 0, 0, b'b']].concat(),
+            13,
+        ), // canonical extent too small
+        (vec![0, 0, 1, 0, 3, 0, 0, 0, b'a'], 10),   // truncated value
+        (first.to_vec(), u32::MAX),                 // reject before any size arithmetic
+    ] {
+        let packed = lz4_flex::block::compress(&encoded);
+        let mut directory = Vec::from(DIRECTORY_MAGIC.as_slice());
+        directory.extend(1u32.to_le_bytes());
+        directory.extend((packed.len() as u32 | PREFIX_FLAG).to_le_bytes());
+        directory.extend(raw.to_le_bytes());
+        directory.extend((encoded.len() as u32).to_le_bytes());
+        directory.extend(Sha256::digest(&packed));
+        directory.extend([1, 0, 1, 0, b'a', b'b']);
+        let root = Sha256::digest(&directory).into();
+        let mut image = packed;
+        image.extend(&directory);
+        image.extend((directory.len() as u64).to_le_bytes());
+        image.extend(FOOTER_MAGIC);
+        fs::write(&path, image).unwrap();
+        let result = FrozenRun::open(&path, root).and_then(|mut run| {
+            run.visit_forward(Unbounded, Unbounded, usize::MAX, |_, _| {
+                panic!("invalid prefix exposed")
+            })
+        });
+        assert!(result.is_err());
+    }
+}
+
+#[test]
+fn writer_can_mix_prefixed_and_plain_blocks_in_one_authenticated_run() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("mixed");
+    let mut model = BTreeMap::new();
+    for n in 0..1500 {
+        let key = format!("x\0networkSnapshots\0y-t\0BLOCK\02:0010:{n:010}\0block-{n:08}");
+        model.insert(key.into_bytes(), vec![1]);
+    }
+    model.insert(vec![255], vec![42; BLOCK_TARGET + 1]); // a standalone plain block
+    let root = seal(&path, &model).unwrap();
+    let image = fs::read(&path).unwrap();
+    let tail = image.len() - 16;
+    let meta_len = u64::from_le_bytes(image[tail..tail + 8].try_into().unwrap()) as usize;
+    let mut metadata = &image[tail - meta_len + 8..tail];
+    let blocks = u32_from(&mut metadata).unwrap();
+    let mut prefixed = 0;
+    for _ in 0..blocks {
+        let tagged = u32_from(&mut metadata).unwrap() as u32;
+        u32_from(&mut metadata).unwrap();
+        if tagged & PREFIX_FLAG != 0 {
+            prefixed += 1;
+            u32_from(&mut metadata).unwrap();
+        }
+        take(&mut metadata, 32).unwrap();
+        let first = u16_from(&mut metadata).unwrap();
+        let last = u16_from(&mut metadata).unwrap();
+        take(&mut metadata, first + last).unwrap();
+    }
+    assert!(prefixed > 0 && prefixed < blocks);
+    let mut run = FrozenRun::open(&path, root).unwrap();
+    let mut expected = model.iter().rev();
+    let count = run
+        .visit_reverse(Unbounded, Unbounded, usize::MAX, |key, value| {
+            let row = expected.next().unwrap();
+            assert_eq!((key, value), (row.0.as_slice(), row.1.as_slice()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(count, model.len());
+}

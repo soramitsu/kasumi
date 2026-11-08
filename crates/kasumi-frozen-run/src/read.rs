@@ -11,6 +11,7 @@ struct Block {
     offset: u64,
     packed: usize,
     raw: usize,
+    prefix_len: Option<usize>,
     digest: [u8; 32],
     first: Vec<u8>,
     last: Vec<u8>,
@@ -48,17 +49,21 @@ impl Decoded {
         if <[u8; 32]>::from(Sha256::digest(&packed)) != block.digest {
             return Err(invalid("sorted-run block digest differs"));
         }
-        let mut bytes = vec![0; block.raw];
+        let lz4_len = block.prefix_len.unwrap_or(block.raw);
+        let mut bytes = vec![0; lz4_len];
         let size = lz4_flex::block::decompress_into(&packed, &mut bytes)
             .map_err(|_| invalid("invalid LZ4 block"))?;
-        if size != block.raw {
+        if size != lz4_len {
             return Err(invalid("sorted-run decoded length differs"));
         }
+        if block.prefix_len.is_some() {
+            bytes = prefix::decode(&bytes, block.raw)?;
+        }
         let mut input = bytes.as_slice();
-        let max_rows = if size > BLOCK_TARGET {
+        let max_rows = if block.raw > BLOCK_TARGET {
             1
         } else {
-            size / ROW_HEADER
+            block.raw / ROW_HEADER
         };
         let mut offsets = Vec::with_capacity(max_rows);
         let mut previous = None;
@@ -75,7 +80,7 @@ impl Decoded {
                 return Err(invalid("sorted-run keys or first boundary differ"));
             }
             previous = Some(key);
-            if size > BLOCK_TARGET && !input.is_empty() {
+            if block.raw > BLOCK_TARGET && !input.is_empty() {
                 return Err(invalid("oversized sorted-run block must contain one row"));
             }
         }
@@ -112,7 +117,10 @@ impl FrozenRun {
         let mut footer = [0u8; 16];
         file.read_exact(&mut footer)?;
         let size = u64::from_le_bytes(footer[..8].try_into().unwrap());
-        if &footer[8..] != FOOTER_MAGIC || size > MAX_DIRECTORY as u64 || size > metadata.len() - 16
+        let v2 = &footer[8..] == FOOTER_MAGIC;
+        if (!v2 && &footer[8..] != FOOTER_MAGIC_V1)
+            || size > MAX_DIRECTORY as u64
+            || size > metadata.len() - 16
         {
             return Err(invalid("invalid sorted-run footer"));
         }
@@ -124,7 +132,12 @@ impl FrozenRun {
             return Err(invalid("sorted-run root digest differs"));
         }
         let mut input = directory.as_slice();
-        if take(&mut input, 8)? != DIRECTORY_MAGIC {
+        let directory_magic = if v2 {
+            DIRECTORY_MAGIC
+        } else {
+            DIRECTORY_MAGIC_V1
+        };
+        if take(&mut input, 8)? != directory_magic {
             return Err(invalid("unknown sorted-run format"));
         }
         let count = u32_from(&mut input)?;
@@ -134,14 +147,27 @@ impl FrozenRun {
         let mut blocks: Vec<Block> = Vec::with_capacity(count);
         let mut offset = 0u64;
         for _ in 0..count {
-            let packed = u32_from(&mut input)?;
+            let tagged = u32_from(&mut input)? as u32;
             let raw = u32_from(&mut input)?;
+            if !(ROW_HEADER..=MAX_RAW).contains(&raw) {
+                return Err(invalid("invalid sorted-run expanded length"));
+            }
+            let (packed, prefix_len) = if v2 && tagged & PREFIX_FLAG != 0 {
+                let len = u32_from(&mut input)?;
+                if raw > BLOCK_TARGET
+                    || !(ROW_HEADER + 2..=prefix::max_encoded_len(raw)).contains(&len)
+                {
+                    return Err(invalid("invalid sorted-run prefix length"));
+                }
+                ((tagged & !PREFIX_FLAG) as usize, Some(len))
+            } else {
+                (tagged as usize, None)
+            };
             let digest = take(&mut input, 32)?.try_into().unwrap();
             let first_len = u16_from(&mut input)?;
             let last_len = u16_from(&mut input)?;
-            if !(ROW_HEADER..=MAX_RAW).contains(&raw)
-                || packed == 0
-                || packed > lz4_flex::block::get_maximum_output_size(raw)
+            if packed == 0
+                || packed > lz4_flex::block::get_maximum_output_size(prefix_len.unwrap_or(raw))
                 || first_len > MAX_KEY
                 || last_len > MAX_KEY
             {
@@ -160,6 +186,7 @@ impl FrozenRun {
                 offset,
                 packed,
                 raw,
+                prefix_len,
                 digest,
                 first: first.to_vec(),
                 last: last.to_vec(),

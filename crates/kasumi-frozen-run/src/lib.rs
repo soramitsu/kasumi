@@ -4,6 +4,7 @@
 //! Each accessed block is authenticated and its key order and boundaries
 //! verified before any data from that block reaches the caller.
 
+mod prefix;
 mod read;
 mod write;
 
@@ -12,8 +13,11 @@ pub use write::seal;
 
 use std::io;
 
-const DIRECTORY_MAGIC: &[u8; 8] = b"KSFRDIR1";
-const FOOTER_MAGIC: &[u8; 8] = b"KSFRIDX1";
+const DIRECTORY_MAGIC_V1: &[u8; 8] = b"KSFRDIR1";
+const FOOTER_MAGIC_V1: &[u8; 8] = b"KSFRIDX1";
+const DIRECTORY_MAGIC: &[u8; 8] = b"KSFRDIR2";
+const FOOTER_MAGIC: &[u8; 8] = b"KSFRIDX2";
+const PREFIX_FLAG: u32 = 1 << 31;
 const BLOCK_TARGET: usize = 32 << 10;
 const MAX_KEY: usize = 4096;
 const MAX_VALUE: usize = 32 << 20;

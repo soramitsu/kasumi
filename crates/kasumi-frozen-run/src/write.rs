@@ -81,18 +81,32 @@ fn write_block(
     first: &[u8],
     last: &[u8],
 ) -> io::Result<()> {
-    if *blocks as usize >= MAX_BLOCKS
-        || directory.len() + DIRECTORY_ENTRY_HEADER + first.len() + last.len() > MAX_DIRECTORY
-    {
+    let metadata_end = directory.len() + DIRECTORY_ENTRY_HEADER + first.len() + last.len();
+    if *blocks as usize >= MAX_BLOCKS || metadata_end > MAX_DIRECTORY {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "sorted-run directory limit exceeded",
         ));
     }
-    let bytes = lz4_flex::block::compress(raw);
+    let mut bytes = lz4_flex::block::compress(raw);
+    let mut prefix_len = None;
+    if first != last {
+        let encoded = prefix::encode(raw)?;
+        let candidate = lz4_flex::block::compress(&encoded);
+        // A prefixed block also needs four directory bytes for the bounded
+        // intermediate length. Keep it only when the whole run gets smaller.
+        if candidate.len() + 4 < bytes.len() && metadata_end + 4 <= MAX_DIRECTORY {
+            bytes = candidate;
+            prefix_len = Some(encoded.len() as u32);
+        }
+    }
     file.write_all(&bytes)?;
-    directory.extend((bytes.len() as u32).to_le_bytes());
+    let flag = if prefix_len.is_some() { PREFIX_FLAG } else { 0 };
+    directory.extend((bytes.len() as u32 | flag).to_le_bytes());
     directory.extend((raw.len() as u32).to_le_bytes());
+    if let Some(len) = prefix_len {
+        directory.extend(len.to_le_bytes());
+    }
     directory.extend(Sha256::digest(&bytes));
     directory.extend((first.len() as u16).to_le_bytes());
     directory.extend((last.len() as u16).to_le_bytes());
