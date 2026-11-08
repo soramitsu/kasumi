@@ -3,13 +3,47 @@
 **Sealed historical data:** Kasumi used 47.9% less allocated storage than
 upstream RocksDB with the same LZ4 codec and 32 KiB block target, and served
 the latest page in 12.3 µs at p95 versus 48.4 µs. **Live indexing:** the
-mutable Kasumi engine improved, but RocksDB still won on both disk and ingest.
+packed mutable directories reduced compacted Kasumi storage by 49% and raised
+median durable throughput by 20%. RocksDB still led on disk and ingest.
 
 These are local Apple M4 Max / Darwin arm64 measurements on the [same finalized BLOCK snapshot fixture](fixtures/README.md). They cover a native Kasumi library and the indexer's actual Node RocksDB binding 2.4.0 / RocksDB 11.1.2. They do not measure GraphQL, RPC, other collections, network traffic or production Linux storage. The two questions are different: can we replace the live writer, and can we store already-finalized records more efficiently?
 
 ## Live writer
 
-**Keep the live indexer on RocksDB.** On three alternating, fresh-database runs, the optimized mutable Kasumi engine preserved every byte and substantially improved its footprint, but remained slower and wrote more than RocksDB. Each of the 4,096 batches has its own durability boundary. Both engines have an 8 MiB cache and were opened again in separate processes, before and after maintenance. Full result: [raw measurements](results/mutable-final.json). These timings are medians of three runs, not production latency guarantees.
+### Packed directories with inline maintenance
+
+The previous Kasumi build on `master` (`86caa65b`), the new build
+(`902a3e7f`) with `DirectoryPageFormat::Lz4`, and RocksDB replayed the
+same 4,096 durable block batches. Each engine ran first, second and third
+once, using fresh databases and the same 8 MiB cache limit. The table shows
+medians across three runs. Each reader compared all 16,387 surviving rows
+with the original trace, both before and after compaction. All nine trials
+returned the same digest for the latest 24 documents. Both Kasumi builds
+completed all requested compaction cycles. [Raw measurements](results/mutable-packed-inline.json)
+
+| Measure | Previous Kasumi | Packed Kasumi | RocksDB |
+|---|---:|---:|---:|
+| Durable blocks/s | 58.8 | 70.5 | 130.0 |
+| Ingest time (s) | 69.61 | 58.13 | 31.51 |
+| Writer CPU time (s) | 12.96 | 12.35 | 1.46 |
+| OS-attributed bytes written per block | 193,473 | 107,462 | 16,907 |
+| Sampled peak writer allocation (MB) | 312.29 | 84.23 | 3.24 |
+| Allocated after writer close (MB) | 147.36 | 84.23 | 1.68 |
+| Allocated after explicit compaction (MB) | 20.84 | 10.70 | 1.77 |
+| Latest 24 documents, first reopen p95 (µs) | 349.5 | 326.6 | 107.5 |
+
+MB is decimal. Ingest ranged from 57.45–73.11 s on the previous build,
+52.33–67.49 s on the packed build and 28.52–43.71 s on RocksDB.
+Packed Kasumi wrote 44% fewer OS-attributed bytes per block than the previous
+build and used 49% less disk after compaction. Its compacted database was
+still 6.0 times the size of RocksDB's, and RocksDB ingested 1.84 times as many
+durable blocks per second. These figures compare the complete builds, including
+the new file verification and directory lookup paths. Each retains one durability
+boundary per block. [Replay method](README.md)
+
+### Earlier fixed-page comparison with maintenance after ingest
+
+On three alternating, fresh-database runs, the optimized mutable Kasumi engine preserved every byte and substantially improved its footprint, but remained slower and wrote more than RocksDB. Each of the 4,096 batches has its own durability boundary. Both engines have an 8 MiB cache and were opened again in separate processes, before and after maintenance. Full result: [raw measurements](results/mutable-final.json). These timings are medians of three runs, not production latency guarantees.
 
 | Measure | Kasumi mutable | RocksDB |
 |---|---:|---:|
@@ -27,7 +61,7 @@ MB is decimal. The p95 is the median of the three per-run p95s of 64 pages; the 
 
 The [pre-optimization run](results/mutable-before-writes.json) used the same release-profile native writer with bounded seeks available, before the two write optimizations. It used 928,944,128 bytes after close, versus a final median of 486,248,448 bytes (47.7% less). This comparison is one baseline run against three final runs. The patches coalesce changes to the same leaf and copy a common parent only once when several child leaves change. A unit regression verifies that the new descending cursor reads six directory pages to return the same 700 rows that took 1,400 reads with independent seeks. Cached point lookups now remember the midpoint of a variable-length directory page without additional cache storage.
 
-The mutable format stores the full key and a 32-byte value location per live entry. On this data even **just** the 856,166 live key bytes, 524,384 bytes of locations, and 1,137,652 live value bytes total 2,518,202 bytes. This excludes table names, segment records, branch pages, and reclaimable pages. The current layout cannot reach RocksDB's measured 1.77 MB on this workload through vacuuming alone.
+The original fixed-page format stores the full key and a 32-byte value location per live entry. On this data even **just** the 856,166 live key bytes, 524,384 bytes of locations, and 1,137,652 live value bytes total 2,518,202 bytes. This excludes table names, segment records, branch pages, and reclaimable pages. Vacuuming alone cannot bring the fixed layout down to RocksDB's measured 1.77 MB on this workload. Packed pages compress those key and location bytes on disk.
 
 **Inline maintenance sensitivity.** In a separate [single full paired run](results/mutable-inline.json), Kasumi performed the normal per-write maintenance budget during ingest. It reclaimed 268,386,304 bytes inline with no deferrals. Peak writer allocation fell to 311.80 MB, after-close allocation to 146.98 MB, and after explicit compaction to 20.94 MB, at 53.00 s ingest. RocksDB took 27.95 s and ended at 1.77 MB. Maintenance timing matters to disk usage but did not change the live-writer decision.
 

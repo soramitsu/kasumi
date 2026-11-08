@@ -63,10 +63,16 @@ try {
       .find(item => item.target?.name === 'kasumi_store' && item.executable)?.executable;
   }
   assert(harness, 'could not find the Kasumi test binary');
-  const frozen = path.join(trial,'kasumi-test');
-  fs.copyFileSync(harness, frozen);
-  fs.chmodSync(frozen, 0o700);
-  const harnessSha = createHash('sha256').update(fs.readFileSync(frozen)).digest('hex');
+  function freezeWorker(source, name) {
+    const binary = path.join(trial, name);
+    fs.copyFileSync(source, binary);
+    fs.chmodSync(binary, 0o700);
+    return {binary, sha256:createHash('sha256').update(fs.readFileSync(binary)).digest('hex')};
+  }
+  const current = freezeWorker(harness, 'kasumi-test');
+  const baseline = process.env.INDEXER_KV_BASELINE_HARNESS
+    ? freezeWorker(process.env.INDEXER_KV_BASELINE_HARNESS, 'kasumi-baseline-test') : undefined;
+  const engines = baseline ? ['kasumi-baseline', 'kasumi', 'rocksdb'] : ['kasumi', 'rocksdb'];
   const usage = path.join(trial, 'process-usage');
   run(process.env.CC || 'cc', ['-O2',path.join(here,'process-usage.c'),'-o',usage]);
   const sync = path.join(trial,'sync.node');
@@ -75,7 +81,12 @@ try {
     '-I',headers,path.join(here,'sync.c'),'-o',sync]);
   const results = [];
   for (let round = 0; round < rounds; ++round) {
-    for (const engine of round % 2 ? ['rocksdb','kasumi'] : ['kasumi','rocksdb']) {
+    // Rotate the first engine so each occupies each position once per full rotation.
+    const start = round % engines.length;
+    for (const engine of [...engines.slice(start), ...engines.slice(0, start)]) {
+      const isBaseline = engine === 'kasumi-baseline';
+      const worker = isBaseline ? baseline : current;
+      const format = isBaseline ? 'fixed' : pageFormat;
       const directory = fs.mkdtempSync(path.join(trial,engine));
       const db = path.join(directory, 'group');
       const report = {engine, round};
@@ -83,17 +94,18 @@ try {
         const reportPath = path.join(trial, 'result.json');
         const env = {...process.env, INDEXER_KV_PHASE:phase, INDEXER_KV_DB:db, INDEXER_KV_TRACE:trace,
           INDEXER_KV_REPORT:reportPath, INDEXER_KV_ROCKS:rocks, INDEXER_KV_SYNC:sync,
-          INDEXER_KV_MAINTENANCE:kasumiMaintenance, INDEXER_KV_DIRECTORY_FORMAT:pageFormat};
+          INDEXER_KV_MAINTENANCE:kasumiMaintenance, INDEXER_KV_DIRECTORY_FORMAT:format};
         const usagePath = path.join(trial, 'usage.json');
         const command = engine === 'rocksdb'
           ? [process.execPath,path.join(here,'rocks.mjs')]
-          : [frozen,'paired_indexer_storage','--ignored','--nocapture','--test-threads=1'];
+          : [worker.binary,'paired_indexer_storage','--ignored','--nocapture','--test-threads=1'];
         run(usage,[usagePath,...command],{env});
         const resources = JSON.parse(fs.readFileSync(usagePath));
         fs.unlinkSync(usagePath);
         report[phase] = JSON.parse(fs.readFileSync(reportPath));
-        if (engine === 'kasumi' && phase === 'write' && pageFormat === 'lz4') {
-          assert.equal(report[phase].directory_page_format, pageFormat, 'worker did not create the selected format');
+        if (engine !== 'rocksdb' && phase === 'write' &&
+            (format !== 'fixed' || report[phase].directory_page_format !== undefined)) {
+          assert.equal(report[phase].directory_page_format, format, 'worker did not create the selected format');
         }
         fs.unlinkSync(reportPath);
         report[phase].footprint = footprint(db);
@@ -105,17 +117,19 @@ try {
     }
   }
   for (const phase of ['read','reopen']) {
-    const baseline = results[0].read;
+    const expected = results[0].read;
     for (const trialResult of results) {
-      assert.equal(trialResult[phase].verified_rows, baseline.verified_rows);
-      assert.equal(trialResult[phase].latest_blocks?.page_sha256, baseline.latest_blocks?.page_sha256);
+      assert.equal(trialResult[phase].verified_rows, expected.verified_rows);
+      assert.equal(trialResult[phase].latest_blocks?.page_sha256, expected.latest_blocks?.page_sha256);
     }
   }
   process.stdout.write(JSON.stringify({
     trace_sha256:createHash('sha256').update(fixture).digest('hex'),
     batches:blocks.length, operations:operationCount, logical_input_bytes:inputBytes,
     system:[os.type(), os.release(), os.arch()], node:process.version,
-    kasumi_test_sha256:harnessSha, kasumi_maintenance:kasumiMaintenance, kasumi_directory_format:pageFormat,
+    kasumi_test_sha256:current.sha256,
+    ...(baseline ? {kasumi_baseline_test_sha256:baseline.sha256, kasumi_baseline_directory_format:'fixed'} : {}),
+    kasumi_maintenance:kasumiMaintenance, kasumi_directory_format:pageFormat,
     rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
     point_reads:1024, ranges_per_direction:64, max_rows_per_range:8, results,
   },null,2)+'\n');
