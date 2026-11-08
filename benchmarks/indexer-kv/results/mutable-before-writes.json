@@ -1,0 +1,74 @@
+{
+  "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+  "batches": 4096,
+  "operations": 28672,
+  "logical_input_bytes": 2447217,
+  "system": [
+    "Darwin",
+    "27.2.0",
+    "arm64"
+  ],
+  "node": "v26.13.0",
+  "rocksdb_js": "2.4.0",
+  "rocksdb": "11.1.2",
+  "point_reads": 1024,
+  "ranges_per_direction": 64,
+  "max_rows_per_range": 8,
+  "results": [
+    {
+      "engine": "kasumi",
+      "round": 0,
+      "write": {
+        "close_ns": 1180208,
+        "device_syncs": 4187,
+        "ingest_ns": 56515536500,
+        "ordering_syncs": 20506,
+        "footprint": {
+          "allocated": 928944128,
+          "apparent": 922429740,
+          "files": 16
+        }
+      },
+      "read": {
+        "close_ns": 478167,
+        "forward_ns": 6899209,
+        "open_ns": 3235542,
+        "point_ns": 19835958,
+        "reverse_ns": 4863292,
+        "verified_rows": 16387,
+        "footprint": {
+          "allocated": 928944128,
+          "apparent": 922429740,
+          "files": 16
+        }
+      }
+    },
+    {
+      "engine": "rocksdb",
+      "round": 0,
+      "write": {
+        "ingest_ns": 30324143875,
+        "device_syncs": 4096,
+        "close_ns": 38994583,
+        "footprint": {
+          "allocated": 1679360,
+          "apparent": 1660958,
+          "files": 8
+        }
+      },
+      "read": {
+        "open_ns": 79771292,
+        "point_ns": 2627917,
+        "forward_ns": 1249417,
+        "reverse_ns": 874750,
+        "verified_rows": 16387,
+        "close_ns": 4102959,
+        "footprint": {
+          "allocated": 1728512,
+          "apparent": 1706023,
+          "files": 10
+        }
+      }
+    }
+  ]
+}

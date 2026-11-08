@@ -1,5 +1,8 @@
 # Kasumi benchmark protocol
 
+The [Polkaswap storage comparison](indexer-kv/RESULTS.md) separately measures
+durable indexing and sealed historical reads on a reproducible Stats workload.
+
 The [measured v1 results](RESULTS.md) cover all fifteen required cases and 99,000
 successful operations. The [cohort manifest](results/release-cohort-macos-arm64-20260905-listener/cohort.json)
 retains twelve unchanged embedded observations and three corrected-network
