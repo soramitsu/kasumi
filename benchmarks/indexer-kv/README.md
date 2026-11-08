@@ -12,6 +12,29 @@ default) or `lz4`. The latter encodes directory pages only. Both read phases
 reopen from the persisted format. The RocksDB configuration is identical in
 both comparisons.
 
+The `compact` selection uses Kasumi's single-writer live database with a
+durable WAL, a bounded change buffer and tiered compressed runs. Supply it as
+the fifth argument with `inline`. `INDEXER_KV_LIVE_HARNESS` accepts a
+prebuilt `polkaswap-live` release example. `INDEXER_KV_ADDON` adds the
+[Kasumi Node binding](../../crates/kasumi-live-node/README.md);
+`INDEXER_KV_NATIVE_ROCKS` adds the [upstream C++ LZ4 control](frozen-codec.md).
+With all four engines, use four rounds so every engine occupies every
+execution position. The JSON records the native binary hashes, trace hash,
+ingest time, OS write bytes, and independently verified state and page checks.
+Process peak RSS includes the whole worker and the predecoded fixture.
+
+For a closer timing comparison of the two Node bindings, `paired-node.mjs`
+holds both handles open and alternates which writes first in each 64-block
+window. Each block is acknowledged separately with the same durability as
+in the isolated worker. The paired run records a duration for every window
+and checks the entire database in both directions after reopen and compaction.
+
+```sh
+node benchmarks/indexer-kv/paired-node.mjs /tmp/kasumi-block-stats.jsonl \
+  /path/to/polkaswap-indexer/node_modules/@harperfast/rocksdb-js \
+  "$PWD/target/release/kasumi_live_node.node" auto 2 > paired.json
+```
+
 The process observer samples regular-file allocation in each engine's private
 directory about every 50 milliseconds and at exit. Its peak is a sampled
 lower bound on the true transient high-water mark; after-close footprint is an

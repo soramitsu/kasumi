@@ -105,6 +105,12 @@ int main(int argc, char **argv) {
             ",\"os_disk_write_bytes\":", micros(usage.ru_utime), micros(usage.ru_stime));
     if (available) fprintf(out, "%" PRIu64, bytes);
     else fputs("null", out);
+    // Darwin reports bytes and Linux reports KiB for ru_maxrss.
+#if defined(__APPLE__)
+    fprintf(out, ",\"peak_process_rss_bytes\":%" PRIu64, (uint64_t)usage.ru_maxrss);
+#elif defined(__linux__)
+    fprintf(out, ",\"peak_process_rss_bytes\":%" PRIu64, (uint64_t)usage.ru_maxrss * 1024);
+#endif
     fprintf(out, ",\"allocation_samples\":%" PRIu64 ",\"sampled_peak_allocated_bytes\":", samples);
     if (samples) fprintf(out, "%" PRIu64, peak);
     else fputs("null", out);

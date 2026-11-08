@@ -5,6 +5,7 @@
 Compile against a matching upstream RocksDB library and headers with LZ4 support. For a locally installed copy with pkg-config metadata:
 
 ```sh
+# Linux also needs -lcrypto for the live page digest. macOS uses CommonCrypto.
 c++ -std=c++20 -O2 benchmarks/indexer-kv/frozen-codec.cc \
   $(pkg-config --cflags --libs rocksdb) -o /tmp/kasumi-frozen-codec
 python3 benchmarks/indexer-kv/frozen-codec.py /tmp/kasumi-frozen-codec \
@@ -16,3 +17,13 @@ The recorded macOS run used the static archive and headers from Homebrew's upstr
 Each read starts a new read-only process with an 8 MiB cache, scans the complete database in descending order, and compares every byte against the sorted reference. The worker times 1,024 verified point reads and 64 warm latest-24 pages, collecting secondary keys before fetching the primary documents. It runs one warmup page. Per-query byte equality checks occur after each timer. The output includes both deterministic reference digests and nearest-rank p50/p95 observations. Fresh read workers rotate through the three controls. Sealed storage counts both all persistent files and the SSTs alone.
 
 These timings use the native C++ API. For installed JS binding timings, use `frozen-rocks.mjs`.
+
+
+For the live control, set `INDEXER_KV_NATIVE_ROCKS` to this executable when
+using `run.mjs` with `inline compact`. It creates an upstream bytewise database
+with LZ4 and a 32 KiB table block target, and calls `DB::Write` with
+`WriteOptions.sync = true` once per original batch. It retains the WAL and
+uses RocksDB's normal flush and compaction policies during ingest. Later
+processes verify the resulting rows, flush and compact, and verify the rows
+again. The macOS bottle used for measurement contains RocksDB's
+`HAVE_FULLFSYNC` implementation for the WAL device barrier. [Upstream POSIX file implementation](https://github.com/facebook/rocksdb/blob/v11.1.2/env/io_posix.cc#L1555-L1567)
