@@ -1,5 +1,18 @@
 # Polkaswap indexer KV replay
 
+The [included fixture](fixtures/README.md) is a verified slice of finalized
+network Stats history. To include the ordinary Kasumi database policy's
+maintenance work during writes, pass a fourth argument `inline`; the default
+is `after-ingest`. The inline run calls one bounded maintenance step with
+the default units and publication allowance before each block, includes its
+time and disk writes, and reports reclaimed bytes and deferrals. Both modes
+also run the explicit end-of-ingest maintenance and reopen checks.
+
+The process observer samples regular-file allocation in each engine's private
+directory about every 50 milliseconds and at exit. Its peak is a sampled
+lower bound on the true transient high-water mark; after-close footprint is an
+exact sum of the files then present.
+
 Run the same ordered raw bytes through Kasumi's native disk-backed `Core` and the Polkaswap indexer's installed `@harperfast/rocksdb-js` package. Use Node 26 with development headers, Cargo with the repository's toolchain, and a C compiler on macOS or Linux.
 
 ```sh

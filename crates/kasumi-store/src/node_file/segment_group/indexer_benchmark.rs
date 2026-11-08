@@ -243,9 +243,22 @@ fn paired_indexer_storage() {
         let core = Core::create_with_backend(group.clone(), group.clone(), GROUP, cache).unwrap();
         group.publish_ready().unwrap();
         core.commit(&[Operation::create_table(TABLE)]).unwrap();
+        let inline = env::var("INDEXER_KV_MAINTENANCE").as_deref() == Ok("inline");
+        let policy = kasumi_kv::MaintenancePolicy::default();
+        let budget = kasumi_kv::MaintenanceBudget {
+            units: policy.inline_units,
+            mutations: policy.inline_mutations,
+        };
+        let (mut mutations, mut deferrals, mut reclaimed_bytes) = (0, 0, 0);
         let before = disk.physical_synchronizations();
         let started = Instant::now();
         for batch in batches {
+            if inline {
+                let work = core.run_maintenance(budget).unwrap();
+                mutations += work.mutations;
+                deferrals += usize::from(work.deferred.is_some());
+                reclaimed_bytes += work.reclaimed_bytes;
+            }
             core.commit(&batch).unwrap();
         }
         let elapsed = started.elapsed().as_nanos();
@@ -254,6 +267,8 @@ fn paired_indexer_storage() {
             core,
             serde_json::json!({
                 "ingest_ns": elapsed, "ordering_syncs": after.0 - before.0, "device_syncs": after.1 - before.1,
+                "inline_maintenance": inline, "maintenance_publications": mutations,
+                "maintenance_deferrals": deferrals, "maintenance_reclaimed_bytes": reclaimed_bytes,
             }),
         )
     } else {

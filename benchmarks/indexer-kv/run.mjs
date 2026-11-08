@@ -7,8 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-const [traceArg, rocksArg, roundsArg = '1'] = process.argv.slice(2);
-if (!traceArg || !rocksArg) throw Error('usage: run.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE [ROUNDS]');
+const [traceArg, rocksArg, roundsArg = '1', kasumiMaintenance = 'after-ingest', ...extra] = process.argv.slice(2);
+if (!traceArg || !rocksArg || extra.length || !['after-ingest', 'inline'].includes(kasumiMaintenance))
+  throw Error('usage: run.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE [ROUNDS] [after-ingest|inline]');
 const trace = fs.realpathSync(traceArg);
 const rocks = fs.realpathSync(rocksArg);
 const rounds = Number(roundsArg);
@@ -80,7 +81,8 @@ try {
       for (const phase of ['write','read','maintenance','reopen']) {
         const reportPath = path.join(trial, 'result.json');
         const env = {...process.env, INDEXER_KV_PHASE:phase, INDEXER_KV_DB:db, INDEXER_KV_TRACE:trace,
-          INDEXER_KV_REPORT:reportPath, INDEXER_KV_ROCKS:rocks, INDEXER_KV_SYNC:sync};
+          INDEXER_KV_REPORT:reportPath, INDEXER_KV_ROCKS:rocks, INDEXER_KV_SYNC:sync,
+          INDEXER_KV_MAINTENANCE:kasumiMaintenance};
         const usagePath = path.join(trial, 'usage.json');
         const command = engine === 'rocksdb'
           ? [process.execPath,path.join(here,'rocks.mjs')]
@@ -109,7 +111,7 @@ try {
     trace_sha256:createHash('sha256').update(fixture).digest('hex'),
     batches:blocks.length, operations:operationCount, logical_input_bytes:inputBytes,
     system:[os.type(), os.release(), os.arch()], node:process.version,
-    kasumi_test_sha256:harnessSha, rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
+    kasumi_test_sha256:harnessSha, kasumi_maintenance:kasumiMaintenance, rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
     point_reads:1024, ranges_per_direction:64, max_rows_per_range:8, results,
   },null,2)+'\n');
 } finally {
