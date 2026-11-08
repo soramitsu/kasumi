@@ -81,7 +81,65 @@ fn sixteen_sorted_updates_copy_one_multileaf_path_and_keep_both_snapshots_hot() 
 }
 
 #[test]
+fn sorted_appends_fill_the_remaining_leaf_space_before_splitting() {
+    let reads = Reads::new(InMemoryGroup::new());
+    let admission = Admission::new(16 << 20);
+    let mut state = create(reads.clone(), admission.clone(), LARGE_CACHE);
+    let put = |id: u32| Operation::put("accounts", padded_key(id), id.to_be_bytes());
+    let mut setup = vec![Operation::create_table("accounts")];
+    setup.extend((0..48).map(put));
+    state.commit(&setup).unwrap();
+    let old = state.snapshot().unwrap();
+    assert_eq!(old.root().height, 1);
+
+    let before = state.arena.stats().unwrap();
+    state
+        .commit(&(48..64).map(put).collect::<Vec<_>>())
+        .unwrap();
+    let after = state.arena.stats().unwrap();
+    let written = after.pages_written - before.pages_written;
+    assert_eq!(
+        written, 6,
+        "one fill, a leaf split with its new root, then one path copy"
+    );
+    assert_eq!(after.syncs - before.syncs, 1);
+    for id in 48..64 {
+        assert_eq!(value(&mut state, &old, &padded_key(id)), None);
+    }
+    let root = state.snapshot().unwrap().root();
+    assert_eq!(root.height, 2);
+    drop((old, state));
+    let mut reopened = DiskState::open(
+        Arc::new(reads.group.crash()),
+        admission.clone(),
+        GROUP,
+        LARGE_CACHE,
+    )
+    .unwrap();
+    let current = reopened.snapshot().unwrap();
+    assert_eq!(current.root(), root);
+    for id in 0..64u32 {
+        assert_eq!(
+            value(&mut reopened, &current, &padded_key(id)).unwrap(),
+            id.to_be_bytes()
+        );
+    }
+    drop((current, reopened));
+    assert_eq!(admission.used.load(Ordering::Acquire), 0);
+}
+
+#[test]
 fn sixteen_sorted_puts_copy_one_leaf_and_preserve_snapshot_parity() {
+    check_fitting_puts(std::array::from_fn(|key| key as u32));
+}
+
+#[test]
+fn sixteen_interleaved_puts_copy_one_leaf_and_preserve_snapshot_parity() {
+    // Alternate high and low keys as a document and its secondary index would.
+    check_fitting_puts([8, 0, 9, 1, 10, 2, 11, 3, 12, 4, 13, 5, 14, 6, 15, 7]);
+}
+
+fn check_fitting_puts(keys: [u32; 16]) {
     let reads = Reads::new(InMemoryGroup::new());
     let admission = Admission::new(16 << 20);
     let mut state = create(reads.clone(), admission.clone(), LARGE_CACHE);
@@ -92,9 +150,9 @@ fn sixteen_sorted_puts_copy_one_leaf_and_preserve_snapshot_parity() {
     assert_eq!(old.root().height, 1);
     assert_eq!(old.root().entries, 1);
 
-    // EncryptedTableBatch publishes its existing table's staged BTreeMap as
-    // one sorted run. These tiny rows fit together in the existing root leaf.
-    let operations: Vec<_> = (0..16u32)
+    // All rows fit together in the existing root leaf.
+    let operations: Vec<_> = keys
+        .into_iter()
         .map(|key| Operation::put("accounts", key.to_be_bytes(), [key as u8; 16]))
         .collect();
     let before = state.arena.stats().unwrap();
@@ -186,8 +244,8 @@ fn batch_runs_preserve_repeated_descending_and_create_table_operation_order() {
             )
         })
         .collect();
-    // The native API keeps caller order. Descending and repeated keys split
-    // runs, and a following table creation must be visible to its own puts.
+    // Independent keys may be reordered in the private directory. Repeated
+    // keys and table creations retain their caller-visible ordering.
     operations.extend([
         Operation::put("accounts", b"c", b"first-c"),
         Operation::put("accounts", b"b", b"first-b"),

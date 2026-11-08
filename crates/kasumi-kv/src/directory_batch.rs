@@ -11,8 +11,8 @@ pub(crate) struct DirectoryEdit<'a> {
 }
 
 impl DirectoryMutator<'_> {
-    /// Merge the maximal prefix routed to the first edit's leaf. Success
-    /// returns the new private root and the number of consumed edits (>= 2).
+    /// Merge a fitting prefix routed to the first edit's leaf. Success returns
+    /// the new private root and the number of consumed edits (>= 2).
     /// `None` requires the ordinary editor: no page has been appended and this
     /// mutator remains reusable. A changed result appends one leaf and one copy
     /// of each ancestor; only the enclosing `finish` synchronizes the pages.
@@ -170,14 +170,21 @@ impl Editor<'_> {
             } else {
                 None
             };
-            changed |= old != edit.value;
             if let Some(value) = edit.value {
                 if !output.fits(edit.key.encoded_len(), LEAF_VALUE_BYTES) {
+                    // Past the last existing key, the page is already a
+                    // complete merge of the preceding edits. Publish that
+                    // fitting prefix together before the next edit splits.
+                    if at == used && old.is_none() && next_edit >= 2 {
+                        count = next_edit;
+                        break;
+                    }
                     return Ok(None);
                 }
                 value.encode(&mut encoded);
                 output.append(edit.key, &encoded, 1)?;
             }
+            changed |= old != edit.value;
             next_edit += 1;
         }
 

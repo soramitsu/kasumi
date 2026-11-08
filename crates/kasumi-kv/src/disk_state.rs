@@ -947,9 +947,11 @@ impl DiskState {
                 }
                 let mut edits = [first; MAX_DIRECTORY_BATCH_EDITS];
                 let mut count = 1;
-                // Table creation and repeated/descending keys retain their
-                // exact original order. Only distinct row edits against one
-                // unchanged input root can share prior-value lookups.
+                // Stage distinct row edits in directory order even when a
+                // caller interleaves document and secondary-index keys. Each
+                // edit already carries its original log location. A repeated
+                // key or a table creation starts a new run so prior-value
+                // lookups see every earlier change to that identity.
                 if first.key.row.is_some() {
                     while count < MAX_DIRECTORY_BATCH_EDITS && index + count < operations.len() {
                         let next = prepared_directory_edit(
@@ -957,14 +959,23 @@ impl DiskState {
                             prepared.values()[index + count],
                             generation,
                         )?;
-                        if next.key.row.is_none() || next.key <= edits[count - 1].key {
+                        if next.key.row.is_none() {
                             break;
                         }
-                        edits[count] = next;
+                        let position = if next.key > edits[count - 1].key {
+                            count
+                        } else {
+                            match edits[..count].binary_search_by_key(&next.key, |edit| edit.key) {
+                                Ok(_) => break,
+                                Err(position) => position,
+                            }
+                        };
+                        edits.copy_within(position..count, position + 1);
+                        edits[position] = next;
                         count += 1;
                     }
                 }
-                for (offset, edit) in edits[..count].iter().enumerate() {
+                for edit in &edits[..count] {
                     // The copied pages of these paths are recorded by the
                     // steps below; this lookup only finds the prior value.
                     if let (Some(record), Some(proof), Some(row)) =
@@ -973,10 +984,10 @@ impl DiskState {
                             DirectoryReader::new(&untracked, self.owner.admission.clone())
                                 .get_with_workspace(root, edit.key, &mut proof.directory)?
                     {
-                        shrank |= match &operations[index + offset] {
-                            Operation::Delete { .. } => true,
-                            Operation::Put { value, .. } => value.len() < old.len as usize,
-                            Operation::CreateTable { .. } => false,
+                        shrank |= match edit.value {
+                            None => true,
+                            Some(DirectoryValue::Row { value, .. }) => value.len < old.len,
+                            Some(DirectoryValue::Table { .. }) => false,
                         };
                         // The run's keys are distinct, so earlier edits in it
                         // cannot replace this key's prior logical value.
