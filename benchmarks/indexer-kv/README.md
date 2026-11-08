@@ -13,6 +13,39 @@ directory about every 50 milliseconds and at exit. Its peak is a sampled
 lower bound on the true transient high-water mark; after-close footprint is an
 exact sum of the files then present.
 
+The [measured results](RESULTS.md) separate this live benchmark from the
+[frozen-run library](../../crates/kasumi-frozen-run/README.md). To compare
+already-finalized history, first decompress the [included fixture](fixtures/README.md),
+then run:
+
+```sh
+node benchmarks/indexer-kv/frozen.mjs /tmp/kasumi-block-stats.jsonl \
+  /path/to/polkaswap-indexer/node_modules/@harperfast/rocksdb-js 5 > sealed-results.json
+```
+
+The sealed benchmark builds a new run and a freshly compacted RocksDB from
+the **same final rows**. It alternates fresh reader processes, opens RocksDB
+read-only, authenticates Kasumi against the root returned by the builder,
+and checks every key/value in descending order. It times 1,024 distributed
+point reads, 64 repeated latest-24 queries after one warm-up, and 64 pages
+spread across the full time interval. Each query uses a descending timestamp
+index scan followed by exact primary lookups. It checks returned documents
+and cross-engine digests outside the timed calls. The JSON includes RocksDB's
+persisted SST compression setting. These are warm native-Rust versus Node
+binding timings. They include those API costs and do not measure GraphQL.
+
+To retain the sample file instead of using temporary benchmark databases,
+run the example directly; `write` refuses an existing destination. Keep the
+printed root with the source cutoff and obtain it from the trusted builder
+when opening the file. The file is read-only after sealing.
+
+```sh
+cargo run --locked --release -p kasumi-frozen-run --example polkaswap-frozen -- \
+  write /tmp/kasumi-block-stats.jsonl /tmp/polkaswap-history.ksfr
+cargo run --locked --release -p kasumi-frozen-run --example polkaswap-frozen -- \
+  read /tmp/kasumi-block-stats.jsonl /tmp/polkaswap-history.ksfr EXPECTED_ROOT_HEX
+```
+
 Run the same ordered raw bytes through Kasumi's native disk-backed `Core` and the Polkaswap indexer's installed `@harperfast/rocksdb-js` package. Use Node 26 with development headers, Cargo with the repository's toolchain, and a C compiler on macOS or Linux.
 
 ```sh

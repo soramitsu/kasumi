@@ -193,4 +193,12 @@ if (phase === 'write') {
   } finally { db.close(); }
 }
 report.footprint = footprint(database);
+// Record the actual SST codec selected by this installed native binding.
+const optionsName = fs.readdirSync(database).filter(name => /^OPTIONS-\d+$/.test(name)).sort().at(-1);
+if (optionsName) {
+  const source = fs.readFileSync(path.join(database, optionsName), 'utf8');
+  report.sst_options = Object.fromEntries(['compression','bottommost_compression','block_size'].map(k => [
+    k, new RegExp('^\\s*' + k + '=(.*)$','m').exec(source)?.[1].trim() ?? null,
+  ]));
+}
 console.log(JSON.stringify(report));
