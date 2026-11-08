@@ -1,0 +1,519 @@
+{
+  "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+  "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+  "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80",
+  "rows": 16387,
+  "documents_per_page": 24,
+  "controls": {
+    "none": {
+      "sealed": {
+        "rocksdb": "11.1.2",
+        "rows": 16387,
+        "table_block_size": 4096,
+        "sst_codec": "NoCompression",
+        "sst_compression_property": ";;",
+        "sst_count": 1,
+        "footprint": {
+          "allocated": 1679360,
+          "apparent": 1661898,
+          "files": 8,
+          "sst_allocated": 1613824,
+          "sst_apparent": 1612477,
+          "sst_files": 1
+        }
+      },
+      "reads": [
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1459887,
+            "p50_ns": 1375,
+            "p95_ns": 1875
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2494044,
+            "p50_ns": 34209,
+            "p95_ns": 67375
+          },
+          "sst_codec": "NoCompression",
+          "sst_compression_property": ";;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 1679360,
+            "apparent": 1661898,
+            "files": 8,
+            "sst_allocated": 1613824,
+            "sst_apparent": 1612477,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1464131,
+            "p50_ns": 1375,
+            "p95_ns": 1875
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2232333,
+            "p50_ns": 34208,
+            "p95_ns": 38500
+          },
+          "sst_codec": "NoCompression",
+          "sst_compression_property": ";;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 1679360,
+            "apparent": 1661898,
+            "files": 8,
+            "sst_allocated": 1613824,
+            "sst_apparent": 1612477,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1472379,
+            "p50_ns": 1416,
+            "p95_ns": 1875
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2288412,
+            "p50_ns": 35125,
+            "p95_ns": 39250
+          },
+          "sst_codec": "NoCompression",
+          "sst_compression_property": ";;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 1679360,
+            "apparent": 1661898,
+            "files": 8,
+            "sst_allocated": 1613824,
+            "sst_apparent": 1612477,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1495801,
+            "p50_ns": 1417,
+            "p95_ns": 1833
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2710835,
+            "p50_ns": 40458,
+            "p95_ns": 46625
+          },
+          "sst_codec": "NoCompression",
+          "sst_compression_property": ";;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 1679360,
+            "apparent": 1661898,
+            "files": 8,
+            "sst_allocated": 1613824,
+            "sst_apparent": 1612477,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1280026,
+            "p50_ns": 1250,
+            "p95_ns": 1542
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2279586,
+            "p50_ns": 34750,
+            "p95_ns": 40667
+          },
+          "sst_codec": "NoCompression",
+          "sst_compression_property": ";;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 1679360,
+            "apparent": 1661898,
+            "files": 8,
+            "sst_allocated": 1613824,
+            "sst_apparent": 1612477,
+            "sst_files": 1
+          }
+        }
+      ]
+    },
+    "lz4": {
+      "sealed": {
+        "rocksdb": "11.1.2",
+        "rows": 16387,
+        "table_block_size": 4096,
+        "sst_codec": "LZ4",
+        "sst_compression_property": "BuiltinV2;04;",
+        "sst_count": 1,
+        "footprint": {
+          "allocated": 372736,
+          "apparent": 356471,
+          "files": 8,
+          "sst_allocated": 307200,
+          "sst_apparent": 307081,
+          "sst_files": 1
+        }
+      },
+      "reads": [
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1374808,
+            "p50_ns": 1292,
+            "p95_ns": 1791
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2294878,
+            "p50_ns": 34792,
+            "p95_ns": 40541
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 372736,
+            "apparent": 356471,
+            "files": 8,
+            "sst_allocated": 307200,
+            "sst_apparent": 307081,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1378164,
+            "p50_ns": 1333,
+            "p95_ns": 1709
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2295168,
+            "p50_ns": 34917,
+            "p95_ns": 38667
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 372736,
+            "apparent": 356471,
+            "files": 8,
+            "sst_allocated": 307200,
+            "sst_apparent": 307081,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1452525,
+            "p50_ns": 1333,
+            "p95_ns": 1750
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2329537,
+            "p50_ns": 34916,
+            "p95_ns": 40625
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 372736,
+            "apparent": 356471,
+            "files": 8,
+            "sst_allocated": 307200,
+            "sst_apparent": 307081,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1350795,
+            "p50_ns": 1292,
+            "p95_ns": 1708
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2285918,
+            "p50_ns": 35042,
+            "p95_ns": 39708
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 372736,
+            "apparent": 356471,
+            "files": 8,
+            "sst_allocated": 307200,
+            "sst_apparent": 307081,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 4096,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1438658,
+            "p50_ns": 1375,
+            "p95_ns": 1875
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2258623,
+            "p50_ns": 34666,
+            "p95_ns": 38417
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 372736,
+            "apparent": 356471,
+            "files": 8,
+            "sst_allocated": 307200,
+            "sst_apparent": 307081,
+            "sst_files": 1
+          }
+        }
+      ]
+    },
+    "lz4_32k": {
+      "sealed": {
+        "rocksdb": "11.1.2",
+        "rows": 16387,
+        "table_block_size": 32768,
+        "sst_codec": "LZ4",
+        "sst_compression_property": "BuiltinV2;04;",
+        "sst_count": 1,
+        "footprint": {
+          "allocated": 290816,
+          "apparent": 272060,
+          "files": 8,
+          "sst_allocated": 225280,
+          "sst_apparent": 222652,
+          "sst_files": 1
+        }
+      },
+      "reads": [
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 32768,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1379715,
+            "p50_ns": 1292,
+            "p95_ns": 1750
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2586955,
+            "p50_ns": 37542,
+            "p95_ns": 48709
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 290816,
+            "apparent": 272060,
+            "files": 8,
+            "sst_allocated": 225280,
+            "sst_apparent": 222652,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 32768,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1619428,
+            "p50_ns": 1500,
+            "p95_ns": 2083
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2867003,
+            "p50_ns": 44000,
+            "p95_ns": 48417
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 290816,
+            "apparent": 272060,
+            "files": 8,
+            "sst_allocated": 225280,
+            "sst_apparent": 222652,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 32768,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1837917,
+            "p50_ns": 1625,
+            "p95_ns": 2375
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2893418,
+            "p50_ns": 42709,
+            "p95_ns": 53875
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 290816,
+            "apparent": 272060,
+            "files": 8,
+            "sst_allocated": 225280,
+            "sst_apparent": 222652,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 32768,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1248327,
+            "p50_ns": 1208,
+            "p95_ns": 1583
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2391209,
+            "p50_ns": 36750,
+            "p95_ns": 40417
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 290816,
+            "apparent": 272060,
+            "files": 8,
+            "sst_allocated": 225280,
+            "sst_apparent": 222652,
+            "sst_files": 1
+          }
+        },
+        {
+          "rocksdb": "11.1.2",
+          "rows": 16387,
+          "table_block_size": 32768,
+          "verified_rows": 16387,
+          "documents_per_page": 24,
+          "points": {
+            "count": 1024,
+            "ns": 1253275,
+            "p50_ns": 1208,
+            "p95_ns": 1583
+          },
+          "latest_blocks": {
+            "count": 64,
+            "ns": 2418414,
+            "p50_ns": 37250,
+            "p95_ns": 40625
+          },
+          "sst_codec": "LZ4",
+          "sst_compression_property": "BuiltinV2;04;",
+          "sst_count": 1,
+          "footprint": {
+            "allocated": 290816,
+            "apparent": 272060,
+            "files": 8,
+            "sst_allocated": 225280,
+            "sst_apparent": 222652,
+            "sst_files": 1
+          }
+        }
+      ]
+    }
+  }
+}

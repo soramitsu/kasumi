@@ -51,14 +51,24 @@ type Page = Vec<(Vec<u8>, Vec<u8>)>;
 fn page(run: &mut FrozenRun, end: std::ops::Bound<&[u8]>) -> io::Result<Page> {
     let mut keys = Vec::with_capacity(24);
     run.visit_reverse(Included(INDEX), end, 24, |idx, _| {
-        assert!(idx.starts_with(INDEX));
+        if !idx.starts_with(INDEX) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "unexpected timestamp index key",
+            ));
+        }
         let id = idx.rsplit(|&c| c == 0).next().unwrap();
         keys.push([PRIMARY, id].concat());
         Ok(())
     })?;
     let mut rows = Vec::with_capacity(keys.len());
     for key in keys {
-        let value = run.get(&key)?.expect("missing primary document");
+        let value = run.get(&key)?.ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                "missing indexed primary document",
+            )
+        })?;
         rows.push((key, value));
     }
     Ok(rows)
@@ -72,8 +82,24 @@ fn quantiles(mut samples: Vec<u64>) -> serde_json::Value {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = env::args().skip(1).collect::<Vec<_>>();
+    if let [command, path, digest] = args.as_slice()
+        && command == "latest"
+    {
+        // This operator query needs only the sealed file and trusted root.
+        // It does not build a reference map or load the source indexer.
+        let mut run = FrozenRun::open(path, root_digest(digest)?)?;
+        let docs = page(&mut run, Excluded(INDEX_END))?
+            .into_iter()
+            .map(|(key, value)| {
+                let id = std::str::from_utf8(&key[PRIMARY.len()..])?;
+                Ok(serde_json::json!({"id":id,"msgpack_hex":hex::encode(value)}))
+            })
+            .collect::<Result<Vec<_>, std::str::Utf8Error>>()?;
+        println!("{}", serde_json::json!({"documents":docs}));
+        return Ok(());
+    }
     if args.len() < 3 {
-        return Err("usage: polkaswap-frozen write|read TRACE RUN [EXPECTED_ROOT]".into());
+        return Err("usage: polkaswap-frozen write|read TRACE RUN [EXPECTED_ROOT] or latest RUN EXPECTED_ROOT".into());
     }
     let rows = replay(&args[1])?;
     if rows.is_empty() {
@@ -92,9 +118,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     if args[0] != "read" || args.len() != 4 {
         return Err("expected read with root, or write without root".into());
     }
-    let root: [u8; 32] = hex::decode(&args[3])?
-        .try_into()
-        .map_err(|_| "expected SHA-256")?;
+    let root = root_digest(&args[3])?;
     let started = Instant::now();
     let mut run = FrozenRun::open(path, root)?;
     let open_ns = started.elapsed().as_nanos();
@@ -176,4 +200,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "historical_pages":quantiles(historical), "history_sha256":hex::encode(history_hash.finalize())})
     );
     Ok(())
+}
+
+fn root_digest(hex_digest: &str) -> Result<[u8; 32], Box<dyn std::error::Error>> {
+    if hex_digest.len() != 64 {
+        return Err("expected 64 hexadecimal digits for SHA-256".into());
+    }
+    hex::decode(hex_digest)?
+        .try_into()
+        .map_err(|_| "expected SHA-256".into())
 }

@@ -1,5 +1,10 @@
 # Polkaswap Stats storage comparison — 8 November 2026
 
+**Sealed historical data:** Kasumi used 47.9% less allocated storage than
+upstream RocksDB with the same LZ4 codec and 32 KiB block target, and served
+the latest page in 12.3 µs at p95 versus 48.4 µs. **Live indexing:** the
+mutable Kasumi engine improved, but RocksDB still won on both disk and ingest.
+
 These are local Apple M4 Max / Darwin arm64 measurements on the [same finalized BLOCK snapshot fixture](fixtures/README.md). They cover a native Kasumi library and the indexer's actual Node RocksDB binding 2.4.0 / RocksDB 11.1.2. They do not measure GraphQL, RPC, other collections, network traffic or production Linux storage. The two questions are different: can we replace the live writer, and can we store already-finalized records more efficiently?
 
 ## Live writer
@@ -25,3 +30,51 @@ The [pre-optimization run](results/mutable-before-writes.json) used the same rel
 The mutable format stores the full key and a 32-byte value location per live entry. On this data even **just** the 856,166 live key bytes, 524,384 bytes of locations, and 1,137,652 live value bytes total 2,518,202 bytes. This excludes table names, segment records, branch pages, and reclaimable pages. The current layout cannot reach RocksDB's measured 1.77 MB on this workload through vacuuming alone.
 
 **Inline maintenance sensitivity.** In a separate [single full paired run](results/mutable-inline.json), Kasumi performed the normal per-write maintenance budget during ingest. It reclaimed 268,386,304 bytes inline with no deferrals. Peak writer allocation fell to 311.80 MB, after-close allocation to 146.98 MB, and after explicit compaction to 20.94 MB, at 53.00 s ingest. RocksDB took 27.95 s and ended at 1.77 MB. Maintenance timing matters to disk usage but did not change the live-writer decision.
+
+## Sealed historical data
+
+The new [frozen-run library](../../crates/kasumi-frozen-run/README.md)
+seals a sorted stream into a single immutable file. It selects the smaller
+of ordinary and common-prefix encoded keys per block, compresses with LZ4,
+and verifies the requested block against a directory authenticated by the
+caller's trusted SHA-256 root. It serves point, ascending and descending
+reads; it cannot acknowledge new blocks or replace a transaction log.
+
+All readers verified the same 16,387 key/value pairs and latest 24 documents
+after reopening. The timings below are the medians of five fresh reader
+processes' warm p95s. A page includes its timestamp-index lookup and all 24
+primary document reads. RocksDB is **11.1.2** in both the deployed binding
+and the native C++ controls. The controls verified the stored codec for every
+SST; the binding defaults to `kNoCompression`. Both engines see the same
+original indexer-encoded values. See [binding comparison](results/sealed-final.json),
+[native controls](results/sealed-native-codecs.json) and
+[upstream reproduction instructions](frozen-codec.md).
+
+| Read-only storage | Total allocated bytes | Data file(s) alone, allocated | Mixed point p95 | Latest 24 p95 |
+|---|---:|---:|---:|---:|
+| Kasumi frozen V2, LZ4, 32 KiB | 151,552 | 151,552 | 1.25 µs | 12.33 µs |
+| Native RocksDB, LZ4, 32 KiB | 290,816 | 225,280 | 1.75 µs | 48.42 µs |
+| Native RocksDB, LZ4, 4 KiB | 372,736 | 307,200 | 1.75 µs | 39.71 µs |
+| Native RocksDB, no compression, 4 KiB | 1,679,360 | 1,613,824 | 1.88 µs | 40.67 µs |
+| Indexer's JS RocksDB binding, no compression, 4 KiB | 1,683,456 | 1,613,824 | 7.58 µs | 251.08 µs |
+
+Even excluding RocksDB's metadata and logs, the Kasumi file used **32.7%
+less allocated storage than the 32 KiB LZ4 SST alone**. In the separate
+pagination test, 64 different pages spread across the full interval returned
+the same 1,536 documents in the same order: 13.00 µs p95 for Kasumi and
+137.08 µs for the deployed binding. We did not run that pagination test
+against the C++ controls. Memory, storage hardware and cache temperature
+affect these timings; the trace fits in memory. They do not predict full
+indexer performance or a cold read from production disks.
+
+The included fixture seals to a 151,114-byte file with trusted root
+`e2b8bb171680d94e61b3ba8892070c3dfb7aede3da82539de2e3231a24fbb815`.
+The V1 file also reopened with its original root and produced identical
+state and page digests. See the [standalone query command](README.md) to
+read a sealed page without the source trace or RocksDB. The fixture root
+identifies this specific data set; it does not certify chain history.
+
+The public indexer was left on RocksDB. A production archival tier would
+need an indexer-owned manifest binding trusted roots to finalized cutoffs,
+and a query path that merges archive and live records without gaps or
+duplicates. No production history was deleted or moved.

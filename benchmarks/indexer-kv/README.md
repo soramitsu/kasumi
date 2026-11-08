@@ -44,7 +44,13 @@ cargo run --locked --release -p kasumi-frozen-run --example polkaswap-frozen -- 
   write /tmp/kasumi-block-stats.jsonl /tmp/polkaswap-history.ksfr
 cargo run --locked --release -p kasumi-frozen-run --example polkaswap-frozen -- \
   read /tmp/kasumi-block-stats.jsonl /tmp/polkaswap-history.ksfr EXPECTED_ROOT_HEX
+cargo run --locked --release -p kasumi-frozen-run --example polkaswap-frozen -- \
+  latest /tmp/polkaswap-history.ksfr EXPECTED_ROOT_HEX
 ```
+
+`latest` needs only the sealed file and the trusted digest. It returns up to
+24 newest indexed BLOCK document IDs and their original MessagePack values
+in hex; no RocksDB instance or reference trace is required.
 
 Run the same ordered raw bytes through Kasumi's native disk-backed `Core` and the Polkaswap indexer's installed `@harperfast/rocksdb-js` package. Use Node 26 with development headers, Cargo with the repository's toolchain, and a C compiler on macOS or Linux.
 

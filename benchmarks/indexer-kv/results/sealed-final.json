@@ -1,0 +1,392 @@
+{
+  "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+  "benchmark": "sealed read-only history; no live writes",
+  "rounds": 5,
+  "system": [
+    "Darwin",
+    "27.2.0",
+    "arm64"
+  ],
+  "node": "v26.13.0",
+  "rocksdb_js": "2.4.0",
+  "rocksdb": "11.1.2",
+  "binary_sha256": "728cc3e8318b560d26fd42eaf3ec2eeecd5ab527ed6be082f139d01e845bffd3",
+  "sealed": {
+    "root": "e2b8bb171680d94e61b3ba8892070c3dfb7aede3da82539de2e3231a24fbb815",
+    "seal_ns": 18520250,
+    "footprint": {
+      "allocated": 151552,
+      "apparent": 151114,
+      "files": 1
+    }
+  },
+  "compacted": {
+    "engine": "rocksdb",
+    "phase": "write",
+    "rows": 16387,
+    "rocksdb_js": "2.4.0",
+    "rocksdb": "11.1.2",
+    "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+    "build_ns": 163567333,
+    "footprint": {
+      "allocated": 1683456,
+      "apparent": 1663091,
+      "files": 8,
+      "sst_allocated": 1613824,
+      "sst_apparent": 1612477,
+      "sst_files": 1
+    },
+    "sst_options": {
+      "compression": "kNoCompression",
+      "bottommost_compression": "kDisableCompressionOption",
+      "block_size": "4096"
+    }
+  },
+  "results": [
+    {
+      "engine": "kasumi",
+      "round": 0,
+      "historical_pages": {
+        "count": 64,
+        "p50_ns": 9500,
+        "p95_ns": 10250
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "latest_blocks": {
+        "count": 64,
+        "p50_ns": 8916,
+        "p95_ns": 9542
+      },
+      "open_ns": 86792,
+      "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80",
+      "point": {
+        "count": 1024,
+        "p50_ns": 625,
+        "p95_ns": 917
+      },
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "verified_rows": 16387
+    },
+    {
+      "engine": "rocksdb",
+      "round": 0,
+      "phase": "read",
+      "rows": 16387,
+      "rocksdb_js": "2.4.0",
+      "rocksdb": "11.1.2",
+      "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "points": {
+        "count": 1024,
+        "ns": 4445885,
+        "p50_ns": 2667,
+        "p95_ns": 7583
+      },
+      "latest_blocks": {
+        "count": 64,
+        "ns": 8718871,
+        "p50_ns": 130500,
+        "p95_ns": 190125,
+        "pages": 64,
+        "documents_per_page": 24,
+        "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80"
+      },
+      "historical_pages": {
+        "count": 64,
+        "ns": 7296662,
+        "p50_ns": 107667,
+        "p95_ns": 137916
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "footprint": {
+        "allocated": 1683456,
+        "apparent": 1663091,
+        "files": 8,
+        "sst_allocated": 1613824,
+        "sst_apparent": 1612477,
+        "sst_files": 1
+      },
+      "sst_options": {
+        "compression": "kNoCompression",
+        "bottommost_compression": "kDisableCompressionOption",
+        "block_size": "4096"
+      }
+    },
+    {
+      "engine": "rocksdb",
+      "round": 1,
+      "phase": "read",
+      "rows": 16387,
+      "rocksdb_js": "2.4.0",
+      "rocksdb": "11.1.2",
+      "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "points": {
+        "count": 1024,
+        "ns": 4537584,
+        "p50_ns": 2583,
+        "p95_ns": 7000
+      },
+      "latest_blocks": {
+        "count": 64,
+        "ns": 9190540,
+        "p50_ns": 136291,
+        "p95_ns": 221417,
+        "pages": 64,
+        "documents_per_page": 24,
+        "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80"
+      },
+      "historical_pages": {
+        "count": 64,
+        "ns": 7019252,
+        "p50_ns": 106584,
+        "p95_ns": 123708
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "footprint": {
+        "allocated": 1683456,
+        "apparent": 1663091,
+        "files": 8,
+        "sst_allocated": 1613824,
+        "sst_apparent": 1612477,
+        "sst_files": 1
+      },
+      "sst_options": {
+        "compression": "kNoCompression",
+        "bottommost_compression": "kDisableCompressionOption",
+        "block_size": "4096"
+      }
+    },
+    {
+      "engine": "kasumi",
+      "round": 1,
+      "historical_pages": {
+        "count": 64,
+        "p50_ns": 12291,
+        "p95_ns": 13000
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "latest_blocks": {
+        "count": 64,
+        "p50_ns": 11584,
+        "p95_ns": 12333
+      },
+      "open_ns": 117625,
+      "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80",
+      "point": {
+        "count": 1024,
+        "p50_ns": 792,
+        "p95_ns": 1250
+      },
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "verified_rows": 16387
+    },
+    {
+      "engine": "kasumi",
+      "round": 2,
+      "historical_pages": {
+        "count": 64,
+        "p50_ns": 10500,
+        "p95_ns": 11250
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "latest_blocks": {
+        "count": 64,
+        "p50_ns": 9959,
+        "p95_ns": 10750
+      },
+      "open_ns": 86583,
+      "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80",
+      "point": {
+        "count": 1024,
+        "p50_ns": 666,
+        "p95_ns": 959
+      },
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "verified_rows": 16387
+    },
+    {
+      "engine": "rocksdb",
+      "round": 2,
+      "phase": "read",
+      "rows": 16387,
+      "rocksdb_js": "2.4.0",
+      "rocksdb": "11.1.2",
+      "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "points": {
+        "count": 1024,
+        "ns": 6174040,
+        "p50_ns": 3125,
+        "p95_ns": 11417
+      },
+      "latest_blocks": {
+        "count": 64,
+        "ns": 10165125,
+        "p50_ns": 153416,
+        "p95_ns": 251083,
+        "pages": 64,
+        "documents_per_page": 24,
+        "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80"
+      },
+      "historical_pages": {
+        "count": 64,
+        "ns": 7801834,
+        "p50_ns": 113250,
+        "p95_ns": 168042
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "footprint": {
+        "allocated": 1683456,
+        "apparent": 1663091,
+        "files": 8,
+        "sst_allocated": 1613824,
+        "sst_apparent": 1612477,
+        "sst_files": 1
+      },
+      "sst_options": {
+        "compression": "kNoCompression",
+        "bottommost_compression": "kDisableCompressionOption",
+        "block_size": "4096"
+      }
+    },
+    {
+      "engine": "rocksdb",
+      "round": 3,
+      "phase": "read",
+      "rows": 16387,
+      "rocksdb_js": "2.4.0",
+      "rocksdb": "11.1.2",
+      "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "points": {
+        "count": 1024,
+        "ns": 5171955,
+        "p50_ns": 3125,
+        "p95_ns": 9791
+      },
+      "latest_blocks": {
+        "count": 64,
+        "ns": 10713209,
+        "p50_ns": 140959,
+        "p95_ns": 332083,
+        "pages": 64,
+        "documents_per_page": 24,
+        "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80"
+      },
+      "historical_pages": {
+        "count": 64,
+        "ns": 7809204,
+        "p50_ns": 122166,
+        "p95_ns": 137083
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "footprint": {
+        "allocated": 1683456,
+        "apparent": 1663091,
+        "files": 8,
+        "sst_allocated": 1613824,
+        "sst_apparent": 1612477,
+        "sst_files": 1
+      },
+      "sst_options": {
+        "compression": "kNoCompression",
+        "bottommost_compression": "kDisableCompressionOption",
+        "block_size": "4096"
+      }
+    },
+    {
+      "engine": "kasumi",
+      "round": 3,
+      "historical_pages": {
+        "count": 64,
+        "p50_ns": 12292,
+        "p95_ns": 13625
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "latest_blocks": {
+        "count": 64,
+        "p50_ns": 11666,
+        "p95_ns": 13042
+      },
+      "open_ns": 102083,
+      "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80",
+      "point": {
+        "count": 1024,
+        "p50_ns": 958,
+        "p95_ns": 1541
+      },
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "verified_rows": 16387
+    },
+    {
+      "engine": "kasumi",
+      "round": 4,
+      "historical_pages": {
+        "count": 64,
+        "p50_ns": 12042,
+        "p95_ns": 17791
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "latest_blocks": {
+        "count": 64,
+        "p50_ns": 11709,
+        "p95_ns": 12458
+      },
+      "open_ns": 107000,
+      "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80",
+      "point": {
+        "count": 1024,
+        "p50_ns": 791,
+        "p95_ns": 1250
+      },
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "verified_rows": 16387
+    },
+    {
+      "engine": "rocksdb",
+      "round": 4,
+      "phase": "read",
+      "rows": 16387,
+      "rocksdb_js": "2.4.0",
+      "rocksdb": "11.1.2",
+      "trace_sha256": "7dc977b532aafb42ae07c4c9aa006cc56bb90ae04110f66daef4ea7e342b43dd",
+      "state_sha256": "35bbb14b0a3cc356df45ada8bc985295863b728e22dca75da9fac4711b0a7ba7",
+      "points": {
+        "count": 1024,
+        "ns": 4131615,
+        "p50_ns": 2583,
+        "p95_ns": 6917
+      },
+      "latest_blocks": {
+        "count": 64,
+        "ns": 9976872,
+        "p50_ns": 141541,
+        "p95_ns": 255584,
+        "pages": 64,
+        "documents_per_page": 24,
+        "page_sha256": "ee40b2f8eb2de7805ba4652751be375b29ea730aefc8133cf916d342badfdd80"
+      },
+      "historical_pages": {
+        "count": 64,
+        "ns": 7080291,
+        "p50_ns": 108291,
+        "p95_ns": 129042
+      },
+      "history_sha256": "86d0939f222e9ad61f4a44c2ba48bc198b940c1bbbe8cf6c324e283ec866911d",
+      "footprint": {
+        "allocated": 1683456,
+        "apparent": 1663091,
+        "files": 8,
+        "sst_allocated": 1613824,
+        "sst_apparent": 1612477,
+        "sst_files": 1
+      },
+      "sst_options": {
+        "compression": "kNoCompression",
+        "bottommost_compression": "kDisableCompressionOption",
+        "block_size": "4096"
+      }
+    }
+  ]
+}
