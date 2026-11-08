@@ -1,6 +1,6 @@
 [package]
 name = "kasumi-frozen-run"
-description = "Authenticated immutable sorted runs for finalized Kasumi history"
+description = "Authenticated sorted runs and compact mutable binary-key storage"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -11,6 +11,12 @@ repository.workspace = true
 lz4_flex = { version = "0.13.1", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 sha2.workspace = true
 tempfile.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+uuid.workspace = true
+rustix = { version = "1", features = ["fs"] }
+arrayvec = "0.7"
 
 [dev-dependencies]
 hex.workspace = true

@@ -316,7 +316,8 @@ budgets.
 | --- | --- |
 | [kasumi-types](crates/kasumi-types) | Canonical JSON wire types, policy, commands, queries, and limits |
 | [kasumi-kv](crates/kasumi-kv) | Transactional durable byte-key storage core |
-| [kasumi-frozen-run](crates/kasumi-frozen-run) | Opt-in compressed, read-only sorted history with verified point and range reads; [Polkaswap comparison](benchmarks/indexer-kv/RESULTS.md) |
+| [kasumi-frozen-run](crates/kasumi-frozen-run) | Compressed sorted runs and a single-writer binary database for live indexes. [Polkaswap comparison](benchmarks/indexer-kv/RESULTS.md) |
+| [kasumi-live-node](crates/kasumi-live-node) | Node-API access to the live database through durable batch commits, point reads and ordered ranges |
 | [kasumi-store](crates/kasumi-store) | Encrypted records, key leases, snapshots, and backup objects |
 | [kasumi-raft](crates/kasumi-raft) | OpenRaft 0.9.25, durable state, and quorum barriers |
 | [kasumi-query](crates/kasumi-query) | Schemas, persistent indexes, and Tantivy/Lindera search |

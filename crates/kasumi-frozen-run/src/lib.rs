@@ -1,13 +1,27 @@
-//! Immutable LZ4-compressed sorted runs for finalized binary keys and values.
+//! Immutable LZ4-compressed sorted runs and Unix-native mutable binary-key storage.
 //! Seal a strictly ascending stream and retain its returned digest in a trusted
 //! manifest. Opening authenticates the sparse directory against that digest.
 //! Each accessed block is authenticated and its key order and boundaries
 //! verified before any data from that block reaches the caller.
 
+#[cfg(unix)]
+mod live;
+#[cfg(unix)]
+mod live_files;
+#[cfg(unix)]
+mod live_levels;
+#[cfg(unix)]
+mod live_merge;
+#[cfg(unix)]
+mod live_wal;
 mod prefix;
 mod read;
 mod write;
 
+#[cfg(unix)]
+pub use live::{LIVE_CHECKPOINT_BYTES, LiveDb, LiveStats};
+#[cfg(unix)]
+pub use live_wal::{MAX_WAL_BATCH_BYTES, MAX_WAL_BATCH_OPS, WalOp};
 pub use read::FrozenRun;
 pub use write::seal;
 
@@ -19,8 +33,10 @@ const DIRECTORY_MAGIC: &[u8; 8] = b"KSFRDIR2";
 const FOOTER_MAGIC: &[u8; 8] = b"KSFRIDX2";
 const PREFIX_FLAG: u32 = 1 << 31;
 const BLOCK_TARGET: usize = 32 << 10;
-const MAX_KEY: usize = 4096;
-const MAX_VALUE: usize = 32 << 20;
+/// Maximum byte length of an individual binary key.
+pub const MAX_KEY: usize = 4096;
+/// Maximum byte length of an individual binary value.
+pub const MAX_VALUE: usize = 32 << 20;
 const ROW_HEADER: usize = 6;
 const MAX_RAW: usize = MAX_KEY + MAX_VALUE + ROW_HEADER;
 const MAX_DIRECTORY: usize = 64 << 20;

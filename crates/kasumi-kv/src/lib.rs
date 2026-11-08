@@ -3,6 +3,13 @@
 //! The core owns the on-disk format and keeps values on the backend. The table
 //! facade supplies typed handles; the retained facade supplies lifecycle reports.
 
+/// A single-writer ordered byte database using compressed checkpoints and a durable log.
+/// Enable the `compact` feature for the filesystem-backed indexing API.
+#[cfg(all(unix, feature = "compact"))]
+pub mod compact {
+    pub use kasumi_frozen_run::{LIVE_CHECKPOINT_BYTES, LiveDb, LiveStats, WalOp};
+}
+
 pub mod cache;
 pub mod core;
 pub mod retained;

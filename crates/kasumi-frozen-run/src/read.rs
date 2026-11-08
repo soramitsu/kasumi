@@ -108,24 +108,37 @@ impl FrozenRun {
 
     /// Verify an already opened regular file. The caller supplies its trusted
     /// expected digest independently of the file being opened.
-    pub fn from_file(mut file: File, expected_root: [u8; 32]) -> io::Result<Self> {
+    pub fn from_file(file: File, expected_root: [u8; 32]) -> io::Result<Self> {
         let metadata = file.metadata()?;
-        if !metadata.is_file() || metadata.len() < 16 {
+        if !metadata.is_file() {
             return Err(invalid("missing sorted-run footer"));
         }
-        file.seek(SeekFrom::End(-16))?;
+        Self::from_extent(file, 0, metadata.len(), expected_root)
+    }
+
+    /// Open a run embedded in a caller-validated extent of a larger file.
+    pub(super) fn from_extent(
+        mut file: File,
+        start: u64,
+        end: u64,
+        expected_root: [u8; 32],
+    ) -> io::Result<Self> {
+        if end.checked_sub(start).is_none_or(|n| n < 16) {
+            return Err(invalid("missing sorted-run footer"));
+        }
+        file.seek(SeekFrom::Start(end - 16))?;
         let mut footer = [0u8; 16];
         file.read_exact(&mut footer)?;
         let size = u64::from_le_bytes(footer[..8].try_into().unwrap());
         let v2 = &footer[8..] == FOOTER_MAGIC;
         if (!v2 && &footer[8..] != FOOTER_MAGIC_V1)
             || size > MAX_DIRECTORY as u64
-            || size > metadata.len() - 16
+            || size > end - start - 16
         {
             return Err(invalid("invalid sorted-run footer"));
         }
-        let payload_len = metadata.len() - 16 - size;
-        file.seek(SeekFrom::Start(payload_len))?;
+        let payload_end = end - 16 - size;
+        file.seek(SeekFrom::Start(payload_end))?;
         let mut directory = vec![0; size as usize];
         file.read_exact(&mut directory)?;
         if <[u8; 32]>::from(Sha256::digest(&directory)) != expected_root {
@@ -145,7 +158,7 @@ impl FrozenRun {
             return Err(invalid("invalid sorted-run block count"));
         }
         let mut blocks: Vec<Block> = Vec::with_capacity(count);
-        let mut offset = 0u64;
+        let mut offset = start;
         for _ in 0..count {
             let tagged = u32_from(&mut input)? as u32;
             let raw = u32_from(&mut input)?;
@@ -191,9 +204,12 @@ impl FrozenRun {
                 first: first.to_vec(),
                 last: last.to_vec(),
             });
-            offset += packed as u64; // MAX_BLOCKS * maximum packed size fits in u64.
+            offset = offset
+                .checked_add(packed as u64)
+                .filter(|&next| next <= payload_end)
+                .ok_or_else(|| invalid("sorted-run extent differs"))?;
         }
-        if !input.is_empty() || offset != payload_len {
+        if !input.is_empty() || offset != payload_end {
             return Err(invalid("sorted-run extent differs"));
         }
         Ok(Self {
@@ -330,3 +346,9 @@ impl FrozenRun {
         Ok(seen)
     }
 }
+
+#[cfg(unix)]
+#[path = "live_levels_cursor.rs"]
+mod live_cursor;
+#[cfg(unix)]
+pub(super) use live_cursor::RunCursor;

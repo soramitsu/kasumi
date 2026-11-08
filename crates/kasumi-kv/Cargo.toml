@@ -7,7 +7,11 @@ license.workspace = true
 repository.workspace = true
 description = "Kasumi's append-only transactional byte-key storage core."
 
+[features]
+compact = ["dep:kasumi-frozen-run"]
+
 [dependencies]
+kasumi-frozen-run = { path = "../kasumi-frozen-run", optional = true }
 
 libc = "0.2"
 lz4_flex = { version = "=0.13.1", default-features = false, features = ["std", "safe-encode", "safe-decode"] }

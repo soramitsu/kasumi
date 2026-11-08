@@ -1,0 +1,21 @@
+[package]
+name = "kasumi-live-node"
+description = "Synchronous Node-API binding for Kasumi's live binary key-value database"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+test = false
+doctest = false
+
+[target.'cfg(unix)'.dependencies]
+kasumi-frozen-run = { path = "../kasumi-frozen-run" }
+napi = { version = "=3.16.1", default-features = false, features = ["napi6"] }
+napi-derive = "=3.7.0"
+
+[build-dependencies]
+napi-build = "=2.6.0"

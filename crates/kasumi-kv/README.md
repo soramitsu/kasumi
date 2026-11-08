@@ -4,6 +4,31 @@ Kasumi's native Rust key-value engine. It owns its transactional disk format,
 ordered directory, snapshots, cache, recovery, and reclamation. It uses no
 embedded database library.
 
+## Compact live indexes
+
+On Linux or macOS, enable the `compact` Cargo feature to use `kasumi_kv::compact::LiveDb` for
+an ordered binary index in a dedicated database directory. Each commit includes
+a device durability barrier. Use one handle for writes and reads. Closing the
+handle releases its exclusive filesystem lock.
+
+```rust
+use kasumi_kv::compact::{LiveDb, WalOp};
+
+let mut index = LiveDb::create(path)?;
+index.commit(&[
+    WalOp::Put(b"block/42", b"payload"),
+    WalOp::Put(b"latest", b"42"),
+])?;
+drop(index);
+let mut index = LiveDb::open(path)?;
+assert_eq!(index.get(b"latest")?.as_deref(), Some(b"42".as_slice()));
+```
+
+The compact API has its own disk format and ownership model. An application
+moving an existing typed `Database` or RocksDB index must copy its logical rows
+into a new directory. The [Node binding](../kasumi-live-node/README.md) exposes
+the same engine to JavaScript.
+
 ## Disk format and commits
 
 One database is a file group under an owned directory. `root.kvroot` contains

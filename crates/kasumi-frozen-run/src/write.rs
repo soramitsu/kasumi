@@ -21,6 +21,24 @@ where
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or(Path::new("."));
     let mut file = tempfile::NamedTempFile::new_in(parent)?;
+    let digest = write_rows(file.as_file_mut(), |write| {
+        for (key, value) in rows {
+            write(key.as_ref(), value.as_ref())?;
+        }
+        Ok(())
+    })?;
+    file.as_file().sync_all()?;
+    file.persist_noclobber(path).map_err(|e| e.error)?;
+    File::open(parent)?.sync_all()?;
+    Ok(digest)
+}
+
+/// Write an ordered stream into a fresh empty file. The owner synchronizes
+/// and publishes that file after all input reads and output writes succeed.
+pub(super) fn write_rows(
+    file: &mut File,
+    rows: impl FnOnce(&mut dyn FnMut(&[u8], &[u8]) -> io::Result<()>) -> io::Result<()>,
+) -> io::Result<[u8; 32]> {
     let mut directory = Vec::from(DIRECTORY_MAGIC.as_slice());
     directory.extend(0u32.to_le_bytes());
     let mut blocks = 0u32;
@@ -28,8 +46,7 @@ where
     let mut first = Vec::new();
     let mut last = Vec::new();
     let mut seen = false;
-    for (key, value) in rows {
-        let (key, value) = (key.as_ref(), value.as_ref());
+    rows(&mut |key, value| {
         if key.len() > MAX_KEY || value.len() > MAX_VALUE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -44,7 +61,7 @@ where
         }
         let record_len = ROW_HEADER + key.len() + value.len();
         if !raw.is_empty() && raw.len() + record_len > BLOCK_TARGET {
-            write_block(&mut file, &mut directory, &mut blocks, &raw, &first, &last)?;
+            write_block(file, &mut directory, &mut blocks, &raw, &first, &last)?;
             raw.clear();
         }
         if raw.is_empty() {
@@ -58,18 +75,16 @@ where
         last.clear();
         last.extend_from_slice(key);
         seen = true;
-    }
+        Ok(())
+    })?;
     if !raw.is_empty() {
-        write_block(&mut file, &mut directory, &mut blocks, &raw, &first, &last)?;
+        write_block(file, &mut directory, &mut blocks, &raw, &first, &last)?;
     }
     directory[8..12].copy_from_slice(&blocks.to_le_bytes());
     let digest = Sha256::digest(&directory).into();
     file.write_all(&directory)?;
     file.write_all(&(directory.len() as u64).to_le_bytes())?;
     file.write_all(FOOTER_MAGIC)?;
-    file.as_file().sync_all()?;
-    file.persist_noclobber(path).map_err(|e| e.error)?;
-    File::open(parent)?.sync_all()?;
     Ok(digest)
 }
 
