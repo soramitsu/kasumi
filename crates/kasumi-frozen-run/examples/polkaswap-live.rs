@@ -7,7 +7,7 @@ mod reads;
 mod trace;
 
 #[cfg(unix)]
-use kasumi_frozen_run::{LIVE_CHECKPOINT_BYTES, LiveDb};
+use kasumi_frozen_run::LiveDb;
 #[cfg(unix)]
 use serde_json::{Value, json};
 #[cfg(unix)]
@@ -55,7 +55,7 @@ fn ingest(db: &mut LiveDb, trace: &Trace) -> io::Result<Value> {
     Ok(json!({"ingest_ns":ns, "device_syncs":file_syncs,
         "directory_syncs":after.directory_syncs - before.directory_syncs,
         "committed_batches":batches.len(), "committed_operations":batches.iter().map(Vec::len).sum::<usize>(),
-        "inline_maintenance":true, "checkpoint_threshold_bytes":LIVE_CHECKPOINT_BYTES,
+        "inline_maintenance":true, "checkpoint_threshold_bytes":db.checkpoint_budget(),
         "maintenance_publications":after.checkpoints - before.checkpoints,
         "levels_after_ingest":after.levels, "level_bytes_written":after.level_bytes_written,
         "largest_flush_bytes":after.largest_flush_bytes,

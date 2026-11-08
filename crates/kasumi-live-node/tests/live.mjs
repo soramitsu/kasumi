@@ -102,3 +102,46 @@ test('large eager ranges fail before returning a partial page, then bounded read
     assert.equal(row.value[0], 7);
   }
 });
+
+test('independent grouped blocks keep their sequence across abrupt exit and prevalidate the complete input', (t) => {
+  const path = fixture(t);
+  const db = LiveDatabase.create(path);
+  assert.deepEqual(db.commitGroup([]), []);
+  assert.deepEqual(db.commitGroup([[{ key: empty, value: empty }], [], [{ key: buf('k'), value: buf('one') }]]),
+    [1n, 2n, 3n]);
+  assert.throws(() => db.commitGroup([[{ key: buf('k'), value: buf('bad') }], [{ key: buf('no'), value: 19 }]]));
+  assert.throws(() => db.commitGroup(Array(65).fill([])), /too many batches/);
+  assert.throws(() => db.commitGroup([[], [{ key: buf('a'), value: Buffer.alloc(512 << 10) }]]), /budget|byte limit/);
+  assert.equal(db.sequence(), 3n);
+  assert.deepEqual(db.get(buf('k')), buf('one'));
+  db.close();
+  const worker = spawnSync(process.execPath, ['-e', `
+    const { LiveDatabase } = require(process.argv[1]);
+    const db = LiveDatabase.open(process.argv[2]);
+    const key = Buffer.from('k');
+    const seq = db.commitGroup([[{key}], [], [{key, value:Buffer.from('latest')}]]);
+    if (seq.join(',') !== '4,5,6') process.exit(92);
+    process.kill(process.pid, 'SIGKILL');
+  `, addon, path], { timeout: 30_000, encoding: 'utf8' });
+  assert.ifError(worker.error);
+  assert.equal(worker.signal, 'SIGKILL', worker.stderr);
+  const recovered = LiveDatabase.open(path);
+  try {
+    assert.equal(recovered.sequence(), 6n);
+    assert.deepEqual(recovered.get(buf('k')), buf('latest'));
+    assert.deepEqual(recovered.get(empty), empty);
+  } finally { recovered.close(); }
+});
+
+test('a custom write buffer is bounded before creation and survives reopen', (t) => {
+  const path = fixture(t);
+  for (const invalid of [-1, NaN, 2.5, 1024, (16 << 20) + 1]) {
+    assert.throws(() => LiveDatabase.create(path, invalid), /write buffer/);
+  }
+  const db = LiveDatabase.create(path, 1 << 20);
+  const key = buf('budget');
+  const value = Buffer.alloc(700000, 9);
+  try { db.commit([{key, value}]); } finally { db.close(); }
+  const live = LiveDatabase.open(path);
+  try { assert.deepEqual(live.get(key), value); } finally { live.close(); }
+});

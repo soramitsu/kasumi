@@ -253,7 +253,7 @@ fn lock_and_process_exit_preserve_the_last_acknowledged_batch() {
 #[test]
 fn oversized_batch_is_checkpointed_and_idle_checkpoint_has_no_effects() {
     let dir = tempdir().unwrap();
-    let mut db = LiveDb::create(dir.path()).unwrap();
+    let mut db = LiveDb::create_with_buffer(dir.path(), LIVE_CHECKPOINT_BYTES).unwrap();
     let before = db.stats();
     assert_eq!((before.file_syncs, before.directory_syncs), (2, 5));
     let value = vec![17; LIVE_CHECKPOINT_BYTES as usize + 1];
@@ -334,13 +334,17 @@ fn initialization_requires_owned_names_and_exact_matching_genesis_prefixes() {
     assert!(LiveDb::open(path).is_err());
     assert_eq!(fs::read(path.join("wal.0")).unwrap(), b"user data");
     let (dir, _) = Files::lock(path, false).unwrap();
-    assert_eq!(dir.creation_marker(false).unwrap(), None);
+    assert_eq!(dir.creation_marker(None).unwrap(), None);
     drop(dir);
 
     let fresh = tempdir().unwrap();
     let (files, _) = Files::lock(fresh.path(), false).unwrap();
-    let id = files.creation_marker(true).unwrap().unwrap();
+    let (id, budget) = files
+        .creation_marker(Some(LIVE_DEFAULT_BUFFER_BYTES))
+        .unwrap()
+        .unwrap();
     let head = Head {
+        budget,
         id,
         seq: 0,
         entries: vec![],
@@ -413,7 +417,7 @@ fn active_wal_hardlinks_and_symlinks_are_refused_before_any_repair() {
 #[test]
 fn carried_tiers_hide_deleted_and_overwritten_keys_across_reopen_and_full_compaction() {
     let dir = tempdir().unwrap();
-    let mut db = LiveDb::create(dir.path()).unwrap();
+    let mut db = LiveDb::create_with_buffer(dir.path(), LIVE_CHECKPOINT_BYTES).unwrap();
     let big = vec![9; LIVE_CHECKPOINT_BYTES as usize];
     let mut expected = BTreeMap::new();
     for i in 0..11u8 {
@@ -452,5 +456,72 @@ fn carried_tiers_hide_deleted_and_overwritten_keys_across_reopen_and_full_compac
     assert_eq!(
         read_all(&mut LiveDb::open(dir.path()).unwrap()),
         expected.into_iter().collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn repeated_changes_reuse_the_delta_value_and_keep_the_original_checkpoint_charge() {
+    let mut delta = Delta::new();
+    let first = [1; 64];
+    let key = b"cursor";
+    assert_eq!(
+        apply(&mut delta, &[WalOp::Put(key, &first)]),
+        128 + 256 + 6 + 64
+    );
+    let pointer = delta[key.as_slice()].as_ref().unwrap().as_ptr();
+    let charge = apply(
+        &mut delta,
+        &[WalOp::Put(key, b"next"), WalOp::Put(key, &[2; 64])],
+    );
+    assert_eq!(charge, 128 + 2 * (256 + 6) + 4 + 64);
+    assert_eq!(delta[key.as_slice()].as_ref().unwrap().as_ptr(), pointer);
+    assert_eq!(delta[key.as_slice()].as_deref(), Some(&[2; 64][..]));
+    assert_eq!(apply(&mut delta, &[WalOp::Delete(key)]), 128 + 256 + 6);
+    assert!(delta[key.as_slice()].is_none());
+    apply(&mut delta, &[WalOp::Put(key, b"")]);
+    assert_eq!(delta[key.as_slice()].as_deref(), Some(&b""[..]));
+    assert_eq!(apply(&mut delta, &[]), 128);
+}
+
+#[test]
+fn persisted_budget_controls_checkpoints_and_legacy_v2_reopens_unchanged() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("current");
+    for budget in [0, LIVE_CHECKPOINT_BYTES - 1, (16 << 20) + 1] {
+        assert!(LiveDb::create_with_buffer(&path, budget).is_err());
+        assert!(!path.exists());
+    }
+    let mut db = LiveDb::create_with_buffer(&path, 2 << 20).unwrap();
+    db.commit(&[WalOp::Put(b"v", &vec![7; 1 << 20])]).unwrap();
+    assert_eq!(db.stats().checkpoints, 0);
+    drop(db);
+    let mut db = LiveDb::open(&path).unwrap();
+    assert_eq!(db.checkpoint_budget(), 2 << 20);
+    db.commit(&[WalOp::Put(b"v", &vec![9; 1 << 20])]).unwrap();
+    assert_eq!(db.stats().checkpoints, 1);
+    drop(db);
+    assert_eq!(
+        LiveDb::open(&path).unwrap().get(b"v").unwrap().unwrap(),
+        vec![9; 1 << 20]
+    );
+
+    // A version-2 bootstrap has only a UUID marker and no budget in its manifest.
+    let old = dir.path().join("v2");
+    fs::create_dir(&old).unwrap();
+    let uid = uuid::Uuid::new_v4();
+    fs::create_dir(old.join(format!(".kasumi-init-v1-{}", uid.simple()))).unwrap();
+    let mut db = LiveDb::open(&old).unwrap();
+    assert_eq!(db.checkpoint_budget(), LIVE_CHECKPOINT_BYTES);
+    db.commit(&[WalOp::Put(b"legacy", b"old")]).unwrap();
+    db.checkpoint().unwrap();
+    drop(db);
+    assert_eq!(&fs::read(old.join(MANIFEST)).unwrap()[..8], b"KSLIVE02");
+    assert_eq!(
+        LiveDb::open(&old)
+            .unwrap()
+            .get(b"legacy")
+            .unwrap()
+            .as_deref(),
+        Some(&b"old"[..])
     );
 }

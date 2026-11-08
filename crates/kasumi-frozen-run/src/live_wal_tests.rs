@@ -141,9 +141,13 @@ fn invalid_operations_are_refused_before_effect_and_sync_failure_fences_the_writ
         io::ErrorKind::InvalidInput
     );
     assert_eq!((wal.len(), wal.syncs(), wal.is_fenced()), (end, 1, false));
-    let res = wal.append_with_sync(&[WalOp::Put(b"a", b"durability uncertain")], |_| {
-        Err(io::Error::other("injected sync failure"))
-    });
+    let res = wal.append_with(
+        &[WalOp::Put(b"a", b"durability uncertain")],
+        |_, file, _, frame| {
+            file.write_all(frame)?;
+            Err(io::Error::other("injected sync failure"))
+        },
+    );
     assert!(res.is_err());
     assert!(wal.is_fenced());
     assert!(wal.append(&[WalOp::Delete(b"a")]).is_err());
@@ -223,4 +227,38 @@ fn transplanted_valid_frames_fail_for_a_different_generation_or_predecessor() {
             (before.len() + image.len() - left_boundary) as u64
         );
     }
+}
+
+#[test]
+fn varying_batches_write_only_their_exact_frame_and_reuse_initialized_compression_space() {
+    let (file, mut wal) = create();
+    let large = vec![0x61; 8192];
+    let small = vec![0x55; 256];
+    let mut sizes = Vec::new();
+    for (i, bytes) in [&large, &small, &small].into_iter().enumerate() {
+        let before = wal.len();
+        wal.append(&[WalOp::Put(b"k", bytes)]).unwrap();
+        sizes.push(wal.len() - before);
+        if i == 0 {
+            assert!(
+                wal.encoder.packed.len() >= HEADER + block::get_maximum_output_size(8192) + DIGEST
+            );
+            // Subsequent smaller encodings must not reinitialize this region.
+            wal.encoder.packed[2048] = 0x93;
+        } else {
+            assert_eq!(wal.encoder.packed[2048], 0x93);
+        }
+    }
+    assert!(sizes[1] < sizes[0] && sizes[1] == sizes[2]);
+    assert_eq!(wal.len(), std::fs::metadata(file.path()).unwrap().len());
+    drop(wal);
+    let mut count = 0;
+    Wal::open(writable(file.path()), BASE, ROOT, |_, ops| {
+        let want = if count == 0 { &large } else { &small };
+        assert_eq!(ops, &[WalOp::Put(b"k", want)]);
+        count += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(count, 3);
 }

@@ -16,10 +16,23 @@ use std::{
     path::Path,
 };
 
-/// Automatic flush threshold for physical WAL bytes or conservatively charged
-/// pending mutations. A single legal atomic batch can exceed this threshold.
+/// Minimum write-buffer budget, also used by legacy v2 databases.
 pub const LIVE_CHECKPOINT_BYTES: u64 = 512 << 10;
+/// Default buffer budget for new databases. Each acknowledgement still syncs the WAL.
+pub const LIVE_DEFAULT_BUFFER_BYTES: u64 = 4 << 20;
+pub(super) fn valid_budget(n: u64) -> bool {
+    (LIVE_CHECKPOINT_BYTES..=16 << 20).contains(&n)
+}
+/// Maximum independently sequenced blocks sharing one WAL synchronization.
+pub const LIVE_GROUP_MAX_BATCHES: usize = 64;
+/// Maximum aggregate conservative delta charge for a multi-block group.
+pub const LIVE_GROUP_MAX_BYTES: u64 = 512 << 10;
+
+#[path = "live_group.rs"]
+mod group;
+
 const MAGIC: &[u8; 8] = b"KSLIVE02";
+const BUDGET_MAGIC: &[u8; 8] = b"KSLIVE03";
 const MAX_LEVELS: usize = 64;
 const HEADER_BYTES: usize = 40;
 const ENTRY_BYTES: usize = 48;
@@ -37,6 +50,7 @@ impl Entry {
 }
 #[derive(Clone)]
 struct Head {
+    budget: Option<u64>,
     id: [u8; 16],
     seq: u64,
     entries: Vec<Entry>,
@@ -44,10 +58,17 @@ struct Head {
 impl Head {
     fn encode(&self) -> Vec<u8> {
         let mut bytes = Vec::with_capacity(HEADER_BYTES + ENTRY_BYTES * self.entries.len() + 32);
-        bytes.extend(MAGIC);
+        bytes.extend(if self.budget.is_some() {
+            BUDGET_MAGIC
+        } else {
+            MAGIC
+        });
         bytes.extend((self.entries.len() as u64).to_le_bytes());
         bytes.extend(self.seq.to_le_bytes());
         bytes.extend(self.id);
+        if let Some(budget) = self.budget {
+            bytes.extend(budget.to_le_bytes());
+        }
         for entry in &self.entries {
             bytes.extend(u64::from(entry.tier).to_le_bytes());
             bytes.extend(entry.sequence.to_le_bytes());
@@ -59,7 +80,7 @@ impl Head {
     fn read(files: &Files) -> io::Result<Self> {
         let mut file = files.read(MANIFEST)?;
         let len = file.metadata()?.len();
-        if !((HEADER_BYTES + 32) as u64..=(HEADER_BYTES + ENTRY_BYTES * MAX_LEVELS + 32) as u64)
+        if !((HEADER_BYTES + 32) as u64..=(HEADER_BYTES + 8 + ENTRY_BYTES * MAX_LEVELS + 32) as u64)
             .contains(&len)
         {
             return Err(invalid("invalid live manifest length"));
@@ -68,21 +89,32 @@ impl Head {
         file.read_exact(&mut bytes)?;
         let split = bytes.len() - 32;
         let (body, digest) = bytes.split_at(split);
-        if &body[..8] != MAGIC || Sha256::digest(body)[..] != *digest {
+        if Sha256::digest(body)[..] != *digest {
             return Err(invalid("invalid live manifest"));
         }
+        let (budget, header) = match &body[..8] {
+            magic if magic == MAGIC => (None, HEADER_BYTES),
+            magic if magic == BUDGET_MAGIC && body.len() >= HEADER_BYTES + 8 => {
+                let n = u64::from_le_bytes(body[40..48].try_into().unwrap());
+                if !valid_budget(n) {
+                    return Err(invalid("invalid live write buffer budget"));
+                }
+                (Some(n), HEADER_BYTES + 8)
+            }
+            _ => return Err(invalid("invalid live manifest version")),
+        };
         let count = u64::from_le_bytes(body[8..16].try_into().unwrap());
         let seq = u64::from_le_bytes(body[16..24].try_into().unwrap());
         let id = body[24..40].try_into().unwrap();
         if count > MAX_LEVELS as u64
-            || body.len() != HEADER_BYTES + ENTRY_BYTES * count as usize
+            || body.len() != header + ENTRY_BYTES * count as usize
             || (count == 0) != (seq == 0)
             || uuid::Uuid::from_bytes(id).get_version_num() != 4
         {
             return Err(invalid("invalid live manifest fields"));
         }
         let mut entries: Vec<Entry> = Vec::with_capacity(count as usize);
-        for record in body[HEADER_BYTES..].chunks_exact(ENTRY_BYTES) {
+        for record in body[header..].chunks_exact(ENTRY_BYTES) {
             let tier = u64::from_le_bytes(record[..8].try_into().unwrap());
             let sequence = u64::from_le_bytes(record[8..16].try_into().unwrap());
             if tier >= MAX_LEVELS as u64
@@ -100,7 +132,12 @@ impl Head {
                 root: record[16..].try_into().unwrap(),
             });
         }
-        Ok(Self { id, seq, entries })
+        Ok(Self {
+            budget,
+            id,
+            seq,
+            entries,
+        })
     }
     fn wal_name(&self) -> String {
         let tier = self.entries.first().map_or(0, |e| e.tier);
@@ -155,33 +192,51 @@ pub struct LiveDb {
     files: Files,
 }
 
-fn change_cost(ops: &[WalOp<'_>]) -> u64 {
-    // Charge every operation, including overwritten writes, with conservative
-    // B-tree/Vec metadata. A positive frame charge bounds empty-batch replay.
-    ops.iter().fold(128, |total, op| {
-        let bytes = match op {
-            WalOp::Put(k, v) => k.len() + v.len(),
-            WalOp::Delete(k) => k.len(),
-        };
-        total + 256 + bytes as u64
-    })
+const FRAME_CHARGE: u64 = 128;
+
+fn op_charge(key: &[u8], value: Option<&[u8]>) -> u64 {
+    256 + (key.len() + value.map_or(0, <[u8]>::len)) as u64
 }
-fn apply(delta: &mut Delta, ops: &[WalOp<'_>]) {
-    for op in ops {
-        match op {
-            WalOp::Put(key, value) => {
-                delta.insert(key.to_vec(), Some(value.to_vec()));
+
+/// Apply one validated batch and return its conservative checkpoint charge.
+fn apply(delta: &mut Delta, ops: &[WalOp<'_>]) -> u64 {
+    // A positive frame charge also bounds recovery of empty batches. Repeated
+    // writes are charged in full even when their map storage can be reused.
+    let mut charge = FRAME_CHARGE;
+    for &op in ops {
+        let (key, value) = match op {
+            WalOp::Put(key, value) => (key, Some(value)),
+            WalOp::Delete(key) => (key, None),
+        };
+        charge += op_charge(key, value);
+        if let Some(current) = delta.get_mut(key) {
+            if let Some(bytes) = value {
+                bytes.clone_into(current.get_or_insert_with(Vec::new));
+            } else {
+                *current = None;
             }
-            WalOp::Delete(key) => {
-                delta.insert(key.to_vec(), None);
-            }
+        } else {
+            delta.insert(key.to_vec(), value.map(<[u8]>::to_vec));
         }
     }
+    charge
 }
 
 impl LiveDb {
     /// Create in a new or empty directory, or resume a provable interrupted creation.
     pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::create_with_buffer(path, LIVE_DEFAULT_BUFFER_BYTES)
+    }
+
+    /// Choose the inline checkpoint threshold (512 KiB through 16 MiB). A larger
+    /// budget permits a longer WAL and more recovery work. The budget is persisted.
+    pub fn create_with_buffer(path: impl AsRef<Path>, budget: u64) -> io::Result<Self> {
+        if !valid_budget(budget) {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "write buffer must be 512 KiB through 16 MiB",
+            ));
+        }
         let (files, dir_syncs) = Files::lock(path.as_ref(), true)?;
         match files.read(MANIFEST) {
             Ok(_) => {
@@ -193,14 +248,26 @@ impl LiveDb {
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
-        let id = files
-            .creation_marker(true)?
+        let (id, recorded) = files
+            .creation_marker(Some(budget))?
             .ok_or_else(|| invalid("missing live creation marker"))?;
-        Self::initialize(files, id, dir_syncs)
+        if recorded.unwrap_or(LIVE_CHECKPOINT_BYTES) != budget {
+            return Err(io::Error::new(
+                ErrorKind::InvalidInput,
+                "existing bootstrap has a different write buffer; use open to resume",
+            ));
+        }
+        Self::initialize(files, id, recorded, dir_syncs)
     }
 
-    fn initialize(files: Files, id: [u8; 16], mut dir_syncs: u64) -> io::Result<Self> {
+    fn initialize(
+        files: Files,
+        id: [u8; 16],
+        budget: Option<u64>,
+        mut dir_syncs: u64,
+    ) -> io::Result<Self> {
         let head = Head {
+            budget,
             id,
             seq: 0,
             entries: vec![],
@@ -212,13 +279,14 @@ impl LiveDb {
         let encoded = head.encode();
         files.reset_bootstrap(
             &id,
+            budget,
             &[(&wal_name, &wal_header(0, binding)), (&next, &encoded)],
         )?;
         let file = files.fresh(&wal_name)?;
         file.try_lock()?;
         let wal = Wal::initialize(file, 0, binding)?;
         files.publish(&id, &encoded, &mut dir_syncs)?;
-        files.remove_marker(&id)?;
+        files.remove_marker(&id, budget)?;
         files.sync(&mut dir_syncs)?;
         Ok(Self {
             files,
@@ -243,8 +311,8 @@ impl LiveDb {
         let (files, mut dir_syncs) = Files::lock(path.as_ref(), false)?;
         let head = match Head::read(&files) {
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                if let Some(id) = files.creation_marker(false)? {
-                    return Self::initialize(files, id, dir_syncs);
+                if let Some((id, budget)) = files.creation_marker(None)? {
+                    return Self::initialize(files, id, budget, dir_syncs);
                 }
                 return Err(e);
             }
@@ -261,11 +329,10 @@ impl LiveDb {
             head.seq,
             head.binding(),
             |_, ops| {
-                if pending >= LIVE_CHECKPOINT_BYTES {
+                if pending >= head.budget.unwrap_or(LIVE_CHECKPOINT_BYTES) {
                     return Err(invalid("live WAL exceeds checkpoint interval"));
                 }
-                pending += change_cost(ops);
-                apply(&mut delta, ops);
+                pending += apply(&mut delta, ops);
                 Ok(())
             },
         )?;
@@ -273,7 +340,7 @@ impl LiveDb {
         // syncing the directory. Persist the observed winner before reclaiming.
         files.sync(&mut dir_syncs)?;
         let mut changed = files.reclaim(&head.id, &head.keep())?;
-        changed |= files.remove_marker(&head.id)?;
+        changed |= files.remove_marker(&head.id, head.budget)?;
         if changed {
             files.sync(&mut dir_syncs)?;
         }
@@ -333,16 +400,20 @@ impl LiveDb {
             self.flush(false)?;
         }
         let sequence = self.wal.append(ops)?;
-        apply(&mut self.delta, ops);
-        self.pending += change_cost(ops);
+        self.pending += apply(&mut self.delta, ops);
         if self.checkpoint_due() {
             self.flush(false)?;
         }
         Ok(sequence)
     }
 
+    /// Persisted threshold shared by automatic flush and recovery admission.
+    pub fn checkpoint_budget(&self) -> u64 {
+        self.head.budget.unwrap_or(LIVE_CHECKPOINT_BYTES)
+    }
+
     fn checkpoint_due(&self) -> bool {
-        self.pending >= LIVE_CHECKPOINT_BYTES || self.wal.len() >= LIVE_CHECKPOINT_BYTES
+        self.pending >= self.checkpoint_budget() || self.wal.len() >= self.checkpoint_budget()
     }
 
     /// Flush the tail and all occupied levels into one sorted run, reclaiming
@@ -394,6 +465,7 @@ impl LiveDb {
         entries.push(entry);
         entries.extend_from_slice(&self.head.entries[take..]);
         let head = Head {
+            budget: self.head.budget,
             id: self.head.id,
             seq: self.sequence(),
             entries,

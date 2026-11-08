@@ -19,7 +19,10 @@ mod read;
 mod write;
 
 #[cfg(unix)]
-pub use live::{LIVE_CHECKPOINT_BYTES, LiveDb, LiveStats};
+pub use live::{
+    LIVE_CHECKPOINT_BYTES, LIVE_DEFAULT_BUFFER_BYTES, LIVE_GROUP_MAX_BATCHES, LIVE_GROUP_MAX_BYTES,
+    LiveDb, LiveStats,
+};
 #[cfg(unix)]
 pub use live_wal::{MAX_WAL_BATCH_BYTES, MAX_WAL_BATCH_OPS, WalOp};
 pub use read::FrozenRun;

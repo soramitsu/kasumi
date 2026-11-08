@@ -14,6 +14,8 @@ use uuid::Uuid;
 
 pub(super) const MANIFEST: &str = "MANIFEST";
 const CREATE_PREFIX: &str = ".kasumi-init-v1-";
+const CREATE_BUDGET_PREFIX: &str = ".kasumi-init-v3-";
+pub(super) type Bootstrap = ([u8; 16], Option<u64>);
 
 pub(super) struct Files {
     directory: File,
@@ -78,17 +80,30 @@ impl Files {
 
     /// The marker is an atomic name containing a fresh, syntactically valid
     /// incarnation. Ordinary filenames never authorize destructive bootstrap.
-    pub(super) fn creation_marker(&self, create: bool) -> io::Result<Option<[u8; 16]>> {
+    pub(super) fn creation_marker(&self, create: Option<u64>) -> io::Result<Option<Bootstrap>> {
         let mut count = 0;
         let mut marker = None;
         self.names(|name| {
             count += 1;
-            if let Some(suffix) = name.strip_prefix(CREATE_PREFIX) {
+            let candidate = if let Some(rest) = name.strip_prefix(CREATE_BUDGET_PREFIX) {
+                let (hex, uuid) = rest
+                    .split_once('-')
+                    .ok_or_else(|| invalid("invalid bootstrap budget"))?;
+                let n = u64::from_str_radix(hex, 16)
+                    .map_err(|_| invalid("invalid bootstrap budget"))?;
+                if !crate::live::valid_budget(n) || hex != format!("{n:x}") {
+                    return Err(invalid("invalid bootstrap budget"));
+                }
+                Some((uuid, Some(n)))
+            } else {
+                name.strip_prefix(CREATE_PREFIX).map(|id| (id, None))
+            };
+            if let Some((suffix, budget)) = candidate {
                 let id = Uuid::parse_str(suffix)
                     .map_err(|_| invalid("invalid live bootstrap identity"))?;
                 if suffix != id.simple().to_string()
                     || id.get_version_num() != 4
-                    || marker.replace(*id.as_bytes()).is_some()
+                    || marker.replace((*id.as_bytes(), budget)).is_some()
                 {
                     return Err(invalid("invalid live bootstrap marker"));
                 }
@@ -107,7 +122,7 @@ impl Files {
             }
             Ok(())
         })?;
-        if marker.is_none() && create {
+        if let (None, Some(budget)) = (marker, create) {
             if count != 0 {
                 return Err(io::Error::new(
                     ErrorKind::AlreadyExists,
@@ -117,19 +132,27 @@ impl Files {
             let id = Uuid::new_v4();
             fs::mkdirat(
                 &self.directory,
-                Self::marker(id.as_bytes()),
+                Self::marker(id.as_bytes(), Some(budget)),
                 Mode::from_raw_mode(0o700),
             )?;
-            marker = Some(*id.as_bytes());
+            marker = Some((*id.as_bytes(), Some(budget)));
         }
         Ok(marker)
     }
 
-    fn marker(id: &[u8; 16]) -> String {
-        format!("{CREATE_PREFIX}{}", Uuid::from_bytes(*id).simple())
+    fn marker(id: &[u8; 16], budget: Option<u64>) -> String {
+        let uid = Uuid::from_bytes(*id).simple();
+        match budget {
+            Some(n) => format!("{CREATE_BUDGET_PREFIX}{n:x}-{uid}"),
+            None => format!("{CREATE_PREFIX}{uid}"),
+        }
     }
-    pub(super) fn remove_marker(&self, id: &[u8; 16]) -> io::Result<bool> {
-        match fs::unlinkat(&self.directory, Self::marker(id), AtFlags::REMOVEDIR) {
+    pub(super) fn remove_marker(&self, id: &[u8; 16], budget: Option<u64>) -> io::Result<bool> {
+        match fs::unlinkat(
+            &self.directory,
+            Self::marker(id, budget),
+            AtFlags::REMOVEDIR,
+        ) {
             Ok(()) => Ok(true),
             Err(rustix::io::Errno::NOENT) => Ok(false),
             Err(e) => Err(e.into()),
@@ -188,9 +211,10 @@ impl Files {
     pub(super) fn reset_bootstrap(
         &self,
         id: &[u8; 16],
+        budget: Option<u64>,
         expected: &[(&str, &[u8])],
     ) -> io::Result<()> {
-        let marker = Self::marker(id);
+        let marker = Self::marker(id, budget);
         self.names(|name| {
             if name == marker {
                 return Ok(());

@@ -2,8 +2,11 @@
 //! batch. Its separately checked header bounds allocation and identifies a torn
 //! final frame without interpreting a corrupted length as a crash tail.
 
+#[path = "live_wal_serial.rs"]
+mod serial;
 use crate::{MAX_KEY, MAX_VALUE, invalid};
 use lz4_flex::block;
+use serial::SerialWriter;
 use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, BufReader, Read, Seek, SeekFrom, Write};
@@ -314,6 +317,64 @@ fn read_frames(
     Ok((sequence, end, length, previous))
 }
 
+/// Reuse both encodings between commits. The compressed scratch remains
+/// initialized up to its largest request. Only the returned frame is emitted.
+struct FrameEncoder {
+    raw: Vec<u8>,
+    packed: Vec<u8>,
+    table: block::CompressTable,
+}
+
+impl FrameEncoder {
+    fn new() -> Self {
+        Self {
+            raw: Vec::new(),
+            packed: Vec::new(),
+            table: block::CompressTable::small(),
+        }
+    }
+
+    fn encode(
+        &mut self,
+        ops: &[WalOp<'_>],
+        size: usize,
+        next: u64,
+        previous: &[u8; DIGEST],
+    ) -> io::Result<(&[u8], [u8; DIGEST])> {
+        self.raw.clear();
+        reserve(&mut self.raw, HEADER + size + DIGEST)?;
+        self.raw.resize(HEADER, 0);
+        encode_ops(&mut self.raw, ops);
+        self.raw.resize(HEADER + size + DIGEST, 0);
+        let mut frame = self.raw.as_mut_slice();
+        if size >= 128 {
+            let capacity = block::get_maximum_output_size(size);
+            let needed = HEADER + capacity + DIGEST;
+            if needed > self.packed.len() {
+                let additional = needed - self.packed.len();
+                reserve(&mut self.packed, additional)?;
+                self.packed.resize(needed, 0);
+            }
+            let bytes = block::compress_into_with_table(
+                &frame[HEADER..HEADER + size],
+                &mut self.packed[HEADER..HEADER + capacity],
+                &mut self.table,
+            )
+            .map_err(|_| invalid("could not compress WAL batch"))?;
+            if bytes < size {
+                frame = &mut self.packed[..HEADER + bytes + DIGEST];
+            }
+        }
+        let trailer = frame.len() - DIGEST;
+        let stored = trailer - HEADER;
+        let header = frame_header(previous, next, ops.len(), size, stored, stored < size);
+        frame[..HEADER].copy_from_slice(&header);
+        let digest = frame_digest(&header, &frame[HEADER..trailer]);
+        frame[trailer..].copy_from_slice(&digest);
+        Ok((frame, digest))
+    }
+}
+
 /// The file is held under the engine's exclusive lock for the complete lifetime
 /// of this writer. A write or device synchronization failure seals it until reopen.
 pub(crate) struct Wal {
@@ -323,9 +384,8 @@ pub(crate) struct Wal {
     previous: [u8; DIGEST],
     fenced: bool,
     syncs: u64,
-    raw: Vec<u8>,
-    packed: Vec<u8>,
-    table: block::CompressTable,
+    encoder: FrameEncoder,
+    serial: SerialWriter,
 }
 
 impl Wal {
@@ -337,9 +397,8 @@ impl Wal {
             previous,
             fenced: false,
             syncs,
-            raw: Vec::new(),
-            packed: Vec::new(),
-            table: block::CompressTable::small(),
+            encoder: FrameEncoder::new(),
+            serial: SerialWriter::default(),
         }
     }
 
@@ -404,13 +463,13 @@ impl Wal {
     }
 
     pub(crate) fn append(&mut self, ops: &[WalOp<'_>]) -> io::Result<u64> {
-        self.append_with_sync(ops, sync_durable)
+        self.append_with(ops, SerialWriter::write)
     }
 
-    fn append_with_sync(
+    fn append_with(
         &mut self,
         ops: &[WalOp<'_>],
-        synchronize: impl FnOnce(&File) -> io::Result<()>,
+        write: impl FnOnce(&mut SerialWriter, &mut File, u64, &[u8]) -> io::Result<u64>,
     ) -> io::Result<u64> {
         if self.fenced {
             return Err(io::Error::other("WAL writer requires recovery"));
@@ -420,41 +479,15 @@ impl Wal {
             .sequence
             .checked_add(1)
             .ok_or_else(|| io::Error::other("WAL sequence exhausted"))?;
-        self.raw.clear();
-        reserve(&mut self.raw, HEADER + size + DIGEST)?;
-        self.raw.resize(HEADER, 0);
-        encode_ops(&mut self.raw, ops);
-        let mut frame = &mut self.raw;
-        if size >= 128 {
-            self.packed.clear();
-            let capacity = block::get_maximum_output_size(size);
-            reserve(&mut self.packed, HEADER + capacity + DIGEST)?;
-            self.packed.resize(HEADER + capacity, 0);
-            let bytes = block::compress_into_with_table(
-                &frame[HEADER..],
-                &mut self.packed[HEADER..],
-                &mut self.table,
-            )
-            .map_err(|_| invalid("could not compress WAL batch"))?;
-            if bytes < size {
-                self.packed.truncate(HEADER + bytes);
-                frame = &mut self.packed;
-            }
-        }
-        let stored = frame.len() - HEADER;
-        let header = frame_header(&self.previous, next, ops.len(), size, stored, stored < size);
-        frame[..HEADER].copy_from_slice(&header);
-        let digest = frame_digest(&header, &frame[HEADER..]);
-        frame.extend_from_slice(&digest);
+        let (frame, digest) = self.encoder.encode(ops, size, next, &self.previous)?;
         let end = self
             .end
             .checked_add(frame.len() as u64)
             .ok_or_else(|| io::Error::other("WAL file size exhausted"))?;
         // Mark uncertain before the first effect and keep the writer fenced on error.
         self.fenced = true;
-        self.file.write_all(frame)?;
-        synchronize(&self.file)?;
-        self.syncs = self.syncs.saturating_add(1);
+        let syncs = write(&mut self.serial, &mut self.file, self.end, frame)?;
+        self.syncs = self.syncs.saturating_add(syncs);
         self.previous = digest;
         self.sequence = next;
         self.end = end;
@@ -462,6 +495,9 @@ impl Wal {
         Ok(next)
     }
 }
+
+#[path = "live_wal_group.rs"]
+mod group;
 
 #[cfg(test)]
 #[path = "live_wal_tests.rs"]

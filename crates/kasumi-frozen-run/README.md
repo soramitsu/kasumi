@@ -10,7 +10,13 @@ replacements and deletes. The same engine is accessible through
 and the [Node-API binding](../kasumi-live-node/README.md).
 
 The write buffer flushes when its conservative change estimate or physical WAL
-reaches 512 KiB. One atomic batch can exceed that trigger. On flush, a new
+reaches the persisted budget. New databases default to 4 MiB. For a storage
+lane with a different memory/recovery budget, use
+`LiveDb::create_with_buffer(path, bytes)` with 512 KiB through 16 MiB. A
+larger budget reduces inline merge frequency at the cost of a larger live
+WAL and longer recovery. Version-2 directories retain their original 512
+KiB budget and remain in their original format. One atomic batch can exceed
+the trigger. On flush, a new
 compressed file absorbs any occupied lower tiers, like carries in a binary
 counter. Each level indexes its own pieces on disk. An explicit `checkpoint()`
 also merges the remaining tiers and retires obsolete files. Reads take the

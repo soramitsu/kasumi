@@ -2,7 +2,8 @@
 #![cfg(unix)]
 
 use kasumi_frozen_run::{
-    LiveDb, MAX_KEY, MAX_VALUE, MAX_WAL_BATCH_BYTES, MAX_WAL_BATCH_OPS, WalOp,
+    LIVE_GROUP_MAX_BATCHES, LIVE_GROUP_MAX_BYTES, LiveDb, MAX_KEY, MAX_VALUE, MAX_WAL_BATCH_BYTES,
+    MAX_WAL_BATCH_OPS, WalOp,
 };
 use napi::bindgen_prelude::{Array, BigInt, Buffer, BufferSlice, JsObjectValue, Object};
 use napi::{Error, Result, Status};
@@ -51,6 +52,55 @@ fn optional_key(options: &Object<'_>, field: &str) -> Result<Option<Vec<u8>>> {
     Ok(Some(key.to_vec()))
 }
 
+struct BatchInputs(Vec<(Vec<u8>, Option<Vec<u8>>)>);
+
+impl BatchInputs {
+    fn decode(operations: Array<'_>, ops_left: &mut usize, bytes_left: &mut usize) -> Result<Self> {
+        let count = operations.len() as usize;
+        if count > *ops_left {
+            return Err(invalid("too many operations in a Kasumi batch"));
+        }
+        *ops_left -= count;
+        let mut owned = Vec::with_capacity(count);
+        for i in 0..operations.len() {
+            let item: Object<'_> = operations
+                .get(i)?
+                .ok_or_else(|| invalid("missing Kasumi batch operation"))?;
+            let key: BufferSlice<'_> = item.get_named_property("key")?;
+            key_within_limit(&key)?;
+            if key.len() > *bytes_left {
+                return Err(invalid("Kasumi batch exceeds the byte limit"));
+            }
+            *bytes_left -= key.len();
+            // A later JS property getter may detach or mutate earlier inputs.
+            // Snapshot each slice before reading another user-controlled property.
+            let key = key.to_vec();
+            let value = if item.has_named_property("value")? {
+                let value: BufferSlice<'_> = item.get_named_property("value")?;
+                if value.len() > MAX_VALUE || value.len() > *bytes_left {
+                    return Err(invalid("Kasumi value or batch exceeds the byte limit"));
+                }
+                *bytes_left -= value.len();
+                Some(value.to_vec())
+            } else {
+                None
+            };
+            owned.push((key, value));
+        }
+        Ok(Self(owned))
+    }
+
+    fn ops(&self) -> Vec<WalOp<'_>> {
+        self.0
+            .iter()
+            .map(|(key, value)| match value {
+                Some(value) => WalOp::Put(key, value),
+                None => WalOp::Delete(key),
+            })
+            .collect()
+    }
+}
+
 /// Synchronous operations can be run on the indexer's dedicated worker thread.
 #[napi]
 pub struct LiveDatabase {
@@ -71,10 +121,16 @@ impl LiveDatabase {
 #[napi]
 impl LiveDatabase {
     #[napi(factory)]
-    pub fn create(path: String) -> Result<Self> {
+    pub fn create(path: String, write_buffer_bytes: Option<f64>) -> Result<Self> {
+        let budget =
+            write_buffer_bytes.unwrap_or(kasumi_frozen_run::LIVE_DEFAULT_BUFFER_BYTES as f64);
+        if !budget.is_finite() || budget.fract() != 0.0 || budget < 0.0 {
+            return Err(invalid("write buffer must be an integer byte count"));
+        }
         Ok(Self {
             db: RefCell::new(Some(
-                LiveDb::create(path).map_err(|e| storage("create", e))?,
+                LiveDb::create_with_buffer(path, budget as u64)
+                    .map_err(|e| storage("create", e))?,
             )),
         })
     }
@@ -95,48 +151,41 @@ impl LiveDatabase {
     /// Submit one ordered batch. A present Buffer value is a put; omission is a delete.
     #[napi]
     pub fn commit(&self, operations: Array<'_>) -> Result<BigInt> {
-        let count = operations.len() as usize;
-        if count > MAX_WAL_BATCH_OPS {
-            return Err(invalid("too many operations in a Kasumi batch"));
-        }
-        let mut owned = Vec::with_capacity(count);
-        let mut bytes = 0;
-        for i in 0..operations.len() {
-            let item: Object<'_> = operations
-                .get(i)?
-                .ok_or_else(|| invalid("missing Kasumi batch operation"))?;
-            let key: BufferSlice<'_> = item.get_named_property("key")?;
-            key_within_limit(&key)?;
-            bytes += key.len();
-            if bytes > MAX_WAL_BATCH_BYTES {
-                return Err(invalid("Kasumi batch exceeds the byte limit"));
-            }
-            // A later JS property getter may detach or mutate earlier inputs.
-            // Snapshot each slice before reading another user-controlled property.
-            let key = key.to_vec();
-            let value = if item.has_named_property("value")? {
-                let value: BufferSlice<'_> = item.get_named_property("value")?;
-                if value.len() > MAX_VALUE || value.len() > MAX_WAL_BATCH_BYTES - bytes {
-                    return Err(invalid("Kasumi value or batch exceeds the byte limit"));
-                }
-                bytes += value.len();
-                Some(value.to_vec())
-            } else {
-                None
-            };
-            owned.push((key, value));
-        }
-        let ops: Vec<_> = owned
-            .iter()
-            .map(|(key, value)| match value {
-                Some(value) => WalOp::Put(key, value),
-                None => WalOp::Delete(key),
-            })
-            .collect();
+        let mut ops_left = MAX_WAL_BATCH_OPS;
+        let mut bytes_left = MAX_WAL_BATCH_BYTES;
+        let owned = BatchInputs::decode(operations, &mut ops_left, &mut bytes_left)?;
         self.inner()?
-            .commit(&ops)
+            .commit(&owned.ops())
             .map(BigInt::from)
             .map_err(|e| storage("commit", e))
+    }
+
+    /// Group already available independent batches behind one WAL synchronization.
+    #[napi]
+    pub fn commit_group(&self, batches: Array<'_>) -> Result<Vec<BigInt>> {
+        let count = batches.len() as usize;
+        if count > LIVE_GROUP_MAX_BATCHES {
+            return Err(invalid("too many batches in live group"));
+        }
+        let mut ops_left = MAX_WAL_BATCH_OPS;
+        let mut bytes_left = if count > 1 {
+            LIVE_GROUP_MAX_BYTES as usize
+        } else {
+            MAX_WAL_BATCH_BYTES
+        };
+        let mut owned = Vec::with_capacity(count);
+        for i in 0..batches.len() {
+            let batch = batches
+                .get(i)?
+                .ok_or_else(|| invalid("missing Kasumi group batch"))?;
+            owned.push(BatchInputs::decode(batch, &mut ops_left, &mut bytes_left)?);
+        }
+        let ops: Vec<_> = owned.iter().map(BatchInputs::ops).collect();
+        let slices: Vec<_> = ops.iter().map(Vec::as_slice).collect();
+        self.inner()?
+            .commit_group(&slices)
+            .map(|sequences| sequences.into_iter().map(BigInt::from).collect())
+            .map_err(|e| storage("commitGroup", e))
     }
 
     #[napi]
