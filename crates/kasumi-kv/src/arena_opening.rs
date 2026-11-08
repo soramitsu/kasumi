@@ -10,7 +10,7 @@ pub(crate) struct ArenaOpening<R> {
     boxed_roll: Option<Box<dyn DirectoryArenaRoll>>,
     admission: Option<Arc<dyn StorageAdmission>>,
     writer: Option<Mutex<Writer>>,
-    header: Option<Mutex<[u8; HEADER_BYTES]>>,
+    header: Option<Mutex<ReadScratch>>,
     lease: Option<NativeResidentLease>,
     completed: Option<DirectoryArenaBackend>,
     disposal: [DisposalObservation; 7],
@@ -32,12 +32,23 @@ impl<R> Default for ArenaOpening<R> {
 }
 impl<R: DirectoryArenaRoll + 'static> ArenaOpening<R> {
     pub(crate) const OBSERVATIONS: usize = 7;
+    #[cfg(test)]
     pub(crate) fn build(
         &mut self,
         backend: BackendRef,
         roll: R,
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
+    ) -> Result<(), CoreError> {
+        self.build_with_format(backend, roll, admission, group_id, false)
+    }
+    pub(crate) fn build_with_format(
+        &mut self,
+        backend: BackendRef,
+        roll: R,
+        admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        packed: bool,
     ) -> Result<(), CoreError> {
         assert!(self.backend.is_none() && self.completed.is_none());
         self.backend = Some(backend);
@@ -47,17 +58,38 @@ impl<R: DirectoryArenaRoll + 'static> ArenaOpening<R> {
         check_owner(admission)?;
         self.lease = Some(
             admission
-                .reserve_workspace(DirectoryArenaBackend::request_bytes::<R>())
+                .reserve_workspace(
+                    DirectoryArenaBackend::request_bytes::<R>()
+                        + if packed {
+                            packed::SCRATCH_BYTES as u64
+                        } else {
+                            0
+                        },
+                )
                 .map(NativeResidentLease::new)?,
         );
         check_owner(admission)?;
         self.boxed_roll = Some(Box::new(self.roll.take().unwrap()));
         self.writer = Some(crate::native_sync::mutex(
-            Writer::default(),
+            Writer {
+                encoder: if packed {
+                    Some(packed::Encoder::new()?)
+                } else {
+                    None
+                },
+                ..Writer::default()
+            },
             self.lease.as_ref().unwrap(),
         ));
         self.header = Some(crate::native_sync::mutex(
-            [0; HEADER_BYTES],
+            ReadScratch {
+                header: [0; HEADER_BYTES],
+                compressed: if packed {
+                    packed::scratch(DIRECTORY_PAGE_BYTES)?
+                } else {
+                    Vec::new()
+                },
+            },
             self.lease.as_ref().unwrap(),
         ));
         self.completed = Some(DirectoryArenaBackend {
@@ -67,6 +99,7 @@ impl<R: DirectoryArenaRoll + 'static> ArenaOpening<R> {
             group_id,
             writer: self.writer.take().unwrap(),
             read_header: self.header.take().unwrap(),
+            packed,
             max_pages: MAX_PAGES,
             pages_read: AtomicU64::new(0),
             pages_written: AtomicU64::new(0),

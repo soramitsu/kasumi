@@ -140,7 +140,7 @@ impl RegisteredNodeStartup {
         disk: Arc<NodeDisk>,
         scratch: Arc<crate::ScratchDisk>,
         mode: NodeOpeningMode,
-        config: NodeStorageConfig,
+        config: impl Into<super::NodeStorageCreateOptions>,
     ) -> Result<Self, NativeConstructorFailure> {
         let existing = matches!(&mode, NodeOpeningMode::Existing);
         Ok(Self {

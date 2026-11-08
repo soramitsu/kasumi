@@ -5,8 +5,8 @@ mod cache_test;
 use kasumi_kv::group::InMemoryGroup;
 use kasumi_kv::{
     AdmissionError, BackendCloseOutcome, BackendNativeDisposition, CacheConfig, Core, CoreError,
-    Database, GroupFile, MaintenanceBudget, MaintenancePolicy, Operation, OwnerFailed,
-    ROOT_SLOT_BYTES, ResidentLease, RootSlot, SegmentGroupBackend, StorageAdmission,
+    Database, DirectoryPageFormat, GroupFile, MaintenanceBudget, MaintenancePolicy, Operation,
+    OwnerFailed, ROOT_SLOT_BYTES, ResidentLease, RootSlot, SegmentGroupBackend, StorageAdmission,
     StorageCompactionPhase, StorageError, TableDefinition, TransactionError,
 };
 use std::ffi::OsStr;
@@ -377,10 +377,19 @@ impl cache_test::Provider for CheckpointAdmission {
 }
 
 fn baseline() -> (Core, CrashBackend) {
+    baseline_with_format(DirectoryPageFormat::Fixed)
+}
+
+fn baseline_with_format(format: DirectoryPageFormat) -> (Core, CrashBackend) {
     let backend = CrashBackend::default();
-    let core =
-        Core::create_with_backend(backend.clone(), admission(), GROUP, CacheConfig::default())
-            .unwrap();
+    let core = Core::create_with_backend_and_format(
+        backend.clone(),
+        admission(),
+        GROUP,
+        CacheConfig::default(),
+        format,
+    )
+    .unwrap();
     core.commit(&[
         Operation::create_table("items"),
         Operation::put("items", b"a", b"old-a"),
@@ -407,12 +416,17 @@ fn read(core: &Core, key: &[u8]) -> Option<Vec<u8>> {
 
 #[test]
 fn every_failed_commit_effect_recovers_a_whole_generation() {
-    verify_failed_commit_effects(0);
+    verify_failed_commit_effects(0, DirectoryPageFormat::Fixed);
 }
 
 #[test]
 fn cached_reads_never_expose_any_failed_commit_effect() {
-    verify_failed_commit_effects(64 << 10);
+    verify_failed_commit_effects(64 << 10, DirectoryPageFormat::Fixed);
+}
+
+#[test]
+fn packed_commits_recover_whole_generations_at_each_failure_boundary() {
+    verify_failed_commit_effects(64 << 10, DirectoryPageFormat::Lz4);
 }
 
 fn prime_cache(core: &Core, byte_limit: u64) {
@@ -428,8 +442,8 @@ fn prime_cache(core: &Core, byte_limit: u64) {
     }
 }
 
-fn verify_failed_commit_effects(cache_bytes: u64) {
-    let (counting_core, counting_backend) = baseline();
+fn verify_failed_commit_effects(cache_bytes: u64, format: DirectoryPageFormat) {
+    let (counting_core, counting_backend) = baseline_with_format(format);
     prime_cache(&counting_core, cache_bytes);
     counting_backend.inject(usize::MAX, FailureMode::Before);
     counting_core.commit(&replacement()).unwrap();
@@ -445,7 +459,7 @@ fn verify_failed_commit_effects(cache_bytes: u64) {
             FailureMode::After,
             FailureMode::TornDurable,
         ] {
-            let (core, backend) = baseline();
+            let (core, backend) = baseline_with_format(format);
             prime_cache(&core, cache_bytes);
             let snapshot = core.snapshot().unwrap();
             backend.inject(ordinal, mode);
@@ -657,8 +671,8 @@ fn batch_workspace_denial_leaves_all_published_versions_unchanged() {
 
 /// Rows whose pages predate a reopen: the original arena is older than the
 /// one the churn after reopen writes, so a cycle rewrites and reclaims it.
-fn aged() -> (Core, CrashBackend) {
-    let (core, backend) = baseline();
+fn aged(format: DirectoryPageFormat) -> (Core, CrashBackend) {
+    let (core, backend) = baseline_with_format(format);
     let mut rows = Vec::new();
     for index in 0..400u16 {
         rows.push(Operation::put(
@@ -736,7 +750,7 @@ fn assert_aged_values(core: &Core, ordinal: usize) {
 
 #[test]
 fn every_failed_maintenance_effect_reopens_all_live_values() {
-    verify_failed_maintenance_effects(0);
+    verify_failed_maintenance_effects(0, DirectoryPageFormat::Fixed);
 }
 
 #[test]
@@ -744,11 +758,16 @@ fn cached_maintenance_is_safe_at_every_failed_effect() {
     // The aged fixture's 400 rows span several directory leaves; the cache is
     // sized to keep that whole working set resident, which prime_cache
     // asserts before any fault is injected.
-    verify_failed_maintenance_effects(1 << 20);
+    verify_failed_maintenance_effects(1 << 20, DirectoryPageFormat::Fixed);
 }
 
-fn verify_failed_maintenance_effects(cache_bytes: u64) {
-    let (counting_core, counting_backend) = aged();
+#[test]
+fn packed_maintenance_recovers_rewritten_pages_and_reclaims_old_arenas_after_every_fault() {
+    verify_failed_maintenance_effects(1 << 20, DirectoryPageFormat::Lz4);
+}
+
+fn verify_failed_maintenance_effects(cache_bytes: u64, format: DirectoryPageFormat) {
+    let (counting_core, counting_backend) = aged(format);
     prime_cache(&counting_core, cache_bytes);
     counting_backend.inject(usize::MAX, FailureMode::Before);
     maintain(&counting_core).unwrap();
@@ -773,7 +792,7 @@ fn verify_failed_maintenance_effects(cache_bytes: u64) {
             FailureMode::After,
             FailureMode::TornDurable,
         ] {
-            let (core, backend) = aged();
+            let (core, backend) = aged(format);
             prime_cache(&core, cache_bytes);
             backend.inject(ordinal, mode);
             assert!(maintain(&core).is_err());
@@ -843,7 +862,7 @@ fn inline_writes(database: &Database, writes: &mut Vec<(Vec<u8>, Vec<u8>)>) -> R
 }
 
 fn aged_database() -> (Database, CrashBackend) {
-    let (core, backend) = aged();
+    let (core, backend) = aged(DirectoryPageFormat::Fixed);
     core.close().into_result().unwrap();
     let backend = backend.crash();
     let database = Database::builder(admission(), GROUP, CacheConfig::default())

@@ -25,6 +25,26 @@ fn scan_upper(upper: Bound<&[u8]>) -> (&[u8], bool) {
     }
 }
 
+/// One inline successful table-marker proof per owner. Long table names use
+/// the ordinary lookup. The fixed shell is funded with the enclosing DiskState.
+pub(super) struct RecentTable {
+    enabled: bool,
+    root: Option<DirectoryRoot>,
+    name: [u8; 64],
+    len: usize,
+}
+
+impl RecentTable {
+    pub(super) fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            root: None,
+            name: [0; 64],
+            len: 0,
+        }
+    }
+}
+
 impl DiskState {
     pub(crate) fn generation(&self) -> Result<u64, CoreError> {
         self.owner.check()?;
@@ -52,10 +72,10 @@ impl DiskState {
     ) -> Result<Option<AdmittedValue>, CoreError> {
         self.run(|state| {
             let root = state.check_snapshot(pin)?;
-            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
-            if reader.get(root, DirectoryKey::table(table))?.is_none() {
+            if !state.table_at(root, table, None)? {
                 return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
+            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             match reader.get(root, DirectoryKey::row(table, key))? {
                 None => Ok(None),
                 Some(DirectoryValue::Row { value, .. }) => state
@@ -68,16 +88,31 @@ impl DiskState {
         })
     }
 
-    fn table_at_prepared(
-        &self,
+    /// The caller has validated the snapshot pin. A successful marker lookup is
+    /// a proof about this exact immutable root, even if its page is later evicted.
+    pub(super) fn table_at(
+        &mut self,
         root: DirectoryRoot,
         table: &str,
-        workspace: &mut crate::core::PreparedPointRead,
+        workspace: Option<&mut crate::directory::DirectoryReadWorkspace>,
     ) -> Result<bool, CoreError> {
+        let proof = &mut self.recent_table;
+        if proof.root == Some(root) && table.as_bytes() == &proof.name[..proof.len] {
+            return Ok(true);
+        }
         let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
-        Ok(reader
-            .get_with_workspace(root, DirectoryKey::table(table), &mut workspace.directory)?
-            .is_some())
+        let marker = DirectoryKey::table(table);
+        let exists = match workspace {
+            Some(ws) => reader.get_with_workspace(root, marker, ws)?,
+            None => reader.get(root, marker)?,
+        }
+        .is_some();
+        if exists && proof.enabled && table.len() <= proof.name.len() {
+            proof.root = Some(root);
+            proof.len = table.len();
+            proof.name[..table.len()].copy_from_slice(table.as_bytes());
+        }
+        Ok(exists)
     }
 
     pub(crate) fn table_exists_prepared(
@@ -86,20 +121,25 @@ impl DiskState {
         table: &str,
         workspace: &mut crate::core::PreparedPointRead,
     ) -> Result<bool, CoreError> {
-        self.run(|state| state.table_at_prepared(state.check_snapshot(pin)?, table, workspace))
+        self.run(|state| {
+            state.table_at(
+                state.check_snapshot(pin)?,
+                table,
+                Some(&mut workspace.directory),
+            )
+        })
     }
 
-    /// Both reads and size preflight validate the table at this same pinned
-    /// root, then reuse the caller's real admitted directory workspace.
+    /// Reads and size preflight share the pinned root's table proof.
     fn point_location_prepared(
-        &self,
+        &mut self,
         pin: &SnapshotPin,
         table: &str,
         key: &[u8],
         workspace: &mut crate::core::PreparedPointRead,
     ) -> Result<Option<ValueLocation>, CoreError> {
         let root = self.check_snapshot(pin)?;
-        if !self.table_at_prepared(root, table, workspace)? {
+        if !self.table_at(root, table, Some(&mut workspace.directory))? {
             return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
         }
         let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
@@ -161,10 +201,10 @@ impl DiskState {
     ) -> Result<bool, CoreError> {
         self.run(|state| {
             let root = state.check_snapshot(pin)?;
-            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
-            if reader.get(root, DirectoryKey::table(table))?.is_none() {
+            if !state.table_at(root, table, None)? {
                 return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
+            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             match reader.get(root, DirectoryKey::row(table, key))? {
                 None => Ok(false),
                 Some(DirectoryValue::Row { .. }) => Ok(true),
@@ -177,7 +217,7 @@ impl DiskState {
 
     // Called inside run, which checks the owner before and after the read.
     fn bounded_record(
-        &self,
+        &mut self,
         pin: &SnapshotPin,
         table: &str,
         lower: Bound<&[u8]>,
@@ -187,10 +227,10 @@ impl DiskState {
         use Bound::{Excluded, Included, Unbounded};
         check_scan_bounds(lower, upper)?;
         let root = self.check_snapshot(pin)?;
-        let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
-        if reader.get(root, DirectoryKey::table(table))?.is_none() {
+        if !self.table_at(root, table, None)? {
             return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
         }
+        let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
         let record = match direction {
             ScanDirection::Ascending => {
                 let key = match lower {
@@ -224,8 +264,7 @@ impl DiskState {
         self.run(|state| {
             check_scan_bounds(lower, upper)?;
             let root = state.check_snapshot(pin)?;
-            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
-            if reader.get(root, DirectoryKey::table(table))?.is_none() {
+            if !state.table_at(root, table, None)? {
                 return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
             ReverseLeafCursor::new(&state.owner.admission)

@@ -22,6 +22,8 @@ use crate::native_backend::BackendRef;
 use crate::segment::{crc32c, le_u32, le_u64};
 
 const MAGIC: [u8; 16] = *b"KASUMI-KVARENA01";
+#[path = "arena_packed.rs"]
+mod packed;
 const VERSION: u32 = 1;
 pub(crate) const HEADER_BYTES: usize = 4096;
 const CHECKSUM_AT: usize = HEADER_BYTES - 4;
@@ -59,9 +61,11 @@ impl<T: DirectoryArenaRoll> DirectoryArenaRoll for NativeOwnedArc<T> {
 struct ActiveArena {
     id: u64,
     pages: u64,
+    payload_bytes: u64,
 }
 
 struct Writer {
+    encoder: Option<Box<packed::Encoder>>,
     active: Option<ActiveArena>,
     poisoned: bool,
     // This exact header buffer is charged with DirectoryArenaBackend before
@@ -71,6 +75,7 @@ struct Writer {
 impl Default for Writer {
     fn default() -> Self {
         Self {
+            encoder: None,
             active: None,
             poisoned: false,
             header: [0; HEADER_BYTES],
@@ -85,15 +90,20 @@ impl Default for Writer {
 /// counts. Standalone intent recovery is not included.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct DirectoryArenaStats {
-    /// Full page payload reads, including repeated validation and uncached
+    /// Logical page payload reads, including repeated validation and uncached
     /// maintenance reads. Cache hits and arena header reads are excluded.
     pub(crate) pages_read: u64,
-    /// Full page appends, including private pages never published by a root.
+    /// Logical page appends, including private pages never published by a root.
     /// Arena header writes are excluded.
     pub(crate) pages_written: u64,
     /// Arena sync callbacks for fresh headers, old arenas during rolls, and
     /// explicit sync_pages calls. Mirrored-root/name syncs are excluded.
     pub(crate) syncs: u64,
+}
+
+struct ReadScratch {
+    header: [u8; HEADER_BYTES],
+    compressed: Vec<u8>,
 }
 
 pub(crate) struct DirectoryArenaBackend {
@@ -104,8 +114,9 @@ pub(crate) struct DirectoryArenaBackend {
     writer: Mutex<Writer>,
     // Included in the adapter's fixed admission. Reads must not need a new
     // header reservation after a commit has durably published its directory.
-    // Serialize only header access; page outputs belong to admitted callers.
-    read_header: Mutex<[u8; HEADER_BYTES]>,
+    // Packed reads also reuse their separately admitted compressed payload buffer.
+    read_header: Mutex<ReadScratch>,
+    packed: bool,
     max_pages: u64,
     pages_read: AtomicU64,
     pages_written: AtomicU64,
@@ -195,7 +206,14 @@ impl DirectoryArenaBackend {
         match self.writer.lock() {
             Ok(writer) if !writer.poisoned => {
                 writer.active.as_ref().map_or(AppendFloor::NONE, |active| {
-                    AppendFloor::at(active.id, active.pages)
+                    AppendFloor::at(
+                        active.id,
+                        if self.packed {
+                            packed::floor(active.payload_bytes)
+                        } else {
+                            active.pages
+                        },
+                    )
                 })
             }
             _ => AppendFloor::NONE,
@@ -239,7 +257,7 @@ impl DirectoryArenaBackend {
         let file = GroupFile::directory(id);
         self.backend.create(file)?;
         check_owner(&self.admission)?;
-        encode_header_into(self.group_id, id, &mut writer.header);
+        encode_header_into(self.group_id, id, self.packed, &mut writer.header);
         self.backend.write(file, 0, &writer.header)?;
         check_owner(&self.admission)?;
         self.backend.sync(file)?;
@@ -247,7 +265,11 @@ impl DirectoryArenaBackend {
         check_owner(&self.admission)?;
         self.roll.confirm(id)?;
         check_owner(&self.admission)?;
-        writer.active = Some(ActiveArena { id, pages: 0 });
+        writer.active = Some(ActiveArena {
+            id,
+            pages: 0,
+            payload_bytes: 0,
+        });
         Ok(())
     }
 
@@ -264,20 +286,29 @@ impl DirectoryArenaBackend {
         {
             self.roll(writer)?;
         }
+        let payload = match &mut writer.encoder {
+            Some(encoder) => encoder.encode(bytes)?,
+            None => bytes,
+        };
         let active = writer.active.as_mut().expect("rolled arena");
         let reference = DirectoryPageRef {
             arena_id: active.id,
-            page_index: active.pages,
+            page_index: if self.packed {
+                packed::reference(active.payload_bytes, payload.len())
+            } else {
+                active.pages
+            },
             sha256,
         };
         self.backend.write(
             GroupFile::directory(active.id),
-            HEADER_BYTES as u64 + active.pages * DIRECTORY_PAGE_BYTES as u64,
-            bytes,
+            HEADER_BYTES as u64 + active.payload_bytes,
+            payload,
         )?;
         record_io(&self.pages_written);
         check_owner(&self.admission)?;
         active.pages += 1;
+        active.payload_bytes += payload.len() as u64;
         Ok(reference)
     }
 }
@@ -323,7 +354,7 @@ impl DirectoryBackend for DirectoryArenaBackend {
         }
         if reference.arena_id == 0
             || reference.arena_id == u64::MAX
-            || reference.page_index >= MAX_PAGES
+            || (!self.packed && reference.page_index >= MAX_PAGES)
         {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory page is outside its arena",
@@ -339,26 +370,54 @@ impl DirectoryBackend for DirectoryArenaBackend {
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
         // The owner may have expired while this reader waited for scratch.
         check_owner(&self.admission)?;
-        self.backend.read(file, 0, &mut *header)?;
+        self.backend.read(file, 0, &mut header.header)?;
         if !checked {
             check_owner(&self.admission)?;
         }
-        validate_header(&header, self.group_id, reference.arena_id)?;
-        drop(header);
-        let at = HEADER_BYTES as u64 + reference.page_index * DIRECTORY_PAGE_BYTES as u64;
+        validate_header(
+            &header.header,
+            self.group_id,
+            reference.arena_id,
+            self.packed,
+        )?;
+        let (at, stored_bytes) = if self.packed {
+            packed::extent(reference.page_index)?
+        } else {
+            (
+                HEADER_BYTES as u64 + reference.page_index * DIRECTORY_PAGE_BYTES as u64,
+                DIRECTORY_PAGE_BYTES,
+            )
+        };
+        // Raw pages can be read directly without holding shared decoder scratch.
+        let scratch = if stored_bytes == DIRECTORY_PAGE_BYTES {
+            drop(header);
+            None
+        } else {
+            Some(header)
+        };
         let len = self.backend.len(file)?;
         if !checked {
             check_owner(&self.admission)?;
         }
-        if len < at + DIRECTORY_PAGE_BYTES as u64 || len > ARENA_BYTES {
+        if len < at + stored_bytes as u64 || len > ARENA_BYTES {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
                 "directory arena length is invalid",
             )));
         }
-        self.backend.read(file, at, out)?;
-        record_io(&self.pages_read);
-        if !checked {
-            check_owner(&self.admission)?;
+        if let Some(mut scratch) = scratch {
+            let payload = &mut scratch.compressed[..stored_bytes];
+            self.backend.read(file, at, payload)?;
+            record_io(&self.pages_read);
+            if !checked {
+                check_owner(&self.admission)?;
+            }
+            packed::decode(payload, out)?;
+        } else {
+            self.backend.read(file, at, out)?;
+            record_io(&self.pages_read);
+            if !checked {
+                check_owner(&self.admission)?;
+            }
         }
         if page_digest(out) != reference.sha256 {
             return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
@@ -444,11 +503,22 @@ fn record_io(counter: &AtomicU64) {
 /// Successful return proves the name and complete header are durable; the
 /// caller then publishes confirmation. Any I/O error requires owner fencing
 /// and reopen, even when this helper's visible effect appears incomplete.
+#[cfg(test)]
 pub(crate) fn recover_directory_intent(
     backend: &dyn SegmentGroupBackend,
     admission: &Arc<dyn StorageAdmission>,
     group_id: [u8; 16],
     arena_id: u64,
+) -> Result<(), CoreError> {
+    recover_directory_intent_with_format(backend, admission, group_id, arena_id, false)
+}
+
+pub(crate) fn recover_directory_intent_with_format(
+    backend: &dyn SegmentGroupBackend,
+    admission: &Arc<dyn StorageAdmission>,
+    group_id: [u8; 16],
+    arena_id: u64,
+    packed: bool,
 ) -> Result<(), CoreError> {
     check_owner(admission)?;
     if arena_id == 0 || arena_id == u64::MAX {
@@ -460,7 +530,8 @@ pub(crate) fn recover_directory_intent(
         .reserve_workspace((2 * HEADER_BYTES + LEASE_ALLOWANCE) as u64)
         .map(NativeResidentLease::new)?;
     check_owner(admission)?;
-    let expected = encode_header(group_id, arena_id);
+    let mut expected = [0; HEADER_BYTES];
+    encode_header_into(group_id, arena_id, packed, &mut expected);
     let file = GroupFile::directory(arena_id);
     let exists = backend.exists(file)?;
     check_owner(admission)?;
@@ -500,16 +571,22 @@ fn check_owner(admission: &Arc<dyn StorageAdmission>) -> Result<(), CoreError> {
         .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))
 }
 
+#[cfg(test)]
 fn encode_header(group_id: [u8; 16], arena_id: u64) -> [u8; HEADER_BYTES] {
     let mut bytes = [0u8; HEADER_BYTES];
-    encode_header_into(group_id, arena_id, &mut bytes);
+    encode_header_into(group_id, arena_id, false, &mut bytes);
     bytes
 }
 
-fn encode_header_into(group_id: [u8; 16], arena_id: u64, bytes: &mut [u8; HEADER_BYTES]) {
+fn encode_header_into(
+    group_id: [u8; 16],
+    arena_id: u64,
+    packed: bool,
+    bytes: &mut [u8; HEADER_BYTES],
+) {
     bytes.fill(0);
-    bytes[..16].copy_from_slice(&MAGIC);
-    bytes[16..20].copy_from_slice(&VERSION.to_le_bytes());
+    bytes[..16].copy_from_slice(if packed { &packed::MAGIC } else { &MAGIC });
+    bytes[16..20].copy_from_slice(&(if packed { 2 } else { VERSION }).to_le_bytes());
     bytes[24..40].copy_from_slice(&group_id);
     bytes[40..48].copy_from_slice(&arena_id.to_le_bytes());
     bytes[48..52].copy_from_slice(&(DIRECTORY_PAGE_BYTES as u32).to_le_bytes());
@@ -521,9 +598,10 @@ fn validate_header(
     bytes: &[u8; HEADER_BYTES],
     group_id: [u8; 16],
     arena_id: u64,
+    packed: bool,
 ) -> Result<(), CoreError> {
-    if bytes[..16] != MAGIC
-        || le_u32(&bytes[16..20]) != VERSION
+    if bytes[..16] != if packed { packed::MAGIC } else { MAGIC }
+        || le_u32(&bytes[16..20]) != if packed { 2 } else { VERSION }
         || bytes[20..24].iter().any(|&byte| byte != 0)
         || bytes[24..40] != group_id
         || le_u64(&bytes[40..48]) != arena_id
@@ -660,6 +738,10 @@ mod tests {
         .unwrap();
         arena.max_pages = 2;
         (group, roll, admission, arena)
+    }
+
+    mod packed_tests {
+        include!("arena_packed_tests.rs");
     }
 
     #[test]

@@ -54,8 +54,12 @@ impl DirectoryArenaBackend {
                 remaining -= add;
                 Ok(ExistingFileSpace {
                     file: GroupFile::directory(active.id),
-                    initial_len: file_length(active.pages)?,
-                    maximum_len: file_length(active.pages + add)?,
+                    // A packed arena rolls at the same page count, but a
+                    // previous append may have consumed less physical space.
+                    initial_len: HEADER_BYTES as u64 + active.payload_bytes,
+                    maximum_len: file_length(add)?
+                        .checked_add(active.payload_bytes)
+                        .ok_or_else(overflow)?,
                 })
             })
             .transpose()?;

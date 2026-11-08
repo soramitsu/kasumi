@@ -983,8 +983,38 @@ impl Core {
         group_id: [u8; 16],
         cache: CacheConfig,
     ) -> Result<Self, NativeOpenFailure<B>> {
-        opening::assemble(backend, admission, group_id, cache, true, true, false)
-            .map(|opened| opened.into_core())
+        Self::create_with_backend_and_format(
+            backend,
+            admission,
+            group_id,
+            cache,
+            crate::DirectoryPageFormat::Fixed,
+        )
+    }
+
+    /// Create a new group using the given directory page format. The choice
+    /// is durable. Reopen it using the ordinary `open_with_backend` method.
+    #[allow(
+        clippy::result_large_err,
+        reason = "Opening failures retain the exact sized backend."
+    )]
+    pub fn create_with_backend_and_format<B: SegmentGroupBackend + 'static>(
+        backend: B,
+        admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        cache: CacheConfig,
+        format: crate::DirectoryPageFormat,
+    ) -> Result<Self, NativeOpenFailure<B>> {
+        opening::assemble(
+            backend,
+            admission,
+            group_id,
+            cache,
+            Some(format),
+            true,
+            false,
+        )
+        .map(|opened| opened.into_core())
     }
     #[allow(
         clippy::result_large_err,
@@ -996,7 +1026,7 @@ impl Core {
         group_id: [u8; 16],
         cache: CacheConfig,
     ) -> Result<Self, NativeOpenFailure<B>> {
-        opening::assemble(backend, admission, group_id, cache, false, true, false)
+        opening::assemble(backend, admission, group_id, cache, None, true, false)
             .map(|opened| opened.into_core())
     }
     pub fn snapshot(&self) -> Result<ReadSnapshot, CoreError> {

@@ -787,6 +787,82 @@ fn every_interrupted_commit_reopens_writable() {
 }
 
 #[test]
+fn table_proof_saves_a_descent_only_for_its_validated_root_and_name() {
+    let admission = Admission::new(16 << 20);
+    let mut state = create(
+        Arc::new(InMemoryGroup::new()),
+        admission.clone(),
+        LARGE_CACHE,
+    );
+    state
+        .commit(&[
+            Operation::create_table("one"),
+            Operation::put("one", b"key", b"old"),
+        ])
+        .unwrap();
+    let old = state.snapshot().unwrap();
+    state
+        .commit(&[
+            Operation::create_table("new"),
+            Operation::put("new", b"key", b"current"),
+        ])
+        .unwrap();
+    let current = state.snapshot().unwrap();
+    assert_eq!(current.root().height, 1);
+    let before = state.cache_stats().unwrap().hits;
+    assert!(state.key_exists(&current, "new", b"key").unwrap());
+    let first = state.cache_stats().unwrap().hits;
+    assert!(!state.key_exists(&current, "new", b"absent").unwrap());
+    let next = state.cache_stats().unwrap().hits;
+    assert_eq!(first - before, 2, "first operation looks up marker and row");
+    assert_eq!(next - first, 1, "second operation looks up just the row");
+    assert!(matches!(
+        state
+            .key_exists(&old, "new", b"key")
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::MissingTable)
+    ));
+    assert!(matches!(
+        state
+            .key_exists(&current, "ne", b"key")
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::MissingTable)
+    ));
+    let registry = SnapshotPins::new(admission.clone(), GROUP, 1).unwrap();
+    let foreign = registry.acquire(current.root()).unwrap();
+    assert!(matches!(
+        state
+            .key_exists(&foreign, "new", b"key")
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::InvalidInput(_))
+    ));
+    state
+        .configure_cache(CacheConfig { byte_limit: 0 })
+        .unwrap();
+    let before = state.arena.stats().unwrap().pages_read;
+    assert!(state.table_exists(&current, "new").unwrap());
+    assert!(state.table_exists(&current, "new").unwrap());
+    assert_eq!(
+        state.arena.stats().unwrap().pages_read - before,
+        2,
+        "turning off retention clears and disables the proof"
+    );
+    state.configure_cache(LARGE_CACHE).unwrap();
+    assert!(state.table_exists(&current, "new").unwrap());
+    admission.failed.store(true, Ordering::Release);
+    assert!(matches!(
+        state
+            .table_exists(&current, "new")
+            .unwrap_err()
+            .rejected_cause(),
+        Some(crate::CoreErrorCause::OwnerFailed)
+    ));
+}
+
+#[test]
 fn cache_hits_still_enforce_owner_and_snapshot_scope() {
     let admission = Admission::new(16 << 20);
     let mut state = create(

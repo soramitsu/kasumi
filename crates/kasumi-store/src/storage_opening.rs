@@ -77,6 +77,20 @@ pub struct NodeStorageConfig {
     pub cached_files: usize,
 }
 
+/// Options for creating native storage. Existing configurations select the
+/// fixed page format. Reopening uses the format recorded by the database.
+#[derive(Clone, Copy, Debug)]
+pub struct NodeStorageCreateOptions {
+    storage: NodeStorageConfig,
+    directory_format: kasumi_kv::DirectoryPageFormat,
+}
+
+impl From<NodeStorageConfig> for NodeStorageCreateOptions {
+    fn from(storage: NodeStorageConfig) -> Self {
+        storage.with_directory_page_format(kasumi_kv::DirectoryPageFormat::Fixed)
+    }
+}
+
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct NodeStorageConfigWire {
@@ -102,6 +116,17 @@ impl From<NodeStorageConfig> for NodeStorageConfigWire {
     }
 }
 impl NodeStorageConfig {
+    /// Select the directory representation used by a new NodeStore.
+    pub fn with_directory_page_format(
+        self,
+        directory_format: kasumi_kv::DirectoryPageFormat,
+    ) -> NodeStorageCreateOptions {
+        NodeStorageCreateOptions {
+            storage: self,
+            directory_format,
+        }
+    }
+
     pub const fn new(byte_limit: u64, cached_files: usize) -> Self {
         Self {
             cache: kasumi_kv::CacheConfig { byte_limit },
@@ -522,14 +547,15 @@ impl RegisteredNodeOpening {
                 .admit_retained_until(provider.clone(), id, deadline)?;
         Ok(Self { registration })
     }
+    /// Prepares an opening and applies the selected directory format only when creating the group.
     pub fn prepare(
         path: &Path,
         id: Uuid,
         disk: Arc<NodeDisk>,
         mode: NodeOpeningMode,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> Result<Self, NativeConstructorFailure> {
-        Self::prepare_inner(path, id, disk, mode, config, None)
+        Self::prepare_inner(path, id, disk, mode, config.into(), None)
     }
 
     pub(crate) fn prepare_node(
@@ -538,9 +564,9 @@ impl RegisteredNodeOpening {
         disk: Arc<NodeDisk>,
         scratch: Arc<crate::ScratchDisk>,
         mode: NodeOpeningMode,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> Result<Self, NativeConstructorFailure> {
-        Self::prepare_inner(path, id, disk, mode, config, Some(scratch))
+        Self::prepare_inner(path, id, disk, mode, config.into(), Some(scratch))
     }
 
     #[cfg(any(test, feature = "test-utils"))]
@@ -643,9 +669,10 @@ impl RegisteredNodeOpening {
         id: Uuid,
         disk: Arc<NodeDisk>,
         mode: NodeOpeningMode,
-        config: NodeStorageConfig,
+        create_options: NodeStorageCreateOptions,
         scratch: Option<Arc<crate::ScratchDisk>>,
     ) -> Result<Self, NativeConstructorFailure> {
+        let config = create_options.storage;
         if id.is_nil() {
             return Err(NativeConstructorFailure::Preclaim(
                 io::ErrorKind::InvalidInput.into(),
@@ -678,6 +705,7 @@ impl RegisteredNodeOpening {
                 };
                 let engine =
                     kasumi_kv::Database::builder(file.clone(), *id.as_bytes(), config.cache)
+                        .with_directory_page_format(create_options.directory_format)
                         .retain_backend(Box::new(file.clone()), engine_mode);
                 let owner = DatabaseOwner {
                     node,

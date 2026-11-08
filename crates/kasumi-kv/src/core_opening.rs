@@ -757,7 +757,7 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
     admission: Arc<dyn StorageAdmission>,
     group_id: [u8; 16],
     cache: CacheConfig,
-    create: bool,
+    create_format: Option<crate::DirectoryPageFormat>,
     close_on_failure: bool,
     facade: bool,
 ) -> Result<NativeDisposal, NativeOpenFailure<B>> {
@@ -785,12 +785,14 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
             .as_ref()
             .expect("admitted original backend")
             .original();
-        if create {
-            custody
-                .admitted
-                .core
-                .disk
-                .create(original, admission.clone(), group_id, cache)?;
+        if let Some(format) = create_format {
+            custody.admitted.core.disk.create_with_format(
+                original,
+                admission.clone(),
+                group_id,
+                cache,
+                format,
+            )?;
         } else {
             custody
                 .admitted

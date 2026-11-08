@@ -152,6 +152,79 @@ fn claim_transfers_actual_group_files_through_one_descriptor_cache_without_new_a
 }
 
 #[test]
+fn warmed_transaction_write_checks_the_exact_file_once_for_growth_and_overwrite() {
+    let (_directory, _, disk, group, core) = fixture();
+    group.reserve_transaction(&plan(1)).unwrap();
+    let file = GroupFile::segment(1);
+    group.create(file).unwrap();
+    group.write(file, 0, &[0; 64]).unwrap();
+    let charged = disk.snapshot().charged_bytes;
+    let before = NodeDiskFile::descriptor_verifications_for_test();
+    group.write(file, 64, &[1; 64]).unwrap();
+    assert_eq!(
+        NodeDiskFile::descriptor_verifications_for_test() - before,
+        1
+    );
+    let before = NodeDiskFile::descriptor_verifications_for_test();
+    group.write(file, 63, &[2, 3]).unwrap();
+    assert_eq!(
+        NodeDiskFile::descriptor_verifications_for_test() - before,
+        1
+    );
+    assert_eq!(disk.snapshot().charged_bytes, charged);
+    let before = NodeDiskFile::descriptor_verifications_for_test();
+    group.sync(file).unwrap();
+    assert_eq!(
+        NodeDiskFile::descriptor_verifications_for_test() - before,
+        2
+    );
+    let before = NodeDiskFile::descriptor_verifications_for_test();
+    group.sync(file).unwrap();
+    assert_eq!(
+        NodeDiskFile::descriptor_verifications_for_test() - before,
+        1
+    );
+    group.finish_transaction(GROUP, 1).unwrap();
+    let mut data = [0; 128];
+    group.read(file, 0, &mut data).unwrap();
+    assert_eq!(data[..63], [0; 63]);
+    assert_eq!(data[63..65], [2, 3]);
+    assert_eq!(data[65..], [1; 63]);
+    core.close().into_result().unwrap();
+    assert!(core.into_disposal().dispose().complete());
+}
+
+#[test]
+fn warmed_transaction_rejects_changed_eof_before_transferring_or_writing() {
+    use std::io::Write;
+
+    let (directory, _, disk, group, core) = fixture();
+    let file = GroupFile::segment(1);
+    group.reserve_transaction(&plan(1)).unwrap();
+    group.create(file).unwrap();
+    group.write(file, 0, &[7; 64]).unwrap();
+    let promised = disk.snapshot().charged_bytes;
+    let path = directory.path().join("group").join(file.file_name());
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .unwrap()
+        .write_all(&[9])
+        .unwrap();
+    let original = std::fs::read(&path).unwrap();
+    assert_eq!(
+        group.write(file, 64, &[8; 64]).unwrap_err().kind(),
+        io::ErrorKind::InvalidData
+    );
+    assert_eq!(std::fs::read(&path).unwrap(), original);
+    assert_eq!(disk.snapshot().charged_bytes, promised);
+    assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
+    assert!(group.finish_transaction(GROUP, 1).is_err());
+    retire_failed(&group, &disk);
+    let _ = core.close();
+}
+
+#[test]
 fn metadata_shortage_precedes_root_or_file_effects_and_targeted_retry_works() {
     let (_directory, memory, disk, group, core) = fixture();
     let images = root_images(&group);

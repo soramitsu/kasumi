@@ -505,9 +505,17 @@ pub struct Builder {
     admission: Arc<dyn StorageAdmission>,
     group_id: [u8; 16],
     cache: CacheConfig,
+    create_format: crate::DirectoryPageFormat,
 }
 
 impl Builder {
+    /// Select the physical directory format for new groups created with this
+    /// builder. Opening an existing group always reads its persisted format.
+    pub fn with_directory_page_format(mut self, format: crate::DirectoryPageFormat) -> Self {
+        self.create_format = format;
+        self
+    }
+
     pub fn admission(&self) -> Arc<dyn StorageAdmission> {
         self.admission.clone()
     }
@@ -573,7 +581,7 @@ impl Builder {
             self.admission,
             self.group_id,
             self.cache,
-            create,
+            create.then_some(self.create_format),
             close_on_failure,
             true,
         )
@@ -946,6 +954,7 @@ impl Database {
             admission,
             group_id,
             cache,
+            create_format: crate::DirectoryPageFormat::Fixed,
         }
     }
 

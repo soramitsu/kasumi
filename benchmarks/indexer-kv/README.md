@@ -6,7 +6,11 @@ maintenance work during writes, pass a fourth argument `inline`; the default
 is `after-ingest`. The inline run calls one bounded maintenance step with
 the default units and publication allowance before each block, includes its
 time and disk writes, and reports reclaimed bytes and deferrals. Both modes
-also run the explicit end-of-ingest maintenance and reopen checks.
+also run the explicit end-of-ingest maintenance and reopen checks. The fifth
+argument selects Kasumi's new-database directory format. Use `fixed` (the
+default) or `lz4`. The latter encodes directory pages only. Both read phases
+reopen from the persisted format. The RocksDB configuration is identical in
+both comparisons.
 
 The process observer samples regular-file allocation in each engine's private
 directory about every 50 milliseconds and at exit. Its peak is a sampled
@@ -57,7 +61,7 @@ Run the same ordered raw bytes through Kasumi's native disk-backed `Core` and th
 ```sh
 CARGO_PROFILE_RELEASE_LTO=false CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
   node benchmarks/indexer-kv/run.mjs /path/to/trace.jsonl \
-  /path/to/polkaswap-indexer/node_modules/@harperfast/rocksdb-js 3 > results.json
+  /path/to/polkaswap-indexer/node_modules/@harperfast/rocksdb-js 3 inline lz4 > results.json
 ```
 
 Every JSON line is one nonempty atomic batch. Use `["put", keyHex, valueHex]` or `["del", keyHex]` inside its `ops` array. Keys are nonempty, all hex uses lower case, and a put may have an empty value. The trace must leave at least one live row. The runner creates and removes its own private temporary databases. `NODE_INCLUDE` can select alternate matching Node headers. `INDEXER_KV_HARNESS` can select a prebuilt Kasumi release test binary with the same benchmark protocol.

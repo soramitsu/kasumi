@@ -14,7 +14,12 @@ group file.
 
 The current root magic is `KASUMI-KVROOT005`, the segment magic is
 `KASUMI-KVSEG0004`, and directory pages use `KASUMI-KVDIR0002` inside
-`KASUMI-KVARENA01` arenas. A `KASUMI-KVROOT005` slot carries the segment
+`KASUMI-KVARENA01` (fixed) or `KASUMI-KVARENA02` (packed) arenas.
+Each root slot records the directory format at bytes 20..24. Four zero bytes
+select fixed pages, including for existing version 005 groups. The four bytes
+`4c 5a 34 01` select packed pages. Older readers that require zeros here
+reject packed groups. The selected format applies to every arena in the group.
+A `KASUMI-KVROOT005` slot carries the segment
 intent, sealed segment and garbage list, the selected directory commit at
 bytes 2208..2384, and the persisted compaction record (cycle, phase, frozen
 file cutoffs, baseline, immutable evacuation worklist, in-phase position and
@@ -29,6 +34,19 @@ Segments have a 64-byte header; arenas have a 4 KiB header followed by immutable
 leaves hold table markers and ordered keys with value locations, lengths,
 versions, and checksums. Values remain in log segments rather than a resident
 map of the whole database.
+
+Packed arenas append an LZ4 block only when it occupies fewer bytes than the
+16 KiB page. They store incompressible pages raw. The 64-bit locator uses its
+low 14 bits for stored length minus one and its remaining bits for the byte
+offset after the arena header. Readers verify the extent, decompress into a
+bounded 16 KiB buffer and verify the original logical page's SHA-256 before
+returning it. Both formats roll after the same number of logical pages.
+Transaction admission reserves for raw pages and settles the bytes actually
+written. Opening a packed group admits reusable compression and read scratch
+before any commit. The writer reuses its compression table and output buffer.
+Concurrent compressed-page misses share one input buffer and decode into each
+reader's 16 KiB page. Raw-page misses read directly into that page. The cache
+stores the full decoded page under the same byte budget as a fixed-format page.
 
 `Core::commit(&[Operation])` applies one batch atomically across named tables.
 The serialized writer performs these durability steps:
@@ -101,6 +119,21 @@ growth admission, and observed descriptor close. Kasumi Store supplies that
 boundary through `NodeSegmentGroup` and `NodeDisk`; record encryption belongs
 to the embedding store.
 
+The default creation format is `DirectoryPageFormat::Fixed`. The table builder
+can opt in to packed directories when creating an empty group.
+
+```rust
+let db = Database::builder(admission, group_id, cache)
+    .with_directory_page_format(DirectoryPageFormat::Lz4)
+    .create_with_backend(backend)?;
+```
+
+Core callers can pass `DirectoryPageFormat::Lz4` as the final argument to
+`Core::create_with_backend_and_format`. The ordinary `open_with_backend`
+reads the format persisted at creation, even for an empty group. Moving an
+existing fixed group to packed pages requires creating a new packed group and
+copying the logical data.
+
 `StorageAdmission` charges resident workspace, outputs, and optional cache
 credit. `SegmentGroupBackend::reserve_transaction` owns the complete physical
 promise for a foreground batch; `finish_transaction` settles consumed rights,
@@ -152,6 +185,15 @@ seeking again at each leaf boundary. The raw equivalent is
 `snapshot.descending_cursor(table, lower, upper, max_value_bytes)?.next_row()`.
 Each selected value is read using its immutable directory location.
 
+With caching enabled, the owner remembers one successful table lookup for a
+name of at most 64 bytes. Reading that table again under the same immutable
+root skips its marker lookup. Each operation still checks the owner and
+snapshot pin. A directory-page hit lends the verified, decoded bytes directly.
+For a row seek on a page of at least 16 entries, point and predecessor lookups
+use two probes at validated quartile offsets to select the quarter to scan.
+Descending cursors use this search for branch selection and build a leaf's
+record offsets once per visit.
+
 `CacheConfig::byte_limit` bounds retained value and directory-page allocations,
 including metadata and evicted payloads still held by readers. Zero disables
 retention. Reads above the bound use disk and separately admitted request
@@ -197,6 +239,11 @@ Each phase change is its own root publication; a reopen resumes from the record
 and never re-copies values a previous lifetime already relocated. Every
 maintenance data batch first reserves its complete `TransactionSpacePlan`, like
 a foreground commit.
+
+For packed groups, census and reclamation measure the stored file lengths.
+A superseded compressed page occupies space until reclamation can retire its
+whole arena. A pinned snapshot reaching any page in that arena keeps the file
+live. New pages written by compaction use the group's creation format.
 
 Idle frees the files a cycle kept only for pinned roots in a reclaim-only
 round: the same certified cohorts over that cycle's limits, with nothing

@@ -10,4 +10,5 @@ description = "Kasumi's append-only transactional byte-key storage core."
 [dependencies]
 
 libc = "0.2"
+lz4_flex = { version = "=0.13.1", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 sha2.workspace = true

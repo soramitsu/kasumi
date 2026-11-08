@@ -1,4 +1,4 @@
-// node benchmarks/indexer-kv/run.mjs TRACE_JSONL ABSOLUTE_ROCKSDB_JS_PACKAGE [ROUNDS]
+// node benchmarks/indexer-kv/run.mjs TRACE_JSONL ABSOLUTE_ROCKSDB_JS_PACKAGE [ROUNDS] [after-ingest|inline] [fixed|lz4]
 import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawnSync} from 'node:child_process';
@@ -7,9 +7,10 @@ import os from 'node:os';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-const [traceArg, rocksArg, roundsArg = '1', kasumiMaintenance = 'after-ingest', ...extra] = process.argv.slice(2);
-if (!traceArg || !rocksArg || extra.length || !['after-ingest', 'inline'].includes(kasumiMaintenance))
-  throw Error('usage: run.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE [ROUNDS] [after-ingest|inline]');
+const [traceArg, rocksArg, roundsArg = '1', kasumiMaintenance = 'after-ingest', pageFormat = 'fixed', ...extra] = process.argv.slice(2);
+if (!traceArg || !rocksArg || extra.length || !['after-ingest', 'inline'].includes(kasumiMaintenance) ||
+    !['fixed', 'lz4'].includes(pageFormat))
+  throw Error('usage: run.mjs TRACE_JSONL ROCKSDB_JS_PACKAGE [ROUNDS] [after-ingest|inline] [fixed|lz4]');
 const trace = fs.realpathSync(traceArg);
 const rocks = fs.realpathSync(rocksArg);
 const rounds = Number(roundsArg);
@@ -82,7 +83,7 @@ try {
         const reportPath = path.join(trial, 'result.json');
         const env = {...process.env, INDEXER_KV_PHASE:phase, INDEXER_KV_DB:db, INDEXER_KV_TRACE:trace,
           INDEXER_KV_REPORT:reportPath, INDEXER_KV_ROCKS:rocks, INDEXER_KV_SYNC:sync,
-          INDEXER_KV_MAINTENANCE:kasumiMaintenance};
+          INDEXER_KV_MAINTENANCE:kasumiMaintenance, INDEXER_KV_DIRECTORY_FORMAT:pageFormat};
         const usagePath = path.join(trial, 'usage.json');
         const command = engine === 'rocksdb'
           ? [process.execPath,path.join(here,'rocks.mjs')]
@@ -91,6 +92,9 @@ try {
         const resources = JSON.parse(fs.readFileSync(usagePath));
         fs.unlinkSync(usagePath);
         report[phase] = JSON.parse(fs.readFileSync(reportPath));
+        if (engine === 'kasumi' && phase === 'write' && pageFormat === 'lz4') {
+          assert.equal(report[phase].directory_page_format, pageFormat, 'worker did not create the selected format');
+        }
         fs.unlinkSync(reportPath);
         report[phase].footprint = footprint(db);
         report[phase].process_usage = resources;
@@ -111,7 +115,8 @@ try {
     trace_sha256:createHash('sha256').update(fixture).digest('hex'),
     batches:blocks.length, operations:operationCount, logical_input_bytes:inputBytes,
     system:[os.type(), os.release(), os.arch()], node:process.version,
-    kasumi_test_sha256:harnessSha, kasumi_maintenance:kasumiMaintenance, rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
+    kasumi_test_sha256:harnessSha, kasumi_maintenance:kasumiMaintenance, kasumi_directory_format:pageFormat,
+    rocksdb_js:pkg.version, rocksdb:pkg.rocksdb.version,
     point_reads:1024, ranges_per_direction:64, max_rows_per_range:8, results,
   },null,2)+'\n');
 } finally {

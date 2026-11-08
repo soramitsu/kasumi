@@ -437,29 +437,35 @@ impl NodeSegmentGroup {
         let position = resources.position(file).ok_or(io::ErrorKind::NotFound)?;
         *stage = "cached_open";
         let index = self.cached(resources, slots, position)?;
-        let handle = slots[index]
-            .handle
-            .as_ref()
-            .expect("cached transaction file");
-        *stage = "observed_length";
-        let current = self.effect(handle.observed_len())?;
-        let logical = current.saturating_sub(HEADER_BYTES as u64);
-        *stage = "append_offset";
-        if at > logical {
-            self.fence();
-            return Err(io::ErrorKind::InvalidData.into());
+        // An interrupted envelope exposes zero logical bytes. Refuse a hole
+        // before completing it. Complete files validate EOF under the same
+        // descriptor lease that authorizes and performs the write below.
+        if resources.entries[position].envelope != Envelope::Complete {
+            *stage = "append_offset";
+            if at != 0 {
+                self.fence();
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            *stage = "envelope";
+            self.complete_envelope(resources, slots, position, index)?;
         }
-        *stage = "envelope";
-        self.complete_envelope(resources, slots, position, index)?;
         let slot = &slots[index];
         let handle = slot.handle.as_ref().expect("cached transaction file");
-        *stage = "current_length";
-        let current = self.effect(handle.observed_len())?;
-        *stage = "growth";
-        self.grow_in_transaction(resources, handle, file, current, physical(at, bytes.len())?)?;
+        let transaction = resources.transaction.as_mut().expect("active transaction");
+        *stage = "transaction_write";
         slot.dirty.store(true, Ordering::Release);
-        *stage = "write";
-        self.effect(handle.write_all_at(bytes, physical(at, 0)?))?;
+        self.effect(
+            handle.write_transaction_at(bytes, physical(at, 0)?, |current, end| {
+                let logical_current = current
+                    .checked_sub(HEADER_BYTES as u64)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                let logical_end = end
+                    .checked_sub(HEADER_BYTES as u64)
+                    .ok_or(io::ErrorKind::InvalidData)?;
+                transaction.authorize_growth(file, logical_current, logical_end)?;
+                Ok(&mut transaction.space)
+            }),
+        )?;
         Ok(true)
     }
 }

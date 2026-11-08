@@ -25,6 +25,15 @@ fn native_output_bytes(len: usize) -> u64 {
 
 #[test]
 fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
+    verify_retained_reader_and_reopen(crate::DirectoryPageFormat::Fixed);
+}
+
+#[test]
+fn compressed_registered_store_reopens_with_default_options() {
+    verify_retained_reader_and_reopen(crate::DirectoryPageFormat::Lz4);
+}
+
+fn verify_retained_reader_and_reopen(format: crate::DirectoryPageFormat) {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("retained-reader.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
@@ -34,7 +43,7 @@ fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
         ID,
         disk.clone(),
         NodeOpeningMode::Create,
-        crate::test_utils::node_storage_config(),
+        crate::test_utils::node_storage_config().with_directory_page_format(format),
     )
     .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
@@ -87,6 +96,18 @@ fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
     assert_eq!(opening.close().unwrap(), DatabaseOpenSettlement::Closed);
     assert_eq!(opening.retire(), StorageCensusDisposition::Retired);
 
+    let root = std::fs::read(path.join(kasumi_kv::ROOT_FILE_NAME)).unwrap();
+    let tags: Vec<_> = root
+        .chunks_exact(4096)
+        .filter(|slot| slot.starts_with(b"KASUMI-KVROOT005"))
+        .map(|slot| &slot[20..24])
+        .collect();
+    let expected_tag = match format {
+        crate::DirectoryPageFormat::Fixed => [0; 4],
+        crate::DirectoryPageFormat::Lz4 => *b"LZ4\x01",
+    };
+    assert_eq!(tags, [expected_tag.as_slice(); 2]);
+
     let existing = RegisteredNodeOpening::prepare(
         &path,
         ID,
@@ -99,6 +120,14 @@ fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
     let verification = existing.verify_existing_tables().unwrap();
     assert_eq!(verification.phase(), NodeReadPhase::Active);
     assert!(existing.report().existing_tables_verified());
+    assert_eq!(
+        verification
+            .catalog_bytes(hash, 64)
+            .unwrap()
+            .unwrap()
+            .as_bytes(),
+        b"ciphertext"
+    );
     assert_eq!(verification.finish(), NodeReadPhase::Finished);
     assert_eq!(verification.retire(), StorageCensusDisposition::Retired);
     assert_eq!(existing.close().unwrap(), DatabaseOpenSettlement::Closed);

@@ -240,7 +240,21 @@ fn paired_indexer_storage() {
     let (core, mut report) = if phase == "write" {
         assert!(!path.exists(), "benchmark requires a fresh group");
         group.acquire_prepared(&NodeOpeningMode::Create).unwrap();
-        let core = Core::create_with_backend(group.clone(), group.clone(), GROUP, cache).unwrap();
+        let format_name =
+            env::var("INDEXER_KV_DIRECTORY_FORMAT").unwrap_or_else(|_| "fixed".into());
+        let format = match format_name.as_str() {
+            "fixed" => kasumi_kv::DirectoryPageFormat::Fixed,
+            "lz4" => kasumi_kv::DirectoryPageFormat::Lz4,
+            other => panic!("unsupported benchmark directory format: {other}"),
+        };
+        let core = Core::create_with_backend_and_format(
+            group.clone(),
+            group.clone(),
+            GROUP,
+            cache,
+            format,
+        )
+        .unwrap();
         group.publish_ready().unwrap();
         core.commit(&[Operation::create_table(TABLE)]).unwrap();
         let inline = env::var("INDEXER_KV_MAINTENANCE").as_deref() == Ok("inline");
@@ -267,7 +281,7 @@ fn paired_indexer_storage() {
             core,
             serde_json::json!({
                 "ingest_ns": elapsed, "ordering_syncs": after.0 - before.0, "device_syncs": after.1 - before.1,
-                "inline_maintenance": inline, "maintenance_publications": mutations,
+                "directory_page_format": format_name, "inline_maintenance": inline, "maintenance_publications": mutations,
                 "maintenance_deferrals": deferrals, "maintenance_reclaimed_bytes": reclaimed_bytes,
             }),
         )

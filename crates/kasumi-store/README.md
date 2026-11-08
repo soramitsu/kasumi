@@ -76,6 +76,29 @@ deployment responsibility and is not established by these software tests.
 provider is not available in a default production build or selectable by server
 configuration.
 
+## Native directory format
+
+`NodeStore::create_new` and `NodeStore::initialize_owned_empty` use fixed
+16 KiB directory pages when passed a `NodeStorageConfig`. To create a group
+with packed directory pages, pass creation options derived from that config.
+
+```rust
+let options = config.with_directory_page_format(kasumi_store::DirectoryPageFormat::Lz4);
+let node = NodeStore::create_new(path, node_store_id, persistent_disk, scratch_disk, options)?;
+```
+
+`NodeStore::open_existing` takes the usual `NodeStorageConfig` and reads the
+format from the group's root. Existing fixed groups retain their layout.
+Moving them to packed pages requires copying logical data into a new packed
+group. Use a packed-capable reader for that group.
+
+The codec applies to the native key directory. Encrypted record payloads
+remain in value-log segments. Compressed directory pages occupy their stored
+length on disk and their full 16 KiB in the shared page/value cache. Packed
+groups admit reusable codec memory at open and reserve for worst-case raw
+pages on write. Maintenance reclaims whole arenas once the current root and
+all pinned snapshots release them. See the [native format and cache details](../kasumi-kv/README.md).
+
 ## Independent application and custody storage
 
 Engine and Raft openers require `Arc<TenantStorageSet>`. Explicit fresh enrollment

@@ -20,7 +20,7 @@
 #[cfg(test)]
 use crate::core::ResidentLease;
 use std::cmp::Ordering;
-use std::num::NonZeroU32;
+use std::num::NonZeroU64;
 use std::sync::Arc;
 
 use crate::cache::CachedBytes;
@@ -102,6 +102,7 @@ pub(crate) const MAX_HEIGHT: usize = 48;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DirectoryPageRef {
     pub(crate) arena_id: u64,
+    /// Page ordinal in fixed arenas, encoded byte offset and stored length in packed arenas.
     pub(crate) page_index: u64,
     pub(crate) sha256: [u8; 32],
 }
@@ -931,13 +932,42 @@ struct PageInfo {
     /// Page offset of the final entry; validation found it, so a range check
     /// reaches the page's maximum key without decoding every entry again.
     last: u16,
-    /// Offset of entry count / 2, found during the same validation pass.
-    middle: u16,
+    /// Offsets at one quarter, one half, and three quarters of the entries.
+    quartiles: [u16; 3],
 }
 
 impl PageInfo {
+    /// The last entry below the bound (or equal for inclusive seeks) lies in
+    /// this quarter if it exists. Table markers commonly occur at the start.
+    fn floor_window(
+        &self,
+        bytes: &[u8],
+        key: DirectoryKey<'_>,
+        exclusive: bool,
+    ) -> Result<(std::ops::Range<usize>, usize), CoreError> {
+        if key.row.is_none() || self.count < 16 {
+            return Ok((0..self.count, HEADER_BYTES));
+        }
+        let before_bound = |at| -> Result<bool, CoreError> {
+            let probe = page_entry(bytes, at, self.used)?.0.key;
+            Ok(if exclusive { probe < key } else { probe <= key })
+        };
+        let middle = self.count / 2;
+        let [left_at, mid_at, right_at] = self.quartiles.map(usize::from);
+        let (lo, split, hi, lo_at, split_at) = if before_bound(mid_at)? {
+            (middle, 3 * self.count / 4, self.count, mid_at, right_at)
+        } else {
+            (0, self.count / 4, middle, HEADER_BYTES, left_at)
+        };
+        Ok(if before_bound(split_at)? {
+            (split..hi, split_at)
+        } else {
+            (lo..split, lo_at)
+        })
+    }
+
     /// The header's fields, which full validation checked for these bytes.
-    fn header(bytes: &[u8], offsets: u32) -> Self {
+    fn header(bytes: &[u8], offsets: u64) -> Self {
         Self {
             generation: le_u64(&bytes[36..44]),
             level: bytes[44],
@@ -945,7 +975,11 @@ impl PageInfo {
             used: le_u32(&bytes[48..52]) as usize,
             entries: le_u64(&bytes[52..60]),
             last: offsets as u16,
-            middle: (offsets >> 16) as u16,
+            quartiles: [
+                (offsets >> 16) as u16,
+                (offsets >> 32) as u16,
+                (offsets >> 48) as u16,
+            ],
         }
     }
 }
@@ -1068,8 +1102,14 @@ fn validate_checked_page(
                     "directory entry count overflows",
                 )))?;
         // `at` <= `used` <= DIRECTORY_PAGE_BYTES, which fits in u16.
+        if index == info.count / 4 {
+            info.quartiles[0] = at as u16;
+        }
         if index == info.count / 2 {
-            info.middle = at as u16;
+            info.quartiles[1] = at as u16;
+        }
+        if index == 3 * info.count / 4 {
+            info.quartiles[2] = at as u16;
         }
         info.last = at as u16;
         at = end;
@@ -1084,7 +1124,7 @@ fn validate_checked_page(
 
 /// Validate a page a retaining backend lent (`lend_page`), whose bytes are
 /// immutable and passed `check`. Their first full validation is recorded
-/// with them as the middle and final entries' offsets, which are past the
+/// with them as the quartile and final entry offsets, which are past the
 /// header and never zero. That validation depends on the root only through its group
 /// and generation ceiling, so it holds for every root of the page's group
 /// whose generation is at least the page's: such a root reuses it without
@@ -1111,8 +1151,13 @@ fn validate_resident_page(
     }
     let info = validate_checked_page(bytes, root, reference, check)?;
     page.record_validated(
-        NonZeroU32::new(u32::from(info.middle) << 16 | u32::from(info.last))
-            .expect("an entry follows the header"),
+        NonZeroU64::new(
+            u64::from(info.last)
+                | u64::from(info.quartiles[0]) << 16
+                | u64::from(info.quartiles[1]) << 32
+                | u64::from(info.quartiles[2]) << 48,
+        )
+        .expect("an entry follows the header"),
     );
     Ok(info)
 }
@@ -1760,21 +1805,8 @@ impl<'a> DirectoryReader<'a> {
         loop {
             let (page, info) = self.view(buffer, root, reference, &bounds)?;
             let mut selected = None;
-            // Warm point lookups can skip half a variable-width page using the
-            // offset saved by validation. Keep tiny pages and table markers on
-            // the simple path; a marker is commonly the first entry.
-            let (start, stop, mut at) = if key.row.is_some() && info.count >= 16 {
-                let mid = info.count / 2;
-                let offset = usize::from(info.middle);
-                if page_entry(&page, offset, info.used)?.0.key <= key {
-                    (mid, info.count, offset)
-                } else {
-                    (0, mid, HEADER_BYTES)
-                }
-            } else {
-                (0, info.count, HEADER_BYTES)
-            };
-            for index in start..stop {
+            let (indices, mut at) = info.floor_window(&page, key, false)?;
+            for index in indices {
                 let (entry, end) = page_entry(&page, at, info.used)?;
                 match entry.key.cmp(&key) {
                     Ordering::Greater => break,
@@ -1832,8 +1864,8 @@ impl<'a> DirectoryReader<'a> {
         let mut buffer = PageBuffer::new(&self.admission)?;
         self.with_previous_leaf(root, upper, exclusive, &mut buffer, |page, info| {
             let mut last = None;
-            let mut at = HEADER_BYTES;
-            for _ in 0..info.count {
+            let (indices, mut at) = info.floor_window(&page, upper, exclusive)?;
+            for _ in indices {
                 let (entry, end) = page_entry(&page, at, info.used)?;
                 if entry.key > upper || (exclusive && entry.key == upper) {
                     break;
@@ -1869,8 +1901,8 @@ impl<'a> DirectoryReader<'a> {
                 return visit(page, info);
             }
             let mut selected = None;
-            let mut at = HEADER_BYTES;
-            for index in 0..info.count {
+            let (indices, mut at) = info.floor_window(&page, upper, exclusive)?;
+            for index in indices {
                 let (entry, end) = page_entry(&page, at, info.used)?;
                 if entry.key > upper || (exclusive && entry.key == upper) {
                     break;
@@ -2425,7 +2457,7 @@ mod tests {
     }
 
     #[test]
-    fn warm_point_reads_skip_half_a_variable_width_page() {
+    fn warm_point_and_predecessor_reads_scan_one_quarter_of_a_variable_width_page() {
         use crate::cache::CacheConfig;
         use crate::page_cache::CachedDirectoryBackend;
 
@@ -2470,9 +2502,23 @@ mod tests {
         let parsed = PARSED_ENTRIES.with(|count| count.replace(None).unwrap());
         assert_eq!(last, Some(value(1, 191)));
         assert!(
-            parsed <= 98,
+            parsed <= 50,
             "parsed {parsed} entries for the final key of 192"
         );
+        for i in [0u16, 48, 96, 144, 191] {
+            let row = key(i);
+            for exclusive in [false, true] {
+                PARSED_ENTRIES.with(|count| count.set(Some(0)));
+                let found = reader
+                    .previous(root, DirectoryKey::row("t", &row), exclusive)
+                    .unwrap()
+                    .map(|record| record.value);
+                let parsed = PARSED_ENTRIES.with(|count| count.replace(None).unwrap());
+                let expected = i.checked_sub(u16::from(exclusive));
+                assert_eq!(found, expected.map(|index| value(1, index.into())));
+                assert!(parsed <= 50, "predecessor parsed {parsed} entries");
+            }
+        }
     }
 
     #[test]

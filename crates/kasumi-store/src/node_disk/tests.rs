@@ -391,6 +391,56 @@ fn file_synchronization_does_not_hold_disk_state_across_the_syscall() {
     clean(&disk, &["slow", "other"]);
 }
 
+#[test]
+fn sync_rechecks_the_name_after_the_syscall_before_settling_allocation() {
+    for publish_parent in [false, true] {
+        let (_directory, config) = installation();
+        let root = &config.roots["data"];
+        let disk = open(
+            config.clone(),
+            crate::test_utils::TestDiskMemory::new(256 << 20, 4096),
+        );
+        let file = disk
+            .create_file("data", Path::new("file"), DiskWork::Foreground)
+            .unwrap();
+        file.reserve_growth(0, 16 << 10, DiskWork::Foreground)
+            .unwrap();
+        file.write_all_at(&[7; 64], 0).unwrap();
+        let before = disk.snapshot();
+        let (entered, entered_rx) = std::sync::mpsc::channel();
+        let (release, release_rx) = std::sync::mpsc::channel();
+        *disk.sync_pause.lock().unwrap() = Some(file::SyncPause {
+            entered,
+            release: release_rx,
+        });
+        std::thread::scope(|scope| {
+            let paused = scope.spawn(|| {
+                if publish_parent {
+                    file.sync_all_and_parent()
+                } else {
+                    file.sync_ordered()
+                }
+            });
+            entered_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            std::fs::rename(root.join("file"), root.join("held")).unwrap();
+            seed(&config, "file", 64);
+            release.send(()).unwrap();
+            assert_eq!(
+                paused.join().unwrap().unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
+        });
+        let after = disk.snapshot();
+        assert_eq!(after.phase, NodeDiskPhase::Failed);
+        assert_eq!(before.charged_bytes, after.charged_bytes);
+        assert_eq!(before.pending_bytes, after.pending_bytes);
+        drop(file);
+        clean(&disk, &["file", "held"]);
+    }
+}
+
 /// Publishing a file and its parent, or syncing an enrolled directory, also
 /// runs each blocking sync without State: another file's write, read, sync
 /// and settlement complete meanwhile, and a failure latched during the sync

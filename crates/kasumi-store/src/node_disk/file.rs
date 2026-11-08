@@ -2165,6 +2165,11 @@ fn prepare_parent_names(
     Ok(names.into_boxed_slice())
 }
 
+#[cfg(test)]
+thread_local! {
+    static DESCRIPTOR_VERIFICATIONS: std::cell::Cell<u64> = const {std::cell::Cell::new(0)};
+}
+
 impl FileOwner {
     fn name(&self) -> &CString {
         self.name.as_ref().expect("live file name")
@@ -2223,21 +2228,17 @@ impl FileOwner {
         })
     }
     fn verify(&self, file: &File) -> io::Result<()> {
-        let result = (|| {
-            verify_parent(
-                &self.disk.roots[&self.root],
-                &self.parent_names,
-                self.parent_custody(),
-            )?;
-            let metadata = stat_leaf(self.parent(), self.name(), self.identity.0)?;
-            if metadata.st_ino != self.identity.1
-                || Identity::of(&file.metadata()?) != self.identity
-            {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            Ok(())
-        })();
-        result.map_err(|error| self.record_error(error))
+        self.verify_metadata(file).map(drop)
+    }
+
+    fn verify_metadata(&self, file: &File) -> io::Result<std::fs::Metadata> {
+        verify_parent(
+            &self.disk.roots[&self.root],
+            &self.parent_names,
+            self.parent_custody(),
+        )
+        .map_err(|error| self.record_error(error))?;
+        self.verify_retained(file)
     }
 
     fn check(&self, file: &File) -> io::Result<()> {
@@ -2259,6 +2260,8 @@ impl FileOwner {
     /// Returns the verified descriptor's metadata, so a caller compares its
     /// length against the budget without a second fstat of the same descriptor.
     fn verify_retained(&self, file: &File) -> io::Result<std::fs::Metadata> {
+        #[cfg(test)]
+        DESCRIPTOR_VERIFICATIONS.with(|count| count.set(count.get() + 1));
         let result = (|| {
             let metadata = stat_leaf(self.parent(), self.name(), self.identity.0)?;
             let descriptor = file.metadata()?;
@@ -2279,19 +2282,64 @@ impl FileOwner {
             .inspect_err(|_| self.disk.fail_locked(&mut state))
     }
 
-    fn observe(&self, budget: &mut Budget) -> io::Result<()> {
+    /// Verify the enrolled name, descriptor and EOF before a synchronization.
+    fn verify_sync_input(
+        &self,
+        state: &mut State,
+        budget: &Budget,
+    ) -> io::Result<std::fs::Metadata> {
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        self.check(file)?;
-        let metadata = file.metadata().map_err(|error| {
-            self.disk.fail();
-            self.record_error(error)
-        })?;
+        self.verify_metadata(file)
+            .and_then(|metadata| {
+                if metadata.len() != budget.actual_len {
+                    return Err(io::ErrorKind::InvalidData.into());
+                }
+                Ok(metadata)
+            })
+            .map_err(|error| {
+                self.disk.fail_locked(state);
+                self.record_error(error)
+            })
+    }
+
+    /// A real sync released State. Verify the binding again and reconcile the
+    /// allocation from that same descriptor observation under the re-acquired lock.
+    fn finish_sync(
+        &self,
+        state: &mut State,
+        budget: &mut Budget,
+        result: io::Result<Synced>,
+    ) -> io::Result<()> {
+        let file = budget.file.as_ref().expect("live persistent descriptor");
+        let (reached, metadata) = result
+            .and_then(|reached| {
+                self.verify_metadata(file)
+                    .map(|metadata| (reached, metadata))
+            })
+            .map_err(|error| {
+                self.disk.fail_locked(state);
+                self.record_error(error)
+            })?;
+        overlapped_failure(state)?;
+        budget.synced = reached;
+        self.observe_sync(state, budget, &metadata)
+    }
+
+    fn observe_sync(
+        &self,
+        state: &mut State,
+        budget: &mut Budget,
+        metadata: &std::fs::Metadata,
+    ) -> io::Result<()> {
+        // Filesystems may share their admission ledger with another disk.
+        if !self.disk.admission_ready() {
+            return Err(io::ErrorKind::Other.into());
+        }
         let allocated = metadata.blocks().checked_mul(512).ok_or_else(|| {
-            self.disk.fail();
+            self.disk.fail_locked(state);
             self.record_error(io::ErrorKind::InvalidData.into())
         })?;
-        let mut state = self.disk.lock_state();
-        self.observe_materialization(&mut state, budget, metadata.len(), allocated, false)
+        self.observe_materialization(state, budget, metadata.len(), allocated, false)
     }
 
     /// Reconcile the actual allocation against the already admitted physical
@@ -2931,6 +2979,11 @@ impl NodeDiskFile {
         Ok(())
     }
 
+    #[cfg(test)]
+    pub(crate) fn descriptor_verifications_for_test() -> u64 {
+        DESCRIPTOR_VERIFICATIONS.with(|count| count.get())
+    }
+
     pub fn observed_len(&self) -> io::Result<u64> {
         self.ensure_open()?;
         let budget = self.0.lock_budget()?;
@@ -3045,14 +3098,28 @@ impl NodeDiskFile {
             self.0.disk.fail();
             return Err(io::ErrorKind::InvalidData.into());
         }
+        let mut state = self.0.disk.lock_state();
+        self.0.check_enrollment(&mut state, &budget)?;
+        self.transfer_transaction_growth(claim, &mut budget, &state, requested_len)?;
+        self.0.record_enrollment(&mut state, &budget);
+        Ok(())
+    }
+
+    /// Transfer part of an existing transaction reservation into this enrolled
+    /// file. The caller records the updated budget before releasing State.
+    fn transfer_transaction_growth(
+        &self,
+        claim: &mut super::transaction::TransactionSpace,
+        budget: &mut Budget,
+        state: &State,
+        requested_len: u64,
+    ) -> io::Result<()> {
         let bytes = file_ceiling(
             requested_len,
             self.0.disk.unit,
             self.0.disk.config.file_allocation_policy,
         )?;
         let delta = bytes.saturating_sub(budget.bytes);
-        let mut state = self.0.disk.lock_state();
-        self.0.check_enrollment(&mut state, &budget)?;
         let parent = self
             .0
             .parent
@@ -3067,7 +3134,7 @@ impl NodeDiskFile {
             .binding;
         claim.check_parent(binding)?;
         // Global bytes and pending already include delta. Only custody moves.
-        claim.consume_growth(&self.0.disk, &state, delta)?;
+        claim.consume_growth(&self.0.disk, state, delta)?;
         budget.bytes = budget
             .bytes
             .checked_add(delta)
@@ -3078,7 +3145,6 @@ impl NodeDiskFile {
             .ok_or(io::ErrorKind::InvalidData)?;
         budget.reserved_len = budget.reserved_len.max(requested_len);
         budget.settled = false;
-        self.0.record_enrollment(&mut state, &budget);
         Ok(())
     }
 
@@ -3124,31 +3190,58 @@ impl NodeDiskFile {
     }
 
     pub fn write_all_at(&self, data: &[u8], offset: u64) -> io::Result<()> {
+        self.write_with_claim(data, offset, |_, _| Ok(None))
+    }
+
+    /// Authorize an append or overwrite against the verified physical EOF and
+    /// transfer its growth from the group claim while holding this file's budget.
+    /// The group callback only checks and updates its private transaction plan.
+    pub(crate) fn write_transaction_at<'a>(
+        &self,
+        data: &[u8],
+        offset: u64,
+        authorize: impl FnOnce(u64, u64) -> io::Result<&'a mut super::transaction::TransactionSpace>,
+    ) -> io::Result<()> {
+        self.write_with_claim(data, offset, |current, end| {
+            if offset > current {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            authorize(current, end).map(Some)
+        })
+    }
+
+    fn write_with_claim<'a>(
+        &self,
+        data: &[u8],
+        offset: u64,
+        authorize: impl FnOnce(
+            u64,
+            u64,
+        )
+            -> io::Result<Option<&'a mut super::transaction::TransactionSpace>>,
+    ) -> io::Result<()> {
         self.ensure_open()?;
         let mut budget = self.0.lock_budget()?;
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        self.0.check(file)?;
         let end = offset
             .checked_add(data.len() as u64)
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         let mut state = self.0.disk.lock_state();
-        if state.phase == NodeDiskPhase::Failed
-            || !self.0.disk.admission_ready()
-            || end > budget.reserved_len
-        {
-            return Err(io::Error::from(io::ErrorKind::InvalidData));
+        if state.phase == NodeDiskPhase::Failed || !self.0.disk.admission_ready() {
+            return Err(io::ErrorKind::Other.into());
         }
         self.0.check_enrollment(&mut state, &budget)?;
-        if file
-            .metadata()
-            .map_err(|error| {
-                self.0.disk.fail_locked(&mut state);
-                self.0.record_error(error)
-            })?
-            .len()
-            != budget.actual_len
-        {
+        let actual = self.0.verify_metadata(file).inspect_err(|_| {
             self.0.disk.fail_locked(&mut state);
+        })?;
+        if actual.len() != budget.actual_len {
+            self.0.disk.fail_locked(&mut state);
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        if let Some(claim) = authorize(actual.len(), end)? {
+            self.transfer_transaction_growth(claim, &mut budget, &state, end)?;
+        }
+        if end > budget.reserved_len {
             return Err(io::ErrorKind::InvalidData.into());
         }
         budget.settled = false;
@@ -3236,23 +3329,12 @@ impl NodeDiskFile {
         }
         self.0.check_enrollment(&mut state, &budget)?;
         let synced = budget.synced;
-        let verified = (|| -> io::Result<()> {
-            self.0.verify(file)?;
-            if file.metadata()?.len() != budget.actual_len {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            Ok(())
-        })();
-        if let Err(error) = verified {
-            self.0.disk.fail_locked(&mut state);
-            return Err(self.0.record_error(error));
-        }
+        let verified = self.0.verify_sync_input(&mut state, &budget)?;
         // Only this exclusive owner writes the file, and its last
         // synchronization after its last write already reached this level.
         if synced >= required {
             crate::sync_trace::skipped();
-            drop(state);
-            return self.0.observe(&mut budget);
+            return self.0.observe_sync(&mut state, &mut budget, &verified);
         }
         // The blocking sync runs without State, so other files' reads, writes
         // and syncs proceed. The budget lock keeps this file unchanged, and
@@ -3272,16 +3354,7 @@ impl NodeDiskFile {
                 .synchronized_ordered(|| sync_ordered_native(file)),
         };
         let mut state = self.0.disk.lock_state();
-        let reached = synchronized
-            .and_then(|reached| self.0.verify(file).map(|()| reached))
-            .map_err(|error| {
-                self.0.disk.fail_locked(&mut state);
-                self.0.record_error(error)
-            })?;
-        overlapped_failure(&state)?;
-        budget.synced = reached;
-        drop(state);
-        self.0.observe(&mut budget)
+        self.0.finish_sync(&mut state, &mut budget, synchronized)
     }
 
     /// Durably publish an initialized envelope without releasing or reopening
@@ -3299,17 +3372,7 @@ impl NodeDiskFile {
         budget.settled = false;
         self.0.record_enrollment(&mut state, &budget);
         let file = budget.file.as_ref().expect("live persistent descriptor");
-        let verified = (|| -> io::Result<()> {
-            self.0.verify(file)?;
-            if file.metadata()?.len() != budget.actual_len {
-                return Err(io::ErrorKind::InvalidData.into());
-            }
-            Ok(())
-        })();
-        if let Err(error) = verified {
-            self.0.disk.fail_locked(&mut state);
-            return Err(self.0.record_error(error));
-        }
+        self.0.verify_sync_input(&mut state, &budget)?;
         // Both blocking syncs run without State, as in `synchronize`. The
         // budget lock keeps this file unchanged, this live owner retains its
         // parent, and both are verified again under State before success.
@@ -3335,14 +3398,11 @@ impl NodeDiskFile {
             self.0.disk.synchronized(|| self.0.parent().sync_all())
         })();
         let mut state = self.0.disk.lock_state();
-        if let Err(error) = synchronized.and_then(|()| self.0.verify(file)) {
-            self.0.disk.fail_locked(&mut state);
-            return Err(self.0.record_error(error));
-        }
-        overlapped_failure(&state)?;
-        budget.synced = Synced::Durable;
-        drop(state);
-        self.0.observe(&mut budget)
+        self.0.finish_sync(
+            &mut state,
+            &mut budget,
+            synchronized.map(|()| Synced::Durable),
+        )
     }
 }
 

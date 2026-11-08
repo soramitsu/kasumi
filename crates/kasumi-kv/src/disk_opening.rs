@@ -66,12 +66,30 @@ impl Default for DiskOpening {
     }
 }
 impl DiskOpening {
+    #[cfg(test)]
     pub(crate) fn create(
         &mut self,
         backend: OriginalBackend,
         admission: Arc<dyn StorageAdmission>,
         group_id: [u8; 16],
         config: CacheConfig,
+    ) -> Result<(), CoreError> {
+        self.create_with_format(
+            backend,
+            admission,
+            group_id,
+            config,
+            crate::DirectoryPageFormat::Fixed,
+        )
+    }
+
+    pub(crate) fn create_with_format(
+        &mut self,
+        backend: OriginalBackend,
+        admission: Arc<dyn StorageAdmission>,
+        group_id: [u8; 16],
+        config: CacheConfig,
+        format: crate::DirectoryPageFormat,
     ) -> Result<(), CoreError> {
         self.initialize(backend, admission, group_id)?;
         if !matches!(
@@ -82,7 +100,7 @@ impl DiskOpening {
                 "group already contains a root",
             )));
         }
-        let genesis = Superblock::genesis(group_id);
+        let genesis = Superblock::genesis_with_format(group_id, format);
         genesis.visit_census(self.backend.as_ref().unwrap().as_ref(), |_| Ok(()))?;
         let root = genesis.initialized()?;
         self.assemble(
@@ -149,7 +167,13 @@ impl DiskOpening {
             repair_mirror(backend.as_ref(), &superblock, slot)?;
         }
         if let Some(id) = superblock.pending_directory() {
-            recover_directory_intent(backend.as_ref(), admission, group_id, id)?;
+            recover_directory_intent_with_format(
+                backend.as_ref(),
+                admission,
+                group_id,
+                id,
+                superblock.directory_format() == crate::DirectoryPageFormat::Lz4,
+            )?;
             let next = superblock.confirm_directory(id)?;
             publish_root(backend.as_ref(), &superblock, &next)?;
             superblock = next;
@@ -239,6 +263,7 @@ impl DiskOpening {
         selected: DirectoryRoot,
         config: CacheConfig,
     ) -> Result<(), CoreError> {
+        let packed = root.directory_format() == crate::DirectoryPageFormat::Lz4;
         self.root_value = Some(root);
         let admission = self.admission.as_ref().unwrap();
         self.root_lease = Some(
@@ -266,11 +291,12 @@ impl DiskOpening {
             failed: AtomicBool::new(false),
             _lease: self.root_lease.take(),
         }));
-        self.arena_opening.build(
+        self.arena_opening.build_with_format(
             self.backend.as_ref().unwrap().clone(),
             self.owner.as_ref().unwrap().clone(),
             admission.clone(),
             group_id,
+            packed,
         )?;
         self.arena = Some(NativeOwnedArc::new(
             self.arena_opening.take_completed().unwrap(),
@@ -296,6 +322,7 @@ impl DiskOpening {
             cache: self.cache.take().unwrap(),
             writer,
             selected,
+            recent_table: RecentTable::new(config.byte_limit != 0),
             pins: self.pins.take_completed().unwrap(),
             reclaim: Reclamation::default(),
             compact: Compaction::default(),

@@ -61,6 +61,7 @@ mod storage_opening;
 pub use disk_memory::{
     DiskMemoryLease, DiskMemoryRequirements, DiskOpenError, NodeDiskMemoryAdmission,
 };
+pub use kasumi_kv::DirectoryPageFormat;
 #[cfg(any(test, feature = "test-utils"))]
 pub use storage_census::NativeConstructorProbe;
 pub use storage_census::{
@@ -74,9 +75,10 @@ pub use storage_opening::{
     FailedOpeningRecovery, NodeBindingWriteReport, NodeCatalogPutBodyError, NodeCatalogWriteReport,
     NodeGroupIdentity, NodeOpeningMode, NodeOpeningPhase, NodeOpeningReport, NodeReadAccessError,
     NodeReadPhase, NodeReadReport, NodeReadTablesError, NodeStartupFailureCustody,
-    NodeStartupPhase, NodeStorageConfig, NodeTablesBodyError, NodeTablesReport, NodeWriterPhase,
-    OwnedEncryptedRow, RegisteredBindingPut, RegisteredCatalogPut, RegisteredNodeOpening,
-    RegisteredNodeRead, RegisteredNodeStartup, RegisteredNodeTables,
+    NodeStartupPhase, NodeStorageConfig, NodeStorageCreateOptions, NodeTablesBodyError,
+    NodeTablesReport, NodeWriterPhase, OwnedEncryptedRow, RegisteredBindingPut,
+    RegisteredCatalogPut, RegisteredNodeOpening, RegisteredNodeRead, RegisteredNodeStartup,
+    RegisteredNodeTables,
 };
 pub use storage_opening::{NodeWriteReport, RegisteredNodeWrite};
 #[cfg(any(test, feature = "test-utils"))]
@@ -1306,7 +1308,7 @@ impl NodeStore {
         node_store_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),
@@ -1330,7 +1332,7 @@ impl NodeStore {
         node_store_id: Uuid,
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> std::result::Result<Self, NodeStoreStartFailure> {
         Self::start_registered(
             path.as_ref(),
@@ -1375,7 +1377,7 @@ impl NodeStore {
         persistent_disk: Arc<NodeDisk>,
         scratch_disk: Arc<ScratchDisk>,
         mode: NodeOpeningMode,
-        config: NodeStorageConfig,
+        config: impl Into<NodeStorageCreateOptions>,
     ) -> std::result::Result<Self, NodeStoreStartFailure> {
         if !Arc::ptr_eq(persistent_disk.memory(), scratch_disk.memory()) {
             return Err(NodeStoreStartFailure::Operation(anyhow::anyhow!(

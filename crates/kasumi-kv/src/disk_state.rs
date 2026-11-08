@@ -12,7 +12,9 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use crate::arena::{DirectoryArenaBackend, DirectoryArenaRoll, recover_directory_intent};
+use crate::arena::{
+    DirectoryArenaBackend, DirectoryArenaRoll, recover_directory_intent_with_format,
+};
 #[cfg(test)]
 use crate::cache::CachedBytes;
 use crate::cache::{CacheConfig, CacheLoadError, CacheStats, NativeCache};
@@ -43,6 +45,7 @@ use crate::snapshot_pins::{SnapshotPin, SnapshotPins};
 
 #[path = "disk_public.rs"]
 mod public;
+use public::RecentTable;
 
 #[path = "disk_publish.rs"]
 mod publication;
@@ -366,6 +369,7 @@ pub(crate) struct DiskState {
     cache: NativeSharedCache,
     writer: SegmentWriter,
     selected: DirectoryRoot,
+    recent_table: RecentTable,
     pins: SnapshotPins,
     reclaim: Reclamation,
     compact: Compaction,
@@ -579,11 +583,7 @@ impl DiskState {
     ) -> Result<bool, CoreError> {
         self.run(|state| {
             let root = state.check_snapshot(root)?;
-            Ok(
-                DirectoryReader::new(&state.pages, state.owner.admission.clone())
-                    .get(root, DirectoryKey::table(table))?
-                    .is_some(),
-            )
+            state.table_at(root, table, None)
         })
     }
 
@@ -597,10 +597,10 @@ impl DiskState {
     ) -> Result<Option<CachedBytes>, CoreError> {
         self.run(|state| {
             let root = state.check_snapshot(root)?;
-            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
-            if reader.get(root, DirectoryKey::table(table))?.is_none() {
+            if !state.table_at(root, table, None)? {
                 return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
             }
+            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
             match reader.get(root, DirectoryKey::row(table, key))? {
                 None => Ok(None),
                 Some(DirectoryValue::Row { value, .. }) => {
@@ -625,17 +625,17 @@ impl DiskState {
 
     /// The successor step of `next`, for callers already inside `run`.
     pub(crate) fn next_record(
-        &self,
+        &mut self,
         root: &SnapshotPin,
         table: &str,
         prefix: &[u8],
         after: Option<&[u8]>,
     ) -> Result<Option<DirectoryRecord>, CoreError> {
         let root = self.check_snapshot(root)?;
-        let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
-        if reader.get(root, DirectoryKey::table(table))?.is_none() {
+        if !self.table_at(root, table, None)? {
             return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
         }
+        let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
         let (lower, exclusive) = after
             .filter(|after| *after >= prefix)
             .map_or((prefix, false), |after| (after, true));
@@ -1249,6 +1249,7 @@ impl DiskState {
             // A denied shrink may already have released lookup ownership
             // while an output guard prevents adopting the smaller limit.
             let result = state.pages.configure(config);
+            state.recent_table = RecentTable::new(result.is_ok() && config.byte_limit != 0);
             state.reset_auto_warm();
             result
         })

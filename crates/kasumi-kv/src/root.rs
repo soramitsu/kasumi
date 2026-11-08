@@ -29,7 +29,8 @@
 //! last identifier of each kind is never allocated, so arithmetic on a decoded
 //! root never overflows.
 //!
-//! `KASUMI-KVROOT005` persists the directory commit at bytes 2208..2384 and
+//! `KASUMI-KVROOT005` stores the immutable directory format tag at bytes 20..24.
+//! It persists the directory commit at bytes 2208..2384 and
 //! the compaction cycle, immutable evacuation worklist and exact ordinal
 //! (`root_compaction.rs`) at bytes 2384..4080; the remainder up to the
 //! checksum must be zero. Bytes 64..128 once held an index-checkpoint
@@ -62,6 +63,32 @@ pub(crate) use compaction::{CompactionCursor, CompactionPhase, CompactionRecord}
 
 pub const ROOT_SLOT_BYTES: usize = 4096;
 pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT005";
+/// Physical directory representation chosen when a new group is created.
+/// The checksummed root records the choice even before the first directory
+/// allocation. Subsequent writers use that format for the life of the group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DirectoryPageFormat {
+    /// The original fixed-width, uncompressed 16 KiB page format.
+    #[default]
+    Fixed,
+    /// Pack variable-length LZ4 or raw representations of the same authenticated pages.
+    Lz4,
+}
+
+impl DirectoryPageFormat {
+    const fn root_tag(self) -> [u8; 4] {
+        match self {
+            Self::Fixed => [0; 4],
+            Self::Lz4 => *b"LZ4\x01",
+        }
+    }
+
+    fn from_root_tag(tag: &[u8]) -> Option<Self> {
+        [Self::Fixed, Self::Lz4]
+            .into_iter()
+            .find(|format| format.root_tag() == tag)
+    }
+}
 /// Root magics of formats this build never reads or migrates.
 const RETIRED_ROOT_MAGICS: [[u8; 16]; 4] = [
     *b"KASUMI-KVROOT001",
@@ -121,6 +148,7 @@ impl RootSlot {
 pub(crate) struct Superblock {
     generation: u64,
     group_id: [u8; 16],
+    directory_format: DirectoryPageFormat,
     next_segment_id: u64,
     /// Newest segment whose file and header are durable; zero for none.
     last_segment_id: u64,
@@ -182,10 +210,19 @@ pub(crate) struct Unlinked {
 impl Superblock {
     /// The unpublished state of a new group. Its first publication is
     /// generation one.
+    #[cfg(test)]
     pub(crate) fn genesis(group_id: [u8; 16]) -> Self {
+        Self::genesis_with_format(group_id, DirectoryPageFormat::Fixed)
+    }
+
+    pub(crate) fn genesis_with_format(
+        group_id: [u8; 16],
+        directory_format: DirectoryPageFormat,
+    ) -> Self {
         Self {
             generation: 0,
             group_id,
+            directory_format,
             next_segment_id: 1,
             last_segment_id: 0,
             sealed: None,
@@ -199,6 +236,10 @@ impl Superblock {
 
     pub(crate) fn generation(&self) -> u64 {
         self.generation
+    }
+
+    pub(crate) fn directory_format(&self) -> DirectoryPageFormat {
+        self.directory_format
     }
 
     /// Publish an empty incarnation before any data/arena allocation. The
@@ -561,6 +602,7 @@ impl Superblock {
         let mut bytes = [0u8; ROOT_SLOT_BYTES];
         bytes[..16].copy_from_slice(&ROOT_MAGIC);
         bytes[16..20].copy_from_slice(&FORMAT_VERSION.to_le_bytes());
+        bytes[20..24].copy_from_slice(&self.directory_format.root_tag());
         bytes[24..40].copy_from_slice(&self.group_id);
         bytes[40..48].copy_from_slice(&self.generation.to_le_bytes());
         bytes[48..56].copy_from_slice(&self.next_segment_id.to_le_bytes());
@@ -622,8 +664,10 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
         "root slot has an unsupported layout",
     ));
     let garbage_count = le_u32(&bytes[GARBAGE_COUNT_AT..GARBAGE_COUNT_AT + 4]) as usize;
+    let Some(directory_format) = DirectoryPageFormat::from_root_tag(&bytes[20..24]) else {
+        return Err(layout);
+    };
     if le_u32(&bytes[16..20]) != FORMAT_VERSION
-        || bytes[20..24].iter().any(|&byte| byte != 0)
         || bytes[RETIRED_CHECKPOINT_AT..SEALED_AT] != RETIRED_CHECKPOINT
         || bytes[GARBAGE_COUNT_AT + 4..GARBAGE_AT]
             .iter()
@@ -678,6 +722,7 @@ fn decode_slot(bytes: &[u8; ROOT_SLOT_BYTES]) -> Result<SlotImage, CoreError> {
     let superblock = Superblock {
         generation: le_u64(&bytes[40..48]),
         group_id: bytes[24..40].try_into().expect("16 bytes"),
+        directory_format,
         next_segment_id: le_u64(&bytes[48..56]),
         last_segment_id: le_u64(&bytes[56..64]),
         sealed,
@@ -963,6 +1008,7 @@ fn publish(
 fn is_successor(previous: &Superblock, next: &Superblock) -> bool {
     previous.generation.checked_add(1) == Some(next.generation)
         && previous.group_id == next.group_id
+        && previous.directory_format == next.directory_format
         && next.next_segment_id >= previous.next_segment_id
         && next.last_segment_id >= previous.last_segment_id
         && next.next_directory_id >= previous.next_directory_id
@@ -1362,6 +1408,30 @@ mod tests {
             damaged.with_durable_root(RootSlot::B, |bytes| bytes[at] ^= 0x20);
             assert_eq!(corrupt_reason(select_root(&damaged)), "no intact root slot");
         }
+    }
+
+    #[test]
+    fn directory_format_is_persisted_at_genesis_and_cannot_change_between_generations() {
+        let fixed = Superblock::genesis(GROUP).initialized().unwrap();
+        let packed = Superblock::genesis_with_format(GROUP, DirectoryPageFormat::Lz4)
+            .initialized()
+            .unwrap();
+        let fixed_image = fixed.encode().unwrap();
+        let packed_image = packed.encode().unwrap();
+        assert_eq!(&fixed_image[20..24], &[0; 4]);
+        assert_eq!(&packed_image[20..24], b"LZ4\x01");
+        assert_eq!(
+            decode_slot(&packed_image).unwrap(),
+            SlotImage::Valid(packed.clone())
+        );
+        assert!(select_root_images(&packed_image, &fixed_image).is_err());
+        assert!(!is_successor(&fixed, &packed.successor().unwrap()));
+
+        let mut unknown = packed_image;
+        unknown[23] = 2;
+        let checksum = crc32c(&unknown[..CHECKSUM_AT]);
+        unknown[CHECKSUM_AT..].copy_from_slice(&checksum.to_le_bytes());
+        assert!(select_root_images(&unknown, &packed_image).is_err());
     }
 
     #[test]
