@@ -35,7 +35,7 @@ pub use core::{
     AdmissionError, AdmittedValue, BackendCloseEntry, BackendCloseOutcome,
     BackendNativeDisposition, CacheWarmup, CacheWarmupState, CacheWarmupStatus, CommittedPosition,
     Core, CoreError, CoreErrorCause, CoreErrorDisposition, CoreOpenCleanup, CoreOpenFailure,
-    CorePanic, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES,
+    CorePanic, DescendingCursor, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES,
     NativeDisposalReport, NativeOpenFailure, NativeOwnedDisposal, Operation, OwnerFailed,
     PreparedPointRead, ReadSnapshot, ResidentLease, ScanDirection, StorageAdmission,
 };

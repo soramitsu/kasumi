@@ -147,8 +147,10 @@ For recent-first queries, use
 Continue on the same read transaction with `Excluded(last_key)` as the upper
 bound. Ascending pages continue by excluding the last key as the lower bound.
 Either end accepts `Unbounded`. Bounds use the table codec's encoded order.
-The reverse seek descends directly to the preceding leaf row. A snapshot range
-reads each selected value using its directory location.
+A descending snapshot scan retains one validated leaf and its record offsets,
+seeking again at each leaf boundary. The raw equivalent is
+`snapshot.descending_cursor(table, lower, upper, max_value_bytes)?.next_row()`.
+Each selected value is read using its immutable directory location.
 
 `CacheConfig::byte_limit` bounds retained value and directory-page allocations,
 including metadata and evicted payloads still held by readers. Zero disables

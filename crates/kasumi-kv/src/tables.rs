@@ -2324,6 +2324,7 @@ pub struct TableRange<K: TableCodec, V: TableCodec> {
     snapshot: SnapshotHandle,
     staged: Option<SharedPending>,
     table: SharedTableName,
+    reverse: Vec<crate::directory::ReverseLeafCursor>,
     start: OwnedKeyBytes,
     start_exclusive: bool,
     end: Bound<OwnedKeyBytes>,
@@ -2379,8 +2380,16 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
             check_key_bound::<K>(key)?;
         }
         inner.core.check_read_owner()?;
+        let stream_reverse = staged.is_none() && direction == ScanDirection::Descending;
+        // At most one read-only cursor, kept out of every forward iterator's
+        // inline layout. The start grant owns its slot until the Vec drops.
+        let cursor_charge = if stream_reverse {
+            size_of::<crate::directory::ReverseLeafCursor>() + 64
+        } else {
+            0
+        };
         let copy_start = |bytes: &[u8]| {
-            let charge = bytes.len().saturating_add(table.len()).saturating_add(256);
+            let charge = bytes.len() + table.len() + 256 + cursor_charge;
             OwnedKeyBytes::copy(&inner.core, bytes, charge as u64)
         };
         let start = match lower {
@@ -2405,11 +2414,31 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
             Excluded(end) => start.bytes >= end.bytes,
             Unbounded => false,
         };
+        let mut reverse = Vec::new();
+        if stream_reverse && !done {
+            reverse
+                .try_reserve_exact(1)
+                .map_err(|_| CoreError::new(crate::CoreErrorCause::CapacityDenied))?;
+            if reverse.capacity() != 1 {
+                return Err(CoreError::new(crate::CoreErrorCause::CapacityDenied).into());
+            }
+            let lower = if start_exclusive {
+                Excluded(start.as_bytes())
+            } else {
+                Included(start.as_bytes())
+            };
+            reverse.push(snapshot.open_descending(
+                &table,
+                lower,
+                end.as_ref().map(OwnedKeyBytes::as_bytes),
+            )?);
+        }
         Ok(Self {
             inner,
             snapshot,
             staged,
             table,
+            reverse,
             start,
             start_exclusive,
             end,
@@ -2449,6 +2478,28 @@ impl<K: TableCodec, V: TableCodec> TableRange<K, V> {
     fn next_entry(&mut self) -> Result<Option<TableRow<K, V>>, TableError> {
         loop {
             self.inner.core.check_read_owner()?;
+            if let Some(leaf) = self.reverse.first_mut() {
+                let lower = if self.start_exclusive {
+                    Bound::Excluded(self.start.as_bytes())
+                } else {
+                    Bound::Included(self.start.as_bytes())
+                };
+                let upper = self.end.as_ref().map(OwnedKeyBytes::as_bytes);
+                let Some((key, value)) = self.snapshot.next_descending(
+                    &self.table,
+                    lower,
+                    upper,
+                    MAX_TABLE_VALUE_BYTES,
+                    leaf,
+                )?
+                else {
+                    return Ok(None);
+                };
+                return Ok(Some((
+                    AccessGuard::decode_admitted(key, &self.snapshot)?,
+                    AccessGuard::decode_admitted(value, &self.snapshot)?,
+                )));
+            }
             let (lower, upper) = self.bounds();
             if self.staged.is_none() && !self.prefix_only {
                 let Some((key, value)) = self.snapshot.seek_admitted(
@@ -3558,6 +3609,79 @@ mod tests {
                 .0
                 .value(),
             798
+        );
+    }
+
+    #[test]
+    fn raw_reverse_cursor_pins_history_and_filters_before_reading_values() {
+        use Bound::{Excluded, Included, Unbounded};
+        let admission = Arc::new(FailableAdmission::default());
+        let db = Database::builder(admission.clone(), GROUP, CacheConfig::default())
+            .create_with_backend(InMemoryGroup::new())
+            .unwrap();
+        let write = db.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            for (key, value) in [
+                (b"a", b"too big".as_slice()),
+                (b"b", b"bb"),
+                (b"c", b"cc"),
+                (b"d", b"too big"),
+            ] {
+                table.insert(key, value).unwrap();
+            }
+        }
+        write.commit().unwrap();
+        let read = db.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        let mut cursor = table
+            .snapshot
+            .descending_cursor(BYTES.name(), Excluded(b"a"), Excluded(b"d"), 2)
+            .unwrap();
+        let (key, value) = cursor.next_row().unwrap().unwrap();
+        assert_eq!(
+            (key.as_bytes(), value.as_bytes()),
+            (b"c".as_slice(), b"cc".as_slice())
+        );
+        drop(table);
+        drop(read);
+        let write = db.begin_write().unwrap();
+        {
+            let mut table = write.open_table(BYTES).unwrap();
+            table.delete_key(b"b").unwrap();
+            table.insert(b"c", b"new").unwrap();
+        }
+        write.commit().unwrap();
+        let (key, value) = cursor.next_row().unwrap().unwrap();
+        assert_eq!(
+            (key.as_bytes(), value.as_bytes()),
+            (b"b".as_slice(), b"bb".as_slice())
+        );
+        assert!(cursor.next_row().unwrap().is_none());
+        assert!(cursor.next_row().unwrap().is_none());
+
+        let read = db.begin_read().unwrap();
+        let table = read.open_table(BYTES).unwrap();
+        let mut over_limit = table
+            .snapshot
+            .descending_cursor(BYTES.name(), Unbounded, Included(b"d"), 2)
+            .unwrap();
+        assert!(over_limit.next_row().is_err());
+        assert!(over_limit.next_row().unwrap().is_none());
+        assert!(
+            table
+                .snapshot
+                .descending_cursor("absent", Unbounded, Unbounded, 2)
+                .is_err()
+        );
+        let mut buffered = table
+            .snapshot
+            .descending_cursor(BYTES.name(), Unbounded, Unbounded, 20)
+            .unwrap();
+        assert!(buffered.next_row().unwrap().is_some());
+        admission.failed.store(true, Ordering::Release);
+        assert!(
+            matches!(buffered.next_row(), Err(error) if matches!(error.rejected_cause(), Some(crate::CoreErrorCause::OwnerFailed)))
         );
     }
 

@@ -1,7 +1,29 @@
 //! Admitted public outputs and directory-only decisions for the Core facade.
 use super::*;
 use crate::core::{AdmittedValue, CommittedPosition, ScanDirection};
+use crate::directory::ReverseLeafCursor;
 use std::ops::{Bound, RangeBounds};
+
+fn check_scan_bounds(lower: Bound<&[u8]>, upper: Bound<&[u8]>) -> Result<(), CoreError> {
+    for bound in [lower, upper] {
+        if matches!(bound, Bound::Included(key) | Bound::Excluded(key) if key.len() > crate::MAX_KEY_BYTES)
+        {
+            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
+                "range key exceeds storage limit",
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn scan_upper(upper: Bound<&[u8]>) -> (&[u8], bool) {
+    match upper {
+        Bound::Included(key) => (key, false),
+        Bound::Excluded(key) => (key, true),
+        // The largest possible stored key belongs to an unbounded interval.
+        Bound::Unbounded => (&[0xff; crate::MAX_KEY_BYTES], false),
+    }
+}
 
 impl DiskState {
     pub(crate) fn generation(&self) -> Result<u64, CoreError> {
@@ -163,13 +185,7 @@ impl DiskState {
         direction: ScanDirection,
     ) -> Result<Option<DirectoryRecord>, CoreError> {
         use Bound::{Excluded, Included, Unbounded};
-        for bound in [lower, upper] {
-            if matches!(bound, Included(key) | Excluded(key) if key.len() > crate::MAX_KEY_BYTES) {
-                return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                    "range key exceeds storage limit",
-                )));
-            }
-        }
+        check_scan_bounds(lower, upper)?;
         let root = self.check_snapshot(pin)?;
         let reader = DirectoryReader::new(&self.pages, self.owner.admission.clone());
         if reader.get(root, DirectoryKey::table(table))?.is_none() {
@@ -188,24 +204,67 @@ impl DiskState {
                 )?
             }
             ScanDirection::Descending => {
-                // The largest permitted byte key belongs to the interval, including
-                // when that exact all-FF key is itself stored in the table.
-                const LAST: &[u8] = &[0xff; crate::MAX_KEY_BYTES];
-                let key = match upper {
-                    Included(key) | Excluded(key) => key,
-                    Unbounded => LAST,
-                };
-                reader.previous(
-                    root,
-                    DirectoryKey::row(table, key),
-                    matches!(upper, Excluded(_)),
-                )?
+                let (key, exclusive) = scan_upper(upper);
+                reader.previous(root, DirectoryKey::row(table, key), exclusive)?
             }
         };
         Ok(record.filter(|record| {
             let key = record.key();
             key.table == table && key.row.is_some_and(|row| (lower, upper).contains(row))
         }))
+    }
+
+    pub(crate) fn open_descending(
+        &mut self,
+        pin: &SnapshotPin,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> Result<ReverseLeafCursor, CoreError> {
+        self.run(|state| {
+            check_scan_bounds(lower, upper)?;
+            let root = state.check_snapshot(pin)?;
+            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
+            if reader.get(root, DirectoryKey::table(table))?.is_none() {
+                return Err(CoreError::new(crate::CoreErrorCause::MissingTable));
+            }
+            ReverseLeafCursor::new(&state.owner.admission)
+        })
+    }
+
+    pub(crate) fn next_descending(
+        &mut self,
+        pin: &SnapshotPin,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        max_value_bytes: usize,
+        leaf: &mut ReverseLeafCursor,
+    ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
+        self.run(|state| {
+            let root = state.check_snapshot(pin)?;
+            let reader = DirectoryReader::new(&state.pages, state.owner.admission.clone());
+            let (start, exclusive) = scan_upper(upper);
+            let Some((key, value)) =
+                leaf.next(&reader, root, DirectoryKey::row(table, start), exclusive)?
+            else {
+                return Ok(None);
+            };
+            let Some(row) = key
+                .row
+                .filter(|row| key.table == table && (lower, upper).contains(row))
+            else {
+                return Ok(None);
+            };
+            let DirectoryValue::Row { value, .. } = value else {
+                return Err(CoreError::new(crate::CoreErrorCause::Corrupt(
+                    "row seek returned a table",
+                )));
+            };
+            let key = AdmittedValue::copy(&state.owner.admission, row)?;
+            let value = state.value_admitted(value, table, row, max_value_bytes)?;
+            Ok(Some((key, value)))
+        })
     }
 
     pub(crate) fn seek_key_admitted(

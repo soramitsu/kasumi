@@ -49,6 +49,10 @@ pub(crate) use update::{
 pub(crate) use walk::DirectoryWalkProgress;
 pub(crate) use walk::DirectoryWalker;
 
+#[path = "directory_reverse.rs"]
+mod reverse;
+pub(crate) use reverse::ReverseLeafCursor;
+
 #[path = "directory_reachability.rs"]
 mod reachability;
 
@@ -1824,6 +1828,32 @@ impl<'a> DirectoryReader<'a> {
         upper: DirectoryKey<'_>,
         exclusive: bool,
     ) -> Result<Option<DirectoryRecord>, CoreError> {
+        let _workspace = reserve(&self.admission, std::mem::size_of::<Bounds>())?;
+        let mut buffer = PageBuffer::new(&self.admission)?;
+        self.with_previous_leaf(root, upper, exclusive, &mut buffer, |page, info| {
+            let mut last = None;
+            let mut at = HEADER_BYTES;
+            for _ in 0..info.count {
+                let (entry, end) = page_entry(&page, at, info.used)?;
+                if entry.key > upper || (exclusive && entry.key == upper) {
+                    break;
+                }
+                last = Some(entry);
+                at = end;
+            }
+            last.map(|entry| self.record(entry, info.generation))
+                .transpose()
+        })
+    }
+
+    fn with_previous_leaf<T>(
+        &self,
+        root: DirectoryRoot,
+        upper: DirectoryKey<'_>,
+        exclusive: bool,
+        buffer: &mut [u8],
+        visit: impl FnOnce(PageBytes<'_>, PageInfo) -> Result<Option<T>, CoreError>,
+    ) -> Result<Option<T>, CoreError> {
         self.admission
             .check_owner_live()
             .map_err(|_| CoreError::new(crate::CoreErrorCause::OwnerFailed))?;
@@ -1832,11 +1862,12 @@ impl<'a> DirectoryReader<'a> {
         let Some(mut reference) = root.page else {
             return Ok(None);
         };
-        let _workspace = reserve(&self.admission, std::mem::size_of::<Bounds>())?;
-        let mut buffer = PageBuffer::new(&self.admission)?;
         let mut bounds = Bounds::root(root);
         loop {
-            let (page, info) = self.view(&mut buffer, root, reference, &bounds)?;
+            let (page, info) = self.view(buffer, root, reference, &bounds)?;
+            if info.level == 0 {
+                return visit(page, info);
+            }
             let mut selected = None;
             let mut at = HEADER_BYTES;
             for index in 0..info.count {
@@ -1844,15 +1875,12 @@ impl<'a> DirectoryReader<'a> {
                 if entry.key > upper || (exclusive && entry.key == upper) {
                     break;
                 }
-                selected = Some((index, at, entry));
+                selected = Some((index, at));
                 at = end;
             }
-            let Some((index, at, entry)) = selected else {
+            let Some((index, at)) = selected else {
                 return Ok(None);
             };
-            if info.level == 0 {
-                return self.record(entry, info.generation).map(Some);
-            }
             reference = bounds.child_at(&page, info, index, at)?;
         }
     }
@@ -3545,6 +3573,62 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn reverse_cursor_reads_once_per_leaf_and_matches_independent_seeks() {
+        const ROWS: u64 = 1_500;
+        const SELECTED: usize = 700;
+        let backend = MemoryPages::default();
+        let admission: Arc<dyn StorageAdmission> = Admission::new(256 << 10);
+        let mut builder = DirectoryBuilder::new(&backend, admission.clone(), GROUP, 1).unwrap();
+        for id in 0..ROWS {
+            builder
+                .push(DirectoryKey::row("stats", &id.to_be_bytes()), value(1, id))
+                .unwrap();
+        }
+        let root = builder.finish().unwrap();
+        let reader = DirectoryReader::new(&backend, admission.clone());
+        let mut last = ROWS.to_be_bytes().to_vec();
+        let baseline = backend.reads.load(AtomicOrdering::Relaxed);
+        let mut expected = Vec::new();
+        for _ in 0..SELECTED {
+            let record = reader
+                .previous(root, DirectoryKey::row("stats", &last), true)
+                .unwrap()
+                .unwrap();
+            last = record.key().row.unwrap().to_vec();
+            expected.push((last.clone(), record.value));
+        }
+        let individual_reads = backend.reads.load(AtomicOrdering::Relaxed) - baseline;
+        let mut cursor = ReverseLeafCursor::new(&admission).unwrap();
+        let baseline = backend.reads.load(AtomicOrdering::Relaxed);
+        for (key, value) in expected {
+            assert_eq!(
+                cursor
+                    .next(
+                        &reader,
+                        root,
+                        DirectoryKey::row("stats", &ROWS.to_be_bytes()),
+                        true
+                    )
+                    .unwrap(),
+                Some((DirectoryKey::row("stats", &key), value))
+            );
+        }
+        let streamed_reads = backend.reads.load(AtomicOrdering::Relaxed) - baseline;
+        assert!(
+            streamed_reads > usize::from(root.height),
+            "scan must cross leaves"
+        );
+        assert!(
+            streamed_reads <= usize::from(root.height) * 4,
+            "{streamed_reads} page reads"
+        );
+        assert_eq!(individual_reads, SELECTED * usize::from(root.height));
+        eprintln!(
+            "{SELECTED} descending rows: {individual_reads} individual page reads, {streamed_reads} streaming reads"
+        );
     }
 
     #[test]

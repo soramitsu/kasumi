@@ -767,6 +767,36 @@ impl Drop for ReadSnapshot {
         self.shared.snapshots.fetch_sub(1, Ordering::AcqRel);
     }
 }
+/// A recent-first byte-key scan over one pinned snapshot. The input bounds
+/// stay borrowed while the cursor retains its current validated leaf.
+pub struct DescendingCursor<'a> {
+    leaf: crate::directory::ReverseLeafCursor,
+    snapshot: ReadSnapshot,
+    table: &'a str,
+    lower: Bound<&'a [u8]>,
+    upper: Bound<&'a [u8]>,
+    max_value_bytes: usize,
+    done: bool,
+}
+
+impl DescendingCursor<'_> {
+    /// Return the next admitted row. Exhaustion and errors end this cursor.
+    pub fn next_row(&mut self) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
+        if self.done {
+            return Ok(None);
+        }
+        let row = self.snapshot.next_descending(
+            self.table,
+            self.lower,
+            self.upper,
+            self.max_value_bytes,
+            &mut self.leaf,
+        );
+        self.done = !matches!(row, Ok(Some(_)));
+        row
+    }
+}
+
 impl ReadSnapshot {
     pub fn generation(&self) -> u64 {
         self.pin.root().generation
@@ -804,6 +834,56 @@ impl ReadSnapshot {
             state
                 .disk()?
                 .seek_key_admitted(&self.pin, table, lower, upper, direction)
+        })
+    }
+
+    /// Stream a descending interval. Each leaf is reached by one directory
+    /// descent and is reused until all its eligible rows have been consumed.
+    pub fn descending_cursor<'a>(
+        &self,
+        table: &'a str,
+        lower: Bound<&'a [u8]>,
+        upper: Bound<&'a [u8]>,
+        max_value_bytes: usize,
+    ) -> Result<DescendingCursor<'a>, CoreError> {
+        Ok(DescendingCursor {
+            leaf: self.open_descending(table, lower, upper)?,
+            snapshot: self.clone(),
+            table,
+            lower,
+            upper,
+            max_value_bytes,
+            done: false,
+        })
+    }
+
+    pub(crate) fn open_descending(
+        &self,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+    ) -> Result<crate::directory::ReverseLeafCursor, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state
+                .disk()?
+                .open_descending(&self.pin, table, lower, upper)
+        })
+    }
+
+    pub(crate) fn next_descending(
+        &self,
+        table: &str,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        max_value_bytes: usize,
+        leaf: &mut crate::directory::ReverseLeafCursor,
+    ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
+        self.shared.run(CoreError::panicked, |state| {
+            self.shared.check_open(state)?;
+            state
+                .disk()?
+                .next_descending(&self.pin, table, lower, upper, max_value_bytes, leaf)
         })
     }
 
