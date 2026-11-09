@@ -37,6 +37,7 @@ mod bulk;
 const MAGIC: &[u8; 8] = b"KSLIVE02";
 const BUDGET_MAGIC: &[u8; 8] = b"KSLIVE03";
 const MAX_LEVELS: usize = 64;
+const BULK_TIER: u8 = (MAX_LEVELS - 1) as u8;
 const HEADER_BYTES: usize = 40;
 const ENTRY_BYTES: usize = 48;
 
@@ -323,7 +324,11 @@ impl LiveDb {
         };
         let mut levels = Vec::with_capacity(head.entries.len());
         for e in &head.entries {
-            levels.push(Level::open(files.read(&e.name(&head.id))?, e.root)?);
+            let mut level = Level::open(files.read(&e.name(&head.id))?, e.root)?;
+            if e.tier == BULK_TIER {
+                level.enable_bulk_cache();
+            }
+            levels.push(level);
         }
         let mut delta = Delta::new();
         let mut pending = 0;
@@ -468,7 +473,10 @@ impl LiveDb {
         let sequence = entry.sequence;
         sync_durable(&file)?;
         let output_bytes = file.metadata()?.len();
-        let level = Level::open(file, entry.root)?;
+        let mut level = Level::open(file, entry.root)?;
+        if entry.tier == BULK_TIER {
+            level.enable_bulk_cache();
+        }
         let mut entries = Vec::with_capacity(self.head.entries.len() - take + 1);
         entries.push(entry);
         entries.extend_from_slice(&self.head.entries[take..]);

@@ -4,6 +4,7 @@
 use crate::{FrozenRun, invalid, live_merge::Delta, read::RunCursor, write};
 use std::{
     cmp::Ordering,
+    collections::VecDeque,
     fs::File,
     io::{self, Seek},
     ops::Bound,
@@ -26,6 +27,8 @@ pub(super) struct Level {
     root: Option<Link>,
     loaded: Option<Loaded>,
     only_piece: bool,
+    cache_bulk_pieces: bool,
+    recent: VecDeque<Loaded>,
 }
 
 impl Level {
@@ -36,6 +39,8 @@ impl Level {
             root,
             loaded: None,
             only_piece: false,
+            cache_bulk_pieces: false,
+            recent: VecDeque::new(),
         };
         if let Some(link) = root
             && let Node::Leaf(leaf) = index::read(&mut out.file, link)?
@@ -46,12 +51,46 @@ impl Level {
         Ok(out)
     }
 
+    pub(super) fn enable_bulk_cache(&mut self) {
+        self.cache_bulk_pieces = true;
+    }
+
+    fn activate(&mut self, piece: Loaded) {
+        if let Some(mut previous) = self.loaded.replace(piece)
+            && self.cache_bulk_pieces
+        {
+            // Keep at most three old pieces; a large single-value buffer must
+            // not multiply with the number of cached pieces.
+            previous.rows.forget_oversized();
+            if let Some(deletes) = &mut previous.deletes {
+                deletes.forget_oversized();
+            }
+            if self.recent.len() == 3 {
+                self.recent.pop_back();
+            }
+            self.recent.push_front(previous);
+        }
+    }
+
+    fn reuse(&mut self, position: usize) {
+        let piece = self.recent.remove(position).expect("recent piece position");
+        self.activate(piece);
+    }
+
     fn load(&mut self, descriptor: Leaf) -> io::Result<()> {
         if self
             .loaded
             .as_ref()
             .is_some_and(|s| s.descriptor.rows == descriptor.rows)
         {
+            return Ok(());
+        }
+        if let Some(position) = self
+            .recent
+            .iter()
+            .position(|s| s.descriptor.rows == descriptor.rows)
+        {
+            self.reuse(position);
             return Ok(());
         }
         let open = |link: Link| {
@@ -67,7 +106,7 @@ impl Level {
             return Err(invalid("live piece key bounds differ"));
         }
         let deletes = descriptor.deleted.map(open).transpose()?;
-        self.loaded = Some(Loaded {
+        self.activate(Loaded {
             descriptor,
             rows,
             deletes,
@@ -115,7 +154,11 @@ impl Level {
             s.descriptor.first.as_slice() <= key && key <= s.descriptor.last.as_slice()
         };
         if !self.only_piece && !self.loaded.as_ref().is_some_and(contains) {
-            self.descend(root, Bound::Included(key), false, &mut Vec::new())?;
+            if let Some(position) = self.recent.iter().position(contains) {
+                self.reuse(position);
+            } else {
+                self.descend(root, Bound::Included(key), false, &mut Vec::new())?;
+            }
         }
         let shard = self.loaded.as_mut().unwrap();
         let Some(v) = shard.rows.get(key)? else {

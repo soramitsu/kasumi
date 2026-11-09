@@ -82,3 +82,9 @@ database, the command reopens it, scans every row, compares its digest and
 count with the source, and probes point and descending index reads. Its JSON
 receipt is printed only after all checks succeed. Repeat independent
 verification using `kasumi-live-transfer verify DIRECTORY ROWS STATE_SHA256`.
+
+An imported base retains up to three previously visited pieces alongside the
+current piece. This avoids repeatedly decoding the sparse indexes when a
+worker alternates between a document, its metadata counter and a secondary
+index. Older cached pieces release their oversized-row buffers when the
+cursor switches pieces. The on-disk format is unchanged.

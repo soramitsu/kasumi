@@ -143,3 +143,39 @@ fn sparse_index_and_empty_level_are_authenticated() {
     file.write_all(&[byte[0] ^ 1]).unwrap();
     assert!(Level::open(file, hash).is_err());
 }
+
+#[test]
+fn bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order() {
+    let mut data = Delta::new();
+    for n in 0..12u8 {
+        data.insert(vec![n * 2], Some(vec![n; 12]));
+    }
+    let mut base = level(&data, &mut [], true, 80); // One key per piece.
+    base.enable_bulk_cache();
+    for n in [2u8, 3, 2, 5, 11, 10, 9, 3, 2, 3] {
+        assert_eq!(base.lookup(&[n * 2]).unwrap(), Some(Some(vec![n; 12])));
+        assert_eq!(base.lookup(&[n * 2 + 1]).unwrap(), None);
+        assert!(base.recent.len() <= 3);
+    }
+    for reverse in [true, false] {
+        let mut result = Vec::new();
+        visit(
+            &mut [&mut base],
+            &Delta::new(),
+            Excluded(&[6]),
+            Included(&[16]),
+            20,
+            reverse,
+            |key, value| {
+                result.push((key[0], value[0]));
+                Ok(())
+            },
+        )
+        .unwrap();
+        let mut expect = vec![(8, 4), (10, 5), (12, 6), (14, 7), (16, 8)];
+        if reverse {
+            expect.reverse();
+        }
+        assert_eq!(result, expect);
+    }
+}

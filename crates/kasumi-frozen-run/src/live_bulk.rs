@@ -1,4 +1,4 @@
-use super::{Entry, LiveDb, MAX_LEVELS, live_levels};
+use super::{BULK_TIER, Entry, LiveDb, live_levels};
 use std::io;
 
 impl LiveDb {
@@ -22,7 +22,7 @@ impl LiveDb {
         // below all younger levels until an explicit full checkpoint requests
         // merging it. This avoids rewriting a large import on its next flush.
         let mut entry = Entry {
-            tier: (MAX_LEVELS - 1) as u8,
+            tier: BULK_TIER,
             sequence: 1,
             root: [0; 32],
         };

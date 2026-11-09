@@ -220,6 +220,11 @@ impl FrozenRun {
         })
     }
 
+    #[cfg(unix)]
+    pub(crate) fn forget_oversized(&mut self) {
+        self.oversized = None;
+    }
+
     fn block(&mut self, id: usize) -> io::Result<&Decoded> {
         let block = &self.blocks[id];
         // An oversized single row cannot evict all the small lookup blocks or
