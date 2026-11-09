@@ -449,6 +449,19 @@ impl Wal {
         ))
     }
 
+    pub(crate) fn read_sealed(
+        file: &File,
+        base: u64,
+        root: [u8; 32],
+        visit: impl FnMut(u64, &[WalOp<'_>]) -> io::Result<()>,
+    ) -> io::Result<u64> {
+        let (sequence, end, length, _) = read_frames(file, base, root, visit)?;
+        if end != length {
+            return Err(invalid("incomplete WAL in read-only database"));
+        }
+        Ok(sequence)
+    }
+
     pub(crate) fn len(&self) -> u64 {
         self.end
     }

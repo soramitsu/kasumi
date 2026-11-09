@@ -88,3 +88,14 @@ current piece. This avoids repeatedly decoding the sparse indexes when a
 worker alternates between a document, its metadata counter and a secondary
 index. Older cached pieces release their oversized-row buffers when the
 cursor switches pieces. The on-disk format is unchanged.
+
+To stream the complete current rows from a sealed live database, run
+`kasumi-live-transfer export-read-only DIRECTORY > rows.raw`. The reader takes
+the directory lock to exclude writers. It opens the manifest, levels and WAL
+read-only, validates complete WAL frames, and rejects a torn tail. Level
+indexes are checked on open and level pieces are authenticated as visited.
+The transfer format requires at least one row, so exporting an empty database
+fails without producing a partial stream. It does not
+initialize an interrupted database, reclaim stale files or apply a repair.
+The count, byte total, sequence and SHA-256 are printed to stderr. The Rust
+`ReadOnlyLiveDb` API also supports point reads and bounded forward scans.

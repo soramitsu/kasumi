@@ -41,6 +41,18 @@ fn complete_trailer_is_required_for_publication_and_verify_rejects_wrong_source(
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("valid");
     assert!(import(&raw, &target).status.success());
+    let readonly = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"))
+        .arg("export-read-only")
+        .arg(&target)
+        .output()
+        .unwrap();
+    assert!(readonly.status.success());
+    assert_eq!(readonly.stdout, raw);
+    assert!(
+        String::from_utf8(readonly.stderr)
+            .unwrap()
+            .contains("\"read_only\":true")
+    );
     assert!(!import(&raw, &target).status.success());
     assert_eq!(
         LiveDb::open(&target).unwrap().get(b"k").unwrap(),
@@ -77,4 +89,23 @@ fn complete_trailer_is_required_for_publication_and_verify_rejects_wrong_source(
         assert_eq!(reopened.sequence(), 0);
         assert!(reopened.get(b"").unwrap().is_none());
     }
+}
+
+#[test]
+fn empty_database_has_no_importable_export() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("empty");
+    drop(LiveDb::create(&path).unwrap());
+    let output = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"))
+        .arg("export-read-only")
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("empty live database")
+    );
 }

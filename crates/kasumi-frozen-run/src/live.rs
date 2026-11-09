@@ -226,6 +226,89 @@ fn apply(delta: &mut Delta, ops: &[WalOp<'_>]) -> u64 {
     charge
 }
 
+fn open_levels(files: &Files, head: &Head) -> io::Result<Vec<Level>> {
+    head.entries
+        .iter()
+        .map(|entry| {
+            let mut level = Level::open(files.read(&entry.name(&head.id))?, entry.root)?;
+            if entry.tier == BULK_TIER {
+                level.enable_bulk_cache();
+            }
+            Ok(level)
+        })
+        .collect()
+}
+
+fn replay_delta(
+    head: &Head,
+    delta: &mut Delta,
+    pending: &mut u64,
+    ops: &[WalOp<'_>],
+) -> io::Result<()> {
+    if *pending >= head.budget.unwrap_or(LIVE_CHECKPOINT_BYTES) {
+        return Err(invalid("live WAL exceeds checkpoint interval"));
+    }
+    *pending += apply(delta, ops);
+    Ok(())
+}
+
+/// An immutable view of a stopped live database. Opening takes the directory
+/// lock, uses only read-only descriptors and rejects incomplete WAL tails.
+/// It never initializes, truncates, reclaims or syncs any file.
+pub struct ReadOnlyLiveDb {
+    levels: Vec<Level>,
+    delta: Delta,
+    sequence: u64,
+    _files: Files,
+}
+
+impl ReadOnlyLiveDb {
+    /// Authenticate the manifest, level indexes and complete WAL. Level pieces
+    /// are authenticated as they are read.
+    pub fn open(path: impl AsRef<Path>) -> io::Result<Self> {
+        let (files, _) = Files::lock(path.as_ref(), false)?;
+        let head = Head::read(&files)?;
+        let levels = open_levels(&files, &head)?;
+        let mut delta = Delta::new();
+        let mut pending = 0;
+        let sequence = Wal::read_sealed(
+            &files.read(&head.wal_name())?,
+            head.seq,
+            head.binding(),
+            |_, ops| replay_delta(&head, &mut delta, &mut pending, ops),
+        )?;
+        Ok(Self {
+            levels,
+            delta,
+            sequence,
+            _files: files,
+        })
+    }
+
+    /// Last complete sequence in the immutable database.
+    pub fn sequence(&self) -> u64 {
+        self.sequence
+    }
+
+    /// Read the current value of a binary key.
+    pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
+        live_levels::get(&mut levels, &self.delta, key)
+    }
+
+    /// Visit current rows in ascending order between the given bounds.
+    pub fn visit_forward(
+        &mut self,
+        lower: Bound<&[u8]>,
+        upper: Bound<&[u8]>,
+        limit: usize,
+        emit: impl FnMut(&[u8], &[u8]) -> io::Result<()>,
+    ) -> io::Result<usize> {
+        let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
+        live_levels::visit(&mut levels, &self.delta, lower, upper, limit, false, emit)
+    }
+}
+
 impl LiveDb {
     /// Create in a new or empty directory, or resume a provable interrupted creation.
     pub fn create(path: impl AsRef<Path>) -> io::Result<Self> {
@@ -322,27 +405,14 @@ impl LiveDb {
             }
             other => other?,
         };
-        let mut levels = Vec::with_capacity(head.entries.len());
-        for e in &head.entries {
-            let mut level = Level::open(files.read(&e.name(&head.id))?, e.root)?;
-            if e.tier == BULK_TIER {
-                level.enable_bulk_cache();
-            }
-            levels.push(level);
-        }
+        let levels = open_levels(&files, &head)?;
         let mut delta = Delta::new();
         let mut pending = 0;
         let wal = Wal::open(
             files.writable(&head.wal_name())?,
             head.seq,
             head.binding(),
-            |_, ops| {
-                if pending >= head.budget.unwrap_or(LIVE_CHECKPOINT_BYTES) {
-                    return Err(invalid("live WAL exceeds checkpoint interval"));
-                }
-                pending += apply(&mut delta, ops);
-                Ok(())
-            },
+            |_, ops| replay_delta(&head, &mut delta, &mut pending, ops),
         )?;
         // A previous process may have renamed the selector and exited before
         // syncing the directory. Persist the observed winner before reclaiming.

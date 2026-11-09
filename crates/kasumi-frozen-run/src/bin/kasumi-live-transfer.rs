@@ -3,11 +3,11 @@
 //! the exporter. No full raw dump or second compressed generation is needed.
 #[cfg(unix)]
 mod unix {
-    use kasumi_frozen_run::{LiveDb, MAX_KEY, MAX_VALUE};
+    use kasumi_frozen_run::{LiveDb, MAX_KEY, MAX_VALUE, ReadOnlyLiveDb};
     use sha2::{Digest, Sha256};
     use std::{
         env, fs,
-        io::{self, BufReader, Read},
+        io::{self, BufReader, BufWriter, Read, Write},
         ops::Bound,
         path::Path,
     };
@@ -188,9 +188,45 @@ mod unix {
         Ok(())
     }
 
+    fn export_read_only(dir: &Path, out: &mut impl Write) -> io::Result<()> {
+        let mut db = ReadOnlyLiveDb::open(dir)?;
+        let mut seen = Counter::default();
+        db.visit_forward(Bound::Unbounded, Bound::Unbounded, usize::MAX, |k, v| {
+            if seen.rows == 0 {
+                out.write_all(MAGIC)?;
+            }
+            seen.row(k, v)?;
+            for data in [k, v] {
+                out.write_all(&(data.len() as u32).to_be_bytes())?;
+                out.write_all(data)?;
+            }
+            Ok(())
+        })?;
+        if seen.rows == 0 {
+            return Err(bad("empty live database has no importable raw stream"));
+        }
+        out.write_all(&u32::MAX.to_be_bytes())?;
+        out.write_all(&seen.rows.to_be_bytes())?;
+        out.write_all(&seen.bytes.to_be_bytes())?;
+        out.write_all(&seen.digest())?;
+        out.flush()?;
+        eprintln!(
+            "{{\"rows\":{},\"logical_bytes\":{},\"state_sha256\":\"{}\",\"kasumi_sequence\":{},\"read_only\":true}}",
+            seen.rows,
+            seen.bytes,
+            hex(&seen.digest()),
+            db.sequence()
+        );
+        Ok(())
+    }
+
     pub fn run() -> io::Result<()> {
         let args: Vec<_> = env::args_os().skip(1).collect();
         match args.as_slice() {
+            [cmd, directory] if cmd == "export-read-only" => export_read_only(
+                Path::new(directory),
+                &mut BufWriter::new(io::stdout().lock()),
+            ),
             [cmd, directory] if cmd == "import" => {
                 let dir = Path::new(directory);
                 // Create exactly once, with private ownership, before any files.
@@ -223,7 +259,7 @@ mod unix {
             }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: kasumi-live-transfer import NEW_DIRECTORY < RAW_STREAM, or verify DIRECTORY ROWS STATE_SHA256",
+                "usage: kasumi-live-transfer import NEW_DIRECTORY < RAW_STREAM, verify DIRECTORY ROWS STATE_SHA256, or export-read-only DIRECTORY > RAW_STREAM",
             )),
         }
     }

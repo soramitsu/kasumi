@@ -525,3 +525,61 @@ fn persisted_budget_controls_checkpoints_and_legacy_v2_reopens_unchanged() {
         Some(&b"old"[..])
     );
 }
+
+#[test]
+fn sealed_reader_authenticates_wal_and_levels_without_changing_any_file() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("data");
+    let mut writer = LiveDb::create(&path).unwrap();
+    writer
+        .commit(&[WalOp::Put(b"a", b"old"), WalOp::Put(b"b", b"keep")])
+        .unwrap();
+    writer.checkpoint().unwrap();
+    writer
+        .commit(&[WalOp::Delete(b"a"), WalOp::Put(b"c", b"new")])
+        .unwrap();
+    assert!(ReadOnlyLiveDb::open(&path).is_err());
+    let seq = writer.sequence();
+    let wal = path.join(writer.head.wal_name());
+    // A stale file for the same database would be reclaimed by a writer reopen.
+    let stale = path.join(Files::name(&writer.head.id, "wal-999-0"));
+    drop(writer);
+    fs::write(&stale, b"preserve me").unwrap();
+    let inventory = || -> BTreeMap<_, _> {
+        fs::read_dir(&path)
+            .unwrap()
+            .map(|e| {
+                let e = e.unwrap();
+                (e.file_name(), fs::read(e.path()).unwrap())
+            })
+            .collect()
+    };
+    let before = inventory();
+    let mut reader = ReadOnlyLiveDb::open(&path).unwrap();
+    assert_eq!(reader.sequence(), seq);
+    assert!(LiveDb::open(&path).is_err());
+    assert_eq!(reader.get(b"a").unwrap(), None);
+    assert_eq!(reader.get(b"c").unwrap().unwrap(), b"new");
+    let mut rows = Vec::new();
+    reader
+        .visit_forward(Unbounded, Unbounded, usize::MAX, |k, v| {
+            rows.push((k.to_vec(), v.to_vec()));
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        rows,
+        [
+            (b"b".to_vec(), b"keep".to_vec()),
+            (b"c".to_vec(), b"new".to_vec())
+        ]
+    );
+    drop(reader);
+    assert_eq!(inventory(), before);
+    let mut file = OpenOptions::new().append(true).open(&wal).unwrap();
+    file.write_all(&[1, 2, 3]).unwrap();
+    drop(file);
+    let torn = inventory();
+    assert!(ReadOnlyLiveDb::open(&path).is_err());
+    assert_eq!(inventory(), torn);
+}
