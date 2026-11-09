@@ -123,5 +123,144 @@
       "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
       "allocatedAfterReplay": 3037765632
     }
-  ]
+  ],
+  "fullWorker": {
+    "blocks": 4096,
+    "firstBlock": 372382,
+    "lastBlock": 376477,
+    "sourceCommit": "72958a862b02304708b3801779a8e0e2cd071b6a",
+    "receiptSha256": "d4f2cac46f6df678289f4a715afa8e7537ed38f157aef4a9acada0aa8ecc6a31",
+    "pairs": [
+      {
+        "pair": 1,
+        "order": [
+          "rocksdb",
+          "kasumi"
+        ],
+        "startToStopChangePercent": -1.2919143094843766,
+        "firstFetchedToFinalCommitChangePercent": 0.4800522922162598,
+        "rocksBytes": 3978047488,
+        "kasumiBytes": 3119792128,
+        "savedAllocatedBytes": 858255360,
+        "savedPercent": 21.574789204728575
+      },
+      {
+        "pair": 2,
+        "order": [
+          "kasumi",
+          "rocksdb"
+        ],
+        "startToStopChangePercent": 1.3666623481527918,
+        "firstFetchedToFinalCommitChangePercent": 2.225950365913021,
+        "rocksBytes": 3978043392,
+        "kasumiBytes": 3119792128,
+        "savedAllocatedBytes": 858251264,
+        "savedPercent": 21.574708454060023
+      },
+      {
+        "pair": 3,
+        "order": [
+          "rocksdb",
+          "kasumi"
+        ],
+        "startToStopChangePercent": 0.9095182553276127,
+        "firstFetchedToFinalCommitChangePercent": 3.981194646474373,
+        "rocksBytes": 3978047488,
+        "kasumiBytes": 3119792128,
+        "savedAllocatedBytes": 858255360,
+        "savedPercent": 21.574789204728575
+      }
+    ],
+    "timings": {
+      "rocksdb": {
+        "startToStopSeconds": {
+          "perPair": [
+            329.182667053,
+            343.340689406,
+            337.737483883
+          ],
+          "medianSeconds": 337.737483883,
+          "meanSeconds": 336.75361344733335,
+          "totalSeconds": 1010.2608403419999
+        },
+        "firstFetchedToFinalCommitSeconds": {
+          "perPair": [
+            298.265288223,
+            312.790560141,
+            301.243573022
+          ],
+          "medianSeconds": 301.243573022,
+          "meanSeconds": 304.09980712866667,
+          "totalSeconds": 912.2994213860001
+        },
+        "firstCommitToFinalCommitSeconds": {
+          "perPair": [
+            298.233596736,
+            312.75360145,
+            301.213701753
+          ],
+          "medianSeconds": 301.213701753,
+          "meanSeconds": 304.06696664633336,
+          "totalSeconds": 912.200899939
+        },
+        "startupToFirstFetchedSeconds": {
+          "perPair": [
+            30.91568074,
+            30.548362287,
+            36.492120805
+          ],
+          "medianSeconds": 30.91568074,
+          "meanSeconds": 32.65205461066667,
+          "totalSeconds": 97.956163832
+        },
+        "aggregateStartToStopBlocksPerSecond": 12.163195394013478,
+        "aggregateFirstFetchedToFinalCommitBlocksPerSecond": 13.469262077719618
+      },
+      "kasumi": {
+        "startToStopSeconds": {
+          "perPair": [
+            324.929909073,
+            348.032997334,
+            340.809267954
+          ],
+          "medianSeconds": 340.809267954,
+          "meanSeconds": 337.9240581203333,
+          "totalSeconds": 1013.772174361
+        },
+        "firstFetchedToFinalCommitSeconds": {
+          "perPair": [
+            299.697117576,
+            319.753122759,
+            313.236666024
+          ],
+          "medianSeconds": 313.236666024,
+          "meanSeconds": 310.895635453,
+          "totalSeconds": 932.686906359
+        },
+        "firstCommitToFinalCommitSeconds": {
+          "perPair": [
+            299.677292719,
+            319.732196817,
+            313.215856002
+          ],
+          "medianSeconds": 313.215856002,
+          "meanSeconds": 310.8751151793333,
+          "totalSeconds": 932.6253455379999
+        },
+        "startupToFirstFetchedSeconds": {
+          "perPair": [
+            25.230028904,
+            28.278224901,
+            27.570813927
+          ],
+          "medianSeconds": 27.570813927,
+          "meanSeconds": 27.026355910666666,
+          "totalSeconds": 81.079067732
+        },
+        "aggregateStartToStopBlocksPerSecond": 12.121066557923,
+        "aggregateFirstFetchedToFinalCommitBlocksPerSecond": 13.174839183675891
+      }
+    },
+    "verification": "All keys and all 4,096 journal and valuation records matched in each pair. Only run timestamps and worker heartbeat metadata differed."
+  }
 }

@@ -1,6 +1,6 @@
 # Polkaswap Stats storage comparison — 9 November 2026
 
-The opt-in compact live engine on Kasumi master is measured below. The Stats comparisons use the same 4,096 finalized BLOCK snapshots. The separate Points replay uses historical operations from the private Points worker. [Stats fixture](fixtures/README.md) The storage replays measure durable KV ingestion and local reads. The application replay separately exercises the indexer's repository and Stats GraphQL resolvers. Neither measures chain RPC, unrelated collections or the full production worker. The [previous mutable formats](#packed-directories-with-inline-maintenance) and [sealed-only archive](#sealed-historical-data) are distinct engines.
+The Stats comparisons replay 4,096 finalized BLOCK snapshots. They measure durable KV ingestion, local reads, the indexer repository and its Stats GraphQL resolvers. Chain RPC time is excluded from those measurements. A separate Points benchmark runs the full historical worker on finalized blocks. [Stats fixture](fixtures/README.md) · [Earlier mutable formats](#packed-directories-with-inline-maintenance) · [Sealed historical archive](#sealed-historical-data)
 
 ## Imported Polkaswap Points data
 
@@ -15,6 +15,8 @@ The 128-block storage trace contained 2,495 steady point reads and 129 durable c
 | Warm data files, 100% resident | 130.3 ms | 147.2 ms | 32.7 ms |
 
 Each case used a fresh physical copy, checked its cache residency and validated every returned value and the final sorted state. These timings measure native reads in the worker's recorded sequence. [Raw measurements](results/points-bulk-filter.json)
+
+Three additional runs per engine compared the full Points worker over the same 4,096 finalized blocks, including archive RPC and durable commits. Execution order alternated across pairs. Filtered Kasumi processed 12.121 blocks/s from start to stop and RocksDB processed 12.163. From the first fetched block to the final commit the rates were 13.175 and 13.469 blocks/s, respectively. Kasumi took 0.35% longer overall and 2.23% longer over the latter interval. Its final database used 3,119,792,128 allocated bytes, about 21.6% less than RocksDB. Every pair reproduced all keys and all journal and valuation rows. [Per-pair timings, allocation and verification](results/points-bulk-filter.json)
 
 ## Live writer
 
