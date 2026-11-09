@@ -10,6 +10,24 @@ impl LiveDb {
         &mut self,
         rows: impl IntoIterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
     ) -> io::Result<u64> {
+        self.load_bulk(rows, None)
+    }
+
+    /// Import an exact row count and include an authenticated Bloom filter in
+    /// the immutable base. Filtered bases require a filter-aware reader.
+    pub fn load_sorted_with_filter(
+        &mut self,
+        rows: impl IntoIterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
+        expected_rows: u64,
+    ) -> io::Result<u64> {
+        self.load_bulk(rows, Some(expected_rows))
+    }
+
+    fn load_bulk(
+        &mut self,
+        rows: impl IntoIterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
+        expected_filter_rows: Option<u64>,
+    ) -> io::Result<u64> {
         self.check()?;
         if self.sequence() != 0 {
             return Err(io::Error::new(
@@ -27,7 +45,7 @@ impl LiveDb {
             root: [0; 32],
         };
         let mut file = self.files.fresh(&entry.name(&self.head.id))?;
-        let (root, count) = live_levels::write_sorted(&mut file, rows)?;
+        let (root, count) = live_levels::write_sorted(&mut file, rows, expected_filter_rows)?;
         entry.root = root;
         self.publish_level(entry, file, 0)?;
         Ok(count)

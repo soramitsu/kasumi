@@ -99,3 +99,27 @@ fails without producing a partial stream. It does not
 initialize an interrupted database, reclaim stale files or apply a repair.
 The count, byte total, sequence and SHA-256 are printed to stderr. The Rust
 `ReadOnlyLiveDb` API also supports point reads and bounded forward scans.
+
+For an opt-in filtered import, run `kasumi-live-transfer import-filtered NEW_DIRECTORY EXPECTED_ROWS`
+with the same sorted stream on stdin. Use its exact row count. The importer checks the trailer,
+the count, and every row before publishing. The immutable bulk level includes a blocked Bloom
+filter of about ten bits per row (64-byte buckets, capped at 256 MiB). Its root authenticates
+both the exact tree and the complete filter. A negative test skips the tree lookup. A positive
+test uses the ordinary exact lookup. WAL updates and newer levels take precedence, and full
+compaction rebuilds the filter from its merged output.
+
+Root node tag 2 contains the ordinary tree link followed by a link to the filter.
+The filter uses 64-byte buckets. The first eight bytes of SHA-256(key), interpreted
+as little-endian u64 modulo the bucket count, select the bucket. The low nine bits
+in each of the next seven little-endian u16 values select the bit positions within
+it, least-significant bit first. Both links and all filter bytes are authenticated.
+The `verify` and `export-read-only` commands check membership of every physical
+filtered key, including shadowed rows, as they scan. Consumers must check the
+complete stream trailer before accepting output. Full compaction counts surviving
+rows and retained tombstones before sizing the rebuilt filter. At the maximum
+size the old and replacement filters can occupy 512 MiB together during compaction.
+
+A filter-aware reader can open both formats. Earlier readers reject the filtered root. Keep a
+separate verified legacy database for rollback when choosing this import mode. The default
+`import` command continues to produce the legacy format. Both produce the same sorted logical
+export for the same source rows.

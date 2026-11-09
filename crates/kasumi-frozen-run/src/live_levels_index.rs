@@ -1,6 +1,6 @@
 //! A level is a file of bounded frozen-run pieces under an authenticated binary tree.
 //! Every child points backward, and opening a level needs only its root handle.
-use crate::{MAX_KEY, invalid, take};
+use crate::{MAX_KEY, invalid, live_bulk_filter::BulkFilter, take};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
@@ -48,6 +48,10 @@ pub(super) enum Node {
         split: Vec<u8>,
         left: Link,
         right: Link,
+    },
+    BulkRoot {
+        tree: Link,
+        filter: Link,
     },
 }
 fn get_key(input: &mut &[u8]) -> io::Result<Vec<u8>> {
@@ -101,12 +105,31 @@ pub(super) fn read(file: &mut File, link: Link) -> io::Result<Node> {
             left: Link::decode(&mut input, link.at)?,
             right: Link::decode(&mut input, link.at)?,
         },
+        2 => {
+            let tree = Link::decode(&mut input, link.at)?;
+            let filter = Link::decode(&mut input, link.at)?;
+            if tree.at + tree.len != filter.at || filter.at + filter.len != link.at {
+                return Err(invalid("invalid bulk membership extents"));
+            }
+            Node::BulkRoot { tree, filter }
+        }
         _ => return Err(invalid("invalid live level node tag")),
     };
     if !input.is_empty() {
         return Err(invalid("trailing live level node fields"));
     }
     Ok(node)
+}
+
+pub(super) fn read_filter(file: &mut File, link: Link) -> io::Result<BulkFilter> {
+    let size = usize::try_from(link.len).map_err(|_| invalid("bulk filter length overflow"))?;
+    let mut filter = BulkFilter::with_bytes(size)?;
+    file.seek(SeekFrom::Start(link.at))?;
+    file.read_exact(filter.bytes_mut())?;
+    if <[u8; 32]>::from(Sha256::digest(filter.bytes())) != link.root {
+        return Err(invalid("bulk membership filter digest differs"));
+    }
+    Ok(filter)
 }
 pub(super) fn open(file: &mut File, expected: [u8; 32]) -> io::Result<Option<Link>> {
     let len = file.metadata()?.len();
@@ -183,7 +206,7 @@ impl Builder {
         self.heights.push(Some(tree));
         Ok(())
     }
-    pub fn finish(self, file: &mut File) -> io::Result<[u8; 32]> {
+    pub fn finish(self, file: &mut File, filter: Option<&BulkFilter>) -> io::Result<[u8; 32]> {
         let mut tree = None;
         for older in self.heights.into_iter().flatten() {
             tree = Some(match tree {
@@ -193,7 +216,15 @@ impl Builder {
         }
         let mut footer = Vec::from(MAGIC.as_slice());
         if let Some(root) = tree {
-            root.link.encode(&mut footer);
+            let mut link = root.link;
+            if let Some(filter) = filter {
+                let membership = append(file, filter.bytes())?;
+                let mut node = vec![2];
+                link.encode(&mut node);
+                membership.encode(&mut node);
+                link = append(file, &node)?;
+            }
+            link.encode(&mut footer);
         } else {
             footer.resize(FOOTER, 0);
         }

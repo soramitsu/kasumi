@@ -7,6 +7,8 @@
 #[cfg(unix)]
 mod live;
 #[cfg(unix)]
+mod live_bulk_filter;
+#[cfg(unix)]
 mod live_files;
 #[cfg(unix)]
 mod live_levels;

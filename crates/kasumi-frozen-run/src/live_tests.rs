@@ -615,3 +615,55 @@ fn sealed_reader_preserves_a_repairable_incomplete_wal_frame() {
     );
     assert_eq!(fs::read(&wal).unwrap(), previous_bytes);
 }
+
+#[test]
+fn filtered_import_reopen_compaction_and_tombstones_keep_all_current_keys() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("filtered");
+    let mut db = LiveDb::create(&path).unwrap();
+    let count = 8_000u16;
+    let rows = (0..count).map(|n| Ok((n.to_be_bytes().to_vec(), vec![(n % 253) as u8; 600])));
+    assert_eq!(
+        db.load_sorted_with_filter(rows, u64::from(count)).unwrap(),
+        u64::from(count)
+    );
+    drop(db);
+    let mut db = LiveDb::open(&path).unwrap();
+    for n in 0..count {
+        assert_eq!(
+            db.get(&n.to_be_bytes()).unwrap(),
+            Some(vec![(n % 253) as u8; 600])
+        );
+    }
+    assert_eq!(db.get(b"missing").unwrap(), None);
+    db.commit(&[
+        WalOp::Delete(&0u16.to_be_bytes()),
+        WalOp::Put(b"", b""),
+        WalOp::Put(b"later", b"value"),
+    ])
+    .unwrap();
+    db.checkpoint().unwrap();
+    drop(db);
+    let mut db = ReadOnlyLiveDb::open(&path).unwrap();
+    assert_eq!(db.get(&0u16.to_be_bytes()).unwrap(), None);
+    assert_eq!(db.get(b"").unwrap(), Some(vec![]));
+    assert_eq!(db.get(b"later").unwrap(), Some(b"value".to_vec()));
+    let mut found = 0;
+    db.visit_forward(Unbounded, Unbounded, usize::MAX, |_, _| {
+        found += 1;
+        Ok(())
+    })
+    .unwrap();
+    assert_eq!(found, usize::from(count) + 1);
+    drop(db);
+    let mismatch = dir.path().join("mismatched");
+    let mut broken = LiveDb::create(&mismatch).unwrap();
+    assert!(
+        broken
+            .load_sorted_with_filter([Ok((b"k".to_vec(), vec![1]))], 2)
+            .is_err()
+    );
+    drop(broken);
+    let db = ReadOnlyLiveDb::open(&mismatch).unwrap();
+    assert_eq!(db.sequence(), 0);
+}

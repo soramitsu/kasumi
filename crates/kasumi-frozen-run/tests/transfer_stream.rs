@@ -8,9 +8,18 @@ use std::{
 };
 
 fn import(bytes: &[u8], target: &Path) -> std::process::Output {
+    run_import(bytes, target, None)
+}
+
+fn run_import(bytes: &[u8], target: &Path, rows: Option<&str>) -> std::process::Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"))
-        .arg("import")
+        .arg(if rows.is_some() {
+            "import-filtered"
+        } else {
+            "import"
+        })
         .arg(target)
+        .args(rows)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -41,6 +50,20 @@ fn complete_trailer_is_required_for_publication_and_verify_rejects_wrong_source(
     let dir = tempfile::tempdir().unwrap();
     let target = dir.path().join("valid");
     assert!(import(&raw, &target).status.success());
+    let filtered = dir.path().join("filtered");
+    assert!(run_import(&raw, &filtered, Some("2")).status.success());
+    let export = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"))
+        .arg("export-read-only")
+        .arg(filtered)
+        .output()
+        .unwrap();
+    assert!(export.status.success());
+    assert_eq!(export.stdout, raw);
+    assert!(
+        !run_import(&raw, &dir.path().join("wrong-count"), Some("3"))
+            .status
+            .success()
+    );
     let readonly = Command::new(env!("CARGO_BIN_EXE_kasumi-live-transfer"))
         .arg("export-read-only")
         .arg(&target)

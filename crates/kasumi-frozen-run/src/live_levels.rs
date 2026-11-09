@@ -1,7 +1,9 @@
 //! Authenticated, immutable runs for the mutable store. The manifest supplies
 //! levels in descending age order (newest first). Only a newly produced run and
 //! its bounded merge inputs participate in a flush.
-use crate::{FrozenRun, invalid, live_merge::Delta, read::RunCursor, write};
+use crate::{
+    FrozenRun, invalid, live_bulk_filter::BulkFilter, live_merge::Delta, read::RunCursor, write,
+};
 use std::{
     cmp::Ordering,
     collections::VecDeque,
@@ -29,30 +31,44 @@ pub(super) struct Level {
     only_piece: bool,
     cache_bulk_pieces: bool,
     recent: VecDeque<Loaded>,
+    membership: Option<BulkFilter>,
 }
 
 impl Level {
-    pub(super) fn open(mut file: File, expected_root: [u8; 32]) -> io::Result<Self> {
-        let root = index::open(&mut file, expected_root)?;
+    pub(super) fn open(mut file: File, expected_root: [u8; 32], bulk: bool) -> io::Result<Self> {
+        let mut root = index::open(&mut file, expected_root)?;
+        let mut membership = None;
+        let mut first = None;
+        if let Some(link) = root {
+            let mut node = index::read(&mut file, link)?;
+            if let Node::BulkRoot { tree, filter } = node {
+                if !bulk {
+                    return Err(invalid("membership filter outside the bulk tier"));
+                }
+                membership = Some(index::read_filter(&mut file, filter)?);
+                root = Some(tree);
+                node = index::read(&mut file, tree)?;
+            }
+            match node {
+                Node::Leaf(leaf) => first = Some(leaf),
+                Node::Branch { .. } => {}
+                Node::BulkRoot { .. } => return Err(invalid("nested bulk membership root")),
+            }
+        }
         let mut out = Self {
             file,
             root,
             loaded: None,
             only_piece: false,
-            cache_bulk_pieces: false,
+            cache_bulk_pieces: bulk,
             recent: VecDeque::new(),
+            membership,
         };
-        if let Some(link) = root
-            && let Node::Leaf(leaf) = index::read(&mut out.file, link)?
-        {
+        if let Some(leaf) = first {
             out.load(leaf)?;
             out.only_piece = true;
         }
         Ok(out)
-    }
-
-    pub(super) fn enable_bulk_cache(&mut self) {
-        self.cache_bulk_pieces = true;
     }
 
     fn activate(&mut self, piece: Loaded) {
@@ -126,6 +142,7 @@ impl Level {
         for _ in 0..=index::HEIGHT {
             match index::read(&mut self.file, link)? {
                 Node::Leaf(leaf) => return self.load(leaf),
+                Node::BulkRoot { .. } => return Err(invalid("nested bulk membership root")),
                 Node::Branch { split, left, right } => {
                     let right_first = match start {
                         Bound::Included(key) => key >= split.as_slice(),
@@ -150,6 +167,13 @@ impl Level {
         let Some(root) = self.root else {
             return Ok(None);
         };
+        if self
+            .membership
+            .as_ref()
+            .is_some_and(|filter| !filter.may_contain(key))
+        {
+            return Ok(None);
+        }
         let contains = |s: &Loaded| {
             s.descriptor.first.as_slice() <= key && key <= s.descriptor.last.as_slice()
         };
@@ -199,15 +223,23 @@ struct Cursor {
     scan: Option<RunCursor>,
     pos: Option<(usize, u32)>,
     key: Vec<u8>,
+    verify_membership: bool,
 }
 
 impl Cursor {
-    fn start(level: &mut Level, lo: Bound<&[u8]>, hi: Bound<&[u8]>, rev: bool) -> io::Result<Self> {
+    fn start(
+        level: &mut Level,
+        lo: Bound<&[u8]>,
+        hi: Bound<&[u8]>,
+        rev: bool,
+        verify_membership: bool,
+    ) -> io::Result<Self> {
         let mut c = Self {
             later: Vec::new(),
             scan: None,
             pos: None,
             key: Vec::new(),
+            verify_membership,
         };
         if let Some(root) = level.root {
             if !level.only_piece {
@@ -239,6 +271,14 @@ impl Cursor {
             if let Some(row) = scan.next(&mut shard.rows, lo, hi)? {
                 self.key.clear();
                 self.key.extend_from_slice(shard.rows.cursor_row(row)?.0);
+                if self.verify_membership
+                    && level
+                        .membership
+                        .as_ref()
+                        .is_some_and(|filter| !filter.may_contain(&self.key))
+                {
+                    return Err(invalid("bulk filter omits a stored key"));
+                }
                 self.pos = Some(row);
                 return Ok(());
             }
@@ -302,6 +342,7 @@ fn merge(
     lo: Bound<&[u8]>,
     hi: Bound<&[u8]>,
     rev: bool,
+    verify_membership: bool,
     mut emit: impl FnMut(&[u8], Option<&[u8]>) -> io::Result<bool>,
 ) -> io::Result<()> {
     if empty(lo, hi) {
@@ -309,7 +350,7 @@ fn merge(
     }
     let mut cursors = levels
         .iter_mut()
-        .map(|l| Cursor::start(l, lo, hi, rev))
+        .map(|l| Cursor::start(l, lo, hi, rev, verify_membership))
         .collect::<io::Result<Vec<_>>>()?;
     let mut changes = delta.range::<[u8], _>((lo, hi));
     let mut take_change = || {
@@ -388,7 +429,7 @@ pub(super) fn visit(
         }
     }
     let mut count = 0;
-    merge(levels, delta, lo, hi, rev, |key, value| {
+    merge(levels, delta, lo, hi, rev, false, |key, value| {
         if let Some(row) = value {
             emit(key, row)?;
             count += 1;
@@ -396,6 +437,41 @@ pub(super) fn visit(
         Ok(count < limit)
     })?;
     Ok(count)
+}
+
+/// The full merge visits keys in every input, including tombstones and values
+/// shadowed by newer writes. Validate the Bloom bits on that same traversal.
+pub(super) fn visit_verified(
+    levels: &mut [&mut Level],
+    delta: &Delta,
+    mut emit: impl FnMut(&[u8], &[u8]) -> io::Result<()>,
+) -> io::Result<()> {
+    if !levels.iter().any(|level| level.membership.is_some()) {
+        return visit(
+            levels,
+            delta,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            usize::MAX,
+            false,
+            emit,
+        )
+        .map(|_| ());
+    }
+    merge(
+        levels,
+        delta,
+        Bound::Unbounded,
+        Bound::Unbounded,
+        false,
+        true,
+        |key, value| {
+            if let Some(value) = value {
+                emit(key, value)?;
+            }
+            Ok(true)
+        },
+    )
 }
 
 type Buffered = (Vec<u8>, Option<Vec<u8>>);
@@ -474,15 +550,44 @@ fn write_pieces(
     let mut rows = Vec::new();
     let mut size = 0;
     let mut index = index::Builder::default();
+    // A full compaction may grow or shrink the immutable base substantially.
+    // Count the actual survivors before allocating the replacement filter.
+    let mut membership = None;
+    if older.iter().any(|level| level.membership.is_some()) {
+        let mut count = 0u64;
+        merge(
+            older,
+            delta,
+            Bound::Unbounded,
+            Bound::Unbounded,
+            false,
+            true,
+            |_, value| {
+                if !drop_tombstones || value.is_some() {
+                    count = count
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("compacted row count overflow"))?;
+                }
+                Ok(true)
+            },
+        )?;
+        if count != 0 {
+            membership = Some(BulkFilter::for_rows(count)?);
+        }
+    }
     merge(
         older,
         delta,
         Bound::Unbounded,
         Bound::Unbounded,
         false,
+        false,
         |key, value| {
             if value.is_none() && drop_tombstones {
                 return Ok(true);
+            }
+            if let Some(filter) = &mut membership {
+                filter.insert(key);
             }
             // Charge row metadata as well as payload bytes so tiny records cannot
             // overrun the shard buffer. One legal oversized row occupies its own shard.
@@ -497,7 +602,7 @@ fn write_pieces(
         },
     )?;
     flush_piece(file, &mut index, &mut rows)?;
-    index.finish(file)
+    index.finish(file, membership.as_ref())
 }
 
 #[cfg(test)]
@@ -509,13 +614,18 @@ mod tests;
 pub(super) fn write_sorted(
     file: &mut File,
     source: impl IntoIterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
+    expected_filter_rows: Option<u64>,
 ) -> io::Result<([u8; 32], u64)> {
     let mut index = index::Builder::default();
+    let mut membership = expected_filter_rows.map(BulkFilter::for_rows).transpose()?;
     let mut rows: Vec<Buffered> = Vec::new();
     let mut size = 0;
     let mut count = 0u64;
     for row in source {
         let (key, value) = row?;
+        if expected_filter_rows.is_some_and(|limit| count >= limit) {
+            return Err(invalid("filtered import exceeds expected row count"));
+        }
         if key.len() > crate::MAX_KEY || value.len() > crate::MAX_VALUE {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -534,6 +644,9 @@ pub(super) fn write_sorted(
             flush_piece(file, &mut index, &mut rows)?;
             size = 0;
         }
+        if let Some(filter) = &mut membership {
+            filter.insert(&key);
+        }
         rows.push((key, Some(value)));
         size += charge;
         count = count
@@ -541,5 +654,8 @@ pub(super) fn write_sorted(
             .ok_or_else(|| invalid("bulk row count overflow"))?;
     }
     flush_piece(file, &mut index, &mut rows)?;
-    Ok((index.finish(file)?, count))
+    if expected_filter_rows.is_some_and(|expected| expected != count) {
+        return Err(invalid("filtered import row count differs"));
+    }
+    Ok((index.finish(file, membership.as_ref())?, count))
 }

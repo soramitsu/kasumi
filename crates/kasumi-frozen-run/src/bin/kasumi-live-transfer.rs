@@ -139,7 +139,7 @@ mod unix {
         let mut seen = Counter::default();
         let mut samples: Vec<(Vec<u8>, [u8; 32])> = Vec::new();
         let stride = expected.div_ceil(64).max(1);
-        db.visit_forward(Bound::Unbounded, Bound::Unbounded, usize::MAX, |k, v| {
+        db.visit_verified(|k, v| {
             if seen.rows >= expected {
                 return Err(bad("more database rows than expected"));
             }
@@ -191,7 +191,7 @@ mod unix {
     fn export_read_only(dir: &Path, out: &mut impl Write) -> io::Result<()> {
         let mut db = ReadOnlyLiveDb::open(dir)?;
         let mut seen = Counter::default();
-        db.visit_forward(Bound::Unbounded, Bound::Unbounded, usize::MAX, |k, v| {
+        db.visit_verified(|k, v| {
             if seen.rows == 0 {
                 out.write_all(MAGIC)?;
             }
@@ -220,6 +220,23 @@ mod unix {
         Ok(())
     }
 
+    fn import(dir: &Path, filter_rows: Option<u64>) -> io::Result<()> {
+        // Create exactly once, with private ownership, before any files.
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new().mode(0o700).create(dir)?;
+        let mut stream = Stream::new(BufReader::with_capacity(1 << 20, io::stdin().lock()))?;
+        let mut db = LiveDb::create(dir)?;
+        let rows = match filter_rows {
+            Some(expected) => db.load_sorted_with_filter(&mut stream, expected)?,
+            None => db.load_sorted(&mut stream)?,
+        };
+        if !stream.done || rows != stream.seen.rows {
+            return Err(bad("incomplete input"));
+        }
+        drop(db);
+        verify(dir, rows, &hex(&stream.seen.digest()), Some(1))
+    }
+
     pub fn run() -> io::Result<()> {
         let args: Vec<_> = env::args_os().skip(1).collect();
         match args.as_slice() {
@@ -227,20 +244,14 @@ mod unix {
                 Path::new(directory),
                 &mut BufWriter::new(io::stdout().lock()),
             ),
-            [cmd, directory] if cmd == "import" => {
-                let dir = Path::new(directory);
-                // Create exactly once, with private ownership, before any files.
-                use std::os::unix::fs::DirBuilderExt;
-                fs::DirBuilder::new().mode(0o700).create(dir)?;
-                let mut stream =
-                    Stream::new(BufReader::with_capacity(1 << 20, io::stdin().lock()))?;
-                let mut db = LiveDb::create(dir)?;
-                let rows = db.load_sorted(&mut stream)?;
-                if !stream.done || rows != stream.seen.rows {
-                    return Err(bad("incomplete input"));
-                }
-                drop(db);
-                verify(dir, rows, &hex(&stream.seen.digest()), Some(1))
+            [cmd, directory] if cmd == "import" => import(Path::new(directory), None),
+            [cmd, directory, count] if cmd == "import-filtered" => {
+                let expected = count
+                    .to_str()
+                    .and_then(|value| value.parse::<u64>().ok())
+                    .filter(|n| *n > 0)
+                    .ok_or_else(|| bad("invalid filtered import row count"))?;
+                import(Path::new(directory), Some(expected))
             }
             [cmd, directory, count, sum] if cmd == "verify" => {
                 let n = count
@@ -259,7 +270,7 @@ mod unix {
             }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: kasumi-live-transfer import NEW_DIRECTORY < RAW_STREAM, verify DIRECTORY ROWS STATE_SHA256, or export-read-only DIRECTORY > RAW_STREAM",
+                "usage: kasumi-live-transfer import NEW_DIRECTORY < RAW_STREAM, import-filtered NEW_DIRECTORY ROWS < RAW_STREAM, verify DIRECTORY ROWS STATE_SHA256, or export-read-only DIRECTORY > RAW_STREAM",
             )),
         }
     }

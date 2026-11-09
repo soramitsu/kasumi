@@ -6,7 +6,7 @@ use std::ops::RangeBounds;
 fn level(delta: &Delta, older: &mut [&mut Level], final_run: bool, target: usize) -> Level {
     let mut file = tempfile::tempfile().unwrap();
     let hash = write_pieces(&mut file, delta, older, final_run, target).unwrap();
-    Level::open(file, hash).unwrap()
+    Level::open(file, hash, false).unwrap()
 }
 
 #[test]
@@ -123,9 +123,9 @@ fn full_rollup_elides_tombstones_and_partial_rollup_preserves_them() {
 fn sparse_index_and_empty_level_are_authenticated() {
     let mut file = tempfile::tempfile().unwrap();
     let hash = write_pieces(&mut file, &Delta::new(), &mut [], true, 64).unwrap();
-    let mut db = Level::open(file.try_clone().unwrap(), hash).unwrap();
+    let mut db = Level::open(file.try_clone().unwrap(), hash, false).unwrap();
     assert_eq!(get(&mut [&mut db], &Delta::new(), b"").unwrap(), None);
-    assert!(Level::open(file, [0; 32]).is_err());
+    assert!(Level::open(file, [0; 32], false).is_err());
 
     let delta = (0u8..5).map(|i| (vec![i], Some(vec![i]))).collect();
     let mut file = tempfile::tempfile().unwrap();
@@ -141,7 +141,7 @@ fn sparse_index_and_empty_level_are_authenticated() {
     file.read_exact(&mut byte).unwrap();
     file.seek(SeekFrom::Start(at)).unwrap();
     file.write_all(&[byte[0] ^ 1]).unwrap();
-    assert!(Level::open(file, hash).is_err());
+    assert!(Level::open(file, hash, false).is_err());
 }
 
 #[test]
@@ -151,7 +151,7 @@ fn bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order() {
         data.insert(vec![n * 2], Some(vec![n; 12]));
     }
     let mut base = level(&data, &mut [], true, 80); // One key per piece.
-    base.enable_bulk_cache();
+    base.cache_bulk_pieces = true;
     for n in [2u8, 3, 2, 5, 11, 10, 9, 3, 2, 3] {
         assert_eq!(base.lookup(&[n * 2]).unwrap(), Some(Some(vec![n; 12])));
         assert_eq!(base.lookup(&[n * 2 + 1]).unwrap(), None);
@@ -178,4 +178,113 @@ fn bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order() {
         }
         assert_eq!(result, expect);
     }
+}
+
+#[test]
+fn filtered_root_authenticates_the_bits_before_accepting_a_negative_lookup() {
+    let mut file = tempfile::tempfile().unwrap();
+    let (hash, n) = write_sorted(
+        &mut file,
+        (0..128u16).map(|i| Ok((i.to_be_bytes().to_vec(), vec![]))),
+        Some(128),
+    )
+    .unwrap();
+    assert_eq!(n, 128);
+    let root = index::open(&mut file, hash).unwrap().unwrap();
+    let Node::BulkRoot { filter, .. } = index::read(&mut file, root).unwrap() else {
+        panic!("missing filtered root")
+    };
+    assert!(
+        matches!(Level::open(file.try_clone().unwrap(), hash, false),
+        Err(e) if e.to_string() == "membership filter outside the bulk tier")
+    );
+    let mut bits = index::read_filter(&mut file, filter).unwrap();
+    for i in 0..128u16 {
+        assert!(bits.may_contain(&i.to_be_bytes()));
+    }
+    assert!((128..2000u16).any(|i| !bits.may_contain(&i.to_be_bytes())));
+    bits.bytes_mut()[0] ^= 1;
+    file.seek(SeekFrom::Start(filter.at)).unwrap();
+    file.write_all(bits.bytes()).unwrap();
+    assert!(
+        matches!(Level::open(file, hash, true), Err(e) if e.to_string()=="bulk membership filter digest differs")
+    );
+}
+
+#[test]
+fn verified_scan_rejects_a_self_consistent_filter_that_hides_a_shadowed_key() {
+    let mut file = tempfile::tempfile().unwrap();
+    let mut index = index::Builder::default();
+    let mut rows = vec![(b"old".to_vec(), Some(vec![]))];
+    flush_piece(&mut file, &mut index, &mut rows).unwrap();
+    let omitted = BulkFilter::for_rows(1).unwrap(); // Deliberately omit the key.
+    let root = index.finish(&mut file, Some(&omitted)).unwrap();
+    let mut level = Level::open(file, root, true).unwrap();
+    let delta = Delta::from([(b"old".to_vec(), None)]);
+    // The logical view is empty, but even this physically shadowed key must
+    // be covered before the filtered database can pass qualification.
+    let err = visit_verified(&mut [&mut level], &delta, |_, _| Ok(())).unwrap_err();
+    assert_eq!(err.to_string(), "bulk filter omits a stored key");
+}
+
+#[test]
+fn compacted_filter_size_tracks_surviving_rows_and_retained_tombstones() {
+    let mut file = tempfile::tempfile().unwrap();
+    let n = 16_384u16;
+    let (hash, _) = write_sorted(
+        &mut file,
+        (0..n).map(|i| Ok((i.to_be_bytes().to_vec(), vec![9]))),
+        Some(n.into()),
+    )
+    .unwrap();
+    let mut base = Level::open(file, hash, true).unwrap();
+    assert!(base.membership.as_ref().unwrap().bytes().len() > 16_000);
+    let deletes: Delta = (1..n).map(|i| (i.to_be_bytes().to_vec(), None)).collect();
+    for drop_tombstones in [true, false] {
+        let mut compacted = tempfile::tempfile().unwrap();
+        let root = write_pieces(
+            &mut compacted,
+            &deletes,
+            &mut [&mut base],
+            drop_tombstones,
+            PIECE_TARGET,
+        )
+        .unwrap();
+        let mut level = Level::open(compacted, root, true).unwrap();
+        let bytes = level.membership.as_ref().unwrap().bytes().len();
+        if drop_tombstones {
+            assert_eq!(bytes, 64);
+        } else {
+            assert!(bytes > 16_000);
+        }
+        assert_eq!(
+            level.lookup(&0u16.to_be_bytes()).unwrap(),
+            Some(Some(vec![9]))
+        );
+        assert_eq!(
+            level.lookup(&1u16.to_be_bytes()).unwrap(),
+            if drop_tombstones { None } else { Some(None) }
+        );
+        let mut visible = 0;
+        visit_verified(&mut [&mut level], &Delta::new(), |_, _| {
+            visible += 1;
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(visible, 1);
+    }
+}
+
+#[test]
+fn filtered_input_stops_at_the_first_excess_row() {
+    let mut file = tempfile::tempfile().unwrap();
+    let rows = (0u8..3).map(|i| {
+        assert!(i < 2, "import read past the first excess row");
+        Ok((vec![i], vec![i]))
+    });
+    let err = write_sorted(&mut file, rows, Some(1)).unwrap_err();
+    assert_eq!(
+        err.to_string(),
+        "filtered import exceeds expected row count"
+    );
 }

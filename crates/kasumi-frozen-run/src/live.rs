@@ -230,11 +230,11 @@ fn open_levels(files: &Files, head: &Head) -> io::Result<Vec<Level>> {
     head.entries
         .iter()
         .map(|entry| {
-            let mut level = Level::open(files.read(&entry.name(&head.id))?, entry.root)?;
-            if entry.tier == BULK_TIER {
-                level.enable_bulk_cache();
-            }
-            Ok(level)
+            Level::open(
+                files.read(&entry.name(&head.id))?,
+                entry.root,
+                entry.tier == BULK_TIER,
+            )
         })
         .collect()
 }
@@ -294,6 +294,16 @@ impl ReadOnlyLiveDb {
     pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
         let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
         live_levels::get(&mut levels, &self.delta, key)
+    }
+
+    /// Export all current rows and verify every physical key in a filtered
+    /// level, including rows hidden by newer writes. Discard output on error.
+    pub fn visit_verified(
+        &mut self,
+        emit: impl FnMut(&[u8], &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
+        live_levels::visit_verified(&mut levels, &self.delta, emit)
     }
 
     /// Visit current rows in ascending order between the given bounds.
@@ -543,10 +553,7 @@ impl LiveDb {
         let sequence = entry.sequence;
         sync_durable(&file)?;
         let output_bytes = file.metadata()?.len();
-        let mut level = Level::open(file, entry.root)?;
-        if entry.tier == BULK_TIER {
-            level.enable_bulk_cache();
-        }
+        let level = Level::open(file, entry.root, entry.tier == BULK_TIER)?;
         let mut entries = Vec::with_capacity(self.head.entries.len() - take + 1);
         entries.push(entry);
         entries.extend_from_slice(&self.head.entries[take..]);
@@ -592,6 +599,17 @@ impl LiveDb {
         self.check()?;
         let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
         live_levels::get(&mut levels, &self.delta, key)
+    }
+
+    /// Export all current rows and verify every physical key in a filtered
+    /// level, including rows hidden by newer writes. Discard output on error.
+    pub fn visit_verified(
+        &mut self,
+        emit: impl FnMut(&[u8], &[u8]) -> io::Result<()>,
+    ) -> io::Result<()> {
+        self.check()?;
+        let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
+        live_levels::visit_verified(&mut levels, &self.delta, emit)
     }
 
     /// Visit current rows in ascending order between the given bounds.
