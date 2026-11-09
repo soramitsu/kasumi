@@ -579,7 +579,39 @@ fn sealed_reader_authenticates_wal_and_levels_without_changing_any_file() {
     let mut file = OpenOptions::new().append(true).open(&wal).unwrap();
     file.write_all(&[1, 2, 3]).unwrap();
     drop(file);
-    let torn = inventory();
+    let corrupt = inventory();
     assert!(ReadOnlyLiveDb::open(&path).is_err());
-    assert_eq!(inventory(), torn);
+    assert_eq!(inventory(), corrupt);
+}
+
+#[test]
+fn sealed_reader_preserves_a_repairable_incomplete_wal_frame() {
+    let dir = tempdir().unwrap();
+    let path = dir.path().join("data");
+    let mut db = LiveDb::create(&path).unwrap();
+    db.commit(&[WalOp::Put(b"stable", b"previous")]).unwrap();
+    let previous_sequence = db.sequence();
+    let wal = path.join(db.head.wal_name());
+    let previous_bytes = fs::read(&wal).unwrap();
+    db.commit(&[WalOp::Put(b"stable", b"interrupted")]).unwrap();
+    drop(db);
+
+    let mut interrupted_bytes = fs::read(&wal).unwrap();
+    assert!(interrupted_bytes.starts_with(&previous_bytes));
+    interrupted_bytes.pop().unwrap();
+    assert!(interrupted_bytes.len() > previous_bytes.len());
+    fs::write(&wal, &interrupted_bytes).unwrap();
+    assert_eq!(
+        ReadOnlyLiveDb::open(&path).err().unwrap().to_string(),
+        "incomplete WAL in read-only database"
+    );
+    assert_eq!(fs::read(&wal).unwrap(), interrupted_bytes);
+
+    let mut recovered = LiveDb::open(&path).unwrap();
+    assert_eq!(recovered.sequence(), previous_sequence);
+    assert_eq!(
+        recovered.get(b"stable").unwrap().as_deref(),
+        Some(&b"previous"[..])
+    );
+    assert_eq!(fs::read(&wal).unwrap(), previous_bytes);
 }
