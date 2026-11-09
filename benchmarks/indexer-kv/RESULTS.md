@@ -1,6 +1,20 @@
 # Polkaswap Stats storage comparison — 9 November 2026
 
-The opt-in compact live engine on Kasumi master is measured below. All comparisons use the [same 4,096 finalized BLOCK snapshots](fixtures/README.md). The storage replays measure durable KV ingestion and local reads. The application replay separately exercises the indexer's repository and Stats GraphQL resolvers. Neither measures chain RPC, unrelated collections or the full production worker. The [previous mutable formats](#packed-directories-with-inline-maintenance) and [sealed-only archive](#sealed-historical-data) are distinct engines.
+The opt-in compact live engine on Kasumi master is measured below. The Stats comparisons use the same 4,096 finalized BLOCK snapshots. The separate Points replay uses historical operations from the private Points worker. [Stats fixture](fixtures/README.md) The storage replays measure durable KV ingestion and local reads. The application replay separately exercises the indexer's repository and Stats GraphQL resolvers. Neither measures chain RPC, unrelated collections or the full production worker. The [previous mutable formats](#packed-directories-with-inline-maintenance) and [sealed-only archive](#sealed-historical-data) are distinct engines.
+
+## Imported Polkaswap Points data
+
+At checkpoint 372,381, both Kasumi formats imported 5,526,276 physical rows with identical logical contents. Master commit `72958a86` can include an authenticated Bloom filter in a new imported base. The filtered database used 3,043,549,184 allocated bytes, up 6,905,856 from the legacy base. All nine private replays independently reproduced the same final logical digest. [Measured operations, builds and allocation](results/points-bulk-filter.json)
+
+The 128-block storage trace contained 2,495 steady point reads and 129 durable commits. The filter ruled out 851 of the 860 absent keys that reached the immutable base. Nine required an exact lookup. All 333 present base keys passed the filter. An additional 1,302 reads resolved against newer writes. A complete import audit also checked the filter against every physical key. [Results](results/points-bulk-filter.json)
+
+| Time in 2,495 point reads | Legacy build and base | Filter-aware build, legacy base | Filter-aware build, filtered base |
+| --- | ---: | ---: | ---: |
+| After the captured startup sequence | 255.2 ms | 286.8 ms | 62.7 ms |
+| Cold data files, 0% resident | 225.3 ms | 224.7 ms | 57.8 ms |
+| Warm data files, 100% resident | 130.3 ms | 147.2 ms | 32.7 ms |
+
+Each case used a fresh physical copy, checked its cache residency and validated every returned value and the final sorted state. These timings measure native reads in the worker's recorded sequence. [Raw measurements](results/points-bulk-filter.json)
 
 ## Live writer
 

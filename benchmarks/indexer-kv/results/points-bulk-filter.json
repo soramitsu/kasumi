@@ -1,0 +1,127 @@
+{
+  "workload": "Private captured Polkaswap Points storage operations from the 128 finalized blocks 372382 through 372509, with separately captured startup and verification operations.",
+  "sourceCommit": "72958a862b02304708b3801779a8e0e2cd071b6a",
+  "cleanControlCommit": "85da005da423a2713f353bf18ede7e5759d65d09",
+  "addonSha256": "21f49d087fa0526386cfe9e81c6a13e514f2108e9918bf36431269b5d355651f",
+  "transferSha256": "261ed6539494dc03a1af71183ab1505613ccea39937a38f900edc0d5982bfca5",
+  "traceSha256": "f5a4367ede822c2eeef669fafd09decba61a1e7a76f8a91c487052af006d9c1f",
+  "physicalReceiptSha256": "46f1695545c3c6ab09d224864264ab204fe15f66eb64054771a27ece129fb9d5",
+  "sourceStateSha256": "f457cdc8ac82f90076951f0573804aa5a8aefac828ea0e860bd8f7b907b03110",
+  "sourceRows": 5526276,
+  "logicalBytes": 3619141280,
+  "legacyAllocatedBytes": 3036643328,
+  "filteredAllocatedBytes": 3043549184,
+  "filterBytesAllocated": 6905856,
+  "filterProbe": {
+    "filterBytes": 6907904,
+    "filterSha256": "78faad2554c44a25ae05196d3fad88385fdd98bacf7c23c06b82702f0ee9cce5",
+    "sourceManifestSha256": "51495d9b08d17622f1caf247c533f105f82ac5f6199c81e07eaa697d8522ec65",
+    "measuredTrace": {
+      "startup": {
+        "present": 372938,
+        "provedAbsent": 2,
+        "newerWrite": 1
+      },
+      "steady": {
+        "provedAbsent": 851,
+        "present": 333,
+        "falsePositive": 9,
+        "newerWrite": 1302
+      }
+    }
+  },
+  "steadyGets": 2495,
+  "steadyCommits": 129,
+  "runs": [
+    {
+      "mode": "full",
+      "variant": "control",
+      "fileCachePercentBefore": 0.0,
+      "steadyGetsMs": 255.24816400004602,
+      "steadyCommitsMs": 36.077802999993764,
+      "wallSecondsIncludingValidation": 5.364746172,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3037765632
+    },
+    {
+      "mode": "full",
+      "variant": "candidate-legacy",
+      "fileCachePercentBefore": 0.0,
+      "steadyGetsMs": 286.78568100001485,
+      "steadyCommitsMs": 100.4660739999963,
+      "wallSecondsIncludingValidation": 5.783792603,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3037765632
+    },
+    {
+      "mode": "full",
+      "variant": "candidate-filtered",
+      "fileCachePercentBefore": 0.0,
+      "steadyGetsMs": 62.7310639999605,
+      "steadyCommitsMs": 38.15745899999911,
+      "wallSecondsIncludingValidation": 5.420549577,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3044671488
+    },
+    {
+      "mode": "cold",
+      "variant": "candidate-legacy",
+      "fileCachePercentBefore": 0.0,
+      "steadyGetsMs": 224.70477999999832,
+      "steadyCommitsMs": 38.5235569999993,
+      "wallSecondsIncludingValidation": 0.321388254,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3037765632
+    },
+    {
+      "mode": "cold",
+      "variant": "candidate-filtered",
+      "fileCachePercentBefore": 0.0,
+      "steadyGetsMs": 57.750101999999856,
+      "steadyCommitsMs": 30.1447059999997,
+      "wallSecondsIncludingValidation": 0.14424656199999994,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3044671488
+    },
+    {
+      "mode": "cold",
+      "variant": "control",
+      "fileCachePercentBefore": 0.0,
+      "steadyGetsMs": 225.29250400000365,
+      "steadyCommitsMs": 36.503933000000075,
+      "wallSecondsIncludingValidation": 0.31932230400000006,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3037765632
+    },
+    {
+      "mode": "warm",
+      "variant": "candidate-filtered",
+      "fileCachePercentBefore": 100.0,
+      "steadyGetsMs": 32.711311999998884,
+      "steadyCommitsMs": 34.869420999998965,
+      "wallSecondsIncludingValidation": 0.14647918099999993,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3044671488
+    },
+    {
+      "mode": "warm",
+      "variant": "control",
+      "fileCachePercentBefore": 100.0,
+      "steadyGetsMs": 130.3041929999962,
+      "steadyCommitsMs": 34.28766600000097,
+      "wallSecondsIncludingValidation": 0.32582701899999994,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3037765632
+    },
+    {
+      "mode": "warm",
+      "variant": "candidate-legacy",
+      "fileCachePercentBefore": 100.0,
+      "steadyGetsMs": 147.17354399999692,
+      "steadyCommitsMs": 33.28124100000002,
+      "wallSecondsIncludingValidation": 0.34356229600000004,
+      "terminalLogicalSha256": "f1ae1562886a061ee312823609193216c8a60e55aab3a19f64f1842f60636fab",
+      "allocatedAfterReplay": 3037765632
+    }
+  ]
+}
