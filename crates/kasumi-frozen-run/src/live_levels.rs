@@ -460,3 +460,43 @@ fn write_pieces(
 #[cfg(test)]
 #[path = "live_levels_tests.rs"]
 mod tests;
+
+/// Stream sorted live rows into the normal piece and sparse-index format. At
+/// most one piece and the logarithmic index-builder stack are resident.
+pub(super) fn write_sorted(
+    file: &mut File,
+    source: impl IntoIterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
+) -> io::Result<([u8; 32], u64)> {
+    let mut index = index::Builder::default();
+    let mut rows: Vec<Buffered> = Vec::new();
+    let mut size = 0;
+    let mut count = 0u64;
+    for row in source {
+        let (key, value) = row?;
+        if key.len() > crate::MAX_KEY || value.len() > crate::MAX_VALUE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "row exceeds live storage limits",
+            ));
+        }
+        // Check the join to the previous piece *before* we flush its rows.
+        if rows.last().is_some_and(|last| key <= last.0) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "bulk keys must strictly increase",
+            ));
+        }
+        let charge = 64 + key.len() + value.len();
+        if !rows.is_empty() && size + charge > PIECE_TARGET {
+            flush_piece(file, &mut index, &mut rows)?;
+            size = 0;
+        }
+        rows.push((key, Some(value)));
+        size += charge;
+        count = count
+            .checked_add(1)
+            .ok_or_else(|| invalid("bulk row count overflow"))?;
+    }
+    flush_piece(file, &mut index, &mut rows)?;
+    Ok((index.finish(file)?, count))
+}

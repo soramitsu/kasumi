@@ -31,6 +31,9 @@ pub const LIVE_GROUP_MAX_BYTES: u64 = 512 << 10;
 #[path = "live_group.rs"]
 mod group;
 
+#[path = "live_bulk.rs"]
+mod bulk;
+
 const MAGIC: &[u8; 8] = b"KSLIVE02";
 const BUDGET_MAGIC: &[u8; 8] = b"KSLIVE03";
 const MAX_LEVELS: usize = 64;
@@ -458,6 +461,11 @@ impl LiveDb {
         let mut old: ArrayVec<_, MAX_LEVELS> = self.levels[..take].iter_mut().collect();
         entry.root = live_levels::write_level(&mut file, &self.delta, &mut old, includes_oldest)?;
         drop(old);
+        self.publish_level(entry, file, take)
+    }
+
+    fn publish_level(&mut self, entry: Entry, file: std::fs::File, take: usize) -> io::Result<()> {
+        let sequence = entry.sequence;
         sync_durable(&file)?;
         let output_bytes = file.metadata()?.len();
         let level = Level::open(file, entry.root)?;
@@ -467,7 +475,7 @@ impl LiveDb {
         let head = Head {
             budget: self.head.budget,
             id: self.head.id,
-            seq: self.sequence(),
+            seq: sequence,
             entries,
         };
         let file = self.files.fresh(&head.wal_name())?;

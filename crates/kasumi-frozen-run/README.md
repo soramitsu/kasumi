@@ -61,3 +61,24 @@ Version 2 tries two LZ4 representations per multirow block: canonical length-pre
 Queries binary-search the directory and the decoded block's row offsets. A reader verifies each accessed compressed block before decompression, validates its decoded length, checks every row boundary and key order, and checks its first and last key against the directory. A forward scan over unbounded endpoints verifies every block. Range callbacks receive borrowed bytes in order, with at most the requested number of callbacks. If an I/O or integrity error occurs after a verified block, the callback may already have received earlier rows.
 
 Each reader retains 64 direct-mapped small blocks. Their combined byte buffers and row-offset backing fit within 4 MiB. They coexist with at most one oversized decoded row (32 MiB value plus at most 4 KiB key, six header bytes and one row offset). Loading a block also uses one temporary compressed buffer bounded by the LZ4 compression bound for its authenticated input length. A prefix-coded block can additionally use at most 43,690 intermediate bytes before expansion into its 32 KiB canonical buffer. Exact point reads return an owned value.
+
+For an offline bulk migration, `LiveDb::load_sorted` atomically initializes an
+empty database from strictly increasing binary rows. It builds one immutable
+base in a streaming pass, bounded by one 4 MiB piece plus one legal oversized
+row and the logarithmic piece index. The source and any I/O errors must
+propagate through the iterator. Reopen after a failure to resolve publication.
+The first successful import gets sequence 1. Later ordinary writes flush into
+younger tiers, preserving the base until full compaction.
+
+`kasumi-live-transfer import NEW_DIRECTORY` reads a raw sorted stream on
+stdin. It requires a fresh path under an existing directory. It rejects empty
+sources, keys above 4096 bytes, values above 32 MiB, duplicate or unordered
+keys, truncation and checksum errors. The format starts with `KSRKRAW1`, then
+repeats a big-endian u32 key size, key bytes, a big-endian u32 value size and
+value bytes. A sentinel key size of 0xffffffff precedes the big-endian u64
+row count, u64 total key/value byte count, and SHA-256 of all length-prefixed
+row bytes. End-of-file must follow the trailer. After syncing and closing the
+database, the command reopens it, scans every row, compares its digest and
+count with the source, and probes point and descending index reads. Its JSON
+receipt is printed only after all checks succeed. Repeat independent
+verification using `kasumi-live-transfer verify DIRECTORY ROWS STATE_SHA256`.
