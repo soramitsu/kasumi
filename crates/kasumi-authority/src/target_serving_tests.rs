@@ -327,6 +327,118 @@ async fn set_suspension(targets: &BTreeMap<u64, Serving>, suspended: bool) -> u6
     }
 }
 
+/// Membership setup changes are state-idempotent, but leadership can change
+/// after its observation. Keep the exact peer identities and original setup
+/// deadline while recovering only Raft's explicit transient membership errors.
+async fn exact_membership_change(
+    targets: &BTreeMap<u64, Serving>,
+    fact: &kasumi_types::TargetActivationFact,
+    change: openraft::ChangeMembers<u64, kasumi_raft::BasicNode>,
+) {
+    use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
+    type MembershipError = RaftError<u64, ClientWriteError<u64, kasumi_raft::BasicNode>>;
+
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let mut last_failure = None;
+    loop {
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "membership setup did not settle: {change:?}; last failure: {last_failure:?}"
+        );
+        let current = tokio::time::timeout_at(deadline, leader(targets))
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "membership leader observation exceeded its original setup deadline: {change:?}; last failure: {last_failure:?}"
+                )
+            });
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "membership observation exceeded its original setup deadline: {last_failure:?}"
+        );
+        let database = targets[&current].owner.database().unwrap();
+        let group = database.raft_group();
+        let covered = group.confirm_local_application(&fact.position).unwrap();
+        let membership = covered.membership().membership();
+        assert_eq!(
+            membership.voter_ids().collect::<BTreeSet<_>>(),
+            BTreeSet::from([1, 2, 3])
+        );
+        let applied = match &change {
+            openraft::ChangeMembers::AddNodes(nodes) | openraft::ChangeMembers::SetNodes(nodes) => {
+                nodes.iter().all(|(id, expected)| {
+                    membership
+                        .nodes()
+                        .any(|(actual, node)| actual == id && node == expected)
+                })
+            }
+            openraft::ChangeMembers::RemoveNodes(ids) => ids
+                .iter()
+                .all(|id| !membership.nodes().any(|(actual, _)| actual == id)),
+            _ => panic!("fixture changes metadata only: {change:?}"),
+        };
+        drop(covered);
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "applied membership observation exceeded its original setup deadline: {last_failure:?}"
+        );
+        if applied {
+            return;
+        }
+        // These changes preserve voters and never wait for learner 4 to catch
+        // up. A lost acknowledgement is resolved by the next applied-state read.
+        let result = tokio::time::timeout_at(deadline, async {
+            match &change {
+                openraft::ChangeMembers::AddNodes(nodes) => {
+                    assert_eq!(nodes.len(), 1);
+                    let (&id, node) = nodes.first_key_value().unwrap();
+                    group
+                        .raft()
+                        .add_learner(id, node.clone(), false)
+                        .await
+                        .map(|_| ())
+                        .map_err(anyhow::Error::new)
+                }
+                openraft::ChangeMembers::RemoveNodes(ids) => {
+                    assert_eq!(ids.len(), 1);
+                    group.remove_learner(*ids.first().unwrap()).await
+                }
+                _ => group
+                    .raft()
+                    .change_membership(change.clone(), true)
+                    .await
+                    .map(|_| ())
+                    .map_err(anyhow::Error::new),
+            }
+        })
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "membership dispatch exceeded its original setup deadline; outcome remains unresolved: {change:?}; last failure: {last_failure:?}"
+            )
+        });
+        match result {
+            Ok(()) => {}
+            Err(error)
+                if matches!(
+                    error.downcast_ref::<MembershipError>(),
+                    Some(MembershipError::APIError(
+                        ClientWriteError::ForwardToLeader(_)
+                    )) | Some(MembershipError::APIError(
+                        ClientWriteError::ChangeMembershipError(ChangeMembershipError::InProgress(
+                            _
+                        ),)
+                    ))
+                ) =>
+            {
+                last_failure = Some(error)
+            }
+            Err(error) => panic!("membership setup rejected: {error:?}"),
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
 async fn assert_operational(
     targets: &BTreeMap<u64, Serving>,
     fact: &kasumi_types::TargetActivationFact,
@@ -420,32 +532,30 @@ pub(super) async fn exercise_serving(
     }
     if maintenance {
         let id = set_suspension(&targets, true).await;
-        let database = targets[&id].owner.database().unwrap();
         // Commit the learner metadata without claiming catch-up or issuing a
         // serving capability to node 4. Three original voters remain a quorum.
-        database
-            .raft_group()
-            .raft()
-            .add_learner(4, kasumi_raft::BasicNode::new("learner-4"), false)
-            .await
-            .unwrap();
+        exact_membership_change(
+            &targets,
+            fact,
+            openraft::ChangeMembers::AddNodes(BTreeMap::from([(
+                4,
+                kasumi_raft::BasicNode::new("learner-4"),
+            )])),
+        )
+        .await;
         // AddNodes deliberately preserves an existing node's address. This
         // fixture updates the same physical voter's operational metadata; it
         // neither admits a replacement owner nor changes the voter set.
-        database
-            .raft_group()
-            .raft()
-            .change_membership(
-                openraft::ChangeMembers::SetNodes(BTreeMap::from([(
-                    id,
-                    kasumi_raft::BasicNode::new("target-maintained"),
-                )])),
-                true,
-            )
-            .await
-            .unwrap();
+        exact_membership_change(
+            &targets,
+            fact,
+            openraft::ChangeMembers::SetNodes(BTreeMap::from([(
+                id,
+                kasumi_raft::BasicNode::new("target-maintained"),
+            )])),
+        )
+        .await;
         assert_operational(&targets, fact, true, true, id).await;
-        drop(database);
         for (_, target) in std::mem::take(&mut targets) {
             target.close(f, router).await;
         }
@@ -456,9 +566,13 @@ pub(super) async fn exercise_serving(
             targets.insert(node_id, Serving::open(f, node_id, selected, router).await);
         }
         assert_operational(&targets, fact, true, true, id).await;
-        let new_leader = set_suspension(&targets, false).await;
-        let database = targets[&new_leader].owner.database().unwrap();
-        database.raft_group().remove_learner(4).await.unwrap();
+        set_suspension(&targets, false).await;
+        exact_membership_change(
+            &targets,
+            fact,
+            openraft::ChangeMembers::RemoveNodes(BTreeSet::from([4])),
+        )
+        .await;
         assert_operational(&targets, fact, false, false, id).await;
     }
     // Original lifetime and permanent closure rules still apply after any

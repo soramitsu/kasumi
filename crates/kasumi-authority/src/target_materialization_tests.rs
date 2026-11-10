@@ -2381,12 +2381,9 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
         .await;
     let targets = f.open_targets(&complete, &input, &router).await;
     let index = current_target(&targets).await;
-    let proof = targets[index]
-        .owner
-        .database()
-        .complete_target(&targets[index].operation, initial_complete(&input))
-        .await
-        .unwrap();
+    // Leadership can change after selection. Recover this original permanent
+    // completion phase without replacing its operation or extending its lifetime.
+    let proof = exact_target_completion(&targets[index], &initial_complete(&input)).await;
     let original = proof.observation().fact.clone();
     // Do not sign or publish any completion acknowledgement. Only actual target
     // consensus state survives; no independent journal supplies success.
