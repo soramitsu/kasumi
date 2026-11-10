@@ -227,14 +227,24 @@ fn apply(delta: &mut Delta, ops: &[WalOp<'_>]) -> u64 {
 }
 
 fn open_levels(files: &Files, head: &Head) -> io::Result<Vec<Level>> {
+    let deepest_ordinary = head
+        .entries
+        .iter()
+        .rev()
+        .find(|e| e.tier != BULK_TIER)
+        .map(|e| e.tier);
     head.entries
         .iter()
         .map(|entry| {
-            Level::open(
+            let mut level = Level::open(
                 files.read(&entry.name(&head.id))?,
                 entry.root,
                 entry.tier == BULK_TIER,
-            )
+            )?;
+            if Some(entry.tier) == deepest_ordinary {
+                level.retain_deep_indexes();
+            }
+            Ok(level)
         })
         .collect()
 }
@@ -292,8 +302,7 @@ impl ReadOnlyLiveDb {
 
     /// Read the current value of a binary key.
     pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
-        let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
-        live_levels::get(&mut levels, &self.delta, key)
+        Ok(live_levels::get(&mut self.levels, &self.delta, key)?.map(<[u8]>::to_vec))
     }
 
     /// Export all current rows and verify every physical key in a filtered
@@ -553,7 +562,15 @@ impl LiveDb {
         let sequence = entry.sequence;
         sync_durable(&file)?;
         let output_bytes = file.metadata()?.len();
-        let level = Level::open(file, entry.root, entry.tier == BULK_TIER)?;
+        let mut level = Level::open(file, entry.root, entry.tier == BULK_TIER)?;
+        // Merges retire a prefix. A surviving older ordinary level keeps its existing slots.
+        if entry.tier != BULK_TIER
+            && self.head.entries[take..]
+                .iter()
+                .all(|e| e.tier == BULK_TIER)
+        {
+            level.retain_deep_indexes();
+        }
         let mut entries = Vec::with_capacity(self.head.entries.len() - take + 1);
         entries.push(entry);
         entries.extend_from_slice(&self.head.entries[take..]);
@@ -596,9 +613,13 @@ impl LiveDb {
 
     /// Read the newest live value of a binary key.
     pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.get_ref(key)?.map(<[u8]>::to_vec))
+    }
+
+    /// Borrow a value from the live delta or its verified level until the next database operation.
+    pub fn get_ref(&mut self, key: &[u8]) -> io::Result<Option<&[u8]>> {
         self.check()?;
-        let mut levels: ArrayVec<_, MAX_LEVELS> = self.levels.iter_mut().collect();
-        live_levels::get(&mut levels, &self.delta, key)
+        live_levels::get(&mut self.levels, &self.delta, key)
     }
 
     /// Export all current rows and verify every physical key in a filtered

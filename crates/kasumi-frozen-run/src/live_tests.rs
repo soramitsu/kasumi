@@ -62,6 +62,10 @@ fn overlay_scans_both_directions_handle_tombstones_replacements_bounds_and_user_
         }
         for key in [b"".as_slice(), b"a", b"b", b"c", b"d", b"e", b"g", b"z"] {
             assert_eq!(db.get(key).unwrap().as_ref(), expected.get(key));
+            assert_eq!(
+                db.get_ref(key).unwrap(),
+                expected.get(key).map(Vec::as_slice)
+            );
         }
         let bounds = [
             Unbounded,

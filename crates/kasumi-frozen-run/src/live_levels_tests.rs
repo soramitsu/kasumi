@@ -52,11 +52,14 @@ fn tiered_bounded_scans_and_point_reads_resolve_newest_puts_and_tombstones() {
         (&mut [&mut changes, &mut base][..], &mem),
         (&mut [&mut merged][..], &Delta::new()),
     ] {
-        assert_eq!(get(levels, delta, b"").unwrap(), Some(vec![]));
+        assert_eq!(
+            get(levels.iter_mut().map(|level| &mut **level), delta, b"").unwrap(),
+            Some([].as_slice())
+        );
         for i in 0..102 {
             assert_eq!(
-                get(levels, delta, &key(i)).unwrap().as_ref(),
-                expected.get(&key(i))
+                get(levels.iter_mut().map(|level| &mut **level), delta, &key(i)).unwrap(),
+                expected.get(&key(i)).map(Vec::as_slice)
             );
         }
         let ks: Vec<_> = [0, 11, 22, 60, 95, 96].map(key).into();
@@ -115,7 +118,7 @@ fn full_rollup_elides_tombstones_and_partial_rollup_preserves_them() {
     let mut bottom = level(&Delta::new(), &mut [&mut retained, &mut old], true, 1000);
     assert_eq!(retained.lookup(b"a").unwrap(), Some(None));
     assert_eq!(bottom.lookup(b"a").unwrap(), None);
-    assert_eq!(bottom.lookup(b"b").unwrap(), Some(Some(vec![])));
+    assert_eq!(bottom.lookup(b"b").unwrap(), Some(Some([].as_slice())));
     assert!(bottom.loaded.as_ref().unwrap().deletes.is_none());
 }
 
@@ -124,7 +127,7 @@ fn sparse_index_and_empty_level_are_authenticated() {
     let mut file = tempfile::tempfile().unwrap();
     let hash = write_pieces(&mut file, &Delta::new(), &mut [], true, 64).unwrap();
     let mut db = Level::open(file.try_clone().unwrap(), hash, false).unwrap();
-    assert_eq!(get(&mut [&mut db], &Delta::new(), b"").unwrap(), None);
+    assert_eq!(get([&mut db], &Delta::new(), b"").unwrap(), None);
     assert!(Level::open(file, [0; 32], false).is_err());
 
     let delta = (0u8..5).map(|i| (vec![i], Some(vec![i]))).collect();
@@ -145,15 +148,59 @@ fn sparse_index_and_empty_level_are_authenticated() {
 }
 
 #[test]
+fn ordinary_tiers_reuse_bounded_pieces_across_value_tombstone_and_gap_lookups() {
+    let data: Delta = (0..10u8)
+        .map(|i| (vec![2 * i], (i != 4).then(|| vec![i; 12])))
+        .collect();
+    let mut run = level(&data, &mut [], false, 80);
+    assert_eq!(run.recent_limit, 2);
+    for i in [0, 9, 4, 0, 4, 9, 5, 0, 8, 5] {
+        assert_eq!(
+            run.lookup(&[2 * i]).unwrap(),
+            Some(data[&vec![2 * i]].as_deref())
+        );
+        assert_eq!(run.lookup(&[2 * i + 1]).unwrap(), None);
+        assert!(run.recent.len() <= 2);
+    }
+    assert_eq!(run.recent.len(), 2);
+}
+
+#[test]
+fn deep_tier_keeps_extra_indexes_without_retaining_decoded_blocks() {
+    let data: Delta = (0..24u8)
+        .map(|n| (vec![n * 2], (n % 3 != 0).then(|| vec![n; 64])))
+        .collect();
+    let mut run = level(&data, &mut [], false, 80);
+    run.retain_deep_indexes();
+    for n in (0..24u8).chain((0..24u8).rev()) {
+        let key = [n * 2];
+        assert_eq!(
+            run.lookup(&key).unwrap(),
+            Some(data[key.as_slice()].as_deref())
+        );
+        assert_eq!(run.lookup(&[n * 2 + 1]).unwrap(), None);
+        assert!(run.recent.len() <= DEEP_RECENT);
+        for piece in run.recent.iter().skip(ORDINARY_RECENT) {
+            assert!(!piece.rows.has_decoded());
+            assert!(!piece.deletes.as_ref().is_some_and(FrozenRun::has_decoded));
+        }
+    }
+    assert_eq!(run.recent.len(), DEEP_RECENT);
+}
+
+#[test]
 fn bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order() {
     let mut data = Delta::new();
     for n in 0..12u8 {
         data.insert(vec![n * 2], Some(vec![n; 12]));
     }
     let mut base = level(&data, &mut [], true, 80); // One key per piece.
-    base.cache_bulk_pieces = true;
+    base.recent_limit = 3;
     for n in [2u8, 3, 2, 5, 11, 10, 9, 3, 2, 3] {
-        assert_eq!(base.lookup(&[n * 2]).unwrap(), Some(Some(vec![n; 12])));
+        assert_eq!(
+            base.lookup(&[n * 2]).unwrap(),
+            Some(Some([n; 12].as_slice()))
+        );
         assert_eq!(base.lookup(&[n * 2 + 1]).unwrap(), None);
         assert!(base.recent.len() <= 3);
     }
@@ -259,7 +306,7 @@ fn compacted_filter_size_tracks_surviving_rows_and_retained_tombstones() {
         }
         assert_eq!(
             level.lookup(&0u16.to_be_bytes()).unwrap(),
-            Some(Some(vec![9]))
+            Some(Some([9].as_slice()))
         );
         assert_eq!(
             level.lookup(&1u16.to_be_bytes()).unwrap(),

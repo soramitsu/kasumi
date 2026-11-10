@@ -37,9 +37,13 @@ New directories use a 4 MiB write buffer budget by default. Pass a byte count as
 WAL size and recovery time for less frequent inline merge work. The budget
 survives reopen and does not change when a commit becomes durable.
 
-Use `LiveDatabase.open(path)` to reopen an existing database. Both `sequence()` and `commit(ops)` return a JavaScript `bigint`. A mutation with a Buffer value inserts or replaces that key; omitting the value deletes it. Duplicate keys follow array order. A read returns a Buffer or `null` for a missing key. Zero-length keys and values round-trip. An empty batch advances the sequence.
+Use `LiveDatabase.open(path)` to reopen an existing database. Both `sequence()` and `commit(ops)` return a JavaScript `bigint`. A mutation with a Buffer value inserts or replaces that key; omitting the value deletes it. Duplicate keys follow array order. A read returns a Buffer or `null` for a missing key. All binary inputs require ordinary ArrayBuffer backing. Copy shared data into a private Buffer before calling the addon. Zero-length keys and values round-trip. An empty batch advances the sequence.
 
 `range({ limit, start?, end?, startExclusive?, endInclusive?, reverse? })` returns an array of `{key, value}`. Buffer bounds describe ascending lexicographic key space in both directions. The default includes `start` and excludes `end`. The limit must be an integer from 0 through 4,096. A result above 64 MiB of combined key and value bytes throws. Use a smaller limit and resume a forward page with `startExclusive: true` on its last key, or a reverse page with `end` on its last key.
+
+`getInto(key, destination)` returns the stored byte length or `null` when the key is absent. It copies a complete value into the destination when it fits, leaving the remainder untouched. A short destination stays unchanged so callers can retry with a larger Buffer. Consumers that reuse the destination must copy any decoded binary fields they retain.
+
+For bulk iteration, `rangePacked(options)` applies the same bounds and returns one stable Buffer. Each row contains a four-byte unsigned big-endian key length, the key, a four-byte unsigned big-endian value length, and the value. An empty page has zero bytes. The 64 MiB limit includes the length fields. Returned point values and pages retain their contents across subsequent reads, commits and close.
 
 A batch accepts up to 65,536 operations and 64 MiB of encoded data. Each key can occupy up to 4 KiB, each value up to 32 MiB. An error after a physical write may leave the complete batch recoverable. Close and reopen the database, then inspect the recovered sequence and data before retrying. Closing releases the lock and can be repeated.
 

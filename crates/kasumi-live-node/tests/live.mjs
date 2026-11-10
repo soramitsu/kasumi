@@ -95,6 +95,7 @@ test('large eager ranges fail before returning a partial page, then bounded read
   db.commit([{ key: buf('a'), value }]);
   db.commit([{ key: buf('b'), value }]);
   assert.throws(() => db.range({ limit: 2 }), /range exceeds 64 MiB/);
+  assert.throws(() => db.rangePacked({ limit: 2 }), /range exceeds 64 MiB/);
   for (const reverse of [true, false]) {
     const [row] = db.range({ limit: 1, reverse });
     assert.deepEqual(row.key, buf(reverse ? 'b' : 'a'));
@@ -144,4 +145,72 @@ test('a custom write buffer is bounded before creation and survives reopen', (t)
   try { db.commit([{key, value}]); } finally { db.close(); }
   const live = LiveDatabase.open(path);
   try { assert.deepEqual(live.get(key), value); } finally { live.close(); }
+});
+
+test('scalar values and packed range pages retain independent bytes after close and reopen', (t) => {
+  const path = fixture(t);
+  const db = LiveDatabase.create(path);
+  const values = [empty, Buffer.alloc(4096, 0xff), Buffer.alloc(4097, 0x80)];
+  db.commit(values.map((value, i) => ({ key: buf([i]), value })));
+  const scalar = values.map((_, i) => db.get(buf([i])));
+  const expectPage = (rows) => Buffer.concat(rows.flatMap(row => [row.key, row.value].flatMap(field => {
+    const n = Buffer.alloc(4);
+    n.writeUInt32BE(field.length);
+    return [n, field];
+  })));
+  const options = { limit: 4, reverse: true, end: buf([2]), endInclusive: true };
+  const page = db.rangePacked(options);
+  const expected = expectPage(db.range(options));
+  assert.deepEqual(page, expected);
+  assert.deepEqual(db.rangePacked({limit: 0}), empty);
+  assert.throws(() => db.rangePacked({limit: 4097}), /limit/);
+  scalar[1][0] = 33;
+  assert.deepEqual(db.get(buf([1])), values[1]);
+  db.commit([{key: buf([2])}]);
+  db.checkpoint();
+  db.close();
+  assert.deepEqual(page, expected);
+  assert.deepEqual(scalar[2], values[2]);
+  const reopened = LiveDatabase.open(path);
+  try {
+    assert.equal(reopened.get(buf([2])), null);
+    assert.deepEqual(reopened.get(buf([1])), values[1]);
+  } finally { reopened.close(); }
+});
+
+test('getInto disambiguates misses, empty and oversized values and permits overlapping binary inputs', (t) => {
+  const db = LiveDatabase.create(fixture(t));
+  t.after(() => db.close());
+  db.commit([{ key: buf('a'), value: buf([1, 2, 3]) }, { key: empty, value: empty }]);
+  const destination = Buffer.alloc(5, 0xee);
+  assert.throws(() => db.getInto(buf('missing'), 'invalid'), /Buffer/);
+  assert.equal(db.getInto(buf('missing'), destination), null);
+  assert.deepEqual(destination, Buffer.alloc(5, 0xee));
+  assert.equal(db.getInto(empty, destination), 0);
+  assert.deepEqual(destination, Buffer.alloc(5, 0xee));
+  assert.equal(db.getInto(buf('a'), destination.subarray(0, 2)), 3);
+  assert.deepEqual(destination, Buffer.alloc(5, 0xee));
+  destination[0] = 'a'.charCodeAt(0);
+  assert.equal(db.getInto(destination.subarray(0, 1), destination), 3);
+  assert.deepEqual(destination, buf([1, 2, 3, 0xee, 0xee]));
+  destination.fill(0);
+  assert.deepEqual(db.get(buf('a')), buf([1, 2, 3]));
+  db.close();
+  assert.throws(() => db.getInto(empty, destination), /closed/);
+});
+
+test('shared backing is rejected before native borrowing even with a shadowed buffer property', (t) => {
+  const db = LiveDatabase.create(fixture(t));
+  t.after(() => db.close());
+  const shared = Buffer.from(new SharedArrayBuffer(32));
+  Object.defineProperty(shared, 'buffer', { value: new ArrayBuffer(32) });
+  assert.throws(() => db.getInto(buf('missing'), shared), /private ArrayBuffer/);
+  assert.throws(() => db.getInto(shared, Buffer.alloc(32)), /private ArrayBuffer/);
+  assert.throws(() => db.get(shared), /private ArrayBuffer/);
+  assert.throws(() => db.commit([{key: shared, value: buf('no')}]), /private ArrayBuffer/);
+  assert.throws(() => db.commitGroup([[{key: buf('key'), value: shared}]]), /private ArrayBuffer/);
+  assert.throws(() => db.range({limit: 4, start: shared}), /private ArrayBuffer/);
+  assert.throws(() => db.rangePacked({limit: 4, end: shared}), /private ArrayBuffer/);
+  assert.equal(db.sequence(), 0n);
+  assert.equal(db.get(buf('key')), null);
 });

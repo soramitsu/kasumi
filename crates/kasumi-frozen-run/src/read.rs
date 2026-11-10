@@ -221,6 +221,28 @@ impl FrozenRun {
     }
 
     #[cfg(unix)]
+    /// Heap capacity retained by the authenticated index once decoded rows have been released.
+    pub(super) fn index_heap_bytes(&self) -> usize {
+        self.blocks.capacity() * size_of::<Block>()
+            + self
+                .blocks
+                .iter()
+                .map(|block| block.first.capacity() + block.last.capacity())
+                .sum::<usize>()
+    }
+
+    #[cfg(unix)]
+    pub(super) fn discard_decoded(&mut self) {
+        self.cache.fill_with(|| None);
+        self.oversized = None;
+    }
+
+    #[cfg(all(unix, test))]
+    pub(super) fn has_decoded(&self) -> bool {
+        self.oversized.is_some() || self.cache.iter().any(Option::is_some)
+    }
+
+    #[cfg(unix)]
     pub(crate) fn forget_oversized(&mut self) {
         self.oversized = None;
     }
@@ -243,6 +265,11 @@ impl FrozenRun {
 
     /// Read an exact binary key, including an empty key or value.
     pub fn get(&mut self, key: &[u8]) -> io::Result<Option<Vec<u8>>> {
+        Ok(self.get_ref(key)?.map(<[u8]>::to_vec))
+    }
+
+    /// Borrow an exact value from its verified block until the next reader operation.
+    pub fn get_ref(&mut self, key: &[u8]) -> io::Result<Option<&[u8]>> {
         let id = self
             .blocks
             .partition_point(|block| block.last.as_slice() < key);
@@ -257,7 +284,7 @@ impl FrozenRun {
         let index = block
             .offsets
             .binary_search_by(|&offset| block.row(offset).0.cmp(key));
-        Ok(index.ok().map(|i| block.row(block.offsets[i]).1.to_vec()))
+        Ok(index.ok().map(|i| block.row(block.offsets[i]).1))
     }
 
     /// Visit up to `limit` authenticated rows in ascending order. Empty or

@@ -17,6 +17,9 @@ mod index;
 use index::{Leaf, Link, Node};
 
 const PIECE_TARGET: usize = 4 << 20;
+const ORDINARY_RECENT: usize = 2;
+const DEEP_RECENT: usize = 7;
+const MAX_EXTRA_INDEX: usize = 512 << 10;
 
 struct Loaded {
     descriptor: Leaf,
@@ -29,7 +32,7 @@ pub(super) struct Level {
     root: Option<Link>,
     loaded: Option<Loaded>,
     only_piece: bool,
-    cache_bulk_pieces: bool,
+    recent_limit: usize,
     recent: VecDeque<Loaded>,
     membership: Option<BulkFilter>,
 }
@@ -60,7 +63,7 @@ impl Level {
             root,
             loaded: None,
             only_piece: false,
-            cache_bulk_pieces: bulk,
+            recent_limit: if bulk { 3 } else { ORDINARY_RECENT },
             recent: VecDeque::new(),
             membership,
         };
@@ -71,26 +74,47 @@ impl Level {
         Ok(out)
     }
 
-    fn activate(&mut self, piece: Loaded) {
-        if let Some(mut previous) = self.loaded.replace(piece)
-            && self.cache_bulk_pieces
-        {
-            // Keep at most three old pieces; a large single-value buffer must
-            // not multiply with the number of cached pieces.
+    /// Only the deepest ordinary tier uses additional index-only slots.
+    pub(super) fn retain_deep_indexes(&mut self) {
+        self.recent_limit = DEEP_RECENT;
+    }
+
+    fn activate(&mut self, piece: Loaded, demote: bool) {
+        if let Some(mut previous) = self.loaded.replace(piece) {
+            // Preserve the authenticated indexes and hot blocks when lookups alternate between
+            // pieces. Drop oversized buffers before retaining a piece.
             previous.rows.forget_oversized();
             if let Some(deletes) = &mut previous.deletes {
                 deletes.forget_oversized();
             }
-            if self.recent.len() == 3 {
+            if self.recent.len() == self.recent_limit {
                 self.recent.pop_back();
             }
             self.recent.push_front(previous);
+            if demote
+                && self.recent_limit == DEEP_RECENT
+                && let Some(cold) = self.recent.get_mut(ORDINARY_RECENT)
+            {
+                let index_bytes = size_of::<Loaded>()
+                    + cold.rows.index_heap_bytes()
+                    + cold.deletes.as_ref().map_or(0, FrozenRun::index_heap_bytes)
+                    + cold.descriptor.first.capacity()
+                    + cold.descriptor.last.capacity();
+                if index_bytes > MAX_EXTRA_INDEX {
+                    self.recent.remove(ORDINARY_RECENT);
+                } else {
+                    cold.rows.discard_decoded();
+                    if let Some(deletes) = &mut cold.deletes {
+                        deletes.discard_decoded();
+                    }
+                }
+            }
         }
     }
 
     fn reuse(&mut self, position: usize) {
         let piece = self.recent.remove(position).expect("recent piece position");
-        self.activate(piece);
+        self.activate(piece, position >= ORDINARY_RECENT);
     }
 
     fn load(&mut self, descriptor: Leaf) -> io::Result<()> {
@@ -122,11 +146,14 @@ impl Level {
             return Err(invalid("live piece key bounds differ"));
         }
         let deletes = descriptor.deleted.map(open).transpose()?;
-        self.activate(Loaded {
-            descriptor,
-            rows,
-            deletes,
-        });
+        self.activate(
+            Loaded {
+                descriptor,
+                rows,
+                deletes,
+            },
+            true,
+        );
         Ok(())
     }
 
@@ -163,7 +190,7 @@ impl Level {
         Err(invalid("live level tree is too deep"))
     }
 
-    fn lookup(&mut self, key: &[u8]) -> io::Result<Option<Option<Vec<u8>>>> {
+    fn lookup(&mut self, key: &[u8]) -> io::Result<Option<Option<&[u8]>>> {
         let Some(root) = self.root else {
             return Ok(None);
         };
@@ -185,7 +212,7 @@ impl Level {
             }
         }
         let shard = self.loaded.as_mut().unwrap();
-        let Some(v) = shard.rows.get(key)? else {
+        let Some(v) = shard.rows.get_ref(key)? else {
             return Ok(None);
         };
         if v.is_empty() && is_deleted(&mut shard.deletes, key)? {
@@ -197,18 +224,18 @@ impl Level {
 
 fn is_deleted(deletes: &mut Option<FrozenRun>, key: &[u8]) -> io::Result<bool> {
     match deletes {
-        Some(run) => Ok(run.get(key)?.is_some()),
+        Some(run) => Ok(run.get_ref(key)?.is_some()),
         None => Ok(false),
     }
 }
 
-pub(super) fn get(
-    levels: &mut [&mut Level],
-    delta: &Delta,
+pub(super) fn get<'a>(
+    levels: impl IntoIterator<Item = &'a mut Level>,
+    delta: &'a Delta,
     key: &[u8],
-) -> io::Result<Option<Vec<u8>>> {
+) -> io::Result<Option<&'a [u8]>> {
     if let Some(change) = delta.get(key) {
-        return Ok(change.clone());
+        return Ok(change.as_deref());
     }
     for level in levels {
         if let Some(change) = level.lookup(key)? {
