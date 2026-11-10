@@ -20,6 +20,11 @@ KillSignal=SIGTERM
 TimeoutStopSec=infinity
 Restart=on-failure
 RestartSec=5
+# The process holds tenant keys and plaintext documents: no core file and no
+# swap. The descriptor limit covers the database's files and every listener.
+LimitCORE=0
+LimitNOFILE=65536
+MemorySwapMax=0
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

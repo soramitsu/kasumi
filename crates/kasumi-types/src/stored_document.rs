@@ -188,14 +188,14 @@ impl DocumentSlot {
     /// Canonical body charge, independent of physical deduplication savings.
     pub fn body_bytes(&self) -> Result<u64> {
         match self {
-            Self::Pending(document) => Ok(fingerprint(&CanonicalJsonValue(&document.body))?.0),
+            Self::Pending(document) => canonical_len(&CanonicalJsonValue(&document.body)),
             Self::Stored(document) => Ok(document.body_bytes),
         }
     }
 
     pub fn document_bytes(&self) -> Result<u64> {
         match self {
-            Self::Pending(document) => Ok(fingerprint(document.as_ref())?.0),
+            Self::Pending(document) => canonical_len(document.as_ref()),
             Self::Stored(document) => Ok(document.document_bytes),
         }
     }
@@ -240,8 +240,10 @@ impl StoredDocument {
             body_bytes == self.body_bytes && body_sha256 == self.body_sha256,
             "stored document canonical body differs"
         );
+        // The body digest above authenticates the content; the framing check
+        // compares a length only, so it does not hash the document again.
         ensure!(
-            fingerprint(document.as_ref())?.0 == self.document_bytes,
+            canonical_len(document.as_ref())? == self.document_bytes,
             "stored document canonical framing differs"
         );
         Ok(document)
@@ -272,7 +274,7 @@ impl StoredDocument {
             id: document.id.clone(),
             version: document.version,
             body_bytes,
-            document_bytes: fingerprint(document)?.0,
+            document_bytes: canonical_len(document)?,
             body_sha256,
             body_object,
             body_object_bytes,
@@ -308,6 +310,28 @@ fn fingerprint(value: &impl Serialize) -> Result<(u64, [u8; 32])> {
     };
     serde_json::to_writer(&mut writer, value)?;
     Ok((writer.bytes, writer.digest.finalize().into()))
+}
+
+/// The serialized length that [`fingerprint`] reports, without its digest.
+/// Framing and charge checks compare lengths only; hashing the same bytes to
+/// discard the result would add a SHA-256 pass to every load and every put.
+fn canonical_len(value: &impl Serialize) -> Result<u64> {
+    struct Length(u64);
+    impl Write for Length {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len() as u64)
+                .ok_or_else(|| io::Error::other("document byte length overflow"))?;
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut writer = Length(0);
+    serde_json::to_writer(&mut writer, value)?;
+    Ok(writer.0)
 }
 
 #[cfg(test)]
@@ -376,6 +400,40 @@ mod tests {
             assert_eq!(resolver.alive.load(Ordering::SeqCst), 0);
         }
     }
+    #[test]
+    fn length_only_measurement_matches_the_fingerprinted_length() {
+        let (descriptor, resolver) = fixture();
+        let document = &resolver.document;
+        let body = CanonicalJsonValue(&document.body);
+        assert_eq!(
+            canonical_len(document).unwrap(),
+            fingerprint(document).unwrap().0
+        );
+        assert_eq!(canonical_len(&body).unwrap(), fingerprint(&body).unwrap().0);
+        assert_eq!(
+            canonical_len(document).unwrap(),
+            serde_json::to_vec(document).unwrap().len() as u64
+        );
+        // Descriptors and pending slots report those same lengths.
+        assert_eq!(descriptor.document_bytes, canonical_len(document).unwrap());
+        let pending = DocumentSlot::Pending(Arc::new(document.clone()));
+        assert_eq!(pending.document_bytes().unwrap(), descriptor.document_bytes);
+        assert_eq!(pending.body_bytes().unwrap(), descriptor.body_bytes);
+    }
+
+    #[test]
+    fn a_framing_length_difference_fails_closed_without_a_body_difference() {
+        // Identity and body match; only the recorded framing length differs.
+        let (mut descriptor, resolver) = fixture();
+        descriptor.document_bytes += 1;
+        let error = descriptor.load(&resolver).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "stored document canonical framing differs"
+        );
+        assert_eq!(resolver.alive.load(Ordering::SeqCst), 0);
+    }
+
     #[test]
     fn wrong_version_and_same_length_body_corruption_fail_closed() {
         let (descriptor, mut resolver) = fixture();

@@ -1114,8 +1114,11 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
     /// The caller must check its current owner and authorization before using
     /// this unchecked lookup. `load` additionally checks physical ownership.
     pub fn get(&mut self, key: K) -> Option<CachedBytes> {
-        self.record_access(key);
-        let Some(index) = self.find(key) else {
+        // One hash of the identity serves every sketch row and the slot probe.
+        // Callers hold the cache lock here, and an identity is tens of bytes.
+        let hashed = key_hash(key);
+        self.record_access(hashed);
+        let Some(index) = self.find_hashed(key, hashed) else {
             self.counters.misses = self.counters.misses.saturating_add(1);
             return None;
         };
@@ -1504,11 +1507,16 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
     }
 
     fn find(&self, key: K) -> Option<usize> {
+        self.find_hashed(key, key_hash(key))
+    }
+
+    /// `hashed` must be `key_hash(key)`.
+    fn find_hashed(&self, key: K, hashed: u64) -> Option<usize> {
         if self.slots.is_empty() {
             return None;
         }
         let mask = self.slots.len() - 1;
-        let mut index = key_hash(key) as usize & mask;
+        let mut index = hashed as usize & mask;
         loop {
             match &self.slots[index] {
                 None => return None,
@@ -1620,7 +1628,8 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
         self.layout_version = self.structural_version;
     }
 
-    fn record_access(&mut self, key: K) {
+    /// `hashed` is the accessed key's `key_hash`.
+    fn record_access(&mut self, hashed: u64) {
         self.samples += 1;
         if self.samples == SKETCH_SAMPLES {
             for count in &mut self.sketch {
@@ -1629,22 +1638,27 @@ impl<K: Copy + Eq + Hash> NativeCache<K> {
             self.samples = 0;
         }
         for row in 0..SKETCH_ROWS {
-            let index = Self::sketch_index(key, row);
+            let index = Self::sketch_slot(hashed, row);
             self.sketch[index] = self.sketch[index].saturating_add(1);
         }
     }
 
     fn frequency(&self, key: K) -> u8 {
+        let hashed = key_hash(key);
         (0..SKETCH_ROWS)
-            .map(|row| self.sketch[Self::sketch_index(key, row)])
+            .map(|row| self.sketch[Self::sketch_slot(hashed, row)])
             .min()
             .unwrap()
     }
 
     fn sketch_index(key: K, row: usize) -> usize {
+        Self::sketch_slot(key_hash(key), row)
+    }
+
+    /// The sketch counter of a key in one row, from that key's `key_hash`.
+    fn sketch_slot(hashed: u64, row: usize) -> usize {
         row * SKETCH_WIDTH
-            + (hash(key_hash(key).wrapping_add((row as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15)))
-                as usize
+            + (hash(hashed.wrapping_add((row as u64).wrapping_mul(0x9e37_79b9_7f4a_7c15))) as usize
                 & (SKETCH_WIDTH - 1))
     }
 }
@@ -2299,6 +2313,30 @@ mod tests {
         assert_eq!(cache.head, NONE);
         assert_eq!(cache.tail, NONE);
         assert!(cache.slots.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn a_lookup_counts_and_probes_with_one_hash_of_its_key() {
+        let (mut cache, _admission) = cache_for(8, 64);
+        drop(load(&mut cache, 7, 64));
+        // A hit and a miss each count one access in the rows `frequency` reads.
+        let hit = cache.frequency(7);
+        assert_eq!(cache.get(7).unwrap().as_bytes(), &[7; 64]);
+        assert_eq!(cache.frequency(7), hit + 1);
+        let miss = cache.frequency(9);
+        assert!(cache.get(9).is_none());
+        assert_eq!(cache.frequency(9), miss + 1);
+        // The shared hash selects the same counters and slot as the keyed forms.
+        for key in [7_u64, 9, u64::MAX] {
+            let hashed = key_hash(key);
+            for row in 0..SKETCH_ROWS {
+                assert_eq!(
+                    NativeCache::<u64>::sketch_index(key, row),
+                    NativeCache::<u64>::sketch_slot(hashed, row)
+                );
+            }
+            assert_eq!(cache.find(key), cache.find_hashed(key, hashed));
+        }
     }
 
     #[test]

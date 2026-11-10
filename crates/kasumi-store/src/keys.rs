@@ -247,13 +247,21 @@ impl TransitKeyProvider {
             response.content_length().is_none_or(|n| n <= 65536),
             "Transit response too large"
         );
+        // A response can carry a plaintext data key. Reserve the whole bound
+        // first: a buffer that grew chunk by chunk would move the key and free
+        // each earlier copy without wiping it.
         let mut bytes = Zeroizing::new(Vec::new());
+        bytes
+            .try_reserve_exact(65536)
+            .context("Transit response allocation failed")?;
+        let reserved = bytes.capacity();
         while let Some(chunk) = response.chunk().await.context("reading Transit response")? {
             ensure!(
                 chunk.len() <= 65536usize.saturating_sub(bytes.len()),
                 "Transit response too large"
             );
-            bytes.extend(chunk);
+            bytes.extend_from_slice(&chunk);
+            debug_assert_eq!(bytes.capacity(), reserved, "Transit response buffer moved");
         }
         serde_json::from_slice(&bytes).context("invalid Transit response")
     }

@@ -12,6 +12,17 @@ use std::{
 
 const MAX_SCHEMA_BYTES: usize = 256 * 1024;
 const MAX_DEPTH: usize = 48;
+/// A validator keeps every compiled pattern for as long as a generation holds
+/// it, on every replica, and none of it is charged to admission. The schema's
+/// own size does not bound that: 200 KiB of schema holding 6,000 patterns such
+/// as `(?:\w{40}){40}` compiled to about 1.3 GiB. With these two limits the
+/// largest accepted schema, 256 patterns of `\w{2500}`, measured about 75 MiB.
+const MAX_SCHEMA_PATTERNS: usize = 256;
+/// Bound on one pattern's compiled program, and separately on the transition
+/// cache a search may grow for it. A pattern over the first is rejected with
+/// its schema. The second never rejects: a search that outgrows its cache
+/// continues on a slower engine with the same result.
+const MAX_PATTERN_PROGRAM_BYTES: usize = 256 * 1024;
 
 #[cfg(test)]
 thread_local! {
@@ -62,11 +73,21 @@ fn inspect(value: &Value, depth: usize, nodes: &mut usize) -> Result<()> {
 }
 
 /// Traverse only schema locations, not property names or enum/default values.
-/// A document may legitimately have a property named `$ref` or `$id`.
-fn inspect_schema(schema: &Value) -> Result<()> {
+/// A document may legitimately have a property named `$ref`, `$id` or
+/// `pattern`. `patterns` counts the regular expressions seen so far.
+fn inspect_schema(schema: &Value, patterns: &mut usize) -> Result<()> {
     let Some(map) = schema.as_object() else {
         return Ok(());
     };
+    if matches!(map.get("pattern"), Some(Value::String(_))) {
+        *patterns += 1;
+    }
+    if let Some(Value::Object(schemas)) = map.get("patternProperties") {
+        *patterns += schemas.len();
+    }
+    if *patterns > MAX_SCHEMA_PATTERNS {
+        return Err(invalid("schema has more than 256 patterns"));
+    }
     for key in ["$ref", "$dynamicRef", "$recursiveRef"] {
         if let Some(reference) = map.get(key)
             && !reference.as_str().is_some_and(|s| s.starts_with('#'))
@@ -97,14 +118,14 @@ fn inspect_schema(schema: &Value) -> Result<()> {
     ] {
         if let Some(Value::Object(schemas)) = map.get(key) {
             for schema in schemas.values() {
-                inspect_schema(schema)?;
+                inspect_schema(schema, patterns)?;
             }
         }
     }
     for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
         if let Some(Value::Array(schemas)) = map.get(key) {
             for schema in schemas {
-                inspect_schema(schema)?;
+                inspect_schema(schema, patterns)?;
             }
         }
     }
@@ -122,7 +143,7 @@ fn inspect_schema(schema: &Value) -> Result<()> {
         "contentSchema",
     ] {
         if let Some(schema) = map.get(key) {
-            inspect_schema(schema)?;
+            inspect_schema(schema, patterns)?;
         }
     }
     Ok(())
@@ -144,7 +165,7 @@ pub(crate) fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>> {
         return Err(invalid("schema exceeds 256 KiB"));
     }
     inspect(schema, 0, &mut 0)?;
-    inspect_schema(schema)?;
+    inspect_schema(schema, &mut 0)?;
     let key: [u8; 32] = Sha256::digest(encoded).into();
     // The cache never owns tenant schema plaintext. Published generations hold
     // validators strongly; sealing/dropping them releases enum/const literals too.
@@ -165,7 +186,11 @@ pub(crate) fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>> {
         .map_err(|e| invalid(format!("invalid schema: {e}")))?;
     let validator = Arc::new(
         jsonschema::draft202012::options()
-            .with_pattern_options(jsonschema::PatternOptions::regex())
+            .with_pattern_options(
+                jsonschema::PatternOptions::regex()
+                    .size_limit(MAX_PATTERN_PROGRAM_BYTES)
+                    .dfa_size_limit(MAX_PATTERN_PROGRAM_BYTES),
+            )
             .with_retriever(NoExternalResources)
             .should_validate_formats(true)
             .build(schema)

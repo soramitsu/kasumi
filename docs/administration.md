@@ -20,6 +20,15 @@ kasumictl --config /etc/kasumi/client-node1.json suspend
 kasumictl --config /etc/kasumi/client-node1.json manage operation.json
 ```
 
+A collection's schema is JSON Schema Draft 2020-12 with local `#` references
+only. Its JSON is limited to 256 KiB, 20,000 nodes and depth 48. It may contain
+at most 256 regular expressions, counting each `pattern` and each
+`patternProperties` key, and each expression's compiled form is limited to
+256 KiB: `^\w{1,255}$` is accepted and `^\w{3000}$` is not; use `maxLength`
+for long bounds. A schema over a limit is rejected with `INVALID_ARGUMENT`.
+The pattern limits exist because compiled expressions stay in memory on every
+replica outside the admission budgets.
+
 The server configuration requires a nonnil `database_id` UUID chosen and saved
 before file creation. Keep it unchanged for that node file; each new node gets
 its own UUID. `example-config` generates a candidate UUID, so save the generated

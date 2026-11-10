@@ -45,19 +45,31 @@ pub struct ListenerLimits {
     /// its first request, is closed gracefully. A silent or vanished peer would
     /// otherwise hold one of `max_connections` forever.
     pub idle_timeout: Duration,
-    /// TLS handshakes one remote address may have in progress at once. Each
+    /// TLS handshakes one remote source may have in progress at once. Each
     /// holds one of `max_connections` for up to `handshake_timeout`, so
-    /// without this cap one address that never finishes its handshakes could
-    /// hold every slot. Loopback clients are exempt unless
-    /// `limit_loopback_handshakes` is set.
+    /// without this cap one host that never finishes its handshakes could
+    /// hold every slot. A source is an IPv4 address or an IPv6 /64. Loopback
+    /// clients are exempt unless `limit_loopback_handshakes` is set.
     pub max_handshakes_per_source: usize,
     pub limit_loopback_handshakes: bool,
 }
 
-/// Handshakes in progress per remote address, on one listener.
+/// Handshakes in progress per remote source, on one listener.
 type Handshaking = Arc<std::sync::Mutex<HashMap<IpAddr, usize>>>;
 
-/// One remote address's TLS handshake in progress; dropping it ends the claim.
+/// What one remote host's handshakes are counted under. A host on IPv6 is
+/// routinely given a whole /64 and may send from any address in it, so a count
+/// kept per exact address would grant it the limit again for each address.
+fn handshake_source(canonical: IpAddr) -> IpAddr {
+    match canonical {
+        IpAddr::V6(address) => IpAddr::V6(std::net::Ipv6Addr::from_bits(
+            address.to_bits() & (u128::MAX << 64),
+        )),
+        v4 => v4,
+    }
+}
+
+/// One remote source's TLS handshake in progress; dropping it ends the claim.
 struct HandshakeClaim(Option<(Handshaking, IpAddr)>);
 impl HandshakeClaim {
     /// None when `source` already has its limit of handshakes in progress.
@@ -66,6 +78,7 @@ impl HandshakeClaim {
         if source.is_loopback() && !limits.limit_loopback_handshakes {
             return Some(Self(None));
         }
+        let source = handshake_source(source);
         let mut counts = handshaking
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
@@ -252,6 +265,18 @@ impl ListenerInventory {
     }
 }
 
+/// Whether an `accept` failure concerns only the connection that was being
+/// accepted: its peer reset or abandoned it while it waited in the queue. The
+/// listener itself is intact. Every other failure, including descriptor
+/// exhaustion, still stops the listener so that the node drains.
+fn connection_abandoned(error: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        error.kind(),
+        ErrorKind::ConnectionAborted | ErrorKind::ConnectionReset | ErrorKind::Interrupted
+    )
+}
+
 trait ConnectionSource: Send {
     fn accept(
         &mut self,
@@ -319,6 +344,9 @@ async fn serve_tls_source(
             connection = listener.accept() => {
                 let (socket, address) = match connection {
                     Ok(connection) => connection,
+                    // The peer gave up before it was accepted. No client may
+                    // stop the node for every tenant by resetting a connection.
+                    Err(error) if connection_abandoned(&error) => continue,
                     Err(error) => { outcome = Err(error.into()); break; },
                 };
                 // Refused before it takes a slot: this address already has
@@ -896,6 +924,114 @@ mod lifecycle_tests {
                 .unwrap()
                 .unwrap();
         }
+    }
+
+    /// A peer that resets its connection before it is accepted fails only that
+    /// connection. The listener keeps serving; any other accept failure still
+    /// stops it (`accept_io_failure_drains_active_tls_request_before_releasing_node`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn a_connection_abandoned_before_accept_does_not_stop_the_listener() {
+        struct AbandonedFirst {
+            listener: TcpListener,
+            abandoned: Vec<std::io::ErrorKind>,
+        }
+        impl ConnectionSource for AbandonedFirst {
+            async fn accept(
+                &mut self,
+            ) -> std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)> {
+                match self.abandoned.pop() {
+                    Some(kind) => Err(kind.into()),
+                    None => self.listener.accept().await,
+                }
+            }
+        }
+        assert!(!connection_abandoned(&std::io::Error::other(
+            "listener failed"
+        )));
+        // EMFILE (24 on Linux and macOS): the process is out of descriptors.
+        assert!(!connection_abandoned(&std::io::Error::from_raw_os_error(
+            24
+        )));
+
+        let rcgen::CertifiedKey { cert, signing_key } =
+            rcgen::generate_simple_self_signed(vec!["localhost".into()]).unwrap();
+        let identity = TlsIdentity::from_pem(
+            cert.pem().as_bytes(),
+            signing_key.serialize_pem().as_bytes(),
+        )
+        .unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let (events, _records) = tokio::sync::mpsc::unbounded_channel();
+        let (stop, shutdown) = watch::channel(false);
+        let server = tokio::spawn(serve_tls_source(
+            AbandonedFirst {
+                listener,
+                abandoned: vec![
+                    std::io::ErrorKind::Interrupted,
+                    std::io::ErrorKind::ConnectionReset,
+                    std::io::ErrorKind::ConnectionAborted,
+                ],
+            },
+            server_config(&identity, ClientAuthentication::OAuth).unwrap(),
+            Router::new().route("/request", post(|| async { "served" })),
+            Arc::new(RecordingAudit(events)),
+            shutdown,
+            |socket| socket.set_nodelay(true),
+            Arc::new(ListenerInventory::new(ListenerLimits::default())),
+        ));
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .http1_only()
+            .add_root_certificate(reqwest::Certificate::from_pem(cert.pem().as_bytes()).unwrap())
+            .timeout(Duration::from_secs(10))
+            .build()
+            .unwrap();
+        let response = client
+            .post(format!("https://localhost:{}/request", address.port()))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(response.text().await.unwrap(), "served");
+        stop.send_replace(true);
+        tokio::time::timeout(Duration::from_secs(10), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+    }
+
+    /// One IPv6 host may send from any address of its /64. Those addresses
+    /// share one count; another /64 and each IPv4 address have their own.
+    #[test]
+    fn one_ipv6_network_cannot_multiply_its_handshakes_by_changing_address() {
+        let handshaking: Handshaking = Arc::default();
+        let limits = ListenerLimits {
+            max_handshakes_per_source: 2,
+            ..ListenerLimits::default()
+        };
+        let claim =
+            |source: &str| HandshakeClaim::new(&handshaking, source.parse().unwrap(), &limits);
+        let first = claim("2001:db8:0:1::1").unwrap();
+        let second = claim("2001:db8:0:1:ffff:ffff:ffff:ffff").unwrap();
+        assert!(claim("2001:db8:0:1:1234::5").is_none());
+        let neighbour = claim("2001:db8:0:2::1").unwrap();
+        let mapped = claim("::ffff:192.0.2.7").unwrap();
+        let exact = claim("192.0.2.7").unwrap();
+        assert!(claim("::ffff:192.0.2.7").is_none());
+        let other = claim("192.0.2.8").unwrap();
+        // Ending one handshake of the /64 admits one more from any of its addresses.
+        drop(first);
+        let third = claim("2001:db8:0:1::2").unwrap();
+        assert!(claim("2001:db8:0:1::3").is_none());
+        drop((second, third, neighbour, mapped, exact, other));
+        assert!(handshaking.lock().unwrap().is_empty());
+        // Loopback stays exempt on both families unless the listener limits it.
+        let loopback: Vec<_> = (0..3)
+            .flat_map(|_| [claim("::1"), claim("127.0.0.1")])
+            .collect();
+        assert!(loopback.iter().all(Option::is_some));
+        assert!(handshaking.lock().unwrap().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

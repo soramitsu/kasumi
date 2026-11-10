@@ -68,6 +68,15 @@ fn leader_hint(status: &tonic::Status) {
     }
 }
 
+/// Why an administrative read failed. The server's own error says what to
+/// correct (a stale incarnation, a missing grant); the gRPC code alone does not.
+fn observation_failure(status: &tonic::Status) -> anyhow::Error {
+    match serde_json::from_slice::<kasumi_types::Error>(status.details()) {
+        Ok(error) => anyhow::anyhow!("administrative observation failed: {error}"),
+        Err(_) => anyhow::anyhow!("administrative observation failed ({})", status.code()),
+    }
+}
+
 /// Commands that use the administrative endpoint. After `--profile`, one of
 /// these selects administration through that installed profile; any other
 /// command after `--profile` is a data command.
@@ -340,7 +349,7 @@ async fn run(arguments: &[String]) -> Result<()> {
         }
         .map_err(|status| {
             leader_hint(&status);
-            anyhow::anyhow!("administrative observation failed ({})", status.code())
+            observation_failure(&status)
         })?;
         if let Some(expected) = expected_policy_limits {
             let snapshot: kasumi_types::PolicyLimitsSnapshot = serde_json::from_slice(&result)?;
@@ -522,6 +531,31 @@ mod tests {
             ])
             .await
             .is_err()
+        );
+    }
+
+    #[test]
+    fn a_failed_administrative_read_reports_the_servers_reason() {
+        let refused = tonic::Status::with_details(
+            tonic::Code::PermissionDenied,
+            "peer text",
+            serde_json::to_vec(&kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Forbidden,
+                "principal lacks the schema read grant",
+            ))
+            .unwrap()
+            .into(),
+        );
+        assert_eq!(
+            observation_failure(&refused).to_string(),
+            "administrative observation failed: Forbidden: principal lacks the schema read grant"
+        );
+        // A status without a Kasumi error keeps the gRPC code as its only reason.
+        let unreachable = tonic::Status::unavailable("peer text");
+        let message = observation_failure(&unreachable).to_string();
+        assert!(
+            message.starts_with("administrative observation failed (") && !message.contains("peer"),
+            "{message}"
         );
     }
 

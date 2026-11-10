@@ -172,6 +172,89 @@ pub enum ErrorCode {
     AuditUnavailable,
 }
 
+impl ErrorCode {
+    /// The code's wire name, as in `{"code":"INDEX_REQUIRED"}`.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvalidArgument => "INVALID_ARGUMENT",
+            Self::Unauthorized => "UNAUTHORIZED",
+            Self::Forbidden => "FORBIDDEN",
+            Self::NotFound => "NOT_FOUND",
+            Self::AlreadyExists => "ALREADY_EXISTS",
+            Self::Conflict => "CONFLICT",
+            Self::SchemaViolation => "SCHEMA_VIOLATION",
+            Self::QuotaExceeded => "QUOTA_EXCEEDED",
+            Self::ResourceExhausted => "RESOURCE_EXHAUSTED",
+            Self::IndexRequired => "INDEX_REQUIRED",
+            Self::CursorExpired => "CURSOR_EXPIRED",
+            Self::Unavailable => "UNAVAILABLE",
+            Self::UnknownOutcome => "UNKNOWN_OUTCOME",
+            Self::Corruption => "CORRUPTION",
+            Self::Sealed => "SEALED",
+            Self::AuditUnavailable => "AUDIT_UNAVAILABLE",
+        }
+    }
+}
+
+/// Displays the wire name, so logs and messages match documents and replies.
+impl std::fmt::Display for ErrorCode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+#[cfg(test)]
+mod error_code_name_tests {
+    use super::ErrorCode;
+
+    #[test]
+    fn every_code_displays_its_wire_name() {
+        let codes = [
+            ErrorCode::InvalidArgument,
+            ErrorCode::Unauthorized,
+            ErrorCode::Forbidden,
+            ErrorCode::NotFound,
+            ErrorCode::AlreadyExists,
+            ErrorCode::Conflict,
+            ErrorCode::SchemaViolation,
+            ErrorCode::QuotaExceeded,
+            ErrorCode::ResourceExhausted,
+            ErrorCode::IndexRequired,
+            ErrorCode::CursorExpired,
+            ErrorCode::Unavailable,
+            ErrorCode::UnknownOutcome,
+            ErrorCode::Corruption,
+            ErrorCode::Sealed,
+            ErrorCode::AuditUnavailable,
+        ];
+        for code in codes {
+            // Adding a variant fails to compile here until it is listed above.
+            match code {
+                ErrorCode::InvalidArgument
+                | ErrorCode::Unauthorized
+                | ErrorCode::Forbidden
+                | ErrorCode::NotFound
+                | ErrorCode::AlreadyExists
+                | ErrorCode::Conflict
+                | ErrorCode::SchemaViolation
+                | ErrorCode::QuotaExceeded
+                | ErrorCode::ResourceExhausted
+                | ErrorCode::IndexRequired
+                | ErrorCode::CursorExpired
+                | ErrorCode::Unavailable
+                | ErrorCode::UnknownOutcome
+                | ErrorCode::Corruption
+                | ErrorCode::Sealed
+                | ErrorCode::AuditUnavailable => {}
+            }
+            assert_eq!(
+                serde_json::to_value(code).unwrap(),
+                serde_json::Value::String(code.to_string())
+            );
+        }
+    }
+}
+
 /// Constructed by the authentication boundary, never from remote operation input.
 /// Embedding applications are trusted and may provide their own verified context.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -354,7 +437,11 @@ pub struct Document {
     pub body: Value,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+/// `Eq` is load-bearing for speed, not only for correctness: generations share
+/// one `Arc<CollectionDefinition>` until a schema change, and `Arc` equality
+/// answers from the shared pointer only when the value is `Eq`. Without it
+/// every write compares the whole schema of every collection in its tenant.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct CollectionDefinition {
     pub name: String,
@@ -367,6 +454,13 @@ pub struct CollectionDefinition {
     #[serde(default)]
     pub strict_read_audit: bool,
 }
+
+// Removing `Eq` would compile everywhere else and silently restore the deep
+// comparison on each write, so the requirement is checked here.
+const _: fn() = || {
+    fn shares_arc_equality<T: Eq>() {}
+    shares_arc_equality::<CollectionDefinition>();
+};
 
 /// Append-only protection is enforced during ordered application, including
 /// administrative callers. A collection cannot later weaken this protection.

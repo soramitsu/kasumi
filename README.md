@@ -189,6 +189,36 @@ For a production-shaped installation, use the complete [standalone installation
 guide](docs/standalone.md), including filesystem qualification, key backup,
 credential rotation, backups, and recovery.
 
+### One command for a development database
+
+While developing against Kasumi, <code>scripts/dev_standalone.py</code> performs
+every step above. It writes the same disposable policy files, initializes a new
+installation, supervises <code>kasumid serve</code> with a credential watcher
+for each profile, restarts a process that fails, and creates the collections
+you name. It needs Python 3.11 or newer and uses the debug binaries in
+<code>target/debug</code> unless you pass <code>--bin-dir</code>:
+
+~~~sh
+cargo +1.97.1 build --locked -p kasumi-server --bins
+
+# The directory must be absolute and must not exist. The three listeners take
+# the base port and the two after it.
+python3 scripts/dev_standalone.py start /tmp/kasumi-dev --base-port 9443 \
+  --collection invoices.collection.json
+
+target/debug/kasumictl --profile /tmp/kasumi-dev/installation/profiles/default.json \
+  put invoices inv-1 '{"status":"open","amount":42}' --if absent --key invoice:inv-1
+
+python3 scripts/dev_standalone.py stop /tmp/kasumi-dev --remove
+~~~
+
+<code>start</code> prints one JSON document with the endpoints, profile and
+log paths, and returns once an authenticated read succeeds and each collection
+reads back as defined. <code>stop</code> without <code>--remove</code> keeps the
+data, and <code>resume</code> supervises it again. On macOS the supervisor
+keeps the machine awake while it runs; pass <code>--allow-sleep</code> to
+decline. This is a development installation, not a release deployment.
+
 ## A Rust application in a few lines
 
 Add the client crate to a Rust service in this workspace, then point it at the

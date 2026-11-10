@@ -408,6 +408,9 @@ impl<F: Future<Output = anyhow::Result<BodyOutcome>>> Future for Body<'_, F> {
     type Output = ();
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
         let this = unsafe { self.get_unchecked_mut() };
+        // The body is destroyed when it completes. `poll` is a safe function,
+        // so polling again must fail here instead of touching the freed body.
+        assert!(!this.disposed, "enrollment body polled after completion");
         this.observation.entry = Entry::Entered;
         match catch_unwind(AssertUnwindSafe(|| this.future.as_mut().poll(cx))) {
             Ok(Poll::Pending) => return Poll::Pending,

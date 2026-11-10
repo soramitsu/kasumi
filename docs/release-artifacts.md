@@ -316,6 +316,12 @@ restart and drained shutdown. Both units passed `systemd-analyze verify`; the
 authority unit still requires actual HA runtime validation. Repeat these checks
 with the final accepted artifacts.
 
+Both units have since gained `LimitCORE=0` and `MemorySwapMax=0`, and the data
+unit `LimitNOFILE=65536`, matching the [deployment template](../deploy/kasumi.service).
+`scripts/test_systemd_units.py` checks that the settings are present. The
+changed units have not been run through `systemd-analyze verify` or the smoke
+again.
+
 These are candidate artifacts. Complete cross-platform functional validation,
 external-service/recovery/capacity/retention/performance gates and the actual
 24-hour soak remain required before release publication. OCI assembly, full

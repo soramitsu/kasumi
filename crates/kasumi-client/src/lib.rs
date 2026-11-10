@@ -4,7 +4,14 @@
 //! not retry; installed endpoint pools retain exact operation identities and
 //! pin historical reads to their originating member.
 
-use kasumi_transport::{CertificatePin, TlsIdentity};
+/// The connection types that [`KasumiClientConfig`] and [`Kasumi::connect`]
+/// take, so that an application needs no direct `kasumi-transport` dependency.
+pub use kasumi_transport::{
+    CertificatePin, TlsIdentity,
+    credentials::{CredentialSource, FileCredentialSource},
+};
+/// Every request, reply and definition type in this crate's signatures.
+pub use kasumi_types as types;
 use kasumi_types::{MutationBatch, WriteReceipt};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -63,11 +70,26 @@ mod kasumi;
 pub use kasumi::{Kasumi, QueryPage, TypedDocument};
 
 /// Everything needed to read and write data: `use kasumi_client::prelude::*;`.
+///
+/// ```
+/// use kasumi_client::prelude::*;
+///
+/// // Each name that a request or batch builder takes is in the prelude.
+/// let walk = QueryRequest::new("events")
+///     .filter(Filter::new().eq("/tenant", "acme").gte("/at", "2026-01-01"))
+///     .sort_asc("/at")
+///     .sort_asc("/event_id")
+///     .paging(Paging::Seek)
+///     .limit(500);
+/// assert_eq!(walk.page_size(), 500);
+/// ```
 pub mod prelude {
     pub use crate::{ClientError, Kasumi, QueryPage, TypedDocument};
     pub use kasumi_types::{
-        Aggregation, Condition, Document, ErrorCode, Filter, Mutation, MutationBatch, Precondition,
-        QueryRequest, QueryResponse, QueryRow, Sort, TextMode, TextSearch, WriteReceipt,
+        AggregateFunction, Aggregation, CollectionDefinition, Condition, Direction, Document,
+        ErrorCode, Filter, Mutation, MutationBatch, Paging, Precondition, QueryRequest,
+        QueryResponse, QueryRow, ReadAssertion, ReadPrecondition, Sort, TextMode, TextSearch,
+        WriteReceipt,
     };
 }
 
@@ -106,12 +128,12 @@ pub fn verify_submitted_mutation_receipt(
 pub enum ClientError {
     #[error("native secure connection failed: {0}")]
     Connection(#[from] anyhow::Error),
-    #[error("native transport failed: {0}")]
+    #[error("{}", transport_failure(.0))]
     Transport(#[from] tonic::Status),
     /// Admitted decode failures retain no peer-controlled strings or metadata after
     /// their admission owner is released. The code remains usable for routing,
     /// and `database` keeps the server's Kasumi error code when it reported one.
-    #[error("native decode failed ({code:?}): {reason}")]
+    #[error("{}", decode_rejection(.code, .reason, .database))]
     DecodeRejected {
         code: tonic::Code,
         reason: &'static str,
@@ -215,6 +237,39 @@ mod classification_tests {
         assert!(!ClientError::Authorization.is_transient());
         assert!(!ClientError::InvalidResponse("fixture").is_transient());
     }
+
+    #[test]
+    fn a_database_answer_displays_its_code_instead_of_a_transport_failure() {
+        use kasumi_types::ErrorCode;
+        let rejected = kasumi(ErrorCode::IndexRequired, tonic::Code::FailedPrecondition);
+        assert_eq!(
+            rejected.to_string(),
+            "database reported INDEX_REQUIRED: fixture"
+        );
+        // A bounded read keeps only the closed code, and still shows it.
+        let normalized = crate::snapshot_decode::normalize(rejected);
+        assert_eq!(
+            normalized.to_string(),
+            "database reported INDEX_REQUIRED (gRPC FailedPrecondition)"
+        );
+        // Without a database answer the failure is still described as local.
+        let unreachable = ClientError::Transport(tonic::Status::unavailable("refused"));
+        assert!(
+            unreachable
+                .to_string()
+                .starts_with("native transport failed: "),
+            "{unreachable}"
+        );
+        let cancelled = ClientError::DecodeRejected {
+            code: tonic::Code::Cancelled,
+            reason: "native transport failed",
+            database: None,
+        };
+        assert_eq!(
+            cancelled.to_string(),
+            "native decode failed (Cancelled): native transport failed"
+        );
+    }
 }
 
 /// Kasumi statuses carry `{"code": ..., "message": ...}` in their details.
@@ -222,6 +277,28 @@ pub(crate) fn database_code(status: &tonic::Status) -> Option<kasumi_types::Erro
     serde_json::from_slice::<kasumi_types::Error>(status.details())
         .ok()
         .map(|error| error.code)
+}
+
+/// A request the database answered with its own error reads as that answer,
+/// not as a failed transport: `INDEX_REQUIRED` is the caller's to act on.
+fn transport_failure(status: &tonic::Status) -> String {
+    match database_code(status) {
+        Some(database) => format!("database reported {database}: {}", status.message()),
+        None => format!("native transport failed: {status}"),
+    }
+}
+
+/// The normalized form keeps no peer text, so the database's closed code is
+/// the only description of its answer and must not be left out.
+fn decode_rejection(
+    code: &tonic::Code,
+    reason: &'static str,
+    database: &Option<kasumi_types::ErrorCode>,
+) -> String {
+    match database {
+        Some(database) => format!("database reported {database} (gRPC {code:?})"),
+        None => format!("native decode failed ({code:?}): {reason}"),
+    }
 }
 
 /// Operator-selected connection identity and trust. Deliberately not Debug or
@@ -234,7 +311,7 @@ pub struct KasumiClientConfig {
     pub server_certificate_pins: BTreeSet<CertificatePin>,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct KasumiClient {
     inner: proto::kasumi_data_client::KasumiDataClient<Channel>,
     deadline: Option<tokio::time::Instant>,

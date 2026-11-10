@@ -26,6 +26,11 @@ cargo fmt --all --check
 python3 -m unittest discover -s scripts -p 'test_*.py'
 ```
 
+To try a change against a running database, `scripts/dev_standalone.py start`
+creates and supervises a disposable loopback installation from the binaries in
+`target/debug`, and `stop --remove` deletes it. The
+[README](README.md#one-command-for-a-development-database) has an example.
+
 On a shared or heavily loaded machine, append `-- --test-threads=2` to the
 test command and keep durable-store tests separate from benchmark runs. Some
 tests start several Raft nodes; concurrent fixtures can contend for full

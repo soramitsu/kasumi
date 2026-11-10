@@ -20,6 +20,9 @@ KillSignal=SIGTERM
 TimeoutStopSec=infinity
 Restart=on-failure
 RestartSec=5
+# The process holds signing keys: no core file and no swap.
+LimitCORE=0
+MemorySwapMax=0
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true

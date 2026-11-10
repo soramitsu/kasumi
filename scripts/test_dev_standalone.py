@@ -169,6 +169,19 @@ class DevStandaloneTests(unittest.TestCase):
                     "collection": [], "ready_timeout": 1, "allow_sleep": True}
         return type("Arguments", (), {**defaults, **values})()
 
+    def test_a_definition_is_compared_with_the_defaults_the_server_reads_back(self):
+        index = {"name": "status", "fields": [{"path": "/status", "kind": "string"}]}
+        text = {"name": "body", "fields": [{"path": "/body", "kind": "string"}],
+                "unique": True, "text": {"analyzer": "unicode_v1"}}
+        definition = {"name": "claims", "indexes": [index, text]}
+        self.assertEqual(dev.with_definition_defaults(definition), {
+            "name": "claims", "strict_read_audit": False,
+            "indexes": [{**index, "unique": False, "text": None}, text]})
+        self.assertEqual(dev.with_definition_defaults({"name": "claims", "strict_read_audit": True}),
+                         {"name": "claims", "strict_read_audit": True, "indexes": []})
+        # The caller's definition is not modified.
+        self.assertEqual(definition, {"name": "claims", "indexes": [index, text]})
+
     def test_start_refuses_relative_existing_or_unusable_inputs_before_creating_anything(self):
         for name in ("kasumid", "kasumictl"):
             binary = self.root / name
@@ -421,13 +434,16 @@ class DevStandaloneTests(unittest.TestCase):
     def test_start_returns_with_captured_output_while_its_supervisor_keeps_running(self):
         # kasumi_dev.py runs `start` with capture_output: the supervisor must not hold those pipes.
         (self.root / "profile.json").write_text(json.dumps(profile(self.root)))
+        # The definition omits every optional field; the server reads them back as their defaults.
+        index = {"name": "status", "fields": [{"path": "/status", "kind": "string"}]}
         installed = json.dumps({"ok": True, "result": {"collections": [
-            {"name": "claims", "indexes": [], "strict_read_audit": False}]}})
+            {"name": "claims", "indexes": [{**index, "unique": False, "text": None}],
+             "strict_read_audit": False}]}})
         self.fakes(f"init) mkdir -p \"$4/profiles\" && for name in default control operator mcp; do "
                    f"cp {self.root}/profile.json \"$4/profiles/$name.json\"; done;;\n"
                    f"serve|credential) {RUN};;\n--profile) echo '{installed}';;\n--config) exit 0;;")
         definition = self.root / "claims.collection.json"
-        definition.write_text(json.dumps({"name": "claims"}))
+        definition.write_text(json.dumps({"name": "claims", "indexes": [index]}))
         directory = self.root / "kasumi"
         completed = subprocess.run(
             [sys.executable, str(dev.SCRIPT), "start", str(directory), "--base-port", str(free_base_port()),

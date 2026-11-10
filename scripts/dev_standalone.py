@@ -580,6 +580,19 @@ def abandon(directory, supervisor):
             stop_process(state, kind, PATIENCE[kind])
 
 
+def with_definition_defaults(definition):
+    """DEFINITION as the server reads it back: omitted optional fields take their defaults.
+
+    A definition may leave out `indexes`, `strict_read_audit` and each index's
+    `unique` and `text`; the server stores and returns them explicitly.
+    """
+    expected = dict(definition)
+    expected.setdefault("strict_read_audit", False)
+    expected["indexes"] = [{"unique": False, "text": None, **index} if isinstance(index, dict) else index
+                           for index in expected.get("indexes", [])]
+    return expected
+
+
 def start(arguments):
     os.umask(0o077)
     directory = Path(arguments.directory)
@@ -643,10 +656,12 @@ def start(arguments):
         require(status == 0, f"collection readback failed: {document}")
         installed = {entry["name"]: entry for entry in document["result"]["collections"]}
         for name, definition in zip(names, definitions):
-            expected = read_json(definition)
-            expected.setdefault("indexes", [])
-            expected.setdefault("strict_read_audit", False)
-            require(installed.get(name) == expected, f"collection {name} reads back differently")
+            expected = with_definition_defaults(read_json(definition))
+            actual = installed.get(name)
+            require(isinstance(actual, dict), f"collection {name} is missing from the readback")
+            differing = sorted(key for key in {*expected, *actual} if key not in expected
+                               or key not in actual or expected[key] != actual[key])
+            require(not differing, f"collection {name} reads back differently in: " + ", ".join(differing))
         state = update_state(directory, {
             "ports": selected,
             "endpoints": {"native": f"https://localhost:{selected['native']}",

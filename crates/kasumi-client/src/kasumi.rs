@@ -1,32 +1,5 @@
 //! The high-level data client: one cloneable handle with defaults for
 //! credentials, decode budgets and deadlines.
-//!
-//! ```no_run
-//! # async fn example() -> Result<(), kasumi_client::ClientError> {
-//! use kasumi_client::prelude::*;
-//! use serde_json::json;
-//!
-//! let db = Kasumi::from_profile("/var/lib/kasumi/profiles/default.json").await?;
-//! db.mutate(&MutationBatch::new().insert("invoices", "inv-1", json!({"status": "open", "amount": 42})))
-//!     .await?;
-//! let invoice = db.get("invoices", "inv-1").await?;
-//! let open = db
-//!     .query(
-//!         &QueryRequest::new("invoices")
-//!             .filter(Filter::new().eq("/status", "open").gte("/amount", 10))
-//!             .sort_desc("/amount")
-//!             .limit(20),
-//!     )
-//!     .await?;
-//! for row in open.rows() {
-//!     println!("{} {}", row.id, row.body);
-//! }
-//! # Ok(()) }
-//! ```
-//!
-//! Responses are decoded under the SDK's bounded admission and then handed to
-//! the application as ordinary owned values. The low-level [`KasumiClient`]
-//! remains available for callers that retain admitted responses directly.
 use crate::{
     AdmittedResponse, ClientDecodeLimits, ClientError, ClientProfile, ClientResources,
     JsonReadOptions, KasumiClient, KasumiClientConfig,
@@ -46,6 +19,33 @@ const CONCURRENT_CALLS: u64 = 256;
 
 /// A connected data client. Clones share two connections, one for reads and one
 /// for writes, and a decode budget.
+///
+/// ```no_run
+/// # async fn example() -> Result<(), kasumi_client::ClientError> {
+/// use kasumi_client::prelude::*;
+/// use serde_json::json;
+///
+/// let db = Kasumi::from_profile("/var/lib/kasumi/profiles/default.json").await?;
+/// db.mutate(&MutationBatch::new().insert("invoices", "inv-1", json!({"status": "open", "amount": 42})))
+///     .await?;
+/// let invoice = db.get("invoices", "inv-1").await?;
+/// let open = db
+///     .query(
+///         &QueryRequest::new("invoices")
+///             .filter(Filter::new().eq("/status", "open").gte("/amount", 10))
+///             .sort_desc("/amount")
+///             .limit(20),
+///     )
+///     .await?;
+/// for row in open.rows() {
+///     println!("{} {}", row.id, row.body);
+/// }
+/// # Ok(()) }
+/// ```
+///
+/// Responses are decoded under the SDK's bounded admission and then handed to
+/// the application as ordinary owned values. The low-level [`KasumiClient`]
+/// remains available for callers that retain admitted responses directly.
 #[derive(Clone)]
 pub struct Kasumi {
     client: KasumiClient,
@@ -53,6 +53,18 @@ pub struct Kasumi {
     resources: Arc<ClientResources>,
     limits: ClientDecodeLimits,
     timeout: Duration,
+}
+
+/// Shows the handle's settings and never its credential source, so that an
+/// application can derive `Debug` on a type holding its database handle.
+impl std::fmt::Debug for Kasumi {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Kasumi")
+            .field("timeout", &self.timeout)
+            .field("limits", &self.limits)
+            .finish_non_exhaustive()
+    }
 }
 
 /// A document body decoded into an application type.

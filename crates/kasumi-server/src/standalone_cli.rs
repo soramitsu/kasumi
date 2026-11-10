@@ -5,7 +5,10 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use kasumi_store::private_files;
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 use uuid::Uuid;
 
 pub async fn command(arguments: &[String]) -> Result<bool> {
@@ -213,81 +216,23 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
             }
             _ => anyhow::bail!("unknown maintenance operation"),
         },
-        [
-            command,
-            mode_flag,
-            mode,
-            directory,
-            policy_flag,
-            policy,
-            allocation_flag,
-            allocation,
-            network_flag,
-            network,
-            placements_flag,
-            placements,
-        ] if command == "init"
-            && mode_flag == "--mode"
-            && mode == "standalone"
-            && policy_flag == "--directory-policy"
-            && allocation_flag == "--file-allocation-policy"
-            && network_flag == "--network"
-            && placements_flag == "--tenant-audit-placements" =>
-        {
-            println!(
+        [command, rest @ ..] if command == "init" => match parse_init(rest)? {
+            InitCommand::Help => println!("{INIT_USAGE}"),
+            InitCommand::Init(options) => println!(
                 "{}",
                 serde_json::to_string_pretty(
                     &initialize(
-                        Path::new(directory),
-                        "default",
-                        directory_policy(Path::new(policy))?,
-                        file_allocation_policy(Path::new(allocation))?,
-                        standalone_network(Path::new(network))?,
-                        tenant_audit_placements(Path::new(placements), "default")?,
+                        &options.directory,
+                        &options.tenant,
+                        directory_policy(&options.directory_policy)?,
+                        file_allocation_policy(&options.file_allocation_policy)?,
+                        standalone_network(&options.network)?,
+                        tenant_audit_placements(&options.tenant_audit_placements, &options.tenant)?,
                     )
                     .await?
                 )?
-            );
-        }
-        [
-            command,
-            mode_flag,
-            mode,
-            directory,
-            policy_flag,
-            policy,
-            allocation_flag,
-            allocation,
-            network_flag,
-            network,
-            placements_flag,
-            placements,
-            tenant_flag,
-            tenant,
-        ] if command == "init"
-            && mode_flag == "--mode"
-            && mode == "standalone"
-            && policy_flag == "--directory-policy"
-            && allocation_flag == "--file-allocation-policy"
-            && network_flag == "--network"
-            && placements_flag == "--tenant-audit-placements"
-            && tenant_flag == "--tenant" =>
-        {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &initialize(
-                        Path::new(directory),
-                        tenant,
-                        directory_policy(Path::new(policy))?,
-                        file_allocation_policy(Path::new(allocation))?,
-                        standalone_network(Path::new(network))?,
-                        tenant_audit_placements(Path::new(placements), tenant)?,
-                    )
-                    .await?
-                )?
-            );
-        }
+            ),
+        },
         [command, action, path] if command == "credential" && action == "inspect" => {
             // Offline and unverified: reads this profile's own bearer file only
             // to report when it expires, e.g. before a planned restart.
@@ -781,48 +726,159 @@ async fn renew(profile: &ClientProfile, control: Option<&ClientProfile>) -> Resu
     )
 }
 
-/// Load the caller's explicit namespace bounds before any installation work.
-/// Numeric validity does not replace qualification of the selected filesystem.
-pub fn directory_policy(path: &Path) -> Result<kasumi_store::DirectoryPolicy> {
+const INIT_USAGE: &str = "\
+usage: kasumid init --mode standalone <absolute-directory>
+       --directory-policy <policy.json> --file-allocation-policy <allocation.json>
+       --network <network.json> --tenant-audit-placements <placements.json>
+       [--tenant <name>]
+
+Creates a new standalone installation in a directory that does not exist yet.
+Every policy file is required, so capacity and audit choices are explicit.
+Options take `--name value` or `--name=value`, in any order. The tenant
+defaults to \"default\".";
+
+/// A complete `kasumid init` request. Nothing is read or created while parsing.
+#[derive(Debug, PartialEq, Eq)]
+struct InitOptions {
+    directory: PathBuf,
+    directory_policy: PathBuf,
+    file_allocation_policy: PathBuf,
+    network: PathBuf,
+    tenant_audit_placements: PathBuf,
+    tenant: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum InitCommand {
+    Help,
+    Init(InitOptions),
+}
+
+/// Parse the arguments after `init`. A missing, repeated or unknown option is
+/// named in its error, so an operator does not have to compare a long command
+/// line against the usage text to find it.
+fn parse_init(arguments: &[String]) -> Result<InitCommand> {
+    const MODE: &str = "--mode";
+    const POLICY: &str = "--directory-policy";
+    const ALLOCATION: &str = "--file-allocation-policy";
+    const NETWORK: &str = "--network";
+    const PLACEMENTS: &str = "--tenant-audit-placements";
+    const TENANT: &str = "--tenant";
+    let mut directory = None;
+    let mut options: BTreeMap<&'static str, String> = BTreeMap::new();
+    let mut rest = arguments.iter();
+    while let Some(argument) = rest.next() {
+        if argument == "-h" || argument == "--help" {
+            return Ok(InitCommand::Help);
+        }
+        if !argument.starts_with("--") {
+            ensure!(
+                directory.is_none(),
+                "kasumid init takes one installation directory; unexpected argument {argument:?}\n\n{INIT_USAGE}"
+            );
+            directory = Some(PathBuf::from(argument));
+            continue;
+        }
+        let (name, inline) = match argument.split_once('=') {
+            Some((name, value)) => (name, Some(value)),
+            None => (argument.as_str(), None),
+        };
+        let Some(name) = [MODE, POLICY, ALLOCATION, NETWORK, PLACEMENTS, TENANT]
+            .into_iter()
+            .find(|known| *known == name)
+        else {
+            anyhow::bail!("unknown kasumid init option {name:?}\n\n{INIT_USAGE}");
+        };
+        let value = match inline {
+            Some(value) => value.to_owned(),
+            None => rest
+                .next()
+                .cloned()
+                .with_context(|| format!("{name} needs a value\n\n{INIT_USAGE}"))?,
+        };
+        ensure!(
+            options.insert(name, value).is_none(),
+            "{name} was given twice"
+        );
+    }
+    match options.remove(MODE).as_deref() {
+        Some("standalone") => {}
+        Some(other) => anyhow::bail!("kasumid init {MODE} must be standalone, not {other:?}"),
+        None => anyhow::bail!("kasumid init needs {MODE} standalone\n\n{INIT_USAGE}"),
+    }
+    let mut file = |name: &'static str, what: &str| {
+        options
+            .remove(name)
+            .map(PathBuf::from)
+            .with_context(|| format!("kasumid init needs {name} <{what}>\n\n{INIT_USAGE}"))
+    };
+    let directory_policy = file(POLICY, "policy.json")?;
+    let file_allocation_policy = file(ALLOCATION, "allocation.json")?;
+    let network = file(NETWORK, "network.json")?;
+    let tenant_audit_placements = file(PLACEMENTS, "placements.json")?;
+    Ok(InitCommand::Init(InitOptions {
+        directory: directory.with_context(|| {
+            format!("kasumid init needs an installation directory\n\n{INIT_USAGE}")
+        })?,
+        directory_policy,
+        file_allocation_policy,
+        network,
+        tenant_audit_placements,
+        tenant: options.remove(TENANT).unwrap_or_else(|| "default".into()),
+    }))
+}
+
+/// Read one of `init`'s small JSON option files. They carry no secrets, so
+/// only their size is bounded here.
+fn option_file(path: &Path, oversized: &'static str) -> Result<Vec<u8>> {
     use std::io::Read;
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(4097)
         .read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() <= 4096, "directory policy exceeds size limit");
-    let policy: kasumi_store::DirectoryPolicy = serde_json::from_slice(&bytes)?;
-    policy.validate()?;
-    Ok(policy)
+    anyhow::ensure!(bytes.len() <= 4096, oversized);
+    Ok(bytes)
+}
+
+/// Name the option and file a failure came from. `init` takes four files, and
+/// a bare I/O or JSON error does not say which one to correct.
+fn in_option_file(flag: &'static str, path: &Path) -> impl FnOnce() -> String {
+    move || format!("{flag} {}", path.display())
+}
+
+/// Load the caller's explicit namespace bounds before any installation work.
+/// Numeric validity does not replace qualification of the selected filesystem.
+pub fn directory_policy(path: &Path) -> Result<kasumi_store::DirectoryPolicy> {
+    let load = || -> Result<kasumi_store::DirectoryPolicy> {
+        let bytes = option_file(path, "directory policy exceeds size limit")?;
+        let policy: kasumi_store::DirectoryPolicy = serde_json::from_slice(&bytes)?;
+        policy.validate()?;
+        Ok(policy)
+    };
+    load().with_context(in_option_file("--directory-policy", path))
 }
 
 /// Read the caller's explicit per-file physical allowance before installation.
 /// This finite bound must be qualified for the selected filesystem.
 pub fn file_allocation_policy(path: &Path) -> Result<kasumi_store::FileAllocationPolicy> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(4097)
-        .read_to_end(&mut bytes)?;
-    anyhow::ensure!(
-        bytes.len() <= 4096,
-        "file allocation policy exceeds size limit"
-    );
-    let policy: kasumi_store::FileAllocationPolicy = serde_json::from_slice(&bytes)?;
-    policy.validate()?;
-    Ok(policy)
+    let load = || -> Result<kasumi_store::FileAllocationPolicy> {
+        let bytes = option_file(path, "file allocation policy exceeds size limit")?;
+        let policy: kasumi_store::FileAllocationPolicy = serde_json::from_slice(&bytes)?;
+        policy.validate()?;
+        Ok(policy)
+    };
+    load().with_context(in_option_file("--file-allocation-policy", path))
 }
 
 /// Read the complete selected loopback identity before creating installation files.
 pub fn standalone_network(path: &Path) -> Result<StandaloneNetwork> {
-    use std::io::Read;
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)?
-        .take(4097)
-        .read_to_end(&mut bytes)?;
-    anyhow::ensure!(bytes.len() <= 4096, "standalone network exceeds size limit");
-    let network: StandaloneNetwork = serde_json::from_slice(&bytes)?;
-    network.validate()?;
-    Ok(network)
+    let load = || -> Result<StandaloneNetwork> {
+        let bytes = option_file(path, "standalone network exceeds size limit")?;
+        let network: StandaloneNetwork = serde_json::from_slice(&bytes)?;
+        network.validate()?;
+        Ok(network)
+    };
+    load().with_context(in_option_file("--network", path))
 }
 
 /// Load an owner-only, bounded map with one explicit choice for each initial group.
@@ -837,10 +893,13 @@ pub fn tenant_audit_placements(
         )]
         BTreeMap<String, TenantAuditPlacementConfig>,
     );
-    let bytes = private_files::read(path, 64 << 10)?;
-    let PlacementMap(placements) = serde_json::from_slice(&bytes)?;
-    validate_initial_audit_placements(tenant, &placements)?;
-    Ok(placements)
+    let load = || -> Result<BTreeMap<String, TenantAuditPlacementConfig>> {
+        let bytes = private_files::read(path, 64 << 10)?;
+        let PlacementMap(placements) = serde_json::from_slice(&bytes)?;
+        validate_initial_audit_placements(tenant, &placements)?;
+        Ok(placements)
+    };
+    load().with_context(in_option_file("--tenant-audit-placements", path))
 }
 
 #[cfg(test)]
@@ -897,6 +956,76 @@ mod directory_policy_tests {
         std::fs::write(&path, vec![b' '; 4097]).unwrap();
         assert!(directory_policy(&path).is_err());
         assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod option_file_error_tests {
+    use super::*;
+
+    /// `init` reads four files. Each failure names its option and path and
+    /// keeps the cause, whether the file is absent, malformed or invalid.
+    #[test]
+    fn each_option_file_failure_names_its_option_path_and_cause() {
+        let directory = kasumi_store::test_utils::private_tempdir().unwrap();
+        let path = directory.path().join("option.json");
+        let named = |flag: &str, error: anyhow::Error, cause: &str| {
+            let message = format!("{error:#}");
+            assert!(
+                message.starts_with(&format!("{flag} {}: ", path.display())),
+                "{message}"
+            );
+            assert!(message.contains(cause), "{message}");
+        };
+        let absent = "No such file or directory";
+        named(
+            "--directory-policy",
+            directory_policy(&path).unwrap_err(),
+            absent,
+        );
+        named(
+            "--file-allocation-policy",
+            file_allocation_policy(&path).unwrap_err(),
+            absent,
+        );
+        named("--network", standalone_network(&path).unwrap_err(), absent);
+        named(
+            "--tenant-audit-placements",
+            tenant_audit_placements(&path, "default").unwrap_err(),
+            absent,
+        );
+
+        std::fs::write(&path, br#"{"extent_bytes":1048576}"#).unwrap();
+        named(
+            "--directory-policy",
+            directory_policy(&path).unwrap_err(),
+            "missing field `max_entries`",
+        );
+        named(
+            "--file-allocation-policy",
+            file_allocation_policy(&path).unwrap_err(),
+            "extent_bytes",
+        );
+        named(
+            "--network",
+            standalone_network(&path).unwrap_err(),
+            "extent_bytes",
+        );
+        std::fs::write(&path, vec![b' '; 4097]).unwrap();
+        named(
+            "--directory-policy",
+            directory_policy(&path).unwrap_err(),
+            "directory policy exceeds size limit",
+        );
+        // The original I/O error stays reachable for callers that classify it.
+        std::fs::remove_file(&path).unwrap();
+        let error = standalone_network(&path).unwrap_err();
+        assert_eq!(
+            error
+                .downcast_ref::<std::io::Error>()
+                .map(std::io::Error::kind),
+            Some(std::io::ErrorKind::NotFound)
+        );
     }
 }
 
@@ -967,8 +1096,151 @@ mod file_allocation_policy_tests {
             "--network".into(),
             "unused-network.json".into(),
         ];
-        assert!(!command(&arguments).await.unwrap());
+        let error = command(&arguments).await.unwrap_err().to_string();
+        assert!(
+            error.starts_with("kasumid init needs --file-allocation-policy <allocation.json>"),
+            "{error}"
+        );
         assert!(!target.exists());
+    }
+}
+
+#[cfg(test)]
+mod init_option_tests {
+    use super::*;
+
+    fn arguments(words: &[&str]) -> Vec<String> {
+        words.iter().map(|word| (*word).to_owned()).collect()
+    }
+
+    fn rejected(words: &[&str]) -> String {
+        parse_init(&arguments(words)).unwrap_err().to_string()
+    }
+
+    const COMPLETE: [&str; 11] = [
+        "--mode",
+        "standalone",
+        "/var/lib/kasumi",
+        "--directory-policy",
+        "policy.json",
+        "--file-allocation-policy",
+        "allocation.json",
+        "--network",
+        "network.json",
+        "--tenant-audit-placements",
+        "placements.json",
+    ];
+
+    fn complete(tenant: &str) -> InitCommand {
+        InitCommand::Init(InitOptions {
+            directory: "/var/lib/kasumi".into(),
+            directory_policy: "policy.json".into(),
+            file_allocation_policy: "allocation.json".into(),
+            network: "network.json".into(),
+            tenant_audit_placements: "placements.json".into(),
+            tenant: tenant.into(),
+        })
+    }
+
+    #[test]
+    fn the_documented_order_and_any_other_order_select_the_same_installation() {
+        assert_eq!(
+            parse_init(&arguments(&COMPLETE)).unwrap(),
+            complete("default")
+        );
+        let mut named = COMPLETE.to_vec();
+        named.extend(["--tenant", "acme"]);
+        assert_eq!(parse_init(&arguments(&named)).unwrap(), complete("acme"));
+        assert_eq!(
+            parse_init(&arguments(&[
+                "--tenant=acme",
+                "--network",
+                "network.json",
+                "--tenant-audit-placements=placements.json",
+                "--file-allocation-policy",
+                "allocation.json",
+                "--directory-policy=policy.json",
+                "/var/lib/kasumi",
+                "--mode=standalone",
+            ]))
+            .unwrap(),
+            complete("acme")
+        );
+    }
+
+    #[test]
+    fn each_missing_option_is_named() {
+        for (flag, value) in [
+            ("--directory-policy", "policy.json"),
+            ("--file-allocation-policy", "allocation.json"),
+            ("--network", "network.json"),
+            ("--tenant-audit-placements", "placements.json"),
+        ] {
+            let without: Vec<&str> = COMPLETE
+                .iter()
+                .copied()
+                .filter(|word| *word != flag && *word != value)
+                .collect();
+            let error = rejected(&without);
+            assert!(
+                error.starts_with(&format!("kasumid init needs {flag} <{value}>")),
+                "{error}"
+            );
+            assert!(error.ends_with(INIT_USAGE), "{error}");
+        }
+        let error = rejected(&COMPLETE[2..]);
+        assert!(
+            error.starts_with("kasumid init needs --mode standalone"),
+            "{error}"
+        );
+        let error = rejected(&[&COMPLETE[..2], &COMPLETE[3..]].concat());
+        assert!(
+            error.starts_with("kasumid init needs an installation directory"),
+            "{error}"
+        );
+        let error = rejected(&COMPLETE[..10]);
+        assert!(
+            error.starts_with("--tenant-audit-placements needs a value"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn repeated_unknown_and_unsupported_input_is_rejected_by_name() {
+        let with = |extra: &[&str]| rejected(&[&COMPLETE[..], extra].concat());
+        assert_eq!(
+            with(&["--network", "other.json"]),
+            "--network was given twice"
+        );
+        assert_eq!(
+            with(&["--tenant=a", "--tenant=b"]),
+            "--tenant was given twice"
+        );
+        assert!(
+            with(&["--force"]).starts_with("unknown kasumid init option \"--force\""),
+            "{}",
+            with(&["--force"])
+        );
+        assert!(
+            with(&["/another/directory"]).starts_with(
+                "kasumid init takes one installation directory; unexpected argument \"/another/directory\""
+            ),
+            "{}",
+            with(&["/another/directory"])
+        );
+        let mut replicated = COMPLETE.to_vec();
+        replicated[1] = "replicated";
+        assert_eq!(
+            rejected(&replicated),
+            "kasumid init --mode must be standalone, not \"replicated\""
+        );
+    }
+
+    #[test]
+    fn help_is_recognized_before_anything_is_required() {
+        for words in [&["--help"][..], &["-h"], &["--mode", "standalone", "-h"]] {
+            assert_eq!(parse_init(&arguments(words)).unwrap(), InitCommand::Help);
+        }
     }
 }
 
@@ -1053,10 +1325,13 @@ mod tenant_audit_placement_tests {
             "--network".into(),
             "missing-network.json".into(),
         ];
-        assert!(!command(&arguments).await?);
+        let missing = "kasumid init needs --tenant-audit-placements <placements.json>";
+        let error = command(&arguments).await.unwrap_err().to_string();
+        assert!(error.starts_with(missing), "{error}");
         let mut named = arguments;
         named.extend(["--tenant".into(), "default".into()]);
-        assert!(!command(&named).await?);
+        let error = command(&named).await.unwrap_err().to_string();
+        assert!(error.starts_with(missing), "{error}");
         assert!(!directory.exists());
         Ok(())
     }

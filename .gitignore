@@ -55,6 +55,14 @@ node_modules/
 .direnv/
 .playwright-cli/
 
+# Local AI assistant state and worktrees
+.claude/
+.codex/
+.cursor/
+.continue/
+.gemini/
+.aider*
+
 # Coverage and profiling output
 .coverage
 .coverage.*

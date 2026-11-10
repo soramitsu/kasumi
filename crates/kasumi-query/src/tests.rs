@@ -495,6 +495,92 @@ fn schemas_never_resolve_remote_or_file_resources_or_rebase_fragments() {
     validate_document(&definition, &json!({"$ref":"literal","$id":"literal"})).unwrap();
 }
 
+/// Validation runs during ordered application on every replica, where a stack
+/// overflow would abort the process and repeat on replay. The schema inspection
+/// permits any local reference, so termination here rests on the validator.
+#[test]
+fn schemas_that_refer_to_themselves_validate_without_unbounded_recursion() {
+    for schema in [
+        json!({"$ref": "#"}),
+        json!({"type": "object", "allOf": [{"$ref": "#"}]}),
+        json!({"not": {"not": {"$ref": "#"}}}),
+        json!({"$defs": {"a": {"$ref": "#/$defs/b"}, "b": {"$ref": "#/$defs/a"}}, "$ref": "#/$defs/a"}),
+    ] {
+        let mut definition = definition(&[]);
+        definition.schema = schema;
+        validate_document(&definition, &json!({})).unwrap();
+    }
+    // Recursion through a property consumes the document and is ordinary use.
+    let mut tree = definition(&[]);
+    tree.schema =
+        json!({"type": "object", "properties": {"child": {"$ref": "#"}, "n": {"type": "number"}}});
+    validate_document(&tree, &json!({"child": {"child": {"n": 1}}})).unwrap();
+    assert_eq!(
+        validate_document(&tree, &json!({"child": {"child": {"n": "one"}}}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+}
+
+#[test]
+fn schemas_bound_the_number_and_compiled_size_of_their_patterns() {
+    let with_patterns = |count: usize| {
+        // Half as `pattern` keywords in nested locations, half as `patternProperties` keys.
+        let branches: Vec<Value> = (0..count / 2)
+            .map(|index| json!({"pattern": format!("^[a-z]{{2}}{index}$")}))
+            .collect();
+        let keyed: serde_json::Map<String, Value> = (count / 2..count)
+            .map(|index| (format!("^k{index}$"), json!({"type": "string"})))
+            .collect();
+        let mut definition = definition(&[]);
+        definition.schema = json!({
+            "type": "object",
+            "properties": {
+                // A property may be named `pattern`; only the keyword is counted.
+                "pattern": {"type": "string"},
+                "code": {"allOf": branches},
+            },
+            "patternProperties": keyed,
+        });
+        definition
+    };
+    let accepted = with_patterns(256);
+    validate_collection_fixture(&accepted, &imbl::OrdMap::new()).unwrap();
+    validate_document(&accepted, &json!({"pattern": "free text", "k200": "x"})).unwrap();
+    assert_eq!(
+        validate_document(&accepted, &json!({"k200": 7}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    let error = validate_collection_fixture(&with_patterns(258), &imbl::OrdMap::new()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert_eq!(error.message, "schema has more than 256 patterns");
+
+    // An ordinary bounded repetition compiles; one whose program would exceed
+    // the per-pattern limit is rejected with its schema, not retained.
+    let mut bounded = definition(&[]);
+    bounded.schema =
+        json!({"type": "object", "properties": {"name": {"pattern": "^[\\w.-]{1,255}$"}}});
+    validate_document(&bounded, &json!({"name": "invoice-2026.pdf"})).unwrap();
+    assert_eq!(
+        validate_document(&bounded, &json!({"name": "no spaces"}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+    let mut oversized = definition(&[]);
+    oversized.schema =
+        json!({"type": "object", "properties": {"name": {"pattern": "(?:\\w{100}){100}"}}});
+    assert_eq!(
+        validate_collection_fixture(&oversized, &imbl::OrdMap::new())
+            .unwrap_err()
+            .code,
+        ErrorCode::InvalidArgument
+    );
+}
+
 #[test]
 fn unique_indexes_are_compound_exact_and_sparse_only_for_missing() {
     let mut definition = definition(&[("/group", ScalarType::String), ("/n", ScalarType::Decimal)]);

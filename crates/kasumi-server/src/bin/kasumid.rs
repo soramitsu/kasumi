@@ -15,6 +15,7 @@ Installation and configuration:
   init --mode standalone <absolute-directory> --directory-policy <policy.json>
        --file-allocation-policy <allocation.json> --network <network.json>
        --tenant-audit-placements <placements.json> [--tenant <name>]
+                                             options in any order (kasumid init --help)
   example-config --directory-policy <policy.json> --file-allocation-policy <allocation.json>
   check-config <configuration.json>
   provision-node <configuration.json>
