@@ -582,6 +582,154 @@ fn schemas_bound_the_number_and_compiled_size_of_their_patterns() {
 }
 
 #[test]
+fn schemas_inspect_referenced_literals_before_compiling_patterns() {
+    let patterns: serde_json::Map<String, Value> = (0..257)
+        .map(|index| (format!("^k{index}$"), json!({"type": "string"})))
+        .collect();
+    let hidden = json!({"patternProperties": patterns});
+    // Each of these targets is outside the usual schema-keyword traversal.
+    // URI decoding must precede JSON Pointer unescaping, including UTF-8 keys.
+    for schema in [
+        json!({"$ref": "#/extension", "extension": hidden}),
+        json!({"$ref": "#/default", "default": hidden}),
+        json!({"$ref": "#/examples/0", "examples": [hidden]}),
+        json!({"$dynamicRef": "#/extension", "extension": hidden}),
+        json!({"dependencies": {"present": hidden}}),
+        json!({"$ref": "#/extension", "extension": {"items": [hidden]}}),
+        json!({"$ref": "#/extension", "extension": {"items": [], "additionalItems": hidden}}),
+        json!({"$ref": "#/payload~1%E4%B8%96%E7%95%8C~0suffix", "payload/世界~suffix": hidden}),
+    ] {
+        let mut definition = definition(&[]);
+        definition.schema = schema;
+        let error = validate_collection_fixture(&definition, &imbl::OrdMap::new()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(error.message, "schema has more than 256 patterns");
+    }
+    // The same contents remain literal when no reference evaluates them.
+    let mut literal = definition(&[]);
+    literal.schema = json!({"type": "object", "default": hidden, "extension": hidden});
+    validate_document(&literal, &json!({})).unwrap();
+}
+
+#[test]
+fn schemas_apply_reference_and_draft_restrictions_to_referenced_literals() {
+    for (hidden, expected) in [
+        (
+            json!({"$id": "https://example.invalid/rebase"}),
+            "schema $id is not supported; use local $defs",
+        ),
+        (
+            json!({"$schema": "http://json-schema.org/draft-07/schema#"}),
+            "only JSON Schema Draft 2020-12 is supported",
+        ),
+        (
+            json!({"$ref": "https://example.invalid/schema"}),
+            "schemas may reference only local fragments",
+        ),
+        (
+            json!({"$dynamicRef": "https://example.invalid/schema"}),
+            "schemas may reference only local fragments",
+        ),
+    ] {
+        let mut definition = definition(&[]);
+        definition.schema = json!({"type": "object", "default": hidden});
+        validate_document(&definition, &json!({})).unwrap();
+        definition.schema["$ref"] = json!("#/default");
+        let error = validate_collection_fixture(&definition, &imbl::OrdMap::new()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(error.message, expected);
+    }
+}
+
+#[test]
+fn schema_reference_inspection_handles_shared_targets_cycles_and_anchors() {
+    let patterns: serde_json::Map<String, Value> = (0..256)
+        .map(|index| (format!("^k{index}$"), json!({"type": "string"})))
+        .collect();
+    let mut shared = definition(&[]);
+    shared.schema = json!({
+        "$defs": {"shared": {"$anchor": "shared", "patternProperties": patterns}},
+        "allOf": [
+            {"$ref": "#/$defs/shared"},
+            {"$ref": "#/$defs/shared"},
+            {"$ref": "#shared"},
+        ],
+    });
+    validate_document(&shared, &json!({"k0": "ok"})).unwrap();
+    assert_eq!(
+        validate_document(&shared, &json!({"k0": 1}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+
+    let mut cyclic = definition(&[]);
+    cyclic.schema = json!({
+        "$ref": "#/left",
+        "left": {"$ref": "#/right", "properties": {"n": {"type": "number"}}},
+        "right": {"$ref": "#/left"},
+    });
+    validate_document(&cyclic, &json!({"n": 1})).unwrap();
+    assert_eq!(
+        validate_document(&cyclic, &json!({"n": "one"}))
+            .unwrap_err()
+            .code,
+        ErrorCode::SchemaViolation
+    );
+
+    // An anchor under an unreferenced extension is not a schema resource. It
+    // must fail resolution rather than admit unchecked patterns via its name.
+    let hidden_patterns: serde_json::Map<String, Value> = (0..257)
+        .map(|index| (format!("^k{index}$"), json!({"type": "string"})))
+        .collect();
+    let mut unknown_anchor = definition(&[]);
+    unknown_anchor.schema = json!({
+        "$ref": "#hidden",
+        "extension": {"$anchor": "hidden", "patternProperties": hidden_patterns},
+    });
+    let error = validate_collection_fixture(&unknown_anchor, &imbl::OrdMap::new()).unwrap_err();
+    assert_eq!(error.code, ErrorCode::InvalidArgument);
+    assert!(
+        error.message.contains("Anchor 'hidden' does not exist"),
+        "{error}"
+    );
+}
+
+#[test]
+fn schema_local_pointers_preserve_escaping_and_reject_unresolved_targets() {
+    let target = json!({"properties": {"n": {"type": "number"}}});
+    for schema in [
+        json!({"$ref": "#/payload~1%E4%B8%96%E7%95%8C~0suffix", "payload/世界~suffix": target}),
+        json!({"$ref": "#/examples/0", "examples": [target]}),
+        // Match the validator's index parsing rather than serde_json::pointer,
+        // which treats a leading zero as an invalid array index.
+        json!({"$ref": "#/examples/00", "examples": [target]}),
+    ] {
+        let mut definition = definition(&[]);
+        definition.schema = schema;
+        validate_document(&definition, &json!({"n": 1})).unwrap();
+        assert_eq!(
+            validate_document(&definition, &json!({"n": "one"}))
+                .unwrap_err()
+                .code,
+            ErrorCode::SchemaViolation
+        );
+    }
+    for (reference, expected) in [
+        ("#/missing", "local schema pointer does not resolve"),
+        ("#/examples/1", "local schema pointer does not resolve"),
+        ("#/examples/no", "local schema pointer does not resolve"),
+        ("#/%FF", "local schema pointer is not UTF-8"),
+    ] {
+        let mut definition = definition(&[]);
+        definition.schema = json!({"$ref": reference, "examples": [target]});
+        let error = validate_collection_fixture(&definition, &imbl::OrdMap::new()).unwrap_err();
+        assert_eq!(error.code, ErrorCode::InvalidArgument);
+        assert_eq!(error.message, expected);
+    }
+}
+
+#[test]
 fn unique_indexes_are_compound_exact_and_sparse_only_for_missing() {
     let mut definition = definition(&[("/group", ScalarType::String), ("/n", ScalarType::Decimal)]);
     definition.indexes = vec![IndexDefinition {

@@ -30,6 +30,10 @@ To try a change against a running database, `scripts/dev_standalone.py start`
 creates and supervises a disposable loopback installation from the binaries in
 `target/debug`, and `stop --remove` deletes it. The
 [README](README.md#one-command-for-a-development-database) has an example.
+After building the server binaries, run
+`python3 scripts/smoke_dev_standalone.py --bin-dir target/debug` to exercise
+initialization, collection defaults, authenticated writes and idempotent replay,
+stop/resume persistence, and cleanup against a disposable database.
 
 On a shared or heavily loaded machine, append `-- --test-threads=2` to the
 test command and keep durable-store tests separate from benchmark runs. Some

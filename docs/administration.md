@@ -26,6 +26,10 @@ at most 256 regular expressions, counting each `pattern` and each
 `patternProperties` key, and each expression's compiled form is limited to
 256 KiB: `^\w{1,255}$` is accepted and `^\w{3000}$` is not; use `maxLength`
 for long bounds. A schema over a limit is rejected with `INVALID_ARGUMENT`.
+These checks include schemas reached through local references, even when the
+target is stored in an extension or an otherwise literal `default` value.
+Unreferenced literal values are not interpreted as schemas, and repeated or
+cyclic references count each schema location only once.
 The pattern limits exist because compiled expressions stay in memory on every
 replica outside the admission budgets.
 

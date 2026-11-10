@@ -72,78 +72,138 @@ fn inspect(value: &Value, depth: usize, nodes: &mut usize) -> Result<()> {
     Ok(())
 }
 
-/// Traverse only schema locations, not property names or enum/default values.
-/// A document may legitimately have a property named `$ref`, `$id` or
-/// `pattern`. `patterns` counts the regular expressions seen so far.
-fn inspect_schema(schema: &Value, patterns: &mut usize) -> Result<()> {
-    let Some(map) = schema.as_object() else {
-        return Ok(());
-    };
-    if matches!(map.get("pattern"), Some(Value::String(_))) {
-        *patterns += 1;
+/// Resolve a local JSON Pointer with the same URI decoding and array-index
+/// interpretation as jsonschema's resolver. Plain-name anchors are reached by
+/// the schema traversal itself; the validator checks that their names resolve.
+fn local_schema_pointer<'a>(root: &'a Value, fragment: &str) -> Result<Option<&'a Value>> {
+    if fragment.is_empty() {
+        return Ok(Some(root));
     }
-    if let Some(Value::Object(schemas)) = map.get("patternProperties") {
-        *patterns += schemas.len();
+    if !fragment.starts_with('/') {
+        return Ok(None);
     }
-    if *patterns > MAX_SCHEMA_PATTERNS {
-        return Err(invalid("schema has more than 256 patterns"));
-    }
-    for key in ["$ref", "$dynamicRef", "$recursiveRef"] {
-        if let Some(reference) = map.get(key)
-            && !reference.as_str().is_some_and(|s| s.starts_with('#'))
-        {
-            return Err(invalid("schemas may reference only local fragments"));
-        }
-    }
-    if let Some(draft) = map.get("$schema")
-        && !matches!(
-            draft.as_str(),
-            Some(
-                "https://json-schema.org/draft/2020-12/schema"
-                    | "https://json-schema.org/draft/2020-12/schema#"
+    let mut decoded = Vec::with_capacity(fragment.len());
+    let bytes = fragment.as_bytes();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'%'
+            && offset + 2 < bytes.len()
+            && let (Some(high), Some(low)) = (
+                char::from(bytes[offset + 1]).to_digit(16),
+                char::from(bytes[offset + 2]).to_digit(16),
             )
-        )
-    {
-        return Err(invalid("only JSON Schema Draft 2020-12 is supported"));
-    }
-    if map.contains_key("$id") {
-        return Err(invalid("schema $id is not supported; use local $defs"));
-    }
-    for key in [
-        "$defs",
-        "definitions",
-        "properties",
-        "patternProperties",
-        "dependentSchemas",
-    ] {
-        if let Some(Value::Object(schemas)) = map.get(key) {
-            for schema in schemas.values() {
-                inspect_schema(schema, patterns)?;
-            }
+        {
+            decoded.push((high * 16 + low) as u8);
+            offset += 3;
+        } else {
+            decoded.push(bytes[offset]);
+            offset += 1;
         }
     }
-    for key in ["allOf", "anyOf", "oneOf", "prefixItems"] {
-        if let Some(Value::Array(schemas)) = map.get(key) {
-            for schema in schemas {
-                inspect_schema(schema, patterns)?;
+    let pointer =
+        std::str::from_utf8(&decoded).map_err(|_| invalid("local schema pointer is not UTF-8"))?;
+    let mut target = root;
+    for segment in pointer[1..].split('/') {
+        let next = if let Some(array) = target.as_array() {
+            segment
+                .parse::<usize>()
+                .ok()
+                .and_then(|index| array.get(index))
+        } else {
+            target.get(segment.replace("~1", "/").replace("~0", "~"))
+        };
+        target = next.ok_or_else(|| invalid("local schema pointer does not resolve"))?;
+    }
+    Ok(Some(target))
+}
+
+/// Visit schema locations and the targets of local references. A reference may
+/// turn an otherwise literal enum/default/extension value into a schema, while
+/// unreferenced data may legitimately contain `$ref`, `$id` or `pattern` keys.
+/// Each location is inspected once: references can cycle or share a target,
+/// and jsonschema shares compiled patterns across references to that target.
+fn inspect_schema(root: &Value) -> Result<()> {
+    let mut pending = vec![root];
+    let mut visited = BTreeSet::new();
+    let mut patterns = 0;
+    while let Some(schema) = pending.pop() {
+        if !visited.insert(std::ptr::from_ref(schema)) {
+            continue;
+        }
+        let Some(map) = schema.as_object() else {
+            continue;
+        };
+        if matches!(map.get("pattern"), Some(Value::String(_))) {
+            patterns += 1;
+        }
+        if let Some(Value::Object(schemas)) = map.get("patternProperties") {
+            patterns += schemas.len();
+        }
+        if patterns > MAX_SCHEMA_PATTERNS {
+            return Err(invalid("schema has more than 256 patterns"));
+        }
+        for key in ["$ref", "$dynamicRef", "$recursiveRef"] {
+            if let Some(reference) = map.get(key) {
+                let fragment = reference
+                    .as_str()
+                    .and_then(|s| s.strip_prefix('#'))
+                    .ok_or_else(|| invalid("schemas may reference only local fragments"))?;
+                if let Some(target) = local_schema_pointer(root, fragment)? {
+                    pending.push(target);
+                }
             }
         }
-    }
-    for key in [
-        "not",
-        "if",
-        "then",
-        "else",
-        "items",
-        "contains",
-        "additionalProperties",
-        "unevaluatedProperties",
-        "unevaluatedItems",
-        "propertyNames",
-        "contentSchema",
-    ] {
-        if let Some(schema) = map.get(key) {
-            inspect_schema(schema, patterns)?;
+        if let Some(draft) = map.get("$schema")
+            && !matches!(
+                draft.as_str(),
+                Some(
+                    "https://json-schema.org/draft/2020-12/schema"
+                        | "https://json-schema.org/draft/2020-12/schema#"
+                )
+            )
+        {
+            return Err(invalid("only JSON Schema Draft 2020-12 is supported"));
+        }
+        if map.contains_key("$id") {
+            return Err(invalid("schema $id is not supported; use local $defs"));
+        }
+        for key in [
+            "$defs",
+            "definitions",
+            "properties",
+            "patternProperties",
+            "dependentSchemas",
+            // jsonschema still compiles legacy dependencies in Draft 2020-12.
+            "dependencies",
+        ] {
+            if let Some(Value::Object(schemas)) = map.get(key) {
+                pending.extend(schemas.values());
+            }
+        }
+        // Referenced literals are not covered by root meta-validation; the
+        // compiler accepts legacy tuple items in them as well.
+        for key in ["allOf", "anyOf", "oneOf", "prefixItems", "items"] {
+            if let Some(Value::Array(schemas)) = map.get(key) {
+                pending.extend(schemas);
+            }
+        }
+        for key in [
+            "not",
+            "if",
+            "then",
+            "else",
+            "items",
+            "contains",
+            "additionalProperties",
+            "additionalItems",
+            "unevaluatedProperties",
+            "unevaluatedItems",
+            "propertyNames",
+            "contentSchema",
+        ] {
+            if let Some(schema) = map.get(key) {
+                pending.push(schema);
+            }
         }
     }
     Ok(())
@@ -165,7 +225,7 @@ pub(crate) fn compile(schema: &Value) -> Result<Arc<jsonschema::Validator>> {
         return Err(invalid("schema exceeds 256 KiB"));
     }
     inspect(schema, 0, &mut 0)?;
-    inspect_schema(schema, &mut 0)?;
+    inspect_schema(schema)?;
     let key: [u8; 32] = Sha256::digest(encoded).into();
     // The cache never owns tenant schema plaintext. Published generations hold
     // validators strongly; sealing/dropping them releases enum/const literals too.
