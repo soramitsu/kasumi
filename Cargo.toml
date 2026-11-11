@@ -43,6 +43,17 @@ kasumi-transport = { path = "crates/kasumi-transport" }
 lto = "thin"
 codegen-units = 1
 
+# Only `cargo test` uses this profile; `cargo build` stays unoptimized, and
+# debug assertions and overflow checks stay on. Tests drive crypto, codecs and
+# multi-node Raft fixtures under production deadlines (10 s writes, 5 min
+# backup verification, the 600 s restore maximum). Unoptimized, they used about
+# 20x the CPU and missed those deadlines on a loaded host.
+[profile.test]
+opt-level = 1
+
+[profile.test.package."*"]
+opt-level = 2
+
 # Minimal source-reviewed fixes; provenance and regression commands are in
 # vendor/README.md. Keep the upstream versions so scanners retain visibility.
 [patch.crates-io]
