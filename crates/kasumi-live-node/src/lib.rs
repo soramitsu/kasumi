@@ -194,19 +194,40 @@ impl LiveDatabase {
 
 #[napi]
 impl LiveDatabase {
+    /// `block_codec` is "lz4" (the default) or "zstd". It is persisted with
+    /// the database, like the write buffer.
     #[napi(factory)]
-    pub fn create(path: String, write_buffer_bytes: Option<f64>) -> Result<Self> {
+    pub fn create(
+        path: String,
+        write_buffer_bytes: Option<f64>,
+        block_codec: Option<String>,
+    ) -> Result<Self> {
         let budget =
             write_buffer_bytes.unwrap_or(kasumi_frozen_run::LIVE_DEFAULT_BUFFER_BYTES as f64);
         if !budget.is_finite() || budget.fract() != 0.0 || budget < 0.0 {
             return Err(invalid("write buffer must be an integer byte count"));
         }
+        let codec = match block_codec.as_deref() {
+            None | Some("lz4") => kasumi_frozen_run::BlockCodec::Lz4,
+            Some("zstd") => kasumi_frozen_run::BlockCodec::Zstd,
+            Some(_) => return Err(invalid("block codec must be \"lz4\" or \"zstd\"")),
+        };
         Ok(Self {
             db: RefCell::new(Some(
-                LiveDb::create_with_buffer(path, budget as u64)
+                LiveDb::create_with_codec(path, budget as u64, codec)
                     .map_err(|e| storage("create", e))?,
             )),
         })
+    }
+
+    /// The codec this database was created with: "lz4" or "zstd".
+    #[napi]
+    pub fn block_codec(&self) -> Result<String> {
+        Ok(match self.inner()?.block_codec() {
+            kasumi_frozen_run::BlockCodec::Lz4 => "lz4",
+            kasumi_frozen_run::BlockCodec::Zstd => "zstd",
+        }
+        .into())
     }
 
     #[napi(factory)]

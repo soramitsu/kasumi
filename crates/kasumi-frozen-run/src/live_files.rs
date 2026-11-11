@@ -1,6 +1,6 @@
 //! All database names are relative to the exclusively locked directory fd.
 //! Each generation file also carries the database incarnation in its name.
-use crate::{invalid, live_wal::sync_durable};
+use crate::{BlockCodec, invalid, live_wal::sync_durable};
 use rustix::fs::{self, AtFlags, Dir, Mode, OFlags};
 use std::os::unix::fs::MetadataExt;
 use std::{
@@ -15,7 +15,17 @@ use uuid::Uuid;
 pub(super) const MANIFEST: &str = "MANIFEST";
 const CREATE_PREFIX: &str = ".kasumi-init-v1-";
 const CREATE_BUDGET_PREFIX: &str = ".kasumi-init-v3-";
-pub(super) type Bootstrap = ([u8; 16], Option<u64>);
+const CREATE_ZSTD_PREFIX: &str = ".kasumi-init-v4-";
+
+/// What a creation fixes before its manifest exists, so that an interrupted
+/// one resumes as the same database. The first bootstraps recorded no budget;
+/// those are always LZ4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Shape {
+    pub budget: Option<u64>,
+    pub codec: BlockCodec,
+}
+pub(super) type Bootstrap = ([u8; 16], Shape);
 
 pub(super) struct Files {
     directory: File,
@@ -80,12 +90,18 @@ impl Files {
 
     /// The marker is an atomic name containing a fresh, syntactically valid
     /// incarnation. Ordinary filenames never authorize destructive bootstrap.
-    pub(super) fn creation_marker(&self, create: Option<u64>) -> io::Result<Option<Bootstrap>> {
+    pub(super) fn creation_marker(&self, create: Option<Shape>) -> io::Result<Option<Bootstrap>> {
         let mut count = 0;
         let mut marker = None;
         self.names(|name| {
             count += 1;
-            let candidate = if let Some(rest) = name.strip_prefix(CREATE_BUDGET_PREFIX) {
+            let budgeted = [
+                (CREATE_ZSTD_PREFIX, BlockCodec::Zstd),
+                (CREATE_BUDGET_PREFIX, BlockCodec::Lz4),
+            ]
+            .into_iter()
+            .find_map(|(prefix, codec)| Some((name.strip_prefix(prefix)?, codec)));
+            let candidate = if let Some((rest, codec)) = budgeted {
                 let (hex, uuid) = rest
                     .split_once('-')
                     .ok_or_else(|| invalid("invalid bootstrap budget"))?;
@@ -94,16 +110,20 @@ impl Files {
                 if !crate::live::valid_budget(n) || hex != format!("{n:x}") {
                     return Err(invalid("invalid bootstrap budget"));
                 }
-                Some((uuid, Some(n)))
+                let budget = Some(n);
+                Some((uuid, Shape { budget, codec }))
             } else {
-                name.strip_prefix(CREATE_PREFIX).map(|id| (id, None))
+                name.strip_prefix(CREATE_PREFIX).map(|id| {
+                    let (budget, codec) = (None, BlockCodec::Lz4);
+                    (id, Shape { budget, codec })
+                })
             };
-            if let Some((suffix, budget)) = candidate {
+            if let Some((suffix, shape)) = candidate {
                 let id = Uuid::parse_str(suffix)
                     .map_err(|_| invalid("invalid live bootstrap identity"))?;
                 if suffix != id.simple().to_string()
                     || id.get_version_num() != 4
-                    || marker.replace((*id.as_bytes(), budget)).is_some()
+                    || marker.replace((*id.as_bytes(), shape)).is_some()
                 {
                     return Err(invalid("invalid live bootstrap marker"));
                 }
@@ -122,7 +142,7 @@ impl Files {
             }
             Ok(())
         })?;
-        if let (None, Some(budget)) = (marker, create) {
+        if let (None, Some(shape)) = (marker, create) {
             if count != 0 {
                 return Err(io::Error::new(
                     ErrorKind::AlreadyExists,
@@ -132,27 +152,24 @@ impl Files {
             let id = Uuid::new_v4();
             fs::mkdirat(
                 &self.directory,
-                Self::marker(id.as_bytes(), Some(budget)),
+                Self::marker(id.as_bytes(), shape),
                 Mode::from_raw_mode(0o700),
             )?;
-            marker = Some((*id.as_bytes(), Some(budget)));
+            marker = Some((*id.as_bytes(), shape));
         }
         Ok(marker)
     }
 
-    fn marker(id: &[u8; 16], budget: Option<u64>) -> String {
+    fn marker(id: &[u8; 16], shape: Shape) -> String {
         let uid = Uuid::from_bytes(*id).simple();
-        match budget {
-            Some(n) => format!("{CREATE_BUDGET_PREFIX}{n:x}-{uid}"),
-            None => format!("{CREATE_PREFIX}{uid}"),
+        match (shape.budget, shape.codec) {
+            (Some(n), BlockCodec::Zstd) => format!("{CREATE_ZSTD_PREFIX}{n:x}-{uid}"),
+            (Some(n), BlockCodec::Lz4) => format!("{CREATE_BUDGET_PREFIX}{n:x}-{uid}"),
+            (None, _) => format!("{CREATE_PREFIX}{uid}"),
         }
     }
-    pub(super) fn remove_marker(&self, id: &[u8; 16], budget: Option<u64>) -> io::Result<bool> {
-        match fs::unlinkat(
-            &self.directory,
-            Self::marker(id, budget),
-            AtFlags::REMOVEDIR,
-        ) {
+    pub(super) fn remove_marker(&self, id: &[u8; 16], shape: Shape) -> io::Result<bool> {
+        match fs::unlinkat(&self.directory, Self::marker(id, shape), AtFlags::REMOVEDIR) {
             Ok(()) => Ok(true),
             Err(rustix::io::Errno::NOENT) => Ok(false),
             Err(e) => Err(e.into()),
@@ -211,10 +228,10 @@ impl Files {
     pub(super) fn reset_bootstrap(
         &self,
         id: &[u8; 16],
-        budget: Option<u64>,
+        shape: Shape,
         expected: &[(&str, &[u8])],
     ) -> io::Result<()> {
-        let marker = Self::marker(id, budget);
+        let marker = Self::marker(id, shape);
         self.names(|name| {
             if name == marker {
                 return Ok(());

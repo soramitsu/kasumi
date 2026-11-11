@@ -115,6 +115,90 @@ fn complete_trailer_is_required_for_publication_and_verify_rejects_wrong_source(
 }
 
 #[test]
+fn a_trailing_zstd_imports_the_same_rows_into_a_zstandard_database() {
+    let mut payload = Vec::new();
+    for n in 0..400u32 {
+        let key = format!("account/{n:06}");
+        let value = format!(
+            "{:064x}",
+            u128::from(n).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835)
+        );
+        for field in [key.as_bytes(), value.as_bytes()] {
+            payload.extend((field.len() as u32).to_be_bytes());
+            payload.extend(field);
+        }
+    }
+    let digest = Sha256::digest(&payload);
+    let logical = (payload.len() - 400 * 8) as u64;
+    let raw = [
+        b"KSRKRAW1".as_slice(),
+        &payload,
+        &u32::MAX.to_be_bytes(),
+        &400u64.to_be_bytes(),
+        &logical.to_be_bytes(),
+        &digest,
+    ]
+    .concat();
+    let executable = env!("CARGO_BIN_EXE_kasumi-live-transfer");
+    let run = |arguments: &[&std::ffi::OsStr]| {
+        let mut child = Command::new(executable)
+            .args(arguments)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child.stdin.take().unwrap().write_all(&raw).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let dir = tempfile::tempdir().unwrap();
+    let [plain, zstd, filtered, unknown] =
+        ["plain", "zstd", "filtered", "unknown"].map(|name| dir.path().join(name));
+    let word = std::ffi::OsStr::new;
+    assert!(run(&[word("import"), plain.as_os_str()]).status.success());
+    assert!(
+        run(&[word("import"), zstd.as_os_str(), word("zstd")])
+            .status
+            .success()
+    );
+    assert!(
+        run(&[
+            word("import-filtered"),
+            filtered.as_os_str(),
+            word("400"),
+            word("zstd")
+        ])
+        .status
+        .success()
+    );
+    // Any other trailing word is a usage error, before anything is created.
+    assert!(
+        !run(&[word("import"), unknown.as_os_str(), word("snappy")])
+            .status
+            .success()
+    );
+    assert!(!unknown.exists());
+    for (path, codec) in [
+        (&plain, kasumi_frozen_run::BlockCodec::Lz4),
+        (&zstd, kasumi_frozen_run::BlockCodec::Zstd),
+        (&filtered, kasumi_frozen_run::BlockCodec::Zstd),
+    ] {
+        let mut db = LiveDb::open(path).unwrap();
+        assert_eq!(db.block_codec(), codec);
+        assert_eq!(db.sequence(), 1);
+        assert!(db.get(b"account/000399").unwrap().is_some());
+        drop(db);
+        let export = Command::new(executable)
+            .arg("export-read-only")
+            .arg(path)
+            .output()
+            .unwrap();
+        assert!(export.status.success());
+        assert_eq!(export.stdout, raw);
+    }
+}
+
+#[test]
 fn empty_database_has_no_importable_export() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("empty");

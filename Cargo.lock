@@ -1876,6 +1876,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "uuid",
+ "zstd",
 ]
 
 [[package]]
@@ -1984,6 +1985,7 @@ dependencies = [
  "kasumi-store",
  "kasumi-transport",
  "kasumi-types",
+ "libc",
  "prost",
  "rcgen",
  "reqwest",

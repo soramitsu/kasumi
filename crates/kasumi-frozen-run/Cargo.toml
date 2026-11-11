@@ -11,6 +11,9 @@ repository.workspace = true
 lz4_flex = { version = "0.13.1", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 sha2.workspace = true
 tempfile.workspace = true
+# Already in the workspace graph through the text index; used only for blocks a
+# writer was asked to compress with Zstandard.
+zstd = { version = "0.13", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

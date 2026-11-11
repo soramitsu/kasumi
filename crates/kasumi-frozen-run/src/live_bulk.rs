@@ -45,7 +45,8 @@ impl LiveDb {
             root: [0; 32],
         };
         let mut file = self.files.fresh(&entry.name(&self.head.id))?;
-        let (root, count) = live_levels::write_sorted(&mut file, rows, expected_filter_rows)?;
+        let (root, count) =
+            live_levels::write_sorted(&mut file, rows, expected_filter_rows, self.head.codec)?;
         entry.root = root;
         self.publish_level(entry, file, 0)?;
         Ok(count)

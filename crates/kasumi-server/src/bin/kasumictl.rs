@@ -128,6 +128,11 @@ fn main() -> std::process::ExitCode {
 }
 
 async fn async_main() -> std::process::ExitCode {
+    // A profile's bearer and client key are read into this process too.
+    if let Err(error) = kasumi_server::process_limits::disable_core_files() {
+        eprintln!("Error: core files could not be disabled: {error}");
+        return std::process::ExitCode::FAILURE;
+    }
     let arguments = std::env::args_os().skip(1).collect::<Vec<_>>();
     if !selects_profile_administration(&arguments)
         && arguments

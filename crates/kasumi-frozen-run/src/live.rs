@@ -1,8 +1,8 @@
 //! Exclusively owned, mutable ordered storage with a durable WAL and immutable
 //! tiered checkpoints. Every on-disk namespace operation uses the locked directory fd.
 use crate::{
-    WalOp, invalid,
-    live_files::{Files, MANIFEST},
+    BlockCodec, WalOp, invalid,
+    live_files::{Files, MANIFEST, Shape},
     live_levels::{self, Level},
     live_merge::Delta,
     live_wal::{Wal, sync_durable, validate_wal_batch, wal_header},
@@ -36,6 +36,9 @@ mod bulk;
 
 const MAGIC: &[u8; 8] = b"KSLIVE02";
 const BUDGET_MAGIC: &[u8; 8] = b"KSLIVE03";
+/// A budgeted manifest that also names a block codec other than LZ4.
+const CODEC_MAGIC: &[u8; 8] = b"KSLIVE04";
+const ZSTD_CODEC: u64 = 1;
 const MAX_LEVELS: usize = 64;
 const BULK_TIER: u8 = (MAX_LEVELS - 1) as u8;
 const HEADER_BYTES: usize = 40;
@@ -55,23 +58,36 @@ impl Entry {
 #[derive(Clone)]
 struct Head {
     budget: Option<u64>,
+    /// Zstandard only with a budget: a database is created with both.
+    codec: BlockCodec,
     id: [u8; 16],
     seq: u64,
     entries: Vec<Entry>,
 }
 impl Head {
+    fn shape(&self) -> Shape {
+        Shape {
+            budget: self.budget,
+            codec: self.codec,
+        }
+    }
     fn encode(&self) -> Vec<u8> {
-        let mut bytes = Vec::with_capacity(HEADER_BYTES + ENTRY_BYTES * self.entries.len() + 32);
-        bytes.extend(if self.budget.is_some() {
-            BUDGET_MAGIC
-        } else {
-            MAGIC
+        let mut bytes =
+            Vec::with_capacity(HEADER_BYTES + 16 + ENTRY_BYTES * self.entries.len() + 32);
+        // An LZ4 database keeps the manifest it has always had.
+        bytes.extend(match (self.codec, self.budget) {
+            (BlockCodec::Zstd, _) => CODEC_MAGIC,
+            (BlockCodec::Lz4, Some(_)) => BUDGET_MAGIC,
+            (BlockCodec::Lz4, None) => MAGIC,
         });
         bytes.extend((self.entries.len() as u64).to_le_bytes());
         bytes.extend(self.seq.to_le_bytes());
         bytes.extend(self.id);
         if let Some(budget) = self.budget {
             bytes.extend(budget.to_le_bytes());
+        }
+        if self.codec == BlockCodec::Zstd {
+            bytes.extend(ZSTD_CODEC.to_le_bytes());
         }
         for entry in &self.entries {
             bytes.extend(u64::from(entry.tier).to_le_bytes());
@@ -84,7 +100,8 @@ impl Head {
     fn read(files: &Files) -> io::Result<Self> {
         let mut file = files.read(MANIFEST)?;
         let len = file.metadata()?.len();
-        if !((HEADER_BYTES + 32) as u64..=(HEADER_BYTES + 8 + ENTRY_BYTES * MAX_LEVELS + 32) as u64)
+        if !((HEADER_BYTES + 32) as u64
+            ..=(HEADER_BYTES + 16 + ENTRY_BYTES * MAX_LEVELS + 32) as u64)
             .contains(&len)
         {
             return Err(invalid("invalid live manifest length"));
@@ -96,14 +113,22 @@ impl Head {
         if Sha256::digest(body)[..] != *digest {
             return Err(invalid("invalid live manifest"));
         }
-        let (budget, header) = match &body[..8] {
-            magic if magic == MAGIC => (None, HEADER_BYTES),
+        let budget_at = |body: &[u8]| {
+            let n = u64::from_le_bytes(body[40..48].try_into().unwrap());
+            valid_budget(n)
+                .then_some(n)
+                .ok_or_else(|| invalid("invalid live write buffer budget"))
+        };
+        let (budget, codec, header) = match &body[..8] {
+            magic if magic == MAGIC => (None, BlockCodec::Lz4, HEADER_BYTES),
             magic if magic == BUDGET_MAGIC && body.len() >= HEADER_BYTES + 8 => {
-                let n = u64::from_le_bytes(body[40..48].try_into().unwrap());
-                if !valid_budget(n) {
-                    return Err(invalid("invalid live write buffer budget"));
+                (Some(budget_at(body)?), BlockCodec::Lz4, HEADER_BYTES + 8)
+            }
+            magic if magic == CODEC_MAGIC && body.len() >= HEADER_BYTES + 16 => {
+                if u64::from_le_bytes(body[48..56].try_into().unwrap()) != ZSTD_CODEC {
+                    return Err(invalid("unknown live block codec"));
                 }
-                (Some(n), HEADER_BYTES + 8)
+                (Some(budget_at(body)?), BlockCodec::Zstd, HEADER_BYTES + 16)
             }
             _ => return Err(invalid("invalid live manifest version")),
         };
@@ -138,6 +163,7 @@ impl Head {
         }
         Ok(Self {
             budget,
+            codec,
             id,
             seq,
             entries,
@@ -337,6 +363,18 @@ impl LiveDb {
     /// Choose the inline checkpoint threshold (512 KiB through 16 MiB). A larger
     /// budget permits a longer WAL and more recovery work. The budget is persisted.
     pub fn create_with_buffer(path: impl AsRef<Path>, budget: u64) -> io::Result<Self> {
+        Self::create_with_codec(path, budget, BlockCodec::Lz4)
+    }
+
+    /// Choose the block codec as well as the write buffer. Both are persisted:
+    /// every level this database writes uses that codec. A database created
+    /// with `BlockCodec::Zstd` is smaller on disk, takes more CPU to flush and
+    /// compact, and cannot be opened by a version that predates the codec.
+    pub fn create_with_codec(
+        path: impl AsRef<Path>,
+        budget: u64,
+        codec: BlockCodec,
+    ) -> io::Result<Self> {
         if !valid_budget(budget) {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
@@ -354,13 +392,17 @@ impl LiveDb {
             Err(e) if e.kind() == ErrorKind::NotFound => {}
             Err(e) => return Err(e),
         }
+        let requested = Shape {
+            budget: Some(budget),
+            codec,
+        };
         let (id, recorded) = files
-            .creation_marker(Some(budget))?
+            .creation_marker(Some(requested))?
             .ok_or_else(|| invalid("missing live creation marker"))?;
-        if recorded.unwrap_or(LIVE_CHECKPOINT_BYTES) != budget {
+        if recorded.budget.unwrap_or(LIVE_CHECKPOINT_BYTES) != budget || recorded.codec != codec {
             return Err(io::Error::new(
                 ErrorKind::InvalidInput,
-                "existing bootstrap has a different write buffer; use open to resume",
+                "existing bootstrap has a different write buffer or block codec; use open to resume",
             ));
         }
         Self::initialize(files, id, recorded, dir_syncs)
@@ -369,11 +411,12 @@ impl LiveDb {
     fn initialize(
         files: Files,
         id: [u8; 16],
-        budget: Option<u64>,
+        shape: Shape,
         mut dir_syncs: u64,
     ) -> io::Result<Self> {
         let head = Head {
-            budget,
+            budget: shape.budget,
+            codec: shape.codec,
             id,
             seq: 0,
             entries: vec![],
@@ -385,14 +428,14 @@ impl LiveDb {
         let encoded = head.encode();
         files.reset_bootstrap(
             &id,
-            budget,
+            shape,
             &[(&wal_name, &wal_header(0, binding)), (&next, &encoded)],
         )?;
         let file = files.fresh(&wal_name)?;
         file.try_lock()?;
         let wal = Wal::initialize(file, 0, binding)?;
         files.publish(&id, &encoded, &mut dir_syncs)?;
-        files.remove_marker(&id, budget)?;
+        files.remove_marker(&id, shape)?;
         files.sync(&mut dir_syncs)?;
         Ok(Self {
             files,
@@ -417,8 +460,8 @@ impl LiveDb {
         let (files, mut dir_syncs) = Files::lock(path.as_ref(), false)?;
         let head = match Head::read(&files) {
             Err(e) if e.kind() == ErrorKind::NotFound => {
-                if let Some((id, budget)) = files.creation_marker(None)? {
-                    return Self::initialize(files, id, budget, dir_syncs);
+                if let Some((id, shape)) = files.creation_marker(None)? {
+                    return Self::initialize(files, id, shape, dir_syncs);
                 }
                 return Err(e);
             }
@@ -437,7 +480,7 @@ impl LiveDb {
         // syncing the directory. Persist the observed winner before reclaiming.
         files.sync(&mut dir_syncs)?;
         let mut changed = files.reclaim(&head.id, &head.keep())?;
-        changed |= files.remove_marker(&head.id, head.budget)?;
+        changed |= files.remove_marker(&head.id, head.shape())?;
         if changed {
             files.sync(&mut dir_syncs)?;
         }
@@ -504,6 +547,11 @@ impl LiveDb {
         Ok(sequence)
     }
 
+    /// The persisted codec every level of this database is written with.
+    pub fn block_codec(&self) -> BlockCodec {
+        self.head.codec
+    }
+
     /// Persisted threshold shared by automatic flush and recovery admission.
     pub fn checkpoint_budget(&self) -> u64 {
         self.head.budget.unwrap_or(LIVE_CHECKPOINT_BYTES)
@@ -553,7 +601,13 @@ impl LiveDb {
         let mut file = self.files.fresh(&entry.name(&self.head.id))?;
         let includes_oldest = take == self.levels.len();
         let mut old: ArrayVec<_, MAX_LEVELS> = self.levels[..take].iter_mut().collect();
-        entry.root = live_levels::write_level(&mut file, &self.delta, &mut old, includes_oldest)?;
+        entry.root = live_levels::write_level(
+            &mut file,
+            &self.delta,
+            &mut old,
+            includes_oldest,
+            self.head.codec,
+        )?;
         drop(old);
         self.publish_level(entry, file, take)
     }
@@ -576,6 +630,7 @@ impl LiveDb {
         entries.extend_from_slice(&self.head.entries[take..]);
         let head = Head {
             budget: self.head.budget,
+            codec: self.head.codec,
             id: self.head.id,
             seq: sequence,
             entries,

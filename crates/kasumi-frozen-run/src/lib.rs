@@ -1,9 +1,10 @@
-//! Immutable LZ4-compressed sorted runs and Unix-native mutable binary-key storage.
+//! Immutable compressed sorted runs and Unix-native mutable binary-key storage.
 //! Seal a strictly ascending stream and retain its returned digest in a trusted
 //! manifest. Opening authenticates the sparse directory against that digest.
 //! Each accessed block is authenticated and its key order and boundaries
 //! verified before any data from that block reaches the caller.
 
+mod codec;
 #[cfg(unix)]
 mod live;
 #[cfg(unix)]
@@ -20,6 +21,7 @@ mod prefix;
 mod read;
 mod write;
 
+pub use codec::BlockCodec;
 #[cfg(unix)]
 pub use live::{
     LIVE_CHECKPOINT_BYTES, LIVE_DEFAULT_BUFFER_BYTES, LIVE_GROUP_MAX_BATCHES, LIVE_GROUP_MAX_BYTES,
@@ -28,7 +30,7 @@ pub use live::{
 #[cfg(unix)]
 pub use live_wal::{MAX_WAL_BATCH_BYTES, MAX_WAL_BATCH_OPS, WalOp};
 pub use read::FrozenRun;
-pub use write::seal;
+pub use write::{seal, seal_with_codec};
 
 use std::io;
 
@@ -36,7 +38,12 @@ const DIRECTORY_MAGIC_V1: &[u8; 8] = b"KSFRDIR1";
 const FOOTER_MAGIC_V1: &[u8; 8] = b"KSFRIDX1";
 const DIRECTORY_MAGIC: &[u8; 8] = b"KSFRDIR2";
 const FOOTER_MAGIC: &[u8; 8] = b"KSFRIDX2";
+/// Version 3 is version 2 whose blocks may also be Zstandard. Only a writer
+/// asked for `BlockCodec::Zstd` produces it; older readers refuse it.
+const DIRECTORY_MAGIC_ZSTD: &[u8; 8] = b"KSFRDIR3";
+const FOOTER_MAGIC_ZSTD: &[u8; 8] = b"KSFRIDX3";
 const PREFIX_FLAG: u32 = 1 << 31;
+const ZSTD_FLAG: u32 = 1 << 30;
 const BLOCK_TARGET: usize = 32 << 10;
 /// Maximum byte length of an individual binary key.
 pub const MAX_KEY: usize = 4096;
@@ -65,6 +72,38 @@ fn u16_from(input: &mut &[u8]) -> io::Result<usize> {
 }
 fn u32_from(input: &mut &[u8]) -> io::Result<usize> {
     Ok(u32::from_le_bytes(take(input, 4)?.try_into().unwrap()) as usize)
+}
+
+/// Fill `buffer` from an absolute file position. On Unix the readers of one
+/// immutable level file share its descriptor, so this read neither depends on
+/// nor moves a file offset. Elsewhere there is no live database and a run
+/// owns its file, where moving the offset is harmless.
+#[cfg(unix)]
+fn read_exact_at(file: &std::fs::File, buffer: &mut [u8], at: u64) -> io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buffer, at)
+}
+#[cfg(windows)]
+fn read_exact_at(file: &std::fs::File, mut buffer: &mut [u8], mut at: u64) -> io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buffer.is_empty() {
+        match file.seek_read(buffer, at) {
+            Ok(0) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            Ok(read) => {
+                buffer = &mut buffer[read..];
+                at += read as u64;
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+#[cfg(not(any(unix, windows)))]
+fn read_exact_at(file: &std::fs::File, buffer: &mut [u8], at: u64) -> io::Result<()> {
+    use io::{Read, Seek};
+    let mut file = file;
+    file.seek(io::SeekFrom::Start(at))?;
+    file.read_exact(buffer)
 }
 
 #[cfg(test)]

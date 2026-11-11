@@ -8,7 +8,7 @@
 #[cfg(all(unix, feature = "compact"))]
 pub mod compact {
     pub use kasumi_frozen_run::{
-        LIVE_CHECKPOINT_BYTES, LIVE_DEFAULT_BUFFER_BYTES, LIVE_GROUP_MAX_BATCHES,
+        BlockCodec, LIVE_CHECKPOINT_BYTES, LIVE_DEFAULT_BUFFER_BYTES, LIVE_GROUP_MAX_BATCHES,
         LIVE_GROUP_MAX_BYTES, LiveDb, LiveStats, WalOp,
     };
 }

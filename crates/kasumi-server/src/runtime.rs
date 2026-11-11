@@ -2639,13 +2639,21 @@ impl Drop for NodeRuntime {
                                     == kasumi_types::drain::DrainCompletion::Retained =>
                             {
                                 if !reported_retention {
-                                    tracing::error!(%failure, "abandoned target runtime drain retained");
+                                    crate::logging::drain_failed(
+                                        "abandoned_target_runtime_drain_retained",
+                                        &failure,
+                                        Some(1),
+                                    );
                                     reported_retention = true;
                                 }
                                 tokio::time::sleep(std::time::Duration::from_secs(1)).await;
                             }
                             Err(failure) => {
-                                tracing::error!(%failure, "abandoned target runtime drain failed");
+                                crate::logging::drain_failed(
+                                    "abandoned_target_runtime_drain_failed",
+                                    &failure,
+                                    None,
+                                );
                                 break;
                             }
                         }

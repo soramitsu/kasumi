@@ -2,7 +2,8 @@
 //! levels in descending age order (newest first). Only a newly produced run and
 //! its bounded merge inputs participate in a flush.
 use crate::{
-    FrozenRun, invalid, live_bulk_filter::BulkFilter, live_merge::Delta, read::RunCursor, write,
+    BlockCodec, FrozenRun, invalid, live_bulk_filter::BulkFilter, live_merge::Delta,
+    read::RunCursor, write,
 };
 use std::{
     cmp::Ordering,
@@ -10,6 +11,7 @@ use std::{
     fs::File,
     io::{self, Seek},
     ops::Bound,
+    sync::Arc,
 };
 
 #[path = "live_levels_index.rs"]
@@ -20,6 +22,9 @@ const PIECE_TARGET: usize = 4 << 20;
 const ORDINARY_RECENT: usize = 2;
 const DEEP_RECENT: usize = 7;
 const MAX_EXTRA_INDEX: usize = 512 << 10;
+const MEMO_BRANCHES: usize = 1024;
+const MEMO_KEY_BYTES: usize = 128 << 10;
+const NOT_KEPT: u32 = u32::MAX;
 
 struct Loaded {
     descriptor: Leaf,
@@ -27,30 +32,98 @@ struct Loaded {
     deletes: Option<FrozenRun>,
 }
 
+/// One authenticated branch of a level's tree and where its two children are
+/// kept, if they are.
+struct Branch {
+    split: Box<[u8]>,
+    left: Link,
+    right: Link,
+    kept: [u32; 2],
+}
+
+/// The top of a level's tree, kept after its first authenticated read so that
+/// a lookup outside the retained pieces does not read and hash the same path
+/// again. Position zero is the root branch, and every other branch is reached
+/// only through the parent whose link authenticated it. At most
+/// `MEMO_BRANCHES` branches and `MEMO_KEY_BYTES` of their split keys are kept;
+/// branches beyond either bound are read from the file each time. Nothing is
+/// evicted, so a level with more branches than that keeps the paths of its
+/// earliest lookups: every branch near the root, and fewer further down.
+#[derive(Default)]
+struct BranchMemo {
+    branches: Vec<Branch>,
+    key_bytes: usize,
+}
+
+/// Where the node being visited would be kept.
+#[derive(Clone, Copy)]
+enum Place {
+    Root,
+    Child(usize, usize),
+    /// Below a branch that is not kept, or outside a descent from the root.
+    Untracked,
+}
+
+impl BranchMemo {
+    fn kept(&self, place: Place) -> Option<usize> {
+        match place {
+            Place::Root => (!self.branches.is_empty()).then_some(0),
+            Place::Child(parent, side) => Some(self.branches[parent].kept[side])
+                .filter(|&at| at != NOT_KEPT)
+                .map(|at| at as usize),
+            Place::Untracked => None,
+        }
+    }
+
+    /// Keep a branch that was just read through `place`, within both bounds.
+    fn keep(&mut self, place: Place, split: Vec<u8>, left: Link, right: Link) -> Option<usize> {
+        if matches!(place, Place::Untracked)
+            || self.branches.len() >= MEMO_BRANCHES
+            || self.key_bytes + split.len() > MEMO_KEY_BYTES
+        {
+            return None;
+        }
+        let at = self.branches.len();
+        self.key_bytes += split.len();
+        self.branches.push(Branch {
+            split: split.into_boxed_slice(),
+            left,
+            right,
+            kept: [NOT_KEPT; 2],
+        });
+        if let Place::Child(parent, side) = place {
+            self.branches[parent].kept[side] = at as u32;
+        }
+        Some(at)
+    }
+}
+
 pub(super) struct Level {
-    file: File,
+    file: Arc<File>,
     root: Option<Link>,
     loaded: Option<Loaded>,
     only_piece: bool,
     recent_limit: usize,
     recent: VecDeque<Loaded>,
     membership: Option<BulkFilter>,
+    memo: BranchMemo,
 }
 
 impl Level {
-    pub(super) fn open(mut file: File, expected_root: [u8; 32], bulk: bool) -> io::Result<Self> {
-        let mut root = index::open(&mut file, expected_root)?;
+    pub(super) fn open(file: File, expected_root: [u8; 32], bulk: bool) -> io::Result<Self> {
+        let file = Arc::new(file);
+        let mut root = index::open(&file, expected_root)?;
         let mut membership = None;
         let mut first = None;
         if let Some(link) = root {
-            let mut node = index::read(&mut file, link)?;
+            let mut node = index::read(&file, link)?;
             if let Node::BulkRoot { tree, filter } = node {
                 if !bulk {
                     return Err(invalid("membership filter outside the bulk tier"));
                 }
-                membership = Some(index::read_filter(&mut file, filter)?);
+                membership = Some(index::read_filter(&file, filter)?);
                 root = Some(tree);
-                node = index::read(&mut file, tree)?;
+                node = index::read(&file, tree)?;
             }
             match node {
                 Node::Leaf(leaf) => first = Some(leaf),
@@ -66,6 +139,7 @@ impl Level {
             recent_limit: if bulk { 3 } else { ORDINARY_RECENT },
             recent: VecDeque::new(),
             membership,
+            memo: BranchMemo::default(),
         };
         if let Some(leaf) = first {
             out.load(leaf)?;
@@ -134,12 +208,7 @@ impl Level {
             return Ok(());
         }
         let open = |link: Link| {
-            FrozenRun::from_extent(
-                self.file.try_clone()?,
-                link.at,
-                link.at + link.len,
-                link.root,
-            )
+            FrozenRun::from_extent(self.file.clone(), link.at, link.at + link.len, link.root)
         };
         let rows = open(descriptor.rows)?;
         if rows.extent_bounds() != Some((descriptor.first.as_slice(), descriptor.last.as_slice())) {
@@ -158,34 +227,64 @@ impl Level {
     }
 
     /// Find the first leaf intersecting the chosen start bound, recording later
-    /// siblings on the path for a range traversal.
+    /// siblings on the path for a range traversal. A descent from the root
+    /// follows kept branches and reads only the nodes below them.
     fn descend(
         &mut self,
         mut link: Link,
         start: Bound<&[u8]>,
         reverse: bool,
-        siblings: &mut Vec<Link>,
+        mut siblings: Option<&mut Vec<Link>>,
     ) -> io::Result<()> {
+        let right_first = |split: &[u8]| match start {
+            Bound::Included(key) => key >= split,
+            Bound::Excluded(key) if reverse => key > split,
+            Bound::Excluded(key) => key >= split,
+            Bound::Unbounded => reverse,
+        };
+        let mut place = if Some(link) == self.root {
+            Place::Root
+        } else {
+            Place::Untracked
+        };
         for _ in 0..=index::HEIGHT {
-            match index::read(&mut self.file, link)? {
-                Node::Leaf(leaf) => return self.load(leaf),
-                Node::BulkRoot { .. } => return Err(invalid("nested bulk membership root")),
-                Node::Branch { split, left, right } => {
-                    let right_first = match start {
-                        Bound::Included(key) => key >= split.as_slice(),
-                        Bound::Excluded(key) if reverse => key > split.as_slice(),
-                        Bound::Excluded(key) => key >= split.as_slice(),
-                        Bound::Unbounded => reverse,
-                    };
-                    if right_first == reverse {
-                        if siblings.len() >= index::HEIGHT {
-                            return Err(invalid("live level tree is too deep"));
-                        }
-                        siblings.push(if reverse { left } else { right });
-                    }
-                    link = if right_first { right } else { left };
+            let (kept, right_first, left, right) = match self.memo.kept(place) {
+                Some(at) => {
+                    let branch = &self.memo.branches[at];
+                    (
+                        Some(at),
+                        right_first(&branch.split),
+                        branch.left,
+                        branch.right,
+                    )
                 }
+                None => match index::read(&self.file, link)? {
+                    Node::Leaf(leaf) => return self.load(leaf),
+                    Node::BulkRoot { .. } => return Err(invalid("nested bulk membership root")),
+                    Node::Branch { split, left, right } => {
+                        let right_first = right_first(&split);
+                        (
+                            self.memo.keep(place, split, left, right),
+                            right_first,
+                            left,
+                            right,
+                        )
+                    }
+                },
+            };
+            if right_first == reverse
+                && let Some(siblings) = siblings.as_deref_mut()
+            {
+                if siblings.len() >= index::HEIGHT {
+                    return Err(invalid("live level tree is too deep"));
+                }
+                siblings.push(if reverse { left } else { right });
             }
+            link = if right_first { right } else { left };
+            place = match kept {
+                Some(at) => Place::Child(at, usize::from(right_first)),
+                None => Place::Untracked,
+            };
         }
         Err(invalid("live level tree is too deep"))
     }
@@ -208,7 +307,7 @@ impl Level {
             if let Some(position) = self.recent.iter().position(contains) {
                 self.reuse(position);
             } else {
-                self.descend(root, Bound::Included(key), false, &mut Vec::new())?;
+                self.descend(root, Bound::Included(key), false, None)?;
             }
         }
         let shard = self.loaded.as_mut().unwrap();
@@ -270,7 +369,7 @@ impl Cursor {
         };
         if let Some(root) = level.root {
             if !level.only_piece {
-                level.descend(root, if rev { hi } else { lo }, rev, &mut c.later)?;
+                level.descend(root, if rev { hi } else { lo }, rev, Some(&mut c.later))?;
             }
             c.scan = Some(RunCursor::new(
                 &level.loaded.as_ref().unwrap().rows,
@@ -330,7 +429,7 @@ impl Cursor {
                 self.scan = None;
                 return Ok(());
             };
-            level.descend(next, Bound::Unbounded, rev, &mut self.later)?;
+            level.descend(next, Bound::Unbounded, rev, Some(&mut self.later))?;
             self.scan = Some(RunCursor::new(
                 &level.loaded.as_ref().unwrap().rows,
                 lo,
@@ -507,12 +606,13 @@ fn flush_piece(
     file: &mut File,
     index: &mut index::Builder,
     rows: &mut Vec<Buffered>,
+    codec: BlockCodec,
 ) -> io::Result<()> {
     if rows.is_empty() {
         return Ok(());
     }
     let at = file.stream_position()?;
-    let root = write::write_rows(file, |put| {
+    let root = write::write_rows(file, codec, |put| {
         for (key, value) in rows.iter() {
             put(key, value.as_deref().unwrap_or_default())?;
         }
@@ -525,7 +625,7 @@ fn flush_piece(
         root,
     };
     let deleted = if rows.iter().any(|(_, v)| v.is_none()) {
-        let root = write::write_rows(file, |put| {
+        let root = write::write_rows(file, codec, |put| {
             for (key, v) in rows.iter() {
                 if v.is_none() {
                     put(key, &[])?;
@@ -560,8 +660,9 @@ pub(super) fn write_level(
     delta: &Delta,
     older: &mut [&mut Level],
     drop_tombstones: bool,
+    codec: BlockCodec,
 ) -> io::Result<[u8; 32]> {
-    write_pieces(file, delta, older, drop_tombstones, PIECE_TARGET)
+    write_pieces(file, delta, older, drop_tombstones, PIECE_TARGET, codec)
 }
 
 fn write_pieces(
@@ -570,6 +671,7 @@ fn write_pieces(
     older: &mut [&mut Level],
     drop_tombstones: bool,
     target: usize,
+    codec: BlockCodec,
 ) -> io::Result<[u8; 32]> {
     if file.stream_position()? != 0 || file.metadata()?.len() != 0 {
         return Err(invalid("live level output must be empty"));
@@ -620,7 +722,7 @@ fn write_pieces(
             // overrun the shard buffer. One legal oversized row occupies its own shard.
             let bytes = 64 + key.len() + value.map_or(0, <[u8]>::len);
             if !rows.is_empty() && size + bytes > target {
-                flush_piece(file, &mut index, &mut rows)?;
+                flush_piece(file, &mut index, &mut rows, codec)?;
                 size = 0;
             }
             rows.push((key.to_vec(), value.map(<[u8]>::to_vec)));
@@ -628,7 +730,7 @@ fn write_pieces(
             Ok(true)
         },
     )?;
-    flush_piece(file, &mut index, &mut rows)?;
+    flush_piece(file, &mut index, &mut rows, codec)?;
     index.finish(file, membership.as_ref())
 }
 
@@ -642,6 +744,7 @@ pub(super) fn write_sorted(
     file: &mut File,
     source: impl IntoIterator<Item = io::Result<(Vec<u8>, Vec<u8>)>>,
     expected_filter_rows: Option<u64>,
+    codec: BlockCodec,
 ) -> io::Result<([u8; 32], u64)> {
     let mut index = index::Builder::default();
     let mut membership = expected_filter_rows.map(BulkFilter::for_rows).transpose()?;
@@ -668,7 +771,7 @@ pub(super) fn write_sorted(
         }
         let charge = 64 + key.len() + value.len();
         if !rows.is_empty() && size + charge > PIECE_TARGET {
-            flush_piece(file, &mut index, &mut rows)?;
+            flush_piece(file, &mut index, &mut rows, codec)?;
             size = 0;
         }
         if let Some(filter) = &mut membership {
@@ -680,7 +783,7 @@ pub(super) fn write_sorted(
             .checked_add(1)
             .ok_or_else(|| invalid("bulk row count overflow"))?;
     }
-    flush_piece(file, &mut index, &mut rows)?;
+    flush_piece(file, &mut index, &mut rows, codec)?;
     if expected_filter_rows.is_some_and(|expected| expected != count) {
         return Err(invalid("filtered import row count differs"));
     }

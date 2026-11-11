@@ -32,10 +32,25 @@ try {
 }
 ```
 
+On macOS, a release build can produce an addon the loader refuses with
+`mis-aligned LINKEDIT string pool`: Xcode's `strip`, which a release build
+runs by default, can leave the symbol string table unaligned. Build with
+`--config 'profile.release.strip="none"'` added to the command above if
+`require` fails that way. Linux builds are unaffected.
+
 New directories use a 4 MiB write buffer budget by default. Pass a byte count as
 `LiveDatabase.create(path, bytes)` (512 KiB through 16 MiB) to trade memory,
 WAL size and recovery time for less frequent inline merge work. The budget
 survives reopen and does not change when a commit becomes durable.
+
+Pass `"zstd"` as a third argument, `LiveDatabase.create(path, bytes, "zstd")`,
+to write Zstandard blocks instead of LZ4 (`undefined` for `bytes` keeps the
+default buffer). The database is smaller on disk, by about half for text that
+LZ4 cannot shorten, and takes more CPU to write and to read blocks that are
+not cached. The choice is persisted, `blockCodec()` returns `"lz4"` or
+`"zstd"`, and a Zstandard database needs this version of the addon or later.
+See the [engine notes](../kasumi-frozen-run/README.md#smaller-files-with-zstandard-blocks)
+for measurements and the format.
 
 Use `LiveDatabase.open(path)` to reopen an existing database. Both `sequence()` and `commit(ops)` return a JavaScript `bigint`. A mutation with a Buffer value inserts or replaces that key; omitting the value deletes it. Duplicate keys follow array order. A read returns a Buffer or `null` for a missing key. All binary inputs require ordinary ArrayBuffer backing. Copy shared data into a private Buffer before calling the addon. Zero-length keys and values round-trip. An empty batch advances the sequence.
 

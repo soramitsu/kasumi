@@ -27,6 +27,7 @@ mod node_enrollment;
 mod node_provision;
 mod observability;
 mod persistent_disk;
+pub mod process_limits;
 pub mod process_runtime;
 mod readiness;
 mod readiness_probe;

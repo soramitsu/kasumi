@@ -34,6 +34,53 @@ data before retrying. A valid database directory must be controlled by its
 owner, including its parent at creation. Copy logical rows to migrate between
 this format and other databases.
 
+## Smaller files with Zstandard blocks
+
+A database or sealed run can trade CPU for disk by letting the writer use
+Zstandard. It is opt-in and chosen once: `LiveDb::create_with_codec(path,
+budget, BlockCodec::Zstd)` for a live database, `seal_with_codec(path, rows,
+BlockCodec::Zstd)` for a sealed run, and a trailing `zstd` on
+`kasumi-live-transfer import` or `import-filtered`. A live database records
+the choice in its manifest, as it does its write buffer, and every flush,
+merge, checkpoint and bulk import writes with it; `LiveDb::block_codec`
+reports it. To change an existing database, export it and import it into a
+new directory with the other codec.
+
+Each block still picks canonical or prefix-coded rows as before, then keeps
+the Zstandard form of those bytes when it is smaller than the LZ4 form, at a
+fixed level of 7. Blocks that Zstandard does not shorten stay LZ4. Without the
+option nothing changes: LZ4 runs and manifests are written byte for byte as
+before, and this version reads every earlier file.
+
+Measured through `kasumi-live-transfer import` and the `cold-lookup` example:
+
+| | LZ4 | Zstandard |
+| --- | ---: | ---: |
+| Stats fixture, 16,387 rows: level file | 151,318 B | 67,879 B (55% smaller) |
+| 800,000 synthetic rows of hexadecimal text: level file | 438.1 MB | 244.9 MB (44% smaller) |
+| Same rows: CPU to import | 5.2 s | 12.1 s |
+| Same rows: CPU per lookup of an uncached block | 53 µs | 71 µs |
+
+The saving depends on the data. Text that LZ4 cannot shorten, such as
+hexadecimal or decimal digits, gains the most; rows that are already random
+bytes gain nothing. To estimate it for an existing database before choosing,
+pipe `kasumi-live-transfer export-read-only DIRECTORY` into
+`benchmarks/indexer-kv/codec-probe.py`. A lookup served from a block the reader
+already holds costs the same under either codec.
+
+A Zstandard run has directory and footer magic `KSFRDIR3` / `KSFRIDX3`. It is
+the version 2 layout with one more flag: bit 30 of a block's stored-length
+word marks a Zstandard frame, alongside bit 31 for prefix coding. A Zstandard
+database's manifest begins `KSLIVE04` and carries the codec after the write
+buffer. Readers from before this codec refuse both, so keep a build that can
+read them for as long as the files exist. A frame is authenticated like any
+block before it is expanded. A block must be exactly one frame of the current
+Zstandard format, and it is expanded into a buffer of exactly its
+authenticated length, so a frame that would expand further fails. Each thread
+that reads or writes Zstandard blocks keeps one decompression and one
+compression context; the compression context is released after an oversized
+row.
+
 ## Read-only frozen runs
 
 A frozen run stores an immutable, strictly sorted stream of binary keys and values for finalized history. The owner supplies the history cutoff and publishes the expected SHA-256 digest through its own trusted manifest. It can then open independent readers against the same file.
@@ -60,7 +107,7 @@ Version 2 tries two LZ4 representations per multirow block: canonical length-pre
 
 Queries binary-search the directory and the decoded block's row offsets. A reader verifies each accessed compressed block before decompression, validates its decoded length, checks every row boundary and key order, and checks its first and last key against the directory. A forward scan over unbounded endpoints verifies every block. Range callbacks receive borrowed bytes in order, with at most the requested number of callbacks. If an I/O or integrity error occurs after a verified block, the callback may already have received earlier rows.
 
-Each reader retains 64 direct-mapped small blocks. Their combined byte buffers and row-offset backing fit within 4 MiB. They coexist with at most one oversized decoded row (32 MiB value plus at most 4 KiB key, six header bytes and one row offset). Loading a block also uses one temporary compressed buffer bounded by the LZ4 compression bound for its authenticated input length. A prefix-coded block can additionally use at most 43,690 intermediate bytes before expansion into its 32 KiB canonical buffer. `get` returns an owned value. `FrozenRun::get_ref` and `LiveDb::get_ref` borrow the verified bytes until the next operation on the reader. A live lookup keeps up to two recently used pieces for each ordinary level and three for the imported bulk level, in addition to the current piece. Oversized decoded rows are released when a piece moves into that cache. The deepest ordinary tier can keep five additional authenticated indexes. Each extra piece releases all decoded blocks and is limited to 512 KiB including its inline descriptor and index allocations. The recent-piece deque has a separate fixed number of slots and can hold spare capacity. At most ten additional file descriptors stay open per database.
+Each reader retains 64 direct-mapped small blocks. Their combined byte buffers and row-offset backing fit within 4 MiB. They coexist with at most one oversized decoded row (32 MiB value plus at most 4 KiB key, six header bytes and one row offset). Loading a block also uses one temporary compressed buffer bounded by its codec's compression bound for its authenticated input length. A prefix-coded block can additionally use at most 43,690 intermediate bytes before expansion into its 32 KiB canonical buffer. `get` returns an owned value. `FrozenRun::get_ref` and `LiveDb::get_ref` borrow the verified bytes until the next operation on the reader. A live lookup keeps up to two recently used pieces for each ordinary level and three for the imported bulk level, in addition to the current piece. Oversized decoded rows are released when a piece moves into that cache. The deepest ordinary tier can keep five additional authenticated indexes. Each extra piece releases all decoded blocks and is limited to 512 KiB including its inline descriptor and index allocations. The recent-piece deque has a separate fixed number of slots and can hold spare capacity. Each level also keeps the branch nodes at the top of its piece index once it has read and authenticated them: at most 1,024 branches and 128 KiB of their split keys, about 250 KiB per level. A lookup that leaves the retained pieces then reads only the nodes below the kept ones: the single leaf for a level of up to about 1,000 pieces (4 GiB of rows), and a few more for a larger level, whose memo holds every branch near the root and the paths of its earliest lookups below that. Every piece reads through its level's descriptor by absolute position, so retained pieces open no additional file descriptors.
 
 For an offline bulk migration, `LiveDb::load_sorted` atomically initializes an
 empty database from strictly increasing binary rows. It builds one immutable

@@ -63,7 +63,10 @@ paths beneath it or explicitly adapt that allowlist.
 
 The template disables process core files and service swap, drops capabilities,
 and restricts filesystem writes. These are systemd settings; verify support and
-effective values on the host. Disable host plaintext swap and hibernation in
+effective values on the host. `kasumid`, `kasumi-authority` and `kasumictl`
+also set their own core-file limit to zero before any command opens a key or a
+profile, so a container or a manually started process leaves no core either; a core handler that ignores
+the limit, and swap, remain host settings. Disable host plaintext swap and hibernation in
 hardened deployments, including crash/kdump collectors that can capture memory.
 `vm.swappiness=0` alone does not disable swap. The OS and embedding application
 are trusted and previously released plaintext cannot be recalled.
@@ -116,7 +119,14 @@ A failed start logs `daemon_failed` with typed `failure_classes` (for example
 a private (0600) file holding the full error chain. It is written to
 `KASUMI_DIAGNOSTIC_DIRECTORY`, else systemd's `LogsDirectory=` (the template
 uses `/var/log/kasumi`), else the temporary directory, which `PrivateTmp=yes`
-discards when the unit stops. If a failed open or a shutdown drain keeps native
+discards when the unit stops; the release units and the template therefore
+set `LogsDirectory=`. A panic in a serving daemon or a credential watcher
+logs `panic` with only its thread and source location; the panic message,
+which can quote an error or a value, goes to a private file in the same
+directory, for at most 32 panics per process. A drain that fails or is
+retried logs its completion and component names the same way, with the text
+of its issues (which includes any joined worker's panic message) in a private
+file. If a failed open or a shutdown drain keeps native
 owners retained for 60 seconds, kasumid logs
 `daemon_exit_with_retained_owners` and exits non-zero rather than staying
 "active" while retrying; the store then recovers on the next start exactly as

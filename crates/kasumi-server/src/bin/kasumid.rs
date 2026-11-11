@@ -84,6 +84,14 @@ async fn async_main() -> std::process::ExitCode {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;
     }
+    // Offline commands open the same keys as the daemon: none may leave a core.
+    if let Err(error) = kasumi_server::process_limits::disable_core_files() {
+        eprintln!(
+            "{{\"level\":\"ERROR\",\"event\":\"core_file_limit_failed\",\"os_error\":{}}}",
+            error.raw_os_error().unwrap_or(0)
+        );
+        return std::process::ExitCode::FAILURE;
+    }
     // Every command but `serve` keeps each tenant's stored snapshot form and
     // converts nothing. An offline command (credential or administrator
     // recovery, key rotation, staging) that opened its tenants embedded would
@@ -109,6 +117,11 @@ async fn async_main() -> std::process::ExitCode {
         }
         Ok(Some(ServeCommand::Serve(options))) => options,
         Ok(None) => {
+            // A credential watcher is a long-running unit whose stderr is the
+            // journal, like the daemon's.
+            if arguments.len() >= 2 && arguments[0] == "credential" && arguments[1] == "watch" {
+                kasumi_server::logging::install_panic_hook();
+            }
             return match run(&arguments).await {
                 Ok(()) => std::process::ExitCode::SUCCESS,
                 Err(error) => {
@@ -123,6 +136,9 @@ async fn async_main() -> std::process::ExitCode {
             return std::process::ExitCode::FAILURE;
         }
     };
+    // An invoked command keeps the default hook's message on its terminal;
+    // the daemon's stderr is the journal.
+    kasumi_server::logging::install_panic_hook();
     kasumi_server::logging::daemon_starting();
     startup_progress::begin();
     match serve(options).await {

@@ -343,12 +343,16 @@ fn initialization_requires_owned_names_and_exact_matching_genesis_prefixes() {
 
     let fresh = tempdir().unwrap();
     let (files, _) = Files::lock(fresh.path(), false).unwrap();
-    let (id, budget) = files
-        .creation_marker(Some(LIVE_DEFAULT_BUFFER_BYTES))
+    let (id, shape) = files
+        .creation_marker(Some(Shape {
+            budget: Some(LIVE_DEFAULT_BUFFER_BYTES),
+            codec: BlockCodec::Lz4,
+        }))
         .unwrap()
         .unwrap();
     let head = Head {
-        budget,
+        budget: shape.budget,
+        codec: shape.codec,
         id,
         seq: 0,
         entries: vec![],
@@ -670,4 +674,125 @@ fn filtered_import_reopen_compaction_and_tombstones_keep_all_current_keys() {
     drop(broken);
     let db = ReadOnlyLiveDb::open(&mismatch).unwrap();
     assert_eq!(db.sequence(), 0);
+}
+
+/// Hexadecimal text, which LZ4 barely shortens and Zstandard roughly halves.
+fn hex_value(seed: u64) -> Vec<u8> {
+    let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+    let mut value = String::new();
+    for _ in 0..25 {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        value.push_str(&format!("{state:016x}"));
+    }
+    value.into_bytes()
+}
+
+#[test]
+fn a_zstandard_database_keeps_its_codec_and_rows_across_flush_reopen_and_compaction() {
+    let dir = tempdir().unwrap();
+    let run_bytes = [BlockCodec::Lz4, BlockCodec::Zstd].map(|codec| {
+        let path = dir.path().join(format!("{codec:?}"));
+        let mut db = LiveDb::create_with_codec(&path, LIVE_CHECKPOINT_BYTES, codec).unwrap();
+        assert_eq!(db.block_codec(), codec);
+        let mut model = BTreeMap::new();
+        for batch in 0..40u64 {
+            let rows: Vec<_> = (batch * 64..batch * 64 + 64)
+                .map(|n| (format!("account/{n:08}").into_bytes(), hex_value(n)))
+                .collect();
+            let ops: Vec<_> = rows.iter().map(|(k, v)| WalOp::Put(k, v)).collect();
+            db.commit(&ops).unwrap();
+            model.extend(rows);
+        }
+        db.commit(&[WalOp::Delete(b"account/00000007")]).unwrap();
+        model.remove(b"account/00000007".as_slice());
+        // The 512 KiB budget flushed several tiers on the way.
+        assert!(db.stats().checkpoints > 1);
+        drop(db);
+        let expected: Vec<_> = model.into_iter().collect();
+        let mut db = LiveDb::open(&path).unwrap();
+        assert_eq!(db.block_codec(), codec);
+        assert_eq!(read_all(&mut db), expected);
+        db.checkpoint().unwrap();
+        assert_eq!(read_all(&mut db), expected);
+        drop(db);
+
+        // The manifest and every level name the codec they were written with.
+        let zstd = codec == BlockCodec::Zstd;
+        let manifest = fs::read(path.join(MANIFEST)).unwrap();
+        assert_eq!(&manifest[..8], if zstd { b"KSLIVE04" } else { b"KSLIVE03" });
+        let mut bytes = 0;
+        for entry in fs::read_dir(&path).unwrap() {
+            let entry = entry.unwrap();
+            if entry.file_name().to_string_lossy().contains("-run-") {
+                let image = fs::read(entry.path()).unwrap();
+                let newer = image.windows(8).any(|window| window == b"KSFRIDX3");
+                assert_eq!(newer, zstd);
+                bytes += image.len();
+            }
+        }
+        let mut sealed = ReadOnlyLiveDb::open(&path).unwrap();
+        for (key, value) in expected.iter().step_by(97) {
+            assert_eq!(sealed.get(key).unwrap().as_ref(), Some(value));
+        }
+        assert_eq!(sealed.get(b"account/00000007").unwrap(), None);
+        drop(sealed);
+        let mut db = LiveDb::open(&path).unwrap();
+        assert_eq!(db.block_codec(), codec);
+        assert_eq!(read_all(&mut db), expected);
+        bytes
+    });
+    assert!(run_bytes[1] * 3 < run_bytes[0] * 2, "{run_bytes:?}");
+}
+
+#[test]
+fn an_interrupted_creation_resumes_with_its_recorded_codec_and_refuses_another() {
+    let dir = tempdir().unwrap();
+    let marker = |name: &str, version: u8| {
+        let path = dir.path().join(name);
+        fs::create_dir(&path).unwrap();
+        let uid = uuid::Uuid::new_v4().simple();
+        fs::create_dir(path.join(format!(".kasumi-init-v{version}-{:x}-{uid}", 1 << 20))).unwrap();
+        path
+    };
+    // A Zstandard creation that stopped after its marker.
+    let zstd = marker("zstd", 4);
+    for (budget, codec) in [(1 << 20, BlockCodec::Lz4), (2 << 20, BlockCodec::Zstd)] {
+        let refused = LiveDb::create_with_codec(&zstd, budget, codec)
+            .err()
+            .unwrap();
+        assert_eq!(refused.kind(), ErrorKind::InvalidInput);
+    }
+    let db = LiveDb::open(&zstd).unwrap();
+    assert_eq!(
+        (db.block_codec(), db.checkpoint_budget()),
+        (BlockCodec::Zstd, 1 << 20)
+    );
+    drop(db);
+    assert_eq!(&fs::read(zstd.join(MANIFEST)).unwrap()[..8], b"KSLIVE04");
+    assert!(fs::read_dir(&zstd).unwrap().all(|entry| {
+        let name = entry.unwrap().file_name();
+        !name.to_string_lossy().starts_with(".kasumi-init-")
+    }));
+
+    // An LZ4 creation that stopped at the same point cannot become Zstandard.
+    let lz4 = marker("lz4", 3);
+    assert!(LiveDb::create_with_codec(&lz4, 1 << 20, BlockCodec::Zstd).is_err());
+    let db = LiveDb::create_with_codec(&lz4, 1 << 20, BlockCodec::Lz4).unwrap();
+    assert_eq!(db.block_codec(), BlockCodec::Lz4);
+    drop(db);
+    assert_eq!(&fs::read(lz4.join(MANIFEST)).unwrap()[..8], b"KSLIVE03");
+
+    // A manifest that names a codec this version does not know fails closed.
+    let mut manifest = fs::read(zstd.join(MANIFEST)).unwrap();
+    let body = manifest.len() - 32;
+    manifest[48..56].copy_from_slice(&2u64.to_le_bytes());
+    let digest = Sha256::digest(&manifest[..body]);
+    manifest[body..].copy_from_slice(&digest);
+    fs::write(zstd.join(MANIFEST), &manifest).unwrap();
+    assert_eq!(
+        LiveDb::open(&zstd).err().unwrap().to_string(),
+        "unknown live block codec"
+    );
 }

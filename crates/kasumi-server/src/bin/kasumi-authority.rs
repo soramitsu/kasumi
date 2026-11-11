@@ -10,9 +10,20 @@ async fn async_main() -> std::process::ExitCode {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;
     }
+    // Every command reads the authority's keys: none may leave a core.
+    if let Err(error) = kasumi_server::process_limits::disable_core_files() {
+        eprintln!(
+            "{{\"level\":\"ERROR\",\"event\":\"core_file_limit_failed\",\"os_error\":{}}}",
+            error.raw_os_error().unwrap_or(0)
+        );
+        return std::process::ExitCode::FAILURE;
+    }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let daemon = args.first().is_some_and(|value| value == "serve");
     if daemon {
+        // An invoked command keeps the default hook's message on its terminal;
+        // the daemon's stderr is the journal.
+        kasumi_server::logging::install_panic_hook();
         kasumi_server::logging::daemon_starting();
     }
     match run(&args).await {

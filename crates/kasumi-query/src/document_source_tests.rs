@@ -582,6 +582,171 @@ fn lending_scan_sort_select_and_aggregate_read_each_document_once() {
     assert!(!source.active.get());
 }
 
+/// When every candidate fits in the page, ordering's loan also copies the
+/// row, so no document is read a second time for the page.
+#[test]
+fn a_sorted_page_holding_every_candidate_copies_rows_on_the_ordering_loan() {
+    let page = |source: &LoanSource, select: &[&str], bound: crate::PageBound| {
+        let query: QueryRequest = serde_json::from_value(serde_json::json!({
+            "collection":"docs","allow_scan":true,"limit":bound.rows,
+            "filter":{"/group":"g"}, "sort":["/order"], "select":select
+        }))
+        .unwrap();
+        source
+            .indexes
+            .execute_page(
+                source,
+                &query,
+                &Limits::default(),
+                bound,
+                &QueryCancellation::default(),
+                &mut query_memory(),
+                |remaining, _| {
+                    Ok((
+                        remaining.map(|(id, _)| id.to_owned()).collect::<Vec<_>>(),
+                        0,
+                    ))
+                },
+            )
+            .unwrap()
+    };
+    let ids = |response: &QueryResponse| {
+        response
+            .rows
+            .iter()
+            .map(|row| row.id.clone())
+            .collect::<Vec<_>>()
+    };
+    let source = LoanSource::new();
+    let whole = crate::PageBound {
+        rows: 3,
+        bytes: usize::MAX,
+    };
+    let (response, remaining) = page(&source, &["/n"], whole);
+    assert_eq!(ids(&response), ["d2", "d1", "d0"]);
+    assert_eq!(
+        response
+            .rows
+            .iter()
+            .map(|row| row.body.clone())
+            .collect::<Vec<_>>(),
+        [
+            serde_json::json!({"n":2}),
+            serde_json::json!({"n":1}),
+            serde_json::json!({"n":0})
+        ]
+    );
+    assert!(remaining.is_empty());
+    // Three reads for the scanned filter and three for ordering; none to copy.
+    assert_eq!(source.calls.get(), 6);
+    assert!(!source.active.get());
+
+    // A page of bytes for two rows cannot hold all three, so every copy is
+    // given up when the third is read and the page loads its rows as it does
+    // without copies: two that fit and the one that does not.
+    let mut source = LoanSource::new();
+    for encoded in source.encoded.values_mut() {
+        let mut document: Document = serde_json::from_str(encoded).unwrap();
+        document.body["pad"] = "x".repeat(120).into();
+        *encoded = serde_json::to_string(&document).unwrap();
+    }
+    let (padded, _) = page(&source, &[], whole);
+    assert_eq!(ids(&padded), ["d2", "d1", "d0"]);
+    assert_eq!(source.calls.get(), 6);
+    let two = serde_json::to_string(&QueryResponse {
+        revision: u64::MAX,
+        rows: padded.rows[..2].to_vec(),
+        aggregates: Vec::new(),
+        cursor: Some("00000000-0000-0000-0000-000000000000".into()),
+    })
+    .unwrap()
+    .len();
+    source.calls.set(0);
+    let (response, remaining) = page(
+        &source,
+        &[],
+        crate::PageBound {
+            rows: 3,
+            bytes: two,
+        },
+    );
+    assert_eq!(response.rows, padded.rows[..2]);
+    assert_eq!(remaining, ["d0"]);
+    assert_eq!(source.calls.get(), 9);
+    assert!(!source.active.get());
+}
+
+/// Copies are optional. Whatever the workspace allows, a sorted query runs if
+/// it could run without them, returns the same rows, and has nothing of them
+/// still admitted when its remaining rows are retained.
+#[test]
+fn row_copies_never_raise_the_memory_a_sorted_query_needs() {
+    let query: QueryRequest = serde_json::from_value(serde_json::json!({
+        "collection":"docs","allow_scan":true,"limit":3,
+        "filter":{"/group":"g"}, "sort":["/order"]
+    }))
+    .unwrap();
+    // The rows, the bytes live when the rest is retained, the peak, the loads.
+    let run = |limit: u64| {
+        let source = LoanSource::new();
+        let mut memory = QueryMemory::new(LimitedWorkspace(limit), 0).unwrap();
+        let mut live = 0;
+        let result = source.indexes.execute_page(
+            &source,
+            &query,
+            &Limits::default(),
+            crate::PageBound {
+                rows: 3,
+                bytes: usize::MAX,
+            },
+            &QueryCancellation::default(),
+            &mut memory,
+            |remaining, memory| {
+                live = memory.live_bytes();
+                Ok((remaining.count(), 0))
+            },
+        );
+        result.map(|(response, rest)| {
+            assert_eq!(rest, 0);
+            (response.rows, live, memory.peak_bytes(), source.calls.get())
+        })
+    };
+    let (rows, live, peak, loads) = run(u64::MAX).unwrap();
+    assert_eq!(loads, 6);
+    assert_eq!(run(peak).unwrap(), (rows.clone(), live, peak, 6));
+    // The least workspace the query runs in: a limit refuses or it does not.
+    let (mut refused, mut least) = (0, peak);
+    while least - refused > 1 {
+        let limit = refused + (least - refused) / 2;
+        if run(limit).is_ok() {
+            least = limit;
+        } else {
+            refused = limit;
+        }
+    }
+    assert!(
+        least < peak,
+        "copies need room of their own: {least} against {peak}"
+    );
+    assert!(matches!(
+        run(least - 1),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::ResourceExhausted
+    ));
+    // Anywhere below the room for every copy, the copies are given up at the
+    // reservation they would have blocked, without reading a document again,
+    // and the page loads its three rows.
+    for limit in [least, least + 1, least + (peak - least) / 2, peak - 1] {
+        let (limited_rows, limited_live, limited_peak, limited_loads) = run(limit).unwrap();
+        assert_eq!(
+            (limited_rows, limited_live),
+            (rows.clone(), live),
+            "{limit}"
+        );
+        assert!(limited_peak <= limit);
+        assert_eq!(limited_loads, 9, "{limit}");
+    }
+}
+
 #[test]
 fn lending_source_error_retains_the_original_owner() {
     let mut source = LoanSource::new();

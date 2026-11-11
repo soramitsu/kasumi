@@ -3,7 +3,9 @@
 //! the exporter. No full raw dump or second compressed generation is needed.
 #[cfg(unix)]
 mod unix {
-    use kasumi_frozen_run::{LiveDb, MAX_KEY, MAX_VALUE, ReadOnlyLiveDb};
+    use kasumi_frozen_run::{
+        BlockCodec, LIVE_DEFAULT_BUFFER_BYTES, LiveDb, MAX_KEY, MAX_VALUE, ReadOnlyLiveDb,
+    };
     use sha2::{Digest, Sha256};
     use std::{
         env, fs,
@@ -220,12 +222,12 @@ mod unix {
         Ok(())
     }
 
-    fn import(dir: &Path, filter_rows: Option<u64>) -> io::Result<()> {
+    fn import(dir: &Path, filter_rows: Option<u64>, codec: BlockCodec) -> io::Result<()> {
         // Create exactly once, with private ownership, before any files.
         use std::os::unix::fs::DirBuilderExt;
         fs::DirBuilder::new().mode(0o700).create(dir)?;
         let mut stream = Stream::new(BufReader::with_capacity(1 << 20, io::stdin().lock()))?;
-        let mut db = LiveDb::create(dir)?;
+        let mut db = LiveDb::create_with_codec(dir, LIVE_DEFAULT_BUFFER_BYTES, codec)?;
         let rows = match filter_rows {
             Some(expected) => db.load_sorted_with_filter(&mut stream, expected)?,
             None => db.load_sorted(&mut stream)?,
@@ -237,6 +239,14 @@ mod unix {
         verify(dir, rows, &hex(&stream.seen.digest()), Some(1))
     }
 
+    fn block_codec(trailing: &[std::ffi::OsString]) -> BlockCodec {
+        if trailing.is_empty() {
+            BlockCodec::Lz4
+        } else {
+            BlockCodec::Zstd
+        }
+    }
+
     pub fn run() -> io::Result<()> {
         let args: Vec<_> = env::args_os().skip(1).collect();
         match args.as_slice() {
@@ -244,14 +254,21 @@ mod unix {
                 Path::new(directory),
                 &mut BufWriter::new(io::stdout().lock()),
             ),
-            [cmd, directory] if cmd == "import" => import(Path::new(directory), None),
-            [cmd, directory, count] if cmd == "import-filtered" => {
+            // A trailing `zstd` creates the database with Zstandard blocks.
+            [cmd, directory, codec @ ..]
+                if cmd == "import" && (codec.is_empty() || codec == ["zstd"]) =>
+            {
+                import(Path::new(directory), None, block_codec(codec))
+            }
+            [cmd, directory, count, codec @ ..]
+                if cmd == "import-filtered" && (codec.is_empty() || codec == ["zstd"]) =>
+            {
                 let expected = count
                     .to_str()
                     .and_then(|value| value.parse::<u64>().ok())
                     .filter(|n| *n > 0)
                     .ok_or_else(|| bad("invalid filtered import row count"))?;
-                import(Path::new(directory), Some(expected))
+                import(Path::new(directory), Some(expected), block_codec(codec))
             }
             [cmd, directory, count, sum] if cmd == "verify" => {
                 let n = count
@@ -270,7 +287,7 @@ mod unix {
             }
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "usage: kasumi-live-transfer import NEW_DIRECTORY < RAW_STREAM, import-filtered NEW_DIRECTORY ROWS < RAW_STREAM, verify DIRECTORY ROWS STATE_SHA256, or export-read-only DIRECTORY > RAW_STREAM",
+                "usage: kasumi-live-transfer import NEW_DIRECTORY [zstd] < RAW_STREAM, import-filtered NEW_DIRECTORY ROWS [zstd] < RAW_STREAM, verify DIRECTORY ROWS STATE_SHA256, or export-read-only DIRECTORY > RAW_STREAM",
             )),
         }
     }

@@ -144,3 +144,21 @@ node benchmarks/indexer-kv/application-stats.mjs \
 A short smoke can use `--upsert 16 1`. Supply a C compiler and Node headers (`CC` and `NODE_INCLUDE` are optional), or set `INDEXER_KV_SYNC` to a compiled copy of the supplied `sync.c` Node addon. Each block receives its own durable acknowledgement on both stores. The Rocks binding performs its real transaction, followed by a full-device WAL flush inside the repository transaction promise. Kasumi stages the repository callback’s ordered writes and serves its point reads from the pending transaction or native store. It completes one native durable commit before that callback’s caller resumes. The opt-in adapter supports the transaction operations reached by this fixture and refuses transactional scans after a staged write.
 
 Every round reports ingest nanoseconds, writer-close nanoseconds, and maintenance reopen/compact/close times. `paid_ns` sums those components for each backend. Directory file allocation is measured before closing writers, after closing them, and after explicit maintenance closes. Separate final reads verify the complete physical key/value state, including bootstrap metadata, and compare all fixture values independently after MessagePack decoding. Both published Stats GraphQL queries then run against freshly reopened repositories. Verification and setup are outside the reported write and maintenance times.
+
+## Estimating the Zstandard block codec on existing data
+
+`codec-probe.py` reads the raw stream of a stopped live database and reports
+the size of its rows as sorted-run blocks under Zstandard, to compare with the
+database's allocated bytes before creating a Zstandard copy
+(`kasumi-live-transfer import NEW_DIRECTORY zstd`). It needs Python 3.14 or
+newer and writes nothing:
+
+```sh
+kasumi-live-transfer export-read-only DIRECTORY \
+  | python3 benchmarks/indexer-kv/codec-probe.py --levels 7
+```
+
+It compresses canonical rows only and counts no directories or indexes. The
+blocks of a real import, which also prefix-codes keys, are usually a little
+smaller than its figure.
+

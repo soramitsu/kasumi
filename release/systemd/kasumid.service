@@ -13,6 +13,11 @@ Group=kasumi
 UMask=0077
 StateDirectory=kasumi
 StateDirectoryMode=0700
+# A failed start, a panic and a failed drain each write their detail to a
+# private (0600) file here and name it in the journal. PrivateTmp would
+# discard it with the unit.
+LogsDirectory=kasumi
+LogsDirectoryMode=0700
 WorkingDirectory=/var/lib/kasumi
 ExecStart=/usr/local/bin/kasumid serve /var/lib/kasumi/installation/kasumi.json
 ExecReload=/bin/kill -HUP $MAINPID

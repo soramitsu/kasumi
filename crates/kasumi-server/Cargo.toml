@@ -16,6 +16,7 @@ kasumi-clock.workspace = true
 kasumi-authority.workspace = true
 kasumi-serving.workspace = true
 hex.workspace = true
+libc.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 kasumi-types.workspace = true

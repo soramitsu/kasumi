@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -145,6 +145,43 @@ test('a custom write buffer is bounded before creation and survives reopen', (t)
   try { db.commit([{key, value}]); } finally { db.close(); }
   const live = LiveDatabase.open(path);
   try { assert.deepEqual(live.get(key), value); } finally { live.close(); }
+});
+
+test('a block codec is chosen at creation, persisted, and makes compressible data smaller', (t) => {
+  const root = fixture(t);
+  assert.throws(() => LiveDatabase.create(`${root}-bad`, undefined, 'snappy'), /block codec/);
+  // Hexadecimal text: LZ4 barely shortens it, Zstandard roughly halves it.
+  const rows = [];
+  for (let n = 0; n < 4000; n++) {
+    let value = '';
+    for (let word = 0; word < 12; word++) {
+      value += Math.floor((Math.sin(n * 131 + word) + 1) * 2 ** 51).toString(16).padStart(13, '0');
+    }
+    rows.push({ key: buf(`account/${String(n).padStart(8, '0')}`), value: buf(value) });
+  }
+  const levelBytes = {};
+  for (const codec of [undefined, 'lz4', 'zstd']) {
+    const path = `${root}-${codec}`;
+    const db = LiveDatabase.create(path, 1 << 20, codec);
+    try {
+      assert.equal(db.blockCodec(), codec ?? 'lz4');
+      for (let at = 0; at < rows.length; at += 500) db.commit(rows.slice(at, at + 500));
+      db.checkpoint();
+    } finally { db.close(); }
+    const live = LiveDatabase.open(path);
+    try {
+      assert.equal(live.blockCodec(), codec ?? 'lz4');
+      assert.deepEqual(live.get(rows[3999].key), rows[3999].value);
+      const page = live.range({ limit: 4096 });
+      assert.equal(page.length, rows.length);
+      assert.deepEqual(page[17], rows[17]);
+    } finally { live.close(); }
+    levelBytes[codec] = readdirSync(path)
+      .filter((name) => name.includes('-run-'))
+      .reduce((bytes, name) => bytes + statSync(join(path, name)).size, 0);
+  }
+  assert.equal(levelBytes.lz4, levelBytes.undefined);
+  assert.ok(levelBytes.zstd * 3 < levelBytes.lz4 * 2, JSON.stringify(levelBytes));
 });
 
 test('scalar values and packed range pages retain independent bytes after close and reopen', (t) => {

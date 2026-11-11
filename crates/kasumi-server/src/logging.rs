@@ -30,6 +30,101 @@ pub fn initialize() -> anyhow::Result<()> {
         .map_err(|_| anyhow::anyhow!("structured daemon logging could not be installed"))
 }
 
+/// Private diagnostic files one process writes for panics. Beyond this a
+/// panic still logs its fixed line, so a panic loop cannot fill a filesystem.
+const PANIC_DIAGNOSTICS: usize = 32;
+
+/// Replace the default panic hook, which prints each panic message on stderr
+/// and so into the journal. A message can format an error or a value that
+/// names a provider, a key or tenant data. The journal line carries only the
+/// thread and source location; the message, with a backtrace when
+/// `RUST_BACKTRACE` asks for one, goes to a new private (0600) file, as a
+/// `daemon_failed` chain does.
+pub fn install_panic_hook() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+    std::panic::set_hook(Box::new(|panic| {
+        let location = panic.location();
+        let thread = std::thread::current();
+        let path = crate::startup_preparation::diagnostic_path("panic");
+        let written = WRITTEN.fetch_add(1, Ordering::Relaxed) < PANIC_DIAGNOSTICS
+            && crate::startup_preparation::write_private_text(&path, &panic_text(panic)).is_ok();
+        tracing::error!(
+            event = "panic",
+            thread = thread.name().unwrap_or("unnamed"),
+            file = location.map_or("unknown", |at| at.file()),
+            line = location.map_or(0, |at| at.line()),
+            diagnostic_written = written,
+            diagnostic_path = %path.display(),
+            "a thread panicked; its message is in diagnostic_path"
+        );
+    }));
+}
+
+/// Everything the default hook would have printed, for the private file only.
+fn panic_text(panic: &std::panic::PanicHookInfo<'_>) -> String {
+    let payload = panic.payload();
+    let message = payload
+        .downcast_ref::<&str>()
+        .copied()
+        .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
+        .unwrap_or("the panic payload is not a string");
+    let mut text = match panic.location() {
+        Some(at) => format!("panicked at {at}:\n{message}"),
+        None => format!("panicked:\n{message}"),
+    };
+    let backtrace = std::backtrace::Backtrace::capture();
+    if backtrace.status() == std::backtrace::BacktraceStatus::Captured {
+        text.push_str(&format!("\n{backtrace}"));
+    }
+    text
+}
+
+/// Private diagnostic files one process writes for drain failures. A drain
+/// that is retried logs each attempt; only these many write a file.
+const DRAIN_DIAGNOSTICS: usize = 32;
+
+/// A drain failure's completion and component names are fixed labels. The
+/// text of its issues is not: a joined worker's error, for one, quotes that
+/// worker's panic message. The journal line carries the labels, and the text
+/// goes to a new private (0600) file, as a `daemon_failed` chain does.
+pub(crate) fn drain_failed(
+    event: &'static str,
+    failure: &kasumi_types::drain::DrainFailure,
+    retry_after_secs: Option<u64>,
+) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static WRITTEN: AtomicUsize = AtomicUsize::new(0);
+    let components = failure
+        .issues()
+        .iter()
+        .map(|issue| format!("{}[{}]", issue.component(), issue.instance()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let path = crate::startup_preparation::diagnostic_path("drain");
+    let written = WRITTEN.fetch_add(1, Ordering::Relaxed) < DRAIN_DIAGNOSTICS
+        && crate::startup_preparation::write_private_text(&path, &failure.to_string()).is_ok();
+    tracing::error!(
+        event,
+        completion = ?failure.completion(),
+        components = %components,
+        retry_after_secs,
+        diagnostic_written = written,
+        diagnostic_path = %path.display(),
+        "a drain did not complete cleanly; its issues are in diagnostic_path"
+    );
+}
+
+/// A family has used its whole renewal budget. This is logged when the last
+/// renewal is issued, so at most once per earned renewal, not per refusal.
+pub(crate) fn credential_renewal_budget_spent(family: uuid::Uuid) {
+    tracing::warn!(
+        event = "credential_renewal_budget_spent",
+        family_id = %family,
+        "a credential family used its whole renewal budget; further renewals are refused until it refills"
+    );
+}
+
 /// Deliberately does not accept an error value: provider errors may contain URLs,
 /// key names or transport details that belong only in protected operator output.
 pub fn tls_reload_failed() {
@@ -302,6 +397,141 @@ mod tests {
             let encoded = value.to_string();
             assert!(!encoded.contains("private-") && !encoded.contains("secret-span-token"));
         }
+    }
+
+    /// The hook is process-wide, so a child process installs it and panics.
+    #[test]
+    fn panic_messages_reach_only_a_private_diagnostic_file() {
+        use std::os::unix::fs::PermissionsExt;
+        const NAME: &str = "logging::tests::panic_messages_reach_only_a_private_diagnostic_file";
+        const MARKER: &str = "KASUMI_PANIC_HOOK_CHILD";
+        if std::env::var(MARKER).as_deref() == Ok(NAME) {
+            initialize().unwrap();
+            install_panic_hook();
+            let panics = |panic: fn()| {
+                let thread = std::thread::Builder::new().name("worker".into());
+                assert!(thread.spawn(panic).unwrap().join().is_err());
+            };
+            panics(|| panic!("{} refused", "https://vault.internal/v1/tenant-key"));
+            panics(|| std::panic::panic_any(7u32));
+            for _ in 0..PANIC_DIAGNOSTICS {
+                panics(|| panic!("private-repeated"));
+            }
+            // A joined worker's error quotes its panic message; a drain
+            // failure that carries it is logged by its labels only.
+            let mut report = kasumi_types::drain::DrainReport::default();
+            let issue = report.record(
+                "background worker",
+                3,
+                anyhow::anyhow!("task 7 panicked with message \"private-drain-payload\""),
+            );
+            let failure = kasumi_types::drain::DrainFailure::retained(issue);
+            drain_failed("fixture_drain_retained", &failure, Some(4));
+            credential_renewal_budget_spent(uuid::Uuid::nil());
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", NAME, "--nocapture", "--test-threads=1"])
+            .env(MARKER, NAME)
+            .env("KASUMI_DIAGNOSTIC_DIRECTORY", directory.path())
+            .env("RUST_BACKTRACE", "0")
+            .env("RUST_LIB_BACKTRACE", "0")
+            .output()
+            .unwrap();
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success() && stdout.contains("1 passed"),
+            "{stdout}\n{stderr}"
+        );
+        // Nothing the process printed carries a panic message.
+        for printed in [&stdout, &stderr] {
+            for private in [
+                "vault.internal",
+                "private-repeated",
+                "private-drain-payload",
+            ] {
+                assert!(!printed.contains(private), "{private}");
+            }
+        }
+        let events = stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|line| line["fields"]["event"] == "panic")
+            .collect::<Vec<_>>();
+        assert_eq!(events.len(), PANIC_DIAGNOSTICS + 2);
+        let diagnostic = |event: &serde_json::Value| {
+            let fields = &event["fields"];
+            assert_eq!(event["level"], "ERROR");
+            assert_eq!(fields["thread"], "worker");
+            assert!(fields["file"].as_str().unwrap().ends_with("logging.rs"));
+            assert!(fields["line"].as_u64().unwrap() > 0);
+            let path = std::path::PathBuf::from(fields["diagnostic_path"].as_str().unwrap());
+            assert_eq!(path.parent(), Some(directory.path()));
+            fields["diagnostic_written"].as_bool().unwrap().then(|| {
+                let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+                assert_eq!(mode & 0o777, 0o600);
+                std::fs::read_to_string(path).unwrap()
+            })
+        };
+        let first = diagnostic(&events[0]).unwrap();
+        assert!(first.starts_with("panicked at ") && first.contains("logging.rs"));
+        assert!(first.contains("https://vault.internal/v1/tenant-key refused"));
+        let second = diagnostic(&events[1]).unwrap();
+        assert!(second.contains("the panic payload is not a string"));
+        // The file bound holds; the fixed journal line continues past it.
+        let written = events.iter().filter_map(diagnostic).count();
+        assert_eq!(written, PANIC_DIAGNOSTICS);
+        assert!(diagnostic(&events[PANIC_DIAGNOSTICS + 1]).is_none());
+
+        let logged = stderr
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .collect::<Vec<_>>();
+        let event = |name: &str| {
+            let mut matching = logged.iter().filter(|line| line["fields"]["event"] == name);
+            let found = matching.next().unwrap_or_else(|| panic!("no {name} line"));
+            assert!(matching.next().is_none());
+            found
+        };
+        let drain = event("fixture_drain_retained");
+        assert_eq!(drain["level"], "ERROR");
+        assert_eq!(drain["fields"]["completion"], "Retained");
+        assert_eq!(drain["fields"]["components"], "background worker[3]");
+        assert_eq!(drain["fields"]["retry_after_secs"], 4);
+        assert_eq!(drain["fields"]["diagnostic_written"], true);
+        let path = std::path::PathBuf::from(drain["fields"]["diagnostic_path"].as_str().unwrap());
+        assert_eq!(path.parent(), Some(directory.path()));
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.starts_with("drain Retained; background worker[3]: "));
+        assert!(text.contains("private-drain-payload"));
+        let spent = event("credential_renewal_budget_spent");
+        assert_eq!(spent["level"], "WARN");
+        assert_eq!(
+            spent["fields"]["family_id"],
+            "00000000-0000-0000-0000-000000000000"
+        );
+
+        let files = |kind: &str| {
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .filter(|entry| {
+                    let name = entry.as_ref().unwrap().file_name();
+                    name.to_string_lossy().starts_with(kind)
+                })
+                .count()
+        };
+        assert_eq!(files("kasumi-panic-"), PANIC_DIAGNOSTICS);
+        assert_eq!(files("kasumi-drain-"), 1);
+        assert_eq!(
+            std::fs::read_dir(directory.path()).unwrap().count(),
+            PANIC_DIAGNOSTICS + 1
+        );
     }
 
     #[test]

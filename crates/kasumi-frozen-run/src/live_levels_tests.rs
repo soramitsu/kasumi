@@ -3,9 +3,18 @@ use std::io::{Read, SeekFrom, Write};
 use std::ops::Bound::{Excluded, Included, Unbounded};
 use std::ops::RangeBounds;
 
+std::thread_local! {
+    /// The codec this test's levels are written with. Each test has its own
+    /// thread, so one test can rerun the others' scenarios under Zstandard.
+    static CODEC: std::cell::Cell<BlockCodec> = const { std::cell::Cell::new(BlockCodec::Lz4) };
+}
+fn codec() -> BlockCodec {
+    CODEC.with(std::cell::Cell::get)
+}
+
 fn level(delta: &Delta, older: &mut [&mut Level], final_run: bool, target: usize) -> Level {
     let mut file = tempfile::tempfile().unwrap();
-    let hash = write_pieces(&mut file, delta, older, final_run, target).unwrap();
+    let hash = write_pieces(&mut file, delta, older, final_run, target, codec()).unwrap();
     Level::open(file, hash, false).unwrap()
 }
 
@@ -125,17 +134,17 @@ fn full_rollup_elides_tombstones_and_partial_rollup_preserves_them() {
 #[test]
 fn sparse_index_and_empty_level_are_authenticated() {
     let mut file = tempfile::tempfile().unwrap();
-    let hash = write_pieces(&mut file, &Delta::new(), &mut [], true, 64).unwrap();
+    let hash = write_pieces(&mut file, &Delta::new(), &mut [], true, 64, codec()).unwrap();
     let mut db = Level::open(file.try_clone().unwrap(), hash, false).unwrap();
     assert_eq!(get([&mut db], &Delta::new(), b"").unwrap(), None);
     assert!(Level::open(file, [0; 32], false).is_err());
 
     let delta = (0u8..5).map(|i| (vec![i], Some(vec![i]))).collect();
     let mut file = tempfile::tempfile().unwrap();
-    let hash = write_pieces(&mut file, &delta, &mut [], false, 80).unwrap();
-    let descriptor = index::open(&mut file, hash).unwrap().unwrap();
+    let hash = write_pieces(&mut file, &delta, &mut [], false, 80, codec()).unwrap();
+    let descriptor = index::open(&file, hash).unwrap().unwrap();
     assert!(matches!(
-        index::read(&mut file, descriptor).unwrap(),
+        index::read(&file, descriptor).unwrap(),
         Node::Branch { .. }
     ));
     let at = descriptor.at + 1;
@@ -228,24 +237,208 @@ fn bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order() {
 }
 
 #[test]
+fn repeated_descents_follow_kept_branches_and_read_only_the_leaf() {
+    let key = |i: u16| i.to_be_bytes().to_vec();
+    let data: Delta = (0..300)
+        .map(|i| (key(i), Some(vec![i as u8; 12])))
+        .collect();
+    let mut run = level(&data, &mut [], true, 80); // One key per piece.
+    let node_reads = || index::NODE_READS.with(|reads| reads.replace(0));
+    // Seven pieces apart: no lookup finds its piece among the three retained.
+    let pass = |run: &mut Level| {
+        let mut lookups = 0;
+        for i in (0..300).step_by(7) {
+            assert_eq!(
+                run.lookup(&key(i)).unwrap(),
+                Some(Some([i as u8; 12].as_slice()))
+            );
+            lookups += 1;
+        }
+        lookups
+    };
+    node_reads();
+    let lookups = pass(&mut run);
+    let first = node_reads();
+    assert!(first > 2 * lookups, "the first pass reads its branches");
+    assert_eq!(pass(&mut run), lookups);
+    assert_eq!(node_reads(), lookups, "later descents read one leaf each");
+    assert!(run.memo.branches.len() < 300);
+
+    // A range scan starts from the same kept branches and stays exact.
+    node_reads();
+    let mut seen = Vec::new();
+    visit(
+        &mut [&mut run],
+        &Delta::new(),
+        Included(&key(140)),
+        Excluded(&key(143)),
+        9,
+        false,
+        |key, _| {
+            seen.push(key.to_vec());
+            Ok(())
+        },
+    )
+    .unwrap();
+    assert_eq!(seen, [key(140), key(141), key(142)]);
+    assert_eq!(
+        run.lookup(&key(299)).unwrap(),
+        Some(Some([43; 12].as_slice()))
+    );
+    assert_eq!(run.lookup(&[1, 44, 0]).unwrap(), None);
+}
+
+#[test]
+fn kept_branches_stay_within_their_count_and_key_bounds() {
+    // More branches than the memo keeps: every lookup still resolves exactly.
+    let key = |i: u16| i.to_be_bytes().to_vec();
+    let data: Delta = (0..1400)
+        .map(|i| (key(i), Some(vec![i as u8; 12])))
+        .collect();
+    let mut run = level(&data, &mut [], true, 80); // 1,400 pieces, 1,399 branches.
+    for round in 0..2 {
+        for i in 0..1400 {
+            assert_eq!(
+                run.lookup(&key(i)).unwrap(),
+                Some(Some([i as u8; 12].as_slice())),
+                "round {round}"
+            );
+        }
+        assert_eq!(run.memo.branches.len(), MEMO_BRANCHES);
+        assert_eq!(run.memo.key_bytes, 2 * MEMO_BRANCHES);
+    }
+    assert_eq!(run.lookup(&[5, 120, 0]).unwrap(), None);
+
+    // Long split keys reach the byte bound first.
+    let long = |i: u8| {
+        let mut key = vec![i; 4000];
+        key.push(i);
+        key
+    };
+    let data: Delta = (0..48).map(|i| (long(i), Some(vec![i]))).collect();
+    let mut run = level(&data, &mut [], true, 5000); // 48 pieces, 47 branches.
+    for _ in 0..2 {
+        for i in 0..48 {
+            assert_eq!(run.lookup(&long(i)).unwrap(), Some(Some([i].as_slice())));
+        }
+    }
+    assert!(run.memo.key_bytes <= MEMO_KEY_BYTES);
+    assert_eq!(run.memo.branches.len(), MEMO_KEY_BYTES / 4001);
+    assert_eq!(
+        run.memo.key_bytes,
+        run.memo
+            .branches
+            .iter()
+            .map(|b| b.split.len())
+            .sum::<usize>()
+    );
+}
+
+#[test]
+fn a_warm_memo_serves_every_scan_and_still_authenticates_what_it_reads() {
+    use std::os::unix::fs::FileExt;
+    let key = |i: u16| i.to_be_bytes().to_vec();
+    let data: Delta = (0..64).map(|i| (key(i), Some(vec![i as u8; 12]))).collect();
+    let mut file = tempfile::tempfile().unwrap();
+    let hash = write_pieces(&mut file, &data, &mut [], true, 80, codec()).unwrap();
+    let image = file.try_clone().unwrap();
+    let mut run = Level::open(file, hash, false).unwrap();
+    let flip = |at: u64| {
+        let mut byte = [0];
+        image.read_exact_at(&mut byte, at).unwrap();
+        image.write_all_at(&[byte[0] ^ 1], at).unwrap();
+    };
+
+    // A first descent that fails its digest keeps nothing.
+    let root = run.root.unwrap();
+    flip(root.at);
+    let refused = run.lookup(&key(40)).unwrap_err();
+    assert_eq!(refused.to_string(), "live level node digest differs");
+    assert!(run.memo.branches.is_empty());
+    flip(root.at);
+
+    // Every bound and direction agrees with the rows, cold and then warm.
+    let bounds = [
+        Unbounded,
+        Included(&[0, 9][..]),
+        Excluded(&[0, 9][..]),
+        Included(&[0, 40][..]),
+        Excluded(&[0, 40][..]),
+    ];
+    for _ in 0..2 {
+        for &lo in &bounds {
+            for &hi in &bounds {
+                for rev in [false, true] {
+                    let mut want: Vec<_> = data
+                        .keys()
+                        .filter(|k| (lo, hi).contains(&k.as_slice()))
+                        .cloned()
+                        .collect();
+                    if rev {
+                        want.reverse();
+                    }
+                    let mut seen = Vec::new();
+                    visit(
+                        &mut [&mut run],
+                        &Delta::new(),
+                        lo,
+                        hi,
+                        usize::MAX,
+                        rev,
+                        |key, _| {
+                            seen.push(key.to_vec());
+                            Ok(())
+                        },
+                    )
+                    .unwrap();
+                    assert_eq!(seen, want, "{lo:?} {hi:?} reverse={rev}");
+                }
+            }
+        }
+        for i in 0..64 {
+            assert_eq!(
+                run.lookup(&key(i)).unwrap(),
+                Some(Some([i as u8; 12].as_slice()))
+            );
+        }
+    }
+    assert_eq!(run.memo.branches.len(), 63);
+
+    // Below the kept branches every read is still checked: damage the first
+    // piece's leaf node, which is neither kept nor among the retained pieces.
+    let mut branch = &run.memo.branches[0];
+    while branch.kept[0] != NOT_KEPT {
+        branch = &run.memo.branches[branch.kept[0] as usize];
+    }
+    let leaf = branch.left;
+    flip(leaf.at);
+    let refused = run.lookup(&key(0)).unwrap_err();
+    assert_eq!(refused.kind(), io::ErrorKind::InvalidData);
+    assert_eq!(refused.to_string(), "live level node digest differs");
+    flip(leaf.at);
+    assert_eq!(run.lookup(&key(0)).unwrap(), Some(Some([0; 12].as_slice())));
+}
+
+#[test]
 fn filtered_root_authenticates_the_bits_before_accepting_a_negative_lookup() {
     let mut file = tempfile::tempfile().unwrap();
     let (hash, n) = write_sorted(
         &mut file,
         (0..128u16).map(|i| Ok((i.to_be_bytes().to_vec(), vec![]))),
         Some(128),
+        codec(),
     )
     .unwrap();
     assert_eq!(n, 128);
-    let root = index::open(&mut file, hash).unwrap().unwrap();
-    let Node::BulkRoot { filter, .. } = index::read(&mut file, root).unwrap() else {
+    let root = index::open(&file, hash).unwrap().unwrap();
+    let Node::BulkRoot { filter, .. } = index::read(&file, root).unwrap() else {
         panic!("missing filtered root")
     };
     assert!(
         matches!(Level::open(file.try_clone().unwrap(), hash, false),
         Err(e) if e.to_string() == "membership filter outside the bulk tier")
     );
-    let mut bits = index::read_filter(&mut file, filter).unwrap();
+    let mut bits = index::read_filter(&file, filter).unwrap();
     for i in 0..128u16 {
         assert!(bits.may_contain(&i.to_be_bytes()));
     }
@@ -263,7 +456,7 @@ fn verified_scan_rejects_a_self_consistent_filter_that_hides_a_shadowed_key() {
     let mut file = tempfile::tempfile().unwrap();
     let mut index = index::Builder::default();
     let mut rows = vec![(b"old".to_vec(), Some(vec![]))];
-    flush_piece(&mut file, &mut index, &mut rows).unwrap();
+    flush_piece(&mut file, &mut index, &mut rows, codec()).unwrap();
     let omitted = BulkFilter::for_rows(1).unwrap(); // Deliberately omit the key.
     let root = index.finish(&mut file, Some(&omitted)).unwrap();
     let mut level = Level::open(file, root, true).unwrap();
@@ -282,6 +475,7 @@ fn compacted_filter_size_tracks_surviving_rows_and_retained_tombstones() {
         &mut file,
         (0..n).map(|i| Ok((i.to_be_bytes().to_vec(), vec![9]))),
         Some(n.into()),
+        codec(),
     )
     .unwrap();
     let mut base = Level::open(file, hash, true).unwrap();
@@ -295,6 +489,7 @@ fn compacted_filter_size_tracks_surviving_rows_and_retained_tombstones() {
             &mut [&mut base],
             drop_tombstones,
             PIECE_TARGET,
+            codec(),
         )
         .unwrap();
         let mut level = Level::open(compacted, root, true).unwrap();
@@ -329,9 +524,30 @@ fn filtered_input_stops_at_the_first_excess_row() {
         assert!(i < 2, "import read past the first excess row");
         Ok((vec![i], vec![i]))
     });
-    let err = write_sorted(&mut file, rows, Some(1)).unwrap_err();
+    let err = write_sorted(&mut file, rows, Some(1), codec()).unwrap_err();
     assert_eq!(
         err.to_string(),
         "filtered import exceeds expected row count"
     );
+}
+
+/// The scenarios above hold when the writer may also choose Zstandard. Their
+/// rows are small enough that most blocks stay LZ4 inside the newer layout;
+/// `live_tests` covers blocks that do become Zstandard.
+#[test]
+fn zstandard_levels_pass_the_same_scenarios() {
+    CODEC.with(|codec| codec.set(BlockCodec::Zstd));
+    tiered_bounded_scans_and_point_reads_resolve_newest_puts_and_tombstones();
+    full_rollup_elides_tombstones_and_partial_rollup_preserves_them();
+    sparse_index_and_empty_level_are_authenticated();
+    ordinary_tiers_reuse_bounded_pieces_across_value_tombstone_and_gap_lookups();
+    deep_tier_keeps_extra_indexes_without_retaining_decoded_blocks();
+    bulk_hot_piece_rotation_preserves_point_gaps_and_cursor_order();
+    repeated_descents_follow_kept_branches_and_read_only_the_leaf();
+    kept_branches_stay_within_their_count_and_key_bounds();
+    a_warm_memo_serves_every_scan_and_still_authenticates_what_it_reads();
+    filtered_root_authenticates_the_bits_before_accepting_a_negative_lookup();
+    verified_scan_rejects_a_self_consistent_filter_that_hides_a_shadowed_key();
+    compacted_filter_size_tracks_surviving_rows_and_retained_tombstones();
+    filtered_input_stops_at_the_first_excess_row();
 }

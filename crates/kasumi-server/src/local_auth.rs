@@ -267,6 +267,42 @@ pub(crate) fn check_recovery_window(expires_at_ms: u64, now_ms: u64) -> kasumi_t
     Ok(())
 }
 
+/// New issuances a family can take at once; it earns one more for every
+/// `1/RENEWAL_BURST` of its lifetime, and no faster than one per second. A
+/// watcher renews once or twice per
+/// lifetime, so only a renewal loop reaches the bound. Without it, any live
+/// credential could append permanent issuance and ledger rows to the shared
+/// security store as fast as the store commits.
+const RENEWAL_BURST: u64 = 32;
+/// Families whose budgets are remembered at once.
+const MAX_RENEWAL_BUDGETS: usize = 4096;
+
+/// What is left of a family's renewal budget, since when it has been earning
+/// the next renewal, and how long each one takes to earn.
+#[derive(Clone, Copy)]
+struct RenewalBudget {
+    available: u64,
+    since_ms: u64,
+    interval_ms: u64,
+}
+impl RenewalBudget {
+    fn at(self, now_ms: u64) -> Self {
+        let earned = now_ms.saturating_sub(self.since_ms) / self.interval_ms;
+        let available = self.available.saturating_add(earned).min(RENEWAL_BURST);
+        Self {
+            available,
+            // A full budget earns nothing; its next interval starts when used.
+            since_ms: if available == RENEWAL_BURST {
+                now_ms
+            } else {
+                self.since_ms
+                    .saturating_add(earned.saturating_mul(self.interval_ms))
+            },
+            interval_ms: self.interval_ms,
+        }
+    }
+}
+
 pub struct LocalCredentials {
     store: Arc<TenantStore>,
     signer_file: PathBuf,
@@ -279,6 +315,8 @@ pub struct LocalCredentials {
     clock: Arc<EpochClock>,
     mutation: Mutex<()>,
     statuses: StatusCache,
+    /// Process-local: a restart, which no credential can cause, refills them.
+    renewals: Mutex<HashMap<Uuid, RenewalBudget>>,
 }
 
 /// Decoded family statuses for the authorization and liveness checks that
@@ -361,6 +399,7 @@ impl LocalCredentials {
             clock: EpochClock::system()?,
             mutation: Mutex::new(()),
             statuses,
+            renewals: Mutex::default(),
         }))
     }
 
@@ -557,6 +596,53 @@ impl LocalCredentials {
             signer: Signers::read(&self.signer_file)?.active,
         })
     }
+    /// The family's renewal budget at `now_ms`. A family starts with a full one.
+    fn renewal_budget(&self, status: &CredentialStatus, now_ms: u64) -> RenewalBudget {
+        let specification = &status.specification;
+        let interval_ms =
+            (specification.lifetime_seconds.saturating_mul(1000) / RENEWAL_BURST).max(1000);
+        self.renewals
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&specification.family_id)
+            .copied()
+            .unwrap_or(RenewalBudget {
+                available: RENEWAL_BURST,
+                since_ms: now_ms,
+                interval_ms,
+            })
+            .at(now_ms)
+    }
+    /// Charge one renewal that was just written durably.
+    fn spend_renewal(&self, family: Uuid, budget: RenewalBudget, now_ms: u64) {
+        let mut budgets = self.renewals.lock().unwrap_or_else(PoisonError::into_inner);
+        if budgets.len() >= MAX_RENEWAL_BUDGETS && !budgets.contains_key(&family) {
+            // A budget that has refilled says nothing a missing one does not.
+            budgets.retain(|_, budget| budget.at(now_ms).available < RENEWAL_BURST);
+            // Still full: forget the family with the most left, which loses
+            // the least. Clearing would refill every spent budget at once.
+            if budgets.len() >= MAX_RENEWAL_BUDGETS
+                && let Some(fullest) = budgets
+                    .iter()
+                    .max_by_key(|(_, budget)| budget.at(now_ms).available)
+                    .map(|(family, _)| *family)
+            {
+                budgets.remove(&fullest);
+            }
+        }
+        let available = budget.available.saturating_sub(1);
+        budgets.insert(
+            family,
+            RenewalBudget {
+                available,
+                ..budget
+            },
+        );
+        drop(budgets);
+        if available == 0 {
+            crate::logging::credential_renewal_budget_spent(family);
+        }
+    }
     pub fn renew(&self, request: &RenewCredential, actor: &str) -> Result<IssuedCredential> {
         ensure!(
             !request.renewal_id.is_nil() && request.renewal_id != request.family_id,
@@ -581,6 +667,15 @@ impl LocalCredentials {
             return self.token(&status, &Self::issuance(&bytes)?);
         }
         let now = self.clock.now_ms()?;
+        // Only a new issuance writes rows; the replay above stays free.
+        let budget = self.renewal_budget(&status, now);
+        ensure!(
+            budget.available > 0,
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "credential family renewed too often; its credentials stay valid, renew again later"
+            )
+        );
         let issuance = self.next_issuance(&status, request.renewal_id, now)?;
         let token = self.token(&status, &issuance)?;
         let event = CredentialEvent {
@@ -598,6 +693,7 @@ impl LocalCredentials {
             ),
             Self::latest(&issuance)?,
         ])?;
+        self.spend_renewal(request.family_id, budget, now);
         Ok(token)
     }
     /// Renew a family from its expired credential through the native
@@ -1150,6 +1246,107 @@ mod tests {
             Ok(_) => panic!("recovery issued a credential it must refuse"),
             Err(error) => error,
         }
+    }
+
+    #[tokio::test]
+    async fn a_family_renews_within_a_budget_that_refills_over_its_lifetime() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let root = kasumi_store::test_utils::private_tempdir().unwrap();
+        let private = root.path().join("operator");
+        private_files::create_directory(&private).unwrap();
+        let signer = private.join("signer.json");
+        initialize_signer(&signer).unwrap();
+        let keys = Arc::new(
+            FileKeyProvider::initialize(&private.join("security.json"), "security").unwrap(),
+        );
+        let physical =
+            crate::runtime_storage_fixtures::physical(root.path(), Default::default()).unwrap();
+        let node = physical
+            .create_new(
+                root.path().join("persistent/database"),
+                kasumi_store::test_utils::NODE_STORE_ID,
+            )
+            .unwrap();
+        let store = TenantStore::initialize_catalog(
+            node.clone(),
+            kasumi_engine::SECURITY_TENANT.into(),
+            keys,
+            StorageAccess::security_audit(),
+        )
+        .await
+        .unwrap();
+        let start = EpochClock::system().unwrap().now_ms().unwrap();
+        let wall = Arc::new(ManualWall(std::sync::atomic::AtomicU64::new(start)));
+        let clock = Arc::new(
+            EpochClock::new(Arc::new(kasumi_clock::SystemLeaseClock), wall.clone()).unwrap(),
+        );
+        let manager = LocalCredentials::with_test_clock(
+            store.clone(),
+            signer,
+            "https://localhost/local".into(),
+            "https://localhost/kasumi".into(),
+            clock.clone(),
+        )
+        .unwrap();
+        let family = |principal: &str| {
+            let specification = CreateCredential {
+                family_id: Uuid::new_v4(),
+                principal: principal.into(),
+                tenant: "tenant-a".into(),
+                resource: kasumi_types::CredentialResource::Database {
+                    incarnation: Uuid::new_v4(),
+                },
+                scopes: BTreeSet::from([Action::Read]),
+                lifetime_seconds: 3600,
+                client_certificate_sha256: None,
+                audience: Default::default(),
+            };
+            manager
+                .create(specification, "initializer")
+                .unwrap()
+                .family_id
+        };
+        let fresh = |family_id| RenewCredential {
+            family_id,
+            renewal_id: Uuid::new_v4(),
+        };
+        let refused = |family_id| {
+            let error = manager.renew(&fresh(family_id), "reader").err().unwrap();
+            let error = error.downcast_ref::<Error>().unwrap();
+            assert_eq!(error.code, ErrorCode::ResourceExhausted);
+        };
+        let (looping, other) = (family("looping"), family("other"));
+        let issuances = || store.scan(ISSUANCES).unwrap().len();
+        let first = fresh(looping);
+        // The budget counts from the first renewal, somewhere between these.
+        let before = clock.now_ms().unwrap();
+        let issued = manager.renew(&first, "reader").unwrap();
+        let after = clock.now_ms().unwrap();
+        for _ in 1..RENEWAL_BURST {
+            manager.renew(&fresh(looping), "reader").unwrap();
+        }
+        // The burst is spent: a new issuance is refused and writes nothing.
+        let written = issuances();
+        assert_eq!(written as u64, 2 + RENEWAL_BURST);
+        refused(looping);
+        assert_eq!(issuances(), written);
+        // A replay issues nothing new, and another family has its own budget.
+        assert_eq!(manager.renew(&first, "reader").unwrap().token, issued.token);
+        manager.renew(&fresh(other), "reader").unwrap();
+        assert_eq!(issuances(), written + 1);
+        // One renewal is earned per 1/32 of the lifetime, and not sooner.
+        let interval = 3_600_000 / RENEWAL_BURST;
+        wall.0.store(before + interval - 1, SeqCst);
+        refused(looping);
+        wall.0.store(after + interval, SeqCst);
+        manager.renew(&fresh(looping), "reader").unwrap();
+        refused(looping);
+        // Two lifetimes later the budget is full again, and no fuller.
+        wall.0.store(after + 2 * 3_600_000, SeqCst);
+        for _ in 0..RENEWAL_BURST {
+            manager.renew(&fresh(looping), "reader").unwrap();
+        }
+        refused(looping);
     }
 
     /// Online recovery renews only an unrevoked family's latest credential,

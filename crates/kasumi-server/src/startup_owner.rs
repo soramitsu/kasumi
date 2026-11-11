@@ -92,7 +92,11 @@ pub(crate) async fn finish(runtime: &mut impl Runtime) -> DrainResult {
                 if error.completion() == DrainCompletion::Complete {
                     return report.complete();
                 }
-                tracing::error!(error = %error, retry_after_secs = delay.as_secs(), "startup owner drain incomplete; retaining resources for retry");
+                crate::logging::drain_failed(
+                    "startup_owner_drain_incomplete",
+                    &error,
+                    Some(delay.as_secs()),
+                );
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(std::time::Duration::from_secs(30));
             }

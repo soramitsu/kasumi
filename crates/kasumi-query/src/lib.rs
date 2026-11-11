@@ -490,7 +490,9 @@ impl QueryIndexes {
     /// `bound`. `retain` then receives the rows after that page in result
     /// order, typically to keep them for a cursor, and returns what it kept
     /// with the bytes it admitted in `memory` for that. Only the first page's
-    /// documents are copied; ordering reads sort keys, never whole bodies.
+    /// documents are copied. Ordering reads sort keys; it also copies the
+    /// rows on that same read when every candidate fits in the page, so that
+    /// the page need not load them again.
     #[allow(clippy::too_many_arguments)]
     pub fn execute_page<S: DocumentSource + ?Sized, W: QueryWorkspace, T>(
         &self,
@@ -691,31 +693,60 @@ impl QueryIndexes {
             };
             retain(remaining, memory)?
         } else {
-            let (ordered, ordered_bytes) = order(
+            // When every candidate's row fits in the page, each is copied while
+            // its sort keys are read, so no document is loaded a second time.
+            let copy = (!request.sort.is_empty() && candidates.len() <= bound.rows)
+                .then_some((selection.as_ref(), bound.bytes));
+            let (ordered, ordered_bytes, copies) = order(
                 source,
                 request,
                 &candidates,
                 scores.as_ref(),
                 &sort_kinds,
+                copy,
                 cancellation,
                 memory,
             )?;
+            let (mut copies, mut unused) =
+                copies.map_or((Vec::new(), 0), |copies| (copies.rows, copies.admitted));
             let mut copied = 0;
             for row in &ordered {
                 cancellation.check()?;
-                if page.is_full()
-                    || !document_source::with_live(
+                if page.is_full() {
+                    break;
+                }
+                // Copies are in candidate order, which is ascending by ID.
+                let copy = copies
+                    .binary_search_by(|(id, ..)| (*id).cmp(row.id))
+                    .ok()
+                    .map(|at| &mut copies[at])
+                    .filter(|(_, row, _)| row.is_some());
+                let pushed = match copy {
+                    Some((_, row, bytes)) => {
+                        let taken = page.push_owned(row, *bytes)?;
+                        if taken {
+                            // The page now holds this copy and its admission.
+                            unused -= *bytes;
+                        }
+                        taken
+                    }
+                    None => document_source::with_live(
                         source,
                         row.id,
                         None,
                         cancellation,
                         |document| page.push(document, row.score, memory),
-                    )?
-                {
+                    )?,
+                };
+                if !pushed {
                     break;
                 }
                 copied += 1;
             }
+            // Copies the page did not take die here, before anything is
+            // retained, with their admission and the vector's.
+            drop(copies);
+            memory.release(unused)?;
             let remaining = RemainingRows {
                 rows: Remaining::Ordered(ordered[copied..].iter()),
                 len: ordered.len() - copied,
@@ -739,21 +770,89 @@ impl QueryIndexes {
     }
 }
 
-/// Result order for sorted and ranked queries. Reads only each candidate's
-/// sort keys; bodies are copied later for the rows a page actually returns.
-/// Returns the ordered rows and their admitted bytes, which stay live.
+/// A row copied during ordering: its ID, the copy until a page takes it, and
+/// the bytes admitted for that copy.
+type CopiedRow<'a> = (&'a str, Option<QueryRow>, u64);
+
+/// Every candidate's row, copied while its sort keys are read, for a query
+/// whose candidates all fit in one page. The copies are optional and all or
+/// nothing: they are given up, and the page loads its rows as it does without
+/// them, as soon as they would not all fit in the page's bytes or a
+/// reservation is refused while they are held.
+struct RowCopies<'a> {
+    selection: Option<&'a Selection>,
+    budget: usize,
+    encoded: usize,
+    rows: Vec<CopiedRow<'a>>,
+    /// Admitted for the vector and for every copy in it.
+    admitted: u64,
+}
+
+/// Give up every copy with its admission.
+fn abandon_copies<W: QueryWorkspace>(
+    copies: &mut Option<RowCopies<'_>>,
+    memory: &mut QueryMemory<W>,
+) -> Result<()> {
+    match copies.take() {
+        Some(held) => {
+            let admitted = held.admitted;
+            drop(held);
+            memory.release(admitted)
+        }
+        None => Ok(()),
+    }
+}
+
+/// Run a step the query cannot do without. Row copies are optional, so when
+/// the step is refused for want of memory while they are held, they are given
+/// up and the step runs once more. A refused step leaves `memory` as it was.
+fn required<W: QueryWorkspace, T>(
+    memory: &mut QueryMemory<W>,
+    copies: &mut Option<RowCopies<'_>>,
+    mut step: impl FnMut(&mut QueryMemory<W>) -> Result<T>,
+) -> Result<T> {
+    match step(memory) {
+        Err(refused) if refused.code == ErrorCode::ResourceExhausted && copies.is_some() => {
+            abandon_copies(copies, memory)?;
+            step(memory)
+        }
+        other => other,
+    }
+}
+
+/// Result order for sorted and ranked queries. Reads each candidate's sort
+/// keys; bodies are copied later for the rows a page actually returns, unless
+/// `copy` (the page's selection and byte bound) lets every row be copied on
+/// the same loan. Returns the ordered rows, their admitted bytes, which stay
+/// live, and the copies if they were all kept.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
     source: &S,
     request: &QueryRequest,
     candidates: &'a IdSet,
     scores: Option<&BTreeMap<String, f32>>,
     sort_kinds: &[Option<ScalarType>],
+    copy: Option<(Option<&'a Selection>, usize)>,
     cancellation: &QueryCancellation,
     memory: &mut QueryMemory<W>,
-) -> ReadResult<(Vec<OrderedRow<'a>>, u64), S::Failure> {
+) -> ReadResult<(Vec<OrderedRow<'a>>, u64, Option<RowCopies<'a>>), S::Failure> {
     let ordered_bytes = allocation::vec_bytes::<OrderedRow<'_>>(candidates.len())?;
     memory.reserve(ordered_bytes)?;
     let mut ordered = Vec::with_capacity(candidates.len());
+    // The copies' vector is as optional as the copies.
+    let mut copies = match copy {
+        Some((selection, budget)) => {
+            let admitted = allocation::vec_bytes::<CopiedRow<'_>>(candidates.len())?;
+            memory.reserve(admitted).ok().map(|()| RowCopies {
+                selection,
+                budget,
+                encoded: 0,
+                rows: Vec::with_capacity(candidates.len()),
+                admitted,
+            })
+        }
+        None => None,
+    };
     let mut keys_bytes = 0u64;
     let mut has_numeric_sort_key = false;
     for id in candidates {
@@ -764,19 +863,43 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
         } else {
             document_source::with_live(source, id, None, cancellation, |document| {
                 let mut bytes = allocation::vec_bytes::<Scalar>(request.sort.len())?;
-                memory.reserve(bytes)?;
+                required(memory, &mut copies, |memory| memory.reserve(bytes))?;
                 let mut keys = Vec::with_capacity(request.sort.len());
                 for (sort, kind) in request.sort.iter().zip(sort_kinds) {
-                    let (key, key_bytes) = scalar::query_scalar(
-                        allocation::pointer(&document.body, &sort.field),
-                        *kind,
-                        memory,
-                    )?;
+                    let (key, key_bytes) = required(memory, &mut copies, |memory| {
+                        scalar::query_scalar(
+                            allocation::pointer(&document.body, &sort.field),
+                            *kind,
+                            memory,
+                        )
+                    })?;
                     has_numeric_sort_key |= matches!(key, Scalar::Number(_));
                     bytes = allocation::add(bytes, key_bytes)?;
                     keys.push(key);
                 }
                 keys_bytes = allocation::add(keys_bytes, bytes)?;
+                if let Some(held) = copies.as_mut() {
+                    let row = BorrowedRow {
+                        document,
+                        selection: held.selection,
+                        score,
+                    };
+                    // Anything that stops this copy stops them all.
+                    let copy = page::encoded_len(&row)
+                        .and_then(|encoded| Ok((encoded, row.clone_bytes()?)))
+                        .ok()
+                        .filter(|(encoded, clone)| {
+                            held.encoded = held.encoded.saturating_add(*encoded).saturating_add(1);
+                            held.encoded <= held.budget && memory.reserve(*clone).is_ok()
+                        });
+                    match copy {
+                        Some((_, clone)) => {
+                            held.rows.push((id.as_str(), Some(row.into_owned()), clone));
+                            held.admitted = allocation::add(held.admitted, clone)?;
+                        }
+                        None => abandon_copies(&mut copies, memory)?,
+                    }
+                }
                 Ok(keys)
             })?
         };
@@ -787,7 +910,9 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
     } else {
         0
     };
-    memory.reserve(decimal_scratch)?;
+    required(memory, &mut copies, |memory| {
+        memory.reserve(decimal_scratch)
+    })?;
     cancellation::sort(&mut ordered, cancellation, |left, right| {
         for ((a, b), order) in left.keys.iter().zip(&right.keys).zip(&request.sort) {
             let ordering = a.cmp(b);
@@ -818,7 +943,7 @@ fn order<'a, S: DocumentSource + ?Sized, W: QueryWorkspace>(
         drop(std::mem::take(&mut row.keys));
     }
     memory.release(keys_bytes)?;
-    Ok((ordered, ordered_bytes))
+    Ok((ordered, ordered_bytes, copies))
 }
 
 struct OrderedRow<'a> {

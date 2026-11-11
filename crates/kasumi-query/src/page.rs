@@ -1,5 +1,7 @@
 //! Page assembly. A query copies only its first page; the rows after it stay
-//! uncopied in the query's generation until a continuation asks for them.
+//! uncopied in the query's generation until a continuation asks for them. A
+//! sorted query whose candidates all fit in that page hands it rows it copied
+//! while reading their sort keys.
 use crate::select::Selection;
 use crate::{
     BorrowedRow, QueryCancellation, QueryMemory, QueryWorkspace, ResultBudget, allocation,
@@ -137,21 +139,9 @@ impl<'a> PageWriter<'a> {
             selection: self.selection,
             score,
         };
-        // The row plus its separator in the response's row array.
-        let bytes = self
-            .bytes
-            .saturating_sub(self.cursor_bytes)
-            .saturating_add(cursor_bytes)
-            .saturating_add(encoded_len(&row)?)
-            .saturating_add(usize::from(!self.rows.is_empty()));
-        if bytes > self.bound.bytes {
-            if self.rows.is_empty() {
-                return Err(crate::exhausted(
-                    "one query row and its cursor exceed the page byte limit; select fewer fields or increase max_result_bytes",
-                ));
-            }
+        let Some(bytes) = self.bytes_with(encoded_len(&row)?, cursor_bytes)? else {
             return Ok(false);
-        }
+        };
         let clone = row.clone_bytes()?;
         memory.reserve(clone)?;
         self.rows.push(row.into_owned());
@@ -159,6 +149,49 @@ impl<'a> PageWriter<'a> {
         self.cursor_bytes = cursor_bytes;
         self.retained = allocation::add(self.retained, clone)?;
         Ok(true)
+    }
+
+    /// Take a row that was copied, and admitted for `clone` bytes, while its
+    /// document was on loan for another purpose. It must be this page's
+    /// selection of that document. Returns false and leaves the row with the
+    /// caller when the page is full or the row would exceed the byte bound.
+    pub(crate) fn push_owned(&mut self, row: &mut Option<QueryRow>, clone: u64) -> Result<bool> {
+        let Some(owned) = row.as_ref() else {
+            return Ok(false);
+        };
+        if self.is_full() {
+            return Ok(false);
+        }
+        let cursor_bytes = CURSOR_SIZED_TOKEN.len();
+        let Some(bytes) = self.bytes_with(encoded_len(owned)?, cursor_bytes)? else {
+            return Ok(false);
+        };
+        self.rows.extend(row.take());
+        self.bytes = bytes;
+        self.cursor_bytes = cursor_bytes;
+        self.retained = allocation::add(self.retained, clone)?;
+        Ok(true)
+    }
+
+    /// The page's encoded size with one more row of `row_bytes` and its
+    /// cursor, or `None` when that row does not fit after earlier ones.
+    fn bytes_with(&self, row_bytes: usize, cursor_bytes: usize) -> Result<Option<usize>> {
+        // The row plus its separator in the response's row array.
+        let bytes = self
+            .bytes
+            .saturating_sub(self.cursor_bytes)
+            .saturating_add(cursor_bytes)
+            .saturating_add(row_bytes)
+            .saturating_add(usize::from(!self.rows.is_empty()));
+        if bytes <= self.bound.bytes {
+            return Ok(Some(bytes));
+        }
+        if self.rows.is_empty() {
+            return Err(crate::exhausted(
+                "one query row and its cursor exceed the page byte limit; select fewer fields or increase max_result_bytes",
+            ));
+        }
+        Ok(None)
     }
 
     pub(crate) fn finish(self) -> (Vec<QueryRow>, u64) {

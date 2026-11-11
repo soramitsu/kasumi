@@ -538,11 +538,14 @@ async fn original_recovery_cancelled_cleanup_retains_entered_original_seat_and_s
         })
         .await;
     }
+    // The operation never reached a terminal, so the seat stays retained; the
+    // pending future itself was destroyed when the call was cancelled.
     assert_eq!(seat.retired_observation.entry(), CleanupEntry::Entered);
     assert_eq!(
         seat.retired_observation.future_disposal(),
-        CleanupEntry::NotEntered
+        CleanupEntry::Returned
     );
+    assert!(seat.retired_observation.unsettled());
     assert!(seat.failure.as_ref().unwrap().retired_cleanup.is_none());
     drop(guard);
     assert!(inventory.retained().await);
@@ -551,6 +554,82 @@ async fn original_recovery_cancelled_cleanup_retains_entered_original_seat_and_s
     assert_eq!(
         admission.snapshot().live_reservations,
         charged.live_reservations
+    );
+}
+
+/// A cleanup parked on a notifier is linked into its waiter list. Cancelling
+/// the observation must unlink it by running its destructor, not release its
+/// storage with the list still pointing there.
+#[tokio::test]
+async fn original_recovery_cancelled_cleanup_destroys_its_parked_future_once() {
+    struct Counted<'a>(&'a AtomicUsize);
+    impl Drop for Counted<'_> {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+    let notify = tokio::sync::Notify::new();
+    let drops = AtomicUsize::new(0);
+    let mut observation = CleanupObservation::default();
+    let mut returned = None;
+    {
+        let mut future = std::pin::pin!(observe_cleanup(&mut observation, &mut returned, async {
+            let _counted = Counted(&drops);
+            notify.notified().await;
+            Ok(())
+        }));
+        std::future::poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+        assert_eq!(drops.load(Ordering::SeqCst), 0);
+    }
+    assert_eq!(drops.load(Ordering::SeqCst), 1);
+    assert_eq!(observation.entry(), CleanupEntry::Entered);
+    assert_eq!(observation.future_disposal(), CleanupEntry::Returned);
+    assert!(observation.unsettled() && returned.is_none());
+    // The one drop above is what unlinked the waiter. The notifier is whole
+    // afterwards: a permit goes to a new waiter.
+    notify.notify_waiters();
+    notify.notify_one();
+    tokio::time::timeout(std::time::Duration::from_secs(5), notify.notified())
+        .await
+        .unwrap();
+
+    // A destructor that panics during cancellation is observed, not replayed.
+    struct PendingThenDropPanic(Option<Box<dyn Any + Send>>);
+    impl Future for PendingThenDropPanic {
+        type Output = kasumi_types::drain::DrainResult;
+        fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Self::Output> {
+            Poll::Pending
+        }
+    }
+    impl Drop for PendingThenDropPanic {
+        fn drop(&mut self) {
+            std::panic::resume_unwind(self.0.take().expect("one original destructor"));
+        }
+    }
+    let original: Box<dyn Any + Send> = Box::new(OriginalPanic(31));
+    let address = panic_address(original.as_ref());
+    let mut observation = CleanupObservation::default();
+    {
+        let mut future = std::pin::pin!(observe_cleanup(
+            &mut observation,
+            &mut returned,
+            PendingThenDropPanic(Some(original))
+        ));
+        std::future::poll_fn(|cx| {
+            assert!(future.as_mut().poll(cx).is_pending());
+            Poll::Ready(())
+        })
+        .await;
+    }
+    assert_eq!(observation.entry(), CleanupEntry::Entered);
+    assert_eq!(observation.future_disposal(), CleanupEntry::Panicked);
+    assert_eq!(
+        observation.with_disposal_panic(panic_address),
+        Some(address)
     );
 }
 

@@ -350,3 +350,161 @@ fn writer_can_mix_prefixed_and_plain_blocks_in_one_authenticated_run() {
         .unwrap();
     assert_eq!(count, model.len());
 }
+
+/// Rows of hexadecimal text, as indexer documents carry: LZ4 has no entropy
+/// coder and barely shortens them, Zstandard roughly halves them.
+fn hex_rows(count: u32) -> BTreeMap<Vec<u8>, Vec<u8>> {
+    (0..count)
+        .map(|n| {
+            let mut state = u64::from(n).wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;
+            let mut value = String::new();
+            for _ in 0..12 {
+                state ^= state << 13;
+                state ^= state >> 7;
+                state ^= state << 17;
+                value.push_str(&format!("{state:016x}"));
+            }
+            (format!("account/{n:08}").into_bytes(), value.into_bytes())
+        })
+        .collect()
+}
+
+/// Every block's tagged length word, flags included, from a sealed image.
+fn tagged_lengths(image: &[u8]) -> Vec<u32> {
+    let tail = image.len() - 16;
+    let meta_len = u64::from_le_bytes(image[tail..tail + 8].try_into().unwrap()) as usize;
+    let mut metadata = &image[tail - meta_len + 8..tail];
+    let blocks = u32_from(&mut metadata).unwrap();
+    (0..blocks)
+        .map(|_| {
+            let tagged = u32_from(&mut metadata).unwrap() as u32;
+            u32_from(&mut metadata).unwrap();
+            if tagged & PREFIX_FLAG != 0 {
+                u32_from(&mut metadata).unwrap();
+            }
+            take(&mut metadata, 32).unwrap();
+            let first = u16_from(&mut metadata).unwrap();
+            let last = u16_from(&mut metadata).unwrap();
+            take(&mut metadata, first + last).unwrap();
+            tagged
+        })
+        .collect()
+}
+
+#[test]
+fn zstandard_runs_hold_the_same_rows_in_fewer_bytes_and_lz4_runs_are_unchanged() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut model = hex_rows(2000);
+    model.insert(vec![255], vec![42; BLOCK_TARGET + 1]); // one oversized row
+    let [lz4, same, zstd] = ["lz4", "same", "zstd"].map(|name| dir.path().join(name));
+    let lz4_root = seal(&lz4, &model).unwrap();
+    // Naming the default codec writes the same bytes as not naming one.
+    assert_eq!(
+        seal_with_codec(&same, &model, BlockCodec::Lz4).unwrap(),
+        lz4_root
+    );
+    let lz4_image = fs::read(&lz4).unwrap();
+    assert_eq!(fs::read(&same).unwrap(), lz4_image);
+    let zstd_root = seal_with_codec(&zstd, &model, BlockCodec::Zstd).unwrap();
+    let zstd_image = fs::read(&zstd).unwrap();
+    assert!(lz4_image.ends_with(FOOTER_MAGIC) && zstd_image.ends_with(FOOTER_MAGIC_ZSTD));
+    assert!(
+        zstd_image.len() * 3 < lz4_image.len() * 2,
+        "{} against {}",
+        zstd_image.len(),
+        lz4_image.len()
+    );
+    // Only the Zstandard run marks blocks as Zstandard, and it marks most.
+    let marked = |image: &[u8]| {
+        let tagged = tagged_lengths(image);
+        let marked = tagged.iter().filter(|word| *word & ZSTD_FLAG != 0).count();
+        (marked, tagged.len())
+    };
+    assert_eq!(marked(&lz4_image).0, 0);
+    let (zstd_blocks, blocks) = marked(&zstd_image);
+    assert!(zstd_blocks * 2 > blocks && blocks > 8);
+    for (path, root) in [(&lz4, lz4_root), (&zstd, zstd_root)] {
+        let mut run = FrozenRun::open(path, root).unwrap();
+        for (key, value) in &model {
+            assert_eq!(&run.get(key).unwrap().unwrap(), value);
+        }
+        assert_eq!(run.get(b"account/0000000").unwrap(), None);
+        let mut expected = model.iter().rev();
+        let count = run
+            .visit_reverse(Unbounded, Unbounded, usize::MAX, |key, value| {
+                let row = expected.next().unwrap();
+                assert_eq!((key, value), (row.0.as_slice(), row.1.as_slice()));
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(count, model.len());
+    }
+    // Each run answers only to its own root, and a flipped block byte in the
+    // Zstandard run is caught before anything is expanded.
+    assert!(FrozenRun::open(&zstd, lz4_root).is_err());
+    let mut damaged = zstd_image.clone();
+    damaged[0] ^= 1;
+    fs::write(&zstd, &damaged).unwrap();
+    let mut run = FrozenRun::open(&zstd, zstd_root).unwrap();
+    assert!(run.get(b"account/00000000").is_err());
+}
+
+#[test]
+fn authenticated_invalid_zstandard_blocks_cannot_reach_the_row_visitor() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("bad");
+    let row = |k| [1, 0, 0, 0, 0, 0, k];
+    let raw = [row(1), row(2)].concat();
+    let frame = codec::zstd_compress(&raw).unwrap();
+    let lz4 = lz4_flex::block::compress(&raw);
+    // Give each image a matching digest, so only the format checks refuse it.
+    let image = |packed: &[u8], flags: u32, raw_len: u32, version_3: bool| {
+        let (directory_magic, footer_magic) = if version_3 {
+            (DIRECTORY_MAGIC_ZSTD, FOOTER_MAGIC_ZSTD)
+        } else {
+            (DIRECTORY_MAGIC, FOOTER_MAGIC)
+        };
+        let mut directory = Vec::from(directory_magic.as_slice());
+        directory.extend(1u32.to_le_bytes());
+        directory.extend((packed.len() as u32 | flags).to_le_bytes());
+        directory.extend(raw_len.to_le_bytes());
+        directory.extend(Sha256::digest(packed));
+        directory.extend([1, 0, 1, 0, 1, 2]);
+        let root: [u8; 32] = Sha256::digest(&directory).into();
+        let mut image = packed.to_vec();
+        image.extend(&directory);
+        image.extend((directory.len() as u64).to_le_bytes());
+        image.extend(footer_magic);
+        fs::write(&path, image).unwrap();
+        FrozenRun::open(&path, root)
+            .and_then(|mut run| run.visit_forward(Unbounded, Unbounded, usize::MAX, |_, _| Ok(())))
+    };
+    let len = raw.len() as u32;
+    // The well-formed image reads back, so the refusals below are about
+    // their one difference from it.
+    assert_eq!(image(&frame, ZSTD_FLAG, len, true).unwrap(), 2);
+    assert_eq!(image(&lz4, 0, len, true).unwrap(), 2);
+    for (packed, flags, raw_len, version_3) in [
+        (b"not a Zstandard frame".as_slice(), ZSTD_FLAG, len, true),
+        (lz4.as_slice(), ZSTD_FLAG, len, true), // an LZ4 block marked as Zstandard
+        (frame.as_slice(), 0, len, true),       // a frame not marked as Zstandard
+        (frame.as_slice(), ZSTD_FLAG, len + 7, true), // expands to less than declared
+        (frame.as_slice(), ZSTD_FLAG, len - 7, true), // expands past its declared length
+        (frame.as_slice(), ZSTD_FLAG, len, false), // version 2 has no such flag
+    ] {
+        assert!(image(packed, flags, raw_len, version_3).is_err());
+    }
+    // The library alone would expand each of these to the right rows: two
+    // frames, a skippable frame before the block, and bytes after it.
+    let halves = [
+        codec::zstd_compress(&row(1)).unwrap(),
+        codec::zstd_compress(&row(2)).unwrap(),
+    ]
+    .concat();
+    let skippable = [&[0x50, 0x2A, 0x4D, 0x18, 1, 0, 0, 0, 9][..], &frame].concat();
+    let trailing = [frame.as_slice(), &[0]].concat();
+    for packed in [halves, skippable, trailing] {
+        let refused = image(&packed, ZSTD_FLAG, len, true).unwrap_err();
+        assert_eq!(refused.to_string(), "invalid Zstandard block");
+    }
+}

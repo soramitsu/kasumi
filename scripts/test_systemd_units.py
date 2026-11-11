@@ -52,6 +52,17 @@ class SystemdUnitTests(unittest.TestCase):
                 self.assertNotEqual(settings.get("User"), ["root"])
                 self.assertEqual(len(settings.get("User", [])), 1)
 
+    def test_each_unit_keeps_private_diagnostics_past_a_restart(self):
+        # Failure detail is kept out of the journal and written to a private
+        # file instead. PrivateTmp deletes the temporary directory when the
+        # unit stops, so each unit needs a logs directory only it can read.
+        for unit in UNITS:
+            with self.subTest(unit=unit):
+                settings = service_settings(ROOT / unit)
+                self.assertEqual(len(settings.get("LogsDirectory", [])), 1)
+                self.assertTrue(settings["LogsDirectory"][0])
+                self.assertEqual(settings.get("LogsDirectoryMode"), ["0700"])
+
     def test_each_node_unit_raises_the_descriptor_limit(self):
         for unit in sorted(NODE_UNITS):
             with self.subTest(unit=unit):

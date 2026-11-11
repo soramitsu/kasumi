@@ -169,6 +169,29 @@ mod admitted_client_tests {
         client: Option<&TlsIdentity>,
     ) -> std::result::Result<(), String> {
         let (client_stream, server_stream) = tokio::io::duplex(64 << 10);
+        let connector = connector(server_pin, authority, client);
+        let acceptor = tokio_rustls::TlsAcceptor::from(server);
+        let name = ServerName::try_from("localhost").unwrap();
+        let (_, accepted) = tokio::join!(
+            async {
+                // The client may finish before the server refuses it; keep its
+                // side open until the server has decided.
+                let connected = connector.connect(name, client_stream).await;
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                connected
+            },
+            acceptor.accept(server_stream)
+        );
+        accepted.map(drop).map_err(|error| error.to_string())
+    }
+
+    /// A client that keeps rustls's default session store, so it offers to
+    /// resume whenever a server has given it a ticket.
+    fn connector(
+        server_pin: CertificatePin,
+        authority: &Authority,
+        client: Option<&TlsIdentity>,
+    ) -> tokio_rustls::TlsConnector {
         let mut roots = RootCertStore::empty();
         roots
             .add(certificates_from_pem(authority.pem.as_bytes()).unwrap()[0].clone())
@@ -194,20 +217,95 @@ mod admitted_client_tests {
                 .unwrap(),
             None => builder.with_no_client_auth(),
         };
-        let connector = tokio_rustls::TlsConnector::from(Arc::new(config));
+        tokio_rustls::TlsConnector::from(Arc::new(config))
+    }
+
+    /// Both ends report the kind of handshake that one connection completed.
+    /// The client reads application data first, which makes it process
+    /// whatever the server sent after its handshake, session tickets included.
+    async fn handshake_kinds(
+        server: Arc<ServerConfig>,
+        connector: &tokio_rustls::TlsConnector,
+    ) -> [Option<rustls::HandshakeKind>; 2] {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (client_stream, server_stream) = tokio::io::duplex(64 << 10);
         let acceptor = tokio_rustls::TlsAcceptor::from(server);
         let name = ServerName::try_from("localhost").unwrap();
-        let (_, accepted) = tokio::join!(
-            async {
-                // The client may finish before the server refuses it; keep its
-                // side open until the server has decided.
-                let connected = connector.connect(name, client_stream).await;
-                tokio::time::sleep(Duration::from_millis(50)).await;
-                connected
-            },
+        let (connected, accepted) = tokio::join!(
+            connector.connect(name, client_stream),
             acceptor.accept(server_stream)
         );
-        accepted.map(drop).map_err(|error| error.to_string())
+        let (mut connected, mut accepted) = (connected.unwrap(), accepted.unwrap());
+        accepted.write_all(b"k").await.unwrap();
+        accepted.flush().await.unwrap();
+        let mut byte = [0];
+        connected.read_exact(&mut byte).await.unwrap();
+        [
+            accepted.get_ref().1.handshake_kind(),
+            connected.get_ref().1.handshake_kind(),
+        ]
+    }
+
+    #[tokio::test]
+    async fn a_returning_client_is_verified_again_instead_of_resuming() {
+        let installation = authority("installation");
+        let server = leaf(&installation, "server", false);
+        let client = leaf(&installation, "client", true);
+        let full = [Some(rustls::HandshakeKind::Full); 2];
+        let admitted = BTreeSet::from([client.certificate_pin()]);
+        for authentication in [
+            ClientAuthentication::Required {
+                trusted_ca_pem: installation.pem.as_bytes(),
+            },
+            ClientAuthentication::Admitted {
+                trusted_ca_pem: installation.pem.as_bytes(),
+                admitted: &admitted,
+            },
+        ] {
+            let config = server_config(&server, authentication).unwrap();
+            // One client configuration, and so one session store, for both
+            // connections: the second would resume if the server allowed it.
+            let returning = connector(server.certificate_pin(), &installation, Some(&client));
+            assert_eq!(handshake_kinds(config.clone(), &returning).await, full);
+            assert_eq!(handshake_kinds(config, &returning).await, full);
+        }
+
+        // A server with rustls's own defaults, which issues resumable tickets.
+        let resumable = || {
+            let mut config = Arc::unwrap_or_clone(
+                server_config(
+                    &server,
+                    ClientAuthentication::Required {
+                        trusted_ca_pem: installation.pem.as_bytes(),
+                    },
+                )
+                .unwrap(),
+            );
+            config.send_tls13_tickets = 2;
+            config.session_storage = rustls::server::ServerSessionMemoryCache::new(256);
+            Arc::new(config)
+        };
+        // The comparison that makes the assertions above meaningful: against
+        // such a server the same returning client does resume.
+        let config = resumable();
+        let returning = connector(server.certificate_pin(), &installation, Some(&client));
+        assert_eq!(handshake_kinds(config.clone(), &returning).await, full);
+        assert_eq!(
+            handshake_kinds(config, &returning).await,
+            [Some(rustls::HandshakeKind::Resumed); 2]
+        );
+
+        // A peer client offers no session even to a server that issues them.
+        let config = resumable();
+        let peer = peer_client_config(
+            &client,
+            installation.pem.as_bytes(),
+            BTreeSet::from([server.certificate_pin()]),
+        )
+        .unwrap();
+        let peer = tokio_rustls::TlsConnector::from(Arc::new(peer));
+        assert_eq!(handshake_kinds(config.clone(), &peer).await, full);
+        assert_eq!(handshake_kinds(config, &peer).await, full);
     }
 
     #[tokio::test]
@@ -428,8 +526,6 @@ pub fn server_config(
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let builder = ServerConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])?;
-    // Each configuration has its own session cache and issues no tickets, so
-    // a session never resumes under a later admission generation.
     let builder = match authentication {
         ClientAuthentication::Required { trusted_ca_pem } => {
             builder.with_client_cert_verifier(client_verifier(trusted_ca_pem, provider)?)
@@ -449,6 +545,12 @@ pub fn server_config(
     )?;
     config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
     config.max_early_data_size = 0;
+    // No session is resumable. By default rustls sends two stateful tickets
+    // and accepts them for a day without running the client verifier again,
+    // so a certificate that has since expired or left the admitted set could
+    // keep connecting. Every connection completes a full handshake instead.
+    config.send_tls13_tickets = 0;
+    config.session_storage = Arc::new(rustls::server::NoServerSessionStorage {});
     Ok(Arc::new(config))
 }
 
@@ -523,6 +625,9 @@ pub fn peer_client_config(
             identity.private_key.clone_key(),
         )?;
     config.enable_early_data = false;
+    // A resumed session would skip the chain, name and pin checks above, so
+    // this client never offers one, whatever tickets a server sends.
+    config.resumption = rustls::client::Resumption::disabled();
     // This config is shared by pinned cluster HTTP and native gRPC peers.
     // Require HTTP/2 for authenticated, multiplexed peer traffic.
     config.alpn_protocols = vec![b"h2".to_vec()];

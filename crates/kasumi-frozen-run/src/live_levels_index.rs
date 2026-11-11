@@ -4,7 +4,7 @@ use crate::{MAX_KEY, invalid, live_bulk_filter::BulkFilter, take};
 use sha2::{Digest, Sha256};
 use std::{
     fs::File,
-    io::{self, Read, Seek, SeekFrom, Write},
+    io::{self, Seek, Write},
 };
 
 const MAGIC: &[u8; 8] = b"KSLVLV01";
@@ -65,17 +65,34 @@ fn put_key(out: &mut Vec<u8>, key: &[u8]) {
     out.extend((key.len() as u16).to_le_bytes());
     out.extend(key);
 }
-pub(super) fn read(file: &mut File, link: Link) -> io::Result<Node> {
+#[cfg(test)]
+std::thread_local! {
+    /// Nodes this thread read from a file, for tests that pin how much of a
+    /// tree a lookup reads.
+    pub(super) static NODE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+pub(super) fn read(file: &File, link: Link) -> io::Result<Node> {
     if link.len > NODE_MAX as u64 {
         return Err(invalid("oversized live level node"));
     }
-    file.seek(SeekFrom::Start(link.at))?;
-    let mut bytes = vec![0; link.len as usize];
-    file.read_exact(&mut bytes)?;
-    if <[u8; 32]>::from(Sha256::digest(&bytes)) != link.root {
+    #[cfg(test)]
+    NODE_READS.with(|reads| reads.set(reads.get() + 1));
+    // Nodes with ordinary keys fit on the stack; only long keys allocate.
+    let mut inline = [0u8; 512];
+    let mut spilled;
+    let bytes = match inline.get_mut(..link.len as usize) {
+        Some(bytes) => bytes,
+        None => {
+            spilled = vec![0; link.len as usize];
+            spilled.as_mut_slice()
+        }
+    };
+    crate::read_exact_at(file, bytes, link.at)?;
+    if <[u8; 32]>::from(Sha256::digest(&*bytes)) != link.root {
         return Err(invalid("live level node digest differs"));
     }
-    let mut input = bytes.as_slice();
+    let mut input = &*bytes;
     let node = match take(&mut input, 1)?[0] {
         0 => {
             let first = get_key(&mut input)?;
@@ -121,24 +138,22 @@ pub(super) fn read(file: &mut File, link: Link) -> io::Result<Node> {
     Ok(node)
 }
 
-pub(super) fn read_filter(file: &mut File, link: Link) -> io::Result<BulkFilter> {
+pub(super) fn read_filter(file: &File, link: Link) -> io::Result<BulkFilter> {
     let size = usize::try_from(link.len).map_err(|_| invalid("bulk filter length overflow"))?;
     let mut filter = BulkFilter::with_bytes(size)?;
-    file.seek(SeekFrom::Start(link.at))?;
-    file.read_exact(filter.bytes_mut())?;
+    crate::read_exact_at(file, filter.bytes_mut(), link.at)?;
     if <[u8; 32]>::from(Sha256::digest(filter.bytes())) != link.root {
         return Err(invalid("bulk membership filter digest differs"));
     }
     Ok(filter)
 }
-pub(super) fn open(file: &mut File, expected: [u8; 32]) -> io::Result<Option<Link>> {
+pub(super) fn open(file: &File, expected: [u8; 32]) -> io::Result<Option<Link>> {
     let len = file.metadata()?.len();
     if len < FOOTER as u64 {
         return Err(invalid("truncated live level footer"));
     }
-    file.seek(SeekFrom::End(-(FOOTER as i64)))?;
     let mut bytes = [0; FOOTER];
-    file.read_exact(&mut bytes)?;
+    crate::read_exact_at(file, &mut bytes, len - FOOTER as u64)?;
     if &bytes[..8] != MAGIC || <[u8; 32]>::from(Sha256::digest(bytes)) != expected {
         return Err(invalid("live level footer digest differs"));
     }

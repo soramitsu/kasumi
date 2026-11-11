@@ -204,7 +204,10 @@ impl CleanupObservation {
 }
 
 /// Capture the original terminal before independently disposing the completed
-/// or unwound future. Cancellation leaves Entered and the parent stays retained.
+/// or unwound future. Cancellation leaves Entered and the parent stays
+/// retained; the pending future is still destroyed in place, because a polled
+/// future can be linked into a lock's or notifier's waiter list and its
+/// storage must not be released while that list still points at it.
 pub(crate) async fn observe_cleanup(
     observation: &mut CleanupObservation,
     returned_error: &mut Option<DrainFailure>,
@@ -213,49 +216,74 @@ pub(crate) async fn observe_cleanup(
     use std::{
         mem::ManuallyDrop,
         panic::{AssertUnwindSafe, catch_unwind},
+        pin::Pin,
         task::Poll,
     };
-    let mut future = std::pin::pin!(ManuallyDrop::new(future));
+    /// Destroys the entered future exactly once and records how that went:
+    /// after its terminal observation, or when this call is cancelled.
+    struct Disposal<'a, F> {
+        future: Pin<&'a mut ManuallyDrop<F>>,
+        observation: &'a mut CleanupObservation,
+    }
+    impl<F> Drop for Disposal<'_, F> {
+        fn drop(&mut self) {
+            self.observation.future_disposal = CleanupEntry::Entered;
+            let disposed = catch_unwind(AssertUnwindSafe(|| unsafe {
+                // SAFETY: this is the sole destruction, in place; ManuallyDrop
+                // prevents replay after either a returned destructor or its
+                // observed original panic, and nothing polls the future again.
+                ManuallyDrop::drop(self.future.as_mut().get_unchecked_mut());
+            }));
+            match disposed {
+                Ok(()) => self.observation.future_disposal = CleanupEntry::Returned,
+                Err(original) => {
+                    self.observation.disposal_panic = Some(original);
+                    self.observation.future_disposal = CleanupEntry::Panicked;
+                }
+            }
+        }
+    }
+    let future = std::pin::pin!(ManuallyDrop::new(future));
     if observation.entry != CleanupEntry::NotEntered {
+        // A refused replay runs none of its future's code, its destructor
+        // included. It was never polled, so releasing its storage is sound.
         return;
     }
     observation.entry = CleanupEntry::Entered;
+    let mut disposal = Disposal {
+        future,
+        observation,
+    };
     std::future::poll_fn(|cx| {
         // SAFETY: the future stays at this address until the one terminal
         // observation, then is explicitly destroyed without another poll.
         let polled = catch_unwind(AssertUnwindSafe(|| {
             // SAFETY: ManuallyDrop is transparent and the original future is
             // projected in place; neither the wrapper nor its body is moved.
-            unsafe { future.as_mut().map_unchecked_mut(|future| &mut **future) }.poll(cx)
+            unsafe {
+                disposal
+                    .future
+                    .as_mut()
+                    .map_unchecked_mut(|future| &mut **future)
+            }
+            .poll(cx)
         }));
         match polled {
             Ok(Poll::Pending) => Poll::Pending,
             Ok(Poll::Ready(original)) => {
                 *returned_error = original.err();
-                observation.entry = CleanupEntry::Returned;
+                disposal.observation.entry = CleanupEntry::Returned;
                 Poll::Ready(())
             }
             Err(original) => {
-                observation.panic = Some(original);
-                observation.entry = CleanupEntry::Panicked;
+                disposal.observation.panic = Some(original);
+                disposal.observation.entry = CleanupEntry::Panicked;
                 Poll::Ready(())
             }
         }
     })
     .await;
-    observation.future_disposal = CleanupEntry::Entered;
-    let disposed = catch_unwind(AssertUnwindSafe(|| unsafe {
-        // SAFETY: this is the sole destruction; ManuallyDrop prevents replay
-        // after either a returned destructor or its observed original panic.
-        ManuallyDrop::drop(future.as_mut().get_unchecked_mut());
-    }));
-    match disposed {
-        Ok(()) => observation.future_disposal = CleanupEntry::Returned,
-        Err(original) => {
-            observation.disposal_panic = Some(original);
-            observation.future_disposal = CleanupEntry::Panicked;
-        }
-    }
+    drop(disposal);
 }
 impl RecoverySeat {
     fn empty(&self) -> bool {

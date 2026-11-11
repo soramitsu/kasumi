@@ -485,6 +485,11 @@ fn explain_renewal_failure(family_id: Uuid, error: anyhow::Error) -> anyhow::Err
     ))
 }
 
+/// Whether a watcher keeps its renewal identity and tries again. That covers
+/// an uncertain outcome, and also a daemon out of room: it refuses before it
+/// issues anything, whether its admission is full or the family has used its
+/// renewal budget, and a watcher that exited then would let the credential
+/// expire while someone else holding it kept the budget spent.
 fn retryable(error: &anyhow::Error) -> bool {
     match error.downcast_ref::<kasumi_client::ClientError>() {
         Some(kasumi_client::ClientError::Connection(_)) => true,
@@ -494,6 +499,7 @@ fn retryable(error: &anyhow::Error) -> bool {
                 | tonic::Code::Unavailable
                 | tonic::Code::DeadlineExceeded
                 | tonic::Code::Unknown
+                | tonic::Code::ResourceExhausted
         ),
         _ => false,
     }
@@ -589,16 +595,19 @@ mod credential_renewal_tests {
     }
 
     #[test]
-    fn credential_watch_retries_only_uncertain_transport_failures() {
+    fn credential_watch_retries_only_uncertain_or_out_of_room_failures() {
+        // ResourceExhausted is a definite refusal before anything is issued:
+        // full admission, or a family that has used its renewal budget.
         for code in [
             tonic::Code::Cancelled,
             tonic::Code::Unavailable,
             tonic::Code::DeadlineExceeded,
             tonic::Code::Unknown,
+            tonic::Code::ResourceExhausted,
         ] {
             assert!(
                 retryable(&ClientError::Transport(tonic::Status::new(code, "fixture")).into()),
-                "uncertain transport {code:?} must retain the renewal identity"
+                "{code:?} must retain the renewal identity and try again"
             );
         }
         for code in [
@@ -607,7 +616,6 @@ mod credential_renewal_tests {
             tonic::Code::NotFound,
             tonic::Code::AlreadyExists,
             tonic::Code::PermissionDenied,
-            tonic::Code::ResourceExhausted,
             tonic::Code::FailedPrecondition,
             tonic::Code::Aborted,
             tonic::Code::OutOfRange,

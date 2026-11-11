@@ -32,8 +32,13 @@ impl RunCursor {
         upper: Bound<&[u8]>,
         reverse: bool,
     ) -> Self {
-        let start = run.blocks.partition_point(|b| below(&b.last, lower));
-        let stop = run.blocks.partition_point(|b| !above(&b.first, upper));
+        let directory = run.directory.as_slice();
+        let start = run
+            .blocks
+            .partition_point(|b| below(b.last(directory), lower));
+        let stop = run
+            .blocks
+            .partition_point(|b| !above(b.first(directory), upper));
         Self {
             blocks: start..stop,
             rows: 0..0,
@@ -64,8 +69,8 @@ impl RunCursor {
             };
             let Some(block) = block else { return Ok(None) };
             self.block = block;
-            let cut_low = below(&run.blocks[block].first, lower);
-            let cut_high = above(&run.blocks[block].last, upper);
+            let cut_low = below(run.blocks[block].first(&run.directory), lower);
+            let cut_high = above(run.blocks[block].last(&run.directory), upper);
             let decoded = run.block(block)?;
             let lo = if cut_low {
                 decoded
@@ -92,6 +97,9 @@ impl FrozenRun {
     }
 
     pub(crate) fn extent_bounds(&self) -> Option<(&[u8], &[u8])> {
-        Some((&self.blocks.first()?.first, &self.blocks.last()?.last))
+        Some((
+            self.blocks.first()?.first(&self.directory),
+            self.blocks.last()?.last(&self.directory),
+        ))
     }
 }
