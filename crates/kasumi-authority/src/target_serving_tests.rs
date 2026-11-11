@@ -179,12 +179,7 @@ impl Serving {
             stores.clone(),
             TargetReplicaConfig {
                 node_id: id,
-                raft: Config {
-                    heartbeat_interval: 50,
-                    election_timeout_min: 250,
-                    election_timeout_max: 400,
-                    ..Config::default()
-                },
+                raft: target_raft_config(),
                 admission: f.physical[&id].admission.clone(),
             },
             router.clone(),
@@ -233,22 +228,43 @@ impl Serving {
 }
 
 async fn leader(targets: &BTreeMap<u64, Serving>) -> u64 {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    let mut last_barrier = None;
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             for (&id, target) in targets {
                 let database = target.owner.database().unwrap();
                 let group = database.raft_group();
-                if group.raft().metrics().borrow().current_leader == Some(id)
-                    && group.linearizable_barrier().await.is_ok()
-                {
-                    return id;
+                if group.raft().metrics().borrow().current_leader == Some(id) {
+                    match group.linearizable_barrier().await {
+                        Ok(_) => return id,
+                        Err(error) => last_barrier = Some(format!("{error:?}")),
+                    }
                 }
             }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
     })
     .await
-    .unwrap()
+    .unwrap_or_else(|elapsed| {
+        let states = targets
+            .iter()
+            .map(|(id, target)| match target.owner.database() {
+                Ok(database) => {
+                    let metrics = database.raft_group().raft().metrics().borrow().clone();
+                    format!(
+                        "{id}: {:?} term={} leader={:?} applied={:?} quorum_ack_ms={:?}",
+                        metrics.state,
+                        metrics.current_term,
+                        metrics.current_leader,
+                        metrics.last_applied,
+                        metrics.millis_since_quorum_ack
+                    )
+                }
+                Err(error) => format!("{id}: database unavailable: {error:?}"),
+            })
+            .collect::<Vec<_>>();
+        panic!("target leader observation failed: {elapsed}; last barrier: {last_barrier:?}; {states:?}")
+    })
 }
 
 fn context() -> RequestContext {
@@ -272,7 +288,7 @@ async fn set_suspension(targets: &BTreeMap<u64, Serving>, suspended: bool) -> u6
     drop(database);
     let context = context();
     let operation = Operation::Suspend(suspended);
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + FIXTURE_OBSERVATION_WINDOW;
     let mut last_failure = None;
     loop {
         assert!(
@@ -328,7 +344,7 @@ async fn set_suspension(targets: &BTreeMap<u64, Serving>, suspended: bool) -> u6
 }
 
 /// Membership setup changes are state-idempotent, but leadership can change
-/// after its observation. Keep the exact peer identities and original setup
+/// after its observation. Keep the exact peer identities and one setup
 /// deadline while recovering only Raft's explicit transient membership errors.
 async fn exact_membership_change(
     targets: &BTreeMap<u64, Serving>,
@@ -338,7 +354,7 @@ async fn exact_membership_change(
     use openraft::error::{ChangeMembershipError, ClientWriteError, RaftError};
     type MembershipError = RaftError<u64, ClientWriteError<u64, kasumi_raft::BasicNode>>;
 
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
+    let deadline = tokio::time::Instant::now() + FIXTURE_OBSERVATION_WINDOW;
     let mut last_failure = None;
     loop {
         assert!(
@@ -446,7 +462,7 @@ async fn assert_operational(
     learner: bool,
     changed_peer: u64,
 ) {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let mut ready = true;
             for target in targets.values() {

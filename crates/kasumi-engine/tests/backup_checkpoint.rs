@@ -22,6 +22,32 @@ fn context() -> RequestContext {
         request_id: "backup-proof-test".into(),
     }
 }
+/// A setup batch can miss the production 10 s write deadline on a loaded host
+/// and still commit. Resolve it as the error instructs: let the original settle,
+/// then repeat the same idempotency key, which replays its stored receipt.
+async fn mutate_resolved(db: &Database, batch: MutationBatch) -> WriteReceipt {
+    let window = tokio::time::Instant::now() + std::time::Duration::from_secs(300);
+    loop {
+        match db.mutate(context(), batch.clone()).await {
+            Ok(receipt) => return receipt,
+            Err(error)
+                if error.code == ErrorCode::UnknownOutcome
+                    && error.message.starts_with("write deadline exceeded")
+                    && tokio::time::Instant::now() < window =>
+            {
+                eprintln!(
+                    "fixture resolves setup batch {} after a missed write deadline",
+                    batch.idempotency_key
+                );
+                while db.fixture_running_proposals() != 0 && tokio::time::Instant::now() < window {
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            }
+            Err(error) => panic!("setup batch {} rejected: {error:?}", batch.idempotency_key),
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn captured_and_historical_backup_verification_fit_fixed_production_workspace() {
     let maximum = 480 << 20;
@@ -40,23 +66,20 @@ async fn captured_and_historical_backup_verification_fit_fixed_production_worksp
     .await;
     for index in 0..40 {
         let id = format!("large-{index}");
-        fixture
-            .db
-            .mutate(
-                context(),
-                MutationBatch {
-                    idempotency_key: id.clone(),
-                    read_set: vec![],
-                    operations: vec![Mutation::Put {
-                        collection: "journal".into(),
-                        id,
-                        body: json!({"payload": "x".repeat(768 << 10)}),
-                        expected: Precondition::Absent,
-                    }],
-                },
-            )
-            .await
-            .unwrap();
+        mutate_resolved(
+            &fixture.db,
+            MutationBatch {
+                idempotency_key: id.clone(),
+                read_set: vec![],
+                operations: vec![Mutation::Put {
+                    collection: "journal".into(),
+                    id,
+                    body: json!({"payload": "x".repeat(768 << 10)}),
+                    expected: Precondition::Absent,
+                }],
+            },
+        )
+        .await;
     }
     let resident = fixture
         .db

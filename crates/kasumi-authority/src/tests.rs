@@ -17,6 +17,28 @@ use uuid::Uuid;
 mod fixture_failure;
 use fixture_failure::FixtureResult;
 
+/// Fixture budget for re-observing leadership, barriers, membership and
+/// retained outcomes in the in-process three-voter clusters. Every attempt
+/// inside it keeps its production deadline; this bounds only how long a
+/// fixture keeps re-observing. At load 90-350 on 16 cores a single leader
+/// observation or election alone exceeded the former 20-30 s budgets.
+const FIXTURE_OBSERVATION_WINDOW: Duration = Duration::from_secs(120);
+
+/// Election timing for the encrypted target replicas: the server's own policy
+/// (250 ms heartbeat, 1.5-3 s election timeout) with the fixture's remaining
+/// defaults. All replicas share one test runtime thread; on a host at load
+/// 90-350 that thread stalled past the former 250-400 ms election timeout, so
+/// leadership churned and no leader observation or barrier could settle.
+fn target_raft_config() -> Config {
+    let server = kasumi_raft::server_config();
+    Config {
+        heartbeat_interval: server.heartbeat_interval,
+        election_timeout_min: server.election_timeout_min,
+        election_timeout_max: server.election_timeout_max,
+        ..Config::default()
+    }
+}
+
 /// One modeled physical process. The caller retains both private directories
 /// and the same admitted disk owners through every file close/reopen.
 struct PhysicalFixture {
@@ -153,7 +175,7 @@ impl Fixture {
     ) -> kasumi_serving::SignedAuthorityReceipt {
         let context = self.context("operator");
         let expected_digest = command.digest().unwrap();
-        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let deadline = tokio::time::Instant::now() + FIXTURE_OBSERVATION_WINDOW;
         loop {
             let current = self.leader().await;
             // A previous dispatch may have committed while its reply or leader
@@ -333,7 +355,7 @@ impl Fixture {
         fixture
     }
     async fn leader(&self) -> Arc<IndependentAuthority> {
-        tokio::time::timeout(Duration::from_secs(30), async {
+        tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
             loop {
                 for service in &self.services {
                     let metrics = service.group.raft().metrics().borrow().clone();

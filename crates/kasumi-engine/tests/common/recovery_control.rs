@@ -92,7 +92,13 @@ async fn snapshot(db: &Arc<Database>) {
 // A current leader can step down between selection and the read barrier. Each
 // helper retains one original finite credential and retries only uncertain
 // read/release errors; permanent authorization and absence are never hidden.
-const CONTROL_OBSERVATION_WINDOW: Duration = Duration::from_secs(40);
+// This is a fixture budget only: every attempt inside it keeps its production
+// deadline (a recovery proposal waits 10 s), so the window must hold several
+// attempts on a CPU-starved host. At load 90-350 one write alone used the
+// former 10 s windows. The completed-recovery tests run credentials and
+// phases on a manual clock, so a longer window cannot outlive them; on the
+// system clock an expired credential still ends the wait as a rejection.
+const CONTROL_OBSERVATION_WINDOW: Duration = Duration::from_secs(120);
 fn uncertain_control_read(code: ErrorCode) -> bool {
     matches!(code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable)
 }
@@ -557,7 +563,7 @@ async fn prepare_completion(
         {
             // The original Start was definitely retained. Resolve an uncertain
             // duplicate acknowledgement by reading that same operation only.
-            tokio::time::timeout(Duration::from_secs(10), async {
+            tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
                 loop {
                     match f
                         .leader()
@@ -683,7 +689,7 @@ async fn prepare_completion(
     };
     command.not_after_ms += 1;
     let reject_context = f.context("owner");
-    tokio::time::timeout(Duration::from_secs(40), async {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let current = f.leader().await;
             match current
@@ -735,7 +741,7 @@ async fn prepare_completion(
     // cached route's replay response uncertain. Retry only the identical
     // prepared phase with its original credential and frozen input.
     let replay_context = f.context("owner");
-    let replayed = tokio::time::timeout(Duration::from_secs(40), async {
+    let replayed = tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let current = f.leader().await;
             match current
@@ -1126,7 +1132,7 @@ async fn prepare_completion(
     // the original phase and one finite read context across current-leader
     // selection; only uncertainty about this read is retried.
     let phase_context = f.context("owner");
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let current = f.leader().await;
             match current
@@ -2013,7 +2019,7 @@ async fn complete_recovery(
 }
 async fn publish_route(f: &Fixture, operation: Uuid, phase: Uuid) -> RecoveryDispatchOutcome {
     let context = f.context("owner");
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let db = f.leader().await;
             match db
@@ -2043,7 +2049,7 @@ async fn publish_route(f: &Fixture, operation: Uuid, phase: Uuid) -> RecoveryDis
 // the actual current leader; permanent authorization/corruption errors still fail.
 async fn read_topology(f: &Fixture) -> kasumi_engine::control::VersionedTopology {
     let context = f.context("owner");
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let plane = kasumi_engine::control::ControlPlane::new(f.leader().await).unwrap();
             match plane.topology(&context).await {
@@ -2303,7 +2309,7 @@ async fn consume_fixture_effect(
     effect: RecoveryEffect,
 ) -> Uuid {
     let context = f.context("owner");
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let db = f.leader().await;
             let observed = match db
@@ -2379,7 +2385,7 @@ async fn resolve_phase_with_prior(
     let context = f.context("owner");
     let mut consumed_synthetic_attempt = consumed_prior;
     let mut diagnostic = resolution_diagnostic::Progress::default();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             diagnostic.enter(resolution_diagnostic::Stage::Leader);
             let db = f.leader().await;
@@ -2598,7 +2604,7 @@ async fn prepare_next(
 ) -> (Uuid, RecoveryDispatch) {
     let context = f.context("owner");
     let phase = Uuid::new_v4();
-    let (sequence, pending, input) = tokio::time::timeout(Duration::from_secs(10), async {
+    let (sequence, pending, input) = tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             let current = f.leader().await;
             let head = match current.recovery_status(context.clone(), operation).await {
@@ -2645,7 +2651,7 @@ async fn prepare_next(
     let mut last_stage = "not_started";
     let mut last_error = None::<String>;
     let mut last_route = None::<String>;
-    let preparation = tokio::time::timeout(Duration::from_secs(40), async {
+    let preparation = tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
         loop {
             attempts += 1;
             last_stage = "select_current_leader";
@@ -3586,7 +3592,7 @@ async fn reject_changed_completion_caps(f: &Fixture, operation: Uuid) {
         };
         assert!(matches!(request.step, TargetRuntimeStep::Complete(_)));
         request.not_after_ms = request.not_after_ms.checked_add_signed(delta).unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
+        tokio::time::timeout(CONTROL_OBSERVATION_WINDOW, async {
             loop {
                 let current = f.leader().await;
                 match current

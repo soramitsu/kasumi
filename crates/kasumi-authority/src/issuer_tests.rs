@@ -676,7 +676,7 @@ async fn accepted_on_current_leader(
     request: LifecycleAuthorityRequest,
 ) -> (Arc<IndependentAuthority>, SignedLifecycleAuthorityReceipt) {
     let context = f.context("operator");
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let service = f.leader().await;
             match service

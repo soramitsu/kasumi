@@ -51,7 +51,12 @@ fn context(tenant: &str) -> RequestContext {
     }
 }
 
-#[tokio::test]
+// The 400 ms and 30 ms restore deadlines are the property under test, so they
+// run on Tokio's paused clock. It advances only while every task waits on a
+// timer (blocking store work holds it), so host load cannot spend the first
+// restore's budget before the queued request reaches the gate. A restore that
+// never ends still trips each deadline and each 2 s fixture wait.
+#[tokio::test(start_paused = true)]
 async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_another_tenant() {
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let physical = common::PhysicalFixture::new(&root.path().join("node.kv"), Default::default());
@@ -78,6 +83,14 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
         reads: AtomicUsize::new(0),
         entered: tokio::sync::Notify::new(),
     });
+    // Prepare the queued target before the first restore takes the gate, so
+    // nothing but the queued request itself runs inside the first deadline.
+    let queued_targets = kasumi_store::test_utils::initialize_custody_fixture(
+        queued.clone(),
+        std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+    )
+    .await
+    .unwrap();
     let task = tokio::spawn({
         let pending = pending.clone();
         let keys = keys.clone();
@@ -118,12 +131,7 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
             keys,
             timeout_ms: 30,
         },
-        kasumi_store::test_utils::initialize_custody_fixture(
-            queued.clone(),
-            std::sync::Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
-        )
-        .await
-        .unwrap(),
+        queued_targets,
         common::local_restore_request(
             context("queued"),
             &common::unavailable_checkpoint("queued", uuid::Uuid::new_v4()),
@@ -140,6 +148,10 @@ async fn restore_deadline_bounds_source_io_and_gate_queue_without_blocking_anoth
         pending.reads.load(Ordering::SeqCst),
         1,
         "queue timeout must occur before source I/O"
+    );
+    assert!(
+        !task.is_finished(),
+        "the queued deadline must expire while the first restore still holds the gate"
     );
     let other_open = tokio::spawn({
         let audit = audit.clone();

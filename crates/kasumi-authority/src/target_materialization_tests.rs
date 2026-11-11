@@ -1221,12 +1221,7 @@ impl MaterialFixture {
                 input.clone(),
                 TargetReplicaConfig {
                     node_id: id,
-                    raft: Config {
-                        heartbeat_interval: 50,
-                        election_timeout_min: 250,
-                        election_timeout_max: 400,
-                        ..Config::default()
-                    },
+                    raft: target_raft_config(),
                     admission: self.physical[&id].admission.clone(),
                 },
                 router.clone(),
@@ -1297,7 +1292,7 @@ impl MaterialFixture {
     }
 }
 async fn current_target(targets: &[RunningTarget]) -> usize {
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             for (i, t) in targets.iter().enumerate() {
                 let g = t.owner.database().raft_group();
@@ -1317,8 +1312,10 @@ async fn elect_original_target(target: &RunningTarget) {
     let database = target.owner.database();
     let group = database.raft_group();
     // Restore this selected physical member's quorum role without replacing
-    // its original phase owner or operation deadline.
-    tokio::time::timeout(Duration::from_secs(20), async {
+    // its original phase owner or operation deadline. Under load an election
+    // and its barrier can take longer than one fixed attempt budget; the
+    // operation's own deadline still bounds every loop below.
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             target.operation.check().unwrap();
             let metrics = group.raft().metrics().borrow().clone();
@@ -1960,8 +1957,9 @@ async fn exercise_target_activation(maintenance: bool) {
     let mut f = MaterialFixture::new().await;
     // This positive integration case opens three encrypted replicas sequentially
     // before activation and restart proof. Bound the original setup operations
-    // for that work; explicit expiry tests retain the fixture's shorter default.
-    f.target_start_timeout_ms = 300_000;
+    // for that work with the API maximum, so a loaded host's re-elections stay
+    // inside one operation; explicit expiry tests retain the shorter default.
+    f.target_start_timeout_ms = 600_000;
     let input = f.materialize_all().await;
     let initialize = f.commit_phase(LifecyclePhase::Initialize, &input).await;
     let router = Arc::new(InProcessRouter::default());
@@ -2146,7 +2144,7 @@ async fn exercise_target_activation(maintenance: bool) {
                 .await
                 .is_err()
         );
-        let local = tokio::time::timeout(Duration::from_secs(10), async {
+        let local = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
             loop {
                 match follower
                     .owner

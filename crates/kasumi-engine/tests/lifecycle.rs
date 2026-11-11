@@ -334,7 +334,9 @@ impl Fixture {
         self.leader().await;
     }
     async fn leader(&self) -> Arc<Database> {
-        tokio::time::timeout(Duration::from_secs(10), async {
+        // Fixture budget for an election plus one linearizable barrier. On a
+        // host at load 90-350 that alone exceeded the former 10 s.
+        tokio::time::timeout(Duration::from_secs(120), async {
             loop {
                 for (id, db) in &self.nodes {
                     // The barrier can await a metrics publication; release

@@ -594,6 +594,48 @@ async fn acknowledged_one_voter_write_survives_sigkill_without_graceful_shutdown
     Ok(())
 }
 
+/// One-shot setup conditions (an election, the first commit) on a loaded host.
+/// These are fixture budgets; nothing below measures how fast they happen.
+const SETUP_WAIT: Duration = Duration::from_secs(60);
+
+/// Catch-up in two-entry batches costs one fsynced round trip per batch, so its
+/// total time scales with host load. Fail when this replica makes no log or
+/// apply progress for `WAIT`, rather than when the whole backlog takes longer
+/// than `WAIT`: an append retry that never shrinks still stalls and fails.
+#[allow(
+    clippy::result_large_err,
+    reason = "Same owning fixture result as the test that calls it."
+)]
+async fn wait_caught_up(group: &RaftGroup, target: u64, what: &str) -> FixtureResult<()> {
+    loop {
+        let before = {
+            let metrics = group.raft().metrics();
+            let metrics = metrics.borrow();
+            (
+                metrics.last_log_index,
+                metrics.last_applied.map(|id| id.index),
+            )
+        };
+        let metrics = group
+            .raft()
+            .wait(Some(WAIT))
+            .metrics(
+                |metrics| {
+                    metrics.last_applied.is_some_and(|id| id.index >= target)
+                        || (
+                            metrics.last_log_index,
+                            metrics.last_applied.map(|id| id.index),
+                        ) != before
+                },
+                what,
+            )
+            .await?;
+        if metrics.last_applied.is_some_and(|id| id.index >= target) {
+            return Ok(());
+        }
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[allow(
     clippy::result_large_err,
@@ -673,13 +715,13 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
         .await?;
     groups[0]
         .raft()
-        .wait(Some(WAIT))
+        .wait(Some(SETUP_WAIT))
         .current_leader(1, "initial leader")
         .await?;
     for group in &groups {
         group
             .raft()
-            .wait(Some(WAIT))
+            .wait(Some(SETUP_WAIT))
             .metrics(
                 |metrics| metrics.last_applied.is_some_and(|id| id.index >= 1),
                 "initial voter group committed",
@@ -705,18 +747,7 @@ async fn oversized_replication_backlog_shrinks_and_catches_up_without_changing_m
     assert_eq!(groups[2].current_term(), initial_term);
     router.isolate(GROUP, 3, false);
     for group in &groups {
-        group
-            .raft()
-            .wait(Some(WAIT))
-            .metrics(
-                |metrics| {
-                    metrics
-                        .last_applied
-                        .is_some_and(|id| id.index >= target.index)
-                },
-                "bounded batches caught up",
-            )
-            .await?;
+        wait_caught_up(group, target.index, "bounded batches caught up").await?;
     }
     assert!(
         transport.rejected.load(Ordering::SeqCst) > 0,

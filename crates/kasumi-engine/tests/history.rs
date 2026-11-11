@@ -5,7 +5,72 @@ use kasumi_store::BackupDestination;
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
-use std::{collections::BTreeSet, sync::Arc};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
+
+/// Fixture budget for resolving one request whose attempts keep missing a
+/// production deadline on a CPU-starved host (load 90-350 on 16 cores runs
+/// this debug build at a few percent of a core). Every attempt keeps its
+/// production deadline; this bounds only how long the fixture repeats it.
+const RESOLUTION_WINDOW: Duration = Duration::from_secs(300);
+
+/// Errors that report only a missed production deadline: an uncertain write
+/// that may still commit, a read/admission wait that returned nothing, or a
+/// strict-audited read withheld because its audit write could not be confirmed
+/// (the audit command missed its write deadline). None of them released data.
+fn missed_deadline(error: &Error) -> bool {
+    match error.code {
+        ErrorCode::UnknownOutcome => error.message.starts_with("write deadline exceeded"),
+        ErrorCode::AuditUnavailable => {
+            error.message == "required read audit could not be confirmed durable"
+        }
+        ErrorCode::ResourceExhausted => matches!(
+            error.message.as_str(),
+            "query deadline exceeded"
+                | "point read deadline exceeded"
+                | "document read deadline exceeded"
+                | "snapshot page deadline exceeded"
+                | "snapshot scan deadline exceeded"
+                | "proposal admission deadline exceeded"
+        ),
+        _ => false,
+    }
+}
+
+/// Wait until no admitted proposal is still running, so a write that missed
+/// its caller's deadline has committed or failed before it is repeated.
+/// Repeating it while the original is still in flight is not a replay: an
+/// archive builds a second manifest that publication rejects as "archive
+/// identity reused for different history", and a large staged finalize admits
+/// a second copy of its input until node admission is exhausted.
+async fn settle_proposals(db: &Database, window: tokio::time::Instant) {
+    while db.fixture_running_proposals() != 0 && tokio::time::Instant::now() < window {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Resolve one exact request that reports only a missed deadline, as the error
+/// tells a client to: let the original settle, then repeat it. Every request
+/// wrapped here replays by its permanent identity (idempotency key, archive
+/// id or staged transaction), so a write that committed after its caller's
+/// deadline returns its original receipt. Every other outcome, including
+/// expected rejections, is unchanged.
+macro_rules! resolved {
+    ($db:expr, $request:expr) => {{
+        let window = tokio::time::Instant::now() + RESOLUTION_WINDOW;
+        loop {
+            match $request.await {
+                Err(error) if missed_deadline(&error) && tokio::time::Instant::now() < window => {
+                    eprintln!(
+                        "fixture resolves a request that missed a production deadline: {}",
+                        error.message
+                    );
+                    settle_proposals(&$db, window).await;
+                }
+                result => break result,
+            }
+        }
+    }};
+}
 
 fn context() -> RequestContext {
     RequestContext {
@@ -83,31 +148,57 @@ async fn open(
     (db, audit, node)
 }
 async fn collection(db: &Database, name: &str, retention_class: CollectionRetentionClass) {
-    db.administer(
-        context(),
-        Operation::CreateCollection(CollectionDefinition {
-            name: name.into(),
-            write_mode: if retention_class == CollectionRetentionClass::ArchivableHistory {
-                CollectionWriteMode::AppendOnly
-            } else {
-                CollectionWriteMode::Mutable
-            },
-            retention_class,
-            schema: json!({"type":"object"}),
-            indexes: vec![IndexDefinition {
-                name: "number".into(),
-                fields: vec![IndexField {
-                    path: "/n".into(),
-                    kind: ScalarType::Number,
+    let created = db
+        .administer(
+            context(),
+            Operation::CreateCollection(CollectionDefinition {
+                name: name.into(),
+                write_mode: if retention_class == CollectionRetentionClass::ArchivableHistory {
+                    CollectionWriteMode::AppendOnly
+                } else {
+                    CollectionWriteMode::Mutable
+                },
+                retention_class,
+                schema: json!({"type":"object"}),
+                indexes: vec![IndexDefinition {
+                    name: "number".into(),
+                    fields: vec![IndexField {
+                        path: "/n".into(),
+                        kind: ScalarType::Number,
+                    }],
+                    unique: true,
+                    text: None,
                 }],
-                unique: true,
-                text: None,
-            }],
-            strict_read_audit: true,
-        }),
-    )
-    .await
-    .unwrap();
+                strict_read_audit: true,
+            }),
+        )
+        .await;
+    match created {
+        Ok(_) => {}
+        // CreateCollection has no idempotency key; resolve an uncertain one by
+        // observing its applied effect instead of proposing it again.
+        Err(error) if error.code == ErrorCode::UnknownOutcome => {
+            eprintln!(
+                "fixture resolves an uncertain collection {name}: {}",
+                error.message
+            );
+            tokio::time::timeout(RESOLUTION_WINDOW, async {
+                while !db
+                    .engine()
+                    .generation()
+                    .unwrap()
+                    .state
+                    .collections
+                    .contains_key(name)
+                {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .unwrap_or_else(|_| panic!("uncertain collection {name} never applied: {error:?}"));
+        }
+        Err(error) => panic!("collection {name} rejected: {error:?}"),
+    }
 }
 fn batch(key: &str, first: u64, count: u64) -> MutationBatch {
     MutationBatch {
@@ -361,15 +452,14 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     collection(&db, "commands", CollectionRetentionClass::Operational).await;
     let mut cutoff = 0;
     for n in 0..3 {
-        cutoff = db
-            .mutate(context(), batch(&format!("seed-{n}"), n * 200, 200))
-            .await
-            .unwrap()
-            .revision;
+        cutoff = resolved!(
+            db,
+            db.mutate(context(), batch(&format!("seed-{n}"), n * 200, 200))
+        )
+        .unwrap()
+        .revision;
     }
-    let before = db
-        .get(&context(), "docs", "r0599")
-        .await
+    let before = resolved!(db, db.get(&context(), "docs", "r0599"))
         .unwrap()
         .expect("document exists");
     let request = ArchiveHistory {
@@ -378,12 +468,9 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         cutoff_revision: cutoff,
         destination: "cold".into(),
     };
-    let receipt = db
-        .archive_history(context(), request.clone())
-        .await
-        .unwrap();
+    let receipt = resolved!(db, db.archive_history(context(), request.clone())).unwrap();
     assert_eq!(
-        db.archive_history(context(), request).await.unwrap(),
+        resolved!(db, db.archive_history(context(), request.clone())).unwrap(),
         receipt
     );
     let state = db.engine().generation().unwrap();
@@ -400,18 +487,19 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     let archive = state.state.history_archives["period-one"].clone();
     drop(state);
     assert_eq!(
-        db.get(&context(), "docs", "r0599")
-            .await
+        resolved!(db, db.get(&context(), "docs", "r0599"))
             .unwrap()
             .expect("document exists")
             .as_ref(),
         before.as_ref()
     );
     assert_eq!(
-        db.mutate(context(), batch("duplicate-archived-id", 599, 1))
-            .await
-            .unwrap_err()
-            .code,
+        resolved!(
+            db,
+            db.mutate(context(), batch("duplicate-archived-id", 599, 1))
+        )
+        .unwrap_err()
+        .code,
         ErrorCode::Conflict
     );
     let mut duplicate_index = batch("duplicate-cold-index", 600, 1);
@@ -419,17 +507,15 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         body["n"] = json!(0);
     }
     assert_eq!(
-        db.mutate(context(), duplicate_index)
-            .await
+        resolved!(db, db.mutate(context(), duplicate_index.clone()))
             .unwrap_err()
             .code,
         ErrorCode::Conflict
     );
-    db.mutate(context(), batch("new-hot-segment", 600, 1))
-        .await
-        .unwrap();
-    let snapshot = db
-        .read_snapshot(
+    resolved!(db, db.mutate(context(), batch("new-hot-segment", 600, 1))).unwrap();
+    let snapshot = resolved!(
+        db,
+        db.read_snapshot(
             &context(),
             ReadSnapshotRequest {
                 documents: vec![
@@ -446,47 +532,51 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
                 time_bounds: None,
             },
         )
-        .await
-        .unwrap();
+    )
+    .unwrap();
     assert_eq!(
         snapshot.documents[0].document.as_ref().unwrap(),
         before.as_ref()
     );
     assert!(snapshot.documents[1].document.is_none());
-    db.mutate(
-        context(),
-        MutationBatch {
-            idempotency_key: "guard-archived-receipt".into(),
-            read_set: snapshot.read_assertions(),
-            operations: vec![Mutation::Put {
-                collection: "commands".into(),
-                id: "command".into(),
-                expected: Precondition::Absent,
-                body: json!({"n":1}),
-            }],
-        },
-    )
-    .await
-    .unwrap();
-    assert_eq!(
+    resolved!(
+        db,
         db.mutate(
             context(),
             MutationBatch {
-                idempotency_key: "false-cold-absence".into(),
-                read_set: vec![ReadAssertion::Document {
-                    collection: "docs".into(),
-                    id: "r0599".into(),
-                    expected: ReadPrecondition::Absent
-                }],
+                idempotency_key: "guard-archived-receipt".into(),
+                read_set: snapshot.read_assertions(),
                 operations: vec![Mutation::Put {
                     collection: "commands".into(),
-                    id: "must-not-commit".into(),
+                    id: "command".into(),
                     expected: Precondition::Absent,
-                    body: json!({"n":2})
+                    body: json!({"n":1}),
                 }],
-            }
+            },
         )
-        .await
+    )
+    .unwrap();
+    assert_eq!(
+        resolved!(
+            db,
+            db.mutate(
+                context(),
+                MutationBatch {
+                    idempotency_key: "false-cold-absence".into(),
+                    read_set: vec![ReadAssertion::Document {
+                        collection: "docs".into(),
+                        id: "r0599".into(),
+                        expected: ReadPrecondition::Absent
+                    }],
+                    operations: vec![Mutation::Put {
+                        collection: "commands".into(),
+                        id: "must-not-commit".into(),
+                        expected: Precondition::Absent,
+                        body: json!({"n":2})
+                    }],
+                }
+            )
+        )
         .unwrap_err()
         .code,
         ErrorCode::Conflict
@@ -497,7 +587,7 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         "sort":["/n"]
     }))
     .unwrap();
-    let rows = db.query(&context(), query.clone()).await.unwrap();
+    let rows = resolved!(db, db.query(&context(), query.clone())).unwrap();
     assert_eq!(
         rows.rows
             .iter()
@@ -505,8 +595,9 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
             .collect::<Vec<_>>(),
         vec!["r0598", "r0599", "r0600"]
     );
-    let snapshot = db
-        .read_snapshot(
+    let snapshot = resolved!(
+        db,
+        db.read_snapshot(
             &context(),
             ReadSnapshotRequest {
                 documents: vec![],
@@ -514,28 +605,30 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
                 time_bounds: None,
             },
         )
-        .await
-        .unwrap();
+    )
+    .unwrap();
     assert_eq!(snapshot.queries[0].rows.len(), 3);
-    let lease = db
-        .open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
-        .await
-        .unwrap();
+    let lease = resolved!(
+        db,
+        db.open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
+    )
+    .unwrap();
     let mut after_id = None;
     let mut read = 0;
     loop {
-        let page = db
-            .scan_snapshot_page(
+        let page = resolved!(
+            db,
+            db.scan_snapshot_page(
                 &context(),
                 ScanSnapshotPage {
                     lease_id: lease.lease_id.clone(),
                     collection: "docs".into(),
-                    after_id,
+                    after_id: after_id.clone(),
                     limit: 97,
                 },
             )
-            .await
-            .unwrap();
+        )
+        .unwrap();
         read += page.documents.len();
         match &page.next_after_id {
             Some(next) => after_id = Some(next.clone()),
@@ -574,22 +667,22 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     )
     .await;
     assert_eq!(
-        db.get(&context(), "docs", "r0599").await.unwrap_err().code,
+        resolved!(db, db.get(&context(), "docs", "r0599"))
+            .unwrap_err()
+            .code,
         ErrorCode::Unavailable
     );
     db.install_archive_destination("cold".into(), destination.clone())
         .unwrap();
     assert_eq!(
-        db.get(&context(), "docs", "r0599")
-            .await
+        resolved!(db, db.get(&context(), "docs", "r0599"))
             .unwrap()
             .expect("document exists")
             .as_ref(),
         before.as_ref()
     );
     assert_eq!(
-        db.query(&context(), query.clone())
-            .await
+        resolved!(db, db.query(&context(), query.clone()))
             .unwrap()
             .rows
             .len(),
@@ -600,23 +693,24 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
         body["n"] = json!(599);
     }
     assert_eq!(
-        db.mutate(context(), duplicate_index)
-            .await
+        resolved!(db, db.mutate(context(), duplicate_index.clone()))
             .unwrap_err()
             .code,
         ErrorCode::Conflict
     );
     assert_eq!(
-        db.archive_history(
-            context(),
-            ArchiveHistory {
-                archive_id: "not-operational".into(),
-                collection: "commands".into(),
-                cutoff_revision: db.engine().generation().unwrap().state.revision,
-                destination: "cold".into()
-            }
+        resolved!(
+            db,
+            db.archive_history(
+                context(),
+                ArchiveHistory {
+                    archive_id: "not-operational".into(),
+                    collection: "commands".into(),
+                    cutoff_revision: db.engine().generation().unwrap().state.revision,
+                    destination: "cold".into()
+                }
+            )
         )
-        .await
         .unwrap_err()
         .code,
         ErrorCode::Forbidden
@@ -630,16 +724,22 @@ async fn archived_prefixes_keep_logical_reads_unique_indexes_and_dedup_after_res
     bytes[last] ^= 1;
     std::fs::write(&path, bytes).unwrap();
     assert_eq!(
-        db.get(&context(), "docs", "r0000").await.unwrap_err().code,
+        resolved!(db, db.get(&context(), "docs", "r0000"))
+            .unwrap_err()
+            .code,
         ErrorCode::Corruption
     );
     assert_eq!(
-        db.query(&context(), query).await.unwrap_err().code,
+        resolved!(db, db.query(&context(), query.clone()))
+            .unwrap_err()
+            .code,
         ErrorCode::Corruption
     );
     std::fs::remove_file(&path).unwrap();
     assert_eq!(
-        db.get(&context(), "docs", "r0000").await.unwrap_err().code,
+        resolved!(db, db.get(&context(), "docs", "r0000"))
+            .unwrap_err()
+            .code,
         ErrorCode::Unavailable
     );
     db.shutdown().await.unwrap();
@@ -716,21 +816,19 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         transaction_id: "permanent-history-command".into(),
         manifest_digest: staged_digest(&manifest).unwrap().0,
     };
-    db.begin_staged_transaction(
-        context(),
-        BeginStagedTransaction {
-            scope: kasumi_types::StagedTransactionScope {
-                tenant: context().tenant,
-                principal: context().principal,
-                incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
-            },
-            transaction_id: reference.transaction_id.clone(),
-            manifest,
-            ttl_ms: 60_000,
+    // Upload lifetime is a fixture budget here, not the property: two 5.4 MB
+    // chunks can take minutes on a loaded host, so allow an hour (max 24 h).
+    let begin = BeginStagedTransaction {
+        scope: kasumi_types::StagedTransactionScope {
+            tenant: context().tenant,
+            principal: context().principal,
+            incarnation: db.engine().generation().unwrap().state.incarnation.clone(),
         },
-    )
-    .await
-    .unwrap();
+        transaction_id: reference.transaction_id.clone(),
+        manifest,
+        ttl_ms: 3_600_000,
+    };
+    resolved!(db, db.begin_staged_transaction(context(), begin.clone())).unwrap();
     for (index, chunk) in chunks.into_iter().enumerate() {
         let request = AppendStagedChunk {
             transaction: reference.clone(),
@@ -748,7 +846,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                 // A caller timeout can leave the original write completing.
                 // Resolve the same manifest/index before retrying its exact
                 // chunk. Neither the upload TTL nor the old worker is renewed.
-                tokio::time::timeout(std::time::Duration::from_secs(30), async {
+                tokio::time::timeout(RESOLUTION_WINDOW, async {
                     loop {
                         match db
                             .staged_transaction_status(&original_context, &reference)
@@ -771,11 +869,13 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                                     Err(error) => assert_eq!(error.code, ErrorCode::UnknownOutcome),
                                 }
                             }
+                            // A loaded host can also withhold this strict-audited
+                            // status read when its audit write misses its deadline.
                             Err(error) => assert!(
                                 matches!(
                                     error.code,
                                     ErrorCode::UnknownOutcome | ErrorCode::Unavailable
-                                ),
+                                ) || missed_deadline(&error),
                                 "original staged status resolution rejected: {error:?}"
                             ),
                         }
@@ -787,20 +887,23 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
             }
         }
     }
-    let original = db
-        .finalize_staged_transaction(context(), reference.clone())
-        .await
-        .unwrap();
-    db.archive_history(
-        context(),
-        ArchiveHistory {
-            archive_id: "large-period".into(),
-            collection: "docs".into(),
-            cutoff_revision: original.revision,
-            destination: "cold".into(),
-        },
+    let original = resolved!(
+        db,
+        db.finalize_staged_transaction(context(), reference.clone())
     )
-    .await
+    .unwrap();
+    resolved!(
+        db,
+        db.archive_history(
+            context(),
+            ArchiveHistory {
+                archive_id: "large-period".into(),
+                collection: "docs".into(),
+                cutoff_revision: original.revision,
+                destination: "cold".into(),
+            },
+        )
+    )
     .unwrap();
     let state = db.engine().generation().unwrap();
     let archive = state.state.history_archives["large-period"].clone();
@@ -873,8 +976,10 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
     )
     .await
     .unwrap();
+    // A fixture budget; use the API maximum so a loaded host's verification
+    // of the 10.8 MB backup cannot be cut short.
     let restore_source = kasumi_engine::RestoreSource {
-        timeout_ms: 300_000,
+        timeout_ms: 600_000,
         destination_alias: "recovered".into(),
         destination: backups.clone(),
         keys: Arc::new(LocalKeyProvider::new([0xD3; 32])),
@@ -912,9 +1017,7 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         .await
         .unwrap();
     assert_eq!(
-        restored
-            .get(&context(), "docs", "r0011")
-            .await
+        resolved!(restored, restored.get(&context(), "docs", "r0011"))
             .unwrap()
             .expect("document exists")
             .body["payload"]
@@ -924,18 +1027,21 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
         900_000
     );
     assert_eq!(
-        restored
-            .finalize_staged_transaction(context(), reference)
-            .await
-            .unwrap(),
+        resolved!(
+            restored,
+            restored.finalize_staged_transaction(context(), reference.clone())
+        )
+        .unwrap(),
         original
     );
-    let lease = restored
-        .open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
-        .await
-        .unwrap();
-    let page = restored
-        .scan_snapshot_page(
+    let lease = resolved!(
+        restored,
+        restored.open_snapshot_lease(&context(), OpenSnapshotLease { ttl_ms: 60_000 })
+    )
+    .unwrap();
+    let page = resolved!(
+        restored,
+        restored.scan_snapshot_page(
             &context(),
             ScanSnapshotPage {
                 lease_id: lease.lease_id.clone(),
@@ -944,8 +1050,8 @@ async fn chunked_full_backup_restores_cold_history_and_permanent_identity_withou
                 limit: 12,
             },
         )
-        .await
-        .unwrap();
+    )
+    .unwrap();
     assert!(page.next_after_id.is_some(), "byte bound splits cold pages");
     assert!(
         page.documents
