@@ -1477,6 +1477,39 @@ mod workspace_tests {
     }
 
     #[test]
+    fn read_admission_classification_survives_io_wrapping() {
+        use kasumi_types::ErrorCode;
+
+        for kind in [
+            std::io::ErrorKind::OutOfMemory,
+            std::io::ErrorKind::WouldBlock,
+            std::io::ErrorKind::Other,
+        ] {
+            for wrapped in [false, true] {
+                for classify in [
+                    crate::service::document_load_error,
+                    crate::state::snapshot_encoding_failure::encoding_error,
+                ] {
+                    let failure = ReadAdmissionFailure {
+                        original: kind.into(),
+                    };
+                    let error = if wrapped {
+                        anyhow::Error::new(std::io::Error::other(failure))
+                    } else {
+                        anyhow::Error::new(failure)
+                    };
+                    let expected = if kind == std::io::ErrorKind::OutOfMemory {
+                        ErrorCode::ResourceExhausted
+                    } else {
+                        ErrorCode::Unavailable
+                    };
+                    assert_eq!(classify(error.context("staged body read")).code, expected);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn restore_slice_bounds_actual_manifest_and_dense_body_decode_work() {
         let bodies = [
             serde_json::Value::Null,

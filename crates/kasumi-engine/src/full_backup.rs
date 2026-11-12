@@ -75,7 +75,12 @@ impl Write for StateStream {
             .total
             .checked_add(len as u64)
             .filter(|value| *value <= self.limit)
-            .ok_or_else(|| std::io::Error::other("backup resident state exceeds format limit"))?;
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "backup resident state exceeds format limit",
+                )
+            })?;
         self.hash.update(bytes);
         while !bytes.is_empty() {
             let count = bytes.len().min(CHUNK_BYTES - self.buffer.len());
@@ -100,6 +105,10 @@ struct StreamWork {
     _permit: Arc<tokio::sync::OwnedSemaphorePermit>,
     _registration: WorkRegistration,
 }
+
+#[cfg(test)]
+#[path = "full_backup_encoding_tests.rs"]
+mod encoding_tests;
 
 fn document_source_peak(tenant_bytes: usize, slot: &DocumentSlot) -> anyhow::Result<u64> {
     let decoded_peak = crate::document_store::source_workspace(slot)?;
@@ -158,11 +167,7 @@ impl StreamWork {
             self.generation.document_resolver(),
             &mut self.writer,
         ) {
-            #[cfg(test)]
-            eprintln!("backup snapshot source failure: {original:#}");
-            #[cfg(not(test))]
-            let _ = original;
-            let error = Error::new(ErrorCode::Unavailable, "backup state stream failed");
+            let error = crate::state::snapshot_encoding_failure::encoding_error(original);
             return Err(if self.writer.stopped {
                 ProducerFailure::Stopped(error)
             } else {

@@ -72,10 +72,7 @@ impl<T: Write> Write for CheckedIo<'_, T> {
     }
 }
 fn error(error: anyhow::Error) -> Error {
-    error
-        .downcast_ref::<Error>()
-        .cloned()
-        .unwrap_or_else(|| Error::new(ErrorCode::Corruption, error.to_string()))
+    super::snapshot_encoding_failure::encoding_error(error)
 }
 impl TenantEngine {
     fn admitted_snapshot_store(&self, admission: &NodeAdmission) -> Result<Arc<TenantStore>> {
@@ -302,5 +299,48 @@ impl TenantEngine {
             }))
             .await???;
         work.check()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test(start_paused = true)]
+    async fn snapshot_deadlines_keep_unavailable_in_checks_and_waits() {
+        let deadline = VerificationDeadline::new(1).unwrap();
+        let expired = deadline
+            .run(std::future::pending::<()>())
+            .await
+            .unwrap_err();
+        for original in [expired, deadline.check().unwrap_err()] {
+            let classified = error(original);
+            assert_eq!(classified.code, ErrorCode::Unavailable);
+            assert_eq!(classified.message, "backup verification deadline expired");
+        }
+        assert_eq!(
+            error(VerificationDeadline::new(0).err().unwrap()).code,
+            ErrorCode::InvalidArgument
+        );
+    }
+
+    #[tokio::test]
+    async fn snapshot_worker_failure_is_unavailable() {
+        let stopped = tokio::spawn(async { panic!("injected snapshot worker failure") })
+            .await
+            .unwrap_err();
+        assert_eq!(error(stopped.into()).code, ErrorCode::Unavailable);
+    }
+
+    #[test]
+    fn snapshot_io_errors_preserve_availability_and_integrity() {
+        for (kind, expected) in [
+            (std::io::ErrorKind::TimedOut, ErrorCode::Unavailable),
+            (std::io::ErrorKind::StorageFull, ErrorCode::Unavailable),
+            (std::io::ErrorKind::InvalidData, ErrorCode::Corruption),
+            (std::io::ErrorKind::UnexpectedEof, ErrorCode::Corruption),
+        ] {
+            assert_eq!(error(std::io::Error::from(kind).into()).code, expected);
+        }
     }
 }

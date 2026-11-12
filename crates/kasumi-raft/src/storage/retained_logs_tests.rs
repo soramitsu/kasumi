@@ -315,12 +315,23 @@ async fn limited_read_returns_bounded_ordered_prefixes_while_exact_reads_remain_
     }
     assert_eq!(batches, 3);
     assert!(log.limited_get_log_entries(end, end).await?.is_empty());
-    assert!(log.limited_get_log_entries(end, end + 1).await.is_err());
+    assert!(matches!(
+        log.limited_get_log_entries(end, end + 1).await.unwrap_err(),
+        StorageError::Defensive { source }
+            if matches!(source.violation, openraft::Violation::LogReadPrefixUnavailable { start } if start == end)
+    ));
     log.purge(id(0)).await?;
-    assert!(log.limited_get_log_entries(0, end).await.is_err());
+    assert!(matches!(
+        log.limited_get_log_entries(0, end).await.unwrap_err(),
+        StorageError::Defensive { source }
+            if matches!(source.violation, openraft::Violation::LogReadPrefixUnavailable { start: 0 })
+    ));
     custody_provider.revoke();
     assert!(stores.custody().store().refresh_lease().await.is_err());
-    assert!(log.limited_get_log_entries(1, end).await.is_err());
+    assert!(matches!(
+        log.limited_get_log_entries(1, end).await.unwrap_err(),
+        StorageError::IO { .. }
+    ));
     custody_provider.allow();
     stores.custody().store().refresh_lease().await?;
     drop(log);
@@ -360,7 +371,10 @@ async fn limited_read_accepts_full_size_entries_and_checks_each_returned_body() 
     stores
         .application()
         .write_batch(&[put(LOG, &1u64.to_be_bytes(), changed)])?;
-    assert!(log.limited_get_log_entries(1, 2).await.is_err());
+    assert!(matches!(
+        log.limited_get_log_entries(1, 2).await.unwrap_err(),
+        StorageError::IO { .. }
+    ));
     drop(log);
     stores.shutdown().await?;
     Ok(())

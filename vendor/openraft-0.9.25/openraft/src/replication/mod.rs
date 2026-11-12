@@ -2,6 +2,8 @@
 
 pub(crate) mod callbacks;
 pub(crate) mod hint;
+#[cfg(test)]
+mod log_read_error_test;
 mod replication_session_id;
 pub(crate) mod request;
 pub(crate) mod request_id;
@@ -281,7 +283,20 @@ where
                             });
                             return Ok(());
                         }
-                        ReplicationError::StorageError(error) => return Err(error.into()),
+                        ReplicationError::StorageError(error) => {
+                            // Only a typed prefix refusal observed under the store's log lock can
+                            // cancel a retired read. A later log probe cannot establish the cause
+                            // of an earlier I/O/authentication failure, which must remain fatal.
+                            if retired_log_read_error(
+                                &error,
+                                self.rx_event.is_closed(),
+                                log_data.as_ref().map(|data| data.data().prev.next_index()),
+                            ) {
+                                tracing::info!(error = %error, "retired replication stream stopped: log prefix unavailable");
+                                return Ok(());
+                            }
+                            return Err(error.into());
+                        }
                         ReplicationError::RPCError(err) => {
                             tracing::error!(err = display(&err), "RPCError");
 
@@ -922,3 +937,21 @@ where
 
 #[cfg(all(test, not(feature = "singlethreaded")))]
 mod tasks_test;
+
+/// Distinguish a legitimately obsolete request from a failed storage operation.
+fn retired_log_read_error<NID: crate::NodeId>(
+    error: &StorageError<NID>,
+    retired: bool,
+    requested_start: Option<u64>,
+) -> bool {
+    retired
+        && matches!(
+            error,
+            StorageError::Defensive { source }
+                if matches!(
+                    source.violation,
+                    crate::Violation::LogReadPrefixUnavailable { start }
+                        if Some(start) == requested_start
+                )
+        )
+}

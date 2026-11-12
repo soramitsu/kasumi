@@ -316,19 +316,27 @@ impl LogStore {
     ) -> Result<Vec<Entry<TypeConfig>>, StorageError<u64>> {
         let retained = self.retained.clone();
         let domains = self.domains.clone();
-        self.read(move |store| {
+        self.mutate_original(move |store| {
+            let unavailable = || {
+                let std::ops::Bound::Included(start) = bounds.0 else {
+                    unreachable!("limited reads have an inclusive start")
+                };
+                anyhow::Error::new(openraft::DefensiveError::new(
+                    openraft::ErrorSubject::Logs,
+                    openraft::Violation::<u64>::LogReadPrefixUnavailable { start },
+                ))
+            };
             let span = *retained
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
             let Some(range) = span.and_then(|span| span.intersect(bounds)) else {
-                ensure!(batch.is_none(), "requested raft read prefix is unavailable");
+                if batch.is_some() {
+                    return Err(unavailable());
+                }
                 return Ok(Vec::new());
             };
-            if batch.is_some() {
-                ensure!(
-                    bounds.0 == std::ops::Bound::Included(*range.start()),
-                    "requested raft read prefix is unavailable"
-                );
+            if batch.is_some() && bounds.0 != std::ops::Bound::Included(*range.start()) {
+                return Err(unavailable());
             }
             // Exact reads retain the complete requested EntryVec. Limited reads
             // retain one prefix, plus at most one authenticated encoded candidate
@@ -398,6 +406,12 @@ impl LogStore {
             Ok(entries)
         })
         .await
+        .map_err(
+            |error| match error.downcast::<openraft::DefensiveError<u64>>() {
+                Ok(error) => error.into(),
+                Err(error) => err(error),
+            },
+        )
     }
 }
 

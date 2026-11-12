@@ -793,3 +793,287 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
     );
     shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
 }
+
+/// Hold the first manifest after it is durably uploaded but before the caller
+/// can submit its catalog publication. The next leader sees only the objects,
+/// never the first node's local in-flight registry.
+struct HeldArchiveManifest {
+    inner: kasumi_store::FilesystemBackupDestination,
+    puts: std::sync::atomic::AtomicUsize,
+    entered: tokio::sync::Notify,
+    release: tokio::sync::Notify,
+}
+#[async_trait::async_trait]
+impl kasumi_store::BackupDestination for HeldArchiveManifest {
+    fn namespace_binding(&self) -> anyhow::Result<BackupNamespaceBinding> {
+        self.inner.namespace_binding()
+    }
+    async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
+        let number = self.puts.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let result = self.inner.put(id, bytes).await;
+        if number == 1 {
+            assert!(result.is_ok(), "first manifest upload failed: {result:?}");
+            self.entered.notify_one();
+            self.release.notified().await;
+        }
+        result
+    }
+    async fn get(&self, id: uuid::Uuid, max_bytes: usize) -> anyhow::Result<Vec<u8>> {
+        self.inner.get(id, max_bytes).await
+    }
+}
+
+fn archive_object_bytes(path: &std::path::Path) -> BTreeMap<uuid::Uuid, Vec<u8>> {
+    std::fs::read_dir(path)
+        .unwrap()
+        .filter_map(|entry| {
+            let entry = entry.unwrap();
+            let name = entry.file_name();
+            let name = name.to_str().unwrap();
+            name.strip_suffix(".kasumi").map(|id| {
+                (
+                    uuid::Uuid::parse_str(id).unwrap(),
+                    std::fs::read(entry.path()).unwrap(),
+                )
+            })
+        })
+        .collect()
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn archive_retry_after_leader_change_adopts_original_objects_and_survives_restart() {
+    let root = kasumi_store::test_utils::private_tempdir().unwrap();
+    let physical: BTreeMap<_, _> = (1..=3)
+        .map(|id| (id, replica_fixture(root.path(), &id.to_string())))
+        .collect();
+    let bootstrap = bootstrap();
+    let group = format!("tenant-a/{}", bootstrap.incarnation);
+    let router = Arc::new(InProcessRouter::default());
+    let mut nodes = BTreeMap::new();
+    let mut audits = BTreeMap::new();
+    let mut node_owners = BTreeMap::new();
+    for id in 1..=3 {
+        let (node_store, audit, node_owner) = store(
+            &physical[&id],
+            &root.path().join(id.to_string()).join("node.kv"),
+            true,
+        )
+        .await;
+        audits.insert(id, audit.clone());
+        node_owners.insert(id, node_owner);
+        let db = open_fixture_replicated(
+            id,
+            kasumi_store::test_utils::initialize_custody_fixture(
+                node_store,
+                Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
+            &bootstrap,
+            router.clone(),
+            server_config(),
+            audit,
+        )
+        .await
+        .unwrap();
+        router.register(group.clone(), id, db.raft_group().raft().clone());
+        nodes.insert(id, db);
+    }
+    initialize_replicated(&nodes[&1], &bootstrap).await.unwrap();
+    let first = leader(&nodes, None).await;
+    nodes[&first]
+        .administer(
+            context(),
+            Operation::CreateCollection(CollectionDefinition {
+                retention_class: CollectionRetentionClass::ArchivableHistory,
+                write_mode: CollectionWriteMode::AppendOnly,
+                name: "documents".into(),
+                schema: json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await
+        .unwrap();
+    let cutoff = nodes[&first]
+        .mutate(context(), batch())
+        .await
+        .unwrap()
+        .revision;
+    let cold_path = root.path().join("1/cold");
+    let destination = Arc::new(HeldArchiveManifest {
+        inner: kasumi_store::FilesystemBackupDestination::new(
+            &cold_path,
+            16 << 20,
+            physical[&1].storage.persistent.clone(),
+        )
+        .unwrap(),
+        puts: std::sync::atomic::AtomicUsize::new(0),
+        entered: tokio::sync::Notify::new(),
+        release: tokio::sync::Notify::new(),
+    });
+    for node in nodes.values() {
+        node.install_archive_destination("cold".into(), destination.clone())
+            .unwrap();
+    }
+    let request = ArchiveHistory {
+        archive_id: "failover-period".into(),
+        collection: "documents".into(),
+        cutoff_revision: cutoff,
+        destination: "cold".into(),
+    };
+    let original = {
+        let node = nodes[&first].clone();
+        let request = request.clone();
+        tokio::spawn(async move { node.archive_history(context(), request).await })
+    };
+    tokio::time::timeout(Duration::from_secs(300), destination.entered.notified())
+        .await
+        .expect("original never uploaded its manifest");
+    let original_objects = archive_object_bytes(&cold_path);
+    assert_eq!(original_objects.len(), 2);
+    assert!(
+        !nodes[&first]
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .history_archives
+            .contains_key(&request.archive_id)
+    );
+
+    router.isolate(&group, first, true);
+    let second = leader(&nodes, Some(first)).await;
+    // The request remains the same despite an unrelated schema generation.
+    // Schema fences belong to each publication proposal, not immutable bytes.
+    let before_schema = nodes[&second]
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .schema_epoch;
+    nodes[&second]
+        .administer(
+            context(),
+            Operation::CreateCollection(CollectionDefinition {
+                retention_class: CollectionRetentionClass::Operational,
+                write_mode: CollectionWriteMode::Mutable,
+                name: "unrelated".into(),
+                schema: json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        nodes[&second]
+            .engine()
+            .generation()
+            .unwrap()
+            .state
+            .schema_epoch
+            > before_schema
+    );
+    let receipt = nodes[&second]
+        .archive_history(context(), request.clone())
+        .await
+        .unwrap();
+    let archive = nodes[&second]
+        .engine()
+        .generation()
+        .unwrap()
+        .state
+        .history_archives[&request.archive_id]
+        .clone();
+    let referenced: BTreeSet<_> = archive
+        .manifest
+        .chunks
+        .iter()
+        .map(|chunk| uuid::Uuid::parse_str(&chunk.object_id).unwrap())
+        .chain([uuid::Uuid::parse_str(&archive.manifest_object_id).unwrap()])
+        .collect();
+    assert_eq!(referenced, original_objects.keys().copied().collect());
+    assert_eq!(
+        archive_object_bytes(&cold_path),
+        original_objects,
+        "retry must not overwrite or orphan objects"
+    );
+    assert_eq!(
+        destination.puts.load(std::sync::atomic::Ordering::SeqCst),
+        4
+    );
+    assert_eq!(receipt.revision, archive.published_revision);
+    let mut different = request.clone();
+    different.cutoff_revision -= 1;
+    assert_eq!(
+        nodes[&second]
+            .archive_history(context(), different)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::Conflict
+    );
+    assert_eq!(
+        destination.puts.load(std::sync::atomic::Ordering::SeqCst),
+        4
+    );
+
+    // The old caller can be cancelled without damaging the winner's objects.
+    original.abort();
+    assert!(original.await.unwrap_err().is_cancelled());
+    router.isolate(&group, first, false);
+    shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
+    for id in 1..=3 {
+        let (node_store, audit, node_owner) = store(
+            &physical[&id],
+            &root.path().join(id.to_string()).join("node.kv"),
+            false,
+        )
+        .await;
+        audits.insert(id, audit.clone());
+        node_owners.insert(id, node_owner);
+        let db = open_fixture_replicated(
+            id,
+            kasumi_store::test_utils::open_existing_custody_fixture(
+                node_store,
+                Arc::new(kasumi_store::test_utils::LocalKeyProvider::new([241; 32])),
+            )
+            .await
+            .unwrap(),
+            &bootstrap,
+            router.clone(),
+            server_config(),
+            audit,
+        )
+        .await
+        .unwrap();
+        db.install_archive_destination("cold".into(), destination.clone())
+            .unwrap();
+        router.register(group.clone(), id, db.raft_group().raft().clone());
+        nodes.insert(id, db);
+    }
+    let recovered = leader(&nodes, None).await;
+    assert_eq!(
+        nodes[&recovered]
+            .archive_history(context(), request)
+            .await
+            .unwrap(),
+        receipt
+    );
+    assert_eq!(
+        nodes[&recovered]
+            .get(&context(), "documents", "a")
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
+        cutoff
+    );
+    assert_eq!(archive_object_bytes(&cold_path), original_objects);
+    assert_eq!(
+        destination.puts.load(std::sync::atomic::Ordering::SeqCst),
+        4
+    );
+    shutdown_nodes(&mut nodes, &mut audits, &mut node_owners, &router, &group).await;
+}

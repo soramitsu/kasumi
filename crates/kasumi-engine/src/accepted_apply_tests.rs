@@ -339,7 +339,6 @@ fn accepted_apply_archive_placement_keeps_delta_without_advancing_data_epoch() {
             source_incarnation: state.incarnation.clone(),
             collection: "docs".into(),
             cutoff_revision: 2,
-            source_schema_epoch: state.schema_epoch,
             destination: "local".into(),
             document_count: 1,
             chunks: vec![ArchiveChunkDescriptor {
@@ -355,7 +354,16 @@ fn accepted_apply_archive_placement_keeps_delta_without_advancing_data_epoch() {
         manifest_object_id: uuid::Uuid::new_v4().to_string(),
         manifest_ciphertext_sha256: "34".repeat(32),
         expected_policy_epoch: state.policy_epoch,
+        expected_schema_epoch: state.schema_epoch,
     };
+    let mut stale = request.clone();
+    stale.expected_schema_epoch = state.schema_epoch.saturating_add(1);
+    let rejected = fixture.prepare(&owner, 3, Operation::PublishHistoryArchive(stale));
+    assert_eq!(
+        rejected.outcome.as_ref().unwrap_err().code,
+        ErrorCode::Conflict
+    );
+    assert!(owner.current().state.history_archives.is_empty());
     // Real ordered archive acceptance validates the manifest against actual
     // source rows. This fixture does not claim external archive availability.
     let prepared = fixture.prepare(&owner, 3, Operation::PublishHistoryArchive(request));

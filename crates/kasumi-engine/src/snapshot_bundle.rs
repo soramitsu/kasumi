@@ -1657,6 +1657,54 @@ mod tests {
         target_store.shutdown().await.unwrap();
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn public_snapshot_failures_distinguish_sealed_storage_from_corrupt_input() {
+        let incarnation = uuid::Uuid::new_v4().to_string();
+        let (
+            (_source_dir, source, source_store),
+            (_target_dir, target, target_store),
+            admission,
+            _,
+        ) = admitted_pair(&incarnation, Default::default()).await;
+        let image = source.snapshot(admission.clone(), 60_000).await.unwrap();
+        // A logical image is intact, but is not a public backend bundle.
+        let wrong_format = source
+            .logical_snapshot(source_store.scratch_disk())
+            .unwrap();
+        let corrupt = target
+            .prepare_snapshot_restore(wrong_format, admission.clone(), 60_000)
+            .await
+            .err()
+            .unwrap();
+        // Staged restore retains the original source error and any native
+        // ownership it carries; classification must not erase that custody.
+        assert!(corrupt.source_error().is_some());
+
+        source_store.seal();
+        let sealed = source
+            .snapshot(admission.clone(), 60_000)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            sealed.operation_error().unwrap().code,
+            kasumi_types::ErrorCode::Sealed
+        );
+        let target_generation = target.generation().unwrap();
+        target_store.seal();
+        let sealed = target
+            .prepare_snapshot_restore(image, admission, 60_000)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            sealed.operation_error().unwrap().code,
+            kasumi_types::ErrorCode::Sealed
+        );
+        assert_eq!(target_generation.state.revision, 0);
+        source_store.shutdown().await.unwrap();
+        target_store.shutdown().await.unwrap();
+    }
+
     /// A moved cache is accepted only when it holds the generation's whole
     /// chain: every segment back to the stream's first authenticates.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

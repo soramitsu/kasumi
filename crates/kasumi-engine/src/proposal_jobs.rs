@@ -71,6 +71,34 @@ pub(super) struct Call<T> {
     response: tokio::sync::oneshot::Receiver<T>,
 }
 
+/// An admitted proposal child, observed after its caller stops waiting. It is
+/// weak: a child keeps its registry budget slot until its last strong handle
+/// drops, so an observer must never extend that past the child's join.
+#[derive(Clone)]
+pub(super) struct Admitted(std::sync::Weak<BackgroundWork>);
+impl Admitted {
+    /// Whether the child has terminated. A dropped child terminated earlier.
+    pub(super) fn finished(&self) -> bool {
+        self.0
+            .upgrade()
+            .is_none_or(|worker| worker.observed().is_some())
+    }
+
+    /// Wait until the child terminates. Cancelling this wait leaves the child
+    /// owned by its registry, as cancelling `Call::wait` does.
+    pub(super) async fn finish(&self) {
+        if let Some(worker) = self.0.upgrade() {
+            let _ = worker.drain().await;
+        }
+    }
+
+    /// A child that terminated and was dropped before anyone observed it.
+    #[cfg(test)]
+    pub(super) fn dropped_for_test() -> Self {
+        Self(std::sync::Weak::new())
+    }
+}
+
 struct TerminalFence {
     closed: Arc<Mutex<bool>>,
     completed: bool,
@@ -530,6 +558,10 @@ impl super::Database {
 }
 
 impl<T> Call<T> {
+    pub(super) fn admitted(&self) -> Admitted {
+        Admitted(Arc::downgrade(&self.worker))
+    }
+
     pub(super) async fn wait(self, timeout: Duration) -> Result<T> {
         tokio::time::timeout(timeout, async move {
             self.worker.drain().await.map_err(|_| {

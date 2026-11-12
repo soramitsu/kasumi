@@ -38,10 +38,9 @@ fn missed_deadline(error: &Error) -> bool {
 
 /// Wait until no admitted proposal is still running, so a write that missed
 /// its caller's deadline has committed or failed before it is repeated.
-/// Repeating it while the original is still in flight is not a replay: an
-/// archive builds a second manifest that publication rejects as "archive
-/// identity reused for different history", and a large staged finalize admits
-/// a second copy of its input until node admission is exhausted.
+/// Repeating a large staged finalize while the original is still in flight
+/// admits a second copy of its input until node admission is exhausted. (An
+/// archive repeated meanwhile waits for its original on the same node.)
 async fn settle_proposals(db: &Database, window: tokio::time::Instant) {
     while db.fixture_running_proposals() != 0 && tokio::time::Instant::now() < window {
         tokio::time::sleep(Duration::from_millis(20)).await;

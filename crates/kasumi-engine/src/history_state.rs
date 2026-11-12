@@ -182,7 +182,7 @@ pub(crate) fn publish(
     }
     if manifest.tenant != state.tenant
         || manifest.source_incarnation != state.incarnation
-        || manifest.source_schema_epoch != state.schema_epoch
+        || request.expected_schema_epoch != state.schema_epoch
         || request.expected_policy_epoch != state.policy_epoch
         || manifest.cutoff_revision > state.revision
     {

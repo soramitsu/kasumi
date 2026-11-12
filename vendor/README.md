@@ -97,7 +97,16 @@ Cancelling a shutdown waiter leaves the chosen policy and original task owners
 installed; failures are retained by the same shutdown census. An incoming
 snapshot chunk dropped mid-write leaves the stream position unknown, so its
 retried chunk seeks to its own offset first; the checkpoint lists this change
-under `pending_development_cases` until it is reviewed.
+under `pending_development_cases` until it is reviewed. A leader that steps
+down retires its replication streams at once. A retired stream whose log read
+fails stops without failing the core only for the typed
+`LogReadPrefixUnavailable` refusal for that request. Kasumi emits this refusal
+from its retained-log inventory while holding the log mutation lock. I/O,
+authentication, decoding and other defensive errors always stay fatal, even
+if the log has since changed.
+Before this, a former leader that rejoined after a partition could stop its
+core when an old stream read entries it had just truncated. That change is
+listed there as well.
 
 The current source inventory records exact bytes and permissions, with focused
 review and new tests explicitly pending in the checkpoint. Refreshing these

@@ -1790,6 +1790,11 @@ where
                 self.replication_capacity = None;
                 self.pending_replication = None;
                 self.leader_data = None;
+                // As a follower this node may next truncate or replace log
+                // entries that this leadership's streams still read. Retire the
+                // streams before any later command changes the log; their task
+                // owners and outcomes stay in the bounded registry.
+                self.remove_all_replication();
             }
             Command::AppendInputEntries { vote, entries } => {
                 let last_log_id = entries.last().unwrap().get_log_id().clone();

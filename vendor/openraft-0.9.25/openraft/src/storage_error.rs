@@ -140,6 +140,11 @@ pub enum Violation<NID: NodeId> {
     #[error("try to get log at index {want} but got {got:?}")]
     LogIndexNotFound { want: u64, got: Option<u64> },
 
+    /// The retained-log inventory proves that the requested prefix no longer exists.
+    /// This must never describe an I/O, decoding, authentication, or retained-record failure.
+    #[error("requested raft read prefix at {start} is unavailable")]
+    LogReadPrefixUnavailable { start: u64 },
+
     #[error("range is empty: start: {start:?}, end: {end:?}")]
     RangeEmpty { start: Option<u64>, end: Option<u64> },
 

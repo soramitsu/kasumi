@@ -23,6 +23,8 @@ pub(crate) use mutation_capacity::admit_mutation_capacity;
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
 mod snapshot_bundle;
+#[path = "snapshot_encoding_failure.rs"]
+pub(crate) mod snapshot_encoding_failure;
 #[path = "snapshot_validation.rs"]
 pub(crate) mod snapshot_validation;
 use crate::SnapshotFailure;
@@ -2610,7 +2612,7 @@ impl TenantEngine {
             generation.document_resolver(),
             writer,
         )
-        .map_err(|_| Error::new(ErrorCode::Corruption, "snapshot encoding failed"))
+        .map_err(snapshot_encoding_failure::encoding_error)
     }
 
     pub(crate) fn logical_snapshot(
@@ -2631,7 +2633,9 @@ impl TenantEngine {
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
             |writer| Ok(Self::write_generation(generation, writer)?),
         )
-        .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))
+        // Keeps write_generation's classification; scratch spool creation
+        // and flush failures are classified by the same rule.
+        .map_err(snapshot_encoding_failure::encoding_error)
     }
 
     pub fn snapshot_bytes(&self) -> Result<usize> {

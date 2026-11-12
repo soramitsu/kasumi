@@ -158,10 +158,8 @@ impl Cluster {
 
     async fn applied(&self, ids: &[u64], target: LogId<u64>) -> FixtureResult<()> {
         for id in ids {
-            self.nodes[id]
-                .group
-                .raft()
-                .wait(Some(WAIT))
+            let raft = self.nodes[id].group.raft();
+            raft.wait(Some(WAIT))
                 .metrics(
                     |metrics| {
                         metrics
@@ -170,7 +168,15 @@ impl Cluster {
                     },
                     "application caught up",
                 )
-                .await?;
+                .await
+                // A stopped core ends this wait as "raft is shutting down".
+                // Name the node and keep the core's own failure.
+                .with_context(|| {
+                    format!(
+                        "node {id} did not apply {target}; core state {:?}",
+                        raft.metrics().borrow().running_state
+                    )
+                })?;
         }
         Ok(())
     }

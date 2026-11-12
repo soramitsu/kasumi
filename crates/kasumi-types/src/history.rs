@@ -174,7 +174,6 @@ pub struct HistoryArchiveManifest {
     pub source_incarnation: String,
     pub collection: String,
     pub cutoff_revision: u64,
-    pub source_schema_epoch: u64,
     pub destination: String,
     pub document_count: usize,
     pub chunks: Vec<ArchiveChunkDescriptor>,
@@ -214,6 +213,8 @@ pub struct PublishHistoryArchive {
     pub manifest_object_id: String,
     pub manifest_ciphertext_sha256: String,
     pub expected_policy_epoch: u64,
+    /// Fence the current selection at publication without changing immutable object bytes.
+    pub expected_schema_epoch: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -242,4 +243,41 @@ pub fn validate_sha256(value: &str) -> Result<()> {
         ));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod archive_wire_tests {
+    use super::*;
+
+    #[test]
+    fn archive_publication_requires_current_schema_fence_outside_manifest() {
+        let manifest = HistoryArchiveManifest {
+            kind: HistoryArchiveKind::HistorySubset,
+            archive_id: "period".into(),
+            tenant: "tenant".into(),
+            source_incarnation: "source".into(),
+            collection: "history".into(),
+            cutoff_revision: 7,
+            destination: "cold".into(),
+            document_count: 1,
+            chunks: vec![],
+        };
+        let request = PublishHistoryArchive {
+            manifest,
+            manifest_object_id: uuid::Uuid::new_v4().to_string(),
+            manifest_ciphertext_sha256: "12".repeat(32),
+            expected_policy_epoch: 3,
+            expected_schema_epoch: 5,
+        };
+        let mut wire = serde_json::to_value(&request).unwrap();
+        assert!(wire["manifest"].get("source_schema_epoch").is_none());
+        assert!(serde_json::from_value::<PublishHistoryArchive>(wire.clone()).is_ok());
+        wire.as_object_mut()
+            .unwrap()
+            .remove("expected_schema_epoch");
+        assert!(serde_json::from_value::<PublishHistoryArchive>(wire).is_err());
+        let mut obsolete = serde_json::to_value(&request.manifest).unwrap();
+        obsolete["source_schema_epoch"] = 5.into();
+        assert!(serde_json::from_value::<HistoryArchiveManifest>(obsolete).is_err());
+    }
 }

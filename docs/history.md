@@ -53,10 +53,29 @@ publishes one replicated catalog change. Appends can continue into the same
 logical collection. The archive identity resolves a published operation to its
 original receipt; a different request cannot reuse it.
 
+A publication can still commit after its caller's write deadline returns
+`UnknownOutcome`. A repeated request for an identity that this node is still
+exporting or publishing waits for that original instead of exporting a second
+object set. It then returns the original receipt, or exports itself if the
+original failed. If the original is still unresolved at the repeat's own write
+deadline, the repeat also returns `UnknownOutcome`. A different request for an
+in-flight identity is rejected with `Conflict`.
+
+After a leadership change, replicas derive the same object identities from the
+tenant, source incarnation, complete archive request and object role/index.
+These identities do not contain document digests. Uploads remain create-only;
+on a collision, the retry authenticates the existing object and compares its
+complete plaintext with its selected immutable prefix. It then adopts the
+winner's ciphertext digest. Fresh encryption nonces never require overwriting
+the winner or publishing a duplicate object set. An unfinished filesystem
+`.pending` object remains unavailable and must never be adopted or overwritten.
+A retry can resume after an unrelated schema change: the current schema epoch
+fences the publication command separately from immutable manifest bytes.
+
 Objects use the tenant's existing authenticated encryption and fresh historical
 key authorization. The committed manifest binds collection, source incarnation,
-cutoff, schema epoch, ordered chunks and plaintext/ciphertext digests. Publication
-checks each replica's eligible source documents against the manifest before
+cutoff, ordered chunks and plaintext/ciphertext digests. Publication checks the
+current schema and authorization epochs, then checks each replica's eligible source documents against the manifest before
 removing resident bodies. Cancellation or an uncertain upload before publication
 can leave encrypted orphan objects, but does not remove source documents.
 Administrative orphan reclamation is not implemented.
@@ -96,7 +115,8 @@ commit rejection, current policy, exact numbers, archived point/query/snapshot
 and leased ID reads, unique indexes, physical restart, and missing/corrupt
 objects. Further tests exercise multiple real encrypted chunks, full restore
 after loss of original cold storage, permanent command replay, missing/corrupt
-dependencies, historical key authority, and cancellation of stalled uploads.
+dependencies, historical key authority, cancellation of stalled uploads, and
+repeats of an archive whose publication is still in flight.
 Native tests cover authenticated feed/archive dispatch and exact values.
 These are local correctness tests; they do not establish Linux deployment,
 large-fleet performance or a recovery objective.

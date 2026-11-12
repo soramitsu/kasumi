@@ -582,7 +582,6 @@ fn archive_leaf_clones_share_unchanged_large_values_and_manifest_payloads() {
             source_incarnation: "incarnation".into(),
             collection: "docs".into(),
             cutoff_revision: 1,
-            source_schema_epoch: 1,
             destination: "local".into(),
             document_count: 2,
             chunks: (0..1024)

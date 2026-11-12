@@ -245,9 +245,10 @@ fn source_read_error(error: ReadFailure<crate::index_source::DocumentSourceFailu
     }
 }
 
-fn document_load_error(error: anyhow::Error) -> Error {
+/// Also classifies a stored body read failing inside snapshot encoding.
+pub(crate) fn document_load_error(error: anyhow::Error) -> Error {
     let mut capacity_denied = false;
-    for cause in error.chain() {
+    for cause in crate::state::snapshot_encoding_failure::causes(&error) {
         if cause.is::<kasumi_store::PointRetirementFailure>()
             || cause.is::<kasumi_store::NodeScopedReadRetirement>()
         {
@@ -1176,6 +1177,7 @@ pub struct Database {
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
+    archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
     admission: Arc<NodeAdmission>,
@@ -1545,6 +1547,7 @@ impl Database {
             store,
             cursors: Mutex::new(HashMap::new()),
             archive_destinations: Mutex::new(BTreeMap::new()),
+            archive_flights: Default::default(),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),
             clock: clocks.elapsed,
             admission: security_audit.admission().clone(),
@@ -2377,7 +2380,19 @@ impl Database {
     async fn submit_input(
         &self,
         context: RequestContext,
+        input: proposal_input::OperationInput,
+    ) -> Result<WriteReceipt> {
+        self.submit_input_observed(context, input, |_| {}).await
+    }
+
+    /// `submit_input`, also reporting the admitted proposal child before
+    /// waiting for it. The child outlives this caller's write deadline, so a
+    /// caller whose effect is not idempotent can let a retry wait for it.
+    async fn submit_input_observed(
+        &self,
+        context: RequestContext,
         mut input: proposal_input::OperationInput,
+        admitted: impl FnOnce(proposal_jobs::Admitted) + Send,
     ) -> Result<WriteReceipt> {
         let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_WRITE_TIMEOUT;
         input.check_admission(self.admission())?;
@@ -2630,6 +2645,7 @@ impl Database {
             max_bytes,
             entry,
         )?;
+        admitted(proposal.admitted());
         let response = proposal
             .wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
             .await?;
@@ -3747,6 +3763,7 @@ mod tests {
     include!("service_query_pagination_memory_tests.rs");
     include!("service_change_feed_memory_tests.rs");
     include!("service_point_memory_tests.rs");
+    include!("service_archive_flight_tests.rs");
     include!("service_shared_document_read_tests.rs");
     include!("service_retirement_tests.rs");
     include!("service_custody_tests.rs");
@@ -3776,6 +3793,11 @@ mod tests {
         let retirement = kasumi_store::PointRetirementFailure::new(capacity().into(), Box::new(()));
         assert_eq!(
             document_load_error(retirement.into()).code,
+            ErrorCode::Unavailable
+        );
+        let retirement = kasumi_store::PointRetirementFailure::new(capacity().into(), Box::new(()));
+        assert_eq!(
+            document_load_error(std::io::Error::other(retirement).into()).code,
             ErrorCode::Unavailable
         );
     }

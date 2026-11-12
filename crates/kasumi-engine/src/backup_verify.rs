@@ -139,26 +139,35 @@ pub(crate) async fn verify_indexed_audit_dependency(
 pub(crate) struct VerificationDeadline(tokio::time::Instant);
 impl VerificationDeadline {
     pub fn new(timeout_ms: u64) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            (1..=600_000).contains(&timeout_ms),
-            "backup verification timeout outside bounds"
-        );
+        if !(1..=600_000).contains(&timeout_ms) {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "backup verification timeout outside bounds",
+            )
+            .into());
+        }
         Ok(Self(
             tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms),
         ))
     }
     pub fn check(self) -> anyhow::Result<()> {
-        anyhow::ensure!(
-            tokio::time::Instant::now() < self.0,
-            "backup verification deadline expired"
-        );
+        if tokio::time::Instant::now() >= self.0 {
+            return Err(Self::expired());
+        }
         Ok(())
     }
     pub async fn run<T>(self, future: impl Future<Output = T>) -> anyhow::Result<T> {
         self.check()?;
         tokio::time::timeout_at(self.0, future)
             .await
-            .map_err(|_| anyhow::anyhow!("backup verification deadline expired"))
+            .map_err(|_| Self::expired())
+    }
+    fn expired() -> anyhow::Error {
+        Error::new(
+            ErrorCode::Unavailable,
+            "backup verification deadline expired",
+        )
+        .into()
     }
     pub async fn blocking<T, E, F>(
         self,
