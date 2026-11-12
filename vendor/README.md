@@ -57,7 +57,7 @@ Apache-2.0 license is retained.
 ## OpenRaft 0.9.25
 
 The complete workspace is retained; the current development inventory contains
-605 files. Cargo selects `openraft` from its
+607 files. Cargo selects `openraft` from its
 `openraft/` package and `openraft-macros` from the sibling `macros/` package.
 The fork retains actual runtime children, incoming snapshot owners and original
 shutdown failures across cancellation, and exposes the membership observer used
@@ -106,10 +106,12 @@ authentication, decoding and other defensive errors always stay fatal, even
 if the log has since changed.
 Before this, a former leader that rejoined after a partition could stop its
 core when an old stream read entries it had just truncated. That change is
-listed there as well.
+listed there as well, and its focused review is recorded in
+[KASUMI-STEP-DOWN-REVIEW.md](openraft-0.9.25/KASUMI-STEP-DOWN-REVIEW.md).
 
-The current source inventory records exact bytes and permissions, with focused
-review and new tests explicitly pending in the checkpoint. Refreshing these
+The current source inventory records exact bytes and permissions. The
+checkpoint states which development changes have a focused review and which
+remain pending. Refreshing these
 hashes does not establish independent complete source review, upstream
 conformance, platform, fault or integrated release acceptance. No release
 qualification is asserted.

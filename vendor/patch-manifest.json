@@ -1594,6 +1594,11 @@
           "mode": "0o644",
           "sha256": "e0079a4fc7d65c26d6f416cad7016e97a0b45512c466ce94df5229451782593f"
         },
+        "KASUMI-STEP-DOWN-REVIEW.md": {
+          "bytes": 7112,
+          "mode": "0o644",
+          "sha256": "c9488114474768736179765349de753cf450f4a31367506439b3680bbf18b571"
+        },
         "LICENSE-APACHE": {
           "bytes": 10847,
           "mode": "0o644",
@@ -4517,28 +4522,28 @@
       "path": "vendor/openraft-0.9.25",
       "review": {
         "inventory_path": "vendor/reviews/openraft-0.9.25/source-inventory.json",
-        "inventory_sha256": "9669ec769b045d0568ca2336a38ccc44844da0401fde6c8c42c46e92b0911bcf",
+        "inventory_sha256": "ef43b7346de986bb3779430d1d8f0d78ef0c900b54b6cf82cb61596d27bf2fe4",
         "kind": "openraft-checkpoint",
         "path": "vendor/reviews/openraft-0.9.25/custody-checkpoint.json",
-        "sha256": "92db49d4e0b22505b14e564d27b2df3be8cbf55fd12bf56b5949694053ba37da"
+        "sha256": "f7b86468ba686288787f68062e8d4cb47f683a8ea14159642f9a164ec63be007"
       }
     }
   ],
   "support_files": {
     "README.md": {
-      "bytes": 8813,
+      "bytes": 8949,
       "mode": "0o644",
-      "sha256": "bcd45442aa47f9d26243d8050f85a32f1478d1d90d98d72b6f210f722c725cbc"
+      "sha256": "5933fd1bbb7f196a32fd07fe48ba5e5af9f111289b24d8c8e655b7302a43a486"
     },
     "reviews/openraft-0.9.25/custody-checkpoint.json": {
-      "bytes": 9018,
+      "bytes": 9351,
       "mode": "0o644",
-      "sha256": "92db49d4e0b22505b14e564d27b2df3be8cbf55fd12bf56b5949694053ba37da"
+      "sha256": "f7b86468ba686288787f68062e8d4cb47f683a8ea14159642f9a164ec63be007"
     },
     "reviews/openraft-0.9.25/source-inventory.json": {
-      "bytes": 111960,
+      "bytes": 112132,
       "mode": "0o644",
-      "sha256": "9669ec769b045d0568ca2336a38ccc44844da0401fde6c8c42c46e92b0911bcf"
+      "sha256": "ef43b7346de986bb3779430d1d8f0d78ef0c900b54b6cf82cb61596d27bf2fe4"
     },
     "rmcp-terminal-ownership.md": {
       "bytes": 5241,

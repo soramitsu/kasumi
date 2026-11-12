@@ -150,6 +150,12 @@
     "sha256": "e0079a4fc7d65c26d6f416cad7016e97a0b45512c466ce94df5229451782593f"
   },
   {
+    "bytes": 7112,
+    "mode": "0o644",
+    "path": "KASUMI-STEP-DOWN-REVIEW.md",
+    "sha256": "c9488114474768736179765349de753cf450f4a31367506439b3680bbf18b571"
+  },
+  {
     "bytes": 10847,
     "mode": "0o644",
     "path": "LICENSE-APACHE",

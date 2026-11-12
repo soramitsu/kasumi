@@ -118,25 +118,25 @@
       "change": "Command::QuitLeader retires the former leadership's replication streams, so none keeps reading a log that this node, now a follower, truncates or replaces",
       "path": "openraft/src/core/raft_core.rs",
       "regression": "kasumi-raft tests/cluster.rs partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart",
-      "status": "development test only; focused review pending; source_change_sha256 still records the reviewed delta before this change"
+      "status": "focused review recorded in KASUMI-STEP-DOWN-REVIEW.md; development tests only; release qualification pending; source_change_sha256 still records the graceful-drain delta reviewed before this change"
     },
     {
       "change": "A retired replication stream cancels only the typed LogReadPrefixUnavailable refusal for its own requested start; all I/O, authentication and other defensive errors remain fatal, irrespective of subsequent log mutation",
       "path": "openraft/src/replication/mod.rs",
       "regression": "replication::log_read_error_test; kasumi-raft retained_logs_tests and partition_rejects_minority_reads_and_writes_and_recovers_after_full_restart",
-      "status": "development test only; focused review pending"
+      "status": "focused review recorded in KASUMI-STEP-DOWN-REVIEW.md; development tests only; release qualification pending"
     },
     {
       "change": "Typed prefix-unavailable error and retained/live stream storage-failure regressions",
       "path": "openraft/src/replication/log_read_error_test.rs",
       "regression": "replication::log_read_error_test",
-      "status": "development validation; release qualification unchanged"
+      "status": "focused review recorded in KASUMI-STEP-DOWN-REVIEW.md; development tests only; release qualification pending"
     },
     {
       "change": "Typed prefix-unavailable error and retained/live stream storage-failure regressions",
       "path": "openraft/src/storage_error.rs",
       "regression": "replication::log_read_error_test",
-      "status": "development validation; release qualification unchanged"
+      "status": "focused review recorded in KASUMI-STEP-DOWN-REVIEW.md; development tests only; release qualification pending"
     }
   ],
   "qualification": "focused independent graceful-drain review and recorded development tests only; complete fork review and final qualification pending",
@@ -149,8 +149,8 @@
     "nine-process HA acceptance",
     "24-hour soak"
   ],
-  "review_status": "focused graceful-drain delta reviewed and focused regressions passed; complete current fork review and conformance pending",
-  "source_bytes": 2716902,
+  "review_status": "focused graceful-drain delta reviewed and focused regressions passed; focused step-down replication-retirement delta reviewed (KASUMI-STEP-DOWN-REVIEW.md); complete current fork review and conformance pending",
+  "source_bytes": 2724014,
   "source_change_hash_method": "SHA256 of canonical JSON inventory records for source_change_paths; sorted keys, compact separators",
   "source_change_paths": [
     "openraft/src/core/mod.rs",
@@ -175,7 +175,7 @@
     "openraft/src/storage/sm_custody_test.rs"
   ],
   "source_change_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
-  "source_files": 606,
+  "source_files": 607,
   "source_inventory": "source-inventory.json",
-  "source_inventory_sha256": "9669ec769b045d0568ca2336a38ccc44844da0401fde6c8c42c46e92b0911bcf"
+  "source_inventory_sha256": "ef43b7346de986bb3779430d1d8f0d78ef0c900b54b6cf82cb61596d27bf2fe4"
 }
