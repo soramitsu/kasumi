@@ -389,9 +389,10 @@ async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_dr
     let context = f.context("operator");
     let mut service = f.leader().await;
     // Raft elections use real time, independently of the fixture clock. Resolve
-    // only this original intent after observed route movement, within the same
-    // five-second wait and without replacing its verified authorization.
-    tokio::time::timeout(Duration::from_secs(5), async {
+    // only this original intent after observed route movement, within the
+    // fixture's observation window and without replacing its verified
+    // authorization.
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             for member in &f.services {
                 member
@@ -433,7 +434,7 @@ async fn control_epoch_stop_preserves_exact_identity_replay_and_restarts_full_dr
         }
     })
     .await
-    .expect("exact stopped-epoch rejection was not resolved within five seconds");
+    .expect("exact stopped-epoch rejection was not resolved within the observation window");
     f.close().await;
 }
 #[tokio::test]
@@ -641,7 +642,7 @@ async fn lifecycle_byte_exhaustion_preserves_reserved_epoch_stop_and_exact_snaps
     // Snapshot validation can span an election under the concurrent workspace
     // suite. Read the same permanent receipt through the current leader using
     // the original credential, rather than requiring the earlier leader to stay.
-    let retained = tokio::time::timeout(Duration::from_secs(20), async {
+    let retained = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             match f
                 .leader()

@@ -5216,7 +5216,10 @@ mod lifecycle_tests {
         // ListenerInventory drains connections, then HTTP/2 stream owners, each
         // with its configured finite budget. Leave a separate bounded window
         // for the runtime's actual Raft/storage/audit owners after those joins.
-        ListenerLimits::default().drain_timeout.saturating_mul(2) + Duration::from_secs(15)
+        // At load 500 one original node's owners outlived a 15 s window that
+        // its sibling met in 142 ms, so the window matches the fixtures'
+        // 120 s observation budget; a stalled owner still fails the test.
+        ListenerLimits::default().drain_timeout.saturating_mul(2) + Duration::from_secs(120)
     }
 
     fn restored_routes_ready(

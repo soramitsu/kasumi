@@ -1221,7 +1221,7 @@ impl MaterialFixture {
                 input.clone(),
                 TargetReplicaConfig {
                     node_id: id,
-                    raft: target_raft_config(),
+                    raft: fixture_raft_config(),
                     admission: self.physical[&id].admission.clone(),
                 },
                 router.clone(),
@@ -1407,7 +1407,7 @@ async fn exact_target_inspection(
 ) {
     let database = target.owner.database();
     let group = database.raft_group();
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             target.operation.check().unwrap();
             elect_original_target(target).await;

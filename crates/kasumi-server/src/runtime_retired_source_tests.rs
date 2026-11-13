@@ -288,10 +288,29 @@ impl Fixture {
             destination: "approved".into(),
             not_after_ms: u64::MAX,
         };
-        replicas[0]
-            .4
-            .retire_source(context.clone(), retirement)
-            .await?;
+        // Consensus can accept the retirement fence and still lose its proof
+        // release under load: an UnknownOutcome. The same request then reads
+        // that exact permanent retirement and verifies its receipt.
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(120);
+        loop {
+            match replicas[0]
+                .4
+                .retire_source(context.clone(), retirement.clone())
+                .await
+            {
+                Ok(_) => break,
+                Err(failure)
+                    if failure.operation_error().is_some_and(|error| {
+                        matches!(
+                            error.code,
+                            kasumi_types::ErrorCode::UnknownOutcome
+                                | kasumi_types::ErrorCode::Unavailable
+                        )
+                    }) && tokio::time::Instant::now() < deadline => {}
+                Err(failure) => return Err(failure.into()),
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
         let custody = replicas[0].4.detach_retired_custody().await?;
         for (index, replica) in replicas.iter().enumerate() {
             transport.unregister(&group, index as u64 + 1);

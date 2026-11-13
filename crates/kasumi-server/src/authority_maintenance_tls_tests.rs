@@ -50,8 +50,13 @@ fn certificates() -> (String, Vec<TlsIdentity>) {
         .collect();
     (certificate.pem(), identities)
 }
+/// Fixture budget for re-observing leadership and resolving one maintenance
+/// command. Every attempt keeps its production deadline; at load 90-350 on 16
+/// cores one leader observation or election alone exceeded the former 15 s wait.
+const FIXTURE_WINDOW: Duration = Duration::from_secs(120);
+
 async fn leader(services: &[Arc<IndependentAuthority>]) -> Arc<IndependentAuthority> {
-    tokio::time::timeout(Duration::from_secs(15), async {
+    tokio::time::timeout(FIXTURE_WINDOW, async {
         loop {
             for service in services {
                 let metrics = service.raft_group().raft().metrics().borrow().clone();
@@ -74,8 +79,9 @@ fn context(installation: &AuthorityInstallation) -> RequestContext {
         principal: "operator".into(),
         request_id: Uuid::new_v4().to_string(),
         scopes: BTreeSet::from([Action::Admin]),
+        // Outlives one command's complete fixture window.
         authorization: RequestAuthorization::from_verified_credential(
-            clock.now_ms().unwrap() + 120_000,
+            clock.now_ms().unwrap() + 3 * FIXTURE_WINDOW.as_millis() as u64,
             &clock.observe().unwrap(),
             CredentialResource::Authority {
                 authority_id: installation.manifest.authority_id,
@@ -85,19 +91,44 @@ fn context(installation: &AuthorityInstallation) -> RequestContext {
         .unwrap(),
     }
 }
+/// Start one maintenance command and resolve its exact outcome. The command
+/// is built once from the current configuration. A leader change or an expired
+/// write deadline leaves the outcome unknown; Start compares the whole
+/// permanent command before replay, so repeating the same command on whichever
+/// member leads resolves it without a second effect.
 async fn start(
-    service: &Arc<IndependentAuthority>,
+    services: &[Arc<IndependentAuthority>],
     action: AuthorityMaintenanceAction,
 ) -> AuthorityMaintenanceStatus {
-    let ctx = context(service.installation());
-    let (AuthorityMaintenanceResponse::Configuration { configuration }, fence) = service
-        .maintenance(ctx.clone(), AuthorityMaintenanceRequest::Configuration)
-        .await
-        .unwrap()
-    else {
-        panic!("configuration expected")
+    let transient = |error: &kasumi_types::Error| {
+        matches!(
+            error.code,
+            kasumi_types::ErrorCode::UnknownOutcome | kasumi_types::ErrorCode::Unavailable
+        )
     };
-    fence.release().await.unwrap();
+    let deadline = tokio::time::Instant::now() + FIXTURE_WINDOW;
+    let ctx = context(services[0].installation());
+    let configuration = loop {
+        let current = leader(services).await;
+        match current
+            .maintenance(ctx.clone(), AuthorityMaintenanceRequest::Configuration)
+            .await
+        {
+            Ok((AuthorityMaintenanceResponse::Configuration { configuration }, fence)) => {
+                if fence.release().await.is_ok() {
+                    break configuration;
+                }
+            }
+            Ok(_) => panic!("configuration expected"),
+            Err(error) if transient(&error) => {}
+            Err(error) => panic!("maintenance configuration rejected: {error:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "maintenance configuration has no answer before the fixture deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    };
     let command = AuthorityMaintenanceCommand {
         operation_id: Uuid::new_v4(),
         expected_policy_epoch: configuration.policy_epoch,
@@ -106,18 +137,36 @@ async fn start(
             .unwrap()
             .now_ms()
             .unwrap()
-            + 60_000,
+            + 2 * FIXTURE_WINDOW.as_millis() as u64,
         action,
     };
-    let (AuthorityMaintenanceResponse::Operation { status }, fence) = service
-        .maintenance(ctx, AuthorityMaintenanceRequest::Start { command })
-        .await
-        .unwrap()
-    else {
-        panic!("status expected")
-    };
-    fence.release().await.unwrap();
-    status
+    loop {
+        let current = leader(services).await;
+        match current
+            .maintenance(
+                ctx.clone(),
+                AuthorityMaintenanceRequest::Start {
+                    command: command.clone(),
+                },
+            )
+            .await
+        {
+            Ok((AuthorityMaintenanceResponse::Operation { status }, fence)) => {
+                if fence.release().await.is_ok() {
+                    assert_eq!(status.command, command);
+                    return status;
+                }
+            }
+            Ok(_) => panic!("status expected"),
+            Err(error) if transient(&error) => {}
+            Err(error) => panic!("maintenance start rejected: {error:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "maintenance start has no definitive answer before the fixture deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 #[tokio::test]
@@ -251,10 +300,13 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
                 installed_members: members.clone(),
             },
             network.clone(),
+            // The server's own election policy. All four replicas share one
+            // test runtime thread; at load 90-350 that thread stalled past a
+            // 500-1000 ms election timeout, so leadership churned mid-command.
             kasumi_raft::Config {
-                heartbeat_interval: 100,
-                election_timeout_min: 500,
-                election_timeout_max: 1000,
+                heartbeat_interval: kasumi_raft::server_config().heartbeat_interval,
+                election_timeout_min: kasumi_raft::server_config().election_timeout_min,
+                election_timeout_max: kasumi_raft::server_config().election_timeout_max,
                 ..Default::default()
             },
             crate::authority_runtime::request_budget(&physical.admission).unwrap(),
@@ -306,7 +358,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     assert!(networks[0].authorize("authority-maintenance", 4).is_err());
     assert_eq!(
         start(
-            &current,
+            &services,
             AuthorityMaintenanceAction::SetCapacity {
                 capacity: AuthorityCapacity {
                     max_tenants: 100,
@@ -321,7 +373,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
     );
     assert_eq!(
         start(
-            &current,
+            &services,
             AuthorityMaintenanceAction::EnrollLearner {
                 node_id: 4,
                 member: members[&4].clone()
@@ -342,7 +394,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         .collect();
     assert_eq!(
         start(
-            &current,
+            &services,
             AuthorityMaintenanceAction::ReplaceVoters { voters }
         )
         .await
@@ -350,7 +402,7 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
         AuthorityMaintenancePhase::Completed
     );
     let stopped_member = start(
-        &current,
+        &services,
         AuthorityMaintenanceAction::RevokeMember { node_id: removed },
     )
     .await;

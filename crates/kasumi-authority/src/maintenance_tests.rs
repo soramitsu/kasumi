@@ -31,6 +31,49 @@ impl Fixture {
             _ => panic!("expected operation status"),
         }
     }
+    /// `maintenance`, until the request has a definitive answer. A leader
+    /// change or an expired write deadline leaves the outcome unknown. Every
+    /// request names a permanent operation: Start compares the whole command
+    /// before replay, and Stop and Status have no second effect. A lost Resume
+    /// acknowledgement may already have advanced the operation, so observe its
+    /// status before repeating Resume.
+    async fn exact_maintenance(
+        &self,
+        request: AuthorityMaintenanceRequest,
+    ) -> kasumi_types::Result<AuthorityMaintenanceStatus> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+        let mut observing = false;
+        loop {
+            let attempt = match (&request, observing) {
+                (AuthorityMaintenanceRequest::Resume { operation_id }, true) => {
+                    AuthorityMaintenanceRequest::Status {
+                        operation_id: *operation_id,
+                    }
+                }
+                _ => request.clone(),
+            };
+            match self.maintenance(attempt).await {
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::UnknownOutcome | ErrorCode::Unavailable
+                    ) =>
+                {
+                    assert!(
+                        tokio::time::Instant::now() < deadline,
+                        "maintenance request has no definitive answer before the fixture deadline: {error:?}"
+                    );
+                    observing = matches!(request, AuthorityMaintenanceRequest::Resume { .. });
+                }
+                // The lost Resume already finished the operation, and repeating
+                // it would be refused, so this observation is its answer.
+                Ok(status) if observing && status.phase.terminal() => return Ok(status),
+                Ok(_) if observing => observing = false,
+                outcome => return outcome,
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    }
     async fn exact_maintenance_transition(
         &self,
         command: &AuthorityMaintenanceCommand,
@@ -166,12 +209,7 @@ impl Fixture {
             id,
             settings,
             self.router.clone(),
-            Config {
-                heartbeat_interval: 100,
-                election_timeout_min: 500,
-                election_timeout_max: 1000,
-                ..Config::default()
-            },
+            fixture_raft_config(),
             request_budget(&storage.admission),
             storage.admission.snapshot_buffer_owner().unwrap(),
             self.epoch.clone(),
@@ -466,7 +504,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
         .await;
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Start { command: enroll })
+            .exact_maintenance(AuthorityMaintenanceRequest::Start { command: enroll })
             .await
             .unwrap()
             .phase,
@@ -488,7 +526,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
         .await;
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Start {
+            .exact_maintenance(AuthorityMaintenanceRequest::Start {
                 command: replacement
             })
             .await
@@ -500,7 +538,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
         .maintenance_command(AuthorityMaintenanceAction::RevokeMember { node_id: removed })
         .await;
     let draining = fixture
-        .maintenance(AuthorityMaintenanceRequest::Start {
+        .exact_maintenance(AuthorityMaintenanceRequest::Start {
             command: revoke.clone(),
         })
         .await
@@ -509,7 +547,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
     assert!(leader.peer_allowed(removed).is_err());
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Stop {
+            .exact_maintenance(AuthorityMaintenanceRequest::Stop {
                 operation_id: revoke.operation_id
             })
             .await
@@ -521,7 +559,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
     fixture.clock.0.store(999, Ordering::SeqCst);
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Resume {
+            .exact_maintenance(AuthorityMaintenanceRequest::Resume {
                 operation_id: revoke.operation_id
             })
             .await
@@ -541,7 +579,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
 
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Resume {
+            .exact_maintenance(AuthorityMaintenanceRequest::Resume {
                 operation_id: revoke.operation_id
             })
             .await
@@ -552,7 +590,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
     fixture.clock.0.store(1998, Ordering::SeqCst);
     assert_eq!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Resume {
+            .exact_maintenance(AuthorityMaintenanceRequest::Resume {
                 operation_id: revoke.operation_id
             })
             .await
@@ -576,7 +614,7 @@ async fn maintenance_replaces_voter_then_permanently_revokes_and_restarts_full_d
         .await;
     assert!(matches!(
         fixture
-            .maintenance(AuthorityMaintenanceRequest::Start { command: delayed })
+            .exact_maintenance(AuthorityMaintenanceRequest::Start { command: delayed })
             .await
             .unwrap()
             .phase,
@@ -774,7 +812,7 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
     }
     // An ambiguous return does not prove the membership phase has completed.
     // Resolve the same permanent command with its original finite invocation.
-    let completed = tokio::time::timeout(Duration::from_secs(30), async {
+    let completed = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let current = fixture.leader().await;
             let attempt = current
@@ -814,7 +852,7 @@ async fn maintenance_removing_the_leader_resumes_the_same_committed_operation() 
     })
     .await
     .expect("original voter replacement did not resolve");
-    let successor = tokio::time::timeout(Duration::from_secs(30), async {
+    let successor = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             for service in &fixture.services {
                 if service.local_node_id == former.local_node_id {

@@ -179,7 +179,7 @@ impl Serving {
             stores.clone(),
             TargetReplicaConfig {
                 node_id: id,
-                raft: target_raft_config(),
+                raft: fixture_raft_config(),
                 admission: f.physical[&id].admission.clone(),
             },
             router.clone(),

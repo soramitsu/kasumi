@@ -520,6 +520,10 @@ class DevStandaloneTests(unittest.TestCase):
         directory = self.instance()
         state = self.state(directory)
         control = Path(state["profile"]).with_name("control.json")
+        # Hand-started processes get an interactive shell's default SIGINT. A runner started
+        # in the background ignores SIGINT, which these shell fakes could not trap, so hold a
+        # handler while launching: exec resets a handled signal to its default.
+        self.addCleanup(signal.signal, signal.SIGINT, signal.signal(signal.SIGINT, signal.default_int_handler))
         launched = {kind: subprocess.Popen([state["kasumid"], *command], stdin=subprocess.DEVNULL)
                     for kind, command in (("server", ["serve", state["configuration"]]),
                                           ("watcher", ["credential", "watch", state["profile"]]),

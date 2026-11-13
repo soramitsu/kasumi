@@ -295,7 +295,7 @@ async fn committed_activation_rejects_raw_bypass_preserves_exact_winner_and_encr
     let stop_context = f.context("operator");
     // A leadership transition after restart can lose an acknowledgement. Resolve
     // this exact command with the original credential fence and no new identity.
-    let stopped = tokio::time::timeout(Duration::from_secs(15), async {
+    let stopped = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let current = f.leader().await;
             match current
@@ -495,7 +495,7 @@ async fn target_storage_retains_original_phase_and_cannot_install_late_renewal_o
     f.clock.0.store(500, Ordering::SeqCst);
     let attempt = phase_boot.begin(&intent).unwrap();
     let caller = node(&f);
-    let newer = tokio::time::timeout(Duration::from_secs(20), async {
+    let newer = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let current = f.leader().await;
             // A leader change does not create a new acquisition attempt or

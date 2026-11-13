@@ -14,7 +14,7 @@ async fn current_observation(
 ) -> (ControlSignerObservation, ControlSignerObservationFence) {
     // Only leader availability may retry, with one original credential and request.
     let caller = receiver(f, request);
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let original = AuthenticatedNode {
                 context: caller.context.clone(),

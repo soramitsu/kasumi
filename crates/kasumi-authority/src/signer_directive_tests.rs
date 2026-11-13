@@ -19,10 +19,10 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
         let enrollment = f.maintenance_command(AuthorityMaintenanceAction::EnrollSignerVerifier { enrollment: SignerVerifierEnrollment {
             verifier: member.verifier.clone(), endpoint: format!("{}/", member.endpoint), certificate_pins: member.certificate_pins.clone(),
         }}).await;
-        assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command: enrollment }).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+        assert_eq!(f.exact_maintenance(AuthorityMaintenanceRequest::Start { command: enrollment }).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
     }
     let global = f.maintenance_command(AuthorityMaintenanceAction::StageSignerGeneration { certificate }).await;
-    assert_eq!(f.maintenance(AuthorityMaintenanceRequest::Start { command: global.clone() }).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
+    assert_eq!(f.exact_maintenance(AuthorityMaintenanceRequest::Start { command: global.clone() }).await.unwrap().phase, AuthorityMaintenancePhase::Completed);
     let mut stop = command.clone();
     stop.operation_id = Uuid::new_v4();
     stop.action = SignerTrustAction::StopStage { staged_operation_id: command.operation_id };
@@ -44,7 +44,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     assert!(serde_json::from_value::<IssuerSignerDirective>(missing_origin).is_err());
     // This is permission for dispatch, not an observation of local publication.
     service.request_signer().unwrap().check().unwrap();
-    assert_eq!(commit_directive(&service, &context, &verifier, &domain, &command).await.unwrap().status(), accepted.status());
+    assert_eq!(commit_directive_or_exact_receipt(&f, &service, &context, &verifier, &domain, &command).await.status(), accepted.status());
     let mut changed = command.clone();
     changed.not_after_ms -= 1;
     assert!(commit_directive(&service, &context, &verifier, &domain, &changed).await.is_err());
@@ -61,7 +61,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
         expected_operational_revision: current.revision, not_after_ms: invalid.not_after_ms,
         action: AuthorityMaintenanceAction::AuthorizeSignerTrust { directive: Box::new(invalid_directive) },
     };
-    let rejected = f.maintenance(AuthorityMaintenanceRequest::Start { command: invalid_command }).await.unwrap();
+    let rejected = f.exact_maintenance(AuthorityMaintenanceRequest::Start { command: invalid_command }).await.unwrap();
     assert!(matches!(rejected.phase, AuthorityMaintenancePhase::Rejected { .. }));
     let activation = SignerTrustCommand {
         operation_id: Uuid::new_v4(),
@@ -84,15 +84,14 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
             _ => unreachable!(),
         },
     }).await;
-    let (won, fence) = service.signing_maintenance(context.clone(), AuthoritySigningRequest {
+    let won = exact_signing_start(&f, &context, AuthoritySigningRequest {
         observation_id: Uuid::new_v4(), domain_sha256: domain.clone(),
         action: AuthoritySigningAction::Start { command: winner.clone() },
-    }).await.unwrap();
-    fence.release().await.unwrap();
+    }).await;
     assert_eq!(won.status.unwrap().phase, AuthorityMaintenancePhase::Completed);
     accepted.check().unwrap(); // An original stage may finish forward after the global winner.
     assert!(commit_directive(&service, &context, &verifier, &domain, &stop).await.is_err());
-    let activated = commit_directive(&service, &context, &verifier, &domain, &activation).await.unwrap();
+    let activated = commit_directive_or_exact_receipt(&f, &service, &context, &verifier, &domain, &activation).await;
     activated.check().unwrap();
     assert!(matches!(&activated.status().command.action,
         AuthorityMaintenanceAction::AuthorizeSignerTrust { directive }
@@ -127,7 +126,7 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     });
     assert!(current.backend.prepare_restore(&crate::state::restore_test_context(&substituted), &mut substituted.as_slice()).is_err());
 
-    assert_eq!(read_directive(&current, &context, &verifier, &domain, command.operation_id).await.unwrap().unwrap(), *accepted.status());
+    assert_eq!(exact_read_directive(&f, &context, &verifier, &domain, command.operation_id).await.unwrap(), *accepted.status());
     let activation_key = format!("maintenance/{}", activation.operation_id);
     let wrong_winner = crate::state::snapshot::rewrite_for_test(&snapshot, |value| {
         if value["type"] == "Entry" && value["value"][0] == activation_key {
@@ -149,13 +148,12 @@ async fn signer_directive_is_ordered_exact_finite_and_preserved_in_encrypted_sna
     // database handle. Sealing the guard precedes the complete ownership drain.
     drop(accepted);
     drop(activated);
-    drop(fence);
     tokio::time::timeout(Duration::from_secs(10), closing).await.unwrap().unwrap();
     drop(current);
     drop(service);
     f.reopen().await;
     let reopened = f.leader().await;
-    assert_eq!(read_directive(&reopened, &context, &verifier, &domain, activation.operation_id).await.unwrap().unwrap(), exact_permission);
+    assert_eq!(exact_read_directive(&f, &context, &verifier, &domain, activation.operation_id).await.unwrap(), exact_permission);
     assert_eq!(reopened.backend.signing_head().unwrap().retirement.unwrap().activation_operation_id, winner.operation_id);
     // A fresh identity must not first commit after its immutable admission bound.
     f.clock.0.store(60_000, Ordering::SeqCst);
@@ -205,7 +203,7 @@ async fn issuer_permission_retains_original_policy_while_current_admin_can_read_
         {
             // A lost start reply cannot authorize a different generation or
             // another command identity. Read only this permanent operation.
-            tokio::time::timeout(Duration::from_secs(35), async {
+            tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
                 loop {
                     match f
                         .maintenance(AuthorityMaintenanceRequest::Status {
@@ -302,7 +300,7 @@ async fn signer_replacement_requires_current_authorization_and_exact_live_owner(
 async fn elect_original_verifier(authority: &Arc<IndependentAuthority>) {
     // Local signer permission belongs to this installed physical member. A
     // different quorum leader cannot substitute its verifier for this replay.
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             let metrics = authority.group.raft().metrics().borrow().clone();
             if metrics.current_leader == Some(authority.local_node_id) {
@@ -322,6 +320,56 @@ async fn elect_original_verifier(authority: &Arc<IndependentAuthority>) {
     })
     .await
     .expect("original physical verifier did not regain fixture leadership");
+}
+
+/// Start a global signing transition on whichever member leads, until it has
+/// a definitive answer. The request keeps one observation identity and one
+/// permanent command, so a repeat resolves the original without a second effect.
+async fn exact_signing_start(
+    f: &Fixture,
+    context: &RequestContext,
+    request: AuthoritySigningRequest,
+) -> AuthoritySigningResponse {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match f.leader().await.signing_maintenance(context.clone(), request.clone()).await {
+            Ok((response, fence)) if fence.release().await.is_ok() => return response,
+            Ok(_) => {}
+            Err(error)
+                if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+            Err(error) => panic!("global signing transition rejected: {error:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "global signing transition has no definitive answer before the fixture deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+}
+
+/// Read a retained directive on whichever member leads. A read has no effect,
+/// so only leader availability is retried.
+async fn exact_read_directive(
+    f: &Fixture,
+    context: &RequestContext,
+    verifier: &TrustVerifierIdentity,
+    domain: &str,
+    operation_id: Uuid,
+) -> Option<AuthorityMaintenanceStatus> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
+    loop {
+        match read_directive(&f.leader().await, context, verifier, domain, operation_id).await {
+            Ok(status) => return status,
+            Err(error)
+                if matches!(error.code, ErrorCode::UnknownOutcome | ErrorCode::Unavailable) => {}
+            Err(error) => panic!("retained signer directive read rejected: {error:?}"),
+        }
+        assert!(
+            tokio::time::Instant::now() < deadline,
+            "retained signer directive has no definitive read before the fixture deadline"
+        );
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
 }
 
 async fn commit_directive_or_exact_receipt(
@@ -407,7 +455,7 @@ async fn signing_start_or_exact_receipt(
                 ErrorCode::UnknownOutcome | ErrorCode::Unavailable
             ) =>
         {
-            tokio::time::timeout(Duration::from_secs(35), async {
+            tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
                 loop {
                     let current = fixture.leader().await;
                     let receipt = AuthoritySigningRequest {

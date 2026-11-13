@@ -24,12 +24,14 @@ use fixture_failure::FixtureResult;
 /// observation or election alone exceeded the former 20-30 s budgets.
 const FIXTURE_OBSERVATION_WINDOW: Duration = Duration::from_secs(120);
 
-/// Election timing for the encrypted target replicas: the server's own policy
-/// (250 ms heartbeat, 1.5-3 s election timeout) with the fixture's remaining
-/// defaults. All replicas share one test runtime thread; on a host at load
-/// 90-350 that thread stalled past the former 250-400 ms election timeout, so
-/// leadership churned and no leader observation or barrier could settle.
-fn target_raft_config() -> Config {
+/// Election timing for the independent-control voters and the encrypted target
+/// replicas: the server's own policy (250 ms heartbeat, 1.5-3 s election
+/// timeout) with the fixture's remaining defaults. All replicas share one test
+/// runtime thread; on a host at load 90-350 that thread stalled past the former
+/// 250-400 ms (targets) and 500-1000 ms (control) election timeouts, so
+/// leadership churned. The control group then committed nothing for a whole
+/// 120 s observation window.
+fn fixture_raft_config() -> Config {
     let server = kasumi_raft::server_config();
     Config {
         heartbeat_interval: server.heartbeat_interval,
@@ -308,12 +310,7 @@ impl Fixture {
                 id,
                 settings.clone(),
                 router.clone(),
-                Config {
-                    heartbeat_interval: 100,
-                    election_timeout_min: 500,
-                    election_timeout_max: 1000,
-                    ..Config::default()
-                },
+                fixture_raft_config(),
                 request_budget(&storage.admission),
                 storage.admission.snapshot_buffer_owner().unwrap(),
                 epoch.clone(),
@@ -507,12 +504,7 @@ impl Fixture {
                 id,
                 self.settings.clone(),
                 self.router.clone(),
-                Config {
-                    heartbeat_interval: 100,
-                    election_timeout_min: 500,
-                    election_timeout_max: 1000,
-                    ..Config::default()
-                },
+                fixture_raft_config(),
                 request_budget(&self.physical[&id].admission),
                 self.physical[&id]
                     .admission

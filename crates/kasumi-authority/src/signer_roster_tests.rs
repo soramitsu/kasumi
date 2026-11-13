@@ -21,7 +21,7 @@ async fn signing_transition(
         action: AuthoritySigningAction::Start { command },
     };
     let context = f.context("operator");
-    tokio::time::timeout(Duration::from_secs(20), async {
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
         loop {
             match f
                 .leader()
