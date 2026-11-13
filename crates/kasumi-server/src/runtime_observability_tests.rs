@@ -2142,8 +2142,10 @@ async fn protected_metrics_under_pressure() {
     assert_eq!(families(&pressured), expected);
     drop(held);
 
-    // A maintenance step holds its opening's state for its whole duration;
-    // the observation copies the worker's published status instead.
+    // Every read and write begin and every database call takes the node
+    // opening's state (a read begin holds it while its snapshot waits for the
+    // database's core lock); the observation copies the worker's published
+    // status instead.
     let node = management.node_for_enrollment_test();
     let (entered, held_step) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();

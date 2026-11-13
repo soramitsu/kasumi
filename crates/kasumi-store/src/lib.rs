@@ -1683,8 +1683,9 @@ impl NodeStore {
         Some(published)
     }
 
-    /// Fixture hook: run `work` holding the opening state a maintenance
-    /// step holds for its whole duration.
+    /// Fixture hook: run `work` holding the node opening's state, which every
+    /// read and write begin and every database call of the node takes (a
+    /// call only while it is admitted; see `RegisteredNodeOpening`).
     #[cfg(any(test, feature = "test-utils"))]
     pub fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
         self.body().db.hold_maintenance_state_for_test(work)

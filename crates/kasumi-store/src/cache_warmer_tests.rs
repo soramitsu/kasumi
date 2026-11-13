@@ -138,6 +138,14 @@ impl Drop for ReleaseGate<'_> {
     }
 }
 
+thread_local! {
+    /// Set by a writer around its commit (`write_row_publishing_slowly`): the
+    /// next root slot this thread writes, the first write of the commit's root
+    /// publication, takes this long.
+    static ROOT_WRITE_DELAY: std::cell::Cell<Option<Duration>> =
+        const { std::cell::Cell::new(None) };
+}
+
 struct Probe {
     group: kasumi_kv::backends::InMemoryGroup,
     reads: AtomicUsize,
@@ -147,6 +155,8 @@ struct Probe {
     /// Microseconds every durable synchronization takes: a slow disk.
     sync_micros: AtomicU64,
     syncs: AtomicUsize,
+    /// When each slow root publication (`ROOT_WRITE_DELAY`) began and ended.
+    slow_publications: Mutex<Vec<(Instant, Instant)>>,
 }
 impl Probe {
     fn slow_sync(&self) {
@@ -175,6 +185,13 @@ impl SegmentGroupBackend for Probe {
         self.group.read_root(slot, out)
     }
     fn write_root(&self, slot: RootSlot, bytes: &[u8; ROOT_SLOT_BYTES]) -> io::Result<()> {
+        if let Some(publication) = ROOT_WRITE_DELAY.with(std::cell::Cell::take) {
+            let started = Instant::now();
+            std::thread::sleep(publication);
+            self.slow_publications
+                .lock()
+                .push((started, Instant::now()));
+        }
         self.group.write_root(slot, bytes)
     }
     fn sync_root(&self) -> io::Result<()> {
@@ -281,6 +298,7 @@ impl Fixture {
             gate: ReadGate::default(),
             sync_micros: AtomicU64::new(0),
             syncs: AtomicUsize::new(0),
+            slow_publications: Mutex::new(Vec::new()),
         });
         let admission = native();
         let mut inputs = Some(crate::NodeFixtureInputs {
@@ -752,6 +770,22 @@ fn write_row(node: &NodeStore, key: u8) {
     transaction.commit().unwrap();
 }
 
+/// `write_row` as a slow commit: its root publication takes `publication`
+/// longer (`Probe::write_root`). Throughout it the commit holds the write gate
+/// and the commit gate, which a worker's warm step waits for, but not the KV
+/// core lock, which reads take.
+fn write_row_publishing_slowly(node: &NodeStore, key: u8, publication: Duration) {
+    let transaction = node.body().db.begin_write().unwrap();
+    {
+        let mut table = transaction.open_table(ROWS).unwrap();
+        table.insert(&[key][..], &[key; 512][..]).unwrap();
+    }
+    ROOT_WRITE_DELAY.with(|slow| slow.set(Some(publication)));
+    let committed = transaction.commit();
+    ROOT_WRITE_DELAY.with(|slow| slow.set(None));
+    committed.unwrap();
+}
+
 fn assert_rows(node: &NodeStore, keys: impl Iterator<Item = u8>) {
     let transaction = node.body().db.begin_read().unwrap();
     let table = transaction.open_table(ROWS).unwrap();
@@ -846,8 +880,9 @@ async fn published_storage_status_is_copied_without_waiting_for_the_kv_core_lock
     fixture.admission.workspace_gate.release();
     writer.join().unwrap();
     assert_rows(&fixture.node, (0..20).chain([100, 101]));
-    // A maintenance step holds its opening's state for its whole duration;
-    // neither the copy nor the write counters need that state.
+    // Every read and write begin and every database call takes the opening's
+    // state (a read begin holds it while its snapshot waits for the KV core
+    // lock); neither the copy nor the write counters need that state.
     let (entered, held) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
     let node = fixture.node.clone();
@@ -1603,6 +1638,12 @@ struct CycleUnderLoad {
     write_max: Duration,
     worker: CacheWorkerStatus,
     storage: kasumi_kv::StorageMaintenanceStatus,
+    /// Slow commits' root publications (`SLOW_PUBLICATION`) that ran.
+    slow_publications: usize,
+    /// Reads that began during a slow publication at least `STALL_SLACK`
+    /// before it ended, and those of them that ended only after it.
+    exposed_reads: usize,
+    stalled_reads: usize,
 }
 impl CycleUnderLoad {
     fn worker_time(&self) -> Duration {
@@ -1628,12 +1669,23 @@ const SLOW_SYNC: Duration = Duration::from_millis(5);
 const READER_THINK: Duration = Duration::from_millis(2);
 const WRITER_THINK: Duration = Duration::from_millis(40);
 const WIDE_ROWS: u16 = 180;
+/// How much longer a slow commit's root publication takes: a commit that a
+/// sync stalls on a loaded disk.
+const SLOW_PUBLICATION: Duration = Duration::from_secs(4);
+/// A read that began this long before a slow publication ended, and was
+/// still running when it ended, waited for that publication: no read takes
+/// that long otherwise, even on a loaded machine.
+const STALL_SLACK: Duration = Duration::from_secs(2);
 
 /// Drive one requested compaction cycle through the real worker on a disk
 /// whose every sync takes `SLOW_SYNC`, while one foreground thread reads a
 /// row every `READER_THINK` and another commits one every `WRITER_THINK`:
-/// two tenants of the node database.
-async fn compaction_cycle_under_foreground_load(unpaced: bool) -> CycleUnderLoad {
+/// two tenants of the node database. The writer's commits numbered in
+/// `slow_commits` (from zero) take `SLOW_PUBLICATION` longer to publish.
+async fn compaction_cycle_under_foreground_load(
+    unpaced: bool,
+    slow_commits: &'static [usize],
+) -> CycleUnderLoad {
     let fixture = Fixture::cold_with(WIDE_ROWS).await;
     write_row(&fixture.node, 100);
     fixture.node.request_storage_compaction().unwrap();
@@ -1652,19 +1704,20 @@ async fn compaction_cycle_under_foreground_load(unpaced: bool) -> CycleUnderLoad
         let node = fixture.node.clone();
         let stop = stop.clone();
         std::thread::spawn(move || {
-            let mut latencies = Vec::new();
+            // When each read began, and how long it took.
+            let mut reads = Vec::new();
             while !stop.load(Ordering::Acquire) {
-                let key = (latencies.len() % 20) as u8;
+                let key = (reads.len() % 20) as u8;
                 let started = Instant::now();
                 {
                     let transaction = node.body().db.begin_read().unwrap();
                     let table = transaction.open_table(ROWS).unwrap();
                     assert_eq!(table.get(&[key][..]).unwrap().unwrap().value(), &[key; 512]);
                 }
-                latencies.push(started.elapsed());
+                reads.push((started, started.elapsed()));
                 std::thread::sleep(READER_THINK);
             }
-            latencies
+            reads
         })
     };
     let writer = {
@@ -1674,7 +1727,12 @@ async fn compaction_cycle_under_foreground_load(unpaced: bool) -> CycleUnderLoad
             let mut latencies = Vec::new();
             while !stop.load(Ordering::Acquire) {
                 let started = Instant::now();
-                write_row(&node, 101 + (latencies.len() % 100) as u8);
+                let key = 101 + (latencies.len() % 100) as u8;
+                if slow_commits.contains(&latencies.len()) {
+                    write_row_publishing_slowly(&node, key, SLOW_PUBLICATION);
+                } else {
+                    write_row(&node, key);
+                }
                 latencies.push(started.elapsed());
                 std::thread::sleep(WRITER_THINK);
             }
@@ -1707,9 +1765,26 @@ async fn compaction_cycle_under_foreground_load(unpaced: bool) -> CycleUnderLoad
     let wall = started.elapsed();
     let worker = fixture.node.cache_worker_status();
     stop.store(true, Ordering::Release);
-    let mut reads = reader.join().unwrap();
+    let timed_reads = reader.join().unwrap();
     let writes = writer.join().unwrap();
     fixture.probe.sync_micros.store(0, Ordering::Release);
+    let publications = fixture.probe.slow_publications.lock().clone();
+    let exposed = |started: Instant| {
+        publications
+            .iter()
+            .find(|(began, ended)| started >= *began && started + STALL_SLACK <= *ended)
+    };
+    let exposed_reads = timed_reads
+        .iter()
+        .filter(|(started, _)| exposed(*started).is_some())
+        .count();
+    let stalled_reads = timed_reads
+        .iter()
+        .filter(|(started, took)| {
+            exposed(*started).is_some_and(|(_, ended)| *started + *took > *ended)
+        })
+        .count();
+    let mut reads: Vec<_> = timed_reads.iter().map(|(_, took)| *took).collect();
     assert!(!worker.failed, "{worker:?}");
     assert!(storage.reclaimed_files_total >= 1, "{storage:?}");
     assert_rows(&fixture.node, (0..20).chain([100]));
@@ -1738,7 +1813,43 @@ async fn compaction_cycle_under_foreground_load(unpaced: bool) -> CycleUnderLoad
         write_max: writes.iter().copied().max().unwrap_or_default(),
         worker,
         storage,
+        slow_publications: publications.len(),
+        exposed_reads,
+        stalled_reads,
     }
+}
+
+fn report_cycle_under_load(name: &str, run: &CycleUnderLoad) {
+    eprintln!(
+        "compaction under foreground load, {name}: wall={:?} worker_share={:.3} \
+         (maintenance={:?} warm={:?} steps={} busy={} longest={:?}) \
+         paced_delays={} paced_delay={:?} reads={} reads_per_second={:.1} \
+         read_share={:.3} read_p99={:?} read_max={:?} writes={} write_mean={:?} \
+         write_max={:?} relocated_bytes={} reclaimed_files={} slow_publications={} \
+         exposed_reads={} stalled_reads={}",
+        run.wall,
+        run.worker_share(),
+        run.worker.maintenance_time,
+        run.worker.warm_time,
+        run.worker.maintenance_steps,
+        run.worker.maintenance_busy,
+        run.worker.longest_database_time,
+        run.worker.paced_delays,
+        run.worker.paced_delay,
+        run.reads,
+        run.reads_per_second(),
+        run.read_share(),
+        run.read_p99,
+        run.read_max,
+        run.writes,
+        run.write_time / run.writes.max(1) as u32,
+        run.write_max,
+        run.storage.relocated_bytes_total,
+        run.storage.reclaimed_files_total,
+        run.slow_publications,
+        run.exposed_reads,
+        run.stalled_reads,
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1746,35 +1857,10 @@ async fn worker_leaves_a_slow_disk_to_foreground_operations_during_a_compaction_
     // The control: the worker's own pace and no stand-in, as before pacing.
     // It shows what the foreground is protected from; nothing but completion
     // is asserted of it.
-    let control = compaction_cycle_under_foreground_load(true).await;
-    let paced = compaction_cycle_under_foreground_load(false).await;
+    let control = compaction_cycle_under_foreground_load(true, &[]).await;
+    let paced = compaction_cycle_under_foreground_load(false, &[]).await;
     for (name, run) in [("unpaced", &control), ("paced", &paced)] {
-        eprintln!(
-            "compaction under foreground load, {name}: wall={:?} worker_share={:.3} \
-             (maintenance={:?} warm={:?} steps={} busy={} longest={:?}) \
-             paced_delays={} paced_delay={:?} reads={} reads_per_second={:.1} \
-             read_share={:.3} read_p99={:?} read_max={:?} writes={} write_mean={:?} \
-             write_max={:?} relocated_bytes={} reclaimed_files={}",
-            run.wall,
-            run.worker_share(),
-            run.worker.maintenance_time,
-            run.worker.warm_time,
-            run.worker.maintenance_steps,
-            run.worker.maintenance_busy,
-            run.worker.longest_database_time,
-            run.worker.paced_delays,
-            run.worker.paced_delay,
-            run.reads,
-            run.reads_per_second(),
-            run.read_share(),
-            run.read_p99,
-            run.read_max,
-            run.writes,
-            run.write_time / run.writes.max(1) as u32,
-            run.write_max,
-            run.storage.relocated_bytes_total,
-            run.storage.reclaimed_files_total,
-        );
+        report_cycle_under_load(name, run);
     }
     assert_eq!(control.worker.paced_delays, 0, "{control:?}");
     // The worker saw the foreground operations and yielded to them.
@@ -1785,12 +1871,15 @@ async fn worker_leaves_a_slow_disk_to_foreground_operations_during_a_compaction_
     // foreground operation was seen and for a loaded machine.
     assert!(paced.worker_share() <= 0.4, "{paced:?}");
     // So the foreground kept at least three fifths of the database's time,
-    // and used it: the reader, which also waits for the other tenant's
-    // commits in both runs, completed reads at more than twice the rate the
-    // unpaced worker left it.
+    // and used it: the reader completed reads at least half again as fast as
+    // with the unpaced worker. In both runs a read waits only while the KV
+    // core lock is held, by a step of the worker or by the staging of the
+    // other tenant's commit, so its rate follows the share of time that lock
+    // is free: about twice to two and a half times that of the unpaced run,
+    // with room left for a loaded machine.
     assert!(paced.reads > 0 && paced.writes > 0, "{paced:?}");
     assert!(
-        paced.reads_per_second() >= control.reads_per_second() * 2.0,
+        paced.reads_per_second() >= control.reads_per_second() * 1.5,
         "paced={paced:?} control={control:?}"
     );
     // A read waits for at most the iteration or the commit in progress: a
@@ -1799,9 +1888,9 @@ async fn worker_leaves_a_slow_disk_to_foreground_operations_during_a_compaction_
         paced.read_p99 <= paced.worker.longest_database_time * 4 + Duration::from_millis(250),
         "{paced:?}"
     );
-    // The worst read waited for about one iteration (a warm step's wait for
-    // a commit included) and one commit of the other tenant: the bound is
-    // the sum, with a second of slack for a loaded machine.
+    // The worst read waited for about one iteration and one commit of the
+    // other tenant: the bound is the sum, with a second of slack for a
+    // loaded machine.
     assert!(
         paced.read_max
             <= paced.worker.longest_database_time + paced.write_max + Duration::from_secs(1),
@@ -1818,6 +1907,29 @@ async fn worker_leaves_a_slow_disk_to_foreground_operations_during_a_compaction_
         paced.worker_share() < control.worker_share(),
         "paced={paced:?} control={control:?}"
     );
+}
+
+/// The same cycle, with two of the other tenant's commits each taking
+/// `SLOW_PUBLICATION` longer to publish their root, as commits do when a
+/// sync stalls on a loaded disk. Such a commit holds the write gate and the
+/// commit gate throughout, so the worker's next warm step waits for it; it
+/// holds no lock a read takes, so reads go on meanwhile.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reads_go_on_while_the_worker_waits_for_a_slow_commit_of_another_tenant() {
+    let run = compaction_cycle_under_foreground_load(false, &[10, 25]).await;
+    report_cycle_under_load("paced, two slow commits", &run);
+    assert_eq!(run.slow_publications, 2, "{run:?}");
+    // The worker begins an iteration at least every second (its longest
+    // pause), so it met a slow publication with seconds of it left and
+    // waited for the rest of it.
+    assert!(
+        run.worker.longest_database_time >= SLOW_PUBLICATION / 4,
+        "{run:?}"
+    );
+    // The reader went on reading during the slow publications: no read that
+    // began at least `STALL_SLACK` before one ended had to wait for its end.
+    assert!(run.exposed_reads > 0, "{run:?}");
+    assert_eq!(run.stalled_reads, 0, "{run:?}");
 }
 
 /// One background unit that keeps the database for at least `held`: it

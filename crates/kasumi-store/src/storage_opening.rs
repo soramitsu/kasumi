@@ -999,96 +999,85 @@ impl RegisteredNodeOpening {
         state.file.physical()?.identity()
     }
 
+    /// Admit one call into the open database. Under the opening's state this
+    /// checks that the opening is open and not stopped, and takes a
+    /// transaction admission; the caller then makes its call on the
+    /// admission after the state is released, as a registered writer begins
+    /// its transaction. A call that waits for the database's write gate,
+    /// commit gate or core lock (a warm step behind a commit's durable root
+    /// publication, say), or does I/O, therefore never holds this state,
+    /// which every tenant's read and write begins, the other calls of this
+    /// opening and close all take.
+    ///
+    /// The admission is live work of the database, like an admitted reader
+    /// or a queued writer. Close seals the database and, while any admission
+    /// lives, reports `WaitingForTransactions` without entering native close
+    /// or disposal; a call that has not entered the database yet is then
+    /// refused with `DatabaseClosed`, and one inside it finishes first.
+    fn admit_call(
+        &self,
+    ) -> Result<kasumi_kv::DatabaseTransactionAdmission, kasumi_kv::StorageError> {
+        self.admit_call_checked(|_| Ok(()))
+    }
+
+    /// `admit_call` with one more check of the opening's state, made under
+    /// the same lock after the open and stopped checks.
+    fn admit_call_checked(
+        &self,
+        check: impl FnOnce(&OpeningState) -> Result<(), kasumi_kv::StorageError>,
+    ) -> Result<kasumi_kv::DatabaseTransactionAdmission, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        check(&state)?;
+        state
+            .engine
+            .database()
+            .map(kasumi_kv::Database::transaction_admission)
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)
+    }
+
     pub fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
     ) -> Result<(), kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        if config.byte_limit > state.file.cache_limit() {
-            return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .configure_cache(config)
+        self.admit_call_checked(|state| {
+            if config.byte_limit > state.file.cache_limit() {
+                return Err(io::Error::from(io::ErrorKind::InvalidInput).into());
+            }
+            Ok(())
+        })?
+        .configure_cache(config)
     }
 
     pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .cache_stats()
+        self.admit_call()?.cache_stats()
     }
 
     pub fn warm_cache(
         &self,
         work_limit: usize,
     ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .warm_cache(work_limit)
+        self.admit_call()?.warm_cache(work_limit)
     }
 
     pub fn warm_cache_if_needed(
         &self,
         work_limit: usize,
     ) -> Result<kasumi_kv::CacheWarmup, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .warm_cache_if_needed(work_limit)
+        self.admit_call()?.warm_cache_if_needed(work_limit)
     }
 
     pub fn cache_warmup_status(
         &self,
     ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .cache_warmup_status()
+        self.admit_call()?.cache_warmup_status()
     }
 
     pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .request_cache_warm_retry()
+        self.admit_call()?.request_cache_warm_retry()
     }
 
     /// One bounded step of the database's persisted compaction cycle. Returns
@@ -1099,32 +1088,14 @@ impl RegisteredNodeOpening {
         &self,
         budget: kasumi_kv::MaintenanceBudget,
     ) -> Result<kasumi_kv::MaintenanceStep, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .run_maintenance(budget)
+        self.admit_call()?.run_maintenance(budget)
     }
 
     /// `kasumi_kv::Database::foreground_activity` of the open database: a
     /// counter that moves whenever a transaction begins, reads or commits.
     /// Takes the opening's state briefly and no database lock.
     pub fn foreground_activity(&self) -> Result<u64, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        Ok(state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .foreground_activity())
+        Ok(self.admit_call()?.foreground_activity())
     }
 
     /// `kasumi_kv::Database::defer_inline_maintenance` of the open database:
@@ -1134,21 +1105,15 @@ impl RegisteredNodeOpening {
         &self,
         duration: std::time::Duration,
     ) -> Result<(), kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .defer_inline_maintenance(duration);
+        self.admit_call()?.defer_inline_maintenance(duration);
         Ok(())
     }
 
-    /// Fixture hook: run `work` holding the opening's state, which a
-    /// maintenance step (`run_maintenance`) holds for its whole duration.
+    /// Fixture hook: run `work` holding the opening's state, as every read
+    /// and write begin and every call of this opening takes it: a call only
+    /// while it is admitted (`admit_call`), a read begin while its snapshot
+    /// is captured, which can wait for a commit's staging or a maintenance
+    /// step to release the database's core lock.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
         let owner = self.registration.owner();
@@ -1160,16 +1125,7 @@ impl RegisteredNodeOpening {
     pub fn maintenance_status(
         &self,
     ) -> Result<kasumi_kv::StorageMaintenanceStatus, kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .maintenance_status()
+        self.admit_call()?.maintenance_status()
     }
 
     /// Configure only the currently admitted, open owner. This is in-memory
@@ -1178,32 +1134,14 @@ impl RegisteredNodeOpening {
         &self,
         policy: kasumi_kv::MaintenancePolicy,
     ) -> Result<(), kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .configure_maintenance(policy)
+        self.admit_call()?.configure_maintenance(policy)
     }
 
     /// Begin a compaction cycle at the next maintenance step regardless of
     /// the growth thresholds, unless nothing older than the newest files
     /// exists yet.
     pub fn request_compaction(&self) -> Result<(), kasumi_kv::StorageError> {
-        let owner = self.registration.owner();
-        let state = owner.state.lock();
-        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
-            return Err(kasumi_kv::StorageError::DatabaseClosed);
-        }
-        state
-            .engine
-            .database()
-            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
-            .request_compaction()
+        self.admit_call()?.request_compaction()
     }
 
     /// Fixed, closed operation shape with no user callback or raw transaction

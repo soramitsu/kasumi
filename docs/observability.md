@@ -470,9 +470,13 @@ publication replaced.
 `maintenance_database_seconds_total` and `warm_database_seconds_total` are the
 wall time the worker's maintenance and warm steps kept the database, including
 their waits for its locks, and `worker_longest_iteration_seconds` is the
-longest single iteration: about how long a foreground operation can wait for
-one. `worker_paced_delays_total` and `worker_paced_delay_seconds_total` count
-the pauses lengthened for foreground operations and by how much.
+longest single iteration: at most about how long a foreground operation can
+wait for one. A warm step that waits for a slow commit keeps no read and no
+other write begin waiting meanwhile, so while commits are slow these figures,
+and the pauses taken for them, overstate what the worker kept from foreground
+operations. `worker_paced_delays_total` and
+`worker_paced_delay_seconds_total` count the pauses lengthened for foreground
+operations and by how much.
 `foreground_active` is 1 while the worker last saw foreground operations.
 `maintenance_urgent` is 1 while maintenance does not yield: the census
 (`measured`, in any phase but `packing`, whose trigger already follows the new
