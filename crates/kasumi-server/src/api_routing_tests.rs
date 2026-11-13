@@ -1,5 +1,6 @@
 #[tokio::test]
 async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages() {
+    use crate::runtime_storage_fixtures::LIVENESS;
     use kasumi_client::{KasumiClientConfig, KasumiClientPool};
     use kasumi_transport::{ClientAuthentication, TlsIdentity};
     use std::{
@@ -127,10 +128,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         body["operations"].as_array_mut().unwrap().push(operation);
     }
     let original: kasumi_types::MutationBatch = serde_json::from_value(body).unwrap();
-    let receipt = pool
-        .mutate(&original, Duration::from_secs(4))
-        .await
-        .unwrap();
+    let receipt = pool.mutate(&original, LIVENESS).await.unwrap();
     assert_eq!(
         first_requests.load(Ordering::SeqCst),
         1,
@@ -152,10 +150,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         "the next operation reads the replacement once"
     );
     *current_token.write().unwrap() = token;
-    let replay = pool
-        .mutate(&original, Duration::from_secs(4))
-        .await
-        .unwrap();
+    let replay = pool.mutate(&original, LIVENESS).await.unwrap();
     assert_eq!(receipt.revision, replay.revision);
     assert_eq!(
         fixture
@@ -201,10 +196,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
         },
         deadline: tokio::time::Instant::now() + duration,
     };
-    let page = pool
-        .query(&query, &json_options(Duration::from_secs(4)))
-        .await
-        .unwrap();
+    let page = pool.query(&query, &json_options(LIVENESS)).await.unwrap();
     assert_eq!(page.member(), 2);
     assert!(page.response().cursor.is_some());
     let snapshot_options = |duration| kasumi_client::SnapshotReadOptions {
@@ -222,7 +214,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     let lease = pool
         .open_snapshot_lease(
             &kasumi_types::OpenSnapshotLease { ttl_ms: 5000 },
-            &snapshot_options(Duration::from_secs(4)),
+            &snapshot_options(LIVENESS),
         )
         .await
         .unwrap();
@@ -259,7 +251,7 @@ async fn native_pool_replays_uncertain_batches_and_never_moves_historical_pages(
     );
     // An explicitly new query can select an available installed member.
     assert_eq!(
-        pool.query(&query, &json_options(Duration::from_secs(2)))
+        pool.query(&query, &json_options(LIVENESS))
             .await
             .unwrap()
             .member(),

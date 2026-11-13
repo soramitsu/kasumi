@@ -51,9 +51,12 @@ impl ReleaseGate {
         self.release.notified().await;
     }
     pub(crate) async fn entered(&self) {
-        tokio::time::timeout(Duration::from_secs(10), self.entered.notified())
-            .await
-            .unwrap();
+        tokio::time::timeout(
+            crate::runtime_storage_fixtures::LIVENESS,
+            self.entered.notified(),
+        )
+        .await
+        .unwrap();
     }
     pub(crate) fn release(&self) {
         self.release.notify_one();
@@ -1264,7 +1267,13 @@ async fn small_integer_query_is_refused_before_its_value_tree_under_a_tight_budg
     drop(filler.lock().unwrap().take());
     let (status, body) = decoded(fixture.router().oneshot(call()).await.unwrap()).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(body["result"]["isError"], json!(false));
+    assert_eq!(
+        body["result"]["isError"],
+        json!(false),
+        "{}; baseline {baseline:?}; now {:?}",
+        body["result"]["structuredContent"]["error"],
+        fixture.admission.snapshot()
+    );
     assert_eq!(
         body["result"]["structuredContent"],
         decode_output(&encoded).unwrap()

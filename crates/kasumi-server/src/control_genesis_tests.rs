@@ -19,11 +19,6 @@ fn pauses() -> &'static Mutex<BTreeMap<PathBuf, Arc<Pause>>> {
     static PAUSES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Pause>>>> = OnceLock::new();
     PAUSES.get_or_init(Default::default)
 }
-// These fixtures drain process-wide Data and tenant-enrollment startup tasks.
-pub(crate) fn data_startup_serial() -> &'static tokio::sync::Mutex<()> {
-    static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    SERIAL.get_or_init(Default::default)
-}
 struct Release(Arc<Pause>);
 impl Drop for Release {
     fn drop(&mut self) {
@@ -171,7 +166,6 @@ async fn existing(
 async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_drain() -> Result<()>
 {
     use std::{future::Future, task::Poll};
-    let _serial = data_startup_serial().lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (config, storage) = config(directory.path())?;
     let pause = Arc::new(Pause::default());
@@ -189,7 +183,11 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified()).await?;
+    tokio::time::timeout(
+        crate::runtime_storage_fixtures::LIVENESS,
+        pause.entered.notified(),
+    )
+    .await?;
     drop(opening);
     assert!(
         {
@@ -237,7 +235,7 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
     })
     .await;
     pause.release.notify_one();
-    let error = tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+    let error = tokio::time::timeout(crate::runtime_storage_fixtures::LIVENESS, drain)
         .await?
         .unwrap_err();
     assert!(format!("{error:#}").contains("actual Control genesis"));
@@ -286,13 +284,12 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
 #[tokio::test]
 async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_error() -> Result<()>
 {
-    let _serial = data_startup_serial().lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (mut config, storage) = config(directory.path())?;
     config.control.initial_limits.max_document_bytes = 1;
     config.validate()?;
     let error = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        crate::runtime_storage_fixtures::LIVENESS,
         crate::data_node_enrollment::initialize_with_storage(config.clone(), storage.clone()),
     )
     .await
@@ -341,7 +338,6 @@ async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_e
 
 #[tokio::test]
 async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owners() -> Result<()> {
-    let _serial = data_startup_serial().lock().await;
     for (index, phase) in [
         "node-provision-node",
         "node-provision-store",
@@ -357,7 +353,7 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
         let (config, storage) = config(directory.path())?;
         let fault = crate::startup_preparation::install(config.database_id, phase);
         let error = tokio::time::timeout(
-            std::time::Duration::from_secs(10),
+            crate::runtime_storage_fixtures::LIVENESS,
             crate::data_node_enrollment::initialize_with_storage(config.clone(), storage.clone()),
         )
         .await?

@@ -1,6 +1,7 @@
 //! Actual encrypted source retirement and cluster registration rejection. The
 //! transport has TLS configuration, but this fixture sends consensus in-process.
 use super::*;
+use crate::runtime_storage_fixtures::LIVENESS;
 use kasumi_engine::admission::NodeAdmission;
 use kasumi_store::{CustodyStore, test_utils::LocalKeyProvider};
 use std::{
@@ -132,11 +133,12 @@ pub(super) async fn after_open(
             tokio::task::block_in_place(|| {
                 let _ = entered.send(());
                 // The guard releases on assertion failure as well as success.
-                // The original core hold and observation deadlines are unchanged.
-                released.recv_timeout(Duration::from_secs(20)).unwrap();
+                // This bound only keeps a hung test from holding the core
+                // forever; it outlasts every liveness wait made while held.
+                released.recv_timeout(4 * LIVENESS).unwrap();
             });
         });
-    tokio::time::timeout(Duration::from_secs(10), entry)
+    tokio::time::timeout(LIVENESS, entry)
         .await
         .context("retired core entry acknowledgement timed out")??;
     selected.entered.notify_one();
@@ -219,12 +221,18 @@ impl Fixture {
             let admission = physical.admission.clone();
             let audit =
                 SecurityAudit::initialize(audit_store, Default::default(), admission.clone())?;
+            // The fixture retires the source through replica 1. Only replica 1
+            // campaigns, so a stalled heartbeat on a loaded machine cannot move
+            // that leadership between its leader check and its writes.
             let database = kasumi_engine::test_utils::open_fixture_replicated(
                 id,
                 stores.clone(),
                 &bootstrap,
                 transport.clone(),
-                kasumi_raft::Config::default(),
+                kasumi_raft::Config {
+                    enable_elect: id == 1,
+                    ..kasumi_raft::Config::default()
+                },
                 audit.clone(),
             )
             .await?;
@@ -246,7 +254,7 @@ impl Fixture {
             .4
             .raft_group()
             .raft()
-            .wait(Some(Duration::from_secs(10)))
+            .wait(Some(LIVENESS))
             .current_leader(1, "retirement fixture source leader")
             .await
             .map_err(anyhow::Error::new)?;
@@ -483,9 +491,6 @@ async fn retired_custody_route_uses_original_bootstrap_without_application_provi
 )]
 async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter_drains()
 -> FixtureResult<()> {
-    let _serial = crate::standalone::ownership_tests::drain_serial()
-        .lock()
-        .await;
     let fixture = Fixture::new().await?;
     let observation = Arc::new(HeldCore::default());
     *observation.context.lock().unwrap() = Some(fixture.context.clone());
@@ -559,13 +564,13 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(Duration::from_secs(10), observation.entered.notified())
+    tokio::time::timeout(LIVENESS, observation.entered.notified())
         .await
         .context("retired startup fixture did not acknowledge core entry")?;
     let original_owner = observation.owner.lock().unwrap().as_ptr();
     // The actual duplicate registration has failed once cleanup closes request
     // admission. Its core remains blocked, so no error/RecoveringControl may return.
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         loop {
             let custody = observation.owner.lock().unwrap().upgrade().unwrap();
             if custody.response_fence(&fixture.context).is_err() {
@@ -605,7 +610,7 @@ async fn retired_registration_rejection_retains_new_owner_until_cancelled_waiter
             .contains("already registered")
     );
     release.release();
-    let error = tokio::time::timeout(Duration::from_secs(10), NodeRuntime::drain_startups())
+    let error = tokio::time::timeout(LIVENESS, NodeRuntime::drain_startups())
         .await
         .context("retired startup ownership did not drain after core release")?
         .unwrap_err();
@@ -712,7 +717,7 @@ async fn retired_preparation_panic_drains_only_new_custody_owner() -> FixtureRes
         }
         outcome
     };
-    let _observation = tokio::time::timeout(Duration::from_secs(10), claim.run_retired(work))
+    let _observation = tokio::time::timeout(LIVENESS, claim.run_retired(work))
         .await?
         .err()
         .context("injected panic unexpectedly succeeded")?;

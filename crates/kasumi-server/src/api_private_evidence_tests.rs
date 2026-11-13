@@ -558,7 +558,14 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
     use sha2::{Digest, Sha256};
     use std::time::Duration;
 
-    const DEADLINE: Duration = Duration::from_secs(30);
+    // The hundred-workflow release qualification keeps its 30-second budget.
+    // The debug suite runs four workflows beside the rest of the suite, where
+    // a loaded machine takes many times longer; their budget only bounds a hang.
+    let deadline_budget = if workflows == 100 {
+        Duration::from_secs(30)
+    } else {
+        4 * crate::runtime_storage_fixtures::LIVENESS
+    };
     // BPNG's installed admission floor is 12 GiB, selected by
     // png2-deploy/scripts/sogeri-poc/deploy/kasumi-storage.py:69. The generic
     // 512-MiB fixture reached 569 MB of its 588-MB metadata-inclusive limit at
@@ -638,7 +645,7 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
                 &evidence,
                 &payload,
                 use_batch,
-                DEADLINE,
+                deadline_budget,
             )
             .await;
             assert!(
@@ -662,7 +669,7 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
                     schedule,
                 );
                 let refusal = append_private_evidence_fixture(
-                    &mut next, &evidence, &payload, use_batch, DEADLINE,
+                    &mut next, &evidence, &payload, use_batch, deadline_budget,
                 )
                 .await;
                 assert!(
@@ -674,9 +681,9 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
                     .lock()
                     .unwrap()
                     .extend(dispatched.lock().unwrap().iter().cloned());
-                assert!(next.read(&evidence, DEADLINE).await.unwrap().is_none());
+                assert!(next.read(&evidence, deadline_budget).await.unwrap().is_none());
             } else {
-                assert!(custody.read(&evidence, DEADLINE).await.unwrap().is_none());
+                assert!(custody.read(&evidence, deadline_budget).await.unwrap().is_none());
             }
             let batches = submitted.lock().unwrap().clone();
             (evidence, payload, use_batch, batches)
@@ -708,7 +715,7 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
         let mut receipts = Vec::new();
         for batch in &batches {
             let receipt = native
-                .resolve(&evidence.scope, batch, DEADLINE)
+                .resolve(&evidence.scope, batch, deadline_budget)
                 .await
                 .unwrap()
                 .expect("original refusal must be durable");
@@ -737,7 +744,7 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
     schedule
         .capacity_retries
         .store(0, std::sync::atomic::Ordering::SeqCst);
-    let deadline = tokio::time::Instant::now() + DEADLINE;
+    let deadline = tokio::time::Instant::now() + deadline_budget;
     for (evidence, payload, use_batch, batches, receipts) in refused {
         let profile = transport.profile_path.clone();
         let binding = transport.binding.clone();
@@ -801,7 +808,9 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
         completed
     })
     .await
-    .expect("all independent native recovery workflows must finish within 30s");
+    .unwrap_or_else(|_| {
+        panic!("all independent native recovery workflows must finish within {deadline_budget:?}")
+    });
     assert_eq!(originals.len(), workflows);
     assert_eq!(
         transport
@@ -833,7 +842,7 @@ async fn private_evidence_quota_recovery_workflows(workflows: usize) {
         for (batch, before) in batches.iter().zip(receipts) {
             assert_eq!(
                 native
-                    .resolve(&evidence.scope, batch, DEADLINE)
+                    .resolve(&evidence.scope, batch, deadline_budget)
                     .await
                     .unwrap(),
                 Some(before),

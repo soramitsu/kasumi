@@ -857,7 +857,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     )
     .unwrap();
     let discovered = pool
-        .discover_lease(&discovery, Duration::from_secs(2))
+        .discover_lease(&discovery, crate::runtime_storage_fixtures::LIVENESS)
         .await
         .unwrap();
     assert_eq!(&discovered, boot.identity());
@@ -883,7 +883,7 @@ async fn actual_pinned_native_issuer_binds_jwt_peer_attempt_and_current_admin_re
     assert!(acquired.remaining().unwrap() <= Duration::from_secs(1));
     *current_credential.write().unwrap() = admin.clone();
     assert_eq!(
-        pool.execute(&command, Duration::from_secs(2))
+        pool.execute(&command, crate::runtime_storage_fixtures::LIVENESS)
             .await
             .unwrap()
             .receipt

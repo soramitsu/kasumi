@@ -30,6 +30,10 @@ pub(crate) enum Kind {
 }
 
 fn tasks(kind: Kind) -> &'static Tasks {
+    #[cfg(test)]
+    if let Some(scoped) = test_scope::tasks(kind) {
+        return scoped;
+    }
     static DATA: OnceLock<Tasks> = OnceLock::new();
     static AUTHORITY: OnceLock<Tasks> = OnceLock::new();
     static LOCAL_OPERATOR: OnceLock<Tasks> = OnceLock::new();
@@ -45,6 +49,44 @@ fn tasks(kind: Kind) -> &'static Tasks {
         Kind::TargetJournal => &TARGET_JOURNAL,
     }
     .get_or_init(Default::default)
+}
+
+/// The library test process runs many fixtures at once, each on its own Tokio
+/// runtime, and an opening task is spawned on the runtime that polls its
+/// `open`. With one process-wide registry per kind, a fixture's drain joined,
+/// waited behind and returned the startups of unrelated fixtures (a prior
+/// failure is even returned by the next `open`), and a drain holding the
+/// registry lock stalled another fixture's first `open` poll. Tests therefore
+/// resolve each kind's registry per runtime: the same publication,
+/// acknowledgement and retained-join code, over the census of the calling
+/// fixture's own runtime. Outside a runtime the process-wide registry remains.
+/// Tokio allocates runtime ids from a process-wide counter, so a later fixture
+/// never resolves a finished fixture's registry.
+#[cfg(test)]
+mod test_scope {
+    use super::{Kind, Tasks};
+    use std::{
+        collections::HashMap,
+        sync::{Mutex, OnceLock, PoisonError},
+    };
+
+    type Scopes = Mutex<HashMap<(tokio::runtime::Id, usize), &'static Tasks>>;
+
+    pub(super) fn tasks(kind: Kind) -> Option<&'static Tasks> {
+        static SCOPES: OnceLock<Scopes> = OnceLock::new();
+        let runtime = tokio::runtime::Handle::try_current().ok()?.id();
+        let mut scopes = SCOPES
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // A test registry lives for the rest of the test process, like the
+        // process-wide one it replaces; it is a few words per runtime and kind.
+        Some(
+            scopes
+                .entry((runtime, kind as usize))
+                .or_insert_with(|| Box::leak(Box::default())),
+        )
+    }
 }
 
 struct Handoff<T> {

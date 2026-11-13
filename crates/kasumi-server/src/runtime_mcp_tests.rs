@@ -107,7 +107,7 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
     };
     let (stop, shutdown) = watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
-    let database = tokio::time::timeout(Duration::from_secs(15), async {
+    let database = tokio::time::timeout(crate::runtime_storage_fixtures::LIVENESS, async {
         loop {
             if let Ok(database) = registry.database(&service)
                 && database.check_serving().is_ok()
@@ -136,6 +136,13 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
     let mut admin = KasumiAdminClient::connect(&control.connection(true).unwrap())
         .await
         .unwrap();
+    // Issuance has whole-second times: a renewal made k seconds after the
+    // creation second outlives the original by k seconds, and must itself be
+    // made before the original expires. Renew halfway through the lifetime,
+    // so that a loaded machine has as long for the renewal as for the calls
+    // that follow the original's expiry. The held request lives as long as
+    // the original, beyond an ordinary client timeout.
+    const SHORT_LIFETIME_SECONDS: u64 = 40;
     let short = admin
         .create_credential(
             &control.bearer().unwrap(),
@@ -146,7 +153,7 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
                 tenant: "tenant-a".into(),
                 resource: tenant.resource.clone(),
                 scopes: BTreeSet::from([Action::Read, Action::Write]),
-                lifetime_seconds: 12,
+                lifetime_seconds: SHORT_LIFETIME_SECONDS,
                 // Used on MCP, which takes only MCP credentials.
                 client_certificate_sha256: None,
                 audience: kasumi_types::CredentialAudience::Mcp,
@@ -166,7 +173,7 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
             .unwrap(),
         )
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(30))
+        .timeout(crate::runtime_storage_fixtures::LIVENESS)
         .build()
         .unwrap();
     let endpoint = config.mcp.protocol.public_url.clone();
@@ -207,7 +214,12 @@ async fn installed_mcp_mutation_release_keeps_original_deadline_and_receipt_impl
         .expect("mutation committed before terminal response release");
     assert!(receipt.outcome.is_ok());
 
-    tokio::time::sleep(Duration::from_secs(4)).await;
+    let halfway = short.expires_at_ms - SHORT_LIFETIME_SECONDS * 1_000 / 2;
+    let now = kasumi_clock::EpochClock::system()
+        .unwrap()
+        .now_ms()
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(halfway.saturating_sub(now))).await;
     // An MCP credential cannot reach the administrative listener; the
     // Control administrator renews it.
     let renewed = admin

@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     runtime::NodeRuntime,
+    runtime_storage_fixtures::LIVENESS,
     standalone::{ClientProfile, drain_operations},
 };
 use kasumi_types::*;
@@ -107,7 +108,7 @@ async fn backup(
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         while registry.database(&context()).is_err() {
             tokio::task::yield_now().await;
         }
@@ -327,7 +328,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         while registry.database(&context()).is_err() {
             tokio::task::yield_now().await;
         }
@@ -362,7 +363,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         .read_snapshot(
             &profile.bearer().unwrap(),
             &read,
-            &snapshot_options(std::time::Duration::from_secs(4)),
+            &snapshot_options(LIVENESS),
         )
         .await
         .unwrap();
@@ -840,9 +841,6 @@ fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain() 
 
 async fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain_impl() {
     use std::{future::Future, task::Poll};
-    let _serial = crate::standalone::ownership_tests::drain_serial()
-        .lock()
-        .await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -863,7 +861,7 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+    tokio::time::timeout(LIVENESS, pause.entered.notified())
         .await
         .unwrap();
     drop(waiting);
@@ -885,7 +883,7 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
             .is_err()
     );
     pause.release.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(5), drain_operations())
+    tokio::time::timeout(LIVENESS, drain_operations())
         .await
         .unwrap()
         .unwrap();
@@ -1377,9 +1375,6 @@ fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_d
 async fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain_impl() {
     use kasumi_store::NodeStore;
     use std::{future::Future, task::Poll};
-    let _serial = crate::standalone::ownership_tests::drain_serial()
-        .lock()
-        .await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1416,7 +1411,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered())
+    tokio::time::timeout(LIVENESS, pause.entered())
         .await
         .unwrap();
     // Preparation already unwound. No custody, pair or database from the alternate
@@ -1484,7 +1479,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     })
     .await;
     pause.release();
-    let error = tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+    let error = tokio::time::timeout(LIVENESS, drain)
         .await
         .unwrap()
         .unwrap_err();
