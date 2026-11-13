@@ -32,6 +32,13 @@ fn checkpoints() -> &'static Checkpoints {
     static CHECKPOINTS: OnceLock<Checkpoints> = OnceLock::new();
     CHECKPOINTS.get_or_init(Default::default)
 }
+/// The local-operator and data startup registries are process-wide, and a
+/// drain joins every owner registered by any test. A test that pauses one of
+/// those owners, drains either registry, or publishes through the operator
+/// registry and drains it before its runtime ends holds this lock for its
+/// whole body. Otherwise a drain beside another test's paused owner waits on
+/// that owner or takes its outcome, and the paused test can wait on the
+/// draining test's registry lock in turn. Take it before `LIFECYCLE_GATE`.
 pub(crate) fn drain_serial() -> &'static tokio::sync::Mutex<()> {
     static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
     SERIAL.get_or_init(Default::default)

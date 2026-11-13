@@ -107,7 +107,8 @@ class AssemblyCustodyTests(unittest.TestCase):
         process = assembly.read(assembly.check_ref(self.custody, item["receipt"]))
         self.assertTrue(process["timed_out"])
         self.assertEqual(process["exit_code"], 124)
-        self.assertTrue(process["cleanup"]["drained"])
+        # The record says whether a census failed or a member survived.
+        self.assertTrue(process["cleanup"]["drained"], process["cleanup"])
         self.assertIn("SIGTERM", process["cleanup"]["signals"])
         self.assertIn(b"started", assembly.check_ref(self.custody, item["stdout"]).read_bytes())
         with self.assertRaisesRegex(ValueError, "exact drained"):

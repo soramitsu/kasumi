@@ -1,6 +1,14 @@
 use super::*;
 use kasumi_store::BackupUpload;
 
+/// `installed` and `enroll_fixture` drain the process-wide operator registry,
+/// which joins every test's operator, so their callers hold this throughout.
+async fn registry_serial() -> tokio::sync::MutexGuard<'static, ()> {
+    crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await
+}
+
 async fn installed() -> (
     tempfile::TempDir,
     RuntimeConfig,
@@ -63,6 +71,7 @@ fn original(config: &RuntimeConfig) -> (&Path, &BackupNamespaceBinding) {
 
 #[tokio::test]
 async fn explicit_enrollment_captures_actual_owner_marker_and_reopens_after_owner_restart() {
+    let _serial = registry_serial().await;
     let (_temporary, mut config, storage) = installed().await;
     let input = request(&config);
     let receipt = enroll_fixture(config.clone(), input.clone(), storage.clone())
@@ -143,6 +152,7 @@ fn configuration_requires_explicit_valid_filesystem_binding_without_a_compatibil
 
 #[tokio::test]
 async fn runtime_requires_retained_owner_and_rejects_foreign_or_changed_binding_unchanged() {
+    let _serial = registry_serial().await;
     let (_temporary, config, storage) = installed().await;
     let disk = storage.open_persistent(&config.persistent_disk).unwrap();
     let owner = crate::standalone::claim(&config, &disk).unwrap().unwrap();
@@ -197,6 +207,7 @@ async fn runtime_requires_retained_owner_and_rejects_foreign_or_changed_binding_
 
 #[tokio::test]
 async fn startup_never_repairs_missing_malformed_or_copied_markers() {
+    let _serial = registry_serial().await;
     for variant in ["missing", "malformed", "copied"] {
         let (_temporary, config, storage) = installed().await;
         let (directory, binding) = original(&config);
@@ -236,6 +247,7 @@ async fn startup_never_repairs_missing_malformed_or_copied_markers() {
 #[tokio::test]
 async fn enrollment_refuses_unmarked_existing_root_missing_parent_and_invalid_request_without_effects()
  {
+    let _serial = registry_serial().await;
     let (_temporary, config, storage) = installed().await;
     let input = request(&config);
     for invalid in [
@@ -274,6 +286,7 @@ async fn enrollment_refuses_unmarked_existing_root_missing_parent_and_invalid_re
 
 #[tokio::test]
 async fn enrollment_cannot_replace_original_owner_with_configuration_or_missing_installation() {
+    let _serial = registry_serial().await;
     let (_temporary, config, storage) = installed().await;
     let input = request(&config);
     let mut foreign = config.clone();

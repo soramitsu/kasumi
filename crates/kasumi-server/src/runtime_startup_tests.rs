@@ -60,6 +60,10 @@ fn refused_database_startup_returns_exact_error_after_drain_even_if_canceled() -
 async fn refused_database_startup_after_drain_impl() -> Result<()> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    // Each case pauses or drains the process-wide Data startup registry.
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
@@ -198,6 +202,10 @@ fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime() ->
 
 async fn panicked_cold_preparation_drains_actual_nodes_stores_and_partial_runtime_impl()
 -> Result<()> {
+    // Each case pauses or drains the process-wide Data startup registry.
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
@@ -299,6 +307,10 @@ fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installat
 
 async fn rejected_cold_audit_open_drains_storage_and_releases_the_standalone_installation_impl()
 -> Result<()> {
+    // Each case pauses or drains the process-wide Data startup registry.
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
@@ -413,6 +425,10 @@ fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock()
 
 async fn completed_runtime_shutdown_failure_retains_diagnostic_and_installation_lock_impl()
 -> Result<()> {
+    // Each case pauses or drains the process-wide Data startup registry.
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
@@ -506,6 +522,10 @@ fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_
 
 async fn actual_standalone_unpolled_serve_and_serving_panic_retain_installation_until_join_impl()
 -> Result<()> {
+    // Each case pauses or drains the process-wide Data startup registry.
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
@@ -665,6 +685,10 @@ fn node_cache_workers_wait_for_runtime_handoff_and_drain_if_unclaimed() -> Resul
 }
 
 async fn node_cache_workers_wait_for_runtime_handoff_impl() -> Result<()> {
+    // Each case pauses or drains the process-wide Data startup registry.
+    let _serial = crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await;
     let _gate = LIFECYCLE_GATE.lock().await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = tokio::time::timeout(

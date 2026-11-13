@@ -231,6 +231,7 @@ fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activation()
 }
 
 async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activation_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, old_profile, storage) = backup(root.path()).await;
     let started = start_with_storage(&configuration, request.clone(), storage.clone())
@@ -441,6 +442,7 @@ fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart() {
 }
 
 async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -548,6 +550,7 @@ fn recensus_physical_edit(disk: &kasumi_store::NodeDisk, edit: impl FnOnce()) {
 }
 
 async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let root_path = root.path().to_path_buf();
     let (configuration, request, _, storage) =
@@ -791,6 +794,15 @@ pub(super) async fn pause_open(path: &Path) {
     }
 }
 
+/// Every test here drains the process-wide operator registry, and several
+/// drain the Data startup registry. A drain joins other tests' owners too,
+/// including one that a paused test holds while it waits on that registry.
+async fn registry_serial() -> tokio::sync::MutexGuard<'static, ()> {
+    crate::standalone::ownership_tests::drain_serial()
+        .lock()
+        .await
+}
+
 async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
     let node = operator
         .prepare_database_group(journal)
@@ -922,6 +934,7 @@ fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file() {
 }
 
 async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1001,6 +1014,7 @@ fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
 }
 
 async fn local_lost_file_binding_cleanup_requires_the_original_node_identity_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1107,6 +1121,7 @@ fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization() {
 }
 
 async fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1165,6 +1180,7 @@ fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation() {
 }
 
 async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_impl() {
+    let _serial = registry_serial().await;
     for dispatched in [false, true] {
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (configuration, request, _, storage) = backup(root.path()).await;
@@ -1281,6 +1297,7 @@ fn activated_local_recovery_never_recreates_missing_control_topology() {
 }
 
 async fn activated_local_recovery_never_recreates_missing_control_topology_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1551,6 +1568,7 @@ fn local_audit_placement_is_owned_before_cache_creation_and_cannot_change_on_res
 
 async fn local_audit_placement_custody_impl() {
     use crate::audit_destination::{AuditDestinationConfig, TenantAuditPlacementConfig};
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1745,6 +1763,7 @@ fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched() {
 }
 
 async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched_impl() {
+    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     let operation = request.operation_id;

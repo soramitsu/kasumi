@@ -19,10 +19,11 @@ fn pauses() -> &'static Mutex<BTreeMap<PathBuf, Arc<Pause>>> {
     static PAUSES: OnceLock<Mutex<BTreeMap<PathBuf, Arc<Pause>>>> = OnceLock::new();
     PAUSES.get_or_init(Default::default)
 }
-// These fixtures drain process-wide Data and tenant-enrollment startup tasks.
+// These fixtures pause and drain process-wide Data and tenant-enrollment
+// startup tasks. Local recovery and runtime startup tests drain the same Data
+// registry, so every such test shares the one startup-registry lock.
 pub(crate) fn data_startup_serial() -> &'static tokio::sync::Mutex<()> {
-    static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    SERIAL.get_or_init(Default::default)
+    crate::standalone::ownership_tests::drain_serial()
 }
 struct Release(Arc<Pause>);
 impl Drop for Release {

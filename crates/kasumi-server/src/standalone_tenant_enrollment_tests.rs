@@ -101,6 +101,10 @@ fn unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs() -> 
                 .build()
                 .unwrap()
                 .block_on(Box::pin(async {
+                    // The drain below joins every test's operator.
+                    let _serial = crate::standalone::ownership_tests::drain_serial()
+                        .lock()
+                        .await;
                     let outcome =
                         unrecorded_standalone_template_never_opens_missing_keyrings_or_catalogs_impl()
                             .await;
@@ -171,6 +175,10 @@ fn explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_res
                 .build()
                 .unwrap()
                 .block_on(Box::pin(async {
+                    // The drain below joins every test's operator.
+                    let _serial = crate::standalone::ownership_tests::drain_serial()
+                        .lock()
+                        .await;
                     let outcome =
                         explicitly_enrolled_standalone_tenant_requires_bound_profile_and_survives_restart_impl()
                             .await;
