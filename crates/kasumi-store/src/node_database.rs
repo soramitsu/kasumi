@@ -65,7 +65,13 @@ pub(crate) struct NodeDatabase {
     state: Mutex<State>,
     #[cfg(test)]
     before_registered_admission: Mutex<Option<Box<dyn FnOnce() + Send>>>,
+    #[cfg(test)]
+    after_shutdown_seal: Mutex<Option<ShutdownSealHook>>,
 }
+
+/// Test hook run by `NodeStore::shutdown` right after it seals the opening.
+#[cfg(test)]
+pub(crate) type ShutdownSealHook = Box<dyn FnOnce(&NodeDatabase) + Send>;
 enum Accepted {
     Direct(DatabaseTransactionAdmission),
     Registered(RegisteredNodeOpening),
@@ -130,6 +136,8 @@ impl NodeDatabase {
             stopped: AtomicBool::new(false),
             #[cfg(test)]
             before_registered_admission: Mutex::new(None),
+            #[cfg(test)]
+            after_shutdown_seal: Mutex::new(None),
             state: Mutex::new(State {
                 database: Some(database),
                 registered: None,
@@ -150,6 +158,8 @@ impl NodeDatabase {
             stopped: AtomicBool::new(false),
             #[cfg(test)]
             before_registered_admission: Mutex::new(None),
+            #[cfg(test)]
+            after_shutdown_seal: Mutex::new(None),
             state: Mutex::new(State {
                 database: None,
                 registered: Some(NodeDatabaseLocator { provider, id }),
@@ -209,6 +219,21 @@ impl NodeDatabase {
             .map(Database::transaction_admission)
             .map(Accepted::Direct)
             .ok_or_else(|| kasumi_kv::StorageError::DatabaseClosed.into())
+    }
+
+    /// Test hook: run `after` with this database in `NodeStore::shutdown`,
+    /// right after the node's opening is sealed.
+    #[cfg(test)]
+    pub(crate) fn after_shutdown_seal_for_test(&self, after: ShutdownSealHook) {
+        assert!(self.after_shutdown_seal.lock().replace(after).is_none());
+    }
+
+    #[cfg(test)]
+    pub(crate) fn run_after_shutdown_seal_for_test(&self) {
+        let after = self.after_shutdown_seal.lock().take();
+        if let Some(after) = after {
+            after(self);
+        }
     }
 
     #[cfg(test)]

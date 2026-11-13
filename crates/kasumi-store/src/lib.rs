@@ -1710,9 +1710,17 @@ impl NodeStore {
     /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.
     pub async fn shutdown(&self) -> DrainResult {
+        // Mark the database stopped before sealing the opening. A worker step
+        // that the seal refuses (`DatabaseClosed`) is a clean stop only while
+        // the database already reports stopped; sealing first left a window in
+        // which a step that met the seal failed the worker, and with it this
+        // drain.
+        self.body().db.stop();
         // This facade owns the actual opening, so ingress sealing cannot depend
         // on a nonblocking locator lookup while census metadata is contended.
         self.opening.seal_store_transactions();
+        #[cfg(test)]
+        self.body().db.run_after_shutdown_seal_for_test();
         self.body().cache_warmer.stop(self);
         let mut report = self.body().shutdown_report.lock().await;
         let lifecycle = &self.body().lifecycle;

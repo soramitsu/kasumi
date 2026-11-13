@@ -2165,3 +2165,59 @@ async fn a_pause_in_progress_ends_once_its_owner_hurries_or_the_database_stops()
     // The stopped database ended the last pause; shutdown completes.
     node.shutdown().await.unwrap();
 }
+
+#[tokio::test]
+async fn shutdown_marks_the_database_stopped_before_it_seals_the_opening() {
+    // A worker step that the seal refuses must find the database stopped, or
+    // it reports the refusal as a worker failure and fails the drain.
+    let fixture = Fixture::cold().await;
+    let stopped_at_seal = Arc::new(StdMutex::new(None));
+    let seen = stopped_at_seal.clone();
+    fixture
+        .node
+        .body()
+        .db
+        .after_shutdown_seal_for_test(Box::new(move |db| {
+            *seen.lock().unwrap() = Some(db.is_stopped());
+        }));
+    fixture.node.shutdown().await.unwrap();
+    assert_eq!(*stopped_at_seal.lock().unwrap(), Some(true));
+}
+
+#[tokio::test]
+async fn a_worker_step_refused_by_the_shutdown_seal_stops_cleanly() {
+    let fixture = Fixture::cold().await;
+    let gate = Arc::new(ReadGate::default());
+    let _release_on_panic = ReleaseGate(&gate);
+    let before = gate.clone();
+    fixture
+        .node
+        .body()
+        .db
+        .before_registered_admission_for_test(Box::new(move || before.pause()));
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture.node.activate_cache_warming().unwrap();
+    tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
+        .await
+        .unwrap();
+    // The worker passed its stopped check and waits before its admission.
+    // Release it right after the seal, so that the seal refuses its admission
+    // before shutdown stops the worker. The pause after the release is best
+    // effort on a loaded machine: an admission that comes later meets a
+    // stopped worker, which stops cleanly with or without the fix, so this
+    // can miss a regression but cannot fail spuriously.
+    let release = gate.clone();
+    fixture
+        .node
+        .body()
+        .db
+        .after_shutdown_seal_for_test(Box::new(move |_| {
+            release.release();
+            std::thread::sleep(Duration::from_millis(500));
+        }));
+    tokio::time::timeout(Duration::from_secs(60), fixture.node.shutdown())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(!fixture.node.cache_worker_status().failed);
+}
