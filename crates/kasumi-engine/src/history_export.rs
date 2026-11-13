@@ -565,7 +565,7 @@ impl Database {
                 state.policy_epoch,
                 state.revision,
                 object_ids.object(None),
-                true,
+                Some(MAX_ARCHIVE_MANIFEST_BYTES),
                 bytes,
                 destination.as_ref(),
                 &cancellation,
@@ -629,7 +629,7 @@ impl Database {
                 policy_epoch,
                 revision,
                 id,
-                true,
+                Some(MAX_ARCHIVE_CHUNK_BYTES),
                 bytes,
                 destination,
                 cancellation,
@@ -682,7 +682,7 @@ impl Database {
             policy_epoch,
             revision,
             id,
-            false,
+            None,
             plaintext,
             destination,
             cancellation,
@@ -690,6 +690,9 @@ impl Database {
         .await
     }
 
+    /// `adopt_within` is set for an object whose identity derives from its
+    /// request, which another attempt may already have published. It is the
+    /// largest plaintext an object of that role can have.
     #[allow(clippy::too_many_arguments)]
     async fn publish_history_object_inner(
         &self,
@@ -697,7 +700,7 @@ impl Database {
         policy_epoch: u64,
         revision: u64,
         id: uuid::Uuid,
-        adopt_identical: bool,
+        adopt_within: Option<usize>,
         plaintext: Vec<u8>,
         destination: &dyn BackupDestination,
         cancellation: &QueryCancellation,
@@ -722,20 +725,26 @@ impl Database {
             _ = cancelled(cancellation) => return Err(cancelled_error()),
         };
         cancellation.check()?;
-        let verified = if adopt_identical {
+        let verified = if let Some(role_bytes) = adopt_within {
             // A competing replica encrypts with a fresh nonce, so its ciphertext
             // cannot match ours. Authenticate the immutable winner first, then
             // compare its complete plaintext with the locally selected prefix.
+            // Read it within the role's bound, not this attempt's size: a repeat
+            // whose selection shrank meets a larger winner. It can never replace
+            // that winner, so the comparison below makes it a Conflict instead
+            // of a retryable read failure. The bound costs no more than this
+            // export's own largest object of the role.
             // A filesystem .pending file is never adopted or overwritten: get
             // cannot see it and reports a retryable unavailable outcome.
-            let limit = max_plaintext_bytes.saturating_add((2 << 20) + 84);
+            let bound = role_bytes.max(max_plaintext_bytes);
+            let limit = bound.saturating_add((2 << 20) + 84);
             let bytes = tokio::select! {
                 result = destination.get(id, limit) => result.map_err(|_| Error::new(
                     ErrorCode::Unavailable, "required history object is missing or unavailable"))?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             let contents = tokio::select! {
-                result = self.store.decrypt_backup_object(&bytes, id, max_plaintext_bytes) => result.map_err(|_| Error::new(
+                result = self.store.decrypt_backup_object(&bytes, id, bound) => result.map_err(|_| Error::new(
                     ErrorCode::Unavailable, "history authentication or historical key authorization failed"))?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
@@ -753,7 +762,7 @@ impl Database {
         };
         if hex::encode(Sha256::digest(&verified.snapshot)) != expected_plaintext {
             return Err(Error::new(
-                if adopt_identical {
+                if adopt_within.is_some() {
                     ErrorCode::Conflict
                 } else {
                     ErrorCode::Corruption

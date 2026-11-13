@@ -7,12 +7,15 @@ const ARCHIVE_FLIGHT_FIXTURE_WAIT: Duration = Duration::from_secs(600);
 
 /// A filesystem destination that records every upload attempt. It holds the
 /// first upload until released, then writes it or fails it without writing.
+/// It can also fail one chosen upload without writing it.
 struct ArchiveFlightDestination {
     inner: Arc<kasumi_store::FilesystemBackupDestination>,
     root: std::path::PathBuf,
     puts: Mutex<Vec<uuid::Uuid>>,
     hold_first: AtomicBool,
     fail_held: AtomicBool,
+    /// The zero-based upload attempt to fail before writing.
+    fail_upload: Mutex<Option<usize>>,
     entered: tokio::sync::Notify,
     release: tokio::sync::Notify,
 }
@@ -39,13 +42,20 @@ impl BackupDestination for ArchiveFlightDestination {
         kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
     }
     async fn put(&self, id: uuid::Uuid, bytes: kasumi_store::BackupUpload) -> anyhow::Result<()> {
-        self.puts.lock().unwrap().push(id);
+        let number = {
+            let mut puts = self.puts.lock().unwrap();
+            puts.push(id);
+            puts.len() - 1
+        };
         if self.hold_first.swap(false, Ordering::SeqCst) {
             self.entered.notify_one();
             self.release.notified().await;
             if self.fail_held.load(Ordering::SeqCst) {
                 anyhow::bail!("fixture upload failed before writing");
             }
+        }
+        if *self.fail_upload.lock().unwrap() == Some(number) {
+            anyhow::bail!("fixture upload failed before writing");
         }
         self.inner.put(id, bytes).await
     }
@@ -109,6 +119,7 @@ async fn archive_flight_fixture(
         puts: Mutex::new(vec![]),
         hold_first: AtomicBool::new(true),
         fail_held: AtomicBool::new(false),
+        fail_upload: Mutex::new(None),
         entered: tokio::sync::Notify::new(),
         release: tokio::sync::Notify::new(),
     });
@@ -310,4 +321,73 @@ async fn archive_retry_takes_over_failed_original(fixture: &CredentialFixture) {
     let referenced = archive_flight_referenced(&archive);
     assert_eq!(destination.objects(), referenced);
     assert_eq!(destination.puts().len(), 1 + referenced.len());
+}
+
+#[tokio::test]
+async fn archive_retry_whose_selection_shrank_is_a_conflict_not_a_retryable_failure() {
+    let fixture = CredentialFixture::new().await;
+    archive_retry_with_shrunken_selection(&fixture).await;
+    fixture.close().await;
+}
+
+async fn archive_retry_with_shrunken_selection(fixture: &CredentialFixture) {
+    let (destination, request) = archive_flight_fixture(fixture).await;
+    let db = &fixture.db;
+    let context = fixture.context.clone();
+    // The original writes its one chunk. Its manifest upload then fails before
+    // writing, so the original fails and leaves that chunk behind.
+    destination.hold_first.store(false, Ordering::SeqCst);
+    *destination.fail_upload.lock().unwrap() = Some(1);
+    let error = db
+        .archive_history(context.clone(), request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (
+            ErrorCode::Unavailable,
+            "required history object is missing or unavailable"
+        )
+    );
+    let original = destination.objects();
+    assert_eq!(original.len(), 1, "only the original's chunk was written");
+
+    // Another archive then publishes the oldest document. The same request now
+    // selects less, so its first chunk is smaller than the stored one.
+    let oldest = db.engine().generation().unwrap().state.collections["history"]
+        .documents
+        .get("h0")
+        .expect("h0 is resident")
+        .version();
+    db.archive_history(
+        context.clone(),
+        ArchiveHistory {
+            archive_id: "earlier".into(),
+            cutoff_revision: oldest,
+            ..request.clone()
+        },
+    )
+    .await
+    .unwrap();
+
+    // The repeat derives the same chunk identity. The stored chunk is authentic
+    // but differs, and create-only storage never replaces it, so no repeat can
+    // succeed: a Conflict, not a retryable read failure.
+    let error = db
+        .archive_history(context.clone(), request.clone())
+        .await
+        .unwrap_err();
+    assert_eq!(
+        (error.code, error.message.as_str()),
+        (ErrorCode::Conflict, "published history plaintext differs")
+    );
+    assert!(original.is_subset(&destination.objects()));
+    assert!(
+        !db.engine()
+            .generation()
+            .unwrap()
+            .state
+            .history_archives
+            .contains_key(&request.archive_id)
+    );
 }

@@ -66,8 +66,11 @@ tenant, source incarnation, complete archive request and object role/index.
 These identities do not contain document digests. Uploads remain create-only;
 on a collision, the retry authenticates the existing object and compares its
 complete plaintext with its selected immutable prefix. It then adopts the
-winner's ciphertext digest. Fresh encryption nonces never require overwriting
-the winner or publishing a duplicate object set. An unfinished filesystem
+winner's ciphertext digest. An existing object whose plaintext differs, larger
+or smaller, makes the retry a `Conflict`: storage never replaces that object, so
+no repeat of that request can succeed. For example, a repeat selects fewer
+documents after another archive publishes some of them. Fresh encryption nonces
+never require overwriting the winner or publishing a duplicate object set. An unfinished filesystem
 `.pending` object remains unavailable and must never be adopted or overwritten.
 A retry can resume after an unrelated schema change: the current schema epoch
 fences the publication command separately from immutable manifest bytes.
@@ -115,8 +118,9 @@ commit rejection, current policy, exact numbers, archived point/query/snapshot
 and leased ID reads, unique indexes, physical restart, and missing/corrupt
 objects. Further tests exercise multiple real encrypted chunks, full restore
 after loss of original cold storage, permanent command replay, missing/corrupt
-dependencies, historical key authority, cancellation of stalled uploads, and
-repeats of an archive whose publication is still in flight.
+dependencies, historical key authority, cancellation of stalled uploads,
+repeats of an archive whose publication is still in flight, and a repeat whose
+selection shrank.
 Native tests cover authenticated feed/archive dispatch and exact values.
 These are local correctness tests; they do not establish Linux deployment,
 large-fleet performance or a recovery objective.
