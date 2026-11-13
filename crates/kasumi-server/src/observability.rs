@@ -214,6 +214,34 @@ pub(crate) struct StorageObservation {
     pub rejected_deferrals_total: u64,
     /// `capacity` or `rejected` while the last maintenance step deferred.
     pub last_deferral: Option<&'static str>,
+    /// How the database's background work shared it with foreground
+    /// operations since it opened. The worker's maintenance steps, those it
+    /// skipped because a writer held the write gate, and the unfinished warm
+    /// attempts a publication replaced.
+    pub maintenance_steps_total: u64,
+    pub maintenance_busy_total: u64,
+    pub warm_restarts_total: u64,
+    /// Seconds the worker's maintenance and warm steps kept the database,
+    /// including their waits for its locks, and the longest single worker
+    /// iteration: about how long a foreground operation can wait for one.
+    pub maintenance_database_seconds_total: f64,
+    pub warm_database_seconds_total: f64,
+    pub worker_longest_iteration_seconds: f64,
+    /// Worker pauses lengthened for foreground operations, and by how much.
+    pub worker_paced_delays_total: u64,
+    pub worker_paced_delay_seconds_total: f64,
+    /// Foreground operations were active at the worker's last iteration.
+    pub foreground_active: bool,
+    /// Maintenance is not yielding to foreground operations: compaction is a
+    /// whole trigger behind or a step of the cycle was refused capacity.
+    pub maintenance_urgent: bool,
+    /// Paced background writes (snapshot chunk commits and journal purge
+    /// chunks): how many, the seconds they kept the database, the longest
+    /// one, and the seconds their writers paused for foreground operations.
+    pub background_write_units_total: u64,
+    pub background_write_database_seconds_total: f64,
+    pub background_write_longest_seconds: f64,
+    pub background_write_paced_delay_seconds_total: f64,
 }
 impl StorageObservation {
     pub(crate) fn published(
@@ -222,6 +250,7 @@ impl StorageObservation {
     ) -> Self {
         let status = &published.status;
         let census = published.census;
+        let background = &published.background;
         Self {
             measured: status.measured,
             segment_files: census.map(|census| census.segment_files),
@@ -259,6 +288,20 @@ impl StorageObservation {
                 kasumi_store::MaintenanceDeferral::Capacity => "capacity",
                 kasumi_store::MaintenanceDeferral::Rejected(_) => "rejected",
             }),
+            maintenance_steps_total: background.maintenance_steps,
+            maintenance_busy_total: background.maintenance_busy,
+            warm_restarts_total: background.warm_restarts,
+            maintenance_database_seconds_total: background.maintenance_time.as_secs_f64(),
+            warm_database_seconds_total: background.warm_time.as_secs_f64(),
+            worker_longest_iteration_seconds: background.longest_database_time.as_secs_f64(),
+            worker_paced_delays_total: background.paced_delays,
+            worker_paced_delay_seconds_total: background.paced_delay.as_secs_f64(),
+            foreground_active: background.foreground_active,
+            maintenance_urgent: background.maintenance_urgent,
+            background_write_units_total: background.writes.units,
+            background_write_database_seconds_total: background.writes.database_time.as_secs_f64(),
+            background_write_longest_seconds: background.writes.longest_database_time.as_secs_f64(),
+            background_write_paced_delay_seconds_total: background.writes.paced_delay.as_secs_f64(),
         }
     }
 }
@@ -1258,7 +1301,7 @@ impl<T: Into<Value>> From<Option<T>> for Value {
 /// Storage families shared by the node's database and each group that has
 /// one of its own: (suffix, kind, value).
 type StorageFamily = (&'static str, &'static str, fn(&StorageObservation) -> Value);
-const STORAGE_FAMILIES: [StorageFamily; 22] = [
+const STORAGE_FAMILIES: [StorageFamily; 36] = [
     ("measured", "gauge", |s| s.measured.into()),
     ("segment_files", "gauge", |s| s.segment_files.into()),
     ("segment_bytes", "gauge", |s| s.segment_bytes.into()),
@@ -1311,6 +1354,48 @@ const STORAGE_FAMILIES: [StorageFamily; 22] = [
     ("snapshot_retained_files", "gauge", |s| {
         s.snapshot_retained_files.into()
     }),
+    ("maintenance_steps_total", "counter", |s| {
+        s.maintenance_steps_total.into()
+    }),
+    ("maintenance_busy_total", "counter", |s| {
+        s.maintenance_busy_total.into()
+    }),
+    ("warm_restarts_total", "counter", |s| {
+        s.warm_restarts_total.into()
+    }),
+    ("maintenance_database_seconds_total", "counter", |s| {
+        s.maintenance_database_seconds_total.into()
+    }),
+    ("warm_database_seconds_total", "counter", |s| {
+        s.warm_database_seconds_total.into()
+    }),
+    ("worker_longest_iteration_seconds", "gauge", |s| {
+        s.worker_longest_iteration_seconds.into()
+    }),
+    ("worker_paced_delays_total", "counter", |s| {
+        s.worker_paced_delays_total.into()
+    }),
+    ("worker_paced_delay_seconds_total", "counter", |s| {
+        s.worker_paced_delay_seconds_total.into()
+    }),
+    ("foreground_active", "gauge", |s| s.foreground_active.into()),
+    ("maintenance_urgent", "gauge", |s| {
+        s.maintenance_urgent.into()
+    }),
+    ("background_write_units_total", "counter", |s| {
+        s.background_write_units_total.into()
+    }),
+    ("background_write_database_seconds_total", "counter", |s| {
+        s.background_write_database_seconds_total.into()
+    }),
+    ("background_write_longest_seconds", "gauge", |s| {
+        s.background_write_longest_seconds.into()
+    }),
+    (
+        "background_write_paced_delay_seconds_total",
+        "counter",
+        |s| s.background_write_paced_delay_seconds_total.into(),
+    ),
 ];
 const COMPACTION_PHASES: [&str; 4] = ["idle", "evacuating", "reclaiming", "packing"];
 const DEFERRAL_CLASSES: [&str; 2] = ["capacity", "rejected"];
@@ -1935,6 +2020,24 @@ mod tests {
                 arena_bytes: 1 << 20,
                 measured_at: now,
             }),
+            background: kasumi_store::PublishedBackgroundWork {
+                maintenance_steps: 40,
+                maintenance_busy: 3,
+                warm_restarts: 2,
+                warm_time: std::time::Duration::from_millis(250),
+                maintenance_time: std::time::Duration::from_millis(1500),
+                longest_database_time: std::time::Duration::from_millis(125),
+                paced_delays: 30,
+                paced_delay: std::time::Duration::from_secs(6),
+                foreground_active: true,
+                maintenance_urgent: phase == kasumi_store::StorageCompactionPhase::Packing,
+                writes: kasumi_store::BackgroundWriteStatus {
+                    units: 7,
+                    database_time: std::time::Duration::from_millis(750),
+                    longest_database_time: std::time::Duration::from_millis(500),
+                    paced_delay: std::time::Duration::from_secs(3),
+                },
+            },
         };
         StorageObservation::published(&published, now + std::time::Duration::from_secs(3))
     }
@@ -2099,6 +2202,32 @@ mod tests {
         assert!(evacuating.contains("kasumi_storage_segment_files 4\n"));
         assert!(evacuating.contains("kasumi_storage_census_age_seconds 3\n"));
         assert!(evacuating.contains("kasumi_storage_compaction_phase{phase=\"evacuating\"} 1\n"));
+        // How background work shared the database, from the same publication.
+        for sample in [
+            "# TYPE kasumi_storage_maintenance_steps_total counter\n",
+            "kasumi_storage_maintenance_steps_total 40\n",
+            "kasumi_storage_maintenance_busy_total 3\n",
+            "kasumi_storage_warm_restarts_total 2\n",
+            "# TYPE kasumi_storage_maintenance_database_seconds_total counter\n",
+            "kasumi_storage_maintenance_database_seconds_total 1.5\n",
+            "kasumi_storage_warm_database_seconds_total 0.25\n",
+            "# TYPE kasumi_storage_worker_longest_iteration_seconds gauge\n",
+            "kasumi_storage_worker_longest_iteration_seconds 0.125\n",
+            "kasumi_storage_worker_paced_delays_total 30\n",
+            "# TYPE kasumi_storage_worker_paced_delay_seconds_total counter\n",
+            "kasumi_storage_worker_paced_delay_seconds_total 6\n",
+            "kasumi_storage_foreground_active 1\n",
+            "kasumi_storage_maintenance_urgent 0\n",
+            "kasumi_storage_background_write_units_total 7\n",
+            "kasumi_storage_background_write_database_seconds_total 0.75\n",
+            "# TYPE kasumi_storage_background_write_longest_seconds gauge\n",
+            "kasumi_storage_background_write_longest_seconds 0.5\n",
+            "kasumi_storage_background_write_paced_delay_seconds_total 3\n",
+        ] {
+            assert!(evacuating.contains(sample), "{sample}");
+        }
+        let packing = observation(Packing, true, true, true, true).prometheus();
+        assert!(packing.contains("kasumi_storage_maintenance_urgent 1\n"));
         let pressured = observation(Evacuating, false, true, true, false).prometheus();
         assert!(pressured.contains("kasumi_persistent_disk_headroom_bytes NaN\n"));
         assert!(pressured.contains("kasumi_admission_memory_used_bytes NaN\n"));

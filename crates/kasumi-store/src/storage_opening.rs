@@ -1111,6 +1111,42 @@ impl RegisteredNodeOpening {
             .run_maintenance(budget)
     }
 
+    /// `kasumi_kv::Database::foreground_activity` of the open database: a
+    /// counter that moves whenever a transaction begins, reads or commits.
+    /// Takes the opening's state briefly and no database lock.
+    pub fn foreground_activity(&self) -> Result<u64, kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        Ok(state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .foreground_activity())
+    }
+
+    /// `kasumi_kv::Database::defer_inline_maintenance` of the open database:
+    /// the driver's steps stand in for every write's inline maintenance step
+    /// for `duration`. Takes the opening's state briefly and no database lock.
+    pub fn defer_inline_maintenance(
+        &self,
+        duration: std::time::Duration,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(kasumi_kv::StorageError::DatabaseClosed);
+        }
+        state
+            .engine
+            .database()
+            .ok_or(kasumi_kv::StorageError::DatabaseClosed)?
+            .defer_inline_maintenance(duration);
+        Ok(())
+    }
+
     /// Fixture hook: run `work` holding the opening's state, which a
     /// maintenance step (`run_maintenance`) holds for its whole duration.
     #[cfg(any(test, feature = "test-utils"))]

@@ -473,6 +473,31 @@ a growing `maintenance_deferrals_total{class="capacity"}` with a phase stuck in
 `evacuating` means the disk needs headroom, and `kasumictl ... compact` retries
 at once after you free some.
 
+Compaction, cache warming, snapshot builds and journal purges are background
+work on a database every tenant shares, and each of their steps keeps other
+writes, and for part of it all reads, waiting. They yield to foreground
+operations: after a step the node worker pauses at least four times as long as
+the step kept the database, at most one second, whenever any transaction began,
+read, committed or waited meanwhile, and a standalone group's snapshot build
+and journal purge pause the same way between their commits (all snapshot
+builds of a database share one such budget). While the worker keeps stepping,
+writes skip the compaction step they otherwise run first; they run it again as
+soon as the worker stops or cannot get the write gate. Background work then
+uses about a fifth of the database's time, a foreground operation waits for at
+most the step or commit in progress, and a cycle or a snapshot takes up to five
+times as long while the node is busy; on a node nothing else uses they run at
+full speed. Maintenance stops yielding while it is urgent: the census the cycle
+was begun on found twice the bytes that begin a cycle (until Packing), or a
+step of the active cycle was refused capacity and that cycle has not completed.
+A group that is shutting down finishes its snapshot and purge without pauses
+and does not wait for another tenant's. A purge of more than one chunk (a
+journal backlog above 21845 entries) keeps its own group's journal, and so
+that group's log reads, appends and applies, waiting through its pauses as
+through its commits. The `kasumi_storage_*` background-work families
+([observability](observability.md)) show the time each kind of work kept the
+database and the time it yielded. A slow disk makes every step longer, and the
+pause with it, but does not change the share.
+
 For ciphertext/integrity errors, stop using the affected store and preserve it.
 Restore an authenticated logical backup into a new incarnation or replace the
 replica from healthy quorum state. Do not bypass authentication, discard

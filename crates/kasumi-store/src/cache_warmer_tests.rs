@@ -5,7 +5,7 @@ use kasumi_kv::{
     RootSlot, SegmentGroupBackend, StorageAdmission, TableDefinition,
 };
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Condvar, Mutex as StdMutex};
 
 const ROWS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("warming");
@@ -144,6 +144,18 @@ struct Probe {
     closes: AtomicUsize,
     read_failure: Mutex<Option<io::Error>>,
     gate: ReadGate,
+    /// Microseconds every durable synchronization takes: a slow disk.
+    sync_micros: AtomicU64,
+    syncs: AtomicUsize,
+}
+impl Probe {
+    fn slow_sync(&self) {
+        self.syncs.fetch_add(1, Ordering::AcqRel);
+        let micros = self.sync_micros.load(Ordering::Acquire);
+        if micros != 0 {
+            std::thread::sleep(Duration::from_micros(micros));
+        }
+    }
 }
 impl SegmentGroupBackend for Probe {
     fn reserve_transaction(
@@ -166,6 +178,7 @@ impl SegmentGroupBackend for Probe {
         self.group.write_root(slot, bytes)
     }
     fn sync_root(&self) -> io::Result<()> {
+        self.slow_sync();
         self.group.sync_root()
     }
     fn visit_entries(
@@ -200,12 +213,14 @@ impl SegmentGroupBackend for Probe {
         self.group.set_len(file, len)
     }
     fn sync(&self, file: GroupFile) -> io::Result<()> {
+        self.slow_sync();
         self.group.sync(file)
     }
     fn unlink(&self, file: GroupFile) -> io::Result<()> {
         self.group.unlink(file)
     }
     fn sync_names(&self) -> io::Result<()> {
+        self.slow_sync();
         self.group.sync_names()
     }
     fn close(&self) -> BackendCloseOutcome {
@@ -223,6 +238,13 @@ struct Fixture {
 }
 impl Fixture {
     async fn cold() -> Self {
+        Self::cold_with(0).await
+    }
+
+    /// The cold fixture with `wide` more rows whose long keys fill a
+    /// directory leaf each few rows: a requested cycle then has that many
+    /// leaves' worth of evacuation steps.
+    async fn cold_with(wide: u16) -> Self {
         let directory = crate::test_utils::private_tempdir().unwrap();
         let memory = crate::test_utils::TestDiskMemory::new(32 << 20, 4096);
         let scratch = crate::ScratchDisk::fixture(directory.path(), memory.clone());
@@ -243,6 +265,9 @@ impl Fixture {
             for i in 0..20_u8 {
                 table.insert(&[i][..], &[i; 512][..]).unwrap();
             }
+            for i in 0..wide {
+                table.insert(&wide_key(i)[..], &[7; 64][..]).unwrap();
+            }
         }
         transaction.commit().unwrap();
         let crash = group.crash();
@@ -254,6 +279,8 @@ impl Fixture {
             closes: AtomicUsize::new(0),
             read_failure: Mutex::new(None),
             gate: ReadGate::default(),
+            sync_micros: AtomicU64::new(0),
+            syncs: AtomicUsize::new(0),
         });
         let admission = native();
         let mut inputs = Some(crate::NodeFixtureInputs {
@@ -323,6 +350,13 @@ impl Fixture {
             .reserve_installed(headroom - overhead)
             .unwrap()
     }
+}
+
+/// A key long enough that a directory leaf holds only a few of them.
+fn wide_key(index: u16) -> Vec<u8> {
+    let mut key = vec![0xA5; 1024];
+    key[..2].copy_from_slice(&index.to_be_bytes());
+    key
 }
 
 #[tokio::test]
@@ -796,13 +830,44 @@ async fn published_storage_status_is_copied_without_waiting_for_the_kv_core_lock
         .expect("the commit reached its workspace reservation");
     let started = Instant::now();
     let copy = fixture.node.published_storage_status().unwrap();
+    let writes = fixture.node.background_write_status();
     assert!(started.elapsed() < Duration::from_secs(2));
     assert!(completed_first_cycle(&copy.status));
     assert!(copy.census.is_some());
     assert!(copy.published_at >= published.published_at);
+    // The background-work figures come with the same copy, and the paced
+    // write counters from atomics.
+    assert!(copy.background.maintenance_steps >= 1, "{copy:?}");
+    assert!(
+        copy.background.maintenance_time > Duration::ZERO,
+        "{copy:?}"
+    );
+    assert_eq!(copy.background.writes, writes);
     fixture.admission.workspace_gate.release();
     writer.join().unwrap();
     assert_rows(&fixture.node, (0..20).chain([100, 101]));
+    // A maintenance step holds its opening's state for its whole duration;
+    // neither the copy nor the write counters need that state.
+    let (entered, held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let node = fixture.node.clone();
+    let holder = std::thread::spawn(move || {
+        node.hold_maintenance_state_for_test(|| {
+            entered.send(()).unwrap();
+            // Never outlive a stuck observer: release on our own deadline.
+            let _ = released.recv_timeout(Duration::from_secs(20));
+        })
+    });
+    held.recv_timeout(Duration::from_secs(10)).unwrap();
+    let started = Instant::now();
+    let copy = fixture.node.published_storage_status().unwrap();
+    let writes = fixture.node.background_write_status();
+    let waited = started.elapsed();
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    assert!(waited < Duration::from_secs(2), "{waited:?}");
+    assert_eq!(copy.background.writes, writes);
+    assert!(copy.background.maintenance_steps >= 1, "{copy:?}");
     assert!(!fixture.node.cache_worker_status().failed);
     fixture.node.shutdown().await.unwrap();
 }
@@ -919,12 +984,17 @@ async fn worker_backs_off_on_busy_and_deferral() {
         deferred.last_deferral,
         Some(kasumi_kv::MaintenanceDeferral::Capacity)
     );
-    let worker = fixture.node.cache_worker_status();
+    // The engine publishes the step before the worker records it in the same
+    // iteration; the steps of the backoff keep reporting the deferral.
+    let worker = fixture
+        .wait(|status| {
+            matches!(
+                status.last_maintenance,
+                Some(kasumi_kv::MaintenanceStep::Ran(progress)) if progress.deferred.is_some()
+            )
+        })
+        .await;
     assert!(!worker.failed, "{worker:?}");
-    assert!(matches!(
-        worker.last_maintenance,
-        Some(kasumi_kv::MaintenanceStep::Ran(progress)) if progress.deferred.is_some()
-    ));
     drop(pressure);
     // An explicit request also clears the step backoff; the cycle resumes
     // from its kept cursors and completes.
@@ -1129,4 +1199,857 @@ fn worker_counts_only_unfinished_attempts_that_were_replaced() {
         status.native,
         Some(native(CacheWarmupState::Running, Some(12)))
     );
+}
+
+fn ran_step(units: usize) -> Option<kasumi_kv::MaintenanceStep> {
+    Some(kasumi_kv::MaintenanceStep::Ran(
+        kasumi_kv::MaintenanceProgress {
+            units,
+            ..Default::default()
+        },
+    ))
+}
+
+/// A worker whose last maintenance step made progress and kept the database
+/// for `held`, with or without foreground operations around it.
+fn maintaining_status(held: Duration, foreground_active: bool) -> CacheWorkerStatus {
+    CacheWorkerStatus {
+        last_maintenance: ran_step(7),
+        maintenance_pending: true,
+        last_database_time: held,
+        foreground_active,
+        ..Default::default()
+    }
+}
+
+fn published(status: kasumi_kv::StorageMaintenanceStatus) -> Option<PublishedStorageStatus> {
+    Some(PublishedStorageStatus::next(None, status, Instant::now()))
+}
+
+#[test]
+fn worker_keeps_its_own_pace_while_no_foreground_operation_is_active() {
+    let now = Instant::now();
+    // However long the last iteration kept the database: nobody waited.
+    for held in [
+        Duration::ZERO,
+        Duration::from_millis(3),
+        Duration::from_millis(80),
+        Duration::from_secs(30),
+    ] {
+        assert_eq!(
+            next_delay(&maintaining_status(held, false), now),
+            RUNNING_DELAY
+        );
+        let busy = CacheWorkerStatus {
+            last_maintenance: Some(kasumi_kv::MaintenanceStep::Busy),
+            ..maintaining_status(held, false)
+        };
+        assert_eq!(next_delay(&busy, now), BUSY_DELAY);
+        let idle = CacheWorkerStatus {
+            last_maintenance: ran_step(0),
+            maintenance_pending: false,
+            ..maintaining_status(held, false)
+        };
+        assert_eq!(next_delay(&idle, now), IDLE_DELAY);
+    }
+}
+
+#[test]
+fn worker_yields_the_foreground_share_of_the_time_it_kept_the_database() {
+    use crate::background_pace::{FOREGROUND_SHARE, MAX_PACED_DELAY};
+    let now = Instant::now();
+    // At least four times the time kept, so at most a fifth of the time.
+    for held in [3, 10, 50, 100, 250] {
+        let held = Duration::from_millis(held);
+        let delay = next_delay(&maintaining_status(held, true), now);
+        assert_eq!(delay, held * FOREGROUND_SHARE);
+        assert!(held.as_secs_f64() / (held + delay).as_secs_f64() <= 0.2 + 1e-9);
+    }
+    // The floor is the worker's own pace and the cap bounds one pause.
+    assert_eq!(
+        next_delay(&maintaining_status(Duration::from_micros(40), true), now),
+        RUNNING_DELAY
+    );
+    for held in [Duration::from_millis(251), Duration::from_secs(90)] {
+        assert_eq!(
+            next_delay(&maintaining_status(held, true), now),
+            MAX_PACED_DELAY
+        );
+    }
+    // Warming alone is paced like maintenance.
+    let warming = CacheWorkerStatus {
+        progress: Some(kasumi_kv::CacheWarmup {
+            work: 1,
+            complete: false,
+            fully_resident: false,
+        }),
+        last_database_time: Duration::from_millis(20),
+        foreground_active: true,
+        ..Default::default()
+    };
+    assert_eq!(next_delay(&warming, now), Duration::from_millis(80));
+    // Busy and idle iterations keep their pauses unless the iteration kept
+    // the database for more than a quarter of them: the pause never shrinks.
+    let busy = |held| CacheWorkerStatus {
+        last_maintenance: Some(kasumi_kv::MaintenanceStep::Busy),
+        ..maintaining_status(held, true)
+    };
+    assert_eq!(next_delay(&busy(Duration::from_millis(2)), now), BUSY_DELAY);
+    assert_eq!(
+        next_delay(&busy(Duration::from_millis(50)), now),
+        Duration::from_millis(200)
+    );
+    let idle = |held| CacheWorkerStatus {
+        last_maintenance: ran_step(0),
+        maintenance_pending: false,
+        ..maintaining_status(held, true)
+    };
+    assert_eq!(
+        next_delay(&idle(Duration::from_millis(50)), now),
+        IDLE_DELAY
+    );
+    assert_eq!(
+        next_delay(&idle(Duration::from_millis(100)), now),
+        Duration::from_millis(400)
+    );
+    assert_eq!(
+        next_delay(&idle(Duration::from_secs(3)), now),
+        MAX_PACED_DELAY
+    );
+    // A deferral's backoff is an idle pause too.
+    let deferred = CacheWorkerStatus {
+        last_maintenance: Some(kasumi_kv::MaintenanceStep::Ran(
+            kasumi_kv::MaintenanceProgress {
+                deferred: Some(kasumi_kv::MaintenanceDeferral::Capacity),
+                ..Default::default()
+            },
+        )),
+        ..maintaining_status(Duration::from_millis(1), true)
+    };
+    assert_eq!(next_delay(&deferred, now), IDLE_DELAY);
+}
+
+#[test]
+fn urgent_maintenance_does_not_yield_to_foreground_operations() {
+    let now = Instant::now();
+    let held = Duration::from_millis(40);
+    let paced = Duration::from_millis(160);
+    let storage = |measured, bytes: u64, retained: u64| kasumi_kv::StorageMaintenanceStatus {
+        phase: kasumi_kv::StorageCompactionPhase::Evacuating,
+        measured,
+        segment_bytes: bytes - (1 << 20),
+        arena_bytes: 1 << 20,
+        snapshot_retained_bytes: retained,
+        trigger_bytes: 300 << 20,
+        cycles_completed: 4,
+        ..Default::default()
+    };
+    let with = |status| CacheWorkerStatus {
+        storage: published(status),
+        ..maintaining_status(held, true)
+    };
+    // No published status, or retained bytes below twice the trigger.
+    let unpublished = maintaining_status(held, true);
+    assert!(!unpublished.maintenance_urgent());
+    assert_eq!(next_delay(&unpublished, now), paced);
+    let below = with(storage(true, (600 << 20) - 1, 0));
+    assert!(!below.maintenance_urgent());
+    assert_eq!(next_delay(&below, now), paced);
+    // The current census found twice the bytes that begin a cycle.
+    let behind = with(storage(true, 600 << 20, 0));
+    assert!(behind.maintenance_urgent());
+    assert_eq!(next_delay(&behind, now), RUNNING_DELAY);
+    assert!(behind.published().unwrap().background.maintenance_urgent);
+    // Files kept only for pinned snapshots are not compaction's to free.
+    let pinned = with(storage(true, 700 << 20, (100 << 20) + 1));
+    assert!(!pinned.maintenance_urgent());
+    assert_eq!(next_delay(&pinned, now), paced);
+    // A census that was invalidated proves nothing about now, and neither
+    // does the census from before a cycle once Packing has the new baseline
+    // and trigger; through Reclaiming the two still belong together.
+    let stale = with(storage(false, 900 << 20, 0));
+    assert!(!stale.maintenance_urgent());
+    assert_eq!(next_delay(&stale, now), paced);
+    let packing = with(kasumi_kv::StorageMaintenanceStatus {
+        phase: kasumi_kv::StorageCompactionPhase::Packing,
+        ..storage(true, 900 << 20, 0)
+    });
+    assert!(!packing.maintenance_urgent());
+    assert_eq!(next_delay(&packing, now), paced);
+    for phase in [
+        kasumi_kv::StorageCompactionPhase::Idle,
+        kasumi_kv::StorageCompactionPhase::Reclaiming,
+    ] {
+        let comparable = with(kasumi_kv::StorageMaintenanceStatus {
+            phase,
+            ..storage(true, 600 << 20, 0)
+        });
+        assert!(comparable.maintenance_urgent(), "{phase:?}");
+    }
+    // A store with no trigger yet is not behind one.
+    let untriggered = with(kasumi_kv::StorageMaintenanceStatus {
+        trigger_bytes: 0,
+        ..storage(true, 900 << 20, 0)
+    });
+    assert!(!untriggered.maintenance_urgent());
+    // A capacity deferral of the active cycle, until a cycle completes.
+    let deferred = CacheWorkerStatus {
+        capacity_deferred_cycle: Some(4),
+        ..with(storage(false, 100 << 20, 0))
+    };
+    assert!(deferred.maintenance_urgent());
+    assert_eq!(next_delay(&deferred, now), RUNNING_DELAY);
+    let completed = CacheWorkerStatus {
+        capacity_deferred_cycle: Some(3),
+        ..deferred
+    };
+    assert!(!completed.maintenance_urgent());
+    assert_eq!(next_delay(&completed, now), paced);
+    // Urgency speeds maintenance that makes progress, nothing else: a
+    // worker that only warms, waits for a writer or idles keeps yielding.
+    let warming_only = CacheWorkerStatus {
+        last_maintenance: ran_step(0),
+        maintenance_pending: false,
+        progress: Some(kasumi_kv::CacheWarmup {
+            work: 1,
+            complete: false,
+            fully_resident: false,
+        }),
+        ..behind
+    };
+    assert!(warming_only.maintenance_urgent());
+    assert_eq!(next_delay(&warming_only, now), paced);
+    let busy = CacheWorkerStatus {
+        last_maintenance: Some(kasumi_kv::MaintenanceStep::Busy),
+        ..behind
+    };
+    assert_eq!(next_delay(&busy, now), paced);
+}
+
+#[test]
+fn worker_observes_foreground_activity_and_its_own_database_time() {
+    let mut status = CacheWorkerStatus::default();
+    let ms = Duration::from_millis;
+    // The first sample has nothing to compare with.
+    observe_iteration(&mut status, ms(1), ms(4), ms(6), Some(10));
+    assert!(!status.foreground_active);
+    assert_eq!(status.foreground_seen, Some(10));
+    assert_eq!((status.warm_time, status.maintenance_time), (ms(1), ms(4)));
+    assert_eq!(
+        (status.last_database_time, status.longest_database_time),
+        (ms(6), ms(6))
+    );
+    // The counter did not move: nothing else wanted the database.
+    observe_iteration(&mut status, ms(2), ms(20), ms(23), Some(10));
+    assert!(!status.foreground_active);
+    assert_eq!((status.warm_time, status.maintenance_time), (ms(3), ms(24)));
+    assert_eq!(
+        (status.last_database_time, status.longest_database_time),
+        (ms(23), ms(23))
+    );
+    // It moved: some transaction began, read or committed meanwhile.
+    observe_iteration(&mut status, ms(0), ms(3), ms(3), Some(11));
+    assert!(status.foreground_active);
+    assert_eq!(
+        (status.last_database_time, status.longest_database_time),
+        (ms(3), ms(23))
+    );
+    observe_iteration(&mut status, ms(0), ms(3), ms(3), Some(11));
+    assert!(!status.foreground_active);
+    // An unreadable counter (a stopping database) is not activity, and the
+    // sample after it has nothing to compare with either.
+    observe_iteration(&mut status, ms(0), ms(0), ms(0), None);
+    assert!(!status.foreground_active);
+    assert_eq!(status.foreground_seen, None);
+    observe_iteration(&mut status, ms(0), ms(0), ms(0), Some(99));
+    assert!(!status.foreground_active);
+    observe_iteration(&mut status, ms(0), ms(0), ms(0), Some(100));
+    assert!(status.foreground_active);
+    // The published copy carries the same counters.
+    status.maintenance_steps = 5;
+    status.maintenance_busy = 2;
+    status.warm_restarts = 1;
+    status.paced_delays = 3;
+    status.paced_delay = ms(480);
+    status.storage = published(kasumi_kv::StorageMaintenanceStatus::default());
+    let background = status.published().unwrap().background;
+    assert_eq!(
+        background,
+        PublishedBackgroundWork {
+            maintenance_steps: 5,
+            maintenance_busy: 2,
+            warm_restarts: 1,
+            warm_time: ms(3),
+            maintenance_time: ms(30),
+            longest_database_time: ms(23),
+            paced_delays: 3,
+            paced_delay: ms(480),
+            foreground_active: true,
+            maintenance_urgent: false,
+            writes: BackgroundWriteStatus::default(),
+        }
+    );
+}
+
+#[test]
+fn a_capacity_deferral_of_an_active_cycle_is_noted_until_a_cycle_completes() {
+    use kasumi_kv::StorageCompactionPhase::{Evacuating, Idle, Reclaiming};
+    let storage = |phase, deferrals, completed| kasumi_kv::StorageMaintenanceStatus {
+        phase,
+        capacity_deferrals_total: deferrals,
+        cycles_completed: completed,
+        ..Default::default()
+    };
+    let mut status = CacheWorkerStatus::default();
+    // No deferral, and one while no cycle is active, note nothing.
+    observe_capacity_deferral(&mut status, None, &storage(Evacuating, 0, 2));
+    assert_eq!(status.capacity_deferred_cycle, None);
+    observe_capacity_deferral(&mut status, Some(storage(Idle, 0, 2)), &storage(Idle, 1, 2));
+    assert_eq!(status.capacity_deferred_cycle, None);
+    // A step of the active cycle was refused capacity.
+    observe_capacity_deferral(
+        &mut status,
+        Some(storage(Evacuating, 1, 2)),
+        &storage(Evacuating, 2, 2),
+    );
+    assert_eq!(status.capacity_deferred_cycle, Some(2));
+    // It stays noted through the cycle's later phases and steps.
+    observe_capacity_deferral(
+        &mut status,
+        Some(storage(Evacuating, 2, 2)),
+        &storage(Reclaiming, 2, 2),
+    );
+    assert_eq!(status.capacity_deferred_cycle, Some(2));
+    // The cycle completed: maintenance yields again.
+    observe_capacity_deferral(
+        &mut status,
+        Some(storage(Reclaiming, 2, 2)),
+        &storage(Idle, 2, 3),
+    );
+    assert_eq!(status.capacity_deferred_cycle, None);
+    // A deferral counted before the worker's first observation is noted
+    // while its cycle is still active.
+    let mut late = CacheWorkerStatus::default();
+    observe_capacity_deferral(&mut late, None, &storage(Evacuating, 3, 7));
+    assert_eq!(late.capacity_deferred_cycle, Some(7));
+}
+
+#[test]
+fn worker_stands_in_for_inline_steps_only_after_a_step_that_ran_undeferred() {
+    let delay = Duration::from_millis(200);
+    let stand_in = Some(delay * 2 + STAND_IN_MARGIN);
+    // A step that made progress, and one that found nothing due: the worker
+    // is alive and will step again within its pause.
+    assert_eq!(
+        inline_stand_in(&maintaining_status(Duration::ZERO, true), delay),
+        stand_in
+    );
+    let idle = CacheWorkerStatus {
+        last_maintenance: Some(kasumi_kv::MaintenanceStep::Ran(
+            kasumi_kv::MaintenanceProgress {
+                idle: true,
+                ..Default::default()
+            },
+        )),
+        ..Default::default()
+    };
+    assert_eq!(inline_stand_in(&idle, delay), stand_in);
+    assert_eq!(
+        inline_stand_in(&idle, RUNNING_DELAY),
+        Some(RUNNING_DELAY * 2 + STAND_IN_MARGIN)
+    );
+    // Writers starve the worker of the write gate, or the cycle is backing
+    // off: the writes' own steps drive it, or count the backoff down.
+    let busy = CacheWorkerStatus {
+        last_maintenance: Some(kasumi_kv::MaintenanceStep::Busy),
+        maintenance_pending: true,
+        ..Default::default()
+    };
+    assert_eq!(inline_stand_in(&busy, delay), None);
+    for deferral in [
+        kasumi_kv::MaintenanceDeferral::Capacity,
+        kasumi_kv::MaintenanceDeferral::Rejected("refused"),
+    ] {
+        let deferred = CacheWorkerStatus {
+            last_maintenance: Some(kasumi_kv::MaintenanceStep::Ran(
+                kasumi_kv::MaintenanceProgress {
+                    deferred: Some(deferral),
+                    ..Default::default()
+                },
+            )),
+            ..Default::default()
+        };
+        assert_eq!(inline_stand_in(&deferred, delay), None);
+    }
+    assert_eq!(inline_stand_in(&CacheWorkerStatus::default(), delay), None);
+    // It covers the longest pause with room for the next step to begin.
+    assert!(inline_stand_in(&idle, crate::MAX_PACED_DELAY).unwrap() > crate::MAX_PACED_DELAY * 2);
+}
+
+/// What foreground readers and a writer saw while the worker drove one
+/// compaction cycle on a slow disk.
+#[derive(Debug)]
+struct CycleUnderLoad {
+    wall: Duration,
+    reads: usize,
+    writes: usize,
+    /// Time the reader spent in its reads: on an unloaded database, almost
+    /// none; behind a maintenance step, the step's remaining time.
+    read_time: Duration,
+    read_p99: Duration,
+    read_max: Duration,
+    /// The same for the writer's commits, each with its inline step if any.
+    write_time: Duration,
+    write_max: Duration,
+    worker: CacheWorkerStatus,
+    storage: kasumi_kv::StorageMaintenanceStatus,
+}
+impl CycleUnderLoad {
+    fn worker_time(&self) -> Duration {
+        self.worker.warm_time + self.worker.maintenance_time
+    }
+    fn worker_share(&self) -> f64 {
+        self.worker_time().as_secs_f64() / self.wall.as_secs_f64()
+    }
+    /// The share of the wall time the reader spent waiting in its reads,
+    /// behind the worker's steps and behind the other tenant's commits.
+    fn read_share(&self) -> f64 {
+        self.read_time.as_secs_f64() / self.wall.as_secs_f64()
+    }
+    fn reads_per_second(&self) -> f64 {
+        self.reads as f64 / self.wall.as_secs_f64()
+    }
+}
+
+/// Every durable synchronization of the slow disk.
+const SLOW_SYNC: Duration = Duration::from_millis(5);
+/// The foreground reader's pause between two reads, and the writer's
+/// between two commits.
+const READER_THINK: Duration = Duration::from_millis(2);
+const WRITER_THINK: Duration = Duration::from_millis(40);
+const WIDE_ROWS: u16 = 180;
+
+/// Drive one requested compaction cycle through the real worker on a disk
+/// whose every sync takes `SLOW_SYNC`, while one foreground thread reads a
+/// row every `READER_THINK` and another commits one every `WRITER_THINK`:
+/// two tenants of the node database.
+async fn compaction_cycle_under_foreground_load(unpaced: bool) -> CycleUnderLoad {
+    let fixture = Fixture::cold_with(WIDE_ROWS).await;
+    write_row(&fixture.node, 100);
+    fixture.node.request_storage_compaction().unwrap();
+    fixture.node.prepare_cache_warming().await.unwrap();
+    fixture
+        .node
+        .body()
+        .cache_warmer
+        .set_unpaced_for_test(unpaced);
+    fixture
+        .probe
+        .sync_micros
+        .store(SLOW_SYNC.as_micros() as u64, Ordering::Release);
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader = {
+        let node = fixture.node.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut latencies = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                let key = (latencies.len() % 20) as u8;
+                let started = Instant::now();
+                {
+                    let transaction = node.body().db.begin_read().unwrap();
+                    let table = transaction.open_table(ROWS).unwrap();
+                    assert_eq!(table.get(&[key][..]).unwrap().unwrap().value(), &[key; 512]);
+                }
+                latencies.push(started.elapsed());
+                std::thread::sleep(READER_THINK);
+            }
+            latencies
+        })
+    };
+    let writer = {
+        let node = fixture.node.clone();
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let mut latencies = Vec::new();
+            while !stop.load(Ordering::Acquire) {
+                let started = Instant::now();
+                write_row(&node, 101 + (latencies.len() % 100) as u8);
+                latencies.push(started.elapsed());
+                std::thread::sleep(WRITER_THINK);
+            }
+            latencies
+        })
+    };
+    let started = Instant::now();
+    fixture.node.activate_cache_warming().unwrap();
+    // The cycle must complete however the worker is paced. The bound only
+    // ends a hung run; nothing is asserted about how long a cycle takes.
+    let storage = tokio::time::timeout(Duration::from_secs(600), async {
+        loop {
+            let storage = fixture.node.storage_maintenance_status().unwrap();
+            if completed_first_cycle(&storage) {
+                return storage;
+            }
+            let worker = fixture.node.cache_worker_status();
+            assert!(!worker.failed, "cache worker failed: {worker:?}");
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "the compaction cycle did not complete: {:?}; worker={:?}",
+            fixture.node.storage_maintenance_status(),
+            fixture.node.cache_worker_status(),
+        )
+    });
+    let wall = started.elapsed();
+    let worker = fixture.node.cache_worker_status();
+    stop.store(true, Ordering::Release);
+    let mut reads = reader.join().unwrap();
+    let writes = writer.join().unwrap();
+    fixture.probe.sync_micros.store(0, Ordering::Release);
+    assert!(!worker.failed, "{worker:?}");
+    assert!(storage.reclaimed_files_total >= 1, "{storage:?}");
+    assert_rows(&fixture.node, (0..20).chain([100]));
+    {
+        let transaction = fixture.node.body().db.begin_read().unwrap();
+        let table = transaction.open_table(ROWS).unwrap();
+        for index in 0..WIDE_ROWS {
+            assert_eq!(
+                table.get(&wide_key(index)[..]).unwrap().unwrap().value(),
+                &[7; 64]
+            );
+        }
+    }
+    fixture.node.shutdown().await.unwrap();
+    assert_eq!(fixture.probe.closes.load(Ordering::Acquire), 1);
+    let read_time = reads.iter().sum();
+    reads.sort_unstable();
+    CycleUnderLoad {
+        wall,
+        reads: reads.len(),
+        writes: writes.len(),
+        read_time,
+        read_p99: reads[(reads.len() * 99) / 100],
+        read_max: *reads.last().unwrap(),
+        write_time: writes.iter().sum(),
+        write_max: writes.iter().copied().max().unwrap_or_default(),
+        worker,
+        storage,
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn worker_leaves_a_slow_disk_to_foreground_operations_during_a_compaction_cycle() {
+    // The control: the worker's own pace and no stand-in, as before pacing.
+    // It shows what the foreground is protected from; nothing but completion
+    // is asserted of it.
+    let control = compaction_cycle_under_foreground_load(true).await;
+    let paced = compaction_cycle_under_foreground_load(false).await;
+    for (name, run) in [("unpaced", &control), ("paced", &paced)] {
+        eprintln!(
+            "compaction under foreground load, {name}: wall={:?} worker_share={:.3} \
+             (maintenance={:?} warm={:?} steps={} busy={} longest={:?}) \
+             paced_delays={} paced_delay={:?} reads={} reads_per_second={:.1} \
+             read_share={:.3} read_p99={:?} read_max={:?} writes={} write_mean={:?} \
+             write_max={:?} relocated_bytes={} reclaimed_files={}",
+            run.wall,
+            run.worker_share(),
+            run.worker.maintenance_time,
+            run.worker.warm_time,
+            run.worker.maintenance_steps,
+            run.worker.maintenance_busy,
+            run.worker.longest_database_time,
+            run.worker.paced_delays,
+            run.worker.paced_delay,
+            run.reads,
+            run.reads_per_second(),
+            run.read_share(),
+            run.read_p99,
+            run.read_max,
+            run.writes,
+            run.write_time / run.writes.max(1) as u32,
+            run.write_max,
+            run.storage.relocated_bytes_total,
+            run.storage.reclaimed_files_total,
+        );
+    }
+    assert_eq!(control.worker.paced_delays, 0, "{control:?}");
+    // The worker saw the foreground operations and yielded to them.
+    assert!(paced.worker.paced_delays > 0, "{paced:?}");
+    assert!(paced.worker.paced_delay >= paced.worker_time(), "{paced:?}");
+    // It kept the database for a bounded share of the cycle. The pacing aims
+    // at a fifth; twice that allows for iterations before the first
+    // foreground operation was seen and for a loaded machine.
+    assert!(paced.worker_share() <= 0.4, "{paced:?}");
+    // So the foreground kept at least three fifths of the database's time,
+    // and used it: the reader, which also waits for the other tenant's
+    // commits in both runs, completed reads at more than twice the rate the
+    // unpaced worker left it.
+    assert!(paced.reads > 0 && paced.writes > 0, "{paced:?}");
+    assert!(
+        paced.reads_per_second() >= control.reads_per_second() * 2.0,
+        "paced={paced:?} control={control:?}"
+    );
+    // A read waits for at most the iteration or the commit in progress: a
+    // few of them bound the worst reads, with slack for a loaded machine.
+    assert!(
+        paced.read_p99 <= paced.worker.longest_database_time * 4 + Duration::from_millis(250),
+        "{paced:?}"
+    );
+    // The worst read waited for about one iteration (a warm step's wait for
+    // a commit included) and one commit of the other tenant: the bound is
+    // the sum, with a second of slack for a loaded machine.
+    assert!(
+        paced.read_max
+            <= paced.worker.longest_database_time + paced.write_max + Duration::from_secs(1),
+        "{paced:?}"
+    );
+    // The worker still did the cycle's work: the writes did not take it
+    // over one inline step each, which would keep the database as before.
+    assert!(
+        paced.worker.maintenance_steps * 2 >= control.worker.maintenance_steps,
+        "paced={paced:?} control={control:?}"
+    );
+    // Pacing is what made the difference.
+    assert!(
+        paced.worker_share() < control.worker_share(),
+        "paced={paced:?} control={control:?}"
+    );
+}
+
+/// One background unit that keeps the database for at least `held`: it
+/// writes a row and stays in its own scope that long. Returns when the unit
+/// started and when its work ended.
+fn background_unit(
+    node: &NodeStore,
+    pace: &mut crate::BackgroundPace,
+    key: u8,
+    held: Duration,
+) -> (Instant, Instant) {
+    node.paced_background_write(pace, &AtomicBool::new(false), || {
+        let started = Instant::now();
+        write_row(node, key);
+        std::thread::sleep(held);
+        (started, Instant::now())
+    })
+}
+
+#[tokio::test]
+async fn a_background_write_stream_pauses_only_for_foreground_operations() {
+    use crate::{BackgroundPace, FOREGROUND_SHARE, MIN_PACED_DELAY};
+    let fixture = Fixture::cold().await;
+    let node = &fixture.node;
+    let held = Duration::from_millis(15);
+    assert_eq!(node.background_write_status(), Default::default());
+    let activity = node.foreground_activity().unwrap();
+    // A stream's units are not foreground activity, and with none it owes
+    // only the floor between them: nothing is counted as a paced delay.
+    let mut pace = BackgroundPace::default();
+    let (_, first_ended) = background_unit(node, &mut pace, 150, held);
+    let (second_started, second_ended) = background_unit(node, &mut pace, 151, held);
+    assert!(second_started.duration_since(first_ended) >= MIN_PACED_DELAY);
+    assert_eq!(node.foreground_activity().unwrap(), activity);
+    let quiet = node.background_write_status();
+    assert_eq!(quiet.units, 2);
+    assert!(quiet.database_time >= held * 2, "{quiet:?}");
+    assert_eq!(quiet.paced_delay, Duration::ZERO);
+    // A foreground read entered since the second unit started: the stream
+    // waits the foreground share of the time that unit kept the database.
+    assert_rows(node, [150, 151].into_iter());
+    assert!(node.foreground_activity().unwrap() > activity);
+    let (third_started, third_ended) = background_unit(node, &mut pace, 152, held);
+    assert!(
+        third_started.duration_since(second_ended) >= held * FOREGROUND_SHARE,
+        "{:?}",
+        third_started.duration_since(second_ended)
+    );
+    let paced = node.background_write_status();
+    assert_eq!(paced.units, 3);
+    assert!(paced.paced_delay > Duration::ZERO, "{paced:?}");
+    // No foreground operation since the third unit started: the floor again.
+    let (fourth_started, _) = background_unit(node, &mut pace, 153, Duration::ZERO);
+    assert!(fourth_started.duration_since(third_ended) >= MIN_PACED_DELAY);
+    assert_eq!(
+        node.background_write_status().paced_delay,
+        paced.paced_delay
+    );
+    // A fresh stream owes nothing, whatever the foreground did before it.
+    assert_rows(node, [152, 153].into_iter());
+    let before = node.background_write_status();
+    background_unit(node, &mut BackgroundPace::default(), 154, Duration::ZERO);
+    assert_eq!(
+        node.background_write_status().paced_delay,
+        before.paced_delay
+    );
+    // A stream whose owner hurries (a group that is shutting down) owes the
+    // pause for the foreground read below and does not take it.
+    background_unit(node, &mut pace, 155, held);
+    assert_rows(node, [154, 155].into_iter());
+    let before = node.background_write_status();
+    node.paced_background_write(&mut pace, &AtomicBool::new(true), || write_row(node, 156));
+    assert_eq!(
+        node.background_write_status().paced_delay,
+        before.paced_delay
+    );
+    // The published status carries the write counters once a worker exists.
+    assert!(node.published_storage_status().is_none());
+    node.prepare_cache_warming().await.unwrap();
+    node.activate_cache_warming().unwrap();
+    fixture.wait(|status| status.maintenance_steps >= 1).await;
+    let published = node.published_storage_status().unwrap();
+    assert_eq!(published.background.writes, node.background_write_status());
+    assert_eq!(published.background.writes.units, 7);
+    assert!(published.background.maintenance_steps >= 1);
+    assert_rows(node, (0..20).chain(150..157));
+    node.shutdown().await.unwrap();
+    // A stopped database has no activity to read and ends every pause.
+    assert_eq!(node.foreground_activity(), None);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_shared_background_stream_runs_one_unit_at_a_time_and_paces_across_writers() {
+    use crate::FOREGROUND_SHARE;
+    let fixture = Fixture::cold().await;
+    let held = Duration::from_millis(10);
+    let running = AtomicUsize::new(0);
+    let overlapped = AtomicBool::new(false);
+    // Two writers, as two tenants' snapshot builds. During every unit another
+    // thread reads a row: a foreground operation, whatever the scheduling.
+    let mut spans = std::thread::scope(|scope| {
+        let writers: Vec<_> = (0..2u8)
+            .map(|writer| {
+                let (node, running, overlapped) = (&fixture.node, &running, &overlapped);
+                scope.spawn(move || {
+                    (0..4u8)
+                        .map(|unit| {
+                            node.shared_background_write(&AtomicBool::new(false), || {
+                                if running.fetch_add(1, Ordering::AcqRel) != 0 {
+                                    overlapped.store(true, Ordering::Release);
+                                }
+                                let started = Instant::now();
+                                write_row(node, 160 + writer * 4 + unit);
+                                std::thread::scope(|foreground| {
+                                    foreground.spawn(|| assert_rows(node, 0..1));
+                                });
+                                std::thread::sleep(held);
+                                let ended = Instant::now();
+                                running.fetch_sub(1, Ordering::AcqRel);
+                                (started, ended)
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                })
+            })
+            .collect();
+        writers
+            .into_iter()
+            .flat_map(|writer| writer.join().unwrap())
+            .collect::<Vec<_>>()
+    });
+    assert!(!overlapped.load(Ordering::Acquire));
+    // Whichever writer ran a unit, the next unit of either waited the
+    // foreground share of the time that unit kept the database.
+    spans.sort_unstable();
+    assert_eq!(spans.len(), 8);
+    for pair in spans.windows(2) {
+        let (_, ended) = pair[0];
+        let (started, _) = pair[1];
+        assert!(
+            started.duration_since(ended) >= held * FOREGROUND_SHARE,
+            "{:?}",
+            started.duration_since(ended)
+        );
+    }
+    let status = fixture.node.background_write_status();
+    assert_eq!(status.units, 8);
+    assert!(status.database_time >= held * 8, "{status:?}");
+    assert!(status.paced_delay > Duration::ZERO, "{status:?}");
+    assert_rows(&fixture.node, (0..20).chain(160..168));
+    fixture.node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_closing_writer_does_not_wait_for_another_tenants_unit_on_the_shared_stream() {
+    let fixture = Fixture::cold().await;
+    let node = &fixture.node;
+    let (entered, held) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let (holding, closing) = (&AtomicBool::new(false), &AtomicBool::new(false));
+    std::thread::scope(|scope| {
+        // One tenant's unit holds the shared stream, as a slow chunk commit or
+        // the pause before one does. Its own deadline bounds a regression.
+        let holder = scope.spawn(move || {
+            node.shared_background_write(&AtomicBool::new(false), || {
+                write_row(node, 170);
+                holding.store(true, Ordering::Release);
+                entered.send(()).unwrap();
+                let _ = released.recv_timeout(Duration::from_secs(30));
+                holding.store(false, Ordering::Release);
+            })
+        });
+        held.recv_timeout(Duration::from_secs(30)).unwrap();
+        // Another tenant's next unit waits for the stream...
+        let waiter = scope.spawn(move || {
+            node.shared_background_write(closing, || {
+                write_row(node, 171);
+                holding.load(Ordering::Acquire)
+            })
+        });
+        // Several of its checks pass while the group is open.
+        std::thread::sleep(crate::background_pace::PAUSE_SLICE * 10);
+        assert!(!waiter.is_finished());
+        // ...until its group closes: it then commits at once, while the other
+        // unit still holds the stream, instead of waiting for it.
+        closing.store(true, Ordering::Release);
+        assert!(waiter.join().unwrap(), "the closing writer waited");
+        release.send(()).unwrap();
+        holder.join().unwrap();
+    });
+    // The closing writer's commit was direct: no paced unit, no pause.
+    let status = node.background_write_status();
+    assert_eq!(status.units, 1, "{status:?}");
+    assert_eq!(status.paced_delay, Duration::ZERO, "{status:?}");
+    assert_rows(node, (0..20).chain([170, 171]));
+    node.shutdown().await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_pause_in_progress_ends_once_its_owner_hurries_or_the_database_stops() {
+    use crate::{BackgroundPace, MAX_PACED_DELAY};
+    let fixture = Fixture::cold().await;
+    let node = &fixture.node;
+    for stop in [false, true] {
+        // A unit that kept the database for a quarter second, then a
+        // foreground read: the stream owes its longest pause.
+        let mut pace = BackgroundPace::default();
+        let key = 172 + u8::from(stop);
+        let (_, ended) = background_unit(node, &mut pace, key, MAX_PACED_DELAY / 4);
+        assert_rows(node, [key].into_iter());
+        let hurry = AtomicBool::new(false);
+        let (set_at, started) = std::thread::scope(|scope| {
+            let next = scope.spawn(|| node.paced_background_write(&mut pace, &hurry, Instant::now));
+            std::thread::sleep(Duration::from_millis(50));
+            let set_at = Instant::now();
+            if stop {
+                node.body().db.stop();
+            } else {
+                hurry.store(true, Ordering::Release);
+            }
+            (set_at, next.join().unwrap())
+        });
+        // Set with at least half the pause left, the stop or the hurry cut
+        // it short. A machine too slow to set it in time proves nothing.
+        if set_at < ended + MAX_PACED_DELAY / 2 {
+            assert!(
+                started < ended + MAX_PACED_DELAY,
+                "stop={stop}: the next unit began {:?} after the paced one",
+                started.duration_since(ended)
+            );
+        }
+    }
+    // The stopped database ended the last pause; shutdown completes.
+    node.shutdown().await.unwrap();
 }

@@ -336,6 +336,29 @@ impl NodeDatabase {
         }
     }
 
+    /// The database's foreground activity counter; it takes no database lock.
+    pub(crate) fn foreground_activity(&self) -> Result<u64, kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => Ok(database.foreground_activity()),
+            Accepted::Registered(opening) => opening.foreground_activity(),
+        }
+    }
+
+    /// The driver's steps stand in for every write's inline maintenance step
+    /// for `duration`; it takes no database lock.
+    pub(crate) fn defer_inline_maintenance(
+        &self,
+        duration: std::time::Duration,
+    ) -> Result<(), kasumi_kv::StorageError> {
+        match self.accepted().map_err(|error| error.0)? {
+            Accepted::Direct(database) => {
+                database.defer_inline_maintenance(duration);
+                Ok(())
+            }
+            Accepted::Registered(opening) => opening.defer_inline_maintenance(duration),
+        }
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
         match self

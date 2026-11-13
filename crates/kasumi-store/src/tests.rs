@@ -1346,8 +1346,11 @@ async fn different_tenants_do_not_share_a_slow_key_service_open_gate() {
         })
     };
     provider.started.notified().await;
+    // The first tenant's key service stays blocked until the second tenant
+    // is open, so a shared gate would never let the second finish. The bound
+    // only ends such a run; one second was not enough on a loaded machine.
     let second = tokio::time::timeout(
-        Duration::from_secs(1),
+        Duration::from_secs(30),
         TenantStore::initialize_catalog_fixture_with_clock(
             node,
             "fast".into(),

@@ -771,6 +771,14 @@ impl DatabaseTransactionAdmission {
         }
         .request_compaction()
     }
+    /// See [`Database::foreground_activity`].
+    pub fn foreground_activity(&self) -> u64 {
+        self.inner.core.foreground_activity()
+    }
+    /// See [`Database::defer_inline_maintenance`].
+    pub fn defer_inline_maintenance(&self, duration: std::time::Duration) {
+        self.inner.core.defer_inline_maintenance(duration);
+    }
 }
 
 /// Facade construction and teardown use the same preowned staging slots.
@@ -1033,7 +1041,8 @@ impl Database {
     /// One bounded step of the persisted compaction cycle under the write
     /// gate. Returns `Busy` instead of waiting while a writer holds the gate;
     /// local deferrals are reported in the progress, never as errors. A step
-    /// that ran replaces the inline step of the next `begin_write`.
+    /// that ran replaces the inline step of the next `begin_write`, and of
+    /// later ones while `defer_inline_maintenance` says so.
     pub fn run_maintenance(
         &self,
         budget: crate::MaintenanceBudget,
@@ -1075,6 +1084,32 @@ impl Database {
         self.inner.core.request_compaction().map_err(Into::into)
     }
 
+    /// A counter that grows whenever a foreground operation enters this
+    /// database: a transaction begins, reads through its snapshot or
+    /// commits. Each is counted before it waits for the write gate or a
+    /// lock, so an operation a maintenance step delays is counted while it
+    /// waits. Maintenance, warm-up, configuration and status calls, and
+    /// everything a thread does inside [`crate::background_work`], are not
+    /// counted. A driver of background work compares two samples to learn
+    /// whether anything else wanted the database in between; the value is
+    /// not a count of transactions. Reading it takes no lock and stays valid
+    /// after close.
+    pub fn foreground_activity(&self) -> u64 {
+        self.inner.core.foreground_activity()
+    }
+
+    /// Let a driver's `run_maintenance` steps stand in for the inline step of
+    /// every `begin_write` within `duration` from now. A driver that spaces
+    /// its steps out for foreground operations calls this after a step that
+    /// ran, with the time until its next step and some margin, so that the
+    /// writes in between do not take over the work it is pacing. The stand-in
+    /// only lapses: when the driver stops, or writers starve it of the write
+    /// gate, every write runs its inline step again. A later call replaces an
+    /// earlier one, zero ends it, and nothing is persisted.
+    pub fn defer_inline_maintenance(&self, duration: std::time::Duration) {
+        self.inner.core.defer_inline_maintenance(duration);
+    }
+
     pub fn transaction_admission(&self) -> DatabaseTransactionAdmission {
         DatabaseTransactionAdmission {
             inner: self.inner.clone(),
@@ -1102,6 +1137,7 @@ impl Database {
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(StorageError::DatabaseClosed.into());
         }
+        self.inner.core.note_foreground();
         let snapshot = SnapshotHandle::capture(&self.inner.core)?;
         if self.inner.closing.load(Ordering::Acquire) {
             return Err(StorageError::DatabaseClosed.into());
@@ -1113,6 +1149,9 @@ impl Database {
     }
 
     pub fn begin_write(&self) -> Result<WriteTransaction, TransactionError> {
+        // Counted before the wait for the write gate, which a maintenance
+        // step holds: the driver sees the writer it is delaying.
+        self.inner.core.note_foreground();
         let lease = WriterGate::enter(&self.inner.gate, &self.inner.closing)?;
         self.inner.core.maintain_before_write()?;
         let snapshot = SnapshotHandle::capture(&self.inner.core)?;

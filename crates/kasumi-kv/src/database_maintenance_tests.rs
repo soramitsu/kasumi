@@ -600,3 +600,215 @@ fn reopen_after_a_cycle_reclaims_the_files_its_pins_kept() {
         assert_second_version(&reopened);
     }
 }
+
+/// Poll `activity` until it passes `after`; a foreground operation that is
+/// waiting has then been counted.
+fn wait_for_activity(database: &Database, after: u64) -> u64 {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let now = database.foreground_activity();
+        if now > after {
+            return now;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the waiting operation was never counted as foreground activity"
+        );
+        std::thread::yield_now();
+    }
+}
+
+#[test]
+fn foreground_activity_counts_transactions_and_nothing_a_driver_does() {
+    let group = Group::new(InMemoryGroup::new());
+    let admission = Arc::new(Admission::default());
+    let database = seeded(&group, &admission);
+    let admitted = database.transaction_admission();
+    let mut seen = database.foreground_activity();
+    assert_eq!(admitted.foreground_activity(), seen);
+    let mut grew = |what: &str| {
+        let now = database.foreground_activity();
+        assert!(now > seen, "{what} was not counted: {seen} -> {now}");
+        seen = now;
+    };
+    // Every stage of a transaction is counted: begin, read, commit.
+    let reader = database.begin_read().unwrap();
+    grew("a read begin");
+    let rows = reader.open_table(ROWS).unwrap();
+    grew("a table check");
+    assert_eq!(rows.get(&[1][..]).unwrap().unwrap().value(), &[1; 48]);
+    grew("a point read");
+    assert!(rows.iter().unwrap().next().is_some());
+    grew("a scan");
+    drop(rows);
+    drop(reader);
+    let writer = database.begin_write().unwrap();
+    grew("a write begin");
+    {
+        let mut rows = writer.open_table(ROWS).unwrap();
+        rows.insert(&b"k"[..], &b"v"[..]).unwrap();
+    }
+    let before_commit = database.foreground_activity();
+    writer.commit().unwrap();
+    assert!(database.foreground_activity() > before_commit);
+    seen = database.foreground_activity();
+    // Nothing a maintenance driver or an observer calls is counted, whether
+    // it does work, finds the write gate busy or only reads a status.
+    database.request_compaction().unwrap();
+    for _ in 0..8 {
+        run(&database);
+        database.warm_cache_if_needed(1).unwrap();
+        database.cache_warmup_status().unwrap();
+        database.maintenance_status().unwrap();
+        database.cache_stats().unwrap();
+    }
+    database.warm_cache(1).unwrap();
+    database.request_cache_warm_retry().unwrap();
+    database
+        .configure_maintenance(MaintenancePolicy::default())
+        .unwrap();
+    let held = database.begin_write().unwrap();
+    let with_writer = database.foreground_activity();
+    assert_eq!(
+        database.run_maintenance(STEP).unwrap(),
+        MaintenanceStep::Busy
+    );
+    assert_eq!(database.foreground_activity(), with_writer);
+    held.abort().unwrap();
+    assert_eq!(database.foreground_activity(), with_writer);
+    assert!(with_writer > seen);
+}
+
+#[test]
+fn background_work_is_not_counted_as_foreground_activity() {
+    let group = Group::new(InMemoryGroup::new());
+    let admission = Arc::new(Admission::default());
+    let database = seeded(&group, &admission);
+    let seen = database.foreground_activity();
+    // A paced background writer's own transactions leave the counter alone,
+    // through nested scopes, and the mark ends with the scope.
+    crate::background_work(|| {
+        write(&database, b"background", b"1").unwrap();
+        crate::background_work(|| {
+            assert_eq!(read(&database, b"background").as_deref(), Some(&b"1"[..]));
+        });
+        write(&database, b"background", b"2").unwrap();
+    });
+    assert_eq!(database.foreground_activity(), seen);
+    // The mark is per thread: another thread's transaction is foreground.
+    crate::background_work(|| {
+        std::thread::scope(|scope| {
+            scope.spawn(|| write(&database, b"foreground", b"1").unwrap());
+        });
+    });
+    let after_thread = database.foreground_activity();
+    assert!(after_thread > seen);
+    // An unwinding scope ends its mark too.
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        crate::background_work(|| panic!("background work payload"))
+    }));
+    assert!(unwound.is_err());
+    write(&database, b"foreground", b"2").unwrap();
+    assert!(database.foreground_activity() > after_thread);
+    assert_eq!(read(&database, b"background").as_deref(), Some(&b"2"[..]));
+}
+
+#[test]
+fn foreground_activity_counts_an_operation_while_it_still_waits() {
+    let group = Group::new(InMemoryGroup::new());
+    let admission = Arc::new(Admission::default());
+    let database = seeded(&group, &admission);
+    // A writer waiting for the write gate, which a maintenance step holds,
+    // is counted before it gets the gate.
+    let held = database.begin_write().unwrap();
+    let seen = database.foreground_activity();
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| write(&database, b"waited", b"gate"));
+        let counted = wait_for_activity(&database, seen);
+        assert_eq!(read(&database, b"waited"), None);
+        held.abort().unwrap();
+        waiting.join().unwrap().unwrap();
+        assert!(database.foreground_activity() > counted);
+    });
+    assert_eq!(read(&database, b"waited").as_deref(), Some(&b"gate"[..]));
+    // A read waiting for the state lock, which a maintenance step or a
+    // staging commit holds, is counted before it gets the lock.
+    let reader = database.begin_read().unwrap();
+    let rows = reader.open_table(ROWS).unwrap();
+    let state = database.inner.core.hold_state_for_test();
+    let seen = database.foreground_activity();
+    std::thread::scope(|scope| {
+        let waiting = scope.spawn(|| rows.get(&[2][..]).unwrap().unwrap().value().to_vec());
+        wait_for_activity(&database, seen);
+        assert!(!waiting.is_finished());
+        drop(state);
+        assert_eq!(waiting.join().unwrap(), vec![2; 48]);
+    });
+}
+
+#[test]
+fn a_driver_stand_in_defers_the_inline_step_of_every_write_until_it_lapses() {
+    use std::time::Duration;
+    let group = Group::new(InMemoryGroup::new());
+    let admission = Arc::new(Admission::default());
+    let database = seeded(&group, &admission);
+    database.request_compaction().unwrap();
+    let requested = database.maintenance_status().unwrap();
+    assert_eq!(requested.phase, StorageCompactionPhase::Idle);
+    // A driver that paces itself stands in: no write runs an inline step,
+    // however many begin, and none touches the cycle.
+    database.defer_inline_maintenance(Duration::from_secs(3600));
+    for index in 0..3u8 {
+        write(&database, &[b'd', index], b"deferred").unwrap();
+    }
+    assert_eq!(database.maintenance_status().unwrap(), requested);
+    // The driver's own steps are not deferred, and the stand-in outlives
+    // the one write a step alone stands in for.
+    assert!(run(&database).phase_changed);
+    let evacuating = database.maintenance_status().unwrap();
+    assert_eq!(evacuating.phase, StorageCompactionPhase::Evacuating);
+    for index in 3..6u8 {
+        write(&database, &[b'd', index], b"deferred").unwrap();
+    }
+    assert_eq!(database.maintenance_status().unwrap(), evacuating);
+    // A later call replaces the earlier one, and it lapses by itself: a
+    // driver that stopped is followed by inline steps again. The first write
+    // after it still finds the driver's last step standing in for its own.
+    database
+        .transaction_admission()
+        .defer_inline_maintenance(Duration::from_millis(1));
+    std::thread::sleep(Duration::from_millis(5));
+    write(&database, b"lapsed-0", b"driven").unwrap();
+    assert_eq!(database.maintenance_status().unwrap(), evacuating);
+    write(&database, b"lapsed-1", b"inline").unwrap();
+    let relocated = database.maintenance_status().unwrap();
+    assert!(
+        relocated.relocated_bytes_total > evacuating.relocated_bytes_total,
+        "{relocated:?}"
+    );
+    // Zero ends a stand-in at once.
+    database.defer_inline_maintenance(Duration::from_secs(3600));
+    write(&database, b"deferred-again", b"x").unwrap();
+    assert_eq!(database.maintenance_status().unwrap(), relocated);
+    database.defer_inline_maintenance(Duration::ZERO);
+    write(&database, b"inline-again", b"x").unwrap();
+    assert_ne!(database.maintenance_status().unwrap(), relocated);
+    // Writes alone finish the cycle, as without any driver.
+    for index in 0..200u8 {
+        if database.maintenance_status().unwrap().cycle == 1
+            && database.maintenance_status().unwrap().phase == StorageCompactionPhase::Idle
+        {
+            break;
+        }
+        write(&database, &[b'w', index], b"inline").unwrap();
+    }
+    let done = database.maintenance_status().unwrap();
+    assert_eq!((done.cycle, done.phase), (1, StorageCompactionPhase::Idle));
+    for index in 0..40u8 {
+        assert_eq!(read(&database, &[index]), Some(vec![index; 48]));
+    }
+    // A closed database refuses the write a deferred inline step skipped.
+    database.defer_inline_maintenance(Duration::from_secs(3600));
+    database.close_native().into_result().unwrap();
+    assert!(database.begin_write().is_err());
+}

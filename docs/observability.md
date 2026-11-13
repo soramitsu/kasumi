@@ -448,6 +448,47 @@ relocated value bytes, invalidated reclamation cohorts and capacity or rejected
 maintenance deferrals since the store opened; `last_deferral` is `capacity` or
 `rejected` while maintenance is backing off.
 
+The same object reports how the database's background work shared it with
+foreground operations. Every tenant of a node database shares its write gate
+and its state lock: a maintenance step or a commit excludes other writes and,
+while the step runs or the commit stages, every read. Background work therefore
+yields. After each iteration the node worker pauses at least four times as long
+as the iteration kept the database (at most one second) whenever a foreground
+operation began, read, committed or waited meanwhile, so it uses at most about
+a fifth of the database's time; with no foreground operation it keeps its own
+1 ms pace. While the worker keeps stepping, its steps also stand in for the
+maintenance step every write otherwise runs first, so the writes do not take
+over the work it is spacing out; once it stops, or writers keep it from the
+write gate, every write runs that step again. A standalone group's snapshot
+build and journal purge pause the same way between their commits (4 MiB
+snapshot chunks, purge chunks), all snapshot builds of the database sharing
+one such budget; the snapshot's publication itself never pauses.
+`maintenance_steps_total` and `maintenance_busy_total` count the worker's
+maintenance steps and those it skipped because a writer held the write gate;
+`warm_restarts_total` counts unfinished cache-warming attempts that a
+publication replaced.
+`maintenance_database_seconds_total` and `warm_database_seconds_total` are the
+wall time the worker's maintenance and warm steps kept the database, including
+their waits for its locks, and `worker_longest_iteration_seconds` is the
+longest single iteration: about how long a foreground operation can wait for
+one. `worker_paced_delays_total` and `worker_paced_delay_seconds_total` count
+the pauses lengthened for foreground operations and by how much.
+`foreground_active` is 1 while the worker last saw foreground operations.
+`maintenance_urgent` is 1 while maintenance does not yield: the census
+(`measured`, in any phase but `packing`, whose trigger already follows the new
+baseline) found retained bytes (less `snapshot_retained_bytes`) at or above
+twice `compaction_trigger_bytes`, or a step of the active cycle was refused
+capacity and that cycle has not completed. `background_write_units_total`,
+`background_write_database_seconds_total`, `background_write_longest_seconds`
+and `background_write_paced_delay_seconds_total` describe the paced snapshot
+and purge commits: how many, the time they kept the database, the longest one,
+and the time their writers paused for foreground operations. A store whose
+operations stall together while `compaction_phase` is not `idle` or a snapshot
+is being built, with `maintenance_database_seconds_total` or
+`background_write_database_seconds_total` rising about as fast as the clock
+and no paced delay, is being kept by background work: check
+`maintenance_urgent`, and the capacity deferrals behind it.
+
 Prometheus exposes the shared database as `kasumi_storage_*` without a tenant
 label, and a dedicated database as `kasumi_local_group_storage_*` labeled
 `{tenant="..."}`; `kasumi_local_group_storage_dedicated{tenant="..."}` (1 or 0)
@@ -463,7 +504,17 @@ the other three), `compaction_cycle`, `compaction_requested`,
 the last step deferred with that class), and the counters
 `reclaimed_files_total`, `reclaimed_bytes_total`, `relocated_bytes_total`,
 `evacuation_survey_fallbacks_total`, `reclaim_invalidations_total` and
-`maintenance_deferrals_total{class="capacity"|"rejected"}`. Counters restart
+`maintenance_deferrals_total{class="capacity"|"rejected"}`. The background-work
+families are the gauges `foreground_active`, `maintenance_urgent`,
+`worker_longest_iteration_seconds` and `background_write_longest_seconds`, and
+the counters `maintenance_steps_total`, `maintenance_busy_total`,
+`warm_restarts_total`, `maintenance_database_seconds_total`,
+`warm_database_seconds_total`, `worker_paced_delays_total`,
+`worker_paced_delay_seconds_total`, `background_write_units_total`,
+`background_write_database_seconds_total` and
+`background_write_paced_delay_seconds_total`. The share of the database the
+worker used over a window is the increase of `maintenance_database_seconds_total`
+plus `warm_database_seconds_total` divided by the window. Counters restart
 from zero when the store reopens. Retained bytes normally oscillate between the
 baseline and the trigger; growth past the trigger while the phase stays
 `evacuating` and capacity deferrals rise means the volume lacks the headroom a

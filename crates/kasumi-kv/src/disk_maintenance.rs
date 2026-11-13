@@ -98,7 +98,8 @@ pub struct MaintenancePolicy {
     /// the rest is within this bound. Zero relocates every old value.
     pub retained_garbage_percent: u32,
     /// Budget of the step `Database::begin_write` runs first, unless a
-    /// driver's `Database::run_maintenance` step ran since the previous write.
+    /// driver's `Database::run_maintenance` step ran since the previous write
+    /// or the driver's stand-in (`Database::defer_inline_maintenance`) holds.
     pub inline_units: usize,
     pub inline_mutations: usize,
     pub capacity_backoff_steps: u64,
