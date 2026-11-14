@@ -927,6 +927,14 @@ impl RaftGroup {
             .fixture_before_apply(hook)
     }
 
+    /// Runs once on the blocking apply worker inside this group's next entry
+    /// publication, after the worker's own access preflight and immediately
+    /// before the entry sink's access check. Standalone and replicated alike.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn fixture_before_entry_sink_access(&self, hook: Box<dyn FnOnce() + Send>) -> Result<()> {
+        apply_publication::install_entry_sink_access_hook(self.store.application(), hook)
+    }
+
     /// Runs once inside the next standalone snapshot task, after its capture
     /// and before its build.
     #[cfg(any(test, feature = "test-utils"))]

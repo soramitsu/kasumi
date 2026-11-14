@@ -589,6 +589,53 @@ impl ApplyPublication<'_> {
     }
 }
 
+/// One-shot test hooks keyed by the exact application store allocation. The
+/// apply worker has already passed its own preflight when a hook runs, so a
+/// fixture can withdraw access between that check and the sink's own check.
+#[cfg(any(test, feature = "test-utils"))]
+type EntrySinkAccessHook = Box<dyn FnOnce() + Send>;
+#[cfg(any(test, feature = "test-utils"))]
+fn entry_sink_access_hooks() -> &'static std::sync::Mutex<Vec<(usize, EntrySinkAccessHook)>> {
+    static HOOKS: std::sync::OnceLock<std::sync::Mutex<Vec<(usize, EntrySinkAccessHook)>>> =
+        std::sync::OnceLock::new();
+    HOOKS.get_or_init(Default::default)
+}
+/// Run `hook` once inside the next entry publication into `store`, on the
+/// blocking apply worker, immediately before the sink's own access check.
+#[cfg(any(test, feature = "test-utils"))]
+pub(crate) fn install_entry_sink_access_hook(
+    store: &std::sync::Arc<kasumi_store::TenantStore>,
+    hook: EntrySinkAccessHook,
+) -> Result<()> {
+    let key = std::sync::Arc::as_ptr(store) as usize;
+    let mut hooks = entry_sink_access_hooks()
+        .lock()
+        .unwrap_or_else(|p| p.into_inner());
+    anyhow::ensure!(
+        hooks.iter().all(|(installed, _)| *installed != key),
+        "entry sink access hook already installed"
+    );
+    hooks.push((key, hook));
+    Ok(())
+}
+#[cfg(any(test, feature = "test-utils"))]
+fn run_entry_sink_access_hook(store: &std::sync::Arc<kasumi_store::TenantStore>) {
+    let key = std::sync::Arc::as_ptr(store) as usize;
+    let hook = {
+        let mut hooks = entry_sink_access_hooks()
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        hooks
+            .iter()
+            .position(|(installed, _)| *installed == key)
+            .map(|index| hooks.swap_remove(index).1)
+    };
+    // Never run a hook while holding the registry lock.
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
 /// Actual adapter-owned Entry sink. Production keeps its existing metadata
 /// check and control lock; the test adapter uses its caller's serialization.
 pub(crate) struct EntryPublicationSink<'env> {
@@ -663,6 +710,8 @@ impl<'env> EntryPublicationSink<'env> {
                     .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))
             })
             .transpose()?;
+        #[cfg(any(test, feature = "test-utils"))]
+        run_entry_sink_access_hook(self.stores.application());
         // No planner, preparer, native reader or writer has entered for this
         // sink yet. Preserve this actual access refusal and its exact stage;
         // access loss after this check still needs its own retirement witness.

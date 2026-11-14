@@ -254,6 +254,11 @@ enum OriginalClosure {
     SealDuringProposal,
     FailedProposalChild,
     LocalExecutorFatal,
+    /// The key lease is withdrawn after the apply worker's own preflight and
+    /// before the entry sink's check. That latches a retained apply failure
+    /// whose ownership drains, so the closure drain completes, and the node's
+    /// snapshot census can still revisit the superseded owner at shutdown.
+    SealInsideEntrySink,
 }
 
 async fn original_tenant_reopens_after(closure: OriginalClosure) {
@@ -337,6 +342,57 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
                 "background work result",
             )
         }
+        OriginalClosure::SealInsideEntrySink => {
+            let (release, blocked) = std::sync::mpsc::channel::<()>();
+            let (entered, sink_blocked) = tokio::sync::oneshot::channel::<()>();
+            retained
+                .raft_group()
+                .fixture_before_entry_sink_access(Box::new(move || {
+                    let _ = entered.send(());
+                    let _ = blocked.recv();
+                }))
+                .unwrap();
+            let writer = {
+                let database = retained.clone();
+                let context = context.clone();
+                tokio::spawn(async move {
+                    database
+                        .administer(context, Operation::SetLimits(Limits::default()))
+                        .await
+                })
+            };
+            tokio::time::timeout(Duration::from_secs(10), sink_blocked)
+                .await
+                .unwrap()
+                .unwrap();
+            retained_store.seal();
+            release.send(()).unwrap();
+            let outcome = tokio::time::timeout(Duration::from_secs(15), writer)
+                .await
+                .unwrap()
+                .unwrap();
+            let code = outcome.unwrap_err().code;
+            assert!(
+                matches!(
+                    code,
+                    kasumi_types::ErrorCode::UnknownOutcome | kasumi_types::ErrorCode::Unavailable
+                ),
+                "{code:?}"
+            );
+            // The sink refusal is the exact retained ordinary report.
+            assert!(
+                retained
+                    .raft_group()
+                    .try_with_retained_apply_report(|report| matches!(
+                        report,
+                        kasumi_raft::RetainedApplyReport::Ordinary(_)
+                    ))
+                    .unwrap()
+                    .unwrap(),
+                "entry sink refusal must retain its ordinary apply report"
+            );
+            (&["key_lease_sealed", "proposal_work_closed"], "Raft apply")
+        }
         OriginalClosure::FailedProposalChild => {
             let failed = retained.fixture_fail_admitted_proposal().await.unwrap_err();
             assert_eq!(failed.code, kasumi_types::ErrorCode::UnknownOutcome);
@@ -404,6 +460,9 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
     );
     kasumi_store::private_files::replace(&application_credential, b"test-runtime-token").unwrap();
     let fresh = wait_fresh(&registry, &context, &retained).await;
+    // An entry whose log record was durable before its apply was refused
+    // returned UnknownOutcome; the fresh generation applies it exactly once.
+    let expected = expected + u64::from(closure == OriginalClosure::SealInsideEntrySink);
     assert_eq!(
         fresh.engine().generation().unwrap().state.revision,
         expected
@@ -463,6 +522,11 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_store_seal_during_inflight_proposal() {
     original_tenant_reopens_after(OriginalClosure::SealDuringProposal).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn original_tenant_reopens_after_access_loss_inside_entry_sink() {
+    original_tenant_reopens_after(OriginalClosure::SealInsideEntrySink).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

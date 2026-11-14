@@ -1399,6 +1399,32 @@ impl Administration {
         contains_weak(&self.superseded.databases, database)
     }
 
+    /// The sticky complete drain reports of superseded databases that some
+    /// caller still holds. Fresh admission already observed and logged each
+    /// one. Daemon shutdown uses them to recognize the node census repeating
+    /// those exact issues. Strong handles live only for this call, so it never
+    /// extends an owner's lifetime; a drain that is not complete is omitted.
+    pub(crate) async fn superseded_database_reports(&self) -> Vec<DrainFailure> {
+        let databases = self
+            .superseded
+            .databases
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .iter()
+            .filter_map(std::sync::Weak::upgrade)
+            .collect::<Vec<_>>();
+        let mut reports = Vec::new();
+        for database in databases {
+            // This owner already drained; shutdown returns its sticky report.
+            if let Err(failure) = database.shutdown().await
+                && failure.completion() == DrainCompletion::Complete
+            {
+                reports.push(failure);
+            }
+        }
+        reports
+    }
+
     pub(crate) fn superseded_lease(
         &self,
         lease: &Arc<crate::serving_runtime::RuntimeLease>,
