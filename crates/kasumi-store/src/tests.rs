@@ -400,6 +400,134 @@ async fn periodic_probes_start_every_twenty_seconds_despite_provider_latency() {
     store.check_access().unwrap();
 }
 
+/// A host suspend longer than a key lease used to seal every fixture tenant on
+/// wake: the production lease clock counts suspend, while the tokio timers that
+/// renew the lease measure awake time and were not yet due. Fixture storage
+/// measures its tenants' lease time awake, through the fixture and production
+/// openers alike; installed storage keeps the suspend-aware production clock.
+#[tokio::test]
+async fn fixture_storage_measures_lease_time_awake_and_installed_storage_counts_suspend() {
+    fn reads(clock: &dyn LeaseClock, reference: &dyn LeaseClock) -> bool {
+        let before = reference.now();
+        let observed = clock.now();
+        before <= observed && observed <= reference.now()
+    }
+    // Each opener runs between two awake readings, so its first probe's lease
+    // deadline lies between them plus the lease, in awake time.
+    async fn awake_lease<T>(open: impl std::future::Future<Output = T>) -> (T, Duration, Duration) {
+        let awake = crate::test_utils::AwakeLeaseClock;
+        let before = awake.now() + MAX_KEY_LEASE;
+        let opened = open.await;
+        (opened, before, awake.now() + MAX_KEY_LEASE)
+    }
+    fn deadline(store: &TenantStore) -> Duration {
+        store.state.read().deadline
+    }
+    // Fixture UTC follows host clock discipline but not a host suspend.
+    use crate::test_utils::{AWAKE_UTC_SLACK_MS, awake_utc_ms};
+    assert_eq!(awake_utc_ms(1_000_300, 1_000_000, 200), 1_000_300);
+    assert_eq!(awake_utc_ms(999_900, 1_000_000, 200), 999_900);
+    assert_eq!(
+        awake_utc_ms(1_127_200, 1_000_000, 200),
+        1_000_200 + AWAKE_UTC_SLACK_MS
+    );
+    let awake = crate::test_utils::AwakeLeaseClock;
+    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+    let scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let scratch = crate::ScratchDisk::fixture(scratch_directory.path(), memory.clone());
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let node = NodeStore::create_new_fixture(
+        directory.path().join("awake.kv"),
+        crate::test_utils::NODE_STORE_ID,
+        memory.clone(),
+        scratch.clone(),
+    )
+    .unwrap();
+    assert!(reads(node.lease_clock().as_ref(), &awake));
+    assert!(!reads(node.lease_clock().as_ref(), &SystemLeaseClock));
+    let application_keys = Arc::new(LocalKeyProvider::new([81; 32]));
+    let custody_keys = Arc::new(LocalKeyProvider::new([82; 32]));
+    let (application, low, high) = awake_lease(TenantStore::initialize_catalog_fixture(
+        node.clone(),
+        "tenant-a".into(),
+        application_keys.clone(),
+    ))
+    .await;
+    let application = application.unwrap();
+    assert!((low..=high).contains(&deadline(&application)));
+    let (stores, low, high) = awake_lease(crate::test_utils::initialize_custody_fixture(
+        application,
+        custody_keys.clone(),
+    ))
+    .await;
+    let stores = stores.unwrap();
+    assert!((low..=high).contains(&deadline(stores.custody().store())));
+    stores.shutdown().await.unwrap();
+    drop(stores);
+    // The production pair and custody openers, on the same fixture storage.
+    let (stores, low, high) = awake_lease(TenantStorageSet::open_existing(
+        node.clone(),
+        "tenant-a".into(),
+        application_keys,
+        custody_keys.clone(),
+        StorageAccess::fixture_for("tenant-a"),
+    ))
+    .await;
+    let stores = stores.unwrap();
+    for store in [stores.application(), stores.custody().store()] {
+        assert!((low..=high).contains(&deadline(store)));
+        assert!(reads(store.clock.as_ref(), &awake));
+    }
+    stores.shutdown().await.unwrap();
+    drop(stores);
+    let (custody, low, high) = awake_lease(CustodyStore::open(
+        node.clone(),
+        "tenant-a".into(),
+        custody_keys,
+    ))
+    .await;
+    let custody = custody.unwrap();
+    assert!((low..=high).contains(&deadline(custody.store())));
+    custody.store().shutdown().await.unwrap();
+    drop(custody);
+    let (audit, low, high) = awake_lease(TenantStore::initialize_catalog(
+        node.clone(),
+        "__kasumi_security".into(),
+        Arc::new(LocalKeyProvider::new([83; 32])),
+        StorageAccess::security_audit(),
+    ))
+    .await;
+    let audit = audit.unwrap();
+    assert!((low..=high).contains(&deadline(&audit)));
+    audit.shutdown().await.unwrap();
+    drop(audit);
+    node.shutdown().await.unwrap();
+
+    let installed_memory = crate::test_utils::installed_device_memory();
+    let installed_directory = crate::test_utils::private_tempdir().unwrap();
+    let path = installed_directory.path().join("installed.kv");
+    let disk = crate::test_utils::retry_disk_registry(|| {
+        NodeDisk::open(
+            &NodeDisk::fixture_config(&path).unwrap(),
+            installed_memory.clone(),
+            &CensusCancellation::default(),
+        )
+    })
+    .unwrap();
+    let installed_scratch_directory = crate::test_utils::private_tempdir().unwrap();
+    let installed = NodeStore::create_new(
+        &path,
+        crate::test_utils::NODE_STORE_ID,
+        disk,
+        crate::ScratchDisk::fixture(installed_scratch_directory.path(), installed_memory),
+        crate::test_utils::node_storage_config(),
+    )
+    .unwrap_or_else(|original| std::panic::panic_any(original));
+    assert!(reads(installed.lease_clock().as_ref(), &SystemLeaseClock));
+    assert!(!reads(installed.lease_clock().as_ref(), &awake));
+    installed.shutdown().await.unwrap();
+}
+
 #[tokio::test(start_paused = true)]
 async fn canceled_shutdown_drains_blocked_probe_and_releases_the_database_file() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);

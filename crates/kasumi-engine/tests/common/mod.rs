@@ -80,6 +80,22 @@ impl PhysicalFixture {
     }
 }
 
+/// Replicated fixtures use the server timing profile, except for election
+/// timeouts that outlast a multi-second stall of a loaded test host. With the
+/// server's 1.5-3 s timeout, replicas descheduled for longer wake to follower
+/// elections, and a read barrier or proposal in flight then fails over a
+/// leadership change the test did not make. Heartbeats, quorum rules and the
+/// 5 s application deadlines remain the server's; deliberate failovers wait
+/// out the longer timeout.
+#[allow(dead_code)]
+pub fn replicated_raft_config() -> kasumi_raft::Config {
+    kasumi_raft::Config {
+        election_timeout_min: 8_000,
+        election_timeout_max: 16_000,
+        ..kasumi_raft::server_config()
+    }
+}
+
 /// The exact runtime facade is required before the service ledger can open.
 #[allow(dead_code)]
 pub async fn security_audit(

@@ -9,7 +9,7 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
         let access = StorageAccess::fixture_for(&tenant);
-        let clock: Arc<dyn LeaseClock> = Arc::new(SystemLeaseClock);
+        let clock = node.lease_clock();
         open(Input {
             node,
             tenant,
@@ -45,7 +45,7 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        let clock: Arc<dyn LeaseClock> = Arc::new(SystemLeaseClock);
+        let clock = node.lease_clock();
         open(Input {
             node,
             tenant,
@@ -81,7 +81,7 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
     ) -> Result<Arc<Self>> {
         let access = StorageAccess::fixture_for(&tenant);
-        let clock: Arc<dyn LeaseClock> = Arc::new(SystemLeaseClock);
+        let clock = node.lease_clock();
         open(Input {
             node,
             tenant,
@@ -117,7 +117,7 @@ impl TenantStore {
         provider: Arc<dyn KeyProvider>,
         access: StorageAccess,
     ) -> Result<Arc<Self>> {
-        let clock: Arc<dyn LeaseClock> = Arc::new(SystemLeaseClock);
+        let clock = node.lease_clock();
         open(Input {
             node,
             tenant,

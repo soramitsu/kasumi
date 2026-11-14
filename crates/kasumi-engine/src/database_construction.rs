@@ -22,6 +22,21 @@ impl DatabaseConstruction {
         memory.require_store_memory(audit.store())?;
         memory.require_store_memory(stores.application())?;
         memory.require_store_memory(stores.custody().store())?;
+        #[cfg(any(test, feature = "test-utils"))]
+        if stores.application().node_store().measures_awake_time() {
+            // Fixture storage: cursors, snapshot leases and command deadlines
+            // measure awake time, like the fixture's key leases, so a host
+            // suspend cannot expire them mid-test.
+            let clock = kasumi_store::test_utils::awake_epoch_clock()?;
+            return Ok(Self {
+                stores,
+                audit,
+                clocks: DatabaseClocks {
+                    elapsed: clock.elapsed_clock(),
+                    command: Arc::new(super::FixtureCommandClock(clock)),
+                },
+            });
+        }
         Ok(Self {
             stores,
             audit,

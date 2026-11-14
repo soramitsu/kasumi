@@ -2,7 +2,7 @@ use kasumi_engine::test_utils::{open_fixture, open_fixture_replicated};
 mod common;
 
 use kasumi_engine::{Database, ReplicaPlacement, ReplicatedBootstrap, initialize_replicated};
-use kasumi_raft::{InProcessRouter, server_config};
+use kasumi_raft::InProcessRouter;
 use kasumi_store::{NodeStore, TenantStore, test_utils::LocalKeyProvider};
 use kasumi_types::*;
 use serde_json::json;
@@ -117,7 +117,9 @@ async fn shutdown_nodes(
 }
 async fn leader(nodes: &BTreeMap<u64, Arc<Database>>, exclude: Option<u64>) -> u64 {
     let mut last_barriers = BTreeMap::new();
-    tokio::time::timeout(Duration::from_secs(10), async {
+    // Only bounds a hang: a failover waits out the fixture's election timeout
+    // (up to 16 s) and the winner's quorum barrier, slower on a loaded host.
+    tokio::time::timeout(Duration::from_secs(120), async {
         loop {
             for (&id, db) in nodes {
                 if Some(id) == exclude {
@@ -202,7 +204,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             &bootstrap,
             router.clone(),
             // These replicas use real durable storage, as the server does.
-            server_config(),
+            common::replicated_raft_config(),
             audit,
         )
         .await
@@ -413,7 +415,7 @@ async fn replicated_service_preserves_batches_receipts_and_cursor_fences_across_
             .unwrap(),
             &bootstrap,
             router.clone(),
-            server_config(),
+            common::replicated_raft_config(),
             audit,
         )
         .await
@@ -503,7 +505,7 @@ async fn deployment_modes_and_live_store_ownership_cannot_be_overridden() {
             .unwrap(),
             &bootstrap,
             Arc::new(InProcessRouter::default()),
-            server_config(),
+            common::replicated_raft_config(),
             audit.clone(),
         )
         .await
@@ -669,7 +671,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
                 node_id: id,
                 incarnation,
                 voters: initial.voters.clone(),
-                raft: server_config(),
+                raft: common::replicated_raft_config(),
                 admission: audit.admission().clone(),
             },
             router.clone(),
@@ -762,7 +764,7 @@ async fn replicated_restore_has_identical_genesis_and_requires_quorum_audit_befo
             .unwrap(),
             &restored_bootstrap,
             router.clone(),
-            server_config(),
+            common::replicated_raft_config(),
             audit,
         )
         .await
@@ -871,7 +873,7 @@ async fn archive_retry_after_leader_change_adopts_original_objects_and_survives_
             .unwrap(),
             &bootstrap,
             router.clone(),
-            server_config(),
+            common::replicated_raft_config(),
             audit,
         )
         .await
@@ -922,14 +924,20 @@ async fn archive_retry_after_leader_change_adopts_original_objects_and_survives_
         cutoff_revision: cutoff,
         destination: "cold".into(),
     };
-    let original = {
+    let mut original = {
         let node = nodes[&first].clone();
         let request = request.clone();
         tokio::spawn(async move { node.archive_history(context(), request).await })
     };
-    tokio::time::timeout(Duration::from_secs(300), destination.entered.notified())
-        .await
-        .expect("original never uploaded its manifest");
+    tokio::select! {
+        () = destination.entered.notified() => {}
+        finished = &mut original => {
+            panic!("original finished before uploading its manifest: {finished:?}")
+        }
+        () = tokio::time::sleep(Duration::from_secs(300)) => {
+            panic!("original never uploaded its manifest")
+        }
+    }
     let original_objects = archive_object_bytes(&cold_path);
     assert_eq!(original_objects.len(), 2);
     assert!(
@@ -1043,7 +1051,7 @@ async fn archive_retry_after_leader_change_adopts_original_objects_and_survives_
             .unwrap(),
             &bootstrap,
             router.clone(),
-            server_config(),
+            common::replicated_raft_config(),
             audit,
         )
         .await

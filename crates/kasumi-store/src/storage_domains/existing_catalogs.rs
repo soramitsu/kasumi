@@ -237,15 +237,9 @@ async fn select(
             });
         }
     }
+    let clock = node.lease_clock();
     Ok(Held {
-        store: TenantStore::unpublished(
-            node,
-            tenant,
-            provider,
-            access,
-            Arc::new(SystemLeaseClock),
-            catalog,
-        ),
+        store: TenantStore::unpublished(node, tenant, provider, access, clock, catalog),
         ownership: Ownership::New,
     })
 }

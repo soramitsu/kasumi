@@ -168,3 +168,50 @@ async fn foreign_equal_policy_core_is_rejected_before_bootstrap_or_raft_startup(
     right.close().await?;
     Ok(())
 }
+
+/// On fixture storage, cursors, snapshot leases and command deadlines measure
+/// awake time, the base of the tokio timers in the same process, so a host
+/// suspend longer than a lease or upload TTL cannot expire them on wake.
+/// Without a suspend, command time is the host's UTC. Installed storage keeps
+/// the suspend-aware production clocks (`DatabaseClocks::default`).
+#[tokio::test]
+async fn fixture_database_leases_and_command_deadlines_measure_awake_time() -> anyhow::Result<()> {
+    use kasumi_clock::LeaseClock;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    kasumi_store::private_files::create_directory(&directory.path().join("persistent"))?;
+    let path = directory.path().join("persistent/node.kv");
+    let disk = NodeDisk::fixture_config(&path)?;
+    let scratch = ScratchDiskConfig {
+        directory: directory.path().join("scratch"),
+        max_bytes: 64 << 20,
+        min_free_bytes: 0,
+        file_allocation_policy: kasumi_store::FileAllocationPolicy::new(0).unwrap(),
+        native_cache_bytes: 8 << 20,
+    };
+    let metadata = metadata_bytes(NodeDisk::memory_requirements(&disk)?)?
+        .checked_add(metadata_bytes(ScratchDisk::memory_requirements(&scratch)?)?)
+        .ok_or_else(|| anyhow::anyhow!("fixture metadata charge overflow"))?;
+    let config = AdmissionConfig::default();
+    let total = (256_u64 << 20)
+        .checked_add(NodeAdmission::required_bookkeeping_bytes(&config)?)
+        .and_then(|bytes| bytes.checked_add(metadata))
+        .ok_or_else(|| anyhow::anyhow!("fixture admission budget overflow"))?;
+    let config = AdmissionConfig {
+        max_inflight_bytes: Some(total),
+        ..config
+    };
+    let fixture = Fixture::new(&path, &disk, &scratch, config).await?;
+    let construction = DatabaseConstruction::new(fixture.stores.clone(), fixture.audit.clone())?;
+    let awake = kasumi_store::test_utils::AwakeLeaseClock;
+    let before = awake.now();
+    let observed = construction.clocks.elapsed.now();
+    assert!(before <= observed && observed <= awake.now());
+    // Command time is the process's shared fixture epoch: awake elapsed time
+    // and fixture UTC, which is the host's UTC unless the host suspended.
+    let epoch = kasumi_store::test_utils::awake_epoch_clock()?;
+    let before = epoch.now_ms()?;
+    let command = construction.clocks.command.now_ms()?;
+    assert!(before <= command && command <= epoch.now_ms()?);
+    drop(construction);
+    fixture.close().await
+}

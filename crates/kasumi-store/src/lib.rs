@@ -1706,6 +1706,30 @@ impl NodeStore {
             .expect("synthetic backend fixture has no installed physical disk")
     }
 
+    /// Elapsed clock of the key leases of this node's tenants. Installed
+    /// storage uses the suspend-aware production clock; fixture storage
+    /// measures awake time (`test_utils::AwakeLeaseClock`).
+    pub fn lease_clock(&self) -> Arc<dyn LeaseClock> {
+        #[cfg(any(test, feature = "test-utils"))]
+        if self.measures_awake_time() {
+            return Arc::new(test_utils::AwakeLeaseClock);
+        }
+        Arc::new(SystemLeaseClock)
+    }
+
+    /// Whether this node is fixture storage, whose tenants measure lease and
+    /// command time awake (see `test_utils::AwakeLeaseClock`). Installed
+    /// storage never does.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn measures_awake_time(&self) -> bool {
+        self.body().db.has_fixture_direct_database()
+            || self
+                .body()
+                .persistent_disk
+                .as_ref()
+                .is_some_and(|disk| disk.fixture_lease_time())
+    }
+
     /// Stop new database work, drain cache warming and retained initializers, then close
     /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.

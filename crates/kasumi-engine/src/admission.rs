@@ -668,6 +668,22 @@ impl MemoryCore {
             .start_sampler()?;
         Ok(core)
     }
+    /// `new` on fixture storage: the age of an RSS sample is measured in awake
+    /// time, the base of the sampler thread's own interval, so a host suspend
+    /// cannot make every sample look stale on wake.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_fixture(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
+        config.validate()?;
+        let high = config.resolve_high_water(physical_capacity()?)?;
+        let memory = ProcessMemory;
+        let clock = kasumi_store::test_utils::AwakeLeaseClock;
+        let prepared = Self::prepare(config, high, &memory, &clock)?;
+        let mut core = Self::allocate(prepared, Arc::new(memory), Arc::new(clock))?;
+        Arc::get_mut(&mut core)
+            .expect("unpublished memory core")
+            .start_sampler()?;
+        Ok(core)
+    }
     fn start_sampler(&mut self) -> std::io::Result<()> {
         if self.sampler.is_some() {
             return Err(std::io::ErrorKind::AlreadyExists.into());
@@ -1124,6 +1140,11 @@ impl NodeAdmission {
     /// Installed replacements must instead reuse a core through `from_memory`.
     pub fn new(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
         Self::from_memory(MemoryCore::new(config)?)
+    }
+    /// `new` for fixture storage (`MemoryCore::new_fixture`).
+    #[cfg(any(test, feature = "test-utils"))]
+    pub fn new_fixture(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
+        Self::from_memory(MemoryCore::new_fixture(config)?)
     }
     pub fn memory(&self) -> &Arc<MemoryCore> {
         &self.core
@@ -2383,6 +2404,23 @@ mod tests {
             baseline.live_reservations
         );
         assert_eq!(node.snapshot().inflight_operations, 0);
+    }
+
+    /// A fixture core measures sample age in awake time, like the sampler's
+    /// interval, so a host suspend cannot make every sample stale on wake and
+    /// shed resident cursors and snapshot leases as if memory were pressured.
+    #[test]
+    fn fixture_core_measures_sample_age_in_awake_time() {
+        let awake = kasumi_store::test_utils::AwakeLeaseClock;
+        let reads = |core: &MemoryCore| {
+            let before = awake.now();
+            let observed = core.data.clock.now();
+            before <= observed && observed <= awake.now()
+        };
+        let fixture = NodeAdmission::new_fixture(AdmissionConfig::default()).unwrap();
+        assert!(reads(fixture.memory()));
+        let installed = MemoryCore::new(AdmissionConfig::default()).unwrap();
+        assert!(!reads(&installed));
     }
 
     #[test]

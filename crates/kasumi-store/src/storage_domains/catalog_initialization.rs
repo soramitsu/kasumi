@@ -224,12 +224,13 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
         "catalog initialization receiver closed"
     );
     application_access.check()?;
+    let lease_clock = node.lease_clock();
     let application = TenantStore::unpublished(
         node.clone(),
         tenant,
         application_provider,
         application_access,
-        Arc::new(SystemLeaseClock),
+        lease_clock.clone(),
         application_catalog,
     );
     let custody = TenantStore::unpublished(
@@ -237,7 +238,7 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
         custody_name,
         custody_provider,
         custody_access,
-        Arc::new(SystemLeaseClock),
+        lease_clock,
         custody_catalog,
     );
     let prepared = async {

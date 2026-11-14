@@ -609,6 +609,9 @@ pub struct NodeDisk {
     // Bytes read through this disk's file owners.
     #[cfg(test)]
     read_bytes: std::sync::atomic::AtomicU64,
+    // Fixture devices: tenant leases on this disk measure awake time.
+    #[cfg(any(test, feature = "test-utils"))]
+    fixture_lease_time: bool,
     // Every covered collection/path/descriptor owner is destroyed first.
     _memory_charge: Lease,
 }
@@ -978,6 +981,8 @@ impl NodeDisk {
         )?;
         cancel.check()?;
         prepared.accounted.commit_stage();
+        #[cfg(any(test, feature = "test-utils"))]
+        let fixture_lease_time = !matches!(selection, DeviceSelection::Installed);
         let registrations =
             selection.open_each(&prepared.devices, config.min_free_bytes, &prepared.memory)?;
         let PreparedResources {
@@ -1052,6 +1057,8 @@ impl NodeDisk {
             read_bytes: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             namespace_failure: std::sync::atomic::AtomicU8::new(0),
+            #[cfg(any(test, feature = "test-utils"))]
+            fixture_lease_time,
             _memory_charge: charge,
         });
         drop(disk.state.lock().expect("unpublished node disk state"));
@@ -1273,6 +1280,13 @@ impl NodeDisk {
     /// Whether no uncertain effect has failed this disk.
     pub(crate) fn is_open(&self) -> bool {
         self.lock_state().phase == NodeDiskPhase::Open
+    }
+
+    /// Whether this is fixture storage, whose tenant leases measure awake time
+    /// (`test_utils::AwakeLeaseClock`). Installed disks never do.
+    #[cfg(any(test, feature = "test-utils"))]
+    pub(crate) fn fixture_lease_time(&self) -> bool {
+        self.fixture_lease_time
     }
 
     pub fn snapshot(&self) -> NodeDiskSnapshot {

@@ -459,13 +459,14 @@ impl FixtureStorage {
     /// Create one fresh fixture core/facade and two fresh isolated disk devices.
     /// `config` is the original TOTAL policy, including existing bookkeeping.
     /// Only newly required disk metadata is added. Reopens reuse this scope.
+    /// Like the fixture's leases, the core measures sample age in awake time.
     pub fn open(
         persistent: &kasumi_store::NodeDiskConfig,
         scratch: &kasumi_store::ScratchDiskConfig,
         config: crate::admission::AdmissionConfig,
     ) -> anyhow::Result<Self> {
         let config = isolated_disk_config_with_metadata(config, persistent, scratch)?;
-        let admission = crate::admission::NodeAdmission::new(config)?;
+        let admission = crate::admission::NodeAdmission::new_fixture(config)?;
         Self::with_admission(persistent, scratch, admission)
     }
 

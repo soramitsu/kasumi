@@ -35,11 +35,11 @@ impl TenantStore {
     ) -> Result<Arc<Self>> {
         require_singleton(&access)?;
         open(Input {
+            clock: node.lease_clock(),
             node,
             tenant,
             provider,
             access,
-            clock: Arc::new(SystemLeaseClock),
             renew: true,
             mode: Mode::Initialize,
         })
@@ -58,11 +58,11 @@ impl TenantStore {
     ) -> Result<Arc<Self>> {
         require_singleton(&access)?;
         open(Input {
+            clock: node.lease_clock(),
             node,
             tenant,
             provider,
             access,
-            clock: Arc::new(SystemLeaseClock),
             renew: true,
             mode: Mode::Existing,
         })

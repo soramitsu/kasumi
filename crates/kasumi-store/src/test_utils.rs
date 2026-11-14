@@ -36,6 +36,77 @@ pub(crate) mod cache_test;
 pub const NODE_STORE_ID: uuid::Uuid =
     uuid::Uuid::from_u128(0x5c8c_7c42_e708_452c_b92f_510a_4673_4f2b);
 
+/// Lease time of fixture storage: the process's awake time, which is the base
+/// of the tokio timers (std `Instant`) that renew key leases. The production
+/// lease clock deliberately counts host suspend, so a host that sleeps longer
+/// than a lease in the middle of a test expires every fixture tenant's key
+/// lease (and its cursors and snapshot leases) on wake, before any renewal is
+/// due by awake time, and the tenant seals. Fixture storage measures awake
+/// time instead; explicitly clocked fixtures keep their own clocks.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AwakeLeaseClock;
+
+/// Keeps awake lease time far from zero, which marks an absent lease deadline.
+const AWAKE_LEASE_ORIGIN: Duration = Duration::from_secs(1 << 20);
+
+impl LeaseClock for AwakeLeaseClock {
+    fn now(&self) -> Duration {
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        AWAKE_LEASE_ORIGIN + START.get_or_init(std::time::Instant::now).elapsed()
+    }
+}
+
+/// How far fixture UTC may run ahead of the awake time elapsed since its first
+/// reading. Host clock discipline over a test process stays far below this.
+pub const AWAKE_UTC_SLACK_MS: u64 = 5_000;
+
+/// Fixture UTC: `host_ms`, but never more than [`AWAKE_UTC_SLACK_MS`] ahead of
+/// `start_ms` plus the awake time elapsed since then.
+pub fn awake_utc_ms(host_ms: u64, start_ms: u64, awake_elapsed_ms: u64) -> u64 {
+    host_ms.min(
+        start_ms
+            .saturating_add(awake_elapsed_ms)
+            .saturating_add(AWAKE_UTC_SLACK_MS),
+    )
+}
+
+/// UTC of fixture storage (see [`awake_utc_ms`]). Without a suspend this is the
+/// host's UTC; a host suspend jumps the host's UTC but not this one, so command
+/// deadlines (staged uploads, read assertions) measured in UTC keep the time
+/// the process was awake, like the fixture's leases.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AwakeWallClock;
+
+impl kasumi_clock::WallClock for AwakeWallClock {
+    fn now_ms(&self) -> Result<u64> {
+        static START: std::sync::OnceLock<(u64, Duration)> = std::sync::OnceLock::new();
+        let host = kasumi_clock::WallClock::now_ms(&kasumi_clock::SystemWallClock)?;
+        let awake = AwakeLeaseClock.now();
+        let (start, awake_start) = *START.get_or_init(|| (host, awake));
+        let elapsed = u64::try_from(awake.saturating_sub(awake_start).as_millis())?;
+        Ok(awake_utc_ms(host, start, elapsed))
+    }
+}
+
+/// The command clock of fixture storage, shared by the process as
+/// `EpochClock::system()` is in production: awake elapsed time and fixture UTC.
+pub fn awake_epoch_clock() -> Result<std::sync::Arc<kasumi_clock::EpochClock>> {
+    static CLOCK: std::sync::OnceLock<
+        std::result::Result<std::sync::Arc<kasumi_clock::EpochClock>, String>,
+    > = std::sync::OnceLock::new();
+    CLOCK
+        .get_or_init(|| {
+            kasumi_clock::EpochClock::new(
+                std::sync::Arc::new(AwakeLeaseClock),
+                std::sync::Arc::new(AwakeWallClock),
+            )
+            .map(std::sync::Arc::new)
+            .map_err(|error| error.to_string())
+        })
+        .clone()
+        .map_err(|error| anyhow::anyhow!(error))
+}
+
 /// Explicit deterministic fixture shares. Residency behavior has dedicated KV
 /// tests; these unrelated store fixtures keep request-owned output uncached.
 pub fn node_storage_config() -> crate::NodeStorageConfig {
