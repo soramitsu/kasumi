@@ -1056,6 +1056,8 @@ struct FaultState {
     operations: usize,
     syncs: usize,
     advance_on_sync: Option<(std::sync::Arc<ManualClock>, Duration)>,
+    /// How long every synchronization takes: a slow disk.
+    sync_delay: Duration,
     #[cfg(test)]
     pause_on_sync: Option<(std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>)>,
 }
@@ -1083,6 +1085,18 @@ impl FaultBackend {
     }
     pub fn syncs(&self) -> usize {
         self.state.lock().syncs
+    }
+    /// Make every later synchronization (file, root and names) take `delay`,
+    /// as a disk with slow fsync does; zero restores an instant one. The
+    /// caller of the synchronization sleeps, holding whatever it holds.
+    pub fn slow_syncs(&self, delay: Duration) {
+        self.state.lock().sync_delay = delay;
+    }
+    fn wait_for_sync(&self) {
+        let delay = self.state.lock().sync_delay;
+        if !delay.is_zero() {
+            std::thread::sleep(delay);
+        }
     }
     /// Expire after root publication, not after a prepared data/page fsync.
     pub fn advance_clock_on_next_sync(
@@ -1141,6 +1155,7 @@ impl kasumi_kv::SegmentGroupBackend for FaultBackend {
     }
     fn sync_root(&self) -> std::io::Result<()> {
         self.mutate()?;
+        self.wait_for_sync();
         self.backend.sync_root()?;
         #[cfg(test)]
         {
@@ -1188,6 +1203,7 @@ impl kasumi_kv::SegmentGroupBackend for FaultBackend {
     }
     fn sync(&self, file: kasumi_kv::GroupFile) -> std::io::Result<()> {
         self.mutate()?;
+        self.wait_for_sync();
         self.backend.sync(file)?;
         self.state.lock().syncs += 1;
         Ok(())
@@ -1198,6 +1214,7 @@ impl kasumi_kv::SegmentGroupBackend for FaultBackend {
     }
     fn sync_names(&self) -> std::io::Result<()> {
         self.mutate()?;
+        self.wait_for_sync();
         self.backend.sync_names()
     }
     fn close(&self) -> kasumi_kv::BackendCloseOutcome {

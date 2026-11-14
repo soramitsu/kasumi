@@ -649,6 +649,8 @@ fn original_recovery_concurrent_final_aliases_retire_exact_controls_once_before_
     let barrier = std::sync::Barrier::new(2);
     let observations = std::thread::scope(|scope| {
         let drop_one = |inventory: OriginalRecoveries| {
+            // Either alias may retire the controls; both threads' frees count.
+            address_watch.enroll();
             REFUND_EXPECTATION
                 .with(|expected| *expected.borrow_mut() = Some((admission.clone(), addresses[1])));
             REFUND_OBSERVATION.with(|observed| observed.set(None));

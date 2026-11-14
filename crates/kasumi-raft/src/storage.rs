@@ -42,6 +42,12 @@ const SNAPSHOT: &str = "raft.snapshot";
 const SNAPSHOT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 // A coverage record must fit the same bounded control read on every path.
 pub(crate) const MAX_SNAPSHOT_COVERAGE_BYTES: usize = 2 << 20;
+// A purge chunk covers its first index and this many more: three deletes an
+// entry and the purge cursor fit one transaction's operation bound. Smaller
+// chunks would not shorten what a purge keeps the node database for: the
+// deleted keys are spread over the whole directory, so each commit rewrites
+// about as many leaves as it has deletes and more commits rewrite more.
+const PURGE_CHUNK_SPAN: u64 = 21844;
 
 fn err(error: impl std::fmt::Display) -> StorageError<u64> {
     StorageIOError::write(&io::Error::other(error.to_string())).into()
@@ -106,6 +112,64 @@ pub(crate) fn current_snapshot_id(value: &str) -> bool {
             && id.get_version() == Some(uuid::Version::Random)
             && id.get_variant() == uuid::Variant::RFC4122
     })
+}
+
+/// How a run of bounded background commits (a snapshot build's pending
+/// marker, chunk uploads and chunk cleanup; a journal purge's chunks) shares
+/// the node database with every tenant's foreground operations. Each commit is
+/// as atomic and as ordered as before; only the time between two changes.
+#[derive(Clone)]
+pub(crate) enum BackgroundCommits {
+    /// Back to back: an open, an install or a consensus build that its group
+    /// or its peers wait for.
+    Direct,
+    /// A standalone group's own background work. Each commit is one paced
+    /// unit (`kasumi_store::NodeStore::paced_background_write`): after a
+    /// commit, while foreground operations are active, the next waits
+    /// `kasumi_store::FOREGROUND_SHARE` times as long as that commit took, up
+    /// to `kasumi_store::MAX_PACED_DELAY`. Once the group is closing (the
+    /// flag) a pause in progress ends and the rest runs back to back, so a
+    /// shutdown waits no longer than it did.
+    Paced(Arc<AtomicBool>),
+}
+
+impl BackgroundCommits {
+    /// The closing flag of a group whose commits are still paced.
+    fn paced(&self) -> Option<&AtomicBool> {
+        match self {
+            Self::Direct => None,
+            Self::Paced(closing) => (!closing.load(Ordering::Acquire)).then_some(closing),
+        }
+    }
+
+    /// One commit of a snapshot build, on the stream every tenant of the
+    /// node database shares: concurrent builds keep to one share between
+    /// them. The caller holds only its own snapshot gate.
+    fn snapshot_commit(&self, store: &TenantStore, writes: &[WriteOp]) -> Result<()> {
+        match self.paced() {
+            Some(closing) => store
+                .node_store()
+                .shared_background_write(closing, || store.write_batch(writes)),
+            None => store.write_batch(writes),
+        }
+    }
+
+    /// One chunk of a journal purge, on the purge's own stream `pace`: the
+    /// caller holds its group's journal gate, which must never wait for
+    /// another tenant's background work.
+    fn purge_commit(
+        &self,
+        store: &TenantStore,
+        pace: &mut kasumi_store::BackgroundPace,
+        commit: impl FnOnce() -> Result<()>,
+    ) -> Result<()> {
+        match self.paced() {
+            Some(closing) => store
+                .node_store()
+                .paced_background_write(pace, closing, commit),
+            None => commit(),
+        }
+    }
 }
 
 // Log cleanup, accepted application cursors and snapshot publication share this
@@ -913,7 +977,9 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     }
 
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
-        self.purge_original(log_id).await.map_err(err)
+        self.purge_original(log_id, BackgroundCommits::Direct, PURGE_CHUNK_SPAN)
+            .await
+            .map_err(err)
     }
 }
 
@@ -921,12 +987,23 @@ impl LogStore {
     /// Purge the standalone journal through a published snapshot. `false`
     /// means a capacity refusal stopped it after zero or more whole chunks,
     /// each committed with its purge cursor: every remaining entry stays
-    /// retained for a later snapshot to purge.
+    /// retained for a later snapshot to purge. Between two chunks the purge
+    /// yields to foreground operations (`BackgroundCommits::Paced`) until
+    /// `closing` is set; it keeps this group's journal gate meanwhile, as it
+    /// does through the whole purge.
     pub(crate) async fn purge_local(
         &mut self,
         log_id: LogId<u64>,
+        closing: &Arc<AtomicBool>,
     ) -> Result<bool, StorageError<u64>> {
-        match self.purge_original(log_id).await {
+        match self
+            .purge_original(
+                log_id,
+                BackgroundCommits::Paced(closing.clone()),
+                PURGE_CHUNK_SPAN,
+            )
+            .await
+        {
             Ok(()) => Ok(true),
             Err(error) => crate::capacity_refusal::take(error)
                 .map(|()| false)
@@ -934,10 +1011,17 @@ impl LogStore {
         }
     }
 
-    async fn purge_original(&self, log_id: LogId<u64>) -> Result<()> {
+    // `chunk_span` is `PURGE_CHUNK_SPAN` outside tests.
+    async fn purge_original(
+        &self,
+        log_id: LogId<u64>,
+        commits: BackgroundCommits,
+        chunk_span: u64,
+    ) -> Result<()> {
         let retained = self.retained.clone();
         let domains = self.domains.clone();
         self.mutate_original(move |store| {
+            let mut pace = kasumi_store::BackgroundPace::default();
             let mut retained = retained
                 .lock()
                 .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
@@ -953,7 +1037,7 @@ impl LogStore {
                 }
                 let start = span.first.index;
                 let end = start
-                    .saturating_add(21844)
+                    .saturating_add(chunk_span)
                     .min(log_id.index)
                     .min(span.last.index);
                 let purged = read_header(store, end)?.log_id;
@@ -975,14 +1059,16 @@ impl LogStore {
                     })
                     .collect::<Vec<_>>();
                 writes.push(put(META, b"purged", serde_json::to_vec(&purged)?));
-                if retired {
-                    store.write_batch(&writes)?;
-                } else {
-                    let bodies = (start..=end)
-                        .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
-                        .collect::<Vec<_>>();
-                    domains.write_batch(&bodies, &writes)?;
-                }
+                commits.purge_commit(store, &mut pace, || {
+                    if retired {
+                        store.write_batch(&writes)
+                    } else {
+                        let bodies = (start..=end)
+                            .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
+                            .collect::<Vec<_>>();
+                        domains.write_batch(&bodies, &writes)
+                    }
+                })?;
                 *retained = next;
                 last_removed = Some(purged);
             }
@@ -1080,16 +1166,16 @@ pub(crate) fn validate_snapshot_manifest(manifest: &SnapshotManifest, limit: u64
 // Pending chunks and an obsolete manifest have durable cleanup cursors. A crash
 // at any chunk or manifest write leaves either the entire old snapshot or the
 // entire new snapshot recoverable, with bounded cleanup on the next open/build.
-fn cleanup_snapshots(store: &TenantStore, limit: u64) -> Result<()> {
+fn cleanup_snapshots(store: &TenantStore, limit: u64, commits: &BackgroundCommits) -> Result<()> {
     for marker in [b"pending".as_slice(), b"obsolete".as_slice()] {
         if let Some(manifest) = load_manifest(store, marker, limit)? {
             for start in (0..manifest.chunks).step_by(1024) {
                 let writes = (start..manifest.chunks.min(start + 1024))
                     .map(|chunk| delete(SNAPSHOT, chunk_key(&manifest, chunk)))
                     .collect::<Vec<_>>();
-                store.write_batch(&writes)?;
+                commits.snapshot_commit(store, &writes)?;
             }
-            store.write_batch(&[delete(SNAPSHOT, marker.to_vec())])?;
+            commits.snapshot_commit(store, &[delete(SNAPSHOT, marker.to_vec())])?;
         }
     }
     Ok(())
@@ -1247,11 +1333,16 @@ struct PendingSnapshot {
     coverage_bytes: Vec<u8>,
 }
 
+// Every chunk is its own commit, and `SNAPSHOT_CHUNK_BYTES` is part of the
+// stored format (`validate_snapshot_manifest`, `load_snapshot`): a build
+// bounds what each commit keeps the node database for only by `commits`,
+// which spaces them out for foreground operations.
 fn stage_snapshot(
     domains: &TenantStorageSet,
     bytes: &SnapshotImage,
     limit: u64,
     snapshot: &SnapshotEnvelope,
+    commits: &BackgroundCommits,
 ) -> Result<PendingSnapshot> {
     let meta = &snapshot.meta;
     let store = domains.application();
@@ -1280,17 +1371,17 @@ fn stage_snapshot(
     // Reject before cleanup or the first pending/chunk write; the prior
     // snapshot remains intact when current-format coverage is too large.
     let coverage_bytes = encode_snapshot_coverage(&coverage)?;
-    cleanup_snapshots(store, limit)?;
+    cleanup_snapshots(store, limit, commits)?;
     let previous = load_manifest(store, b"current", limit)?;
     let encoded = serde_json::to_vec(&manifest)?;
-    store.write_batch(&[put(SNAPSHOT, b"pending", encoded.clone())])?;
+    commits.snapshot_commit(store, &[put(SNAPSHOT, b"pending", encoded.clone())])?;
     let mut reader = bytes.reader();
     let mut remaining = bytes.len();
     for index in 0..manifest.chunks {
         let mut chunk = vec![0; remaining.min(SNAPSHOT_CHUNK_BYTES as u64) as usize];
         reader.read_exact(&mut chunk)?;
         remaining -= chunk.len() as u64;
-        store.write_batch(&[put(SNAPSHOT, &chunk_key(&manifest, index), chunk)])?;
+        commits.snapshot_commit(store, &[put(SNAPSHOT, &chunk_key(&manifest, index), chunk)])?;
     }
     let mut install = vec![
         put(SNAPSHOT, b"current", encoded),
@@ -1360,9 +1451,10 @@ fn persist_snapshot(
         &SnapshotImage::from_bytes(domains.application().scratch_disk(), bytes)?,
         limit,
         snapshot,
+        &BackgroundCommits::Direct,
     )?;
     publish_snapshot(domains, pending, snapshot, None)?;
-    cleanup_snapshots(domains.application(), limit)
+    cleanup_snapshots(domains.application(), limit, &BackgroundCommits::Direct)
 }
 
 #[derive(Default)]
@@ -1491,7 +1583,7 @@ impl StateMachine {
                         captured_domains.custody(),
                         first.as_ref(),
                     )?;
-                    cleanup_snapshots(&captured, limit)?;
+                    cleanup_snapshots(&captured, limit, &BackgroundCommits::Direct)?;
                     if let Some(snapshot) = load_snapshot(&captured, limit)? {
                         validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
                         ensure!(snapshot.version == 2, "unsupported raft snapshot version");
@@ -1682,7 +1774,13 @@ impl CoveringSnapshot for crate::local::LocalSnapshot {
 }
 
 impl SnapshotBuilder {
-    async fn build<O: CoveringSnapshot>(&mut self) -> Result<O, StorageError<u64>> {
+    // The pending marker, the chunk uploads and the cleanup run under the
+    // snapshot gate only and follow `commits`. The publication, under the
+    // applied and control locks its group's applies wait for, never pauses.
+    async fn build<O: CoveringSnapshot>(
+        &mut self,
+        commits: BackgroundCommits,
+    ) -> Result<O, StorageError<u64>> {
         let gate = self.machine.snapshot_gate.clone().lock_owned().await;
         let captured = match &self.captured {
             Ok(captured) => captured.clone(),
@@ -1758,7 +1856,7 @@ impl SnapshotBuilder {
                     initialization_association: logical.initialization_association.clone(),
                 };
                 let (covering, image) = O::captured(&captured, limit, &snapshot_buffers)?;
-                let mut pending = stage_snapshot(&domains, &image, limit, &captured)?;
+                let mut pending = stage_snapshot(&domains, &image, limit, &captured, &commits)?;
                 pending
                     .application
                     .extend(
@@ -1782,7 +1880,7 @@ impl SnapshotBuilder {
                 // Once the image is published its predecessor's chunks are
                 // garbage: the next build or open removes what a refused
                 // standalone cleanup leaves.
-                if let Err(error) = cleanup_snapshots(&store, limit) {
+                if let Err(error) = cleanup_snapshots(&store, limit, &commits) {
                     match O::deferred() {
                         Some(_) => crate::capacity_refusal::take(error)?,
                         None => return Err(error.into()),
@@ -1816,13 +1914,16 @@ impl SnapshotBuilder {
 
 impl RaftSnapshotBuilder<TypeConfig> for SnapshotBuilder {
     async fn build_snapshot(&mut self) -> Result<Snapshot<TypeConfig>, StorageError<u64>> {
-        self.build().await
+        self.build(BackgroundCommits::Direct).await
     }
 }
 
 impl crate::local::LocalSnapshotBuilder for SnapshotBuilder {
-    async fn build_local(&mut self) -> Result<crate::local::LocalSnapshot, StorageError<u64>> {
-        self.build().await
+    async fn build_local(
+        &mut self,
+        closing: &Arc<AtomicBool>,
+    ) -> Result<crate::local::LocalSnapshot, StorageError<u64>> {
+        self.build(BackgroundCommits::Paced(closing.clone())).await
     }
 }
 
@@ -2364,6 +2465,7 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                     &snapshot,
                     machine.limits.max_snapshot_bytes,
                     &envelope,
+                    &BackgroundCommits::Direct,
                 )?;
                 // Rows too large for that one publication are written first.
                 // Until it commits no published state names them.
@@ -2380,7 +2482,11 @@ impl RaftStateMachine<TypeConfig> for StateMachine {
                         Some(prepared.as_ref()),
                     )?;
                 }
-                cleanup_snapshots(&machine.store, machine.limits.max_snapshot_bytes)?;
+                cleanup_snapshots(
+                    &machine.store,
+                    machine.limits.max_snapshot_bytes,
+                    &BackgroundCommits::Direct,
+                )?;
                 prepared.publish()?;
                 state.log_id = envelope.meta.last_log_id;
                 state.membership = envelope.meta.last_membership;

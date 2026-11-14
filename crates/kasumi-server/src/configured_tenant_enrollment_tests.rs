@@ -120,9 +120,6 @@ async fn dormant_resident() -> (
 
 #[tokio::test]
 async fn cancelled_preparation_of_borrowed_resident_preserves_its_original_storage_owner() {
-    let _serial = crate::control_genesis::tests::data_startup_serial()
-        .lock()
-        .await;
     let (_directory, mut runtime, manager, context) = Box::pin(dormant_resident()).await;
     let before = manager.configured("tenant-a").unwrap();
     let original = before.store.get("engine.bootstrap", b"manifest").unwrap();
@@ -145,13 +142,16 @@ async fn cancelled_preparation_of_borrowed_resident_preserves_its_original_stora
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified())
-        .await
-        .unwrap();
+    tokio::time::timeout(
+        crate::runtime_storage_fixtures::LIVENESS,
+        pause.entered.notified(),
+    )
+    .await
+    .unwrap();
     drop(waiting);
     pause.release.notify_one();
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        crate::runtime_storage_fixtures::LIVENESS,
         crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment),
     )
     .await
@@ -173,9 +173,6 @@ async fn cancelled_preparation_of_borrowed_resident_preserves_its_original_stora
 #[tokio::test]
 async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preserves_borrowed_owner()
 {
-    let _serial = crate::control_genesis::tests::data_startup_serial()
-        .lock()
-        .await;
     let (_directory, mut runtime, manager, context) = Box::pin(dormant_resident()).await;
     let before = manager.configured("tenant-a").unwrap();
     let pause = Arc::new(Pause::default());
@@ -197,9 +194,12 @@ async fn closure_before_actual_enrollment_handoff_rejects_publication_and_preser
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified())
-        .await
-        .unwrap();
+    tokio::time::timeout(
+        crate::runtime_storage_fixtures::LIVENESS,
+        pause.entered.notified(),
+    )
+    .await
+    .unwrap();
     // The shutdown admission transition takes exactly the handoff's mutex.
     *manager.enrollment_closed.lock().unwrap() = true;
     pause.release.notify_one();
@@ -240,9 +240,6 @@ fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries
 
 async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_retries_existing_state_impl()
 -> Result<()> {
-    let _serial = crate::control_genesis::tests::data_startup_serial()
-        .lock()
-        .await;
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = Box::pin(crate::runtime_storage_fixtures::initialize_standalone(
         &directory.path().join("installed"),
@@ -300,11 +297,15 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered.notified()).await?;
+    tokio::time::timeout(
+        crate::runtime_storage_fixtures::LIVENESS,
+        pause.entered.notified(),
+    )
+    .await?;
     drop(waiting);
     pause.release.notify_one();
     tokio::time::timeout(
-        std::time::Duration::from_secs(10),
+        crate::runtime_storage_fixtures::LIVENESS,
         crate::startup_owner::drain(crate::startup_owner::Kind::TenantEnrollment),
     )
     .await??;
@@ -514,9 +515,6 @@ async fn local_topology_failure_adapters_preserve_validation_and_decode_fallback
 
 #[tokio::test]
 async fn local_topology_maps_keep_their_concrete_grants() {
-    let _serial = crate::control_genesis::tests::data_startup_serial()
-        .lock()
-        .await;
     let (_directory, mut runtime, manager, _context) = Box::pin(dormant_resident()).await;
     let local = manager.committed_topology().unwrap();
     let nodes = manager.configured_nodes().unwrap();

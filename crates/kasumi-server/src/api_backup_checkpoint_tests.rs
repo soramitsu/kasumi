@@ -1119,21 +1119,35 @@ async fn retirement_pool_lost_abort_reply_never_dispatches_to_second_installed_r
         serde_json::from_slice(&saved_request).unwrap();
     assert_eq!(restored_request.reference().unwrap(), reference);
 
+    // One status-only invocation consults every installed route and stays
+    // unresolved. It splits its deadline across the routes, and a loaded
+    // machine can spend a short one on the first route's connection alone; a
+    // fresh pool then repeats the invocation with twice the deadline.
     status_reads_blocked.store(true, Ordering::SeqCst);
-    let mut unavailable_pool = new_pool();
-    let unavailable = unavailable_pool
-        .retirement_status(&reference, std::time::Duration::from_secs(2))
-        .await;
-    assert!(
-        matches!(&unavailable, Err(kasumi_client::ClientError::Transport(status))
-            if matches!(status.code(), Code::Unavailable | Code::DeadlineExceeded)),
-        "unavailable exact status must remain unresolved: {unavailable:?}"
-    );
+    let mut deadline = std::time::Duration::from_secs(2);
+    loop {
+        let mut unavailable_pool = new_pool();
+        let unavailable = unavailable_pool
+            .retirement_status(&reference, deadline)
+            .await;
+        assert!(
+            matches!(&unavailable, Err(kasumi_client::ClientError::Transport(status))
+                if matches!(status.code(), Code::Unavailable | Code::DeadlineExceeded)),
+            "unavailable exact status must remain unresolved: {unavailable:?}"
+        );
+        drop(unavailable_pool);
+        if second_status_reads.load(Ordering::SeqCst) > 0 {
+            break;
+        }
+        assert!(
+            deadline < crate::runtime_storage_fixtures::LIVENESS,
+            "status-only recovery never consulted the second installed route"
+        );
+        deadline = (deadline * 2).min(crate::runtime_storage_fixtures::LIVENESS);
+    }
     assert!(first_status_reads.load(Ordering::SeqCst) > 0);
-    assert!(second_status_reads.load(Ordering::SeqCst) > 0);
     assert_eq!(first_effects.load(Ordering::SeqCst), 1);
     assert_eq!(second_effects.load(Ordering::SeqCst), 0);
-    drop(unavailable_pool);
 
     status_reads_blocked.store(false, Ordering::SeqCst);
     let mut recovery_pool = new_pool();

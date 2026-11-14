@@ -29,7 +29,7 @@ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
     group: Arc<str>,
     state: Arc<tokio::sync::Mutex<Option<LocalState<M>>>>,
     metrics: Arc<Mutex<Metrics>>,
-    closed: AtomicBool,
+    closed: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     worker: Worker,
     snapshot_worker: Arc<Worker>,
@@ -90,6 +90,9 @@ struct SnapshotWork {
     group: Arc<str>,
     metrics: Arc<Mutex<Metrics>>,
     worker: Arc<Worker>,
+    /// The group is shutting down: a running build and purge stop yielding
+    /// to foreground operations and finish back to back.
+    closing: Arc<AtomicBool>,
     failed: Arc<AtomicBool>,
     report: Arc<Mutex<kasumi_types::drain::DrainReport>>,
     published: Arc<AtomicU64>,
@@ -120,10 +123,14 @@ impl LocalJoinedApply for crate::StateMachine {
     }
 }
 
-/// A state machine's snapshot builder as the standalone writer runs it.
+/// A state machine's snapshot builder as the standalone writer runs it: in
+/// the background of its group and of every other tenant of the node
+/// database, so a build of many commits yields to foreground operations
+/// between them until `closing` is set.
 pub(crate) trait LocalSnapshotBuilder {
     fn build_local(
         &mut self,
+        closing: &Arc<AtomicBool>,
     ) -> impl std::future::Future<Output = Result<LocalSnapshot, openraft::StorageError<u64>>> + Send;
 }
 
@@ -287,7 +294,7 @@ where
             group: group.into(),
             state: Arc::new(tokio::sync::Mutex::new(Some(state))),
             metrics: Arc::new(Mutex::new(metrics)),
-            closed: AtomicBool::new(false),
+            closed: Arc::new(AtomicBool::new(false)),
             failed,
             worker: Default::default(),
             snapshot_worker: Default::default(),
@@ -414,6 +421,7 @@ where
             group: self.group.clone(),
             metrics: self.metrics.clone(),
             worker: self.snapshot_worker.clone(),
+            closing: self.closed.clone(),
             failed: self.failed.clone(),
             report: self.report.clone(),
             published: self.published.clone(),
@@ -768,6 +776,7 @@ where
         let mut log = self.log.clone();
         let metrics = work.metrics.clone();
         let failed = work.failed.clone();
+        let closing = work.closing.clone();
         let published = work.published.clone();
         let group = work.group.clone();
         #[cfg(any(test, feature = "test-utils"))]
@@ -784,12 +793,12 @@ where
                     tokio::task::spawn_blocking(hook).await?;
                 }
             }
-            match builder.build_local().await? {
+            match builder.build_local(&closing).await? {
                 LocalSnapshot::Published(position) => {
                     // A purge refused for capacity keeps the rest of the
                     // journal for a later snapshot to purge.
                     let purged = match position {
-                        Some(position) => log.purge_local(position).await?,
+                        Some(position) => log.purge_local(position, &closing).await?,
                         None => true,
                     };
                     if !purged {

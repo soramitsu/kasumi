@@ -595,7 +595,7 @@ async fn retired_snapshot_power_loss_never_tears_image_seed_boundary_or_applied_
         drop(domains);
         let (reopened, _, _, _) =
             fixture_on_disk(crash, false, fixture_scratch.clone(), persistent.clone()).await?;
-        cleanup_snapshots(reopened.application(), 1 << 20)?;
+        cleanup_snapshots(reopened.application(), 1 << 20, &BackgroundCommits::Direct)?;
         let image = load_snapshot(reopened.application(), 1 << 20)?;
         let boundary = control::retired_boundary(reopened.custody())?;
         let applied: Option<AppliedCursor> =
@@ -872,9 +872,15 @@ async fn retirement_projection_writer_and_reader_share_the_two_megabyte_boundary
     // valid baseline image. The synthetic oversized metadata is not encoded or
     // presented as a valid incoming transport; refusal must precede any image
     // cleanup, pending manifest, or chunk effect, regardless of its image bytes.
-    let error = stage_snapshot(&domains, &encoded, 64 << 20, &oversized)
-        .err()
-        .context("oversized projection reached staging")?;
+    let error = stage_snapshot(
+        &domains,
+        &encoded,
+        64 << 20,
+        &oversized,
+        &BackgroundCommits::Direct,
+    )
+    .err()
+    .context("oversized projection reached staging")?;
     assert!(
         error
             .to_string()

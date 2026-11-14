@@ -5103,3 +5103,510 @@ fn real_node_segment_group_maintenance_stays_within_transaction_plan() {
     assert_eq!(existing.close().unwrap(), DatabaseOpenSettlement::Closed);
     assert_eq!(existing.retire(), StorageCensusDisposition::Retired);
 }
+
+/// The node worker's calls (warm step, warm status, maintenance step and
+/// status) wait for the database's locks while a commit holds them. Every
+/// tenant's read and write begins, the other status calls and close take the
+/// opening's state too, so none of them may wait behind such a call there.
+mod worker_calls {
+    use super::*;
+    use kasumi_kv::{SegmentGroupBackend, TableDefinition};
+    use std::sync::atomic::AtomicUsize;
+
+    const TENANT_A: TableDefinition<&[u8], &[u8]> = TableDefinition::new("tenant-a");
+    const TENANT_B: TableDefinition<&[u8], &[u8]> = TableDefinition::new("tenant-b");
+    const TENANT_B_CATALOG_KEY: [u8; 32] = [0xb5; 32];
+    /// Far beyond what any operation below needs, even on a heavily loaded
+    /// machine: only an operation stuck behind the paused commit reaches it.
+    const STUCK: Duration = Duration::from_secs(30);
+
+    /// A pause point of `GatedBackend`. Once armed, the next call of its kind
+    /// reports that it entered and waits until the test releases it.
+    #[derive(Default)]
+    struct BackendPause {
+        armed: AtomicBool,
+        /// (entered, released)
+        progress: Mutex<(bool, bool)>,
+        changed: parking_lot::Condvar,
+    }
+    impl BackendPause {
+        fn arm(&self) {
+            self.armed.store(true, Ordering::Release);
+        }
+        fn pass(&self) {
+            if !self.armed.swap(false, Ordering::AcqRel) {
+                return;
+            }
+            let mut progress = self.progress.lock();
+            progress.0 = true;
+            self.changed.notify_all();
+            while !progress.1 {
+                self.changed.wait(&mut progress);
+            }
+        }
+        fn entered_within(&self, timeout: Duration) -> bool {
+            let deadline = Instant::now() + timeout;
+            let mut progress = self.progress.lock();
+            while !progress.0 && !self.changed.wait_until(&mut progress, deadline).timed_out() {}
+            progress.0
+        }
+        fn release(&self) {
+            self.progress.lock().1 = true;
+            self.changed.notify_all();
+        }
+    }
+    /// Releases its pause when dropped, so that a failed assertion never
+    /// leaves a database call blocked in the backend.
+    struct ReleasePause(Arc<BackendPause>);
+    impl Drop for ReleasePause {
+        fn drop(&mut self) {
+            self.0.release();
+        }
+    }
+
+    /// A fixture backend with two pause points: after a root synchronization,
+    /// halfway through a commit's root publication, where the commit holds the
+    /// write gate and the commit gate but not the KV core lock; and before a
+    /// data synchronization, in a commit's staging, which holds all three.
+    #[derive(Clone, Default)]
+    struct GatedBackend {
+        inner: crate::test_utils::FaultBackend,
+        root_sync: Arc<BackendPause>,
+        data_sync: Arc<BackendPause>,
+        closes: Arc<AtomicUsize>,
+    }
+    impl SegmentGroupBackend for GatedBackend {
+        fn reserve_transaction(
+            &self,
+            plan: &kasumi_kv::TransactionSpacePlan,
+        ) -> std::result::Result<(), kasumi_kv::TransactionReserveError> {
+            self.inner.reserve_transaction(plan)
+        }
+        fn finish_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()> {
+            self.inner.finish_transaction(group_id, batch_seq)
+        }
+        fn cancel_transaction(&self, group_id: [u8; 16], batch_seq: u64) -> io::Result<()> {
+            self.inner.cancel_transaction(group_id, batch_seq)
+        }
+        fn read_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            out: &mut [u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> io::Result<()> {
+            self.inner.read_root(slot, out)
+        }
+        fn write_root(
+            &self,
+            slot: kasumi_kv::RootSlot,
+            bytes: &[u8; kasumi_kv::ROOT_SLOT_BYTES],
+        ) -> io::Result<()> {
+            self.inner.write_root(slot, bytes)
+        }
+        fn sync_root(&self) -> io::Result<()> {
+            self.inner.sync_root()?;
+            self.root_sync.pass();
+            Ok(())
+        }
+        fn visit_entries(
+            &self,
+            visitor: &mut dyn FnMut(&std::ffi::OsStr) -> io::Result<()>,
+        ) -> io::Result<()> {
+            self.inner.visit_entries(visitor)
+        }
+        fn exists(&self, file: kasumi_kv::GroupFile) -> io::Result<bool> {
+            self.inner.exists(file)
+        }
+        fn create(&self, file: kasumi_kv::GroupFile) -> io::Result<()> {
+            self.inner.create(file)
+        }
+        fn len(&self, file: kasumi_kv::GroupFile) -> io::Result<u64> {
+            self.inner.len(file)
+        }
+        fn read(&self, file: kasumi_kv::GroupFile, at: u64, out: &mut [u8]) -> io::Result<()> {
+            self.inner.read(file, at, out)
+        }
+        fn write(&self, file: kasumi_kv::GroupFile, at: u64, bytes: &[u8]) -> io::Result<()> {
+            self.inner.write(file, at, bytes)
+        }
+        fn set_len(&self, file: kasumi_kv::GroupFile, length: u64) -> io::Result<()> {
+            self.inner.set_len(file, length)
+        }
+        fn sync(&self, file: kasumi_kv::GroupFile) -> io::Result<()> {
+            self.data_sync.pass();
+            self.inner.sync(file)
+        }
+        fn unlink(&self, file: kasumi_kv::GroupFile) -> io::Result<()> {
+            self.inner.unlink(file)
+        }
+        fn sync_names(&self) -> io::Result<()> {
+            self.inner.sync_names()
+        }
+        fn close(&self) -> kasumi_kv::BackendCloseOutcome {
+            self.closes.fetch_add(1, Ordering::AcqRel);
+            self.inner.close()
+        }
+    }
+
+    struct GatedNode {
+        node: NodeStore,
+        backend: GatedBackend,
+        scratch: Arc<ScratchDisk>,
+        _directory: tempfile::TempDir,
+    }
+
+    /// A registered node on a `GatedBackend` holding one row of each of two
+    /// tenants and a catalog entry of the second. Its writes never run the
+    /// inline maintenance step, whose syncs and publications would otherwise
+    /// reach the pause points before the commit under test.
+    fn gated_node() -> GatedNode {
+        let memory = TestDiskMemory::new(256 << 20, 4096);
+        let directory = private_tempdir().unwrap();
+        let scratch = ScratchDisk::fixture(directory.path(), memory);
+        let backend = GatedBackend::default();
+        let node = NodeStore::create_with_backend(
+            backend.clone(),
+            crate::test_utils::storage_admission(),
+            scratch.clone(),
+        )
+        .unwrap();
+        node.body()
+            .db
+            .defer_inline_maintenance(Duration::from_secs(3600))
+            .unwrap();
+        commit_row(&node, TENANT_A, b"row", b"first");
+        commit_row(&node, TENANT_B, b"row", b"first");
+        commit_row(&node, CATALOG, &TENANT_B_CATALOG_KEY, b"tenant b catalog");
+        GatedNode {
+            node,
+            backend,
+            scratch,
+            _directory: directory,
+        }
+    }
+
+    fn commit_row(
+        node: &NodeStore,
+        table: TableDefinition<&[u8], &[u8]>,
+        key: &[u8],
+        value: &[u8],
+    ) {
+        let transaction = node.body().db.begin_write().unwrap();
+        transaction
+            .open_table(table)
+            .unwrap()
+            .insert(key, value)
+            .unwrap();
+        transaction.commit().unwrap();
+    }
+
+    fn read_row(
+        node: &NodeStore,
+        table: TableDefinition<&[u8], &[u8]>,
+        key: &[u8],
+    ) -> Option<Vec<u8>> {
+        let transaction = node.body().db.begin_read().unwrap();
+        let table = transaction.open_table(table).unwrap();
+        table.get(key).unwrap().map(|row| row.value().to_vec())
+    }
+
+    /// A registered read of the second tenant, as its store reads: begin,
+    /// read its catalog entry, finish and retire.
+    fn registered_read_of_tenant_b(node: &NodeStore) -> Option<Vec<u8>> {
+        let reader = node.body().db.queue_registered_read().unwrap();
+        assert_eq!(reader.begin(), NodeReadPhase::Active);
+        let entry = reader
+            .catalog_bytes(TENANT_B_CATALOG_KEY, 64)
+            .unwrap()
+            .map(|bytes| bytes.as_bytes().to_vec());
+        assert_eq!(reader.finish(), NodeReadPhase::Finished);
+        assert_eq!(reader.retire(), StorageCensusDisposition::Retired);
+        entry
+    }
+
+    /// Transactions and admissions of the node database that are live now.
+    fn live_transactions(node: &NodeStore) -> usize {
+        let state = node.opening.registration.owner().state.lock();
+        state
+            .engine
+            .database()
+            .map_or(0, kasumi_kv::Database::active_transactions)
+    }
+
+    /// Whether a database call made on another thread has entered the node's
+    /// opening: it holds the opening's state, or an admission of its own
+    /// beyond the `baseline` live transactions. The tests run nothing else on
+    /// the node meanwhile, so either can only be that call.
+    fn entered_opening(node: &NodeStore, baseline: usize) -> bool {
+        match node.opening.registration.owner().state.try_lock() {
+            None => true,
+            Some(state) => state
+                .engine
+                .database()
+                .is_some_and(|database| database.active_transactions() > baseline),
+        }
+    }
+
+    fn wait_until(what: &str, mut condition: impl FnMut() -> bool) {
+        let deadline = Instant::now() + STUCK;
+        while !condition() {
+            assert!(Instant::now() < deadline, "{what}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+
+    /// Run `operation` on a thread of its own and return its result, or fail
+    /// once it has waited `STUCK`.
+    fn completes<T: Send + 'static>(
+        what: &str,
+        operation: impl FnOnce() -> T + Send + 'static,
+    ) -> T {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(operation());
+        });
+        match receiver.recv_timeout(STUCK) {
+            Ok(value) => value,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                panic!("{what} did not complete while the worker's call waited for the database")
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => panic!("{what} panicked"),
+        }
+    }
+
+    fn joined<T>(what: &str, handle: std::thread::JoinHandle<T>) -> T {
+        wait_until(&format!("{what} did not finish"), || handle.is_finished());
+        handle.join().unwrap_or_else(|_| panic!("{what} panicked"))
+    }
+
+    /// Tenant A's commit, paused at `pause` on its own thread. Returns once it
+    /// is paused there.
+    fn paused_commit(gated: &GatedNode, pause: &Arc<BackendPause>) -> std::thread::JoinHandle<()> {
+        pause.arm();
+        let node = gated.node.clone();
+        let committer = std::thread::spawn(move || commit_row(&node, TENANT_A, b"row", b"second"));
+        assert!(
+            pause.entered_within(STUCK),
+            "tenant A's commit never reached its pause point"
+        );
+        committer
+    }
+
+    /// The worker's `call`, made exactly as the node worker makes it, on a
+    /// thread of its own. Returns once the call has entered the node's
+    /// opening; it cannot get further while the paused commit holds the
+    /// database's locks it waits for.
+    fn waiting_worker_call<T: Send + 'static>(
+        node: &NodeStore,
+        call: impl FnOnce(&NodeStore) -> T + Send + 'static,
+    ) -> std::thread::JoinHandle<T> {
+        let baseline = live_transactions(node);
+        let worker = {
+            let node = node.clone();
+            std::thread::spawn(move || call(&node))
+        };
+        wait_until("the worker's call never entered the node database", || {
+            entered_opening(node, baseline)
+        });
+        worker
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn every_tenant_reads_and_writes_while_the_worker_waits_for_a_commit_in_publication() {
+        let gated = gated_node();
+        let node = &gated.node;
+        // Tenant A's commit stops halfway through its root publication,
+        // holding the write gate and the commit gate.
+        let release = ReleasePause(gated.backend.root_sync.clone());
+        let committer = paused_commit(&gated, &gated.backend.root_sync);
+        // The worker's warm step waits for the commit gate.
+        let worker = waiting_worker_call(node, |node| node.body().db.warm_cache_if_needed(1));
+        assert!(
+            !worker.is_finished(),
+            "the warm step passed the commit gate"
+        );
+
+        // The other tenant's registered read begins, reads and finishes.
+        let entry = completes("a registered read of tenant B", {
+            let node = node.clone();
+            move || registered_read_of_tenant_b(&node)
+        });
+        assert_eq!(entry.as_deref(), Some(&b"tenant b catalog"[..]));
+        // A read of tenant A reads the root the commit is replacing.
+        let row = completes("a read of tenant A", {
+            let node = node.clone();
+            move || read_row(&node, TENANT_A, b"row")
+        });
+        assert_eq!(row.as_deref(), Some(&b"first"[..]));
+        // The other tenant's write begins: it gets past the opening and is
+        // counted as a foreground operation of the database, where it waits
+        // for the write gate that every write of the node database waits for
+        // while a commit is in progress.
+        let activity = completes("a foreground activity sample", {
+            let node = node.clone();
+            move || node.foreground_activity().unwrap()
+        });
+        let writer = {
+            let node = node.clone();
+            std::thread::spawn(move || commit_row(&node, TENANT_B, b"row", b"second"))
+        };
+        wait_until("tenant B's write did not enter the database", || {
+            node.foreground_activity()
+                .is_some_and(|counted| counted != activity)
+        });
+        assert!(!writer.is_finished() && !committer.is_finished() && !worker.is_finished());
+
+        // Once the commit completes, the write and the warm step follow.
+        drop(release);
+        joined("tenant A's commit", committer);
+        joined("tenant B's write", writer);
+        joined("the warm step", worker).unwrap();
+        assert_eq!(
+            read_row(node, TENANT_A, b"row").as_deref(),
+            Some(&b"second"[..])
+        );
+        assert_eq!(
+            read_row(node, TENANT_B, b"row").as_deref(),
+            Some(&b"second"[..])
+        );
+        node.shutdown().await.unwrap();
+        assert_eq!(gated.backend.closes.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn status_calls_answer_while_the_worker_waits_for_a_commit_in_staging() {
+        let gated = gated_node();
+        let node = &gated.node;
+        // Tenant A's commit stops in its staging, holding the write gate, the
+        // commit gate and the KV core lock.
+        let release = ReleasePause(gated.backend.data_sync.clone());
+        let committer = paused_commit(&gated, &gated.backend.data_sync);
+        // The worker's warm status read waits for the KV core lock.
+        let worker = waiting_worker_call(node, |node| node.body().db.cache_warmup_status());
+        assert!(
+            !worker.is_finished(),
+            "the warm status passed the KV core lock"
+        );
+
+        // The node's maintenance status and foreground activity, which take
+        // no lock of the database, answer; so does a maintenance step, which
+        // finds the write gate held and returns at once.
+        let status = completes("the storage maintenance status", {
+            let node = node.clone();
+            move || node.storage_maintenance_status()
+        });
+        assert_eq!(
+            status.unwrap().phase,
+            kasumi_kv::StorageCompactionPhase::Idle
+        );
+        let activity = completes("a foreground activity sample", {
+            let node = node.clone();
+            move || node.foreground_activity()
+        });
+        assert!(activity.is_some());
+        let step = completes("a maintenance step", {
+            let node = node.clone();
+            move || {
+                node.body()
+                    .db
+                    .run_maintenance(kasumi_kv::MaintenanceBudget {
+                        units: 512,
+                        mutations: 1,
+                    })
+            }
+        });
+        assert_eq!(step.unwrap(), kasumi_kv::MaintenanceStep::Busy);
+        assert!(!committer.is_finished() && !worker.is_finished());
+
+        drop(release);
+        joined("tenant A's commit", committer);
+        joined("the warm status", worker).unwrap();
+        assert_eq!(
+            read_row(node, TENANT_A, b"row").as_deref(),
+            Some(&b"second"[..])
+        );
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn close_seals_without_waiting_for_a_worker_call_and_settles_once_it_returns() {
+        let gated = gated_node();
+        let node = &gated.node;
+        let release = ReleasePause(gated.backend.root_sync.clone());
+        let committer = paused_commit(&gated, &gated.backend.root_sync);
+        let worker = waiting_worker_call(node, |node| node.body().db.warm_cache_if_needed(1));
+
+        // Close does not wait for the call. It seals the database at once and
+        // waits for the call as for any admitted transaction, without
+        // entering native close.
+        let closed = completes("close", {
+            let node = node.clone();
+            move || node.opening.close().map_err(|error| error.kind())
+        });
+        assert_eq!(closed, Ok(DatabaseOpenSettlement::WaitingForTransactions));
+        assert_eq!(gated.backend.closes.load(Ordering::Acquire), 0);
+        // Sealed: new reads and writes, and the worker's next call, are refused.
+        assert!(matches!(
+            node.body().db.begin_read(),
+            Err(kasumi_kv::TransactionError(
+                kasumi_kv::StorageError::DatabaseClosed
+            ))
+        ));
+        assert!(node.body().db.queue_registered_read().is_err());
+        assert!(matches!(
+            node.body().db.begin_write(),
+            Err(kasumi_kv::TransactionError(
+                kasumi_kv::StorageError::DatabaseClosed
+            ))
+        ));
+        assert!(matches!(
+            node.body().db.cache_warmup_status(),
+            Err(kasumi_kv::StorageError::DatabaseClosed)
+        ));
+        assert_eq!(
+            close_again(node),
+            Ok(DatabaseOpenSettlement::WaitingForTransactions)
+        );
+        assert_eq!(gated.backend.closes.load(Ordering::Acquire), 0);
+
+        // The commit, past its staging, completes; the warm step that waited
+        // for its gate finds the database sealed.
+        drop(release);
+        joined("tenant A's commit", committer);
+        assert!(matches!(
+            joined("the warm step", worker),
+            Err(kasumi_kv::StorageError::DatabaseClosed)
+        ));
+        // With no call left, the same close settles, once.
+        assert_eq!(close_again(node), Ok(DatabaseOpenSettlement::Closed));
+        assert_eq!(gated.backend.closes.load(Ordering::Acquire), 1);
+        node.shutdown().await.unwrap();
+        assert_eq!(gated.backend.closes.load(Ordering::Acquire), 1);
+        let GatedNode {
+            node,
+            backend,
+            scratch,
+            _directory,
+        } = gated;
+        drop(node);
+        // The commit that completed while close waited is durable.
+        let reopened = NodeStore::open_with_backend(
+            backend.inner.crash(),
+            crate::test_utils::storage_admission(),
+            scratch,
+        )
+        .unwrap();
+        assert_eq!(
+            read_row(&reopened, TENANT_A, b"row").as_deref(),
+            Some(&b"second"[..])
+        );
+        assert_eq!(
+            read_row(&reopened, TENANT_B, b"row").as_deref(),
+            Some(&b"first"[..])
+        );
+        reopened.shutdown().await.unwrap();
+    }
+
+    fn close_again(node: &NodeStore) -> Result<DatabaseOpenSettlement, io::ErrorKind> {
+        node.opening.close().map_err(|error| error.kind())
+    }
+}

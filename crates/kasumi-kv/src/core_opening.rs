@@ -866,6 +866,9 @@ pub(crate) fn assemble<B: SegmentGroupBackend + 'static>(
             fenced: AtomicBool::new(false),
             fence_panic: OnceLock::new(),
             snapshots: AtomicUsize::new(0),
+            foreground: AtomicU64::new(0),
+            opened: Instant::now(),
+            inline_deferred_until: AtomicU64::new(0),
             _authority: custody.admitted.core.authority.take(),
         };
         custody.admitted.core.core = Some(Core {

@@ -6,6 +6,14 @@ use kasumi_store::{NodeDiskConfig, ScratchDiskConfig};
 use kasumi_types::AuditRetentionBudget;
 use std::{collections::BTreeMap, path::Path};
 
+/// Bound for a fixture's wait on an event that its own work produces: a paused
+/// task entering its checkpoint, a released drain joining, a leader appearing.
+/// The wait ends as soon as the event happens, so the bound only keeps a broken
+/// fixture from hanging; it allows for a heavily loaded machine running the
+/// rest of the suite in parallel. Waits whose length a test asserts keep their
+/// own bounds.
+pub(crate) const LIVENESS: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Existing test policies already include bookkeeping. Add only the exact new
 /// metadata owners, once, before creating either physical fixture disk.
 pub(crate) fn configure(config: &mut RuntimeConfig) -> Result<RuntimeStorage> {

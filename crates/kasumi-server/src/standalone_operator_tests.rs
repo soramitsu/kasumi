@@ -1,11 +1,11 @@
 //! Real file/keyring ownership regressions; no fixture storage capabilities.
 use super::*;
+use crate::runtime_storage_fixtures::LIVENESS;
 use std::{
     collections::BTreeMap,
     future::Future,
     sync::{Mutex, OnceLock},
     task::Poll,
-    time::Duration,
 };
 
 #[derive(Default)]
@@ -24,24 +24,13 @@ impl std::ops::Deref for CheckpointControl {
 }
 impl Drop for CheckpointControl {
     fn drop(&mut self) {
-        // A failed assertion must not strand another test's registry drain.
+        // A failed assertion must not strand this fixture's registry drain.
         self.0.release.notify_one();
     }
 }
 fn checkpoints() -> &'static Checkpoints {
     static CHECKPOINTS: OnceLock<Checkpoints> = OnceLock::new();
     CHECKPOINTS.get_or_init(Default::default)
-}
-/// The local-operator and data startup registries are process-wide, and a
-/// drain joins every owner registered by any test. A test that pauses one of
-/// those owners, drains either registry, or publishes through the operator
-/// registry and drains it before its runtime ends holds this lock for its
-/// whole body. Otherwise a drain beside another test's paused owner waits on
-/// that owner or takes its outcome, and the paused test can wait on the
-/// draining test's registry lock in turn. Take it before `LIFECYCLE_GATE`.
-pub(crate) fn drain_serial() -> &'static tokio::sync::Mutex<()> {
-    static SERIAL: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-    SERIAL.get_or_init(Default::default)
 }
 pub(super) fn run_large_fixture<F, Fut>(name: &'static str, make: F) -> Result<()>
 where
@@ -149,7 +138,6 @@ fn every_standalone_operator_retains_real_installation_through_cancelled_reply_a
 }
 
 async fn every_standalone_operator_impl() -> Result<()> {
-    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("database"),
@@ -193,7 +181,7 @@ async fn every_standalone_operator_impl() -> Result<()> {
             }
         });
         pending(&mut request).await;
-        tokio::time::timeout(Duration::from_secs(10), paused.entered.notified()).await?;
+        tokio::time::timeout(LIVENESS, paused.entered.notified()).await?;
         drop(request);
         physical_reopen_rejected(&config, &storage);
         let mut first = Box::pin(drain_operations());
@@ -203,7 +191,7 @@ async fn every_standalone_operator_impl() -> Result<()> {
         let mut retry = Box::pin(drain_operations());
         pending(&mut retry).await;
         paused.release.notify_one();
-        tokio::time::timeout(Duration::from_secs(10), retry).await??;
+        tokio::time::timeout(LIVENESS, retry).await??;
         physical_reopen(&config, &storage).await?;
         // Reopen encrypted catalogs and credentials too, then drain their new owners.
         let mut owner = OperatorState::open(
@@ -226,7 +214,6 @@ fn cancelled_initialization_remains_joinable_before_its_first_catalog_publicatio
 }
 
 async fn cancelled_initialization_impl() -> Result<()> {
-    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let path = directory.join("data/node.kv");
@@ -243,7 +230,7 @@ async fn cancelled_initialization_impl() -> Result<()> {
         storage.clone(),
     ));
     pending(&mut request).await;
-    tokio::time::timeout(Duration::from_secs(10), paused.entered.notified()).await?;
+    tokio::time::timeout(LIVENESS, paused.entered.notified()).await?;
     drop(request);
     assert!(
         private_files::ExclusiveLock::acquire(&directory.join("data/installation.lock")).is_err()
@@ -253,7 +240,7 @@ async fn cancelled_initialization_impl() -> Result<()> {
     pending(&mut first).await;
     drop(first);
     paused.release.notify_one();
-    tokio::time::timeout(Duration::from_secs(10), drain_operations()).await??;
+    tokio::time::timeout(LIVENESS, drain_operations()).await??;
     physical_reopen(
         &RuntimeConfig::load(directory.join("kasumi.json"))?,
         &storage,
@@ -271,7 +258,6 @@ fn singleton_open_failure_drains_node_before_releasing_operator_lock() -> Result
 }
 
 async fn singleton_open_failure_impl() -> Result<()> {
-    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("database"),
@@ -298,7 +284,7 @@ async fn singleton_open_failure_impl() -> Result<()> {
         .await
         .is_err()
     );
-    tokio::time::timeout(Duration::from_secs(10), claimed.entered.notified()).await?;
+    tokio::time::timeout(LIVENESS, claimed.entered.notified()).await?;
     physical_reopen(&config, &storage).await?;
     let mut owner = OperatorState::open(&config, storage.clone()).await?;
     owner.audit.status()?;
@@ -315,7 +301,6 @@ fn early_control_pair_error_retains_and_drains_both_catalogs() -> Result<()> {
 }
 
 async fn early_control_pair_error_impl() -> Result<()> {
-    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
         &root.path().join("database"),
@@ -351,7 +336,6 @@ fn early_initialization_audit_error_drains_without_publishing_completion() -> Re
 }
 
 async fn early_initialization_audit_error_impl() -> Result<()> {
-    let _serial = drain_serial().lock().await;
     let root = kasumi_store::test_utils::private_tempdir()?;
     let directory = std::fs::canonicalize(root.path())?.join("database");
     let failed = install(&directory.join("data/node.kv"), "initialize-audit", true);

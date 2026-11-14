@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     observability::{Lifecycle, Telemetry},
+    runtime_storage_fixtures::LIVENESS,
     standalone::ClientProfile,
 };
 use kasumi_client::KasumiAdminClient;
@@ -9,6 +10,13 @@ use kasumi_types::*;
 use uuid::Uuid;
 
 fn http(profile: &ClientProfile, identity: bool) -> reqwest::Client {
+    http_with_timeout(profile, identity, Duration::from_secs(15))
+}
+fn http_with_timeout(
+    profile: &ClientProfile,
+    identity: bool,
+    timeout: Duration,
+) -> reqwest::Client {
     let mut client = reqwest::Client::builder()
         .https_only(true)
         .min_tls_version(reqwest::tls::Version::TLS_1_3)
@@ -21,7 +29,7 @@ fn http(profile: &ClientProfile, identity: bool) -> reqwest::Client {
             .unwrap(),
         )
         .redirect(reqwest::redirect::Policy::none())
-        .timeout(Duration::from_secs(15));
+        .timeout(timeout);
     if identity {
         let mut pem = private_files::read(&profile.identity.certificate, 1 << 20).unwrap();
         pem.extend_from_slice(
@@ -40,7 +48,7 @@ async fn gate(telemetry: &Arc<Telemetry>) -> crate::rpc::AuditReleaseGate {
     gate
 }
 async fn entered(gate: &crate::rpc::AuditReleaseGate) {
-    tokio::time::timeout(Duration::from_secs(10), gate.entered.notified())
+    tokio::time::timeout(LIVENESS, gate.entered.notified())
         .await
         .unwrap();
 }
@@ -138,7 +146,7 @@ async fn ready_response(
     phase: &'static str,
 ) -> reqwest::Response {
     let mut last_503 = serde_json::Value::Null;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         loop {
             let response = client
                 .get(endpoint)
@@ -195,7 +203,7 @@ async fn published_storage(
     endpoint: &str,
     token: &str,
 ) -> serde_json::Value {
-    tokio::time::timeout(Duration::from_secs(30), async {
+    tokio::time::timeout(LIVENESS, async {
         loop {
             let response = client
                 .get(endpoint)
@@ -299,7 +307,7 @@ async fn unavailable_tenant_ready(
 ) -> serde_json::Value {
     let mut last_status = None;
     let mut last_observation = serde_json::Value::Null;
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         loop {
             let response = client
                 .get(endpoint)
@@ -358,7 +366,7 @@ async fn unavailable_tenant_metrics(
     endpoint: &str,
     token: &str,
 ) -> String {
-    tokio::time::timeout(Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         loop {
             let response = client
                 .get(endpoint)
@@ -703,6 +711,26 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         "kasumi_storage_maintenance_deferrals_total{class=\"capacity\"} ",
         "kasumi_storage_maintenance_deferrals_total{class=\"rejected\"} 0\n",
         "# TYPE kasumi_storage_reclaimed_files_total counter\n",
+        "# TYPE kasumi_storage_maintenance_steps_total counter\n",
+        "kasumi_storage_maintenance_steps_total ",
+        "kasumi_storage_maintenance_busy_total ",
+        // Tenant initialization commits while the worker warms the cache,
+        // and a commit can replace an unfinished warm attempt: any count.
+        "# TYPE kasumi_storage_warm_restarts_total counter\n",
+        "kasumi_storage_warm_restarts_total ",
+        "# TYPE kasumi_storage_maintenance_database_seconds_total counter\n",
+        "kasumi_storage_maintenance_database_seconds_total ",
+        "kasumi_storage_warm_database_seconds_total ",
+        "kasumi_storage_worker_longest_iteration_seconds ",
+        "kasumi_storage_worker_paced_delays_total ",
+        "# TYPE kasumi_storage_worker_paced_delay_seconds_total counter\n",
+        "kasumi_storage_worker_paced_delay_seconds_total ",
+        "kasumi_storage_foreground_active ",
+        "kasumi_storage_maintenance_urgent 0\n",
+        "kasumi_storage_background_write_units_total ",
+        "kasumi_storage_background_write_database_seconds_total ",
+        "kasumi_storage_background_write_longest_seconds ",
+        "kasumi_storage_background_write_paced_delay_seconds_total ",
         "kasumi_local_group_storage_dedicated{tenant=\"tenant-a\"} 0\n",
         "kasumi_local_group_figures_age_seconds{tenant=\"tenant-a\"} 0\n",
     ] {
@@ -987,13 +1015,24 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     hold.release.notify_one();
     withheld(pending, 401, None).await;
 
+    // Issuance has whole-second times: a renewal made k seconds after the
+    // creation second outlives the original by k seconds, and must itself be
+    // made before the original expires. Renew halfway through the lifetime,
+    // so that a loaded machine has as long for the renewal as for the request
+    // that follows the original's expiry. The held request outlives the
+    // ordinary client timeout, so it has a client of its own.
+    const SHORT_LIFETIME_SECONDS: u64 = 30;
     let hold = gate(&telemetry).await;
     let credential_clock = kasumi_clock::EpochClock::system().unwrap();
     let creation_started_at_ms = credential_clock.now_ms().unwrap();
     let short = admin
         .create_credential(
             &operator,
-            &create(4, "administrator", BTreeSet::from([Action::Admin])),
+            &create(
+                SHORT_LIFETIME_SECONDS,
+                "administrator",
+                BTreeSet::from([Action::Admin]),
+            ),
         )
         .await
         .unwrap();
@@ -1002,14 +1041,18 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
         "credential timing: creation_started_at_ms={creation_started_at_ms} created_at_ms={created_at_ms} original_expires_at_ms={}",
         short.expires_at_ms
     );
-    let pending = request(&client, &metrics, &short.token);
+    let pending = request(
+        &http_with_timeout(&control, true, LIVENESS),
+        &metrics,
+        &short.token,
+    );
     entered(&hold).await;
     let entered_at_ms = credential_clock.now_ms().unwrap();
     let renewal_boundary_ms = short
         .expires_at_ms
-        .checked_sub(4_000)
+        .checked_sub(SHORT_LIFETIME_SECONDS * 1_000)
         .unwrap()
-        .checked_add(1_000)
+        .checked_add(SHORT_LIFETIME_SECONDS * 1_000 / 2)
         .unwrap();
     println!(
         "credential timing: entered_at_ms={entered_at_ms} next_issuance_boundary_ms={renewal_boundary_ms}"
@@ -2122,8 +2165,10 @@ async fn protected_metrics_under_pressure() {
     assert_eq!(families(&pressured), expected);
     drop(held);
 
-    // A maintenance step holds its opening's state for its whole duration;
-    // the observation copies the worker's published status instead.
+    // Every read and write begin and every database call takes the node
+    // opening's state (a read begin holds it while its snapshot waits for the
+    // database's core lock); the observation copies the worker's published
+    // status instead.
     let node = management.node_for_enrollment_test();
     let (entered, held_step) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel::<()>();
@@ -2131,19 +2176,19 @@ async fn protected_metrics_under_pressure() {
         node.hold_maintenance_state_for_test(|| {
             entered.send(()).unwrap();
             // Never outlive a stuck observer: release on our own deadline.
-            let _ = released.recv_timeout(Duration::from_secs(20));
+            let _ = released.recv_timeout(LIVENESS);
         })
     });
-    held_step.recv_timeout(Duration::from_secs(10)).unwrap();
+    held_step.recv_timeout(LIVENESS).unwrap();
     let started = std::time::Instant::now();
     let observed = management.local_observation().await.unwrap();
     let waited = started.elapsed();
     release.send(()).unwrap();
     holder.join().unwrap();
-    assert!(
-        waited < Duration::from_secs(5),
-        "observation waited {waited:?}"
-    );
+    // The step stays held until this observation returns, or until the
+    // holder's own deadline: an observation that waited for the step took
+    // that long. Half of it allows for a loaded machine.
+    assert!(waited < LIVENESS / 2, "observation waited {waited:?}");
     assert!(observed.storage.is_some());
     assert!(
         observed

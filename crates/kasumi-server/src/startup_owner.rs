@@ -30,6 +30,10 @@ pub(crate) enum Kind {
 }
 
 fn tasks(kind: Kind) -> &'static Tasks {
+    #[cfg(test)]
+    if let Some(scoped) = test_scope::tasks(kind) {
+        return scoped;
+    }
     static DATA: OnceLock<Tasks> = OnceLock::new();
     static AUTHORITY: OnceLock<Tasks> = OnceLock::new();
     static LOCAL_OPERATOR: OnceLock<Tasks> = OnceLock::new();
@@ -45,6 +49,44 @@ fn tasks(kind: Kind) -> &'static Tasks {
         Kind::TargetJournal => &TARGET_JOURNAL,
     }
     .get_or_init(Default::default)
+}
+
+/// The library test process runs many fixtures at once, each on its own Tokio
+/// runtime, and an opening task is spawned on the runtime that polls its
+/// `open`. With one process-wide registry per kind, a fixture's drain joined,
+/// waited behind and returned the startups of unrelated fixtures (a prior
+/// failure is even returned by the next `open`), and a drain holding the
+/// registry lock stalled another fixture's first `open` poll. Tests therefore
+/// resolve each kind's registry per runtime: the same publication,
+/// acknowledgement and retained-join code, over the census of the calling
+/// fixture's own runtime. Outside a runtime the process-wide registry remains.
+/// Tokio allocates runtime ids from a process-wide counter, so a later fixture
+/// never resolves a finished fixture's registry.
+#[cfg(test)]
+mod test_scope {
+    use super::{Kind, Tasks};
+    use std::{
+        collections::HashMap,
+        sync::{Mutex, OnceLock, PoisonError},
+    };
+
+    type Scopes = Mutex<HashMap<(tokio::runtime::Id, usize), &'static Tasks>>;
+
+    pub(super) fn tasks(kind: Kind) -> Option<&'static Tasks> {
+        static SCOPES: OnceLock<Scopes> = OnceLock::new();
+        let runtime = tokio::runtime::Handle::try_current().ok()?.id();
+        let mut scopes = SCOPES
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        // A test registry lives for the rest of the test process, like the
+        // process-wide one it replaces; it is a few words per runtime and kind.
+        Some(
+            scopes
+                .entry((runtime, kind as usize))
+                .or_insert_with(|| Box::leak(Box::default())),
+        )
+    }
 }
 
 struct Handoff<T> {
@@ -258,6 +300,100 @@ mod tests {
                 self.report.complete()
             })
         }
+    }
+
+    #[test]
+    fn startup_drains_share_a_runtime_across_threads_and_isolate_other_runtimes() -> Result<()> {
+        use crate::runtime_storage_fixtures::LIVENESS;
+
+        let first = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()?;
+        let second = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()?;
+        let observation = Arc::new(Observation::default());
+        let mut report = DrainReport::default();
+        let original = report.record("first runtime", 0, anyhow::anyhow!("owned cleanup failure"));
+        let candidate = Candidate {
+            report,
+            observation: observation.clone(),
+            fail_once: false,
+        };
+        let caller_thread = std::thread::current().id();
+        let draining = first.block_on(async {
+            let (publish, published) = oneshot::channel::<()>();
+            let mut opening = Box::pin(open(Kind::Data, async move {
+                published.await?;
+                Ok(candidate)
+            }));
+            std::future::poll_fn(|cx| {
+                assert!(opening.as_mut().poll(cx).is_pending());
+                Poll::Ready(())
+            })
+            .await;
+            drop(opening);
+            publish.send(()).unwrap();
+            tokio::time::timeout(LIVENESS, observation.entered.notified()).await?;
+
+            // Opening was polled on the caller; draining from a worker must
+            // still join that runtime's abandoned owner and retained failure.
+            let (started, entered) = oneshot::channel();
+            let draining = tokio::spawn(async move {
+                assert_ne!(std::thread::current().id(), caller_thread);
+                let mut draining = Box::pin(drain(Kind::Data));
+                std::future::poll_fn(|cx| {
+                    assert!(draining.as_mut().poll(cx).is_pending());
+                    Poll::Ready(())
+                })
+                .await;
+                started.send(()).unwrap();
+                tokio::time::timeout(LIVENESS, draining).await?
+            });
+            tokio::time::timeout(LIVENESS, entered).await??;
+            Ok::<_, anyhow::Error>(draining)
+        })?;
+
+        // An unrelated runtime must open and drain the same kind while the
+        // first runtime's drain holds its registry and cleanup remains paused.
+        second.block_on(async {
+            let own = Arc::new(Observation::default());
+            let candidate = Candidate {
+                report: DrainReport::default(),
+                observation: own.clone(),
+                fail_once: false,
+            };
+            let mut claimed =
+                tokio::time::timeout(LIVENESS, open(Kind::Data, async move { Ok(candidate) }))
+                    .await??;
+            tokio::time::timeout(LIVENESS, drain(Kind::Data)).await??;
+            assert_eq!(own.attempts.load(Ordering::Acquire), 0);
+            assert!(!observation.closed.load(Ordering::Acquire));
+            own.release.notify_one();
+            tokio::time::timeout(LIVENESS, finish(&mut claimed)).await??;
+            Ok::<_, anyhow::Error>(())
+        })?;
+
+        observation.release.notify_one();
+        first.block_on(async {
+            let error = tokio::time::timeout(LIVENESS, draining)
+                .await??
+                .unwrap_err();
+            let failure = error.downcast_ref::<DrainFailure>().unwrap();
+            assert_eq!(failure.completion(), DrainCompletion::Complete);
+            assert_eq!(failure.issues().len(), 1);
+            assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                &original,
+                &failure.issues()[0]
+            ));
+            assert_eq!(observation.attempts.load(Ordering::Acquire), 1);
+            assert!(observation.closed.load(Ordering::Acquire));
+            assert!(observation.dropped.load(Ordering::Acquire));
+            tokio::time::timeout(LIVENESS, drain(Kind::Data)).await??;
+            Ok::<_, anyhow::Error>(())
+        })?;
+        second.block_on(async { tokio::time::timeout(LIVENESS, drain(Kind::Data)).await? })
     }
 
     #[tokio::test]

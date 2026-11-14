@@ -37,7 +37,14 @@ pub use backup_sessions::{
     MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
     verify_backup_session,
 };
-pub use cache_warmer::{CacheWorkerStatus, PublishedCensus, PublishedStorageStatus};
+mod background_pace;
+pub use background_pace::{
+    BackgroundPace, BackgroundWriteStatus, FOREGROUND_SHARE, MAX_PACED_DELAY, MIN_PACED_DELAY,
+    paced_delay,
+};
+pub use cache_warmer::{
+    CacheWorkerStatus, PublishedBackgroundWork, PublishedCensus, PublishedStorageStatus,
+};
 mod cached_rows;
 pub use cached_rows::NamespaceEpoch;
 mod deferred_batch;
@@ -1119,6 +1126,7 @@ pub(crate) struct RegisteredNodeBody {
     initializers: AsyncMutex<InitializerRegistry>,
     shutdown_report: AsyncMutex<DrainReport>,
     cache_warmer: cache_warmer::CacheWarmer,
+    background_writes: background_pace::BackgroundWrites,
     lifecycle: node_lifecycle::NodeLifecycle,
 }
 
@@ -1146,6 +1154,7 @@ impl RegisteredNodeBody {
             initializers: AsyncMutex::new(InitializerRegistry::default()),
             shutdown_report: AsyncMutex::new(DrainReport::default()),
             cache_warmer: cache_warmer::CacheWarmer::default(),
+            background_writes: background_pace::BackgroundWrites::default(),
             lifecycle: node_lifecycle::NodeLifecycle::preparing(),
         }
     }
@@ -1669,11 +1678,14 @@ impl NodeStore {
     /// or `None` before its first. Never waits on the database: see
     /// `PublishedStorageStatus`.
     pub fn published_storage_status(&self) -> Option<PublishedStorageStatus> {
-        self.body().cache_warmer.published_storage()
+        let mut published = self.body().cache_warmer.published_storage()?;
+        published.background.writes = self.body().background_writes.status();
+        Some(published)
     }
 
-    /// Fixture hook: run `work` holding the opening state a maintenance
-    /// step holds for its whole duration.
+    /// Fixture hook: run `work` holding the node opening's state, which every
+    /// read and write begin and every database call of the node takes (a
+    /// call only while it is admitted; see `RegisteredNodeOpening`).
     #[cfg(any(test, feature = "test-utils"))]
     pub fn hold_maintenance_state_for_test<R>(&self, work: impl FnOnce() -> R) -> R {
         self.body().db.hold_maintenance_state_for_test(work)
@@ -1698,9 +1710,17 @@ impl NodeStore {
     /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.
     pub async fn shutdown(&self) -> DrainResult {
+        // Mark the database stopped before sealing the opening. A worker step
+        // that the seal refuses (`DatabaseClosed`) is a clean stop only while
+        // the database already reports stopped; sealing first left a window in
+        // which a step that met the seal failed the worker, and with it this
+        // drain.
+        self.body().db.stop();
         // This facade owns the actual opening, so ingress sealing cannot depend
         // on a nonblocking locator lookup while census metadata is contended.
         self.opening.seal_store_transactions();
+        #[cfg(test)]
+        self.body().db.run_after_shutdown_seal_for_test();
         self.body().cache_warmer.stop(self);
         let mut report = self.body().shutdown_report.lock().await;
         let lifecycle = &self.body().lifecycle;

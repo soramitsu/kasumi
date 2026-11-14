@@ -48,6 +48,7 @@ pub use core::{
     CorePanic, DescendingCursor, MAX_BATCH_BYTES, MAX_KEY_BYTES, MAX_TABLE_BYTES, MAX_VALUE_BYTES,
     NativeDisposalReport, NativeOpenFailure, NativeOwnedDisposal, Operation, OwnerFailed,
     PreparedPointRead, ReadSnapshot, ResidentLease, ScanDirection, StorageAdmission,
+    background_work,
 };
 pub use disk_state::{
     MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,

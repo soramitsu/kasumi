@@ -273,8 +273,12 @@ impl RaftSnapshotBuilder<TypeConfig> for CustodySnapshotBuilder {
     }
 }
 // Retired custody keeps its contract: any failed build fences the writer.
+// Its closed snapshot is one small transaction: nothing to pace.
 impl crate::local::LocalSnapshotBuilder for CustodySnapshotBuilder {
-    async fn build_local(&mut self) -> Result<crate::local::LocalSnapshot, StorageError<u64>> {
+    async fn build_local(
+        &mut self,
+        _closing: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> Result<crate::local::LocalSnapshot, StorageError<u64>> {
         let snapshot = self.build_snapshot().await?;
         Ok(crate::local::LocalSnapshot::Published(
             snapshot.meta.last_log_id,

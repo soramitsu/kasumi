@@ -1,6 +1,7 @@
 use super::*;
 use crate::{
     runtime::NodeRuntime,
+    runtime_storage_fixtures::LIVENESS,
     standalone::{ClientProfile, drain_operations},
 };
 use kasumi_types::*;
@@ -107,7 +108,7 @@ async fn backup(
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         while registry.database(&context()).is_err() {
             tokio::task::yield_now().await;
         }
@@ -231,7 +232,6 @@ fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activation()
 }
 
 async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activation_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, old_profile, storage) = backup(root.path()).await;
     let started = start_with_storage(&configuration, request.clone(), storage.clone())
@@ -328,7 +328,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
-    tokio::time::timeout(std::time::Duration::from_secs(10), async {
+    tokio::time::timeout(LIVENESS, async {
         while registry.database(&context()).is_err() {
             tokio::task::yield_now().await;
         }
@@ -363,7 +363,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         .read_snapshot(
             &profile.bearer().unwrap(),
             &read,
-            &snapshot_options(std::time::Duration::from_secs(4)),
+            &snapshot_options(LIVENESS),
         )
         .await
         .unwrap();
@@ -442,7 +442,6 @@ fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart() {
 }
 
 async fn local_cleanup_absence_requires_durable_parent_sync_after_operator_restart_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -550,7 +549,6 @@ fn recensus_physical_edit(disk: &kasumi_store::NodeDisk, edit: impl FnOnce()) {
 }
 
 async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let root_path = root.path().to_path_buf();
     let (configuration, request, _, storage) =
@@ -794,15 +792,6 @@ pub(super) async fn pause_open(path: &Path) {
     }
 }
 
-/// Every test here drains the process-wide operator registry, and several
-/// drain the Data startup registry. A drain joins other tests' owners too,
-/// including one that a paused test holds while it waits on that registry.
-async fn registry_serial() -> tokio::sync::MutexGuard<'static, ()> {
-    crate::standalone::ownership_tests::drain_serial()
-        .lock()
-        .await
-}
-
 async fn create_catalogs(operator: &Operator, journal: &mut Journal) {
     let node = operator
         .prepare_database_group(journal)
@@ -852,9 +841,6 @@ fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain() 
 
 async fn cancelled_local_operator_retains_exclusive_installation_until_joined_drain_impl() {
     use std::{future::Future, task::Poll};
-    let _serial = crate::standalone::ownership_tests::drain_serial()
-        .lock()
-        .await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -875,7 +861,7 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(5), pause.entered.notified())
+    tokio::time::timeout(LIVENESS, pause.entered.notified())
         .await
         .unwrap();
     drop(waiting);
@@ -897,7 +883,7 @@ async fn cancelled_local_operator_retains_exclusive_installation_until_joined_dr
             .is_err()
     );
     pause.release.notify_one();
-    tokio::time::timeout(std::time::Duration::from_secs(5), drain_operations())
+    tokio::time::timeout(LIVENESS, drain_operations())
         .await
         .unwrap()
         .unwrap();
@@ -934,7 +920,6 @@ fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file() {
 }
 
 async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1014,7 +999,6 @@ fn local_lost_file_binding_cleanup_requires_the_original_node_identity() {
 }
 
 async fn local_lost_file_binding_cleanup_requires_the_original_node_identity_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1121,7 +1105,6 @@ fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization() {
 }
 
 async fn local_catalog_replay_resolves_complete_catalogs_without_reinitialization_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1180,7 +1163,6 @@ fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation() {
 }
 
 async fn local_incomplete_catalogs_or_dispatched_restore_never_restart_creation_impl() {
-    let _serial = registry_serial().await;
     for dispatched in [false, true] {
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (configuration, request, _, storage) = backup(root.path()).await;
@@ -1297,7 +1279,6 @@ fn activated_local_recovery_never_recreates_missing_control_topology() {
 }
 
 async fn activated_local_recovery_never_recreates_missing_control_topology_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1394,9 +1375,6 @@ fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_d
 async fn failed_restored_generation_startup_retains_alternate_node_through_cancelled_drain_impl() {
     use kasumi_store::NodeStore;
     use std::{future::Future, task::Poll};
-    let _serial = crate::standalone::ownership_tests::drain_serial()
-        .lock()
-        .await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1433,7 +1411,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
         Poll::Ready(())
     })
     .await;
-    tokio::time::timeout(std::time::Duration::from_secs(10), pause.entered())
+    tokio::time::timeout(LIVENESS, pause.entered())
         .await
         .unwrap();
     // Preparation already unwound. No custody, pair or database from the alternate
@@ -1501,7 +1479,7 @@ async fn failed_restored_generation_startup_retains_alternate_node_through_cance
     })
     .await;
     pause.release();
-    let error = tokio::time::timeout(std::time::Duration::from_secs(10), drain)
+    let error = tokio::time::timeout(LIVENESS, drain)
         .await
         .unwrap()
         .unwrap_err();
@@ -1568,7 +1546,6 @@ fn local_audit_placement_is_owned_before_cache_creation_and_cannot_change_on_res
 
 async fn local_audit_placement_custody_impl() {
     use crate::audit_destination::{AuditDestinationConfig, TenantAuditPlacementConfig};
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     start_with_storage(&configuration, request.clone(), storage.clone())
@@ -1763,7 +1740,6 @@ fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched() {
 }
 
 async fn respelled_local_recovery_journal_is_refused_with_its_generation_untouched_impl() {
-    let _serial = registry_serial().await;
     let root = kasumi_store::test_utils::private_tempdir().unwrap();
     let (configuration, request, _, storage) = backup(root.path()).await;
     let operation = request.operation_id;

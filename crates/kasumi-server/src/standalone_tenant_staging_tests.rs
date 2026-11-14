@@ -15,9 +15,6 @@ where
                 .build()
                 .unwrap()
                 .block_on(Box::pin(async move {
-                    let _serial = crate::standalone::ownership_tests::drain_serial()
-                        .lock()
-                        .await;
                     let outcome =
                         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                             Box::pin(make())
@@ -40,8 +37,8 @@ where
                             }
                             Err(payload) => Err(payload),
                         };
-                    // The process-wide startup registry must join its tasks
-                    // before this test's Tokio runtime can cancel them.
+                    // This runtime's startup registry must join its tasks
+                    // before the runtime can cancel them.
                     let drained =
                         crate::startup_owner::drain(crate::startup_owner::Kind::LocalOperator)
                             .await;

@@ -7,6 +7,8 @@ use kasumi_store::{
 
 #[path = "apply_publication_tests.rs"]
 mod apply_publication_tests;
+#[path = "background_commit_tests.rs"]
+mod background_commit_tests;
 #[path = "group_ownership_tests.rs"]
 mod group_ownership_tests;
 #[path = "joint_publication_tests.rs"]
@@ -764,7 +766,7 @@ async fn snapshot_install_power_loss_at_every_storage_operation_keeps_whole_old_
         disk.fail_after(failure);
         let written = persist_snapshot(&domains, &bytes, 1024, &new);
         let recovered = existing_fault_store(disk.crash(), fixture_scratch.clone()).await?;
-        cleanup_snapshots(&recovered, 1024)?;
+        cleanup_snapshots(&recovered, 1024, &BackgroundCommits::Direct)?;
         let restored = load_snapshot(&recovered, 1024)?.context("snapshot lost")?;
         let recovered_domains = kasumi_store::test_utils::open_existing_custody_fixture(
             recovered.clone(),
@@ -1260,9 +1262,15 @@ async fn coverage_writer_refuses_one_byte_past_reader_limit_before_staging() -> 
         usize::try_from(u64::from_be_bytes(oversized_bytes[9..17].try_into()?))?,
         accepted_metadata_len + 1
     );
-    let error = stage_snapshot(&domains, &oversized_image, 4 << 20, &oversized)
-        .err()
-        .context("oversized coverage was staged")?;
+    let error = stage_snapshot(
+        &domains,
+        &oversized_image,
+        4 << 20,
+        &oversized,
+        &BackgroundCommits::Direct,
+    )
+    .err()
+    .context("oversized coverage was staged")?;
     assert!(
         error
             .to_string()

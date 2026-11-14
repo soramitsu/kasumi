@@ -249,11 +249,8 @@ mod tests {
     }
 
     async fn relocated_installed_keys_are_copied_and_inventory_detects_corruption_impl() {
-        // Operator calls publish through the process-wide startup registry. Join
+        // Operator calls publish through this runtime's startup registry. Join
         // them before this fixture's runtime ends so no handoff is cancelled.
-        let _serial = crate::standalone::ownership_tests::drain_serial()
-            .lock()
-            .await;
         let root = kasumi_store::test_utils::private_tempdir().unwrap();
         let (installed, storage) = crate::runtime_storage_fixtures::initialize_standalone(
             &root.path().join("kasumi"),

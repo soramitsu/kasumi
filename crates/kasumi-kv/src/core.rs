@@ -11,12 +11,14 @@ use crate::native_owned_arc::NativeOwnedArc;
 pub(crate) use crate::native_resident_lease::NativeResidentLease;
 use crate::snapshot_pins::SnapshotPin;
 use std::any::Any;
+use std::cell::Cell;
 use std::fmt;
 use std::io;
 use std::ops::Bound;
 use std::panic::{AssertUnwindSafe, catch_unwind};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, TryLockError};
+use std::time::{Duration, Instant};
 
 pub const MAX_VALUE_BYTES: usize = 40 << 20;
 pub const MAX_BATCH_BYTES: usize = 96 << 20;
@@ -483,6 +485,33 @@ impl Operation {
     }
 }
 
+fn elapsed_nanos(elapsed: Duration) -> u64 {
+    u64::try_from(elapsed.as_nanos()).unwrap_or(u64::MAX)
+}
+
+std::thread_local! {
+    /// `background_work` scopes this thread is inside.
+    static BACKGROUND_SCOPES: Cell<u32> = const { Cell::new(0) };
+}
+
+/// Run `work` as background work of this thread: the transactions it begins,
+/// reads and commits meanwhile, on any database, are not counted as
+/// foreground activity (`Core::foreground_activity`). A paced background
+/// writer wraps each of its own writes, so that it yields to other
+/// operations and never to itself. Scopes nest; the mark ends with `work`,
+/// also when it unwinds.
+pub fn background_work<T>(work: impl FnOnce() -> T) -> T {
+    struct Scope;
+    impl Drop for Scope {
+        fn drop(&mut self) {
+            BACKGROUND_SCOPES.with(|scopes| scopes.set(scopes.get() - 1));
+        }
+    }
+    BACKGROUND_SCOPES.with(|scopes| scopes.set(scopes.get() + 1));
+    let _scope = Scope;
+    work()
+}
+
 struct State {
     backend: crate::native_backend::BackendRef,
     disk: Option<DiskState>,
@@ -504,6 +533,14 @@ struct Shared {
     fenced: AtomicBool,
     fence_panic: OnceLock<CorePanic>,
     snapshots: AtomicUsize,
+    /// Foreground operations that have entered this core: see
+    /// `Core::foreground_activity`.
+    foreground: AtomicU64,
+    /// When this core opened, and the nanoseconds after it until which a
+    /// driver's steps stand in for every write's inline maintenance step: see
+    /// `Core::defer_inline_maintenance`.
+    opened: Instant,
+    inline_deferred_until: AtomicU64,
     _authority: Option<crate::native_backend::BackendOwner>,
 }
 impl Drop for Shared {
@@ -604,6 +641,24 @@ impl Shared {
             self.fence();
         }
         result
+    }
+
+    /// Count one foreground operation as it enters, before it waits for any
+    /// lock, unless its thread is inside `background_work`. One relaxed
+    /// increment: no lock and no allocation.
+    fn note_foreground(&self) {
+        if BACKGROUND_SCOPES.with(Cell::get) == 0 {
+            self.foreground.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// `run` for a foreground read: counted as foreground activity first.
+    fn read<T>(
+        &self,
+        work: impl FnOnce(&mut State) -> Result<T, CoreError>,
+    ) -> Result<T, CoreError> {
+        self.note_foreground();
+        self.run(CoreError::panicked, work)
     }
 
     /// Run one installed operation under the state lock. An owner-failure
@@ -802,7 +857,7 @@ impl ReadSnapshot {
         self.pin.root().generation
     }
     pub fn table_exists(&self, table: &str) -> Result<bool, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state.disk()?.table_exists(&self.pin, table)
         })
@@ -829,7 +884,7 @@ impl ReadSnapshot {
         upper: Bound<&[u8]>,
         direction: ScanDirection,
     ) -> Result<Option<AdmittedValue>, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -863,7 +918,7 @@ impl ReadSnapshot {
         lower: Bound<&[u8]>,
         upper: Bound<&[u8]>,
     ) -> Result<crate::directory::ReverseLeafCursor, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -879,7 +934,7 @@ impl ReadSnapshot {
         max_value_bytes: usize,
         leaf: &mut crate::directory::ReverseLeafCursor,
     ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -896,7 +951,7 @@ impl ReadSnapshot {
         direction: ScanDirection,
         max_value_bytes: usize,
     ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -1033,7 +1088,7 @@ impl Core {
         if self.shared.stopped.load(Ordering::Acquire) {
             return Err(CoreError::new(crate::CoreErrorCause::Closed));
         }
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             let pin = state.disk()?.snapshot()?;
             self.shared.snapshots.fetch_add(1, Ordering::AcqRel);
@@ -1054,6 +1109,43 @@ impl Core {
             self.shared.fence();
             CoreError::new(crate::CoreErrorCause::OwnerFailed)
         })
+    }
+    /// Foreground operations that have entered this core since it opened:
+    /// snapshot captures, reads through a snapshot, write begins and commits,
+    /// each counted before it waits for any lock and so also while a
+    /// maintenance step or another commit makes it wait. Operations of a
+    /// thread inside `background_work`, and maintenance, warm-up,
+    /// configuration and status calls, are not counted. The value only
+    /// grows and is not a count of transactions; a driver of background work
+    /// compares two samples to learn whether anything else wanted the
+    /// database in between. Reading it takes no lock.
+    pub fn foreground_activity(&self) -> u64 {
+        self.shared.foreground.load(Ordering::Relaxed)
+    }
+    /// Count a foreground operation that is about to wait for this core.
+    pub(crate) fn note_foreground(&self) {
+        self.shared.note_foreground();
+    }
+    /// Let a driver's `run_maintenance` steps stand in for the inline step of
+    /// every write that begins within `duration` from now. A driver that
+    /// spaces its steps out, so that foreground operations get the database
+    /// in between, calls this after a step that ran with the time until its
+    /// next step and some margin: the writes in between then do not take
+    /// over, each at its own expense and that of every reader, the work the
+    /// driver is deliberately pacing. The stand-in only lapses. A driver that
+    /// stops, or that writers starve of the write gate, is followed by inline
+    /// steps again, so a cycle never depends on a driver alone. A later call
+    /// replaces an earlier one and zero ends it; nothing is persisted, and
+    /// neither the lock nor the state of the database is touched.
+    pub fn defer_inline_maintenance(&self, duration: Duration) {
+        let until = self.shared.opened.elapsed().saturating_add(duration);
+        self.shared
+            .inline_deferred_until
+            .store(elapsed_nanos(until), Ordering::Release);
+    }
+    fn inline_maintenance_deferred(&self) -> bool {
+        elapsed_nanos(self.shared.opened.elapsed())
+            < self.shared.inline_deferred_until.load(Ordering::Acquire)
     }
     pub fn is_fenced(&self) -> bool {
         self.shared.fenced.load(Ordering::Acquire)
@@ -1174,9 +1266,15 @@ impl Core {
     }
     /// The inline step every `Database::begin_write` runs before its
     /// snapshot, with the policy's inline budget, unless a `run_maintenance`
-    /// step ran since the previous write. Local deferrals never fail the
-    /// write; fatal maintenance errors do.
+    /// step ran since the previous write or a driver's stand-in
+    /// (`defer_inline_maintenance`) has not lapsed. Local deferrals never
+    /// fail the write; fatal maintenance errors do.
     pub(crate) fn maintain_before_write(&self) -> Result<(), CoreError> {
+        // An active driver stands in: see `defer_inline_maintenance`. The
+        // write's snapshot capture checks the owner and the open state next.
+        if self.inline_maintenance_deferred() {
+            return Ok(());
+        }
         let _gate = self.gate()?;
         self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
@@ -1212,6 +1310,12 @@ impl Core {
             }
         }
         panic!("bounded maintenance cycle did not finish");
+    }
+    /// Test fixture: hold the state lock as a maintenance step or a staging
+    /// commit does, until the guard drops.
+    #[cfg(test)]
+    pub(crate) fn hold_state_for_test(&self) -> impl Drop + '_ {
+        self.shared.lock_state().unwrap()
     }
     #[cfg(test)]
     pub(crate) fn seal_files_for_test(&self) -> Result<(), CoreError> {
@@ -1265,7 +1369,7 @@ impl Core {
                 "prepared point bound exceeds native value limit",
             )));
         }
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             let charge = self
                 .shared
@@ -1296,7 +1400,7 @@ impl Core {
                 "prepared point owner differs",
             )));
         }
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -1319,7 +1423,7 @@ impl Core {
                 "prepared point owner differs",
             )));
         }
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -1343,7 +1447,7 @@ impl Core {
                 "prepared point owner or bound differs",
             )));
         }
-        let length = self.shared.run(CoreError::panicked, |state| {
+        let length = self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -1360,7 +1464,7 @@ impl Core {
         max_value_bytes: usize,
     ) -> Result<Option<AdmittedValue>, CoreError> {
         self.check_snapshot(snapshot)?;
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -1374,7 +1478,7 @@ impl Core {
         key: &[u8],
     ) -> Result<bool, CoreError> {
         self.check_snapshot(snapshot)?;
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state.disk()?.key_exists(&snapshot.pin, table, key)
         })
@@ -1386,7 +1490,7 @@ impl Core {
         prefix: &[u8],
     ) -> Result<bool, CoreError> {
         self.check_snapshot(snapshot)?;
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             Ok(state
                 .disk()?
@@ -1403,7 +1507,7 @@ impl Core {
         max_value_bytes: usize,
     ) -> Result<Option<(AdmittedValue, AdmittedValue)>, CoreError> {
         self.check_snapshot(snapshot)?;
-        self.shared.run(CoreError::panicked, |state| {
+        self.shared.read(|state| {
             self.shared.check_open(state)?;
             state
                 .disk()?
@@ -1417,6 +1521,7 @@ impl Core {
     /// previous root. Every failure after staging is an unknown commit and
     /// fences.
     pub fn commit(&self, operations: &[Operation]) -> Result<(), CoreError> {
+        self.shared.note_foreground();
         let _gate = self.gate()?;
         let prepared = self.shared.run(CoreError::unknown_commit, |state| {
             self.shared.check_open(state)?;
