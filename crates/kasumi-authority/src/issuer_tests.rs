@@ -445,63 +445,54 @@ async fn control_stop_before_intent_and_reserved_capacity_defeat_late_publicatio
         (256 << 10) + 16_000,
     )
     .await;
-    let service = f.leader().await;
+    // Each permanent request resolves on whichever member currently leads; an
+    // uncertain acknowledgement is repeated, never read as absence.
     let signed = c.intent(&f, &target(Uuid::new_v4()), 1_050_000);
-    service
-        .execute_lifecycle(f.context("operator"), request(&signed))
-        .await
-        .unwrap();
+    accepted_on_current_leader(&f, request(&signed)).await;
     let mut exhausted = false;
     for _ in 0..30 {
-        match service
-            .execute_lifecycle(
-                f.context("operator"),
-                request(&c.intent(&f, &target(Uuid::new_v4()), 1_050_000)),
-            )
-            .await
-        {
-            Ok(_) => {}
-            Err(error) => {
-                assert_eq!(error.code, ErrorCode::ResourceExhausted);
-                exhausted = true;
-                break;
-            }
+        let next = request(&c.intent(&f, &target(Uuid::new_v4()), 1_050_000));
+        if let Err(code) = exact_lifecycle_outcome(&f, next).await {
+            assert_eq!(code, ErrorCode::ResourceExhausted);
+            exhausted = true;
+            break;
         }
     }
     assert!(exhausted, "ordinary lifecycle byte budget must exhaust");
     let stop = LifecycleAuthorityRequest::StopEpoch(Box::new(c.stop(&signed)));
-    service
-        .execute_lifecycle(f.context("operator"), stop)
-        .await
-        .unwrap();
+    accepted_on_current_leader(&f, stop).await;
     f.close().await;
     let f = c.issuer().await;
-    let service = f.leader().await;
     let signed = c.intent(&f, &target(Uuid::new_v4()), 1_050_000);
-    service
-        .execute_lifecycle(
-            f.context("operator"),
-            LifecycleAuthorityRequest::StopEpoch(Box::new(c.stop(&signed))),
-        )
-        .await
-        .unwrap();
+    accepted_on_current_leader(
+        &f,
+        LifecycleAuthorityRequest::StopEpoch(Box::new(c.stop(&signed))),
+    )
+    .await;
     assert_eq!(
-        service
-            .execute_lifecycle(f.context("operator"), request(&signed))
-            .await
-            .err()
-            .unwrap()
-            .code,
-        ErrorCode::Conflict
+        exact_lifecycle_outcome(&f, request(&signed)).await,
+        Err(ErrorCode::Conflict)
     );
-    assert!(
-        service
-            .read_lifecycle_receipt(f.context("operator"), request(&signed).reference())
-            .await
-            .unwrap()
-            .0
-            .is_none()
-    );
+    let context = f.context("operator");
+    let retained = tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
+        loop {
+            match f
+                .leader()
+                .await
+                .read_lifecycle_receipt(context.clone(), request(&signed).reference())
+                .await
+            {
+                Ok((receipt, _)) => break receipt,
+                Err(error) if error.code == ErrorCode::Unavailable => {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+                Err(error) => panic!("stopped intent receipt read failed: {error:?}"),
+            }
+        }
+    })
+    .await
+    .expect("stopped intent receipt read was not resolved within the observation window");
+    assert!(retained.is_none());
     f.close().await;
 }
 #[tokio::test]
@@ -703,6 +694,41 @@ async fn accepted_on_current_leader(
     })
     .await
     .expect("bounded setup recovery did not obtain current-quorum receipt")
+}
+
+// Repeat one exact permanent lifecycle request on the current leader until its
+// outcome is definitive: accepted with a released fence, or a definitive
+// rejection code. An uncertain acknowledgement is never read as absence.
+async fn exact_lifecycle_outcome(
+    f: &Fixture,
+    request: LifecycleAuthorityRequest,
+) -> std::result::Result<(), ErrorCode> {
+    let context = f.context("operator");
+    tokio::time::timeout(FIXTURE_OBSERVATION_WINDOW, async {
+        loop {
+            match f
+                .leader()
+                .await
+                .execute_lifecycle(context.clone(), request.clone())
+                .await
+            {
+                Ok((_, fence)) => {
+                    if fence.release().await.is_ok() {
+                        return Ok(());
+                    }
+                }
+                Err(error)
+                    if matches!(
+                        error.code,
+                        ErrorCode::Unavailable | ErrorCode::UnknownOutcome
+                    ) => {}
+                Err(error) => return Err(error.code),
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+    })
+    .await
+    .expect("exact lifecycle outcome was not resolved within the observation window")
 }
 
 #[path = "activation_gate_tests.rs"]
