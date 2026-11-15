@@ -58,6 +58,14 @@ pub struct BackgroundPace {
     previous: Option<PacedUnit>,
 }
 
+impl BackgroundPace {
+    /// How long the stream's last unit kept, or waited for, the database;
+    /// `None` before its first unit.
+    pub fn last_unit_time(&self) -> Option<Duration> {
+        self.previous.map(|unit| unit.held)
+    }
+}
+
 /// Paced background writes on one node database since it opened.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct BackgroundWriteStatus {
@@ -145,21 +153,41 @@ impl NodeStore {
         hurry: &AtomicBool,
         work: impl FnOnce() -> T,
     ) -> T {
+        self.pause_before_background_unit(pace, hurry);
+        self.run_background_unit(pace, work)
+    }
+
+    /// The pause `paced_background_write` takes before a stream's next unit,
+    /// by itself, on the calling thread, which must be free to block. A writer
+    /// that holds a lock through each unit but must not hold it between units
+    /// (a journal purge holds its group's journal gate for one chunk at a
+    /// time) pauses here without the lock, then takes it and runs the unit
+    /// with `run_background_unit`. Nothing before a stream's first unit.
+    pub fn pause_before_background_unit(&self, pace: &BackgroundPace, hurry: &AtomicBool) {
+        let Some(previous) = pace.previous else {
+            return;
+        };
+        // The floor first: an operation that queued behind the previous
+        // unit gets in, and is counted, before this stream decides.
+        self.pause_until(previous.ended + MIN_PACED_DELAY, hurry);
+        let foreground = match (previous.activity, self.foreground_activity()) {
+            (Some(before), Some(now)) => before != now,
+            _ => false,
+        };
+        let owed = owed_pause(previous.held, foreground);
+        let paused = self.pause_until(previous.ended + owed, hurry);
+        self.body()
+            .background_writes
+            .paced_nanos
+            .fetch_add(nanos(paused), Ordering::Relaxed);
+    }
+
+    /// One unit of a background write stream without the pause before it
+    /// (`pause_before_background_unit`): `work` runs inside
+    /// `kasumi_kv::background_work`, and the unit counts in this node's
+    /// `background_write_status` and in `pace` for the next pause.
+    pub fn run_background_unit<T>(&self, pace: &mut BackgroundPace, work: impl FnOnce() -> T) -> T {
         let writes = &self.body().background_writes;
-        if let Some(previous) = pace.previous {
-            // The floor first: an operation that queued behind the previous
-            // unit gets in, and is counted, before this stream decides.
-            self.pause_until(previous.ended + MIN_PACED_DELAY, hurry);
-            let foreground = match (previous.activity, self.foreground_activity()) {
-                (Some(before), Some(now)) => before != now,
-                _ => false,
-            };
-            let owed = owed_pause(previous.held, foreground);
-            let paused = self.pause_until(previous.ended + owed, hurry);
-            writes
-                .paced_nanos
-                .fetch_add(nanos(paused), Ordering::Relaxed);
-        }
         let activity = self.foreground_activity();
         let started = Instant::now();
         let output = kasumi_kv::background_work(work);

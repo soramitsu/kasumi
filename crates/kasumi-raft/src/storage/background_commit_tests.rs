@@ -379,3 +379,140 @@ async fn a_paced_journal_purge_leaves_what_a_direct_one_does_while_another_tenan
     assert_eq!(state.last_log_id, Some(id(9)));
     Ok(())
 }
+
+#[test]
+fn a_paced_purge_sizes_its_chunks_by_time_within_the_limit() {
+    let (sized, _closing) = paced();
+    let ms = Duration::from_millis;
+    // The first chunk, then as many entries as fit the chunk time at the last
+    // chunk's rate: at most twice the last chunk, never under the floor.
+    assert_eq!(sized.purge_span(None, PURGE_CHUNK_SPAN), 63);
+    assert_eq!(sized.purge_span(Some((256, ms(50))), PURGE_CHUNK_SPAN), 127);
+    assert_eq!(sized.purge_span(Some((256, ms(25))), PURGE_CHUNK_SPAN), 255);
+    assert_eq!(
+        sized.purge_span(Some((1000, ms(10))), PURGE_CHUNK_SPAN),
+        1999
+    );
+    assert_eq!(sized.purge_span(Some((64, ms(1))), PURGE_CHUNK_SPAN), 127);
+    assert_eq!(
+        sized.purge_span(Some((64, Duration::ZERO)), PURGE_CHUNK_SPAN),
+        127
+    );
+    assert_eq!(sized.purge_span(Some((64, ms(50))), PURGE_CHUNK_SPAN), 63);
+    assert_eq!(
+        sized.purge_span(Some((16, Duration::from_secs(1))), PURGE_CHUNK_SPAN),
+        63
+    );
+    assert_eq!(
+        sized.purge_span(Some((20000, ms(1))), PURGE_CHUNK_SPAN),
+        PURGE_CHUNK_SPAN
+    );
+    // Within the caller's limit.
+    assert_eq!(sized.purge_span(None, 2), 2);
+    assert_eq!(sized.purge_span(Some((3, ms(1))), 2), 2);
+    assert_eq!(sized.purge_span(Some((3, ms(1))), 0), 0);
+    // A direct purge, or a closing group's, uses the limit.
+    assert_eq!(
+        BackgroundCommits::Direct.purge_span(None, PURGE_CHUNK_SPAN),
+        PURGE_CHUNK_SPAN
+    );
+    let (closing_commits, closing) = paced();
+    closing.store(true, Ordering::Release);
+    assert_eq!(closing_commits.purge_span(Some((64, ms(50))), 9), 9);
+}
+
+/// The purge holds its group's journal and control gates for one chunk at a
+/// time: an append waits for at most one chunk, not the whole purge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_append_waits_for_at_most_one_chunk_of_a_paced_purge() -> Result<()> {
+    let (_directory, fixture_scratch) = scratch();
+    let disk = FaultBackend::new();
+    let (stores, _, _, mut log) = fixture(disk.clone(), true, fixture_scratch).await?;
+    log.blocking_append((0..=99).map(blank)).await?;
+    let node = stores.application().node_store().clone();
+    // Ten chunks of at most ten entries (the limit), each keeping the database
+    // for at least one slow sync.
+    disk.slow_syncs(Duration::from_millis(20));
+    let (commits, _closing) = paced();
+    let purging = log.clone();
+    let purge = tokio::spawn(async move { purging.purge_original(id(90), commits, 9).await });
+    tokio::time::timeout(Duration::from_secs(60), async {
+        while node.background_write_status().units == 0 {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the purge commits its first chunk");
+    log.blocking_append([blank(100)]).await?;
+    let waited = node.background_write_status().units;
+    purge.await??;
+    disk.slow_syncs(Duration::ZERO);
+    let chunks = node.background_write_status().units;
+    assert_eq!(chunks, 10);
+    assert!(
+        waited * 2 < chunks,
+        "the append returned after {waited} of the purge's {chunks} chunks"
+    );
+    let (state, entries) = journal(&mut log).await?;
+    assert_eq!(state.last_purged_log_id, Some(id(90)));
+    assert_eq!(state.last_log_id, Some(id(100)));
+    assert_eq!(entries, (91..=100).map(id).collect::<Vec<_>>());
+    Ok(())
+}
+
+/// After a periodic snapshot a standalone group purges `SNAPSHOT_INTERVAL`
+/// entries. That purge commits in several chunks sized by time, so neither the
+/// group's appends nor another tenant's commits wait for all of it, and it
+/// leaves what one direct commit leaves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_periodic_paced_purge_commits_in_chunks_no_one_waits_for_all_of() -> Result<()> {
+    const ENTRIES: u64 = 5000;
+    let (_directory, fixture_scratch) = scratch();
+    let (direct_stores, _, _, mut direct) =
+        fixture(FaultBackend::new(), true, fixture_scratch.clone()).await?;
+    let (stores, _, _, mut log) = fixture(FaultBackend::new(), true, fixture_scratch).await?;
+    for start in (0..ENTRIES).step_by(500) {
+        direct
+            .blocking_append((start..start + 500).map(blank))
+            .await?;
+        log.blocking_append((start..start + 500).map(blank)).await?;
+    }
+    direct
+        .purge_original(id(ENTRIES - 1), BackgroundCommits::Direct, PURGE_CHUNK_SPAN)
+        .await?;
+    assert_eq!(
+        direct_stores
+            .application()
+            .node_store()
+            .background_write_status(),
+        Default::default()
+    );
+    let node = stores.application().node_store().clone();
+    let neighbour = Neighbour::start(&node).await?;
+    let (_, closing) = paced();
+    let started = Instant::now();
+    assert!(log.purge_local(id(ENTRIES - 1), &closing).await?);
+    let ended = Instant::now();
+    let status = node.background_write_status();
+    assert!(
+        status.units > 1,
+        "the purge kept the database in one commit of {:?}",
+        status.database_time
+    );
+    assert!(status.longest_database_time < status.database_time);
+    let (state, entries) = journal(&mut log).await?;
+    assert_eq!(state.last_purged_log_id, Some(id(ENTRIES - 1)));
+    assert!(entries.is_empty());
+    assert_eq!((state, entries), journal(&mut direct).await?);
+    let (count, longest) = during(&neighbour.finish(), started, ended);
+    eprintln!(
+        "periodic paced purge: entries={ENTRIES} wall={:?} units={} database_time={:?} \
+         longest_unit={:?} paced_delay={:?} neighbour_commits={count} longest_neighbour_commit={longest:?}",
+        ended.duration_since(started),
+        status.units,
+        status.database_time,
+        status.longest_database_time,
+        status.paced_delay,
+    );
+    Ok(())
+}

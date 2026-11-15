@@ -55,3 +55,15 @@ fn background_write_counters_saturate_instead_of_wrapping() {
         }
     );
 }
+
+#[test]
+fn a_stream_reports_how_long_its_last_unit_kept_the_database() {
+    let mut pace = BackgroundPace::default();
+    assert_eq!(pace.last_unit_time(), None);
+    pace.previous = Some(PacedUnit {
+        ended: Instant::now(),
+        held: Duration::from_millis(7),
+        activity: None,
+    });
+    assert_eq!(pace.last_unit_time(), Some(Duration::from_millis(7)));
+}

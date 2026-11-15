@@ -42,12 +42,22 @@ const SNAPSHOT: &str = "raft.snapshot";
 const SNAPSHOT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 // A coverage record must fit the same bounded control read on every path.
 pub(crate) const MAX_SNAPSHOT_COVERAGE_BYTES: usize = 2 << 20;
-// A purge chunk covers its first index and this many more: three deletes an
-// entry and the purge cursor fit one transaction's operation bound. Smaller
-// chunks would not shorten what a purge keeps the node database for: the
-// deleted keys are spread over the whole directory, so each commit rewrites
-// about as many leaves as it has deletes and more commits rewrite more.
+// The largest purge chunk covers its first index and this many more: three
+// deletes an entry and the purge cursor fit one transaction's operation bound.
+// A direct purge (consensus, open, a closing group) uses it.
 const PURGE_CHUNK_SPAN: u64 = 21844;
+// A paced purge (a standalone group's own, after each periodic snapshot) sizes
+// its chunks by time instead. Each delete looks its key up in a directory whose
+// record keys are keyed hashes, so the deletes of consecutive entries land all
+// over it and a cold lookup reads and digests whole pages: thousands of entries
+// keep the node database's commit, and so every tenant's writes and audited
+// reads, for seconds on a host without SHA instructions. A chunk aims at
+// `PACED_PURGE_CHUNK_TIME` of database time, from `PACED_PURGE_MIN_ENTRIES`
+// entries up. Below that a commit's fixed cost (its durable sync, the leaves it
+// rewrites) dominates: smaller chunks would hardly shorten one, while each
+// rewrites leaves the next rewrites again.
+const PACED_PURGE_CHUNK_TIME: std::time::Duration = std::time::Duration::from_millis(25);
+const PACED_PURGE_MIN_ENTRIES: u64 = 64;
 
 fn err(error: impl std::fmt::Display) -> StorageError<u64> {
     StorageIOError::write(&io::Error::other(error.to_string())).into()
@@ -154,9 +164,21 @@ impl BackgroundCommits {
         }
     }
 
+    /// Before a journal purge chunk: the pause of the purge's own stream
+    /// `pace`, which the caller takes holding none of its group's gates, so
+    /// that the group's appends and audited reads run meanwhile. Nothing for
+    /// a direct purge or before a stream's first chunk.
+    fn purge_pause(&self, store: &TenantStore, pace: &kasumi_store::BackgroundPace) {
+        if let Some(closing) = self.paced() {
+            store
+                .node_store()
+                .pause_before_background_unit(pace, closing);
+        }
+    }
+
     /// One chunk of a journal purge, on the purge's own stream `pace`: the
-    /// caller holds its group's journal gate, which must never wait for
-    /// another tenant's background work.
+    /// caller holds its group's journal and control gates for exactly this
+    /// chunk, which must never wait for another tenant's background work.
     fn purge_commit(
         &self,
         store: &TenantStore,
@@ -164,12 +186,47 @@ impl BackgroundCommits {
         commit: impl FnOnce() -> Result<()>,
     ) -> Result<()> {
         match self.paced() {
-            Some(closing) => store
-                .node_store()
-                .paced_background_write(pace, closing, commit),
+            Some(_) => store.node_store().run_background_unit(pace, commit),
             None => commit(),
         }
     }
+
+    /// The span (last index minus first) of a purge's next chunk, at most
+    /// `limit`. A direct purge uses `limit`. A paced one starts with
+    /// `PACED_PURGE_MIN_ENTRIES` entries, then fits `PACED_PURGE_CHUNK_TIME`
+    /// at the rate of its last chunk (`last`: its entries and database time),
+    /// at most doubling and never under `PACED_PURGE_MIN_ENTRIES`.
+    fn purge_span(&self, last: Option<(u64, std::time::Duration)>, limit: u64) -> u64 {
+        if self.paced().is_none() {
+            return limit;
+        }
+        let entries = match last {
+            None => PACED_PURGE_MIN_ENTRIES,
+            Some((entries, held)) => {
+                let fitted = if held.is_zero() {
+                    u64::MAX
+                } else {
+                    u64::try_from(
+                        u128::from(entries) * PACED_PURGE_CHUNK_TIME.as_nanos() / held.as_nanos(),
+                    )
+                    .unwrap_or(u64::MAX)
+                };
+                fitted.clamp(
+                    PACED_PURGE_MIN_ENTRIES,
+                    entries.saturating_mul(2).max(PACED_PURGE_MIN_ENTRIES),
+                )
+            }
+        };
+        (entries - 1).min(limit)
+    }
+}
+
+/// What one chunk of a journal purge left: whether entries through the
+/// purge's target remain, and how many entries it removed (none when nothing
+/// was left to remove).
+struct PurgeChunk {
+    more: bool,
+    entries: u64,
 }
 
 // Log cleanup, accepted application cursors and snapshot publication share this
@@ -987,10 +1044,13 @@ impl LogStore {
     /// Purge the standalone journal through a published snapshot. `false`
     /// means a capacity refusal stopped it after zero or more whole chunks,
     /// each committed with its purge cursor: every remaining entry stays
-    /// retained for a later snapshot to purge. Between two chunks the purge
-    /// yields to foreground operations (`BackgroundCommits::Paced`) until
-    /// `closing` is set; it keeps this group's journal gate meanwhile, as it
-    /// does through the whole purge.
+    /// retained for a later snapshot to purge. Its chunks are sized by time
+    /// and, between two of them, it yields to foreground operations
+    /// (`BackgroundCommits::Paced`) until `closing` is set. It holds this
+    /// group's journal and control gates for one chunk at a time and pauses
+    /// without them, so an append or audited read of this group waits for at
+    /// most one chunk, and every other tenant's commit for at most one chunk
+    /// commit.
     pub(crate) async fn purge_local(
         &mut self,
         log_id: LogId<u64>,
@@ -1011,73 +1071,121 @@ impl LogStore {
         }
     }
 
-    // `chunk_span` is `PURGE_CHUNK_SPAN` outside tests.
+    // `chunk_span` is `PURGE_CHUNK_SPAN` outside tests: the largest chunk.
+    //
+    // Each chunk runs under this log's I/O and control gates by itself
+    // (`mutate_original`), exactly as the whole purge used to: the custody
+    // checks, its fixed-size prefix and that prefix's purge cursor in one
+    // commit, then the retained span. Between chunks the gates are free, so
+    // appends interleave; every state between two chunks is one a crash after
+    // a chunk leaves, which open already recovers.
     async fn purge_original(
         &self,
         log_id: LogId<u64>,
         commits: BackgroundCommits,
         chunk_span: u64,
     ) -> Result<()> {
-        let retained = self.retained.clone();
-        let domains = self.domains.clone();
-        self.mutate_original(move |store| {
-            let mut pace = kasumi_store::BackgroundPace::default();
-            let mut retained = retained
-                .lock()
-                .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
-            let first = crate::control::first_applied_membership(domains.custody().store())?;
-            crate::control::local_first_association_write(domains.custody(), first.as_ref(), None)?;
-            crate::initialization_association::load_state(domains.custody(), first.as_ref())?;
-            let retired = crate::control::retired_boundary(domains.custody())?.is_some();
-            let mut last_removed = None;
-            // Each fixed-size prefix and its exact purge cursor commit together.
-            while let Some(span) = *retained {
-                if span.first.index > log_id.index {
-                    break;
-                }
-                let start = span.first.index;
-                let end = start
-                    .saturating_add(chunk_span)
-                    .min(log_id.index)
-                    .min(span.last.index);
-                let purged = read_header(store, end)?.log_id;
-                span.check_endpoint(purged)?;
-                let next = if end == span.last.index {
-                    None
-                } else {
-                    Some(RetainedSpan {
-                        first: read_header(store, end + 1)?.log_id,
-                        last: span.last,
-                    })
-                };
-                let mut writes = (start..=end)
-                    .flat_map(|index| {
-                        [
-                            delete(HEADERS, index.to_be_bytes().to_vec()),
-                            delete(CUSTODY_LOG, index.to_be_bytes().to_vec()),
-                        ]
-                    })
-                    .collect::<Vec<_>>();
-                writes.push(put(META, b"purged", serde_json::to_vec(&purged)?));
-                commits.purge_commit(store, &mut pace, || {
-                    if retired {
-                        store.write_batch(&writes)
+        let mut pace = kasumi_store::BackgroundPace::default();
+        let mut last = None;
+        loop {
+            let span = commits.purge_span(last, chunk_span);
+            if last.is_some() && commits.paced().is_some() {
+                let (store, paced) = (self.store.clone(), commits.clone());
+                pace = tokio::task::spawn_blocking(move || {
+                    paced.purge_pause(&store, &pace);
+                    pace
+                })
+                .await?;
+            }
+            let retained = self.retained.clone();
+            let domains = self.domains.clone();
+            let chunk_commits = commits.clone();
+            let (chunk, returned) = self
+                .mutate_original(move |store| {
+                    let mut pace = pace;
+                    let mut retained = retained
+                        .lock()
+                        .map_err(|_| anyhow::anyhow!("raft retained span lock poisoned"))?;
+                    let first =
+                        crate::control::first_applied_membership(domains.custody().store())?;
+                    crate::control::local_first_association_write(
+                        domains.custody(),
+                        first.as_ref(),
+                        None,
+                    )?;
+                    crate::initialization_association::load_state(
+                        domains.custody(),
+                        first.as_ref(),
+                    )?;
+                    let retired = crate::control::retired_boundary(domains.custody())?.is_some();
+                    let Some(span_now) = retained.filter(|span| span.first.index <= log_id.index)
+                    else {
+                        // Nothing retained through the target: only the cursor moves.
+                        store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
+                        return Ok((
+                            PurgeChunk {
+                                more: false,
+                                entries: 0,
+                            },
+                            pace,
+                        ));
+                    };
+                    let start = span_now.first.index;
+                    let end = start
+                        .saturating_add(span)
+                        .min(log_id.index)
+                        .min(span_now.last.index);
+                    let purged = read_header(store, end)?.log_id;
+                    span_now.check_endpoint(purged)?;
+                    let next = if end == span_now.last.index {
+                        None
                     } else {
-                        let bodies = (start..=end)
-                            .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
-                            .collect::<Vec<_>>();
-                        domains.write_batch(&bodies, &writes)
+                        Some(RetainedSpan {
+                            first: read_header(store, end + 1)?.log_id,
+                            last: span_now.last,
+                        })
+                    };
+                    let mut writes = (start..=end)
+                        .flat_map(|index| {
+                            [
+                                delete(HEADERS, index.to_be_bytes().to_vec()),
+                                delete(CUSTODY_LOG, index.to_be_bytes().to_vec()),
+                            ]
+                        })
+                        .collect::<Vec<_>>();
+                    writes.push(put(META, b"purged", serde_json::to_vec(&purged)?));
+                    chunk_commits.purge_commit(store, &mut pace, || {
+                        if retired {
+                            store.write_batch(&writes)
+                        } else {
+                            let bodies = (start..=end)
+                                .map(|index| delete(LOG, index.to_be_bytes().to_vec()))
+                                .collect::<Vec<_>>();
+                            domains.write_batch(&bodies, &writes)
+                        }
+                    })?;
+                    *retained = next;
+                    let more = next.is_some_and(|span| span.first.index <= log_id.index);
+                    if !more && purged != log_id {
+                        // The target is past the retained journal's end.
+                        store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
                     }
-                })?;
-                *retained = next;
-                last_removed = Some(purged);
+                    Ok((
+                        PurgeChunk {
+                            more,
+                            entries: end - start + 1,
+                        },
+                        pace,
+                    ))
+                })
+                .await?;
+            pace = returned;
+            if !chunk.more {
+                return Ok(());
             }
-            if last_removed != Some(log_id) {
-                store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
-            }
-            Ok(())
-        })
-        .await
+            // A direct chunk is no unit: its span stays the limit.
+            last = Some((chunk.entries, pace.last_unit_time().unwrap_or_default()));
+        }
     }
 }
 
@@ -1666,6 +1774,28 @@ pub struct SnapshotBuilder {
     captured: Result<Arc<LogicalSnapshot>, ScratchOperationFailure>,
 }
 
+/// Whether the published snapshot may be at or past `index`, from its manifest
+/// and coverage record alone: `false` when there is none, or when both records
+/// name the same application snapshot and its position is before `index`. Any
+/// other case (no coverage record, or one of another kind or manifest) is
+/// `true`, and the caller reads the image itself.
+fn stored_snapshot_may_cover(
+    domains: &TenantStorageSet,
+    store: &TenantStore,
+    limit: u64,
+    index: Option<u64>,
+) -> Result<bool> {
+    let Some(manifest) = load_manifest(store, b"current", limit)? else {
+        return Ok(false);
+    };
+    let Some(coverage) = load_snapshot_coverage(domains.custody().store())? else {
+        return Ok(true);
+    };
+    Ok(coverage.kind != SnapshotKind::Application
+        || coverage.manifest_id != manifest.id
+        || coverage.meta.last_log_id.map(|id| id.index) >= index)
+}
+
 fn load_snapshot(
     store: &TenantStore,
     limit: u64,
@@ -1821,9 +1951,14 @@ impl SnapshotBuilder {
                     "state machine requires recovery"
                 );
                 domains.check_access()?;
-                if let Some(current) = load_snapshot(&store, limit)?
-                    && current.meta.last_log_id.map(|id| id.index)
-                        >= captured.meta.last_log_id.map(|id| id.index)
+                // Only a stored snapshot at or past the capture is served in its
+                // place. Its position comes from its coverage record, so a build
+                // does not read back (decrypt, re-spool and digest) the whole
+                // image it is about to replace.
+                let captured_index = captured.meta.last_log_id.map(|id| id.index);
+                if stored_snapshot_may_cover(&domains, &store, limit, captured_index)?
+                    && let Some(current) = load_snapshot(&store, limit)?
+                    && current.meta.last_log_id.map(|id| id.index) >= captured_index
                 {
                     validate_snapshot_coverage(&domains, &current, limit)?;
                     if current.meta.last_log_id.map(|id| id.index)

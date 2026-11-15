@@ -971,3 +971,68 @@ async fn joined_group_refused_outside_ordinary_completion_fences_without_records
     reopened.shutdown().await?;
     Ok(())
 }
+
+/// A periodic build finds the stored snapshot's position in its manifest and
+/// coverage records; it never reads back the image it replaces. A predecessor
+/// image missing a chunk therefore does not stop the next build, which
+/// publishes and removes the rest of that image as usual.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn a_periodic_build_does_not_read_back_the_image_it_replaces() -> FixtureResult<()> {
+    let (_scratch_directory, disk) = scratch()?;
+    let directory = kasumi_store::test_utils::private_tempdir()?;
+    let stores = common::store(
+        &directory.path().join("build-reads.kv"),
+        true,
+        disk,
+        1,
+        GROUP,
+    )
+    .await?;
+    let backend = Arc::new(common::Backend::default());
+    let local = open_local(&stores, &backend).await?;
+    local.fixture_local_snapshot_interval(3).await?;
+    let mut written = Vec::new();
+    for number in 0..3 {
+        let value = format!("first-{number}");
+        local.write_joined(generated(&value)).await?;
+        written.push(value);
+    }
+    local.fixture_local_snapshot_settled().await?;
+    let first = local.metrics().snapshot.expect("first periodic snapshot");
+    let current = |stores: &kasumi_store::TenantStorageSet| -> FixtureResult<String> {
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &stores
+                .application()
+                .get("raft.snapshot", b"current")?
+                .expect("published manifest"),
+        )?;
+        Ok(manifest["id"].as_str().expect("manifest id").to_owned())
+    };
+    let replaced = current(&stores)?;
+    let mut chunk = replaced.as_bytes().to_vec();
+    chunk.push(b'/');
+    chunk.extend_from_slice(&0u64.to_be_bytes());
+    assert!(stores.application().get("raft.snapshot", &chunk)?.is_some());
+    stores
+        .application()
+        .write_batch(&[kasumi_store::WriteOp::delete("raft.snapshot", chunk)])?;
+    for number in 0..3 {
+        let value = format!("second-{number}");
+        local.write_joined(generated(&value)).await?;
+        written.push(value);
+    }
+    local.fixture_local_snapshot_settled().await?;
+    let second = local.metrics().snapshot.expect("second periodic snapshot");
+    assert!(second.index > first.index);
+    assert_ne!(current(&stores)?, replaced);
+    local.shutdown().await?;
+    drop(local);
+    let (reopened, replayed) = reopened_values(&stores).await?;
+    assert_eq!(replayed, written);
+    reopened.shutdown().await?;
+    Ok(())
+}
