@@ -1,7 +1,5 @@
 //! Aggregate exact child outcomes before awaiting another runtime component.
-use kasumi_types::drain::{
-    DrainCompletion, DrainFailure, DrainIssueRef, DrainReport, DrainResult,
-};
+use kasumi_types::drain::{DrainCompletion, DrainFailure, DrainIssueRef, DrainReport, DrainResult};
 
 /// Drop a complete outcome that only repeats already reported observations.
 ///
@@ -68,7 +66,7 @@ mod tests {
         let closure = complete(&owner);
         // The census re-records the same slot and returns the same observation.
         owner.record("Raft apply", 0, anyhow::anyhow!("later census"));
-        assert!(unless_reported(Err(complete(&owner)), &[closure.clone()]).is_ok());
+        assert!(unless_reported(Err(complete(&owner)), std::slice::from_ref(&closure)).is_ok());
         assert!(unless_reported(Ok(()), &[closure]).is_ok());
     }
 
@@ -81,7 +79,8 @@ mod tests {
         // Same component name and slot, but a different observation.
         let mut other = DrainReport::default();
         other.record("Raft apply", 0, anyhow::anyhow!("unreported"));
-        let unrelated = unless_reported(Err(complete(&other)), &[closure.clone()]).unwrap_err();
+        let unrelated =
+            unless_reported(Err(complete(&other)), std::slice::from_ref(&closure)).unwrap_err();
         assert_eq!(unrelated.issues().len(), 1);
         assert!(!DrainIssueRef::ptr_eq(&unrelated.issues()[0], &apply));
 
@@ -89,7 +88,8 @@ mod tests {
         let mut mixed = DrainReport::default();
         mixed.merge(&closure);
         mixed.record("Raft startup", 0, anyhow::anyhow!("new"));
-        let mixed = unless_reported(Err(complete(&mixed)), &[closure.clone()]).unwrap_err();
+        let mixed =
+            unless_reported(Err(complete(&mixed)), std::slice::from_ref(&closure)).unwrap_err();
         assert_eq!(mixed.completion(), DrainCompletion::Complete);
         assert_eq!(mixed.issues().len(), 2);
 

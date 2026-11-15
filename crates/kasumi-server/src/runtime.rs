@@ -2452,10 +2452,22 @@ impl NodeRuntime {
                 );
             }
         }
+        // The snapshot startup census can revisit a superseded original
+        // database that some caller still holds. Fresh admission already
+        // observed and logged that owner's complete closure drain; repeating
+        // exactly those issues is no new failure, while any other issue keeps
+        // the whole outcome.
+        let reported = match &self.administration {
+            Some(manager) => manager.superseded_database_reports().await,
+            None => Vec::new(),
+        };
         observe(
             &mut self.startup_drain,
             &mut retained,
-            self.audit.admission().drain_snapshot_startups().await,
+            crate::runtime_drain::unless_reported(
+                self.audit.admission().drain_snapshot_startups().await,
+                &reported,
+            ),
         );
         // A readiness timeout/stop retains its actual SDK query independently
         // of the maintenance waiter. Only positively drained tenant/Control
