@@ -214,6 +214,13 @@ pub const NATIVE_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// Native write policy. Cancellation never erases retained custody or receipts.
 pub const NATIVE_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
 const PROVIDER_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long node shutdown retries a native close or disposal proof that only a
+/// contended census observation stopped. Census sweeps hold one slot's
+/// metadata for a nonblocking observation, never across callbacks or IO.
+#[cfg(not(test))]
+const NATIVE_OBSERVATION_CONTENTION_WAIT: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const NATIVE_OBSERVATION_CONTENTION_WAIT: Duration = Duration::from_millis(250);
 
 /// Fixed, non-sensitive classes of the most recent key-access lease failure.
 /// Provider messages, key names and endpoints never leave the error value.
@@ -1770,7 +1777,27 @@ impl NodeStore {
         }
         lifecycle.resource_returned(node_lifecycle::NodeResource::Initializers);
         lifecycle.enter_resource(node_lifecycle::NodeResource::Native);
-        match self.body().db.close() {
+        // A census sweep (owner_at, inspect_retained) may hold the opening's
+        // metadata while close looks it up or this proves its disposal. Such an
+        // observation changes nothing: retry it, bounded, instead of retaining
+        // the node and leaving a sticky issue for a later shutdown retry. Live
+        // callers, admitted work and terminal outcomes still return at once.
+        let deadline = std::time::Instant::now() + NATIVE_OBSERVATION_CONTENTION_WAIT;
+        let mut closed = self.body().db.close();
+        loop {
+            let contended = match &closed {
+                Ok(()) => !self.body().db.native_resources_disposed(),
+                Err(_) => self.body().db.close_observation_contended(),
+            };
+            if !contended || std::time::Instant::now() >= deadline {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            if closed.is_err() {
+                closed = self.body().db.close();
+            }
+        }
+        match closed {
             Ok(()) => {
                 if !self.body().db.native_resources_disposed() {
                     let issue = report.record(

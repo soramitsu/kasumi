@@ -269,3 +269,66 @@ async fn composite_node_path_deallocation_precedes_original_fixed_fee_refund() {
     );
     assert_eq!(fixture.memory.snapshot().attempts, before.attempts);
 }
+
+/// Hold the installed opening's census metadata on another thread, as a
+/// sweep's owner_at/inspect_retained does, until `release` returns.
+fn hold_opening_metadata(
+    fixture: &Fixture,
+    release: impl FnOnce() + Send + 'static,
+) -> std::thread::JoinHandle<()> {
+    let id = fixture
+        .node
+        .registered_opening_id()
+        .expect("installed node has a registered opening");
+    let memory = fixture.memory.clone();
+    let (held, observe) = std::sync::mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        memory
+            .storage_census()
+            .with_owner_metadata_held_for_test(id, || {
+                held.send(()).unwrap();
+                release();
+            });
+    });
+    observe.recv().unwrap();
+    holder
+}
+
+#[tokio::test]
+async fn shutdown_waits_out_short_opening_metadata_contention() {
+    // Before shutdown retried contended census observations, this returned
+    // Retained ("registered node opening observation is busy"), and a node
+    // runtime kept that issue even after its next attempt succeeded.
+    let fixture = Fixture::new();
+    let holder = hold_opening_metadata(&fixture, || {
+        std::thread::sleep(Duration::from_millis(20));
+    });
+    let outcome = fixture.node.shutdown().await;
+    holder.join().unwrap();
+    assert!(
+        outcome.is_ok(),
+        "short census metadata contention retained shutdown: {outcome:?}"
+    );
+}
+
+#[tokio::test]
+async fn shutdown_retains_opening_metadata_contention_past_its_bound() {
+    let fixture = Fixture::new();
+    let (release, released) = std::sync::mpsc::channel::<()>();
+    let holder = hold_opening_metadata(&fixture, move || {
+        released.recv_timeout(Duration::from_secs(5)).unwrap();
+    });
+    let first = fixture.node.shutdown().await;
+    release.send(()).unwrap();
+    holder.join().unwrap();
+    let failure = first.expect_err("contention past the bound retains the node");
+    assert_eq!(
+        failure.completion(),
+        kasumi_types::drain::DrainCompletion::Retained
+    );
+    assert_eq!(
+        failure.issues()[0].error().to_string(),
+        "registered node opening observation is busy"
+    );
+    fixture.node.shutdown().await.unwrap();
+}

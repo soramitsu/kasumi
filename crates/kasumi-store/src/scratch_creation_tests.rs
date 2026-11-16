@@ -531,3 +531,55 @@ fn ordinary_carrier_preserves_whole_original_anyhow_allocation() {
     assert_eq!(view as *const _ as *const () as usize, address);
     assert!(view.downcast_ref::<serde_json::Error>().is_some());
 }
+
+#[test]
+fn scratch_creation_tolerates_concurrent_census_sweeps() {
+    // Census sweeps (drain_released_readers on every read admission and close,
+    // StorageCensus::drain) try-lock every occupied slot, including one still
+    // constructing. Before publication waited out that contention, about one
+    // creation in 3000 failed here with "scratch table creation failed" and no
+    // reason, which a Raft group treats as a fatal storage write error.
+    use std::sync::atomic::AtomicU64;
+    let memory = TestDiskMemory::new(1 << 30, 4096);
+    let directory = crate::test_utils::private_tempdir().unwrap();
+    let disk = ScratchDisk::fixture(directory.path(), memory.clone());
+    let stop = Arc::new(AtomicBool::new(false));
+    let sweeps = Arc::new(AtomicU64::new(0));
+    let sweepers: Vec<_> = (0..4)
+        .map(|_| {
+            let memory = memory.clone();
+            let stop = stop.clone();
+            let sweeps = sweeps.clone();
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let census = memory.storage_census();
+                    for index in 0..census.capacity() {
+                        if let Some(id) = census.owner_at(index) {
+                            census.inspect_retained::<AdmissionParent>(id, |_| false);
+                        }
+                    }
+                    sweeps.fetch_add(1, Ordering::Relaxed);
+                }
+            })
+        })
+        .collect();
+    let mut failures = Vec::new();
+    for _ in 0..1000 {
+        match EncryptedTable::new(&disk, 8 << 20, CACHE) {
+            Ok(table) => drop(table),
+            Err(failure) => {
+                failures.push(failure.to_string());
+                drop(failure.retire());
+            }
+        }
+    }
+    stop.store(true, Ordering::Relaxed);
+    for sweeper in sweepers {
+        sweeper.join().unwrap();
+    }
+    assert!(sweeps.load(Ordering::Relaxed) > 0);
+    assert!(
+        failures.is_empty(),
+        "census sweeps failed scratch creation: {failures:?}"
+    );
+}

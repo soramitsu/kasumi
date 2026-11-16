@@ -41,6 +41,10 @@ struct State {
     busy: DrainReport,
     terminal: DrainReport,
     interrupted: Option<DrainFailure>,
+    /// The last close stopped only on a census observation of the registered
+    /// opening that a retry may pass: its lookup was contended, or its admitted
+    /// children had not yet retired (a contended check or a retirement in flight).
+    observation_contended: bool,
 }
 
 struct ClosePanic(Mutex<Box<dyn Any + Send>>);
@@ -144,6 +148,7 @@ impl NodeDatabase {
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
+                observation_contended: false,
             }),
         }
     }
@@ -166,6 +171,7 @@ impl NodeDatabase {
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
+                observation_contended: false,
             }),
         }
     }
@@ -529,6 +535,7 @@ impl NodeDatabase {
     pub(crate) fn close(&self) -> DrainResult {
         self.stop();
         let mut state = self.state.lock();
+        state.observation_contended = false;
         if let Some(failure) = &state.interrupted {
             // An explicit failed-close recovery may have completed after this
             // original terminal was retained. Only its exact accepted physical
@@ -548,6 +555,7 @@ impl NodeDatabase {
             let opening = match locator.opening() {
                 Ok(opening) => opening,
                 Err(_) => {
+                    state.observation_contended = true;
                     let issue = state.busy.record(
                         self.component,
                         0,
@@ -576,6 +584,7 @@ impl NodeDatabase {
                             // Native engine disposal alone does not retire a
                             // child's retained original outcome or paid lease.
                             // This remains retryable after exact child cleanup.
+                            state.observation_contended = true;
                             let issue = state.busy.record(
                                 self.component,
                                 0,
@@ -674,6 +683,13 @@ impl NodeDatabase {
         let failure = DrainFailure::retained(issue);
         state.interrupted = Some(failure.clone());
         Err(failure)
+    }
+
+    /// Whether the last close stopped only on a census observation of the
+    /// registered opening (lookup or child retirement). That close changed
+    /// nothing and may be retried; every other retained close keeps its outcome.
+    pub(crate) fn close_observation_contended(&self) -> bool {
+        self.state.lock().observation_contended
     }
 
     /// Inspect native disposal and sealed child retirement while keeping the
