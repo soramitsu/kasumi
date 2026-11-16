@@ -61,7 +61,7 @@ the fixed behaviors, not an end-to-end speedup.
 
 ## Run04 observation and capacity implications
 
-The retained [run04 replicated report](../benchmarks/results/release-matrix-macos-arm64-20260905-04/replicated-1.json)
+The retained run04 replicated report (`benchmarks/results/release-matrix-macos-arm64-20260905-04/replicated-1.json`)
 records another finite read failure under the disclosed host-load override.
 After loading 1,000,000 exact 1 KiB documents, balanced traffic completed 10
 operations, then zero-based operation 10 returned `UNAVAILABLE` with
@@ -98,7 +98,7 @@ five-second failure. The common service maps underlying barrier errors to
 `read quorum unavailable`, so the result alone cannot distinguish quorum
 confirmation delay from waiting for local application.
 
-The [host samples](../benchmarks/results/release-matrix-macos-arm64-20260905-04/host-samples.jsonl)
+The host samples (`benchmarks/results/release-matrix-macos-arm64-20260905-04/host-samples.jsonl`)
 during this part of the replicated case show harness RSS increasing from about
 12.35 GiB to 22.70 GiB, with concurrent background CPU observations of
 244.9–336.3% in the 05:29:16–05:29:37 UTC interval. Samples are approximately

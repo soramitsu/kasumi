@@ -31,11 +31,11 @@ requirement or required evidence gap was identified within this audit's scope.
 
 ## Resolved: queued connection reset could stop the listener
 
-[Run 06](../benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json)
+Run 06 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json`)
 passed 14 cases, including local, replicated and indexed-text workloads at 1,000
 tenants. The final network-1000 case exited before readiness with macOS
 `EINVAL`; it produced no measured operations. The
-[OS reproducer](../benchmarks/results/listener-startup-20260905/reset-reproducer.json)
+OS reproducer (`benchmarks/results/listener-startup-20260905/reset-reproducer.json`)
 observes that error from `TCP_NODELAY` on a connection reset while queued before
 accept. This is a matching reproducible mechanism; the original benchmark did
 not record the failing syscall.
@@ -44,7 +44,7 @@ not record the failing syscall.
 inside its bounded connection task. Setup failure closes that socket, attempts a
 rejected-handshake audit, and leaves the listener available. A genuine listener
 accept error still stops accepting and drains nested connection owners before
-returning. The [source comparison](../benchmarks/results/listener-startup-20260905/source-change.json)
+returning. The source comparison (`benchmarks/results/listener-startup-20260905/source-change.json`)
 and archived before/after files identify `tls.rs` as the only change since
 `a3205990…`; storage, consensus, lease, backup and shared-audit code is unchanged.
 
@@ -63,7 +63,7 @@ to `TransportDenied` and awaits the shared encrypted security writer.
 the shared-writer/embedded regressions below establish durable persistence,
 separate service protection and failure handling independently. Rejected
 connections remain closed if recording fails. The
-[affected network rerun](../benchmarks/results/network-rerun-macos-arm64-20260905-listener/matrix.json)
+affected network rerun (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/matrix.json`)
 now passes all three tenant counts, including complete startup, workloads,
 shutdown and recovery at 1,000 tenants. Its measurements and the unchanged engine
 cases are combined with explicit provenance in the release evidence below.
@@ -139,14 +139,14 @@ run for this documentation review.
 
 ## Requirement-to-primary-evidence coverage
 
-The current [macOS command manifest](../benchmarks/results/macos-validation-20260905-listener/evidence.json)
-and [Linux command manifest](../benchmarks/results/linux-validation-20260905-listener/evidence.json)
+The current macOS command manifest (`benchmarks/results/macos-validation-20260905-listener/evidence.json`)
+and Linux command manifest (`benchmarks/results/linux-validation-20260905-listener/evidence.json`)
 both retain unchanged before/after source fingerprints, 188 passing workspace
 test entries, zero failures, and two opt-in tests ignored by the workspace
 command. Both also record strict all-feature/all-target Clippy, formatting, six
 Python tests, and one separately executed actual OpenBao test. The actual passing
-entries are in the [macOS log](../benchmarks/results/macos-validation-20260905-listener/1-test.log)
-and [Linux log](../benchmarks/results/linux-validation-20260905-listener/full-gate.log).
+entries are in the macOS log (`benchmarks/results/macos-validation-20260905-listener/1-test.log`)
+and Linux log (`benchmarks/results/linux-validation-20260905-listener/full-gate.log`).
 Both manifests bind their results to the inspected `28aeb801…` source. The upstream
 storage conformance suite is one entry, not an invented count of its internal
 assertions. The earlier 186-entry `-embedded-audit` runs retain their
@@ -168,11 +168,11 @@ implementation, with explicit limits on what they prove.
 | Seal blocks admission/release, cancels work, clears state and owned keys | `TenantStore::seal` closes the epoch before waiting for key locks and clears the owned key map. [Database](../crates/kasumi-engine/src/service.rs) fences admission/release, seals work, clears resident generation/cursors and observes independent expiry. [Response-release tests](../crates/kasumi-engine/tests/response_release.rs) deny encoded output after policy/key changes. | Access, owned-resource behavior and embedded denial records are covered in both current-source full gates. Previously returned plaintext remains outside recall. |
 | Durable audits survive compaction; strict successful reads persist before release | Tenant audits are retained in `TenantState` and serialized with snapshots, independently of purged logs. [State](../crates/kasumi-engine/src/state.rs) rejects effects when required audit count/byte capacity is unavailable. `release_event` commits strict read/discovery/receipt audit before final authorization and release, with the read revision and `authorized_release`. [Contracts](../crates/kasumi-engine/tests/contracts.rs) assert revision binding and actual I/O failure withholding results. [SecurityAudit](../crates/kasumi-engine/src/security_audit.rs) persists closed metadata and sequence atomically in the separately wrapped service store; tests reopen it after tenant sealing and enforce quota failure. | Tenant auditing has retained contract evidence; shared embedded/network denial auditing is fixed with the focused proof above. No claim of confirmed client receipt or automatic audit pruning. |
 | Encrypted filesystem/S3 backup, integrity and wrapped dependencies; new suspended restore only | [Backup](../crates/kasumi-store/src/backup.rs) authenticates a versioned manifest containing all retained wrappers and an internal snapshot digest. Filesystem writes fsync before create-only publication and directory sync; S3 signs bounded TLS requests and uses create-only writes. [Engine bootstrap](../crates/kasumi-engine/src/bootstrap.rs) requires empty targets/new incarnations and validates/rebuilds before readiness. [Administration](../crates/kasumi-server/src/administration.rs) requires completed suspended targets, terminal source retirement and control CAS before routing replacement. [Local contracts](../crates/kasumi-engine/tests/contracts.rs) and [replicated restore](../crates/kasumi-engine/tests/replicated.rs) verify receipt preservation, fresh identity and quorum completion audit before activation. | Covered. Service durability is bounded by the selected destination's honest guarantees. |
-| Actual key/object adapter compatibility | [Actual OpenBao test](../crates/kasumi-store/tests/openbao_live.rs) uses real Transit generation/decrypt/rewrap, wrapping rotation, minimum-version revocation and old/new encrypted backup decryption, then warm-store denial. It passed separately on both current 188-entry platform gates. [Current actual MinIO evidence](../benchmarks/results/linux-validation-20260905-listener/minio-evidence.json) binds the passing encrypted TLS/SigV4/create-only/access-denial test to the unchanged `28aeb801…` client source and binary hash before/after. | MinIO client is macOS aarch64 and server is digest-pinned Linux aarch64; this is current-source adapter evidence, not a Linux-client claim. Actual Vault or arbitrary S3 implementations were not claimed. |
+| Actual key/object adapter compatibility | [Actual OpenBao test](../crates/kasumi-store/tests/openbao_live.rs) uses real Transit generation/decrypt/rewrap, wrapping rotation, minimum-version revocation and old/new encrypted backup decryption, then warm-store denial. It passed separately on both current 188-entry platform gates. Current actual MinIO evidence (`benchmarks/results/linux-validation-20260905-listener/minio-evidence.json`) binds the passing encrypted TLS/SigV4/create-only/access-denial test to the unchanged `28aeb801…` client source and binary hash before/after. | MinIO client is macOS aarch64 and server is digest-pinned Linux aarch64; this is current-source adapter evidence, not a Linux-client claim. Actual Vault or arbitrary S3 implementations were not claimed. |
 
 ## Release measurement closure
 
-The [cohort manifest](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json)
+The cohort manifest (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json`)
 records `completed_under_host_load` and complete coverage of raw, local,
 replicated, indexed-text and authenticated network cases at 1, 100 and 1,000
 tenants. Each case uses one million documents with exactly 1,024-byte JSON
@@ -187,7 +187,7 @@ SHA-256 `a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7`.
 The cohort binds the selected result hashes, both original manifests, current
 platform gates, release build and renderer identities. This audit verified all
 selected result hashes, referenced evidence hashes and the
-[derived capacity hash](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json).
+derived capacity hash (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json`).
 Earlier failures and source labels remain intact.
 
 [Measured results](../benchmarks/RESULTS.md) report raw lookup, actual embedded

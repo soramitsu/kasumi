@@ -4,9 +4,9 @@ The Stats comparisons replay 4,096 finalized BLOCK snapshots. They measure durab
 
 ## Imported Polkaswap Points data
 
-At checkpoint 372,381, both Kasumi formats imported 5,526,276 physical rows with identical logical contents. Master commit `72958a86` can include an authenticated Bloom filter in a new imported base. The filtered database used 3,043,549,184 allocated bytes, up 6,905,856 from the legacy base. All nine private replays independently reproduced the same final logical digest. [Measured operations, builds and allocation](results/points-bulk-filter.json)
+At checkpoint 372,381, both Kasumi formats imported 5,526,276 physical rows with identical logical contents. Master commit `72958a86` can include an authenticated Bloom filter in a new imported base. The filtered database used 3,043,549,184 allocated bytes, up 6,905,856 from the legacy base. All nine private replays independently reproduced the same final logical digest. Measured operations, builds and allocation (`benchmarks/indexer-kv/results/points-bulk-filter.json`)
 
-The 128-block storage trace contained 2,495 steady point reads and 129 durable commits. The filter ruled out 851 of the 860 absent keys that reached the immutable base. Nine required an exact lookup. All 333 present base keys passed the filter. An additional 1,302 reads resolved against newer writes. A complete import audit also checked the filter against every physical key. [Results](results/points-bulk-filter.json)
+The 128-block storage trace contained 2,495 steady point reads and 129 durable commits. The filter ruled out 851 of the 860 absent keys that reached the immutable base. Nine required an exact lookup. All 333 present base keys passed the filter. An additional 1,302 reads resolved against newer writes. A complete import audit also checked the filter against every physical key. Results (`benchmarks/indexer-kv/results/points-bulk-filter.json`)
 
 | Time in 2,495 point reads | Legacy build and base | Filter-aware build, legacy base | Filter-aware build, filtered base |
 | --- | ---: | ---: | ---: |
@@ -14,9 +14,9 @@ The 128-block storage trace contained 2,495 steady point reads and 129 durable c
 | Cold data files, 0% resident | 225.3 ms | 224.7 ms | 57.8 ms |
 | Warm data files, 100% resident | 130.3 ms | 147.2 ms | 32.7 ms |
 
-Each case used a fresh physical copy, checked its cache residency and validated every returned value and the final sorted state. These timings measure native reads in the worker's recorded sequence. [Raw measurements](results/points-bulk-filter.json)
+Each case used a fresh physical copy, checked its cache residency and validated every returned value and the final sorted state. These timings measure native reads in the worker's recorded sequence. Raw measurements (`benchmarks/indexer-kv/results/points-bulk-filter.json`)
 
-Three additional runs per engine compared the full Points worker over the same 4,096 finalized blocks, including archive RPC and durable commits. Execution order alternated across pairs. Filtered Kasumi processed 12.121 blocks/s from start to stop and RocksDB processed 12.163. From the first fetched block to the final commit the rates were 13.175 and 13.469 blocks/s, respectively. Kasumi took 0.35% longer overall and 2.23% longer over the latter interval. Its final database used 3,119,792,128 allocated bytes, about 21.6% less than RocksDB. Every pair reproduced all keys and all journal and valuation rows. [Per-pair timings, allocation and verification](results/points-bulk-filter.json)
+Three additional runs per engine compared the full Points worker over the same 4,096 finalized blocks, including archive RPC and durable commits. Execution order alternated across pairs. Filtered Kasumi processed 12.121 blocks/s from start to stop and RocksDB processed 12.163. From the first fetched block to the final commit the rates were 13.175 and 13.469 blocks/s, respectively. Kasumi took 0.35% longer overall and 2.23% longer over the latter interval. Its final database used 3,119,792,128 allocated bytes, about 21.6% less than RocksDB. Every pair reproduced all keys and all journal and valuation rows. Per-pair timings, allocation and verification (`benchmarks/indexer-kv/results/points-bulk-filter.json`)
 
 ## Live writer
 
@@ -52,9 +52,9 @@ decoding and GraphQL verification are outside the timed ingest interval.
 This is an offline qualification of the Stats document write path with a
 scoped Kasumi storage adapter, not a live production cutover, chain RPC
 benchmark or certification of other collections and entitlement history.
-[Raw application rounds and binary/source hashes (gzip)](results/live-application-linux.json.gz) ·
-[Release module hashes](results/live-application-release.json) ·
-[Reproduction instructions](README.md) · [Independent query replay on macOS](results/application-stats-macos.json).
+Raw application rounds and binary/source hashes (gzip) (`benchmarks/indexer-kv/results/live-application-linux.json.gz`) ·
+Release module hashes (`benchmarks/indexer-kv/results/live-application-release.json`) ·
+[Reproduction instructions](README.md) · Independent query replay on macOS (`benchmarks/indexer-kv/results/application-stats-macos.json`).
 
 ### Default live engine on master (`cc719b23`)
 
@@ -71,19 +71,19 @@ On the 4,096-block Stats trace, Kasumi beat the indexer's installed RocksDB bind
 | Median allocated bytes, single-block writer closed | 458,752 | 1,675,264 |
 | Median allocated bytes, compacted, both modes | 159,744 | 1,753,088 |
 
-The 12+12 rounds were fixed before starting, with a fresh database per round and the first writer alternated in each 64-block window and between rounds. Overall throughput divides all 49,152 blocks per engine and mode by summed ingests, including outliers. Each round verified all 16,387 keys and values in both orders after writer close and again after explicit compaction. The 4 MiB budget is charged to pending mutations, not reserved disk. The closed, uncompacted database used about 73% less space; the larger open-RocksDB footprint includes preallocated files. The reported paid rate charges writer close, explicit compaction and maintenance close, but excludes process setup and read verification. The initial two-round [single-block](results/live-default-linux-pilot-x1.json) and [grouped](results/live-default-linux-pilot-x8.json) pilot is separate: single-block total times split, while Kasumi won both grouped trials.
+The 12+12 rounds were fixed before starting, with a fresh database per round and the first writer alternated in each 64-block window and between rounds. Overall throughput divides all 49,152 blocks per engine and mode by summed ingests, including outliers. Each round verified all 16,387 keys and values in both orders after writer close and again after explicit compaction. The 4 MiB budget is charged to pending mutations, not reserved disk. The closed, uncompacted database used about 73% less space; the larger open-RocksDB footprint includes preallocated files. The reported paid rate charges writer close, explicit compaction and maintenance close, but excludes process setup and read verification. The initial two-round single-block (`benchmarks/indexer-kv/results/live-default-linux-pilot-x1.json`) and grouped (`benchmarks/indexer-kv/results/live-default-linux-pilot-x8.json`) pilot is separate: single-block total times split, while Kasumi won both grouped trials.
 
-[All Linux confirmation rounds (CSV)](results/live-default-linux-rounds.csv) · [Single-block raw windows (gzip)](results/live-default-linux-12-x1.json.gz) · [Eight-block raw windows (gzip)](results/live-default-linux-12-x8.json.gz) · [Toolchain and native binary provenance](results/live-linux-build.json). Use `summarize-paired.mjs` on either raw file to validate the checked rows, phase digests, and aggregate rates.
+All Linux confirmation rounds (CSV) (`benchmarks/indexer-kv/results/live-default-linux-rounds.csv`) · Single-block raw windows (gzip) (`benchmarks/indexer-kv/results/live-default-linux-12-x1.json.gz`) · Eight-block raw windows (gzip) (`benchmarks/indexer-kv/results/live-default-linux-12-x8.json.gz`) · Toolchain and native binary provenance (`benchmarks/indexer-kv/results/live-linux-build.json`). Use `summarize-paired.mjs` on either raw file to validate the checked rows, phase digests, and aggregate rates.
 
 The new default persists a 4 MiB budget instead of flushing at 512 KiB. Linux uses a full-integrity synchronized write for each single block where the filesystem supports it; on macOS Kasumi uses `F_FULLFSYNC`. Both keep a separate recoverable WAL frame for every logical block. The indexer's JS RocksDB package exposes a synchronous JS transaction but does not request a device flush for every transaction by default. For equal durability the comparator synchronizes the actual WAL before acknowledgement. Rates are for that contract, not the package's less durable default or production chain-processing throughput.
 
-On the same Apple M4 Max host running macOS directly, the final Node [single-block comparison](results/live-default-macos-x1.json) favored Kasumi in both rounds, **145.9 vs 137.6 blocks/s** in aggregate (6.0% faster). Compacted allocation was 159,744 vs 1,765,376 median bytes. The [eight-block macOS test](results/live-default-macos-x8.json) split one win each and was **slower for Kasumi overall**: 741 vs 1,020 blocks/s. Relative speed varies with storage, OS and commit mode. The Linux host was a local four-vCPU Debian 13 arm64 VM on this Mac, using ext4 on its own virtual block device, not the production server.
+On the same Apple M4 Max host running macOS directly, the final Node single-block comparison (`benchmarks/indexer-kv/results/live-default-macos-x1.json`) favored Kasumi in both rounds, **145.9 vs 137.6 blocks/s** in aggregate (6.0% faster). Compacted allocation was 159,744 vs 1,765,376 median bytes. The eight-block macOS test (`benchmarks/indexer-kv/results/live-default-macos-x8.json`) split one win each and was **slower for Kasumi overall**: 741 vs 1,020 blocks/s. Relative speed varies with storage, OS and commit mode. The Linux host was a local four-vCPU Debian 13 arm64 VM on this Mac, using ext4 on its own virtual block device, not the production server.
 
-A separate [four-way Linux matrix](results/live-default-linux-four-way.json.gz) rotated each worker through all four positions in isolation. The final Node result held: median 5,668 vs 4,808 blocks/s and aggregate 5,596 vs 4,302. Against native C++ RocksDB 11.1.2/LZ4 with 32 KiB blocks, Rust Kasumi was faster at the **median** (5,768 vs 5,348 blocks/s), but a 1.285 s Kasumi run reversed the **aggregate** (4,866 vs 5,363 blocks/s). The native comparison does not establish a universal speed win. Compacted native allocation was consistently **159,744 vs 335,872 bytes**, and the latest-page p95 medians were 4.02 vs 20.83 µs. Native RocksDB was faster at individual point lookups. Linux OS write-byte counters were unavailable; they were not treated as zero.
+A separate four-way Linux matrix (`benchmarks/indexer-kv/results/live-default-linux-four-way.json.gz`) rotated each worker through all four positions in isolation. The final Node result held: median 5,668 vs 4,808 blocks/s and aggregate 5,596 vs 4,302. Against native C++ RocksDB 11.1.2/LZ4 with 32 KiB blocks, Rust Kasumi was faster at the **median** (5,768 vs 5,348 blocks/s), but a 1.285 s Kasumi run reversed the **aggregate** (4,866 vs 5,363 blocks/s). The native comparison does not establish a universal speed win. Compacted native allocation was consistently **159,744 vs 335,872 bytes**, and the latest-page p95 medians were 4.02 vs 20.83 µs. Native RocksDB was faster at individual point lookups. Linux OS write-byte counters were unavailable; they were not treated as zero.
 
 ### Earlier compact live engine: 512 KiB budget
 
-The first four-round matrix used the tiered engine at `32858b91` on Apple M4 Max / Darwin arm64. Every contender ran once in each position, using a fresh directory. Both Node bindings ran under Node 26.13.0. The native RocksDB 11.1.2 control uses LZ4 and 32 KiB table blocks. The primary speed comparison is Node against Node; the native controls independently test whether language bindings or compression settings explain the result. [Raw measurements, binary hashes and verified digests](results/mutable-tiered-macos.json)
+The first four-round matrix used the tiered engine at `32858b91` on Apple M4 Max / Darwin arm64. Every contender ran once in each position, using a fresh directory. Both Node bindings ran under Node 26.13.0. The native RocksDB 11.1.2 control uses LZ4 and 32 KiB table blocks. The primary speed comparison is Node against Node; the native controls independently test whether language bindings or compression settings explain the result. Raw measurements, binary hashes and verified digests (`benchmarks/indexer-kv/results/mutable-tiered-macos.json`)
 
 | Median of four runs | Kasumi Node | RocksDB Node (installed) | Kasumi Rust | RocksDB C++ / LZ4 |
 |---|---:|---:|---:|---:|
@@ -101,7 +101,7 @@ The first four-round matrix used the tiered engine at `32858b91` on Apple M4 Max
 
 On this matrix both Kasumi interfaces use 91.0% less disk after compaction than the installed RocksDB binding, and 53.0% less than native LZ4 RocksDB. Kasumi Node uses 30.4% fewer OS-attributed write bytes per block, but its median throughput is **14.9% lower** than RocksDB Node. With native interfaces Kasumi is 7.5% slower. Individual Kasumi Node ingests ranged from 36.07 to 50.91 seconds; RocksDB Node ranged from 31.14 to 36.43. CPU includes process startup and fixture decoding; ingest timing excludes them. Read timings should only be compared within the same interface pair. Full data and the latest-24 digest matched after both reopens for every run. The compact engine is opt-in for a fresh database and this is not a migration test.
 
-The [two adjacent-window Node runs on the same original build](results/mutable-tiered-macos-paired.json) took 40.87 vs 44.67 s and 39.99 vs 26.86 s (Kasumi vs RocksDB). Kasumi won 73 of 128 windows but only one complete round. The whole-run comparison includes every stall.
+The two adjacent-window Node runs on the same original build (`benchmarks/indexer-kv/results/mutable-tiered-macos-paired.json`) took 40.87 vs 44.67 s and 39.99 vs 26.86 s (Kasumi vs RocksDB). Kasumi won 73 of 128 windows but only one complete round. The whole-run comparison includes every stall.
 
 ### Packed directories with inline maintenance
 
@@ -112,7 +112,7 @@ once, using fresh databases and the same 8 MiB cache limit. The table shows
 medians across three runs. Each reader compared all 16,387 surviving rows
 with the original trace, both before and after compaction. All nine trials
 returned the same digest for the latest 24 documents. Both Kasumi builds
-completed all requested compaction cycles. [Raw measurements](results/mutable-packed-inline.json)
+completed all requested compaction cycles. Raw measurements (`benchmarks/indexer-kv/results/mutable-packed-inline.json`)
 
 | Measure | Previous Kasumi | Packed Kasumi | RocksDB |
 |---|---:|---:|---:|
@@ -136,7 +136,7 @@ boundary per block. [Replay method](README.md)
 
 ### Earlier fixed-page comparison with maintenance after ingest
 
-On three alternating, fresh-database runs, the optimized mutable Kasumi engine preserved every byte and substantially improved its footprint, but remained slower and wrote more than RocksDB. Each of the 4,096 batches has its own durability boundary. Both engines have an 8 MiB cache and were opened again in separate processes, before and after maintenance. Full result: [raw measurements](results/mutable-final.json). These timings are medians of three runs, not production latency guarantees.
+On three alternating, fresh-database runs, the optimized mutable Kasumi engine preserved every byte and substantially improved its footprint, but remained slower and wrote more than RocksDB. Each of the 4,096 batches has its own durability boundary. Both engines have an 8 MiB cache and were opened again in separate processes, before and after maintenance. Full result: raw measurements (`benchmarks/indexer-kv/results/mutable-final.json`). These timings are medians of three runs, not production latency guarantees.
 
 | Measure | Kasumi mutable | RocksDB |
 |---|---:|---:|
@@ -152,11 +152,11 @@ On three alternating, fresh-database runs, the optimized mutable Kasumi engine p
 
 MB is decimal. The p95 is the median of the three per-run p95s of 64 pages; the ranges were 0.384–0.858 ms and 0.099–0.111 ms. Both engines agreed on the complete 16,387 rows and the 24-document page before and after compaction. All requested Kasumi compaction cycles completed. The binding doesn't expose synchronous WAL commit; see the [harness](README.md) for its single-WAL durability protocol, process boundaries, sampling, and cache treatment.
 
-The [pre-optimization run](results/mutable-before-writes.json) used the same release-profile native writer with bounded seeks available, before the two write optimizations. It used 928,944,128 bytes after close, versus a final median of 486,248,448 bytes (47.7% less). This comparison is one baseline run against three final runs. The patches coalesce changes to the same leaf and copy a common parent only once when several child leaves change. A unit regression verifies that the new descending cursor reads six directory pages to return the same 700 rows that took 1,400 reads with independent seeks. Cached point lookups now remember the midpoint of a variable-length directory page without additional cache storage.
+The pre-optimization run (`benchmarks/indexer-kv/results/mutable-before-writes.json`) used the same release-profile native writer with bounded seeks available, before the two write optimizations. It used 928,944,128 bytes after close, versus a final median of 486,248,448 bytes (47.7% less). This comparison is one baseline run against three final runs. The patches coalesce changes to the same leaf and copy a common parent only once when several child leaves change. A unit regression verifies that the new descending cursor reads six directory pages to return the same 700 rows that took 1,400 reads with independent seeks. Cached point lookups now remember the midpoint of a variable-length directory page without additional cache storage.
 
 The original fixed-page format stores the full key and a 32-byte value location per live entry. On this data even **just** the 856,166 live key bytes, 524,384 bytes of locations, and 1,137,652 live value bytes total 2,518,202 bytes. This excludes table names, segment records, branch pages, and reclaimable pages. Vacuuming alone cannot bring the fixed layout down to RocksDB's measured 1.77 MB on this workload. Packed pages compress those key and location bytes on disk.
 
-**Inline maintenance sensitivity.** In a separate [single full paired run](results/mutable-inline.json), Kasumi performed the normal per-write maintenance budget during ingest. It reclaimed 268,386,304 bytes inline with no deferrals. Peak writer allocation fell to 311.80 MB, after-close allocation to 146.98 MB, and after explicit compaction to 20.94 MB, at 53.00 s ingest. RocksDB took 27.95 s and ended at 1.77 MB. Maintenance timing matters to disk usage but did not change the live-writer decision.
+**Inline maintenance sensitivity.** In a separate single full paired run (`benchmarks/indexer-kv/results/mutable-inline.json`), Kasumi performed the normal per-write maintenance budget during ingest. It reclaimed 268,386,304 bytes inline with no deferrals. Peak writer allocation fell to 311.80 MB, after-close allocation to 146.98 MB, and after explicit compaction to 20.94 MB, at 53.00 s ingest. RocksDB took 27.95 s and ended at 1.77 MB. Maintenance timing matters to disk usage but did not change the live-writer decision.
 
 ## Sealed historical data
 
@@ -173,8 +173,8 @@ processes' warm p95s. A page includes its timestamp-index lookup and all 24
 primary document reads. RocksDB is **11.1.2** in both the deployed binding
 and the native C++ controls. The controls verified the stored codec for every
 SST; the binding defaults to `kNoCompression`. Both engines see the same
-original indexer-encoded values. See [binding comparison](results/sealed-final.json),
-[native controls](results/sealed-native-codecs.json) and
+original indexer-encoded values. See binding comparison (`benchmarks/indexer-kv/results/sealed-final.json`),
+native controls (`benchmarks/indexer-kv/results/sealed-native-codecs.json`) and
 [upstream reproduction instructions](frozen-codec.md).
 
 | Read-only storage | Total allocated bytes | Data file(s) alone, allocated | Mixed point p95 | Latest 24 p95 |

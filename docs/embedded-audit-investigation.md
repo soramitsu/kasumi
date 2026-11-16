@@ -12,17 +12,17 @@ authorization bypass, document loss, or stale read; it violated the agreed
 auditing contract across interfaces.
 
 Run05 was explicitly interrupted before changing source. Its
-[termination record](../benchmarks/results/release-matrix-macos-arm64-20260905-05/TERMINATION.md)
+termination record (`benchmarks/results/release-matrix-macos-arm64-20260905-05/TERMINATION.md`)
 preserves the exact stop reason, unchanged historical source identity and partial
 measurements. The historical macOS/Linux gates bound to source `fffa308bc84d9ab5d015ec7f7f0c33af9b592d04a49ff0005b5633c4ab58ed33`
 do not validate the subsequent changes described below. Fresh
-[macOS](../benchmarks/results/macos-validation-20260905-embedded-audit/evidence.json)
-and [Linux](../benchmarks/results/linux-validation-20260905-embedded-audit/evidence.json)
+macOS (`benchmarks/results/macos-validation-20260905-embedded-audit/evidence.json`)
+and Linux (`benchmarks/results/linux-validation-20260905-embedded-audit/evidence.json`)
 full gates now pass on source
 `a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2`,
 with 186 workspace test entries and zero failures on each platform, strict
 Clippy, formatting and six Python checks. Each platform's actual OpenBao test
-also passed; the fresh [MinIO test](../benchmarks/results/linux-validation-20260905-embedded-audit/minio-evidence.json)
+also passed; the fresh MinIO test (`benchmarks/results/linux-validation-20260905-embedded-audit/minio-evidence.json`)
 passed with a macOS client against a Linux MinIO container. These manifests bind
 the corrected source. The complete measurement matrix remains required.
 

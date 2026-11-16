@@ -8,6 +8,7 @@ target/
 # Benchmark output stays local; results are not tracked
 /kasumi-benchmark.json
 /benchmarks/results/
+/benchmarks/indexer-kv/results/
 *.json.tmp
 
 # Development evidence is a local archive; keep only the retention policy

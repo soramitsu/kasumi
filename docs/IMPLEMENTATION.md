@@ -46,18 +46,18 @@ validation, strict audit failure, snapshot integrity and receipt expiry.
 The current completed combined validation used source
 `28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`:
 188 workspace entries on
-[macOS](../benchmarks/results/macos-validation-20260905-listener/evidence.json)
-and [Linux](../benchmarks/results/linux-validation-20260905-listener/evidence.json),
+macOS (`benchmarks/results/macos-validation-20260905-listener/evidence.json`)
+and Linux (`benchmarks/results/linux-validation-20260905-listener/evidence.json`),
 with strict all-feature/all-target workspace Clippy, formatting, six Python
 tests and one additional actual OpenBao test per platform. The
-[MinIO fixture](../benchmarks/results/linux-validation-20260905-listener/minio-evidence.json)
+MinIO fixture (`benchmarks/results/linux-validation-20260905-listener/minio-evidence.json`)
 used the matching macOS test binary against a pinned Linux container.
 The preceding shutdown source `fffa308b…` passed 177 entries per platform;
 its original manifests remain retained without relabeling their source.
 
 Earlier combined validation passed on frozen source: 167 workspace test entries on
-[macOS](../benchmarks/results/macos-validation-20260905-barrier/evidence.json) and
-[Linux](../benchmarks/results/linux-validation-20260905-barrier/evidence.json),
+macOS (`benchmarks/results/macos-validation-20260905-barrier/evidence.json`) and
+Linux (`benchmarks/results/linux-validation-20260905-barrier/evidence.json`),
 with strict all-feature/all-target workspace Clippy, formatting and two Python
 driver tests. Linux also passed the separate actual OpenBao test. These gates
 bind source fingerprint
@@ -182,7 +182,7 @@ Those fixes do not establish the cause of the separate quorum availability miss.
 Earlier results and execution failures are preserved. The final cohort below
 provides every required case without substituting these interrupted attempts.
 
-The [fifth matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-05/execution.json)
+The fifth matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-05/execution.json`)
 passed the raw/local one-tenant cases. All six replicated workloads and verified
 recovery were checkpointed, but final cleanup was explicitly interrupted before
 implementing the confirmed embedded denial-audit fix.
@@ -193,7 +193,7 @@ misses remain measured capacity findings unless evidence demonstrates a contract
 defect; no launch latency SLA is imposed retrospectively.
 
 
-The [sixth matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json)
+The sixth matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json`)
 attempted all 15 cases on `a3205990…`. Fourteen passed; the 1,000-tenant network
 server exited before readiness with `Invalid argument (os error 22)`, leaving
 that network workload unmeasured. An isolated queued-reset TCP fixture reproduces
@@ -201,16 +201,16 @@ the same macOS error from `TCP_NODELAY`; the listener propagated that accepted-
 connection error to whole-node shutdown. The original failure did not record
 its syscall, so the original trigger remains inferred. The targeted correction
 keeps connection setup failure within its bounded, audited connection task.
-Fresh full platform gates now pass. The [release build](../benchmarks/results/macos-validation-20260905-listener/release-build.json)
+Fresh full platform gates now pass. The release build (`benchmarks/results/macos-validation-20260905-listener/release-build.json`)
 proves that `kasumi-bench` is byte-identical to run06, while the server and
 loopback fixture incorporate the listener correction. The
-[network supplement](../benchmarks/results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md)
+network supplement (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md`)
 repeated all three network counts successfully, including recovery. The final
 1,000-tenant server shut down in 1.608 seconds and recovered with verified reads
 in 52.016 seconds on this shared macOS host.
 
-The [cohort manifest](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json)
-and [capacity view](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json)
+The cohort manifest (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json`)
+and capacity view (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json`)
 bind all fifteen selected cases to their original raw records. All 99 workloads
 completed 1,000 successful operations each. The report separates raw/shared/owned
 access, local and quorum durability, authenticated RPC/MCP, and indexed text;

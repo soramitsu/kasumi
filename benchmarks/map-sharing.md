@@ -24,7 +24,7 @@ count. This establishes that copying hash-map nodes deep-cloned unrelated JSON
 values in this workload.
 
 The raw samples and context are in
-[`results/map-sharing-exploratory.json`](results/map-sharing-exploratory.json).
+`results/map-sharing-exploratory.json` (`benchmarks/results/map-sharing-exploratory.json`).
 A 1,000-tenant Kasumi baseline was opening groups and other Rust builds were
 active on the machine. This is mechanism evidence, not an isolated capacity
 measurement. The experiment excludes validation, durability, replication,

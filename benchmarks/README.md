@@ -1,12 +1,16 @@
 # Kasumi benchmark protocol
 
+Benchmark output under `benchmarks/results/` and `benchmarks/indexer-kv/results/`
+stays on the machine that produced it and is not tracked in the repository.
+Paths to result files in these documents name that local output.
+
 The [Polkaswap storage comparison](indexer-kv/RESULTS.md) separately measures
 durable indexing and sealed historical reads on a reproducible Stats workload.
 
 The [measured v1 results](RESULTS.md) cover all fifteen required cases and 99,000
-successful operations. The [cohort manifest](results/release-cohort-macos-arm64-20260905-listener/cohort.json)
+successful operations. The cohort manifest (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json`)
 retains twelve unchanged embedded observations and three corrected-network
-observations at their original source identities. The [portable report tools](results/release-cohort-macos-arm64-20260905-listener/tooling/COHORT-RENDERING.md)
+observations at their original source identities. The portable report tools (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/tooling/COHORT-RENDERING.md`)
 regenerate the derived report. Shared-host and sample limitations are explicit;
 these measurements establish no Redis speed ratio or production SLA.
 

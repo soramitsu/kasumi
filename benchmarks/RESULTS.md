@@ -6,29 +6,29 @@ capacity or performance. A fresh matrix is required for the native engine.
 
 Recorded cohort outcome: **`completed_under_host_load`**. Full measurement coverage: **yes**. This report selects twelve unchanged engine measurements and three later network case outcomes. It is not a single execution or a relabeling of old results as corrected-source measurements. Shared-host observations do not establish production capacity, a launch SLA or a Redis speed ratio.
 
-The [cohort manifest](results/release-cohort-macos-arm64-20260905-listener/cohort.json) binds every selected origin, and the [derived capacity view](results/release-cohort-macos-arm64-20260905-listener/capacity.json) retains those origins. The original [run06 manifest](results/release-matrix-macos-arm64-20260905-06/matrix.json), [host samples](results/release-matrix-macos-arm64-20260905-06/host-samples.jsonl) and [run notes](results/release-matrix-macos-arm64-20260905-06/RUN_NOTES.md), and the network supplement's [manifest](results/network-rerun-macos-arm64-20260905-listener/matrix.json), [host samples](results/network-rerun-macos-arm64-20260905-listener/host-samples.jsonl) and [run notes](results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md) remain separate records.
+The cohort manifest (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json`) binds every selected origin, and the derived capacity view (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json`) retains those origins. The original run06 manifest (`benchmarks/results/release-matrix-macos-arm64-20260905-06/matrix.json`), host samples (`benchmarks/results/release-matrix-macos-arm64-20260905-06/host-samples.jsonl`) and run notes (`benchmarks/results/release-matrix-macos-arm64-20260905-06/RUN_NOTES.md`), and the network supplement's manifest (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/matrix.json`), host samples (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/host-samples.jsonl`) and run notes (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/RUN_NOTES.md`) remain separate records.
 
 ## Cohort provenance
 
-The twelve raw/local/replicated/text cases retain source `a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2`. Network cases use corrected source `28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`. The complete [source-change proof](results/listener-startup-20260905/source-change.json) contains exactly one changed file, server `tls.rs`; dependencies and engine/benchmark sources are unchanged. Reuse additionally requires the new release build to produce the exact previously measured `kasumi-bench` SHA256 `a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7`. Network client, fixture launcher and server identities are bound to their new release build. All raw hashes, original source labels and the unsuccessful earlier network case are preserved.
+The twelve raw/local/replicated/text cases retain source `a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2`. Network cases use corrected source `28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`. The complete source-change proof (`benchmarks/results/listener-startup-20260905/source-change.json`) contains exactly one changed file, server `tls.rs`; dependencies and engine/benchmark sources are unchanged. Reuse additionally requires the new release build to produce the exact previously measured `kasumi-bench` SHA256 `a1f93ade86ddfe7096bb0afccc9ae72b4f196254657595d4f6409525f0be52b7`. Network client, fixture launcher and server identities are bound to their new release build. All raw hashes, original source labels and the unsuccessful earlier network case are preserved.
 
 | Case | Origin | Recorded outcome |
 | --- | --- | --- |
-| [raw-1](results/release-matrix-macos-arm64-20260905-06/raw-1.json) | run06 / a3205990 | passed |
-| [local-1](results/release-matrix-macos-arm64-20260905-06/local-1.json) | run06 / a3205990 | passed |
-| [replicated-1](results/release-matrix-macos-arm64-20260905-06/replicated-1.json) | run06 / a3205990 | passed |
-| [text-1](results/release-matrix-macos-arm64-20260905-06/text-1.json) | run06 / a3205990 | passed |
-| [network-1](results/network-rerun-macos-arm64-20260905-listener/network-1.json) | network supplement / 28aeb801 | passed |
-| [raw-100](results/release-matrix-macos-arm64-20260905-06/raw-100.json) | run06 / a3205990 | passed |
-| [local-100](results/release-matrix-macos-arm64-20260905-06/local-100.json) | run06 / a3205990 | passed |
-| [replicated-100](results/release-matrix-macos-arm64-20260905-06/replicated-100.json) | run06 / a3205990 | passed |
-| [text-100](results/release-matrix-macos-arm64-20260905-06/text-100.json) | run06 / a3205990 | passed |
-| [network-100](results/network-rerun-macos-arm64-20260905-listener/network-100.json) | network supplement / 28aeb801 | passed |
-| [raw-1000](results/release-matrix-macos-arm64-20260905-06/raw-1000.json) | run06 / a3205990 | passed |
-| [local-1000](results/release-matrix-macos-arm64-20260905-06/local-1000.json) | run06 / a3205990 | passed |
-| [replicated-1000](results/release-matrix-macos-arm64-20260905-06/replicated-1000.json) | run06 / a3205990 | passed |
-| [text-1000](results/release-matrix-macos-arm64-20260905-06/text-1000.json) | run06 / a3205990 | passed |
-| [network-1000](results/network-rerun-macos-arm64-20260905-listener/network-1000.json) | network supplement / 28aeb801 | passed |
+| raw-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1.json`) | run06 / a3205990 | passed |
+| local-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/local-1.json`) | run06 / a3205990 | passed |
+| replicated-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-1.json`) | run06 / a3205990 | passed |
+| text-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1.json`) | run06 / a3205990 | passed |
+| network-1 (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/network-1.json`) | network supplement / 28aeb801 | passed |
+| raw-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-100.json`) | run06 / a3205990 | passed |
+| local-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/local-100.json`) | run06 / a3205990 | passed |
+| replicated-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-100.json`) | run06 / a3205990 | passed |
+| text-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/text-100.json`) | run06 / a3205990 | passed |
+| network-100 (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/network-100.json`) | network supplement / 28aeb801 | passed |
+| raw-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1000.json`) | run06 / a3205990 | passed |
+| local-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/local-1000.json`) | run06 / a3205990 | passed |
+| replicated-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-1000.json`) | run06 / a3205990 | passed |
+| text-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1000.json`) | run06 / a3205990 | passed |
+| network-1000 (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/network-1000.json`) | network supplement / 28aeb801 | passed |
 
 ## Dataset and guarantees
 
@@ -146,7 +146,7 @@ All latency columns use **microseconds**; displayed values are rounded. Throughp
 
 ### Filesystem activity during setup
 
-The [incremental-cache cleanup record](results/release-matrix-macos-arm64-20260905-06/artifact-cleanup-incremental/result.json) records filesystem activity from 2026-09-05T11:32:37.361619+00:00 through 2026-09-05T11:33:14.871082+00:00, while local-1000 was in progress. Inventoried Cargo incremental caches were removed; the record preserves unchanged source and 130,488 retained compiled files. This overlapped collection setup and may have extended into initial loading based on the case start and recorded phase durations; phase checkpoints have no exact timestamps. Setup/load timing and subsequent host I/O/cache state are additionally qualified. No isolated setup cost or causal performance improvement is inferred. [Run notes](results/release-matrix-macos-arm64-20260905-06/RUN_NOTES.md) retain the cleanup scope and tradeoff.
+The incremental-cache cleanup record (`benchmarks/results/release-matrix-macos-arm64-20260905-06/artifact-cleanup-incremental/result.json`) records filesystem activity from 2026-09-05T11:32:37.361619+00:00 through 2026-09-05T11:33:14.871082+00:00, while local-1000 was in progress. Inventoried Cargo incremental caches were removed; the record preserves unchanged source and 130,488 retained compiled files. This overlapped collection setup and may have extended into initial loading based on the case start and recorded phase durations; phase checkpoints have no exact timestamps. Setup/load timing and subsequent host I/O/cache state are additionally qualified. No isolated setup cost or causal performance improvement is inferred. Run notes (`benchmarks/results/release-matrix-macos-arm64-20260905-06/RUN_NOTES.md`) retain the cleanup scope and tradeoff.
 
 ### English and Japanese indexed text
 
@@ -278,28 +278,28 @@ The cohort manifest records 15 of 15 expected case outcomes. Terminal case cover
 
 | Case | Recorded outcome | Exit code |
 | --- | --- | --- |
-| [raw-1](results/release-matrix-macos-arm64-20260905-06/raw-1.json) | passed | 0 |
-| [local-1](results/release-matrix-macos-arm64-20260905-06/local-1.json) | passed | 0 |
-| [replicated-1](results/release-matrix-macos-arm64-20260905-06/replicated-1.json) | passed | 0 |
-| [text-1](results/release-matrix-macos-arm64-20260905-06/text-1.json) | passed | 0 |
-| [network-1](results/network-rerun-macos-arm64-20260905-listener/network-1.json) | passed | 0 |
-| [raw-100](results/release-matrix-macos-arm64-20260905-06/raw-100.json) | passed | 0 |
-| [local-100](results/release-matrix-macos-arm64-20260905-06/local-100.json) | passed | 0 |
-| [replicated-100](results/release-matrix-macos-arm64-20260905-06/replicated-100.json) | passed | 0 |
-| [text-100](results/release-matrix-macos-arm64-20260905-06/text-100.json) | passed | 0 |
-| [network-100](results/network-rerun-macos-arm64-20260905-listener/network-100.json) | passed | 0 |
-| [raw-1000](results/release-matrix-macos-arm64-20260905-06/raw-1000.json) | passed | 0 |
-| [local-1000](results/release-matrix-macos-arm64-20260905-06/local-1000.json) | passed | 0 |
-| [replicated-1000](results/release-matrix-macos-arm64-20260905-06/replicated-1000.json) | passed | 0 |
-| [text-1000](results/release-matrix-macos-arm64-20260905-06/text-1000.json) | passed | 0 |
-| [network-1000](results/network-rerun-macos-arm64-20260905-listener/network-1000.json) | passed | 0 |
+| raw-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1.json`) | passed | 0 |
+| local-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/local-1.json`) | passed | 0 |
+| replicated-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-1.json`) | passed | 0 |
+| text-1 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1.json`) | passed | 0 |
+| network-1 (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/network-1.json`) | passed | 0 |
+| raw-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-100.json`) | passed | 0 |
+| local-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/local-100.json`) | passed | 0 |
+| replicated-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-100.json`) | passed | 0 |
+| text-100 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/text-100.json`) | passed | 0 |
+| network-100 (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/network-100.json`) | passed | 0 |
+| raw-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/raw-1000.json`) | passed | 0 |
+| local-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/local-1000.json`) | passed | 0 |
+| replicated-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/replicated-1000.json`) | passed | 0 |
+| text-1000 (`benchmarks/results/release-matrix-macos-arm64-20260905-06/text-1000.json`) | passed | 0 |
+| network-1000 (`benchmarks/results/network-rerun-macos-arm64-20260905-listener/network-1000.json`) | passed | 0 |
 
 
 All selected cases in this cohort completed and matched their recorded result/executable identities.
 
-The [first matrix](results/release-matrix-macos-arm64-20260905-01/matrix.json) failed at a replicated balanced-workload read. The [investigation](../docs/read-barrier-investigation.md) separates that observed failure from the controlled regressions proving snapshot scheduling and bounded fresh-quorum retry fixes. The [second matrix](results/release-matrix-macos-arm64-20260905-02/matrix.json) was interrupted to correct a disk-guard precedence bug; its completed raw case and partial local load are retained. The [third matrix](results/release-matrix-macos-arm64-20260905-03/matrix.json) passed the raw/local/replicated one-tenant cases and then stopped with a broken driver output pipe. The [fourth matrix](results/release-matrix-macos-arm64-20260905-04/TERMINATION.md) retained a separate five-second replicated read-quorum timeout and a redb reopen failure, then was explicitly stopped. The [shutdown investigation](../docs/shutdown-investigation.md) documents worker lifetime fixes and their controlled regressions; it does not claim the quorum timeout was caused by that defect. The [fifth matrix](results/release-matrix-macos-arm64-20260905-05/TERMINATION.md) passed raw/local; its replicated case completed all six 1,000-operation workloads and verified recovery, then was explicitly interrupted before final cleanup to correct missing embedded denial audits. The [audit investigation](../docs/embedded-audit-investigation.md) records that contract gap and its focused corrections. Subsequent runs log to regular files independently of the initiating tool session. Incomplete runs are not substituted for a completed matrix.
+The first matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-01/matrix.json`) failed at a replicated balanced-workload read. The [investigation](../docs/read-barrier-investigation.md) separates that observed failure from the controlled regressions proving snapshot scheduling and bounded fresh-quorum retry fixes. The second matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-02/matrix.json`) was interrupted to correct a disk-guard precedence bug; its completed raw case and partial local load are retained. The third matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-03/matrix.json`) passed the raw/local/replicated one-tenant cases and then stopped with a broken driver output pipe. The fourth matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-04/TERMINATION.md`) retained a separate five-second replicated read-quorum timeout and a redb reopen failure, then was explicitly stopped. The [shutdown investigation](../docs/shutdown-investigation.md) documents worker lifetime fixes and their controlled regressions; it does not claim the quorum timeout was caused by that defect. The fifth matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-05/TERMINATION.md`) passed raw/local; its replicated case completed all six 1,000-operation workloads and verified recovery, then was explicitly interrupted before final cleanup to correct missing embedded denial audits. The [audit investigation](../docs/embedded-audit-investigation.md) records that contract gap and its focused corrections. Subsequent runs log to regular files independently of the initiating tool session. Incomplete runs are not substituted for a completed matrix.
 
-The [sixth matrix](results/release-matrix-macos-arm64-20260905-06/TERMINATION.md) completed fourteen cases, then its 1,000-tenant network fixture exited before readiness with `Invalid argument (os error 22)`. No network-1000 workload or document load ran. The [listener investigation](../docs/listener-startup-investigation.md) distinguishes the reproduced macOS reset-socket mechanism and connection-isolation correction from the inferred original syscall. The original failure is retained even if a later corrected network case succeeds. A configured 1,000-group entry in its partial capacity report does not prove those groups became ready.
+The sixth matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-06/TERMINATION.md`) completed fourteen cases, then its 1,000-tenant network fixture exited before readiness with `Invalid argument (os error 22)`. No network-1000 workload or document load ran. The [listener investigation](../docs/listener-startup-investigation.md) distinguishes the reproduced macOS reset-socket mechanism and connection-isolation correction from the inferred original syscall. The original failure is retained even if a later corrected network case succeeds. A configured 1,000-group entry in its partial capacity report does not prove those groups became ready.
 
 Owned embedded reads precede shared reads over the same deterministic IDs. Owned calls return a document clone; shared calls return a retained immutable handle. Raw borrowing and these authenticated return paths have different contracts and cache state, so their ratio does not isolate the copying cost. Raw maps run in another process. Native RPC precedes MCP on the same server with a warmup read per credential. Cache state, retained allocations, receipts and audit growth therefore differ across these paths. Comparing their numerical ratios does not isolate one implementation cost or justify a Redis multiplier.
 

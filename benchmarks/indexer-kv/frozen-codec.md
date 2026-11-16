@@ -33,4 +33,4 @@ ARM64 Linux bottle (verified layer SHA-256
 `84c243b567cdc3890b3d5ce2a4717cab24107062cc31dcdac45d2966fe60054e`).
 The same worker compiled against its matching headers with Debian g++ 14;
 the dynamic library used LZ4 and gflags 2.3.1. Its raw replay and the hashes
-of both native workers are in the [four-way Linux results](results/live-default-linux-four-way.json.gz).
+of both native workers are in the four-way Linux results (`benchmarks/indexer-kv/results/live-default-linux-four-way.json.gz`).

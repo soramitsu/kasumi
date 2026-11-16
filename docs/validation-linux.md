@@ -12,12 +12,12 @@ The refreshed Linux gate passed on frozen source
 - The current macOS storage test binary also passed the real MinIO fixture
   against the pinned Linux container.
 
-The [machine-readable gate record](../benchmarks/results/linux-validation-20260905-listener/evidence.json)
+The machine-readable gate record (`benchmarks/results/linux-validation-20260905-listener/evidence.json`)
 contains the exact command, immutable image ID, process IDs, source hashes,
 exit status, counts and log hashes. The source fingerprint was unchanged before
 and after the run and matches the
-[188-entry macOS workspace gate](../benchmarks/results/macos-validation-20260905-listener/evidence.json).
-The complete [Linux output](../benchmarks/results/linux-validation-20260905-listener/full-gate.log)
+188-entry macOS workspace gate (`benchmarks/results/macos-validation-20260905-listener/evidence.json`).
+The complete Linux output (`benchmarks/results/linux-validation-20260905-listener/full-gate.log`)
 includes every test and the real-service invocation.
 
 ## Environment and command
@@ -32,7 +32,7 @@ uses Rust/Cargo 1.94.1 and immutable image ID
 The container has six CPUs and a 14 GiB memory limit, with no additional swap
 allowance. It reuses `target/linux-validation` and the existing Cargo registry
 mount. Cargo ran offline with its native jobserver. The exact historical command
-is retained in the [machine-readable gate record](../benchmarks/results/linux-validation-20260905-listener/evidence.json).
+is retained in the machine-readable gate record (`benchmarks/results/linux-validation-20260905-listener/evidence.json`).
 New functional release runs use the canonical [`release_gate.py`](../scripts/release_gate.py)
 runner and the current [release checklist](release-checklist.md).
 
@@ -74,7 +74,7 @@ barriers, concurrent historical pagination, native/MCP lost-response resolution,
 exact queries, multilingual indexing, authentication, authorization, audits,
 key rotation and backup/restore. This software gate does not establish that the
 full million-document capacity matrix passes. In particular, the retained
-[fourth matrix](../benchmarks/results/release-matrix-macos-arm64-20260905-04/matrix.json)
+fourth matrix (`benchmarks/results/release-matrix-macos-arm64-20260905-04/matrix.json`)
 records both a read deadline failure and an immediate-reopen ownership failure;
 passing focused lifecycle tests must not erase those observations or stand in
 for a fresh full-size run.
@@ -87,8 +87,8 @@ revocation. The fetcher verifies the Linux arm64 release archive against
 `1b408e01f3565ac0cbcb88d637dca271d0515148fb72efdeff4473a34fa50c4e` before
 extracting its regular `bao` member to a fixed destination.
 
-The [current MinIO evidence](../benchmarks/results/linux-validation-20260905-listener/minio-evidence.json)
-and [test output](../benchmarks/results/linux-validation-20260905-listener/minio-live.log)
+The current MinIO evidence (`benchmarks/results/linux-validation-20260905-listener/minio-evidence.json`)
+and test output (`benchmarks/results/linux-validation-20260905-listener/minio-live.log`)
 record a macOS arm64 client against the official Linux arm64 container. The
 client was built by the passing macOS gate above; its SHA-256 is
 `0c6b41dd14fd540a7cd5bcd72989f1b94efc0a1ebe756b89abf285f84404d967`.
@@ -103,17 +103,17 @@ Linux MinIO client, a live HashiCorp Vault deployment, or every S3 provider.
 Both fixture containers exited and the Docker inventory was empty. The
 validation wrapper and clients exited; only the dedicated `kasumi-validation`
 profile was stopped before benchmarking. The profile and VM stop are recorded
-in [cleanup evidence](../benchmarks/results/linux-validation-20260905-listener/colima-stop.log).
+in cleanup evidence (`benchmarks/results/linux-validation-20260905-listener/colima-stop.log`).
 Other profiles remained stopped and were not modified.
 
 ## Retained earlier evidence
 
-The [previous 186-entry embedded-audit gate](../benchmarks/results/linux-validation-20260905-embedded-audit/)
-remains available. The [earlier 177-entry shutdown gate](../benchmarks/results/linux-validation-20260905-shutdown/)
-remains available. The [earlier 167-entry gate](../benchmarks/results/linux-validation-20260905-barrier/)
+The previous 186-entry embedded-audit gate (`benchmarks/results/linux-validation-20260905-embedded-audit/`)
+remains available. The earlier 177-entry shutdown gate (`benchmarks/results/linux-validation-20260905-shutdown/`)
+remains available. The earlier 167-entry gate (`benchmarks/results/linux-validation-20260905-barrier/`)
 and its subsequent Python guard supplement remain available. Earlier
-[157-entry, MinIO and static systemd evidence](../benchmarks/results/linux-validation-20260905-final/)
-and [initial attempts](../benchmarks/results/linux-validation-20260905/)
+157-entry, MinIO and static systemd evidence (`benchmarks/results/linux-validation-20260905-final/`)
+and initial attempts (`benchmarks/results/linux-validation-20260905/`)
 are retained as history. They do not replace the refreshed gate.
 
 The unchanged `deploy/kasumi.service` previously passed `systemd-analyze verify`

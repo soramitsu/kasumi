@@ -10,8 +10,8 @@ not declare the full release complete: the full-size measurement matrix and its
 interpretation remain separate deliverables.
 
 The primary execution records are the
-[macOS workspace log](../benchmarks/results/macos-validation-20260905-shutdown/1-test.log)
-and [Linux full-gate log](../benchmarks/results/linux-validation-20260905-shutdown/full-gate.log).
+macOS workspace log (`benchmarks/results/macos-validation-20260905-shutdown/1-test.log`)
+and Linux full-gate log (`benchmarks/results/linux-validation-20260905-shutdown/full-gate.log`).
 Both contain the named tests below and have zero failures. Their manifests bind
 the same source before and after execution. Review included the assertions and
 implementation paths, rather than treating the test count or checklist as proof.
@@ -53,13 +53,13 @@ retained adapter routing/protocol/response-fence audits. Its focused tests
 establish exactly one denial record across embedded/native/MCP and continued
 durable coverage before dispatch and after encoding. These are subsequent
 changes, not claims about the earlier frozen source. Fresh
-[macOS](../benchmarks/results/macos-validation-20260905-embedded-audit/evidence.json)
-and [Linux](../benchmarks/results/linux-validation-20260905-embedded-audit/evidence.json)
+macOS (`benchmarks/results/macos-validation-20260905-embedded-audit/evidence.json`)
+and Linux (`benchmarks/results/linux-validation-20260905-embedded-audit/evidence.json`)
 gates now pass on source
 `a3205990001d86ea66e4ac457fba29ef634b7b6923dfdaa5d80cf2916d517df2`:
 186 workspace test entries with zero failures on each platform, strict Clippy,
 formatting, six Python checks and one actual OpenBao test per platform. The
-fresh [MinIO test](../benchmarks/results/linux-validation-20260905-embedded-audit/minio-evidence.json)
+fresh MinIO test (`benchmarks/results/linux-validation-20260905-embedded-audit/minio-evidence.json`)
 also passed using the corrected source. Complete release measurements remain
 required before final release acceptance.
 
@@ -68,19 +68,19 @@ required before final release acceptance.
 The historical identities and conclusions above are retained. The current
 review covers source
 `28aeb80168d3ab02a0eec7bf2a0163a7cb99dbfd74adf596e849de17e1fa3c1d`.
-The [source-change manifest](../benchmarks/results/listener-startup-20260905/source-change.json)
+The source-change manifest (`benchmarks/results/listener-startup-20260905/source-change.json`)
 proves that only `crates/kasumi-server/src/tls.rs` changed after the corrected
 `a320…` source. Its connection setup failure now closes and audits that connection
 while allowing the listener to serve subsequent clients.
 
-The current [macOS gate](../benchmarks/results/macos-validation-20260905-listener/evidence.json)
-and [Linux gate](../benchmarks/results/linux-validation-20260905-listener/evidence.json)
+The current macOS gate (`benchmarks/results/macos-validation-20260905-listener/evidence.json`)
+and Linux gate (`benchmarks/results/linux-validation-20260905-listener/evidence.json`)
 each passed **188 workspace test entries**, with zero failures and two explicit
 external-service opt-ins ignored in the workspace invocation. Strict Clippy,
 formatting and six Python tests passed. Actual OpenBao passed separately on
-[macOS](../benchmarks/results/macos-validation-20260905-listener/5-test.log)
-and [Linux](../benchmarks/results/linux-validation-20260905-listener/full-gate.log).
-The [MinIO evidence](../benchmarks/results/linux-validation-20260905-listener/minio-evidence.json)
+macOS (`benchmarks/results/macos-validation-20260905-listener/5-test.log`)
+and Linux (`benchmarks/results/linux-validation-20260905-listener/full-gate.log`).
+The MinIO evidence (`benchmarks/results/linux-validation-20260905-listener/minio-evidence.json`)
 records a passing current macOS client against the pinned Linux container.
 These records bind unchanged source hashes and preserve the client/platform
 distinction.
@@ -88,8 +88,8 @@ distinction.
 A narrow read-only review of the evaluator, schema validator, text reader
 publication, pagination and adapter dispatch/release paths found no additional
 uncovered query/interface requirement within the documented limits. The
-[macOS test log](../benchmarks/results/macos-validation-20260905-listener/1-test.log)
-and [Linux test log](../benchmarks/results/linux-validation-20260905-listener/full-gate.log)
+macOS test log (`benchmarks/results/macos-validation-20260905-listener/1-test.log`)
+and Linux test log (`benchmarks/results/linux-validation-20260905-listener/full-gate.log`)
 both contain these direct checks:
 
 - `indexed_boolean_filters_match_independent_reference_evaluator`,
@@ -113,7 +113,7 @@ replacement measurement outcome, production capacity, or a speedup claim.
 ## Release closure after completed measurements
 
 The measurement prerequisite recorded above is now satisfied by the
-[selected cohort](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json):
+selected cohort (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/cohort.json`):
 **15 passing cases and 99,000 successful measured operations**, with zero failed
 or unattempted operations. Each case loaded one million 1 KiB documents across
 1, 100 or 1,000 tenants. Coverage includes raw access, embedded reads, local and
@@ -127,7 +127,7 @@ one execution. Twelve engine cases retain their original `a320…` identity and
 exact matching engine executable; all three network cases use `28aeb…` after the
 proven TLS-only change. The earlier network startup failure remains archived.
 The [results](../benchmarks/RESULTS.md) and
-[capacity evidence](../benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json)
+capacity evidence (`benchmarks/results/release-cohort-macos-arm64-20260905-listener/capacity.json`)
 retain the original records, host-load qualifications, setup filesystem activity,
 separate interface guarantees and sample-size limits. They establish neither
 maximum production capacity nor a Redis speedup ratio.

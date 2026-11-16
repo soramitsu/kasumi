@@ -8,7 +8,7 @@ recovery phase, and failed opening the same durable file:
 opening durable database: Database already open. Cannot acquire lock.
 ```
 
-The [retained run04 report](../benchmarks/results/release-matrix-macos-arm64-20260905-04/replicated-1.json)
+The retained run04 report (`benchmarks/results/release-matrix-macos-arm64-20260905-04/replicated-1.json`)
 also records a separate availability failure: balanced traffic completed 10 of
 1,000 operations, then a read returned `UNAVAILABLE` after 5,001,772 microseconds;
 989 operations were unattempted. Owned reads, shared reads, durable writes,
@@ -16,11 +16,11 @@ also records a separate availability failure: balanced traffic completed 10 of
 operations. The shutdown fix must not be described as proof that this read
 deadline failure is resolved. See the [read-barrier investigation](read-barrier-investigation.md).
 
-The preceding [run03 replicated result](../benchmarks/results/release-matrix-macos-arm64-20260905-03/replicated-1.json)
+The preceding run03 replicated result (`benchmarks/results/release-matrix-macos-arm64-20260905-03/replicated-1.json`)
 completed all six workloads and verified recovery. That earlier success does
 not invalidate the later ownership failure or establish repeatability. Run04
 was explicitly interrupted before the shutdown changes; its exact terminal
-status and retained measurements are documented in [TERMINATION.md](../benchmarks/results/release-matrix-macos-arm64-20260905-04/TERMINATION.md).
+status and retained measurements are documented in TERMINATION.md (`benchmarks/results/release-matrix-macos-arm64-20260905-04/TERMINATION.md`).
 
 ## Ownership boundary and changes
 
@@ -66,26 +66,26 @@ it adds no file-lock retry, failed-operation retry, or enlarged deadline.
   store. Releasing the callback allows immediate file reopen and recovery of
   the acknowledged value, without sleep or retry. The resource-drop ordering
   and canceled blocking-persistence ownership tests also pass in
-  [the focused Raft log](../benchmarks/results/macos-validation-20260905-shutdown/1-test.log).
+  the focused Raft log (`benchmarks/results/macos-validation-20260905-shutdown/1-test.log`).
 - [Store regressions](../crates/kasumi-store/src/tests.rs) hold a real background
   decrypt probe, cancel the first shutdown caller, then verify a subsequent
   shutdown joins the probe, releases the node, and permits immediate durable
   reopen. A second regression fences background registration racing shutdown.
-  Both pass in [the store log](../benchmarks/results/macos-validation-20260905-shutdown/1-test.log).
+  Both pass in the store log (`benchmarks/results/macos-validation-20260905-shutdown/1-test.log`).
 - The [Database regression](../crates/kasumi-engine/tests/shutdown.rs) performs
   four immediate close/reopen rounds with batches and durable receipts, an
   active cursor, a triggered snapshot, concurrent shutdown callers, and a
-  retained plaintext handle. It passes in [the engine log](../benchmarks/results/macos-validation-20260905-shutdown/1-test.log).
+  retained plaintext handle. It passes in the engine log (`benchmarks/results/macos-validation-20260905-shutdown/1-test.log`).
   The work-registration drain also has a separate regression.
 - The server regression
   `startup_and_serving_drains_finish_live_tls_requests_before_reopening_node`
-  passes in [its focused log](../benchmarks/results/macos-validation-20260905-shutdown/1-test.log), covering
+  passes in its focused log (`benchmarks/results/macos-validation-20260905-shutdown/1-test.log`), covering
   live TLS request ownership during startup and serving cleanup.
-- The [embedded smoke result](../benchmarks/results/shutdown-lifecycle-smoke-macos-debug.json)
+- The embedded smoke result (`benchmarks/results/shutdown-lifecycle-smoke-macos-debug.json`)
   completes raw/local/replicated/text modes with 100 exact 1 KiB documents,
   eight operations per workload, and 1/3 tenants. The
-  [one-tenant](../benchmarks/results/network-shutdown-lifecycle-smoke-macos-debug-1.json)
-  and [three-tenant network results](../benchmarks/results/network-shutdown-lifecycle-smoke-macos-debug-3.json)
+  one-tenant (`benchmarks/results/network-shutdown-lifecycle-smoke-macos-debug-1.json`)
+  and three-tenant network results (`benchmarks/results/network-shutdown-lifecycle-smoke-macos-debug-3.json`)
   complete all native RPC/MCP workloads and clean server restarts with real
   OpenBao, TLS, and authentication. These are development smoke measurements.
 

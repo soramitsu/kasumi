@@ -45,7 +45,7 @@ All workloads pick keys uniformly at random from the loaded key space
 | `mixed` | 90% `Get`, 10% one-upsert `Mutate` | 90% `GET`, 10% `MULTI; SET; ZADD; EXEC` |
 | `batch-read` | `ReadSnapshot` of 10 distinct documents | `MGET` of 10 keys |
 | `batch-write` | `Mutate` with 10 upserts | `MULTI; MSET (10); ZADD (10); EXEC` |
-| `range-scan` | `Query` `/n` in `[s, s+50)`, sorted by `/n`, limit 50 | one `EVALSHA`: `ZRANGE idx:n s (s+50 BYSCORE LIMIT 0 50` then `MGET` |
+| `range-scan` | `Query` `/n` in `s, s+50)`, sorted by `/n`, limit 50 | one `EVALSHA`: `ZRANGE idx:n s (s+50 BYSCORE LIMIT 0 50` then `MGET` |
 
 Every response is checked: reads must return every requested document, range
 scans exactly 50 rows, and writes a successful receipt or `EXEC` reply.
@@ -141,7 +141,7 @@ distinct fresh idle publications after the request returns. That prevents an
 old idle snapshot from satisfying the wait. The retained follow-up runs below
 predate this final freshness guard; their raw rows keep cycle numbers, wait
 times and status ages.
-An [interrupted follow-up run](results/redis-comparison-20261106/dx-followup/interrupted-compaction-wait.jsonl)
+An [interrupted follow-up run (`benchmarks/results/redis-comparison-20261106/dx-followup/interrupted-compaction-wait.jsonl`)
 exposed that harness bug after its two point-write cases; it is retained
 separately and excluded from the paired summaries.
 Use one of them to compare builds on a change that is not about compaction;
@@ -163,8 +163,8 @@ Kasumi 6ff7734d (release profile: thin LTO, one codegen unit), Redis 8.10.3
 100,000 keys of 1,024-byte documents, 30 s measured after a 3 s warmup.
 The host was shared and loaded: load averages ranged from 19 to 160 across
 rows and are recorded per row in the raw results
-([Kasumi](results/redis-comparison-20261106/kasumi-6ff7734d.jsonl),
-[Redis](results/redis-comparison-20261106/redis-8.10.3.jsonl)). The Redis
+(Kasumi (`benchmarks/results/redis-comparison-20261106/kasumi-6ff7734d.jsonl`),
+Redis (`benchmarks/results/redis-comparison-20261106/redis-8.10.3.jsonl`)). The Redis
 systems ran interleaved; Kasumi ran afterwards on its own because its first
 two loads failed (see below). Treat differences under about 2x as noise.
 
@@ -287,8 +287,8 @@ threads over 8 seconds; they rank costs, they are not exact shares.
 The per-connection row comes from a separate A/B run of two builds without
 LTO at 51f47f27 (10,000 documents of 1 KiB, 15 s per case, two alternating
 rounds per build for reads and four for writes and mixed, medians, host load
-average 90–510 from other work; [raw
-results](results/redis-comparison-20261106/per-connection-audit/), same host
+average 90–510 from other work; raw
+results (`benchmarks/results/redis-comparison-20261106/per-connection-audit/`), same host
 and harness), so compare it only with its own baseline column. Writes did
 not change beyond noise in that run. In that run a point write, like a batch
 of ten documents, cost two kv commits: the journal append and the apply
@@ -320,8 +320,8 @@ has the ranges and the profile. The 16-client mixed case is bound by the seriali
 writes, and its slow runs coincided with an active compaction cycle.
 
 The compaction row tested whether the change lets the store's maintenance
-worker compete harder with foreground writes ([raw
-results](results/redis-comparison-20261106/compaction-ab/), same host,
+worker compete harder with foreground writes (raw
+results (`benchmarks/results/redis-comparison-20261106/compaction-ab/`), same host,
 harness, document count and durations). It does not. Where a cycle falls
 depends on how much the earlier cases wrote: the load of 10,000 documents
 leaves about 229 MB of retained files against a 268 MB trigger, so the first
@@ -355,8 +355,8 @@ The journal row compares two builds without LTO at a7c4c178 (10,000
 documents of 1 KiB, 20 s per case, `--workloads point-write,batch-write`,
 four alternating rounds per build in ABBA order, each in a quiet window: no
 other harness driver or Kasumi test binary, a 4 KiB `F_FULLFSYNC` p50 of
-5.5–7.4 ms, load average 16–54; medians; [raw
-results](results/redis-comparison-20261106/journal-with-apply/)). A
+5.5–7.4 ms, load average 16–54; medians; raw
+results (`benchmarks/results/redis-comparison-20261106/journal-with-apply/`)). A
 `sync-trace` build of the change counted no journal append and no separate
 apply commit in either write workload: one commit per write, at 6.0–6.1
 syncs each. The 100-document load batches keep their append, apply and
@@ -454,9 +454,9 @@ Two correctness fixes accompany those changes:
   zero errors; the same reader build completed 18,179 batch reads and 2,273
   scans without errors. These establish a regression check, not a general
   availability guarantee or a throughput improvement under changing load.
-  [Raw replays](results/redis-comparison-20261106/dx-followup/reader-replays.jsonl)
+  Raw replays (`benchmarks/results/redis-comparison-20261106/dx-followup/reader-replays.jsonl`)
   include the failed baseline rows;
-  [binary hashes](results/redis-comparison-20261106/dx-followup/reader-builds.json)
+  binary hashes (`benchmarks/results/redis-comparison-20261106/dx-followup/reader-builds.json`)
   identify this intermediate reader build, which precedes the final grouped
   receipt-credit lifetime fix.
 - A durable publication held the tenant key-state read lock while waiting
@@ -475,8 +475,8 @@ available stack sample preceded that warning by nearly twelve minutes and
 does not identify the terminal stall. Maintenance and warmup still hold an
 opening lock needed by reader registration; the lease fix does not establish
 a bound on those waits or on an operating system device flush.
-The retained [probe samples](results/redis-comparison-20261106/dx-followup/compaction-flush-probe.txt)
-and [warning/percentile summary](results/redis-comparison-20261106/dx-followup/compaction-diagnosis.json)
+The retained probe samples (`benchmarks/results/redis-comparison-20261106/dx-followup/compaction-flush-probe.txt`)
+and warning/percentile summary (`benchmarks/results/redis-comparison-20261106/dx-followup/compaction-diagnosis.json`)
 preserve the timing distinction.
 
 ### Paired standalone writes
@@ -486,8 +486,8 @@ Two alternating baseline/candidate rounds used fresh 10,000-key installations,
 and `--compact-before finish`. The baseline is `e4d920eb`; the candidate is
 the production change in `26c33731` with the lease fix in `9f0e8315`. Both
 use release builds without LTO, 16 codegen units and line-table debug data.
-The frozen candidate precedes a test-only lint cleanup; its [build identity
-and exact delta](results/redis-comparison-20261106/dx-followup/final-build.json)
+The frozen candidate precedes a test-only lint cleanup; its build identity
+and exact delta (`benchmarks/results/redis-comparison-20261106/dx-followup/final-build.json`)
 are retained. All sixteen measured write cases completed without request
 errors. The table gives medians, **baseline / candidate**.
 
@@ -505,8 +505,8 @@ This does not establish better tail latency. Both candidate 16-client point
 cases triggered another automatic compaction cycle, while their baseline
 counterparts did not; one candidate p99 reached 2.30 seconds. Later cases
 also saw different retained history because the candidate completed more
-writes. Host load averages ranged from 60 to 561. The [paired raw
-results](results/redis-comparison-20261106/dx-followup/write-pairs.jsonl)
+writes. Host load averages ranged from 60 to 561. The paired raw
+results (`benchmarks/results/redis-comparison-20261106/dx-followup/write-pairs.jsonl`)
 keep compaction activity and all lower-performing rows.
 
 The lower single-client batch result prompted a separate baseline/candidate/
@@ -516,8 +516,8 @@ was 28.6 / 30.4 operations/s and CPU was 21.14 / 20.21 ms per operation.
 Individual throughput ranges overlapped (22.9–34.4 / 26.7–34.1); each build
 had one case with an automatic compaction cycle and one without. These short
 runs do not prove equal performance, but they do not support attributing the
-earlier 24% drop to single-client execution overhead. [Isolated batch
-results](results/redis-comparison-20261106/dx-followup/batch-isolation.jsonl)
+earlier 24% drop to single-client execution overhead. Isolated batch
+results (`benchmarks/results/redis-comparison-20261106/dx-followup/batch-isolation.jsonl`)
 retain all four runs.
 
 ### Updated matched-TLS matrix
@@ -554,9 +554,9 @@ always. These results show remaining latency, memory and recovery costs;
 they do not show that Kasumi has caught up with Redis. `everysec` retains its
 weaker acknowledgement durability, as specified above.
 
-The [full tables](results/redis-comparison-20261106/dx-followup/matrix-summary.md)
+The full tables (`benchmarks/results/redis-comparison-20261106/dx-followup/matrix-summary.md`)
 include p50/p99/p99.9, CPU, memory, write amplification, idle cost, disk usage
-and compaction; the [raw matrix](results/redis-comparison-20261106/dx-followup/matrix.jsonl)
+and compaction; the raw matrix (`benchmarks/results/redis-comparison-20261106/dx-followup/matrix.jsonl`)
 retains per-case settings and load. CPU and write-cost ratios include warmup,
 while throughput uses the measured interval.
 
@@ -582,8 +582,8 @@ Rust builds also ran during these read experiments; flush-heavy test execution
 was held until after the benchmark work.
 The default cap is a maximum, not a reserved GiB: RSS stayed near 113 MiB.
 The result does not justify reducing the generated default. CPU covers the
-whole driver invocation as described above. [Raw cache
-replays](results/redis-comparison-20261106/dx-followup/cache-replays.jsonl)
+whole driver invocation as described above. Raw cache
+replays (`benchmarks/results/redis-comparison-20261106/dx-followup/cache-replays.jsonl`)
 include the sampled peaks and per-case load.
 
 ### Disk use: packed directory pages and compaction slack (2026-11-15)
@@ -690,4 +690,4 @@ itself is not excluded.
 
 Raw rows, host samples, server logs, data-directory listings, the patch, the
 build identity and the scripts are in
-[results/redis-comparison-20261115-disk-use/](results/redis-comparison-20261115-disk-use/).
+results/redis-comparison-20261115-disk-use/ (`benchmarks/results/redis-comparison-20261115-disk-use/`).
