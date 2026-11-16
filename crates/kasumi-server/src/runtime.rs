@@ -1157,6 +1157,10 @@ pub struct NodeRuntime {
     closed: bool,
     stopping_audit_started: bool,
     stopping_audit_observed: bool,
+    // Complete closure reports of superseded databases that the node census
+    // repeated. They stay recognized when shutdown is cancelled and retried
+    // after a caller dropped that database; the census keeps the same issues.
+    census_reported: Vec<kasumi_types::drain::DrainFailure>,
     administration: Option<Arc<crate::administration::Administration>>,
     original_recoveries:
         Option<crate::administration::original_serving_runtime::OriginalRecoveries>,
@@ -1552,6 +1556,7 @@ impl NodeRuntime {
             closed: false,
             stopping_audit_started: false,
             stopping_audit_observed: false,
+            census_reported: Vec::new(),
             startup_drain: Default::default(),
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
@@ -2456,17 +2461,20 @@ impl NodeRuntime {
         // database that some caller still holds. Fresh admission already
         // observed and logged that owner's complete closure drain; repeating
         // exactly those issues is no new failure, while any other issue keeps
-        // the whole outcome.
-        let reported = match &self.administration {
-            Some(manager) => manager.superseded_database_reports().await,
-            None => Vec::new(),
-        };
+        // the whole outcome. The reports stay remembered across a cancelled
+        // and retried shutdown: a caller may drop that database in between,
+        // while the census still holds the same issues.
+        if let Some(manager) = &self.administration {
+            for report in manager.superseded_database_reports().await {
+                crate::runtime_drain::remember_reported(&mut self.census_reported, report);
+            }
+        }
         observe(
             &mut self.startup_drain,
             &mut retained,
             crate::runtime_drain::unless_reported(
                 self.audit.admission().drain_snapshot_startups().await,
-                &reported,
+                &self.census_reported,
             ),
         );
         // A readiness timeout/stop retains its actual SDK query independently

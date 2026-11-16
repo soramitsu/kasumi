@@ -592,13 +592,42 @@ impl ApplyPublication<'_> {
 /// One-shot test hooks keyed by the exact application store allocation. The
 /// apply worker has already passed its own preflight when a hook runs, so a
 /// fixture can withdraw access between that check and the sink's own check.
+/// Each entry holds a Weak to its store: the allocation, and so its address,
+/// cannot be reused while the entry exists, and a hook whose store is gone is
+/// discarded instead of ever matching another store.
 #[cfg(any(test, feature = "test-utils"))]
 type EntrySinkAccessHook = Box<dyn FnOnce() + Send>;
 #[cfg(any(test, feature = "test-utils"))]
-fn entry_sink_access_hooks() -> &'static std::sync::Mutex<Vec<(usize, EntrySinkAccessHook)>> {
-    static HOOKS: std::sync::OnceLock<std::sync::Mutex<Vec<(usize, EntrySinkAccessHook)>>> =
+type EntrySinkAccessHooks = Vec<(
+    std::sync::Weak<kasumi_store::TenantStore>,
+    EntrySinkAccessHook,
+)>;
+#[cfg(any(test, feature = "test-utils"))]
+fn entry_sink_access_hooks() -> &'static std::sync::Mutex<EntrySinkAccessHooks> {
+    static HOOKS: std::sync::OnceLock<std::sync::Mutex<EntrySinkAccessHooks>> =
         std::sync::OnceLock::new();
     HOOKS.get_or_init(Default::default)
+}
+/// Remove the entry for `store`, and every entry whose store is gone. The
+/// caller drops the removed hooks after releasing the registry lock.
+#[cfg(any(test, feature = "test-utils"))]
+fn take_entry_sink_access_hooks(
+    hooks: &mut EntrySinkAccessHooks,
+    store: &std::sync::Arc<kasumi_store::TenantStore>,
+) -> (Option<EntrySinkAccessHook>, Vec<EntrySinkAccessHook>) {
+    let mut matched = None;
+    let mut stale = Vec::new();
+    let mut index = 0;
+    while index < hooks.len() {
+        if hooks[index].0.strong_count() == 0 {
+            stale.push(hooks.swap_remove(index).1);
+        } else if std::ptr::eq(hooks[index].0.as_ptr(), std::sync::Arc::as_ptr(store)) {
+            matched = Some(hooks.swap_remove(index).1);
+        } else {
+            index += 1;
+        }
+    }
+    (matched, stale)
 }
 /// Run `hook` once inside the next entry publication into `store`, on the
 /// blocking apply worker, immediately before the sink's own access check.
@@ -607,29 +636,30 @@ pub(crate) fn install_entry_sink_access_hook(
     store: &std::sync::Arc<kasumi_store::TenantStore>,
     hook: EntrySinkAccessHook,
 ) -> Result<()> {
-    let key = std::sync::Arc::as_ptr(store) as usize;
     let mut hooks = entry_sink_access_hooks()
         .lock()
         .unwrap_or_else(|p| p.into_inner());
-    anyhow::ensure!(
-        hooks.iter().all(|(installed, _)| *installed != key),
-        "entry sink access hook already installed"
-    );
-    hooks.push((key, hook));
+    let (existing, stale) = take_entry_sink_access_hooks(&mut hooks, store);
+    let installed = existing.is_none();
+    match existing {
+        // Keep the earlier hook in place; refuse the second installation.
+        Some(existing) => hooks.push((std::sync::Arc::downgrade(store), existing)),
+        None => hooks.push((std::sync::Arc::downgrade(store), hook)),
+    }
+    drop(hooks);
+    drop(stale);
+    anyhow::ensure!(installed, "entry sink access hook already installed");
     Ok(())
 }
 #[cfg(any(test, feature = "test-utils"))]
 fn run_entry_sink_access_hook(store: &std::sync::Arc<kasumi_store::TenantStore>) {
-    let key = std::sync::Arc::as_ptr(store) as usize;
-    let hook = {
+    let (hook, stale) = {
         let mut hooks = entry_sink_access_hooks()
             .lock()
             .unwrap_or_else(|p| p.into_inner());
-        hooks
-            .iter()
-            .position(|(installed, _)| *installed == key)
-            .map(|index| hooks.swap_remove(index).1)
+        take_entry_sink_access_hooks(&mut hooks, store)
     };
+    drop(stale);
     // Never run a hook while holding the registry lock.
     if let Some(hook) = hook {
         hook();

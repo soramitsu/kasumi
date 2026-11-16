@@ -585,3 +585,109 @@ The result does not justify reducing the generated default. CPU covers the
 whole driver invocation as described above. [Raw cache
 replays](results/redis-comparison-20261106/dx-followup/cache-replays.jsonl)
 include the sampled peaks and per-case load.
+
+### Disk use: packed directory pages and compaction slack (2026-11-15)
+
+The 992 MiB data directory and the 61.6 / 770 write ratios in the
+[baseline](#baseline-results-2026-11-06) come from the November 6 build. This
+section measures the current source in four configurations:
+
+- **Default:** fixed directory pages and 256 MiB compaction slack.
+- **LZ4:** packed LZ4 directory pages for new node stores.
+- **64 MiB slack:** compaction slack of 64 MiB instead of 256 MiB.
+- **Both:** the two changes together.
+
+The workload is the baseline's:
+
+- standalone `kasumid`;
+- 100,000 keys of 1,024-byte JSON, loaded by 4 loaders;
+- all six workloads at 1 and 16 clients, 30 s measured after a 3 s warmup;
+- a requested compaction at the end, with restart timing skipped.
+
+Each configuration ran twice, one after the other, between 18:32 and 22:24 UTC on
+2026-11-15.
+
+**Build.** The source is `cf9959f1` plus four uncommitted files that change only
+daemon-shutdown drain reporting. The release profile is thin LTO with one codegen
+unit. The default rows use an unmodified build (`kasumid` sha256 `23981bd1…`).
+The variant rows use the same tree plus a benchmark-only patch
+(`kasumid` `8985d8aa…`). That patch reads `KASUMI_BENCH_DIRECTORY_FORMAT` and
+`KASUMI_BENCH_COMPACTION_SLACK_BYTES` and was never applied to the checkout. Each
+server log and data directory confirms the format and slack in effect.
+
+**Host conditions.** These rows are not representative of throughput:
+
+- One-minute load averaged 108–757 from other projects' builds.
+- Up to two other `kasumid` servers and 8–23 `rustc` processes ran on the same
+  machine.
+- Swap use was 7.6–13.0 GiB.
+- No run had suspended time, and no Kasumi test binary ran during any run.
+- Load throughput of the same configuration varied up to 7× between its two runs.
+
+The disk and write-amplification figures are per-process, so they do not depend
+on that contention. Each cell gives run 1 / run 2.
+
+| Measure | Default | LZ4 directory pages | 64 MiB slack | Both |
+| --- | ---: | ---: | ---: | ---: |
+| Data directory right after the load (99 MiB logical) | 4,434 / 4,458 MiB | 1,153 / 1,141 MiB | 3,638 / 4,608 MiB | 1,104 / 1,275 MiB |
+| …after all workloads | 3,177 / 5,154 MiB | – / 702 MiB | – / 4,181 MiB | – / 1,306 MiB |
+| …after a requested compaction | 2,261 / 1,501 MiB | – / 720 MiB | – / 4,194 MiB | – / 1,339 MiB |
+| Device bytes written per logical byte, load | 50.3 / 49.6 | 16.2 / 16.6 | 51.2 / 50.1 | 18.9 / 16.0 |
+| Device bytes written per logical byte, 1-client point writes | 450 / 472 | 230 / 199 | – / 483 | 183 / 205 |
+| Load throughput (docs/s) | 101 / 297 | 87 / 66 | 57 / 177 | 35 / 257 |
+| Server CPU per 100-document load batch (ms) | 139 / 120 | 166 / 181 | 152 / 129 | 198 / 134 |
+
+A dash means the run's harness stopped before that case. The first LZ4,
+64 MiB-slack and combined runs each stopped on their first request error, as
+`run.py` does. From then on the wrapper kept going past workload request errors
+and recorded them. The second run of each configuration completed. Its rows
+include every case.
+
+**Where the bytes are.** Copy-on-write directory files dominate. At the end of
+each second run they occupied:
+
+- 956 MiB with the default format, beside 286 MiB of value segments;
+- 418 MiB with LZ4 pages, beside 301 MiB of segments.
+
+Encrypted values do not compress, so packing shrinks only the directory pages.
+
+**Why slack barely matters here.** `kasumid serve` starts a compaction cycle at
+`max(150% of the baseline, baseline + slack)`. With these 370–1,940 MB baselines
+the growth term set the trigger in every run except one LZ4 run, so 64 MiB of
+slack changed little. Its second run ended with more directory garbage, not less.
+
+**Read refusals.** Some runs had a few reads refused with `RESOURCE_EXHAUSTED`:
+
+| Run | Case | Refusals |
+| --- | --- | ---: |
+| LZ4, run 1 | 1-client batch reads | 2 of 3,760 |
+| LZ4, run 2 | 16-client mixed | 1 of 6,630 |
+| 64 MiB slack, run 1 | 1-client point reads | 2 of 5,753 |
+| Both, run 1 | 16-client batch reads | 16 of 6,945 |
+
+Neither default run had any refusal. The driver records only the status code,
+and the server does not log these refusals. The most likely source is the 5 s
+native read deadline: reads report it as `ResourceExhausted` "query deadline
+exceeded" (`kasumi-engine/src/query_admission.rs`). The refusals fell during
+compaction cycles at load averages near 300, but that is not confirmed. A control
+run of the variant build with both variables unset was not made, so the build
+itself is not excluded.
+
+**Recommendation.**
+
+- **Directory pages.** LZ4 directory pages cut the data directory right after
+  the load by about 74%. They cut device writes by about two thirds for the load
+  and by about half for 1-client point writes. No read-path CPU difference
+  showed above the noise; the load may cost more CPU. They are the change worth
+  making. The first-release rule allows one current storage format. Choosing LZ4
+  therefore means making it the only creation format and removing the fixed
+  reader, which is an owner decision. Before changing the default, explain the
+  read refusals above and repeat these runs on a quieter host.
+- **Compaction slack.** Do not change it. At this size the growth term decides
+  when compaction runs. Earlier compaction, if wanted, is the existing
+  `--storage-compaction-growth-percent` option, which this section did not
+  measure.
+
+Raw rows, host samples, server logs, data-directory listings, the patch, the
+build identity and the scripts are in
+[results/redis-comparison-20261115-disk-use/](results/redis-comparison-20261115-disk-use/).

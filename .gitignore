@@ -9,6 +9,7 @@ target/
 /kasumi-benchmark.json
 /benchmarks/results/network-loopback-*.json
 /benchmarks/results/local/
+/benchmarks/results/redis-comparison*/
 *.json.tmp
 
 # Development evidence is a local archive; keep only the retention policy

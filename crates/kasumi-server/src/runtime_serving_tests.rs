@@ -379,16 +379,23 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
                 ),
                 "{code:?}"
             );
-            // The sink refusal is the exact retained ordinary report.
-            assert!(
-                retained
-                    .raft_group()
-                    .try_with_retained_apply_report(|report| matches!(
-                        report,
-                        kasumi_raft::RetainedApplyReport::Ordinary(_)
-                    ))
-                    .unwrap()
-                    .unwrap(),
+            // The sink refusal is the exact retained ordinary report. A
+            // concurrent background drain may briefly hold it busy.
+            let ordinary = tokio::time::timeout(Duration::from_secs(10), async {
+                loop {
+                    match retained.raft_group().try_with_retained_apply_report(|report| {
+                        matches!(report, kasumi_raft::RetainedApplyReport::Ordinary(_))
+                    }) {
+                        Ok(observed) => break observed,
+                        Err(_busy) => tokio::time::sleep(Duration::from_millis(10)).await,
+                    }
+                }
+            })
+            .await
+            .expect("retained apply report stays busy");
+            assert_eq!(
+                ordinary,
+                Some(true),
                 "entry sink refusal must retain its ordinary apply report"
             );
             (&["key_lease_sealed", "proposal_work_closed"], "Raft apply")

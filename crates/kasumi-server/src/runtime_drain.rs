@@ -27,6 +27,24 @@ pub(crate) fn unless_reported(outcome: DrainResult, reported: &[DrainFailure]) -
     }
 }
 
+/// Keep one complete report for `unless_reported` across shutdown retries.
+/// A report adds nothing when each of its issues is already kept, so repeated
+/// retries do not grow the list; a retained report is never kept.
+pub(crate) fn remember_reported(reported: &mut Vec<DrainFailure>, report: DrainFailure) {
+    if report.completion() != DrainCompletion::Complete {
+        return;
+    }
+    let known = report.issues().iter().all(|issue| {
+        reported
+            .iter()
+            .flat_map(DrainFailure::issues)
+            .any(|prior| DrainIssueRef::ptr_eq(prior, issue))
+    });
+    if !known {
+        reported.push(report);
+    }
+}
+
 pub(crate) fn observe(
     report: &mut DrainReport,
     retained: &mut Option<DrainFailure>,
@@ -106,5 +124,27 @@ mod tests {
             .unwrap_err();
         let census = unless_reported(Err(complete(&owner)), &[unresolved]).unwrap_err();
         assert_eq!(census.completion(), DrainCompletion::Complete);
+    }
+
+    #[test]
+    fn remembered_reports_survive_a_retry_without_growing() {
+        let mut owner = DrainReport::default();
+        let apply = owner.record("Raft apply", 0, anyhow::anyhow!("reported"));
+        let mut kept = Vec::new();
+        remember_reported(&mut kept, complete(&owner));
+        // A retried shutdown sees the same closure report again.
+        remember_reported(&mut kept, complete(&owner));
+        assert_eq!(kept.len(), 1);
+        // A retained report is never evidence of an already-logged drain.
+        remember_reported(
+            &mut kept,
+            owner
+                .outcome(Some(DrainFailure::retained(apply)))
+                .unwrap_err(),
+        );
+        assert_eq!(kept.len(), 1);
+        // After the superseded handle is gone, the census still repeats only
+        // the remembered issue.
+        assert!(unless_reported(Err(complete(&owner)), &kept).is_ok());
     }
 }
