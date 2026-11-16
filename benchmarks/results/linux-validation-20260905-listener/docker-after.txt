@@ -1,1 +1,0 @@
-No running containers in dedicated kasumi-validation profile.

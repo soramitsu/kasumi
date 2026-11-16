@@ -5,11 +5,9 @@ target/
 # Local benchmark checkout links
 /*-native-???????
 
-# Default local benchmark output; reviewed result cohorts remain tracked
+# Benchmark output stays local; results are not tracked
 /kasumi-benchmark.json
-/benchmarks/results/network-loopback-*.json
-/benchmarks/results/local/
-/benchmarks/results/redis-comparison*/
+/benchmarks/results/
 *.json.tmp
 
 # Development evidence is a local archive; keep only the retention policy
