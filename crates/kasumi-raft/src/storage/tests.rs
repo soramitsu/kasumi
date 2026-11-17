@@ -9,6 +9,8 @@ use kasumi_store::{
 mod apply_publication_tests;
 #[path = "background_commit_tests.rs"]
 mod background_commit_tests;
+#[path = "durable_reopen_tests.rs"]
+mod durable_reopen_tests;
 #[path = "group_ownership_tests.rs"]
 mod group_ownership_tests;
 #[path = "joint_publication_tests.rs"]

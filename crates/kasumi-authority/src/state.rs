@@ -342,6 +342,9 @@ impl Backend {
         meta.signing.validate()?;
         meta.operational.membership.validate()?;
         meta.operational.capacity.validate()?;
+        // Reopen restores nothing, so remove here what a restore interrupted
+        // before or after its selection left staged or retired.
+        NamespaceStage::reclaim_unselected(&store)?;
         Ok(Arc::new(Self {
             store,
             installation,
@@ -1156,6 +1159,11 @@ impl StateMachineBackend for Backend {
             staged: std::sync::OnceLock::new(),
             _mutation_guard: guard,
         }))
+    }
+    // Every Authority effect publishes with the applied cursor in one paired
+    // transaction, and a restore selects its generation the same way.
+    fn resumes_durable_selection(&self) -> bool {
+        true
     }
     fn close_application(&self) {
         self.store.seal();

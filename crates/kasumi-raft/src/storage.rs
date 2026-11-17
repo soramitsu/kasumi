@@ -1575,6 +1575,37 @@ struct AppliedState {
     membership: StoredMembership<u64, BasicNode>,
 }
 
+/// The applied position of a backend whose selected state is durable at the
+/// custody cursor. Snapshot publication never leaves that cursor behind the
+/// published image, so an earlier cursor is corruption, not a reason to rewind.
+fn durable_applied_state(
+    domains: &TenantStorageSet,
+    snapshot: Option<&SnapshotEnvelope>,
+) -> Result<AppliedState> {
+    let state = match crate::control::load::<crate::control::AppliedCursor>(
+        domains.custody().store(),
+        META,
+        b"applied",
+    )? {
+        None => AppliedState::default(),
+        Some(crate::control::AppliedCursor::Entry(position)) => AppliedState {
+            log_id: Some(position.log_id),
+            membership: position.membership,
+        },
+        Some(crate::control::AppliedCursor::Snapshot { meta, .. }) => AppliedState {
+            log_id: meta.last_log_id,
+            membership: meta.last_membership,
+        },
+    };
+    if let Some(snapshot) = snapshot {
+        ensure!(
+            state.log_id.map(|id| id.index) >= snapshot.meta.last_log_id.map(|id| id.index),
+            "durable applied cursor precedes the published snapshot"
+        );
+    }
+    Ok(state)
+}
+
 /// Lives inside actual blocking work, not its cancellable async waiter. Failure
 /// or unwinding must close serving even if nobody remains to receive the result.
 /// Drop only publishes an atomic fence: storage drain and teardown happen later.
@@ -1707,9 +1738,15 @@ impl StateMachine {
                         )?;
                     }
                     cleanup_snapshots(&captured, limit, &BackgroundCommits::Direct)?;
-                    if let Some(snapshot) = load_snapshot(&captured, limit)? {
-                        validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
+                    let snapshot = load_snapshot(&captured, limit)?;
+                    if let Some(snapshot) = &snapshot {
+                        validate_snapshot_coverage(&captured_domains, snapshot, limit)?;
                         ensure!(snapshot.version == 2, "unsupported raft snapshot version");
+                    }
+                    if target.resumes_durable_selection() {
+                        return Ok(durable_applied_state(&captured_domains, snapshot.as_ref())?);
+                    }
+                    if let Some(snapshot) = snapshot {
                         let context = crate::SnapshotRestoreContext {
                             mode: crate::SnapshotRestoreMode::Reopen,
                             backend_sha256: snapshot.backend.sha256().into(),

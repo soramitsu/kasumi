@@ -373,6 +373,15 @@ pub trait StateMachineBackend: Send + Sync + 'static {
         context: &SnapshotRestoreContext,
         bytes: &mut dyn std::io::Read,
     ) -> std::result::Result<Box<dyn PreparedStateMachineRestore + 'a>, ScratchOperationFailure>;
+    /// Whether this backend's durably selected state always sits exactly at
+    /// the custody applied cursor: every effect publishes with that cursor and
+    /// every restore selects its generation with it. Reopen then resumes after
+    /// the durable cursor and never restores the older published snapshot over
+    /// newer selected state. The default rebuilds resident state from the
+    /// snapshot and replays the log after the snapshot's position.
+    fn resumes_durable_selection(&self) -> bool {
+        false
+    }
     /// Irreversibly evict resident application material before publishing an
     /// installed closed custody snapshot. This cannot grant data access.
     fn close_application(&self);
@@ -504,6 +513,9 @@ impl StateMachineBackend for OwnedBackend {
     ) -> std::result::Result<Box<dyn PreparedStateMachineRestore + 'a>, ScratchOperationFailure>
     {
         self.inner.prepare_restore(context, bytes)
+    }
+    fn resumes_durable_selection(&self) -> bool {
+        self.inner.resumes_durable_selection()
     }
 }
 
