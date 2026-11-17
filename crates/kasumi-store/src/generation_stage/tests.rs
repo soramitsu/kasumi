@@ -313,66 +313,6 @@ async fn duplicate_owner_transitions_abort_the_whole_selection() -> Result<()> {
 }
 
 #[tokio::test]
-async fn namespace_replacement_cannot_erase_or_substitute_stage_owners() -> Result<()> {
-    let (_directory, scratch) = scratch();
-    let stores = pair(FaultBackend::new(), scratch.clone(), true).await;
-    let stage = NamespaceStage::begin(stores.application(), "new")?;
-    stage.seal_empty()?;
-    let original = stores
-        .application()
-        .get_bounded(OWNERS, b"new", OWNER_BYTES)?
-        .unwrap();
-    let replacement = source(&scratch, 1, 32);
-    for replacement in [
-        NamespaceReplacement::empty(OWNERS),
-        NamespaceReplacement::from_table(OWNERS, &replacement),
-    ] {
-        let application = [WriteOp::put("checkpoint", b"current", b"new")];
-        let custody = [WriteOp::put("position", b"applied", b"new")];
-        assert!(
-            stores
-                .application()
-                .replace_namespaces(&[replacement], &application)
-                .is_err()
-        );
-        assert!(
-            stores
-                .write_batch_replacing(&application, &custody, &[replacement], &[])
-                .is_err()
-        );
-        assert!(
-            stores
-                .write_batch_replacing(&application, &custody, &[], &[replacement])
-                .is_err()
-        );
-        assert_eq!(
-            stores
-                .application()
-                .get_bounded(OWNERS, b"new", OWNER_BYTES)?
-                .unwrap()
-                .as_bytes(),
-            original.as_bytes()
-        );
-        assert!(
-            stores
-                .application()
-                .get("checkpoint", b"current")?
-                .is_none()
-        );
-        assert!(
-            stores
-                .custody()
-                .store()
-                .get("position", b"applied")?
-                .is_none()
-        );
-    }
-    select(&stores, &stage)?;
-    assert!(verify(&stores, 0, 32)?);
-    Ok(())
-}
-
-#[tokio::test]
 async fn every_native_crash_cut_keeps_old_or_complete_new_selection() -> Result<()> {
     let (_directory, scratch) = scratch();
     let original = FaultBackend::new();

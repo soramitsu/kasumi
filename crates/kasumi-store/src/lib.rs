@@ -118,8 +118,8 @@ pub use scratch_disk::{ScratchDisk, ScratchDiskConfig, ScratchDiskSnapshot};
 mod serving_access;
 mod spool;
 pub use read_view::{
-    NamespaceReplacement, PointRetirementFailure, PreparedTenantReadPoints,
-    PreparedTenantReadWorkspace, TenantReadView, plaintext_get_workspace_bytes,
+    PointRetirementFailure, PreparedTenantReadPoints, PreparedTenantReadWorkspace, TenantReadView,
+    plaintext_get_workspace_bytes,
 };
 pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
 pub use scratch_table::{

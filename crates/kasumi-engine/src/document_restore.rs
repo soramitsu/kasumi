@@ -810,25 +810,6 @@ impl StagedDocuments {
         Ok(true)
     }
 
-    /// The one complete replacement of both namespaces that a restore once
-    /// published with its snapshot commitment. Its staging grows with every
-    /// object the tenant holds; tests show it exceeding the native cap.
-    #[cfg(test)]
-    pub(crate) fn complete_snapshot_replacements(
-        &self,
-    ) -> [kasumi_store::NamespaceReplacement<'_>; 2] {
-        match &self.tables.backing {
-            Some(backing) => [
-                kasumi_store::NamespaceReplacement::from_table(BODIES, &backing.bodies),
-                kasumi_store::NamespaceReplacement::from_table(BLOBS, &backing.blobs),
-            ],
-            None => [
-                kasumi_store::NamespaceReplacement::empty(BODIES),
-                kasumi_store::NamespaceReplacement::empty(BLOBS),
-            ],
-        }
-    }
-
     /// Each published object namespace, its staged table and its row bound.
     fn namespaces(&self) -> [(&'static str, Option<&EncryptedTable>, usize); 2] {
         [

@@ -366,12 +366,12 @@ pub(crate) fn installation_writes(
             if current_position
                 .is_none_or(|id| Some(id.index) <= meta.last_log_id.map(|id| id.index))
             {
-                let replacement = crate::custody_tables::prepare_replacement(
+                let incoming = crate::custody_tables::verify_history_extension(
                     control,
                     retirement.verified_records()?,
                 )?;
-                writes.push(replacement.head.write()?);
-                records = Some(replacement);
+                writes.push(incoming.head.write()?);
+                records = Some(incoming);
             }
             writes.push(WriteOp::put(
                 META,

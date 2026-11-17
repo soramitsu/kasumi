@@ -9,7 +9,7 @@
 //! cover only this in-process owner, never another process or a reopened store.
 //!
 //! Write-once identities cannot change once present (`write_domain` refuses a
-//! different value or a delete, and namespace replacement refuses them), so a
+//! different value or a delete, and no stage may own their namespace), so a
 //! present value is retained after its first authenticated read.
 use super::*;
 
@@ -85,24 +85,11 @@ impl CachedRows {
     }
 
     pub(crate) fn fence_operations(&self, operations: &[WriteOp]) -> NamespaceWriteFence<'_> {
-        self.fence_replacing(&[], operations)
-    }
-
-    pub(crate) fn fence_replacing(
-        &self,
-        replacements: &[NamespaceReplacement<'_>],
-        operations: &[WriteOp],
-    ) -> NamespaceWriteFence<'_> {
-        self.fence(
-            replacements
-                .iter()
-                .map(NamespaceReplacement::namespace)
-                .chain(operations.iter().map(|operation| match operation {
-                    WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => {
-                        namespace.as_str()
-                    }
-                })),
-        )
+        self.fence(operations.iter().map(|operation| match operation {
+            WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => {
+                namespace.as_str()
+            }
+        }))
     }
 }
 

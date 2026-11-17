@@ -485,21 +485,14 @@ async fn typed_domain_expiry_is_minted_only_after_actual_complete_commit() -> Re
     let stores = TenantStorageSet::install(app, custody)?;
     assert!(
         stores
-            .write_batch_replacing_outcome(
-                &[WriteOp::put("", b"entry", b"invalid")],
-                &[],
-                &[],
-                &[],
-            )
+            .write_batch_outcome(&[WriteOp::put("", b"entry", b"invalid")], &[])
             .is_err(),
         "precommit rejection must remain an unproven original error"
     );
     disk.advance_clock_on_next_sync(clock, MAX_KEY_LEASE);
-    let outcome = stores.write_batch_replacing_outcome(
+    let outcome = stores.write_batch_outcome(
         &[WriteOp::put("data", b"entry", b"new")],
         &[WriteOp::put("control", b"entry", b"new")],
-        &[],
-        &[],
     )?;
     let DomainPublicationOutcome::CommittedAccessDenied(denied) = outcome else {
         panic!("post-commit expiry must not authorize acknowledgment");
@@ -1080,81 +1073,7 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
         Some(b"\"tenant/group\"".as_slice())
     );
 
-    for namespace in ["engine.bootstrap", DEPLOYMENT_NS, "raft.meta"] {
-        assert!(
-            app.replace_namespaces(&[NamespaceReplacement::empty(namespace)], &[])
-                .is_err()
-        );
-        assert!(
-            custody
-                .replace_namespaces(&[NamespaceReplacement::empty(namespace)], &[])
-                .is_err()
-        );
-        assert!(
-            stores
-                .write_batch_replacing(&[], &[], &[NamespaceReplacement::empty(namespace)], &[])
-                .is_err()
-        );
-        assert!(
-            stores
-                .write_batch_replacing(&[], &[], &[], &[NamespaceReplacement::empty(namespace)])
-                .is_err()
-        );
-    }
-    let replacement =
-        EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
     custody.write_batch(&[WriteOp::put("raft.meta", b"mutable", b"old")])?;
-    assert!(
-        app.replace_namespaces(
-            &[NamespaceReplacement::from_table(
-                "engine.bootstrap",
-                &replacement
-            )],
-            &[]
-        )
-        .is_err()
-    );
-    assert!(
-        app.replace_namespaces(
-            &[NamespaceReplacement::from_table(
-                DEPLOYMENT_NS,
-                &replacement
-            )],
-            &[]
-        )
-        .is_err()
-    );
-    assert!(
-        custody
-            .replace_namespaces(
-                &[NamespaceReplacement::from_table("raft.meta", &replacement)],
-                &[]
-            )
-            .is_err()
-    );
-    assert!(
-        stores
-            .write_batch_replacing(
-                &[],
-                &[],
-                &[NamespaceReplacement::from_table(
-                    "engine.bootstrap",
-                    &replacement
-                )],
-                &[]
-            )
-            .is_err()
-    );
-    assert!(
-        stores
-            .write_batch_replacing(
-                &[],
-                &[],
-                &[],
-                &[NamespaceReplacement::from_table("raft.meta", &replacement)]
-            )
-            .is_err()
-    );
     assert_eq!(
         app.get("engine.bootstrap", b"manifest")?.as_deref(),
         Some(b"manifest-a".as_slice())
@@ -1173,39 +1092,6 @@ async fn initial_bootstrap_identity_is_atomic_write_once_with_exact_retry() -> R
         custody.get("raft.meta", b"mutable")?.as_deref(),
         Some(b"old".as_slice())
     );
-    let forbidden_manifest =
-        EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
-    forbidden_manifest.insert(b"manifest", b"manifest-b")?;
-    assert!(
-        app.replace_namespaces(
-            &[NamespaceReplacement::from_table(
-                "engine.bootstrap",
-                &forbidden_manifest
-            )],
-            &[]
-        )
-        .is_err()
-    );
-    let forbidden_digest =
-        EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
-    forbidden_digest.insert(b"application_bootstrap_sha256", b"digest-b")?;
-    assert!(
-        custody
-            .replace_namespaces(
-                &[NamespaceReplacement::from_table(
-                    "raft.meta",
-                    &forbidden_digest
-                )],
-                &[]
-            )
-            .is_err()
-    );
-    custody.write_batch(&[WriteOp::put("ordinary", b"replaceable", b"old")])?;
-    custody.replace_namespaces(
-        &[NamespaceReplacement::from_table("ordinary", &replacement)],
-        &[],
-    )?;
-    assert!(custody.get("ordinary", b"replaceable")?.is_none());
     inject_initial_identity_rows(&stores, &[], &[WriteOp::delete("raft.meta", b"group")])?;
     assert!(
         stores
@@ -1414,126 +1300,6 @@ async fn paired_deployment_read_rejects_oversized_envelope_before_key_id_parse()
     drop(table);
     drop(tx);
     stores.shutdown().await?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn empty_namespace_replacements_roll_back_both_domains_when_real_source_is_closed()
--> Result<()> {
-    let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
-    let scratch_directory = crate::test_utils::private_tempdir()?;
-    let scratch = ScratchDisk::fixture(scratch_directory.path(), memory.clone());
-    let directory = crate::test_utils::private_tempdir()?;
-    let node = NodeStore::create_new_fixture(
-        directory.path().join("namespace-rollback.kv"),
-        crate::test_utils::NODE_STORE_ID,
-        memory,
-        scratch.clone(),
-    )
-    .expect("bounded node fixture setup succeeds");
-    let stores = initialize_pair_fixture(node).await?;
-    let app = stores.application();
-    let custody = stores.custody().store();
-    stores.write_batch(
-        &[
-            WriteOp::put("data", b"old", b"application"),
-            WriteOp::put("meta", b"position", b"old"),
-        ],
-        &[
-            WriteOp::put("data", b"old", b"custody"),
-            WriteOp::put("meta", b"position", b"old"),
-        ],
-    )?;
-    let pinned_app = app.read_view()?;
-    let pinned_custody = custody.read_view()?;
-    let closed = EncryptedTable::new(&scratch, 8 << 20, scratch.native_cache_config()).unwrap();
-    closed.insert(b"new", b"unpublished")?;
-    closed.close().unwrap();
-    // App deletion and metadata are already staged when the custody source's
-    // real native read fails. No facade-level injected error skips this path.
-    let error = stores
-        .write_batch_replacing(
-            &[WriteOp::put("meta", b"position", b"attempted")],
-            &[WriteOp::put("meta", b"position", b"attempted")],
-            &[NamespaceReplacement::empty("data")],
-            &[NamespaceReplacement::from_table("data", &closed)],
-        )
-        .unwrap_err();
-    let failure = error
-        .downcast::<crate::NodeScopedWriteFailure>()
-        .expect("the registered writer retains the original source failure");
-    {
-        let report = failure.report();
-        let kasumi_kv::TerminalObservation::Returned(Err(original)) = report.body() else {
-            panic!("replacement must reach the closed native source");
-        };
-        assert!(matches!(
-            original.downcast_ref::<kasumi_kv::TransactionError>(),
-            Some(kasumi_kv::TransactionError(
-                kasumi_kv::StorageError::DatabaseClosed
-            ))
-        ));
-        let terminal = report
-            .terminal()
-            .expect("the attempted replacement has a transaction");
-        assert_eq!(
-            terminal.operation(),
-            Some(kasumi_kv::WriteTerminalOperation::Abort)
-        );
-        assert!(terminal.disposal_complete());
-    }
-    assert_eq!(failure.retire(), crate::StorageCensusDisposition::Retired);
-    assert_eq!(
-        app.get("data", b"old")?.as_deref(),
-        Some(b"application".as_slice())
-    );
-    assert_eq!(
-        custody.get("data", b"old")?.as_deref(),
-        Some(b"custody".as_slice())
-    );
-    assert!(custody.get("data", b"new")?.is_none());
-    assert_eq!(
-        app.get("meta", b"position")?.as_deref(),
-        Some(b"old".as_slice())
-    );
-    assert_eq!(
-        custody.get("meta", b"position")?.as_deref(),
-        Some(b"old".as_slice())
-    );
-
-    // The same stores can then commit both empty namespaces and their bindings.
-    stores.write_batch_replacing(
-        &[WriteOp::put("meta", b"position", b"new")],
-        &[WriteOp::put("meta", b"position", b"new")],
-        &[NamespaceReplacement::empty("data")],
-        &[NamespaceReplacement::empty("data")],
-    )?;
-    assert!(app.get("data", b"old")?.is_none());
-    assert!(custody.get("data", b"old")?.is_none());
-    assert_eq!(
-        app.get("meta", b"position")?.as_deref(),
-        Some(b"new".as_slice())
-    );
-    assert_eq!(
-        custody.get("meta", b"position")?.as_deref(),
-        Some(b"new".as_slice())
-    );
-    assert_eq!(
-        pinned_app.get("data", b"old", 1024)?.as_deref(),
-        Some(b"application".as_slice())
-    );
-    assert_eq!(
-        pinned_custody.get("data", b"old", 1024)?.as_deref(),
-        Some(b"custody".as_slice())
-    );
-    assert_eq!(
-        pinned_app.get("meta", b"position", 1024)?.as_deref(),
-        Some(b"old".as_slice())
-    );
-    assert_eq!(
-        pinned_custody.get("meta", b"position", 1024)?.as_deref(),
-        Some(b"old".as_slice())
-    );
     Ok(())
 }
 

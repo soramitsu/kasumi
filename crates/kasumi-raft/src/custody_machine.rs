@@ -651,10 +651,10 @@ pub(crate) mod tests {
         let original = replace_with_alternate_json(store, META, crate::custody_tables::HEAD)?;
         assert!(control::custody_head(domains.custody()).is_err());
         assert!(crate::custody_records::Records::capture(store).is_err());
-        assert!(crate::custody_tables::prepare_replacement(store, records.clone()).is_err());
+        assert!(crate::custody_tables::verify_history_extension(store, records.clone()).is_err());
         restore_json(store, META, crate::custody_tables::HEAD, original)?;
         assert_eq!(control::custody_state(domains.custody())?, expected);
-        assert!(crate::custody_tables::prepare_replacement(store, records.clone()).is_ok());
+        assert!(crate::custody_tables::verify_history_extension(store, records.clone()).is_ok());
 
         let original =
             replace_with_alternate_json(store, crate::custody_tables::COMMANDS, b"rotate")?;

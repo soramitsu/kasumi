@@ -103,7 +103,7 @@ impl TenantStorageSet {
 
     /// Publish `application_ops` and `custody_ops` in one durable transaction
     /// that also carries `carried`, ahead of them in each domain.
-    pub fn write_batch_replacing_outcome_carrying(
+    pub fn write_batch_outcome_carrying(
         &self,
         carried: CarriedBatch,
         application_ops: &[WriteOp],
@@ -297,7 +297,7 @@ mod tests {
         assert_eq!(deferred.state(), DeferredState::Carried);
         assert!(deferred.take().is_none());
         stores
-            .write_batch_replacing_outcome_carrying(
+            .write_batch_outcome_carrying(
                 carried,
                 &[WriteOp::put(NS, b"effect", b"effect".to_vec())],
                 &[WriteOp::put(NS, b"cursor", b"cursor".to_vec())],
@@ -363,7 +363,7 @@ mod tests {
         assert_eq!(deferred.state(), DeferredState::Waiting);
         let carried = deferred.take().context("sealed batch still waits")?;
         stores
-            .write_batch_replacing_outcome_carrying(carried, &[], &[])?
+            .write_batch_outcome_carrying(carried, &[], &[])?
             .into_result()?;
         assert!(recorded(&stores)?);
         assert_eq!(stores.deferred_flushes_for_test(), 0);

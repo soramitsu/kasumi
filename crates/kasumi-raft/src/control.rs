@@ -1210,12 +1210,12 @@ impl PreparedApplied {
     ) -> Result<kasumi_store::DomainPublicationOutcome> {
         let custody = self.custody_writes();
         if let Some(journal) = journal {
-            domains.write_batch_replacing_outcome_carrying(journal, application, custody)
+            domains.write_batch_outcome_carrying(journal, application, custody)
         } else if application.is_empty() && custody.is_empty() {
             domains.check_access()?;
             Ok(kasumi_store::DomainPublicationOutcome::Acknowledged)
         } else {
-            domains.write_batch_replacing_outcome(application, custody, &[], &[])
+            domains.write_batch_outcome(application, custody)
         }
     }
 }

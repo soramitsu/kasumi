@@ -903,7 +903,23 @@ impl TenantStorageSet {
     /// Both leases are held through actual fsync, including on caller cancellation.
     /// The synchronous call must be owned by the caller's tracked blocking worker.
     pub fn write_batch(&self, application_ops: &[WriteOp], custody_ops: &[WriteOp]) -> Result<()> {
-        self.write_batch_replacing(application_ops, custody_ops, &[], &[])
+        self.write_batch_outcome(application_ops, custody_ops)?
+            .into_result()
+    }
+
+    /// Preserve the exact post-commit access-denied disposition for the owning
+    /// publication coordinator. All precommit and commit errors remain opaque.
+    pub fn write_batch_outcome(
+        &self,
+        application_ops: &[WriteOp],
+        custody_ops: &[WriteOp],
+    ) -> Result<DomainPublicationOutcome> {
+        self.publish_inner(
+            None,
+            application_ops,
+            custody_ops,
+            PublicationMode::Ordinary,
+        )
     }
 
     /// Publish first application state only into a pristine installed domain
@@ -936,50 +952,13 @@ impl TenantStorageSet {
                 "initial state cannot replace its domain binding"
             );
         }
-        self.publish(
+        self.publish_inner(
+            None,
             application_ops,
             custody_ops,
-            &[],
-            &[],
             PublicationMode::Initialize,
         )?
         .into_result()
-    }
-
-    /// Stream verified application and custody tables while publishing their
-    /// manifests, namespace bindings and applied position in one durable commit.
-    pub fn write_batch_replacing(
-        &self,
-        application_ops: &[WriteOp],
-        custody_ops: &[WriteOp],
-        application_replacements: &[NamespaceReplacement<'_>],
-        custody_replacements: &[NamespaceReplacement<'_>],
-    ) -> Result<()> {
-        self.write_batch_replacing_outcome(
-            application_ops,
-            custody_ops,
-            application_replacements,
-            custody_replacements,
-        )?
-        .into_result()
-    }
-
-    /// Preserve the exact post-commit access-denied disposition for the owning
-    /// publication coordinator. All precommit and commit errors remain opaque.
-    pub fn write_batch_replacing_outcome(
-        &self,
-        application_ops: &[WriteOp],
-        custody_ops: &[WriteOp],
-        application_replacements: &[NamespaceReplacement<'_>],
-        custody_replacements: &[NamespaceReplacement<'_>],
-    ) -> Result<DomainPublicationOutcome> {
-        self.publish(
-            application_ops,
-            custody_ops,
-            application_replacements,
-            custody_replacements,
-            PublicationMode::Ordinary,
-        )
     }
 
     pub(crate) fn publish_carrying(
@@ -992,27 +971,7 @@ impl TenantStorageSet {
             carried,
             application_ops,
             custody_ops,
-            &[],
-            &[],
             PublicationMode::Ordinary,
-        )
-    }
-
-    fn publish(
-        &self,
-        application_ops: &[WriteOp],
-        custody_ops: &[WriteOp],
-        application_replacements: &[NamespaceReplacement<'_>],
-        custody_replacements: &[NamespaceReplacement<'_>],
-        mode: PublicationMode,
-    ) -> Result<DomainPublicationOutcome> {
-        self.publish_inner(
-            None,
-            application_ops,
-            custody_ops,
-            application_replacements,
-            custody_replacements,
-            mode,
         )
     }
 
@@ -1023,8 +982,6 @@ impl TenantStorageSet {
         carried: Option<&crate::CarriedBatch>,
         application_ops: &[WriteOp],
         custody_ops: &[WriteOp],
-        application_replacements: &[NamespaceReplacement<'_>],
-        custody_replacements: &[NamespaceReplacement<'_>],
         mode: PublicationMode,
     ) -> Result<DomainPublicationOutcome> {
         crate::deferred_batch::before_write(&self.application.node)?;
@@ -1038,8 +995,6 @@ impl TenantStorageSet {
             custody_ops,
         ])?;
         validate_paired_initial_identity(application_ops, custody_ops)?;
-        crate::read_view::validate_replacements(application_replacements, application_ops)?;
-        crate::read_view::validate_replacements(custody_replacements, custody_ops)?;
         let application = &self.application;
         let custody = &self.custody.store;
         let _app_access = AccessGuard(application);
@@ -1047,12 +1002,8 @@ impl TenantStorageSet {
         self.check_access()?;
         let _app_mutation = application.mutations.lock();
         let _custody_mutation = custody.mutations.lock();
-        let _app_fence = application
-            .cached_rows
-            .fence_replacing(application_replacements, application_ops);
-        let _custody_fence = custody
-            .cached_rows
-            .fence_replacing(custody_replacements, custody_ops);
+        let _app_fence = application.cached_rows.fence_operations(application_ops);
+        let _custody_fence = custody.cached_rows.fence_operations(custody_ops);
         let _carried_fences = carried.map(|_| {
             (
                 application
@@ -1084,7 +1035,6 @@ impl TenantStorageSet {
                     let binding = serde_json::to_vec(&self.custody.binding)?;
                     require_pristine_domain(tx, custody, Some(&binding))?;
                 }
-                crate::read_view::replace_domain(tx, application, application_replacements)?;
                 {
                     let state = application.state.read();
                     application.require_access(&state)?;
@@ -1092,7 +1042,6 @@ impl TenantStorageSet {
                     write_domain(tx, application, &state, &catalog, carried_application)?;
                     write_domain(tx, application, &state, &catalog, application_ops)?;
                 }
-                crate::read_view::replace_domain(tx, custody, custody_replacements)?;
                 {
                     let state = custody.state.read();
                     custody.require_access(&state)?;

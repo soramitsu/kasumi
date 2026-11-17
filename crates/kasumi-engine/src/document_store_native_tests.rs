@@ -874,19 +874,9 @@ async fn document_store_native_reopen_reconciles_more_objects_than_one_transacti
     }
     let staged = builder.finish()?;
     let store = fixture.stores.application();
-    // One complete replacement stages every object at once and exceeds the
-    // native transaction cap: the restart failure reconciliation replaces.
-    let error = store
-        .replace_namespaces(&staged.complete_snapshot_replacements(), &[])
-        .expect_err("one transaction cannot stage every object");
-    assert!(
-        format!("{error:#}").contains("storage capacity denied"),
-        "{error:#}"
-    );
-    // The refused writer retires with its failure custody.
-    drop(error);
     assert!(published_objects(store)?.is_empty());
-
+    // More object bytes than one native transaction can carry are published,
+    // so reconciliation necessarily committed them in bounded batches.
     staged.reconcile(store)?;
     let published = published_objects(store)?;
     let (bodies, blobs) = staged.object_counts()?;

@@ -341,9 +341,9 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     Ok(state)
 }
 
-pub(crate) fn prepare_replacement(
+pub(crate) fn verify_history_extension(
     store: &TenantStore,
-    replacement: Arc<crate::custody_records::Records>,
+    incoming: Arc<crate::custody_records::Records>,
 ) -> Result<Arc<crate::custody_records::Records>> {
     // A newer snapshot cannot discard or substitute a committed permanent
     // identity. The publication gate is held while this installed prefix is read.
@@ -355,11 +355,8 @@ pub(crate) fn prepare_replacement(
         previous.validate()?;
     }
     let generation = generation(store)?;
-    for ((namespace, incoming), expected) in generation
-        .namespaces()
-        .iter()
-        .zip(replacement.tables())
-        .zip([
+    for ((namespace, incoming), expected) in
+        generation.namespaces().iter().zip(incoming.tables()).zip([
             previous.as_ref().map_or(0, |head| head.commands),
             previous.as_ref().map_or(0, |head| head.audit),
         ])
@@ -378,10 +375,10 @@ pub(crate) fn prepare_replacement(
         })?;
         ensure!(
             count == expected,
-            "custody replacement source record missing"
+            "custody installation source record missing"
         );
     }
-    Ok(replacement)
+    Ok(incoming)
 }
 
 /// A complete history generation, staged but not yet selected. Its writes
@@ -393,7 +390,7 @@ pub(crate) struct StagedHistory {
 }
 
 /// Stage `records` when they extend the selected history. The caller holds
-/// the control gate and has run `prepare_replacement`, which proved the
+/// the control gate and has run `verify_history_extension`, which proved the
 /// selected generation a byte-identical subset of `records`; equal heads
 /// therefore mean equal history and nothing is staged.
 pub(crate) fn stage_history(

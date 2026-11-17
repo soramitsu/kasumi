@@ -7,37 +7,6 @@ pub(crate) use point_retirement::retire_point_backing;
 mod ordinary_visit_tests;
 mod prepared_points;
 pub use prepared_points::{PreparedTenantReadPoints, PreparedTenantReadWorkspace};
-/// A complete namespace replacement, published atomically with binding metadata.
-///
-/// Remaining step-6 migration boundary: fixed Raft custody and Authority
-/// namespaces still use this path. Engine auxiliary restore/bootstrap does not.
-/// Delete this API after those selectors and their readers migrate together.
-///
-/// An explicit empty replacement removes every current record in the namespace.
-/// Omitting a namespace from the replacement list leaves its records unchanged.
-#[derive(Clone, Copy)]
-pub struct NamespaceReplacement<'a> {
-    namespace: &'a str,
-    source: Option<&'a EncryptedTable>,
-}
-impl<'a> NamespaceReplacement<'a> {
-    pub fn empty(namespace: &'a str) -> Self {
-        Self {
-            namespace,
-            source: None,
-        }
-    }
-    pub fn from_table(namespace: &'a str, source: &'a EncryptedTable) -> Self {
-        Self {
-            namespace,
-            source: Some(source),
-        }
-    }
-    pub(crate) fn namespace(&self) -> &'a str {
-        self.namespace
-    }
-}
-
 /// A stable database root with access rechecked for every decrypted record.
 pub struct TenantReadView {
     store: Arc<TenantStore>,
@@ -163,35 +132,6 @@ impl TenantStore {
             store: self.clone(),
             transaction: Some(ViewTransaction::begin(&self.node)?),
         })
-    }
-    /// Replace verified encrypted tables and publish their metadata in one
-    /// durable transaction. The caller owns validation, disk/work admission and
-    /// the blocking operation through actual completion.
-    pub fn replace_namespaces(
-        &self,
-        replacements: &[NamespaceReplacement<'_>],
-        operations: &[WriteOp],
-    ) -> Result<()> {
-        crate::deferred_batch::before_write(&self.node)?;
-        validate_replacements(replacements, operations)?;
-        reject_unpaired_identity_ops(operations)?;
-        let _access = AccessGuard(self);
-        self.check_access()?;
-        let _mutation = self.mutations.lock();
-        let _fence = self.cached_rows.fence_replacing(replacements, operations);
-        self.node.with_registered_write(
-            |tx| {
-                replace_domain(tx, self, replacements)?;
-                {
-                    let state = self.state.read();
-                    self.require_access(&state)?;
-                    let catalog = self.catalog.read();
-                    write_domain(tx, self, &state, &catalog, operations)?;
-                }
-                self.check_access()
-            },
-            || self.check_access(),
-        )
     }
 }
 impl TenantReadView {
@@ -622,83 +562,6 @@ impl Drop for TenantReadView {
             transaction.close_on_drop(&self.store.node);
         }
     }
-}
-
-pub(crate) fn validate_replacements(
-    replacements: &[NamespaceReplacement<'_>],
-    operations: &[WriteOp],
-) -> Result<()> {
-    validate_batch(&[operations])?;
-    let mut names = std::collections::BTreeSet::new();
-    for replacement in replacements {
-        let namespace = replacement.namespace;
-        validate_record(namespace, &[], 0)?;
-        ensure!(
-            !is_initial_identity_namespace(namespace)
-                && namespace != crate::generation_stage::OWNERS
-                && namespace != crate::generation_stage::SELECTIONS,
-            "initial identity or generation namespace cannot be replaced"
-        );
-        ensure!(names.insert(namespace), "duplicate replacement namespace");
-    }
-    for operation in operations {
-        let namespace = match operation {
-            WriteOp::Put { namespace, .. } | WriteOp::Delete { namespace, .. } => namespace,
-        };
-        ensure!(
-            !names.contains(namespace.as_str()),
-            "metadata overlaps a replaced table"
-        );
-    }
-    Ok(())
-}
-
-pub(crate) fn replace_domain(
-    tx: &kasumi_kv::WriteTransaction,
-    store: &TenantStore,
-    replacements: &[NamespaceReplacement<'_>],
-) -> Result<()> {
-    for replacement in replacements {
-        let namespace = replacement.namespace;
-        ensure!(
-            !is_initial_identity_namespace(namespace)
-                && namespace != crate::generation_stage::OWNERS
-                && namespace != crate::generation_stage::SELECTIONS,
-            "initial identity or generation namespace cannot be replaced"
-        );
-        let prefix = {
-            let state = store.state.read();
-            store.require_access(&state)?;
-            let index = state.keys.get(INDEX_KEY).context("index key missing")?;
-            namespace_prefix(&store.tenant, namespace, index)
-        };
-        {
-            let mut table = tx.open_table(RECORDS)?;
-            table.retain_prefix(prefix.as_slice(), |_, _| false)?;
-        }
-        if let Some(source) = replacement.source {
-            let mut count = 0u64;
-            source.visit(|key, value| {
-                ensure!(
-                    !is_write_once_identity(namespace, key),
-                    "initial bootstrap identity cannot be replaced"
-                );
-                count = count
-                    .checked_add(1)
-                    .context("replacement record count overflow")?;
-                // Drop key-state guards after each bounded record so a large import
-                // does not block normal provider renewal for its entire duration.
-                let state = store.state.read();
-                store.require_access(&state)?;
-                let catalog = store.catalog.read();
-                let operation = WriteOp::put(namespace, key, value);
-                validate_batch(&[std::slice::from_ref(&operation)])?;
-                write_domain(tx, store, &state, &catalog, &[operation])
-            })?;
-        }
-        store.check_access()?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]

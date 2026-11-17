@@ -46,7 +46,7 @@ async fn namespace_epochs_advance_around_every_write_naming_them() {
         .unwrap();
     assert_eq!(families.current(), 4);
     store
-        .replace_namespaces(&[NamespaceReplacement::empty("families")], &[])
+        .write_batch(&[WriteOp::delete("families", b"g")])
         .unwrap();
     assert_eq!(families.current(), 6);
     assert!(store.get("families", b"g").unwrap().is_none());
