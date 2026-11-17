@@ -185,14 +185,6 @@ impl std::error::Error for AdmissionError {}
 /// once. `CapacityDenied` proves no published effect and never fences; private work
 /// may have been durably rolled back.
 pub trait StorageAdmission: Send + Sync {
-    /// Purpose-bound native source funding through this actual installed owner.
-    fn install_source_pool(
-        self: Arc<Self>,
-        _install: &mut crate::SourcePoolInstall<'_>,
-    ) -> io::Result<()> {
-        Err(io::ErrorKind::Unsupported.into())
-    }
-
     fn check_owner(&self) -> Result<(), OwnerFailed>;
     /// The owner's in-memory state only: not failed, still open. For steps
     /// that perform no I/O (a cache hit, memory admission, pin bookkeeping,
@@ -856,6 +848,9 @@ impl ReadSnapshot {
     pub fn generation(&self) -> u64 {
         self.pin.root().generation
     }
+    pub(crate) fn retirement_registry(&self) -> crate::snapshot_pins::SnapshotPins {
+        self.pin.registry()
+    }
     pub fn table_exists(&self, table: &str) -> Result<bool, CoreError> {
         self.shared.read(|state| {
             self.shared.check_open(state)?;
@@ -1388,26 +1383,6 @@ impl Core {
         })
     }
 
-    pub fn table_exists_prepared(
-        &self,
-        snapshot: &ReadSnapshot,
-        table: &str,
-        workspace: &mut PreparedPointRead,
-    ) -> Result<bool, CoreError> {
-        self.check_snapshot(snapshot)?;
-        if !NativeOwnedArc::ptr_eq(&self.shared, &workspace.owner) {
-            return Err(CoreError::new(crate::CoreErrorCause::InvalidInput(
-                "prepared point owner differs",
-            )));
-        }
-        self.shared.read(|state| {
-            self.shared.check_open(state)?;
-            state
-                .disk()?
-                .table_exists_prepared(&snapshot.pin, table, workspace)
-        })
-    }
-
     /// Inspect the exact pinned directory's value extent using already-owned
     /// traversal pages. This does not read or authenticate the value bytes.
     pub fn point_length_prepared(
@@ -1632,7 +1607,3 @@ impl Core {
 #[cfg(test)]
 #[path = "core_tests.rs"]
 mod tests;
-
-#[path = "core_source_read.rs"]
-mod source_read;
-pub(crate) use source_read::SourceReadContext;

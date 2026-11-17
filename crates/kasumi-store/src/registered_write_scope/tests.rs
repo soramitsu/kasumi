@@ -40,12 +40,11 @@ impl Fixture {
     }
     fn publish(&self, value: &[u8]) -> Result<()> {
         self.node.with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 tx.open_table(CATALOG)?.insert(KEY, value)?;
                 Ok(())
             },
-            |_| Ok(()),
+            || Ok(()),
         )
     }
     fn assert_read(&self, expected: &[u8]) -> Result<()> {
@@ -66,8 +65,7 @@ async fn successful_write_is_registered_before_native_body_and_disposed_before_a
     let fixture = Fixture::new()?;
     let before = fixture.memory.storage_census().snapshot();
     let output = fixture.node.with_registered_write(
-        &mut (),
-        |tx, _| {
+        |tx| {
             assert_eq!(
                 fixture.memory.storage_census().snapshot().writers,
                 before.writers + 1
@@ -76,7 +74,7 @@ async fn successful_write_is_registered_before_native_body_and_disposed_before_a
                 .insert(KEY, b"selected".as_slice())?;
             Ok(())
         },
-        |_| {
+        || {
             // A recovered observer cannot acknowledge the future output while
             // this synchronous post-commit callback still owns its decision.
             let observer = (0..fixture.memory.storage_census().capacity())
@@ -118,14 +116,13 @@ async fn successful_write_keeps_original_output_while_prephysical_metadata_conte
     let capture_calls = Arc::new(AtomicUsize::new(0));
     let output_drops = Arc::new(AtomicUsize::new(0));
     let (id, address, output) = fixture.node.with_registered_write(
-        &mut (),
-        |tx, _| {
+        |tx| {
             body_calls.fetch_add(1, Ordering::AcqRel);
             tx.open_table(CATALOG)?
                 .insert(KEY, b"committed once".as_slice())?;
             Ok(())
         },
-        |_| {
+        || {
             capture_calls.fetch_add(1, Ordering::AcqRel);
             let observer = (0..fixture.memory.storage_census().capacity())
                 .filter_map(|index| fixture.memory.storage_census().owner_at(index))
@@ -209,13 +206,12 @@ async fn clean_body_error_keeps_original_until_facade_drop_and_native_abort_is_w
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 tx.open_table(CATALOG)?
                     .insert(KEY, b"never published".as_slice())?;
                 Err(OriginalError(marker.clone()).into())
             },
-            |_| -> Result<()> { panic!("aborted body entered post-commit callback") },
+            || -> Result<()> { panic!("aborted body entered post-commit callback") },
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;
@@ -250,12 +246,11 @@ async fn clean_error_drop_during_report_borrow_retires_exact_child_on_parent_ret
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |_, _| {
+            |_| {
                 calls.fetch_add(1, Ordering::AcqRel);
                 Err(OriginalError(Arc::new(())).into())
             },
-            |_| Ok(()),
+            || Ok(()),
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;
@@ -295,13 +290,12 @@ async fn post_commit_original_error_preserves_committed_disposition_and_requires
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 tx.open_table(CATALOG)?
                     .insert(KEY, b"committed".as_slice())?;
                 Ok(())
             },
-            |_| Err::<(), _>(OriginalError(marker.clone()).into()),
+            || Err::<(), _>(OriginalError(marker.clone()).into()),
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;
@@ -388,8 +382,7 @@ async fn actual_native_point_output_refund_panic_keeps_original_on_registered_bo
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 let table = tx.open_table(CATALOG)?;
                 fixture
                     .memory
@@ -399,7 +392,7 @@ async fn actual_native_point_output_refund_panic_keeps_original_on_registered_bo
                 drop(output);
                 Ok(())
             },
-            |_| -> Result<()> {
+            || -> Result<()> {
                 panic!("original body output retirement panic entered commit capture")
             },
         )
@@ -451,14 +444,13 @@ async fn body_panic_and_real_native_control_disposal_panic_keep_both_originals()
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |_, _| {
+            |_| {
                 fixture
                     .memory
                     .panic_on_next_matching_point_lease_drop(request, disposal);
                 std::panic::resume_unwind(body)
             },
-            |_| Ok(()),
+            || Ok(()),
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;
@@ -524,8 +516,7 @@ async fn refused_native_disposal_retains_original_post_commit_output_drop_panic_
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 tx.open_table(CATALOG)?
                     .insert(KEY, b"committed".as_slice())?;
                 fixture
@@ -533,7 +524,7 @@ async fn refused_native_disposal_retains_original_post_commit_output_drop_panic_
                     .panic_on_next_matching_point_lease_drop(request, disposal);
                 Ok(())
             },
-            |_| {
+            || {
                 post_calls.fetch_add(1, Ordering::AcqRel);
                 Ok(PostCommitOutputPanic(Some(output)))
             },
@@ -602,12 +593,11 @@ async fn registration_pressure_and_close_racing_queued_dispatch_enter_no_borrowe
     assert!(
         queued
             .run(
-                &mut (),
-                |_, _| {
+                |_| {
                     calls.fetch_add(1, Ordering::AcqRel);
                     Ok(())
                 },
-                |_| Ok(())
+                || Ok(())
             )
             .is_none()
     );
@@ -630,8 +620,7 @@ async fn actual_staging_capacity_error_is_classified_only_with_clean_abort_and_d
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 let mut table = tx.open_table(CATALOG)?;
                 let before = fixture.memory.snapshot();
                 let filler = MEMORY_BYTES
@@ -647,7 +636,7 @@ async fn actual_staging_capacity_error_is_classified_only_with_clean_abort_and_d
                 drop(pressure);
                 Err(original.into())
             },
-            |_| Ok(()),
+            || Ok(()),
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;
@@ -691,12 +680,11 @@ async fn actual_native_staging_backing_admission_panic_remains_on_exact_begin_ch
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |_, _| {
+            |_| {
                 called.fetch_add(1, Ordering::AcqRel);
                 Ok(())
             },
-            |_| Ok(()),
+            || Ok(()),
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;
@@ -748,9 +736,8 @@ async fn clean_error_diagnostic_destructor_panic_stays_observed_before_census_cr
     let failure = fixture
         .node
         .with_registered_write(
-            &mut (),
-            |_, _| Err(DiagnosticDropPanic(std::sync::Mutex::new(Some(original))).into()),
-            |_| Ok(()),
+            |_| Err(DiagnosticDropPanic(std::sync::Mutex::new(Some(original))).into()),
+            || Ok(()),
         )
         .unwrap_err()
         .downcast::<NodeScopedWriteFailure>()?;

@@ -1,6 +1,6 @@
 //! One ordinary-funded encrypted point session over an actual paired snapshot.
 //! Construction owns all point buffers. Native descriptors and optional cache
-//! retention retain their separate accounting; this is not standing source funding.
+//! retention retain their separate accounting.
 use super::*;
 use std::io;
 
@@ -243,7 +243,7 @@ impl PreparedTenantPointWorkspace {
 }
 
 /// Borrow only the existing ordinary prepared directory for constructor
-/// extent observations. This exposes neither a raw root nor a source loan.
+/// extent observations. This exposes no raw root.
 pub struct PreparedTenantPointBounds<'a> {
     workspace: &'a mut PreparedTenantPointWorkspace,
     view: &'a TenantStorageReadView,
@@ -284,7 +284,7 @@ impl PreparedTenantPointReads {
 
     /// Constructor-only ordinary scan on the same root as prepared point reads.
     /// The caller keeps its actual workspace through both pre-decode admission
-    /// and the decoded-row callback. This is not a protected-source loan.
+    /// and the decoded-row callback.
     pub fn custody_visit_with_workspace<W>(
         &mut self,
         namespace: &str,
@@ -437,10 +437,3 @@ impl PreparedTenantPointReads {
 #[cfg(test)]
 #[path = "prepared_point_read_tests.rs"]
 mod tests;
-
-#[path = "prepared_source_points.rs"]
-mod source_points;
-pub use source_points::{
-    PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
-    SourceHistoryDisposition,
-};

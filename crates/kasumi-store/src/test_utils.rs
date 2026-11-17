@@ -357,7 +357,6 @@ impl TestDiskMemory {
         );
     }
 }
-impl kasumi_kv::SourceMemoryProvider for TestDiskMemory {}
 impl crate::NodeDiskMemoryAdmission for TestDiskMemory {
     fn quote_installed(&self, bytes: u64) -> std::io::Result<u64> {
         Self::required_reservation_bytes(bytes)

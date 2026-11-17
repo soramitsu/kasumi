@@ -484,7 +484,6 @@ impl StoragePayload for DatabaseOwner {
         {
             return false;
         }
-        reads::drain_source_owners(&self.provider, self.census_id);
         RegisteredNodeOpening::drain_released_clean_writers(&self.provider, self.census_id);
         let Some(mut state) = self.state.try_lock() else {
             return false;
@@ -892,7 +891,6 @@ impl RegisteredNodeOpening {
             };
             owner.provider.clone()
         };
-        reads::drain_source_owners(&provider, self.registration.id());
         Self::drain_released_readers(&provider, self.registration.id());
         Self::drain_released_clean_writers(&provider, self.registration.id());
         let Some(mut state) = owner.state.try_lock() else {
@@ -904,7 +902,6 @@ impl RegisteredNodeOpening {
             // A last error facade can drop while close held the opening lock,
             // after the pre-close pass. Give only this opening's released readers
             // a post-close pass and retry the existing busy close once.
-            reads::drain_source_owners(&provider, self.registration.id());
             Self::drain_released_readers(&provider, self.registration.id());
             Self::drain_released_clean_writers(&provider, self.registration.id());
             let Some(mut state) = owner.state.try_lock() else {
@@ -1735,10 +1732,8 @@ mod reads;
 pub(crate) use reads::AdmittedReadReport;
 pub use reads::{
     AdmittedReadBytes, NodeReadAccessError, NodeReadPhase, NodeReadReport, NodeReadTablesError,
-    OwnedEncryptedRow, RegisteredNodeRead, SourceHistoryAbort, SourceHistoryRefusal,
+    OwnedEncryptedRow, RegisteredNodeRead,
 };
-#[cfg(any(test, feature = "test-utils"))]
-pub use reads::{RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic};
 
 mod catalog_put;
 pub use catalog_put::{NodeCatalogPutBodyError, NodeCatalogWriteReport, RegisteredCatalogPut};
@@ -1756,16 +1751,3 @@ mod tests;
 
 mod startup;
 pub use startup::{NodeStartupFailureCustody, NodeStartupPhase, RegisteredNodeStartup};
-
-#[cfg(any(test, feature = "test-utils"))]
-#[path = "native_source_funding_fixture.rs"]
-mod native_source_funding_fixture;
-#[cfg(any(test, feature = "test-utils"))]
-pub use native_source_funding_fixture::{
-    NativeSlotBlockers, NativeSourceFixtureError, NativeSourceFundingFixture,
-};
-
-pub use reads::{
-    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
-    SourceCapacityReport, SourceCapacityRetirement, SourcePoolPhase,
-};

@@ -59,10 +59,6 @@ pub use key_access_denied::KeyAccessDenied;
 mod allocation_tests;
 mod device_disk;
 mod disk_memory;
-mod source_metadata;
-pub use source_metadata::{
-    SourceMetadataCallError, SourceMetadataInstall, SourceMetadataPermit, SourceMetadataPurpose,
-};
 mod storage_census;
 mod storage_opening;
 pub use disk_memory::{
@@ -120,8 +116,7 @@ mod serving_access;
 mod spool;
 pub use read_view::{
     NamespaceReplacement, PointRetirementFailure, PreparedTenantReadPoints,
-    PreparedTenantReadSource, PreparedTenantReadSourceLoan, PreparedTenantReadWorkspace,
-    TenantReadView, plaintext_get_workspace_bytes,
+    PreparedTenantReadWorkspace, TenantReadView, plaintext_get_workspace_bytes,
 };
 pub use registered_read_scope::{NodeScopedReadFailure, NodeScopedReadRetirement};
 pub use scratch_table::{
@@ -132,10 +127,6 @@ pub use scratch_table::{
 mod storage_domains;
 mod sync_trace;
 pub use serving_access::{StorageAccess, StoragePurpose};
-pub use storage_domains::{
-    PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
-    SourceHistoryDisposition,
-};
 mod file_keys;
 mod live_trust;
 pub mod private_files;
@@ -2846,7 +2837,33 @@ impl TenantStore {
     }
 
     pub fn write_batch(&self, operations: &[WriteOp]) -> Result<()> {
-        self.write_batch_with_source(operations, None)
+        crate::deferred_batch::before_write(&self.node)?;
+        let _access = AccessGuard(self);
+        validate_batch(&[operations])?;
+        reject_unpaired_identity_ops(operations)?;
+        self.check_access()?;
+        let _mutation = self.mutations.lock();
+        let _fence = self.cached_rows.fence_operations(operations);
+        self.node.with_registered_write(
+            |tx| {
+                // Key access is needed to encrypt, not while waiting for the
+                // writer or synchronizing its publication. Holding it through
+                // those waits prevents a successful live probe from renewing
+                // the lease on a slow disk.
+                {
+                    let state = self.state.read();
+                    self.require_access(&state)?;
+                    let catalog = self.catalog.read();
+                    write_domain(tx, self, &state, &catalog, operations)?;
+                }
+                self.check_access()
+            },
+            || {
+                self.check_access().context(
+                    "batch committed but key access was lost before acknowledgment; outcome unknown",
+                )
+            },
+        )
     }
 
     /// Bound encryption framing separately from namespace, key and value bytes.
@@ -3476,19 +3493,3 @@ mod catalog_budget;
 mod tests;
 #[cfg(test)]
 mod tls_fixture;
-
-#[cfg(any(test, feature = "test-utils"))]
-pub use storage_opening::{
-    NativeSlotBlockers, NativeSourceFixtureError, NativeSourceFundingFixture,
-};
-
-#[cfg(any(test, feature = "test-utils"))]
-pub use storage_opening::{
-    RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic,
-};
-
-pub use storage_opening::{
-    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
-    SourceCapacityReport, SourceCapacityRetirement, SourceHistoryAbort, SourceHistoryRefusal,
-    SourcePoolPhase,
-};

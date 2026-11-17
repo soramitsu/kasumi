@@ -101,7 +101,6 @@ impl Drop for Grant {
         }
     }
 }
-impl kasumi_kv::SourceMemoryProvider for Memory {}
 impl NodeDiskMemoryAdmission for Memory {
     fn quote_installed(&self, bytes: u64) -> io::Result<u64> {
         bytes

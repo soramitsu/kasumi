@@ -303,14 +303,12 @@ fn native_closed_arc_actual_aliases_keep_original_grants_until_controls_retire()
     let after_admission = (counting.count(), counting.layouts(), counting.addresses());
     let writer = WriterGate::enter(&database.inner.gate, &database.inner.closing).unwrap();
     let after_writer = (counting.count(), counting.layouts(), counting.addresses());
-    let source = database.inner.core.source_context().unwrap();
-    let after_source = (counting.count(), counting.layouts(), counting.addresses());
     drop(counting);
     eprintln!(
-        "actual closed-owner alias allocations: admission={after_admission:?}; writer={after_writer:?}; source={after_source:?}; grants before={issued}, after={}",
+        "actual closed-owner alias allocations: admission={after_admission:?}; writer={after_writer:?}; grants before={issued}, after={}",
         ledger.issued.load(Ordering::Acquire)
     );
-    assert_eq!(after_source.0, 0, "actual aliases allocate no new controls");
+    assert_eq!(after_writer.0, 0, "actual aliases allocate no new controls");
     assert_eq!(
         ledger.issued.load(Ordering::Acquire),
         issued,
@@ -345,15 +343,10 @@ fn native_closed_arc_actual_aliases_keep_original_grants_until_controls_retire()
     drop(writer);
     assert!(
         !disposal.dispose().complete(),
-        "source aliases refuse Shared disposal"
+        "prepared point refuses Shared disposal"
     );
     assert!(FREED[GATE].load(Ordering::Acquire));
     assert!(FREED[CORE].load(Ordering::Acquire));
-    assert!(
-        !FREED[SHARED].load(Ordering::Acquire),
-        "source/prepared point keep exact shared owner"
-    );
-    drop(source);
     assert!(
         !FREED[SHARED].load(Ordering::Acquire),
         "prepared point remains an original alias"
@@ -378,17 +371,18 @@ fn native_closed_arc_concurrent_final_aliases_retire_original_controls_once() {
     let sync = crate::native_sync::tests::Watch::new();
     let (database, group, ledger) = fixture();
     assert_constructor_sync(&sync, &ledger);
+    // Each prepared point is an original Shared alias. Its own workspace
+    // grants are issued before the baseline below.
+    let points = [
+        database.inner.core.prepare_point_read(8).unwrap(),
+        database.inner.core.prepare_point_read(8).unwrap(),
+    ];
     let issued = ledger.issued.load(Ordering::Acquire);
     let counting = super::read_fork_tests::AllocationCount::start();
-    let left = (
-        database.transaction_admission(),
-        database.inner.core.source_context().unwrap(),
-    );
+    let [left_point, right_point] = points;
+    let left = (database.transaction_admission(), left_point);
     let after_left = (counting.count(), counting.layouts(), counting.addresses());
-    let right = (
-        database.transaction_admission(),
-        database.inner.core.source_context().unwrap(),
-    );
+    let right = (database.transaction_admission(), right_point);
     let after_right = (counting.count(), counting.layouts(), counting.addresses());
     drop(counting);
     eprintln!(
@@ -411,12 +405,12 @@ fn native_closed_arc_concurrent_final_aliases_retire_original_controls_once() {
     assert!(!FREED[SHARED].load(Ordering::Acquire));
     let barrier = Barrier::new(2);
     std::thread::scope(|scope| {
-        for (admission, source) in [left, right] {
+        for (admission, point) in [left, right] {
             let barrier = &barrier;
             scope.spawn(move || {
                 barrier.wait();
                 drop(admission);
-                drop(source);
+                drop(point);
             });
         }
     });

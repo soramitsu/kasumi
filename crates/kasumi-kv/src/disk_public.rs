@@ -115,21 +115,6 @@ impl DiskState {
         Ok(exists)
     }
 
-    pub(crate) fn table_exists_prepared(
-        &mut self,
-        pin: &SnapshotPin,
-        table: &str,
-        workspace: &mut crate::core::PreparedPointRead,
-    ) -> Result<bool, CoreError> {
-        self.run(|state| {
-            state.table_at(
-                state.check_snapshot(pin)?,
-                table,
-                Some(&mut workspace.directory),
-            )
-        })
-    }
-
     /// Reads and size preflight share the pinned root's table proof.
     fn point_location_prepared(
         &mut self,

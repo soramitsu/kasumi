@@ -440,24 +440,6 @@ impl NodeDatabase {
         opening.queue_write()
     }
 
-    pub(crate) fn queue_source_capacity(&self) -> std::io::Result<crate::RegisteredSourceCapacity> {
-        let opening =
-            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_WRITE_TIMEOUT)?;
-        opening.queue_source_capacity()
-    }
-
-    pub(crate) fn require_registered_read(
-        &self,
-        reader: &RegisteredNodeRead,
-    ) -> std::io::Result<()> {
-        let opening =
-            self.admit_opening_until(std::time::Instant::now() + crate::NATIVE_READ_TIMEOUT)?;
-        if !reader.belongs_to(&opening) {
-            return Err(std::io::ErrorKind::InvalidInput.into());
-        }
-        Ok(())
-    }
-
     pub(crate) fn fork_registered_read(
         &self,
         parent: &RegisteredNodeRead,

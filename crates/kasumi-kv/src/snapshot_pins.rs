@@ -12,8 +12,8 @@
 //! exact root is stamped with the nonce under the registry lock, and each
 //! certified installation advances the registered root. Cohort coverage then
 //! accepts a pinned slot only at the current root, at a captured (walked)
-//! root, or when it carries the cohort's stamp. Clones share the slot and a
-//! history transfer keeps its stamp. Stamps and nonces are volatile.
+//! root, or when it carries the cohort's stamp. Clones share the slot and
+//! its stamp. Stamps and nonces are volatile.
 //! This module never closes the group or notifies admission of owner failure.
 
 #[cfg(test)]
@@ -25,10 +25,6 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 #[cfg(test)]
 #[path = "snapshot_pin_allocation_tests.rs"]
 pub(crate) mod allocation_tests;
-#[path = "snapshot_pin_rights.rs"]
-mod rights;
-pub(crate) use rights::retained::{PendingSourceRights, RightsRetirement};
-pub(crate) use rights::{HistoryPinRight, PreparedProtectedPin};
 
 use crate::core::{AdmissionError, CoreError, NativeResidentLease, StorageAdmission};
 use crate::directory::DirectoryRoot;
@@ -37,21 +33,10 @@ const ALLOCATION_ALLOWANCE: usize = 64;
 const LEASE_ALLOWANCE: usize = 128;
 const ARC_HEADER_BYTES: usize = 2 * std::mem::size_of::<usize>();
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SourceLane {
-    source: u64,
-    lane: u8,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PinClass {
-    Ordinary,
-    Protected(SourceLane),
-}
 #[derive(Clone, Copy)]
 struct Slot {
     root: DirectoryRoot,
     token: u64,
-    class: PinClass,
     /// Nonce of the cohort that certified `root` when this pin was installed;
     /// zero when no active cohort covered that root.
     coverage: u64,
@@ -59,15 +44,6 @@ struct Slot {
 #[derive(Clone, Copy)]
 enum Entry {
     Empty,
-    ProtectedIdle {
-        lane: SourceLane,
-        ticket: Option<u64>,
-    },
-    HistoryHold {
-        ticket: u64,
-        target: PinIdentity,
-        lane: SourceLane,
-    },
     Pinned(Slot),
 }
 impl Entry {
@@ -85,7 +61,6 @@ impl Entry {
 struct RegistryState {
     slots: Box<[Entry]>,
     epoch: u64,
-    serial: u64,
     /// The active reclamation cohort and the root it currently certifies.
     coverage: Option<(u64, DirectoryRoot)>,
 }
@@ -173,8 +148,6 @@ struct PinIdentity {
 struct PinInner {
     registry: RegistryRef,
     identity: OnceLock<PinIdentity>,
-    // Protected and subsequently demoted pins retain their exact rights owner.
-    _rights: Option<rights::RightsRef>,
     _lease: LeaseCharge,
 }
 
@@ -217,20 +190,14 @@ impl SnapshotPins {
             }));
         } else {
             let mut state = self.inner.state.lock().unwrap();
-            if let Some(Entry::Pinned(slot)) = state
+            let Some(Entry::Pinned(slot)) = state
                 .slots
                 .iter_mut()
                 .find(|entry| matches!(entry, Entry::Pinned(_)))
-            {
-                slot.token += 1;
-            } else {
-                let entry = state
-                    .slots
-                    .iter_mut()
-                    .find(|entry| matches!(entry, Entry::ProtectedIdle { .. }))
-                    .expect("actual idle lane");
-                *entry = Entry::Empty;
-            }
+            else {
+                panic!("actual pinned slot");
+            };
+            slot.token += 1;
         }
     }
     pub(crate) const fn pin_backing_request_bytes() -> u64 {
@@ -239,22 +206,6 @@ impl SnapshotPins {
             + ARC_HEADER_BYTES
             + ALLOCATION_ALLOWANCE
             + LEASE_ALLOWANCE) as u64
-    }
-    pub(crate) const fn rights_request_bytes() -> u64 {
-        rights::source_rights_request_bytes()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn source_lock_available_for_test(&self) -> bool {
-        self.inner.state.try_lock().is_ok()
-    }
-    pub(crate) fn clone_owner(&self) -> Self {
-        Self {
-            inner: self.inner.clone(),
-        }
-    }
-    pub(crate) fn same_owner(&self, other: &Self) -> bool {
-        RetiredArc::ptr_eq(&self.inner, &other.inner)
     }
 
     #[cfg(test)]
@@ -285,7 +236,6 @@ impl SnapshotPins {
             inner: RetiredArc::new(PinInner {
                 registry: self.inner.clone(),
                 identity: OnceLock::new(),
-                _rights: None,
                 _lease: lease,
             }),
         };
@@ -304,7 +254,6 @@ impl SnapshotPins {
         state.slots[slot] = Entry::Pinned(Slot {
             root,
             token,
-            class: PinClass::Ordinary,
             coverage,
         });
         state.epoch = token;
@@ -571,8 +520,8 @@ impl SnapshotPins {
 
     /// Cheap scheduling observation only, never an unlink proof: whether any
     /// live pin holds a root older than `generation`. Acquisition pins only
-    /// the current root and a history transfer only an already pinned one, so
-    /// once no pin is older than a past current root, none can become so.
+    /// the current root, so once no pin is older than a past current root,
+    /// none can become so.
     pub(crate) fn pinned_before(&self, generation: u64) -> Result<bool, CoreError> {
         self.inner.check()?;
         let state = self.inner.lock()?;
@@ -690,6 +639,11 @@ impl SnapshotPin {
     pub(crate) fn root(&self) -> DirectoryRoot {
         self.identity().root
     }
+    pub(crate) fn registry(&self) -> SnapshotPins {
+        SnapshotPins {
+            inner: self.inner.registry.clone(),
+        }
+    }
 }
 
 impl RegistryInner {
@@ -745,8 +699,6 @@ impl Drop for PinInner {
         let Some(identity) = self.identity.get().copied() else {
             return;
         };
-        // Inspect the current class: a history transfer may have demoted this
-        // very pin without changing its immutable identity.
         let mut state = self.registry.state.lock().unwrap_or_else(|poisoned| {
             self.registry.failed.store(true, Ordering::Release);
             poisoned.into_inner()
@@ -754,10 +706,7 @@ impl Drop for PinInner {
         let entry = &mut state.slots[identity.slot];
         match entry.pinned().copied() {
             Some(slot) if slot.token == identity.token && slot.root == identity.root => {
-                *entry = match slot.class {
-                    PinClass::Ordinary => Entry::Empty,
-                    PinClass::Protected(lane) => Entry::ProtectedIdle { lane, ticket: None },
-                };
+                *entry = Entry::Empty;
                 match state.epoch.checked_add(1) {
                     Some(epoch) => state.epoch = epoch,
                     None => self.registry.failed.store(true, Ordering::Release),
@@ -765,7 +714,7 @@ impl Drop for PinInner {
             }
             _ => self.registry.failed.store(true, Ordering::Release),
         }
-        // Payload/credit destructors, including RightsRef, run after unlock.
+        // Payload/credit destructors run after unlock.
         drop(state);
     }
 }
@@ -1323,7 +1272,6 @@ mod tests {
     #[test]
     fn coverage_nonce_stamps_only_pins_of_the_registered_root() {
         let (_, pins) = setup(8);
-        let rights = pins.reserve_source_rights().unwrap();
         let before = pins.acquire(root(2)).unwrap();
         assert!(
             matches!(&(pins.begin_coverage(0, root(2))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
@@ -1334,8 +1282,7 @@ mod tests {
         );
         let other = pins.acquire(root(1)).unwrap();
         let stamped = pins.acquire(root(2)).unwrap();
-        let mut prepared = pins.prepare_protected(&rights).unwrap();
-        let protected = pins.install_protected(&mut prepared, root(2)).unwrap();
+        let restamped = pins.acquire(root(2)).unwrap();
         assert_eq!(stamps(&pins), [(1, 0), (2, 0), (2, 9), (2, 9)]);
         assert!(
             matches!(&(pins.advance_coverage(8, root(3))), Err(native_error) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput("cohort coverage nonce differs"))))
@@ -1357,11 +1304,10 @@ mod tests {
             before,
             other,
             stamped,
-            protected,
+            restamped,
             later,
             unstamped_old,
             after,
-            prepared,
         ));
     }
 
@@ -1400,27 +1346,25 @@ mod tests {
     }
 
     #[test]
-    fn stamp_survives_clone_and_history_commit() {
+    fn stamp_survives_clone() {
         let (_, pins) = setup(6);
-        let rights = pins.reserve_source_rights().unwrap();
         let capture = pins.capture().unwrap();
         pins.begin_coverage(3, root(1)).unwrap();
-        let mut prepared = pins.prepare_protected(&rights).unwrap();
-        let protected = pins.install_protected(&mut prepared, root(1)).unwrap();
-        let clone = protected.clone();
+        let stamped = pins.acquire(root(1)).unwrap();
+        let clone = stamped.clone();
         pins.advance_coverage(3, root(2)).unwrap();
-        drop(protected);
-        pins.validate_cohort_coverage(&capture, 3, root(2)).unwrap();
-        let mut history = pins.reserve_history(&clone).unwrap();
-        pins.commit_history(&mut history).unwrap();
-        drop(history);
+        drop(stamped);
         pins.validate_cohort_coverage(&capture, 3, root(2)).unwrap();
         let state = pins.inner.state.lock().unwrap();
-        assert!(state.slots.iter().filter_map(Entry::pinned).any(|slot| {
-            slot.root == root(1) && slot.class == PinClass::Ordinary && slot.coverage == 3
-        }));
+        assert!(
+            state
+                .slots
+                .iter()
+                .filter_map(Entry::pinned)
+                .any(|slot| slot.root == root(1) && slot.coverage == 3)
+        );
         drop(state);
-        drop((clone, prepared));
+        drop(clone);
     }
 
     #[test]
@@ -1469,25 +1413,20 @@ mod tests {
     }
 
     #[test]
-    fn pinned_before_sees_ordinary_protected_and_demoted_pins() {
+    fn pinned_before_sees_pins_until_their_last_clone_drops() {
         let (_, pins) = setup(4);
-        let rights = pins.reserve_source_rights().unwrap();
         assert!(!pins.pinned_before(u64::MAX).unwrap());
         let ordinary = pins.acquire(root(3)).unwrap();
         assert!(pins.pinned_before(4).unwrap());
         assert!(!pins.pinned_before(3).unwrap());
-        let mut prepared = pins.prepare_protected(&rights).unwrap();
-        let protected = pins.install_protected(&mut prepared, root(1)).unwrap();
-        let clone = protected.clone();
+        let older = pins.acquire(root(1)).unwrap();
+        let clone = older.clone();
         assert!(pins.pinned_before(2).unwrap());
         assert!(!pins.pinned_before(1).unwrap());
-        drop(protected);
-        // A history transfer demotes the same slot; its root stays pinned.
-        let mut history = pins.reserve_history(&clone).unwrap();
-        pins.commit_history(&mut history).unwrap();
-        drop(history);
+        drop(older);
+        // The clone shares the slot; its root stays pinned.
         assert!(pins.pinned_before(2).unwrap());
-        drop((clone, prepared));
+        drop(clone);
         assert!(!pins.pinned_before(3).unwrap());
         drop(ordinary);
         assert!(!pins.pinned_before(u64::MAX).unwrap());

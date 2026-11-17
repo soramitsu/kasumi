@@ -982,7 +982,6 @@ impl PausedRegistrationMemory {
         Ok(())
     }
 }
-impl kasumi_kv::SourceMemoryProvider for PausedRegistrationMemory {}
 impl NodeDiskMemoryAdmission for PausedRegistrationMemory {
     fn storage_census(&self) -> &crate::StorageCensus {
         &self.census

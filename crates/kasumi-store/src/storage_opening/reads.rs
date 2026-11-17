@@ -5,17 +5,6 @@ use std::sync::atomic::AtomicUsize;
 #[path = "read_report.rs"]
 mod read_report;
 pub(crate) use read_report::AdmittedReadReport;
-mod source_pool;
-pub(super) use source_pool::drain_source_owners;
-pub use source_pool::{
-    PreparedRegisteredSource, RegisteredSourceCapacity, SourceCapacityClose, SourceCapacityFailure,
-    SourceCapacityReport, SourceCapacityRetirement, SourceHistoryAbort, SourceHistoryRefusal,
-    SourcePoolPhase,
-};
-#[cfg(any(test, feature = "test-utils"))]
-pub use source_pool::{
-    RegisteredSourceFundingFixture, SourceCompletionFault, SourceReadDiagnostic,
-};
 
 #[cfg(test)]
 type ReleasedReaderSweepObserver = Box<dyn FnMut(StorageOwnerId)>;
@@ -59,13 +48,6 @@ pub enum NodeReadPhase {
     /// Registered selected-snapshot intent. Public begin must never turn this
     /// into a current-root read, even through a recovered census facade.
     ForkQueued,
-    /// Registered protected-source intent; ordinary begin/read cannot dispatch it.
-    SourceQueued,
-    SourcePreparing,
-    SourcePrepared,
-    SourceCapturing,
-    SourceCaptured,
-    SourceHistory,
     Begin,
     Tables,
     Active,
@@ -184,9 +166,6 @@ enum RoutineReadFailure {
 struct ReaderState {
     phase: NodeReadPhase,
     transaction: Option<RetainedReadTransaction>,
-    // Private typed source purpose stays present even after native disposal.
-    // Its inline layout is included in every owning report quote.
-    source: Option<source_pool::SourceReaderState>,
     begin: Observation<ReadBeginFailure>,
     tables: Observation<NodeReadTablesError>,
     outer: Observation<std::convert::Infallible>,
@@ -198,19 +177,13 @@ struct ReaderState {
 }
 impl ReaderState {
     fn has_failures(&self) -> bool {
-        let failures = observed_failure(self.begin.borrow())
+        observed_failure(self.begin.borrow())
             || observed_failure(self.tables.borrow())
             || observed_failure(self.outer.borrow())
             || observed_failure(self.output_admission.borrow())
             || observed_failure(self.read_failure.borrow())
             || observed_failure(self.body_panic.borrow())
-            || observed_failure(self.finish_outer.borrow());
-        let failures = failures
-            || self
-                .source
-                .as_ref()
-                .is_some_and(source_pool::SourceReaderState::has_failures);
-        failures
+            || observed_failure(self.finish_outer.borrow())
             || self.transaction.as_ref().is_some_and(|transaction| {
                 let report = transaction.report();
                 observed_failure(report.release())
@@ -222,9 +195,6 @@ impl ReaderState {
     // Classify every observation together; a known capacity result cannot
     // acknowledge an unrelated unknown result introduced by a recovered facade.
     fn routine_failure(&self) -> Option<RoutineReadFailure> {
-        if self.source.is_some() {
-            return None;
-        }
         if !self.outer.success() || !matches!(self.body_panic, Observation::NotEntered) {
             return None;
         }
@@ -438,9 +408,6 @@ impl ReaderRequest {
     }
 
     fn finish_locked(&self, state: &mut ReaderState) -> NodeReadPhase {
-        if state.source.is_some() {
-            return source_pool::finish_source_locked(self, state);
-        }
         if matches!(
             state.phase,
             NodeReadPhase::Queued | NodeReadPhase::ForkQueued
@@ -540,7 +507,7 @@ impl StoragePayload for ReaderRequest {
         let phase = self.finish_observed(&mut state);
         if self.auto_retire_routine_failure.load(Ordering::Acquire) {
             state.acknowledge_settled_routine();
-            if state.source.is_none() && phase == NodeReadPhase::Retained {
+            if phase == NodeReadPhase::Retained {
                 // Preserve the released-reader sweep's terminal-failure rule:
                 // a failed close keeps its original but ends routine retry intent.
                 self.auto_retire_routine_failure
@@ -607,7 +574,7 @@ impl RegisteredNodeOpening {
     /// Revisit this opening's released clean and routine readers without waiting.
     /// Admission and close call this before taking the opening state lock. A
     /// detached clean reader may still own its census cell after transient
-    /// metadata contention; unknown observations and source owners stay retained.
+    /// metadata contention; unknown observations stay retained.
     pub(crate) fn drain_released_readers(
         provider: &Arc<dyn NodeDiskMemoryAdmission>,
         opening_id: StorageOwnerId,
@@ -633,7 +600,7 @@ impl RegisteredNodeOpening {
                 let Some(state) = request.state.try_lock() else {
                     return false;
                 };
-                if request.facades.load(Ordering::Acquire) != 0 || state.source.is_some() {
+                if request.facades.load(Ordering::Acquire) != 0 {
                     return false;
                 }
                 (matches!(
@@ -685,7 +652,6 @@ impl RegisteredNodeOpening {
             ReaderState {
                 phase,
                 transaction: None,
-                source: None,
                 begin: Observation::NotEntered,
                 tables: Observation::NotEntered,
                 outer: Observation::NotEntered,
@@ -768,7 +734,6 @@ impl RegisteredNodeOpening {
                     ReaderState {
                         phase: NodeReadPhase::Queued,
                         transaction: None,
-                        source: None,
                         begin: Observation::NotEntered,
                         tables: Observation::NotEntered,
                         outer: Observation::NotEntered,
@@ -815,6 +780,7 @@ impl RegisteredNodeRead {
             .storage_census()
             .retained_native_constructor::<ReaderRequest>(provider.clone(), id)
     }
+    #[cfg(test)]
     pub(crate) fn memory_requests() -> io::Result<[u64; 2]> {
         Ok([
             AdmittedReadReport::request_bytes()?,
@@ -1169,9 +1135,6 @@ impl RegisteredNodeRead {
         if key.is_empty() || key.len() > 4096 {
             return Err(NodeReadAccessError::InvalidInput);
         }
-        if self.is_protected_source() {
-            return self.source_record_length_prepared(key, workspace);
-        }
         self.read_current(|transaction| {
             transaction.point_length_prepared(crate::RECORDS, key, workspace)
         })
@@ -1189,9 +1152,6 @@ impl RegisteredNodeRead {
             || max_value_bytes > crate::MAX_BATCH
         {
             return Err(NodeReadAccessError::InvalidInput);
-        }
-        if self.is_protected_source() {
-            return self.source_record_bytes_prepared(key, max_value_bytes, workspace);
         }
         self.read_current(|transaction| {
             transaction.get_bytes_prepared(crate::RECORDS, key, max_value_bytes, workspace)
@@ -1242,9 +1202,7 @@ impl RegisteredNodeRead {
             // A failed ordinary read keeps its installed transaction until
             // that transaction's own close attempt; losing the opening lock to
             // another operation is not that attempt.
-            let unclosed = phase == NodeReadPhase::Failed
-                && state.source.is_none()
-                && state.transaction.is_some();
+            let unclosed = phase == NodeReadPhase::Failed && state.transaction.is_some();
             if phase != NodeReadPhase::Active && !unclosed {
                 return phase;
             }
@@ -1266,7 +1224,7 @@ impl RegisteredNodeRead {
     }
     /// Complete this clean reader under the caller's already-established budget.
     /// Observation lock contention may use that budget; failures and outstanding
-    /// source/facade custody are never waited away.
+    /// facade custody are never waited away.
     pub(crate) fn retire_until(self, deadline: std::time::Instant) -> StorageCensusDisposition {
         self.retire_inner(Some(deadline))
     }
@@ -1281,7 +1239,7 @@ impl RegisteredNodeRead {
             // A borrowed diagnostic may briefly own only the reader state mutex.
             // Retry that observation within the existing scope budget, before
             // consuming this registration. No native operation enters here, and
-            // failure/source classification below remains the original one-shot
+            // failure classification below remains the original one-shot
             // policy. Nonblocking retirement never waits for this observation.
             let mut observed = initial_state;
             while observed.is_none() {
@@ -1307,11 +1265,7 @@ impl RegisteredNodeRead {
                 ) {
                     state.phase = NodeReadPhase::Cancelled;
                 }
-                // A recovered ordinary facade cannot acknowledge source exchange
-                // or cleanup originals. Its private source owner has a separate gate.
-                if state.source.is_none() {
-                    state.outcomes_released = true;
-                }
+                state.outcomes_released = true;
                 state.phase == NodeReadPhase::Finished && !state.has_failures()
             } else {
                 false

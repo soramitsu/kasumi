@@ -144,8 +144,6 @@ impl MemoryCore {
             .ok_or_else(|| anyhow::anyhow!("installed reservation workspace overflow"))
     }
 }
-// MemoryCore funds no native source pools; an install refuses as Unsupported.
-impl kasumi_kv::SourceMemoryProvider for MemoryCore {}
 impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
     fn install_native_constructor(
         self: Arc<Self>,
@@ -174,39 +172,6 @@ impl kasumi_store::NodeDiskMemoryAdmission for MemoryCore {
                 return Err(io::ErrorKind::Other.into());
             }
         };
-        permit.bind(charge);
-        Ok(())
-    }
-
-    fn install_source_metadata(
-        self: Arc<Self>,
-        install: &mut kasumi_store::SourceMetadataInstall<'_>,
-    ) -> io::Result<()> {
-        let provider: Arc<dyn kasumi_store::NodeDiskMemoryAdmission> = self.clone();
-        let permit = install
-            .try_begin_bind(provider)
-            .map_err(|_| io::ErrorKind::InvalidInput)?;
-        let bytes = Self::installed_reservation_bytes(permit.request_bytes())
-            .ok_or(io::ErrorKind::OutOfMemory)?;
-        // The exact constructor, including History, is ordinary source work.
-        // Publication lanes are standing reservations acquired ahead of work;
-        // this does not borrow audit TLS or bypass cache/ordinary headroom.
-        let charge = match self.reserve_kind_raw(
-            bytes,
-            None,
-            ChargeKind::Resident,
-            super::ChargeOrigin::DocumentSource,
-        ) {
-            Ok(charge) => charge,
-            Err(ReserveKindError::Exhausted) => {
-                return Err(permit.refuse_capacity(io::ErrorKind::OutOfMemory.into()));
-            }
-            Err(ReserveKindError::IdentifierExhausted | ReserveKindError::Missing) => {
-                return Err(io::ErrorKind::Other.into());
-            }
-        };
-        #[cfg(test)]
-        super::installed_drop_probe::observe(&charge);
         permit.bind(charge);
         Ok(())
     }

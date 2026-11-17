@@ -153,12 +153,11 @@ impl EncryptedTrust {
         let catalog = self.store.catalog.read();
         let _fence = self.store.cached_rows.fence_operations(&operations);
         self.store.node.with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 write_domain(tx, &self.store, &state, &catalog, &operations)?;
                 self.store.require_access(&state)
             },
-            |_| {
+            || {
                 self.store
                     .require_access(&state)
                     .context("local signer trust committed but key access was lost")

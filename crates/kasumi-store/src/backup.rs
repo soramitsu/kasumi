@@ -1500,8 +1500,6 @@ mod tests {
             _bookkeeping: DiskMemoryLease,
         }
 
-        impl kasumi_kv::SourceMemoryProvider for FailBundleMemory {}
-
         impl NodeDiskMemoryAdmission for FailBundleMemory {
             fn storage_census(&self) -> &crate::StorageCensus {
                 &self.census

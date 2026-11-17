@@ -139,7 +139,6 @@ impl TypedCatalogDenialMemory {
         Ok(owner)
     }
 }
-impl kasumi_kv::SourceMemoryProvider for TypedCatalogDenialMemory {}
 impl crate::NodeDiskMemoryAdmission for TypedCatalogDenialMemory {
     fn storage_census(&self) -> &crate::StorageCensus {
         &self.census

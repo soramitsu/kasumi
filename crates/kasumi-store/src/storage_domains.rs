@@ -12,10 +12,6 @@ mod prepared_read_view;
 pub use prepared_point_read::{
     PreparedTenantPointBounds, PreparedTenantPointReads, PreparedTenantPointWorkspace,
 };
-pub use prepared_point_read::{
-    PreparedTenantSourcePointLoan, PreparedTenantSourcePointReads, PreparedTenantSourceReadView,
-    SourceHistoryDisposition,
-};
 pub use prepared_read_view::PreparedTenantStorageReadView;
 
 /// The paired native commit returned successfully. Its final access check alone
@@ -45,10 +41,9 @@ impl DomainPublicationOutcome {
     }
 }
 
-enum PublicationMode<'a> {
+enum PublicationMode {
     Initialize,
     Ordinary,
-    Capture(&'a mut crate::PreparedRegisteredSource),
 }
 
 const BINDING_NS: &str = "kasumi.storage-domains";
@@ -987,26 +982,6 @@ impl TenantStorageSet {
         )
     }
 
-    /// Publish the exact paired domains and capture a preowned native source
-    /// while its original native writer token is still held. Its registered owner
-    /// remains with the caller across every original commit/capture outcome.
-    pub fn write_batch_replacing_capturing_source(
-        &self,
-        application_ops: &[WriteOp],
-        custody_ops: &[WriteOp],
-        application_replacements: &[NamespaceReplacement<'_>],
-        custody_replacements: &[NamespaceReplacement<'_>],
-        source: &mut crate::PreparedRegisteredSource,
-    ) -> Result<DomainPublicationOutcome> {
-        self.publish(
-            application_ops,
-            custody_ops,
-            application_replacements,
-            custody_replacements,
-            PublicationMode::Capture(source),
-        )
-    }
-
     pub(crate) fn publish_carrying(
         &self,
         carried: Option<&crate::CarriedBatch>,
@@ -1029,7 +1004,7 @@ impl TenantStorageSet {
         custody_ops: &[WriteOp],
         application_replacements: &[NamespaceReplacement<'_>],
         custody_replacements: &[NamespaceReplacement<'_>],
-        mode: PublicationMode<'_>,
+        mode: PublicationMode,
     ) -> Result<DomainPublicationOutcome> {
         self.publish_inner(
             None,
@@ -1050,14 +1025,10 @@ impl TenantStorageSet {
         custody_ops: &[WriteOp],
         application_replacements: &[NamespaceReplacement<'_>],
         custody_replacements: &[NamespaceReplacement<'_>],
-        mode: PublicationMode<'_>,
+        mode: PublicationMode,
     ) -> Result<DomainPublicationOutcome> {
         crate::deferred_batch::before_write(&self.application.node)?;
-        let initialize = matches!(&mode, PublicationMode::Initialize);
-        let mut source = match mode {
-            PublicationMode::Capture(source) => Some(source),
-            PublicationMode::Initialize | PublicationMode::Ordinary => None,
-        };
+        let initialize = matches!(mode, PublicationMode::Initialize);
         let carried_application = carried.map_or(&[][..], crate::CarriedBatch::application);
         let carried_custody = carried.map_or(&[][..], crate::CarriedBatch::custody);
         validate_batch(&[
@@ -1090,10 +1061,6 @@ impl TenantStorageSet {
                 custody.cached_rows.fence_operations(carried_custody),
             )
         });
-        if let Some(source) = source.as_deref() {
-            source.require_prepared_store(application)?;
-            source.require_prepared_store(custody)?;
-        }
         {
             let app_state = application.state.read();
             let custody_state = custody.state.read();
@@ -1108,12 +1075,7 @@ impl TenantStorageSet {
             validate_distinct_keys(&app_state, &custody_state)?;
         }
         application.node.with_registered_write(
-            &mut source,
-            |tx, source| {
-                if let Some(source) = source.as_deref() {
-                    source.require_prepared_store(application)?;
-                    source.require_prepared_store(custody)?;
-                }
+            |tx| {
                 check_paired_initial_identity_state(
                     tx, application, custody, application_ops, custody_ops,
                 )?;
@@ -1140,10 +1102,7 @@ impl TenantStorageSet {
                 }
                 self.check_access()
             },
-            |source| {
-                if let Some(source) = source.as_deref_mut() {
-                    source.capture_published_store(application)?;
-                }
+            || {
                 match self.check_access().context(
                     "domain transaction committed; access expired before acknowledgment; outcome unknown",
                 ) {

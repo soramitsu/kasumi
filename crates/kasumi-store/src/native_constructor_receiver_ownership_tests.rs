@@ -155,7 +155,6 @@ impl Memory {
         }
     }
 }
-impl kasumi_kv::SourceMemoryProvider for Memory {}
 impl NodeDiskMemoryAdmission for Memory {
     fn storage_census(&self) -> &StorageCensus {
         &self.census

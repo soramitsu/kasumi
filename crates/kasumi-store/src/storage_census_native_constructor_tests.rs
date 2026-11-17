@@ -105,7 +105,6 @@ impl RefusingMemory {
         memory
     }
 }
-impl kasumi_kv::SourceMemoryProvider for RefusingMemory {}
 impl NodeDiskMemoryAdmission for RefusingMemory {
     fn storage_census(&self) -> &StorageCensus {
         &self.census

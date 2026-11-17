@@ -51,36 +51,6 @@ impl AdmittedReadReport {
             charge: ReportCharge(Some(charge)),
         }
     }
-    pub(super) fn new_source(
-        provider: &Arc<dyn NodeDiskMemoryAdmission>,
-        grant: &mut Option<crate::source_metadata::SourceReportGrant>,
-        state: &mut Option<ReaderState>,
-    ) -> io::Result<Self> {
-        if state.is_none() {
-            return Err(io::ErrorKind::InvalidInput.into());
-        }
-        grant
-            .as_ref()
-            .ok_or(io::ErrorKind::InvalidInput)?
-            .require(provider, Self::request_bytes()?)?;
-        let charge = grant
-            .take()
-            .expect("validated source report grant")
-            .into_lease();
-        Ok(Self {
-            state: Some(Arc::new(Mutex::new(
-                state.take().expect("retained source state"),
-            ))),
-            charge: ReportCharge(Some(Arc::new(charge))),
-        })
-    }
-    #[cfg(any(test, feature = "test-utils"))]
-    pub(super) fn allocation_addresses(&self) -> [usize; 2] {
-        [
-            std::ptr::from_ref(self.state.as_deref().unwrap()) as usize,
-            std::ptr::from_ref(self.charge.0.as_deref().unwrap()) as usize,
-        ]
-    }
     pub(crate) fn report(&self) -> NodeReadReport<'_> {
         NodeReadReport { state: self.lock() }
     }
@@ -132,7 +102,6 @@ mod tests {
         ReaderState {
             phase: NodeReadPhase::Queued,
             transaction: None,
-            source: None,
             begin: Observation::NotEntered,
             tables: Observation::NotEntered,
             outer: Observation::NotEntered,

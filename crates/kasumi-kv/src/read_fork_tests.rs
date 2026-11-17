@@ -2,8 +2,8 @@
 //! segmented in-memory disk implementation, not a substitute snapshot model.
 #[path = "read_fork_commit_tests.rs"]
 mod commit_progress;
-#[path = "source_read_tests.rs"]
-mod source_reads;
+#[path = "retained_custody_tests.rs"]
+mod retained_custody;
 use super::*;
 use crate::core::{AdmissionError, OwnerFailed};
 use crate::group::InMemoryGroup;
@@ -121,7 +121,6 @@ fn note_deallocation(pointer: *mut u8, layout: Layout) {
     crate::native_owned_arc::allocation_tests::note_deallocation(pointer);
     crate::tables::native_owned_arc_tests::note_deallocation(pointer, layout);
     crate::tables::staging_credit_tests::note_deallocation(pointer, layout);
-    crate::retained::source_funding_note_deallocation(pointer, layout);
     crate::snapshot_pins::allocation_tests::note_deallocation(pointer, layout);
     let _ = COUNTING.try_with(|enabled| {
         if enabled.get() {
@@ -969,12 +968,11 @@ fn retained_reader_disposal_panic_preserves_unknown_even_after_transaction_is_ab
 }
 
 #[test]
-fn source_quote_constructor_requests_are_pure_and_match_actual_native_capture() {
+fn read_request_quotes_are_pure_and_match_actual_native_capture() {
     use crate::{PointReadRequests, ProtectedReadRequests};
     let counting = AllocationCount::start();
     let backing = ProtectedReadRequests::snapshot_backing_request_bytes();
     let pin = ProtectedReadRequests::pin_backing_request_bytes();
-    let rights = ProtectedReadRequests::rights_request_bytes();
     let point = PointReadRequests::new(65_537).unwrap();
     assert!(PointReadRequests::new(usize::MAX).is_err());
     assert_eq!(
@@ -982,7 +980,6 @@ fn source_quote_constructor_requests_are_pure_and_match_actual_native_capture() 
         AdmittedValue::request_bytes(65_537).unwrap()
     );
     assert!(point.bounds_request_bytes() > 0 && point.page_request_bytes() > 16 << 10);
-    assert!(rights > 0);
     assert_eq!(counting.count(), 0);
     drop(counting);
     let admission = CountedAdmission::new();

@@ -2,9 +2,47 @@
 //! The provider grant and every original observation stay here until explicit
 //! disposition. Provider callbacks and payload construction never hold metadata.
 use super::*;
-use crate::source_metadata::MetadataAttempt;
 use kasumi_kv::TerminalObservation;
 use std::{any::TypeId, convert::Infallible, fmt};
+
+/// One effectful stage's original outcome. A stage runs at most once; its
+/// returned error or panic payload stays here until explicit disposition.
+enum MetadataAttempt<E> {
+    Pending,
+    Entered,
+    Returned(Result<(), E>),
+    Panicked(Box<dyn Any + Send>),
+}
+impl<E> MetadataAttempt<E> {
+    const fn new() -> Self {
+        Self::Pending
+    }
+    fn run(&mut self, work: impl FnOnce() -> Result<(), E>) {
+        if !matches!(self, Self::Pending) {
+            return;
+        }
+        *self = Self::Entered;
+        *self = match catch_unwind(AssertUnwindSafe(work)) {
+            Ok(value) => Self::Returned(value),
+            Err(payload) => Self::Panicked(payload),
+        };
+    }
+    fn succeeded(&self) -> bool {
+        matches!(self, Self::Returned(Ok(())))
+    }
+    fn pending(&self) -> bool {
+        matches!(self, Self::Pending)
+    }
+    fn view(&self) -> TerminalObservation<'_, E> {
+        match self {
+            Self::Pending => TerminalObservation::NotEntered,
+            Self::Entered => TerminalObservation::Entered,
+            Self::Returned(Ok(())) => TerminalObservation::Returned(Ok(())),
+            Self::Returned(Err(error)) => TerminalObservation::Returned(Err(error)),
+            Self::Panicked(payload) => TerminalObservation::Panicked(payload.as_ref()),
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeConstructorCallError {
@@ -419,7 +457,7 @@ impl StorageCensus {
             metadata.kind = T::KIND;
             metadata.parent = parent;
             metadata.children_sealed = false;
-            assert!(metadata.lease.is_none() && metadata.source.is_none());
+            assert!(metadata.lease.is_none());
             assert_eq!(slot.children.load(Ordering::Acquire), 0);
             slot.pending.store(NONE, Ordering::Release);
             slot.output_generation.store(generation, Ordering::Release);

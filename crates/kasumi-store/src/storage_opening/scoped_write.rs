@@ -56,12 +56,11 @@ impl ScopedWriteRequest {
         self.database.owner().dispose_write(transaction, wait)
     }
 
-    fn execute<W, T>(
+    fn execute<T>(
         &self,
         state: &mut ScopedWriterState,
-        workspace: &mut W,
-        body: impl FnOnce(&kasumi_kv::WriteTransaction, &mut W) -> anyhow::Result<()>,
-        post_commit: impl FnOnce(&mut W) -> anyhow::Result<T>,
+        body: impl FnOnce(&kasumi_kv::WriteTransaction) -> anyhow::Result<()>,
+        post_commit: impl FnOnce() -> anyhow::Result<T>,
     ) -> Option<T> {
         let owner = self.database.owner();
         let _serial = owner.serial.lock();
@@ -93,10 +92,7 @@ impl ScopedWriteRequest {
         state.phase = NodeWriterPhase::Body;
         state.body = Observation::Entered;
         state.body = match catch_unwind(AssertUnwindSafe(|| {
-            body(
-                state.transaction.as_ref().unwrap().transaction().unwrap(),
-                workspace,
-            )
+            body(state.transaction.as_ref().unwrap().transaction().unwrap())
         })) {
             Ok(result) => Observation::Returned(result),
             Err(payload) => Observation::Panicked(payload),
@@ -119,7 +115,7 @@ impl ScopedWriteRequest {
         if committed {
             state.phase = NodeWriterPhase::PostCommit;
             state.post_commit = Observation::Entered;
-            state.post_commit = match catch_unwind(AssertUnwindSafe(|| post_commit(workspace))) {
+            state.post_commit = match catch_unwind(AssertUnwindSafe(post_commit)) {
                 Ok(Ok(value)) => {
                     output = Some(value);
                     Observation::Returned(Ok(()))
@@ -188,11 +184,10 @@ impl RegisteredNodeWrite {
     pub(crate) fn provider(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
         self.registration.owner().database.owner().provider.clone()
     }
-    pub(crate) fn run<W, T>(
+    pub(crate) fn run<T>(
         &self,
-        workspace: &mut W,
-        body: impl FnOnce(&kasumi_kv::WriteTransaction, &mut W) -> anyhow::Result<()>,
-        post_commit: impl FnOnce(&mut W) -> anyhow::Result<T>,
+        body: impl FnOnce(&kasumi_kv::WriteTransaction) -> anyhow::Result<()>,
+        post_commit: impl FnOnce() -> anyhow::Result<T>,
     ) -> Option<T> {
         let request = self.registration.owner();
         let mut state = request.state.lock();
@@ -201,7 +196,7 @@ impl RegisteredNodeWrite {
         }
         state.outer = Observation::Entered;
         match catch_unwind(AssertUnwindSafe(|| {
-            request.execute(&mut state, workspace, body, post_commit)
+            request.execute(&mut state, body, post_commit)
         })) {
             Ok(output) => {
                 state.outer = Observation::Returned(Ok(()));

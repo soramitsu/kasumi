@@ -107,13 +107,6 @@ impl EncryptedPointBacking {
             _charge: charge,
         })
     }
-    pub(crate) fn verify_source_tables(
-        &mut self,
-        reader: &RegisteredNodeRead,
-    ) -> Result<(), NodeReadAccessError> {
-        reader.verify_source_tables_prepared(&mut self.native)
-    }
-
     pub(crate) fn bounds(&self) -> (usize, usize, usize) {
         (self.namespace_bytes, self.key_bytes, self.value_bytes)
     }

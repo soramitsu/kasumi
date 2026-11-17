@@ -197,15 +197,6 @@ impl PreparedTenantReadWorkspace {
         Ok(())
     }
 
-    fn require_memory(&self, expected: &Arc<dyn NodeDiskMemoryAdmission>) -> Result<()> {
-        ensure!(
-            Arc::ptr_eq(expected, self.store.persistent_disk().memory())
-                && Arc::ptr_eq(expected, self.store.scratch_disk().memory()),
-            "selected view and workspace memory owners differ"
-        );
-        Ok(())
-    }
-
     fn get(
         &mut self,
         view: &TenantReadView,
@@ -235,10 +226,6 @@ impl PreparedTenantReadWorkspace {
         result.map(|range| range.map(|range| &self.backing.plaintext[range]))
     }
 }
-
-#[path = "prepared_source_points.rs"]
-mod source_points;
-pub use source_points::{PreparedTenantReadSource, PreparedTenantReadSourceLoan};
 
 #[cfg(test)]
 #[path = "prepared_points_tests.rs"]

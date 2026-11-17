@@ -2126,7 +2126,7 @@ impl StoragePayload for NodeSegmentGroup {
 }
 
 /// Exact request made to the installed provider for a native ResidentLease.
-/// Shared by the real constructor and source quotation; this does not reserve.
+/// This quotes only; it does not reserve.
 pub(crate) fn workspace_provider_request_bytes(bytes: u64) -> io::Result<u64> {
     crate::disk_memory::add(
         bytes,
@@ -2135,17 +2135,6 @@ pub(crate) fn workspace_provider_request_bytes(bytes: u64) -> io::Result<u64> {
 }
 
 impl StorageAdmission for NodeSegmentGroup {
-    fn install_source_pool(
-        self: Arc<Self>,
-        install: &mut kasumi_kv::SourcePoolInstall<'_>,
-    ) -> io::Result<()> {
-        self.check_owner()
-            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-        let provider: Arc<dyn kasumi_kv::SourceMemoryProvider> = self.disk.memory().clone();
-        install.through_installed_provider(provider, workspace_provider_request_bytes)?;
-        self.check_owner().map_err(|_| io::ErrorKind::Other.into())
-    }
-
     /// A failed check of the root descriptor is an owner failure: the group
     /// and its disk stay failed until every owner drains and a census reopens
     /// them, even if the original inode later reappears.

@@ -6,10 +6,7 @@ pub(crate) use point_retirement::retire_point_backing;
 #[cfg(test)]
 mod ordinary_visit_tests;
 mod prepared_points;
-pub use prepared_points::{
-    PreparedTenantReadPoints, PreparedTenantReadSource, PreparedTenantReadSourceLoan,
-    PreparedTenantReadWorkspace,
-};
+pub use prepared_points::{PreparedTenantReadPoints, PreparedTenantReadWorkspace};
 /// A complete namespace replacement, published atomically with binding metadata.
 ///
 /// An explicit empty replacement removes every current record in the namespace.
@@ -179,8 +176,7 @@ impl TenantStore {
         let _mutation = self.mutations.lock();
         let _fence = self.cached_rows.fence_replacing(replacements, operations);
         self.node.with_registered_write(
-            &mut (),
-            |tx, _| {
+            |tx| {
                 replace_domain(tx, self, replacements)?;
                 {
                     let state = self.state.read();
@@ -190,7 +186,7 @@ impl TenantStore {
                 }
                 self.check_access()
             },
-            |_| self.check_access(),
+            || self.check_access(),
         )
     }
 }
@@ -700,6 +696,3 @@ pub(crate) fn replace_domain(
 #[cfg(test)]
 #[path = "read_view_fork_tests.rs"]
 mod fork_tests;
-
-#[path = "read_view/source_publication.rs"]
-mod source_publication;

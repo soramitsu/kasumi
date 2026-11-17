@@ -186,8 +186,9 @@ impl RetainedWriteTransaction {
     }
 
     /// Publish once and retain the original successful writer token through
-    /// preowned source capture. Every refusal, unknown result and panic retains
-    /// the same original terminal observation; none can mint HoldingWriter.
+    /// the caller's post-commit work. Every refusal, unknown result and panic
+    /// retains the same original terminal observation; none can mint
+    /// HoldingWriter.
     pub fn commit_holding_writer(&mut self) -> WriteTerminalReport<'_> {
         self.commit_with_writer(true)
     }
@@ -309,7 +310,7 @@ pub struct BoundedReadRow {
 
 #[must_use]
 pub struct RetainedReadTransaction {
-    retirement_observer: Option<crate::tables::source_read::ReadRetirementObserver>,
+    retirement_observer: Option<crate::tables::read_retirement::ReadRetirementObserver>,
     native_retirement: Attempt<StorageError>,
     transaction: Option<ReadTransaction>,
     release: Attempt<StorageError>,
@@ -473,17 +474,6 @@ impl RetainedReadTransaction {
             .open_table(definition)
             .map_err(BoundedReadError::Table)?;
         Ok(())
-    }
-
-    pub fn check_bytes_table_prepared(
-        &self,
-        definition: TableDefinition<&[u8], &[u8]>,
-        workspace: &mut crate::PreparedPointRead,
-    ) -> Result<(), BoundedReadError> {
-        Self::table_name(definition)?;
-        self.readable()?
-            .check_bytes_table_prepared(definition, workspace)
-            .map_err(BoundedReadError::Table)
     }
 
     /// The returned value retains its resident admission until it is dropped.
@@ -1033,16 +1023,6 @@ impl fmt::Debug for OpeningAdmission {
 }
 
 impl StorageAdmission for OpeningAdmission {
-    fn install_source_pool(
-        self: Arc<Self>,
-        install: &mut crate::SourcePoolInstall<'_>,
-    ) -> io::Result<()> {
-        self.check_owner()
-            .map_err(|_| io::Error::from(io::ErrorKind::Other))?;
-        self.inner.clone().install_source_pool(install)?;
-        self.check_owner().map_err(|_| io::ErrorKind::Other.into())
-    }
-
     fn check_owner(&self) -> Result<(), OwnerFailed> {
         if self.failed.load(Ordering::Acquire) {
             return Err(OwnerFailed);
@@ -2013,11 +1993,3 @@ mod tests {
 #[cfg(test)]
 #[path = "transaction_claim_activation_tests.rs"]
 mod transaction_claim_activation_tests;
-
-#[path = "retained_source_read.rs"]
-mod source_read;
-pub use source_read::*;
-
-#[path = "source_funding.rs"]
-mod source_funding;
-pub use source_funding::*;

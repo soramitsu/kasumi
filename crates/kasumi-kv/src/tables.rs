@@ -1471,44 +1471,6 @@ impl ReadTransaction {
         })
     }
 
-    /// Validate the same canonical table tags using already admitted point
-    /// backing. No table guard/name allocation or new read grant is created.
-    pub fn check_bytes_table_prepared(
-        &self,
-        definition: TableDefinition<&[u8], &[u8]>,
-        workspace: &mut crate::PreparedPointRead,
-    ) -> Result<(), TableError> {
-        let name = definition.name();
-        if name == TABLE_TYPES || name.is_empty() || name.len() > 128 {
-            return Err(TableError::TypeMismatch(name.to_owned()));
-        }
-        if !self
-            .inner
-            .core
-            .table_exists_prepared(&self.snapshot, name, workspace)?
-        {
-            return Err(TableError::DoesNotExist(name.to_owned()));
-        }
-        if !self
-            .inner
-            .core
-            .table_exists_prepared(&self.snapshot, TABLE_TYPES, workspace)?
-        {
-            return Err(TableError::TypeMismatch(name.to_owned()));
-        }
-        let actual = self.inner.core.get_prepared(
-            &self.snapshot,
-            TABLE_TYPES,
-            name.as_bytes(),
-            2,
-            workspace,
-        )?;
-        if actual != Some(definition.tags().as_slice()) {
-            return Err(TableError::TypeMismatch(name.to_owned()));
-        }
-        Ok(())
-    }
-
     /// Point read through the pinned disk root. The returned value retains its
     /// resident admission until the caller drops it.
     pub fn prepare_point_read(
@@ -1860,8 +1822,8 @@ pub struct WriteTransaction {
 /// A successful durable commit whose original writer token remains held.
 /// The actual transaction is consumed into this inline owner: no allocation,
 /// admission, replay or mutable transaction capability is introduced. Dropping
-/// it releases the same writer token after the caller captures a preowned root.
-#[must_use = "keep the committed writer guard through the exact source capture"]
+/// it releases the same writer token after the caller's post-commit work.
+#[must_use = "keep the committed writer guard through the post-commit work"]
 #[repr(transparent)]
 pub struct CommittedWrite {
     _transaction: WriteTransaction,
@@ -2962,90 +2924,6 @@ mod tests {
         Database::builder(Arc::new(AllowAll), GROUP, CacheConfig::default())
             .create_with_backend(backend)
             .unwrap()
-    }
-
-    #[test]
-    fn prepared_table_validation_preserves_types_snapshot_and_owner_under_denial() {
-        const NUMBERS: TableDefinition<u64, u64> = TableDefinition::new("numbers");
-        const NUMBERS_AS_BYTES: TableDefinition<&[u8], &[u8]> = TableDefinition::new("numbers");
-        const LATER: TableDefinition<&[u8], &[u8]> = TableDefinition::new("later");
-        let admission = Arc::new(WorkspaceCeiling::new());
-        let database = Database::builder(admission.clone(), GROUP, CacheConfig::default())
-            .create_with_backend(InMemoryGroup::new())
-            .unwrap();
-        let other = Database::builder(admission.clone(), [54; 16], CacheConfig::default())
-            .create_with_backend(InMemoryGroup::new())
-            .unwrap();
-        let write = database.begin_write().unwrap();
-        write
-            .open_table(BYTES)
-            .unwrap()
-            .insert(b"key", b"value")
-            .unwrap();
-        write.open_table(NUMBERS).unwrap().insert(1, 2).unwrap();
-        write.commit().unwrap();
-        let old = database.begin_read().unwrap();
-        let mut workspace = old.prepare_point_read(128).unwrap();
-        let write = database.begin_write().unwrap();
-        write
-            .open_table(LATER)
-            .unwrap()
-            .insert(b"key", b"later")
-            .unwrap();
-        write.commit().unwrap();
-        let current = database.begin_read().unwrap();
-        let foreign = other.begin_read().unwrap();
-        let address = workspace.output.bytes.as_ptr();
-        admission.limit.store(0, Ordering::Release);
-
-        // This is genuine ordinary workspace refusal, while canonical tag
-        // reads use the preowned native backing at the selected snapshot.
-        assert!(
-            matches!(&(old.open_table(BYTES)), Err(TableError::Storage(StorageError::Core(
-                native_error
-            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::CapacityDenied)))
-        );
-        old.check_bytes_table_prepared(BYTES, &mut workspace)
-            .unwrap();
-        current
-            .check_bytes_table_prepared(BYTES, &mut workspace)
-            .unwrap();
-        assert!(matches!(
-            old.check_bytes_table_prepared(NUMBERS_AS_BYTES, &mut workspace),
-            Err(TableError::TypeMismatch(name)) if name == "numbers"
-        ));
-        assert!(matches!(
-            old.check_bytes_table_prepared(LATER, &mut workspace),
-            Err(TableError::DoesNotExist(name)) if name == "later"
-        ));
-        current
-            .check_bytes_table_prepared(LATER, &mut workspace)
-            .unwrap();
-        for name in ["", TABLE_TYPES] {
-            assert!(matches!(
-                old.check_bytes_table_prepared(TableDefinition::new(name), &mut workspace),
-                Err(TableError::TypeMismatch(actual)) if actual == name
-            ));
-        }
-        assert!(
-            matches!(&(foreign.check_bytes_table_prepared(BYTES, &mut workspace)), Err(TableError::Storage(StorageError::Core(
-                native_error
-            ))) if matches!(native_error.rejected_cause(), Some(crate::CoreErrorCause::InvalidInput(_))))
-        );
-        // Failed validation cannot replace the old root or corrupt reusable
-        // output; valid loans still use the same allocation afterward.
-        old.check_bytes_table_prepared(BYTES, &mut workspace)
-            .unwrap();
-        assert_eq!(
-            old.get_bytes_prepared("records", b"key", 128, &mut workspace)
-                .unwrap(),
-            Some(b"value".as_slice())
-        );
-        assert_eq!(workspace.output.bytes.as_ptr(), address);
-        admission.limit.store(u64::MAX, Ordering::Release);
-        drop((workspace, old, current, foreign));
-        database.close().unwrap();
-        other.close().unwrap();
     }
 
     #[test]
@@ -4304,5 +4182,5 @@ pub(crate) mod read_fork_tests;
 #[path = "database_maintenance_tests.rs"]
 mod database_maintenance_tests;
 
-#[path = "source_read_backing.rs"]
-pub(crate) mod source_read;
+#[path = "read_retirement.rs"]
+pub(crate) mod read_retirement;

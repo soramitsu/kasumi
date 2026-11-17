@@ -1,6 +1,5 @@
 //! Shared opaque allocation-before-credit retirement. This is an allocation
-//! owner, not a capacity grant or a source-funding capability.
-use crate::core::NativeResidentLease;
+//! owner, not a capacity grant.
 
 /// Owns one actual concrete token Box. No raw owner extraction, Weak handle or
 /// alternate early-release path exists. Construction itself acquires no credit;
@@ -26,18 +25,8 @@ impl ResidentAllocation {
             .ok_or_else(|| std::io::ErrorKind::OutOfMemory.into())
     }
 
-    #[cfg(test)]
-    pub(crate) fn token_address_for_test(&self) -> usize {
-        self.0.as_deref().unwrap() as *const dyn RetireToken as *const () as usize
-    }
-
     pub fn new<T: Send + Sync + 'static>(token: T) -> Self {
         Self(Some(Box::new(token)))
-    }
-    // The actual Store DiskMemoryLease is a re-export of this owner. Native
-    // construction adds its existing outer Box; no callback or third box.
-    pub(crate) fn into_native(self) -> NativeResidentLease {
-        NativeResidentLease::new(Box::new(self))
     }
 }
 impl Drop for ResidentAllocation {

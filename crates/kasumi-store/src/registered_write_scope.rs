@@ -107,11 +107,10 @@ impl std::fmt::Display for NodeScopedWriteRetirement {
 impl std::error::Error for NodeScopedWriteRetirement {}
 
 impl NodeStore {
-    pub(crate) fn with_registered_write<W, T>(
+    pub(crate) fn with_registered_write<T>(
         &self,
-        workspace: &mut W,
-        body: impl FnOnce(&kasumi_kv::WriteTransaction, &mut W) -> Result<()>,
-        post_commit: impl FnOnce(&mut W) -> Result<T>,
+        body: impl FnOnce(&kasumi_kv::WriteTransaction) -> Result<()>,
+        post_commit: impl FnOnce() -> Result<T>,
     ) -> Result<T> {
         let deadline = std::time::Instant::now() + NATIVE_WRITE_TIMEOUT;
         // The explicit synthetic branch is selected from the actual node type,
@@ -119,16 +118,16 @@ impl NodeStore {
         #[cfg(any(test, feature = "test-utils"))]
         if self.body().db.has_fixture_direct_database() {
             let transaction = self.body().db.begin_write()?;
-            body(&transaction, workspace)?;
+            body(&transaction)?;
             let committed = transaction.commit_holding_writer()?;
-            let output = post_commit(workspace);
+            let output = post_commit();
             drop(committed);
             return output;
         }
         let writer = self.body().db.queue_registered_write_until(deadline)?;
         let provider = writer.provider();
         let id = writer.id();
-        let output = writer.run(workspace, body, post_commit);
+        let output = writer.run(body, post_commit);
         if !writer.report().committed_and_disposed() {
             provider.storage_census().dispose_write_output(id, output);
             return Err(NodeScopedWriteFailure {

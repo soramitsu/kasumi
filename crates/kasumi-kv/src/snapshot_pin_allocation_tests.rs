@@ -122,54 +122,11 @@ fn native_capture_vector_and_lease_box_deallocate_before_credit() {
 }
 
 #[test]
-fn native_rights_arc_and_lease_box_deallocate_before_credit() {
+fn native_pin_concurrent_final_aliases_deallocate_before_credit() {
     let _exclusive = WATCH_LOCK.lock().unwrap();
     let (admission, pins) = setup(4);
     let baseline = admission.used.load(Ordering::Acquire);
-    let rights = pins.reserve_source_rights().unwrap();
-    let watch = Watch::new(
-        &admission,
-        admission.used.load(Ordering::Acquire) - baseline,
-        [
-            Arc::as_ptr(rights.inner.0.as_ref().unwrap()) as usize,
-            admission.last_box.load(Ordering::Acquire),
-            0,
-        ],
-    );
-    drop(rights);
-    watch.assert_refunded();
-    assert_eq!(admission.used.load(Ordering::Acquire), baseline);
-}
-
-#[test]
-fn native_uninstalled_pin_cancel_deallocates_actual_prepared_arc_and_lease_box() {
-    let _exclusive = WATCH_LOCK.lock().unwrap();
-    let (admission, pins) = setup(4);
-    let rights = pins.reserve_source_rights().unwrap();
-    let baseline = admission.used.load(Ordering::Acquire);
-    let mut prepared = pins.prepare_protected(&rights).unwrap();
-    let watch = Watch::new(
-        &admission,
-        admission.used.load(Ordering::Acquire) - baseline,
-        [
-            Arc::as_ptr(prepared.pin.as_ref().unwrap().inner.0.as_ref().unwrap()) as usize,
-            admission.last_box.load(Ordering::Acquire),
-            0,
-        ],
-    );
-    prepared.cancel().unwrap();
-    watch.assert_refunded();
-    assert_eq!(admission.used.load(Ordering::Acquire), baseline);
-}
-
-#[test]
-fn native_protected_pin_concurrent_final_aliases_deallocate_before_credit() {
-    let _exclusive = WATCH_LOCK.lock().unwrap();
-    let (admission, pins) = setup(4);
-    let rights = pins.reserve_source_rights().unwrap();
-    let baseline = admission.used.load(Ordering::Acquire);
-    let mut prepared = pins.prepare_protected(&rights).unwrap();
-    let pin = pins.install_protected(&mut prepared, root(1)).unwrap();
+    let pin = pins.acquire(root(1)).unwrap();
     let aliases: Vec<_> = (0..8).map(|_| pin.clone()).collect();
     let watch = Watch::new(
         &admission,

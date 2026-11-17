@@ -5,9 +5,8 @@ macOS. It accepts ordered binary puts and deletes in one transaction. A
 successful `commit` returns its durable sequence. Writes use a checksummed,
 sequence-numbered WAL frame per batch and synchronize the file before return.
 Reads combine the current write buffer and immutable levels, including
-replacements and deletes. The same engine is accessible through
-[`kasumi_kv::compact`](../kasumi-kv/README.md#compact-live-indexes)
-and the [Node-API binding](../kasumi-live-node/README.md).
+replacements and deletes. The same engine is accessible through the
+[Node-API binding](../kasumi-live-node/README.md).
 
 The write buffer flushes when its conservative change estimate or physical WAL
 reaches the persisted budget. New databases default to 4 MiB. For a storage

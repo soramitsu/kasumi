@@ -454,15 +454,6 @@ impl DiskState {
         result
     }
 
-    pub(crate) fn source_pins(&self) -> SnapshotPins {
-        self.pins.clone_owner()
-    }
-    pub(crate) fn install_source_pin(
-        &self,
-        prepared: &mut crate::snapshot_pins::PreparedProtectedPin,
-    ) -> Result<SnapshotPin, CoreError> {
-        self.pins.install_protected(prepared, self.selected)
-    }
     pub(crate) fn snapshot(&self) -> Result<SnapshotPin, CoreError> {
         self.owner.check()?;
         let result = catch_unwind(AssertUnwindSafe(|| self.pins.acquire(self.selected)))

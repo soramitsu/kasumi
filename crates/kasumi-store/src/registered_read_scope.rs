@@ -196,18 +196,6 @@ pub struct NodeScopedReadRetirement {
     body_error: Option<anyhow::Error>,
 }
 impl NodeScopedReadRetirement {
-    pub(crate) fn after_source_close(
-        provider: Arc<dyn NodeDiskMemoryAdmission>,
-        id: StorageOwnerId,
-        disposition: StorageCensusDisposition,
-    ) -> Self {
-        Self {
-            provider,
-            id,
-            disposition,
-            body_error: None,
-        }
-    }
     pub fn id(&self) -> StorageOwnerId {
         self.id
     }
