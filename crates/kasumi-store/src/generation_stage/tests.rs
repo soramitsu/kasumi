@@ -642,3 +642,61 @@ async fn every_crash_cut_of_a_switch_keeps_one_complete_generation_and_reclaims_
     assert!(old > 0 && new > 0);
     Ok(())
 }
+
+// Keep lease renewal active while the synchronous staging fixture runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_generation_larger_than_one_native_transaction_switches_with_fixed_writes() -> Result<()>
+{
+    const ROWS: u64 = 400;
+    const ROW: usize = 256 << 10;
+    let (_directory, scratch) = scratch();
+    let stores = pair(FaultBackend::new(), scratch.clone(), true).await;
+    let store = stores.application();
+    legacy_rows(store, 3)?;
+    let adopted = SelectedGeneration::adopt(store, FAMILY, &INITIAL)?;
+    let large = EncryptedTable::new(&scratch, 256 << 20, scratch.native_cache_config()).unwrap();
+    for row in 0..ROWS {
+        large.insert(&row.to_be_bytes(), &vec![(row % 251) as u8; ROW])?;
+    }
+    let small = source(&scratch, 1, 8);
+    assert!(ROWS as usize * ROW > kasumi_kv::MAX_BATCH_BYTES);
+    let a = NamespaceStage::begin_generation(store, INITIAL[0])?;
+    a.write_table(&large)?;
+    let b = NamespaceStage::begin_generation(store, INITIAL[1])?;
+    b.write_table(&small)?;
+    // Selector, two consumed owners and two retired predecessors, whatever
+    // the generation's size: the paired publication stays bounded.
+    let writes = adopted.switch_writes(store, &[&a, &b])?;
+    assert_eq!(writes.len(), 5);
+    let bytes: usize = writes
+        .iter()
+        .map(|write| match write {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } => namespace.len() + key.len() + value.len(),
+            WriteOp::Delete { namespace, key } => namespace.len() + key.len(),
+        })
+        .sum();
+    assert!(bytes < 4096);
+    stores.write_batch(&writes, &[WriteOp::put("position", b"applied", b"new")])?;
+    NamespaceStage::reclaim_unselected(store)?;
+    let view = store.read_view()?;
+    let generation = SelectedGeneration::load_at(&view, FAMILY, &INITIAL)?;
+    assert_eq!(generation.namespaces(), [a.namespace(), b.namespace()]);
+    let mut rows = 0u64;
+    view.visit(generation.namespace(0), ROW, |key, value| {
+        let row = u64::from_be_bytes(key.try_into()?);
+        assert_eq!(value, vec![(row % 251) as u8; ROW].as_slice());
+        rows += 1;
+        Ok(())
+    })?;
+    assert_eq!(rows, ROWS);
+    view.close()?;
+    for namespace in INITIAL {
+        assert_eq!(count(store, namespace)?, 0);
+    }
+    large.close()?;
+    Ok(())
+}
