@@ -26,7 +26,8 @@ async fn three_rows() -> Result<(tempfile::TempDir, Arc<TenantStore>, TenantStat
     let mut state = state();
     let empty = View::empty(&state.tenant, &state.incarnation)?;
     let install = empty.prepare_install(&store, &state, &"10".repeat(32), false)?;
-    store.replace_namespaces(&install.replacements(), install.writes())?;
+    install.stage()?;
+    store.write_batch(install.writes())?;
     let mut view = install.view;
     for ordinal in 1..=3 {
         let (next, pending) = stop(&state, &view, &format!("scan-{ordinal}"), &applied(ordinal));

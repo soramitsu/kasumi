@@ -158,9 +158,8 @@ async fn durable() -> (tempfile::TempDir, Arc<TenantStore>, TenantState, View) {
     let install = empty
         .prepare_install(&store, &state, &"18".repeat(32), false)
         .unwrap();
-    store
-        .replace_namespaces(&install.replacements(), install.writes())
-        .unwrap();
+    install.stage().unwrap();
+    store.write_batch(install.writes()).unwrap();
     (directory, store, state, install.view)
 }
 
@@ -320,7 +319,7 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
         canonical.as_bytes(),
     )?;
     let restored = selected.prepare_install(&store, &state, &checkpoint, true)?;
-    assert!(restored.replacements().is_empty());
+    assert!(restored.writes().is_empty());
     assert_eq!(restored.view.head(), selected.head());
     store.shutdown().await?;
     Ok(())

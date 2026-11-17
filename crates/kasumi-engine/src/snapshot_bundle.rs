@@ -980,10 +980,8 @@ mod tests {
             };
             let prepared = engine.prepare_restore(&context, &mut image.reader())?;
             prepared.stage_application()?;
-            store.replace_namespaces(
-                &prepared.application_replacements(),
-                prepared.application_writes(),
-            )?;
+            assert!(prepared.application_replacements().is_empty());
+            store.write_batch(prepared.application_writes())?;
             prepared.publish().map_err(Into::into)
         })
         .await?
@@ -1508,9 +1506,8 @@ mod tests {
         let install = staged
             .prepare_install(&source_store, &state, &"de".repeat(32), false)
             .unwrap();
-        source_store
-            .replace_namespaces(&install.replacements(), install.writes())
-            .unwrap();
+        install.stage().unwrap();
+        source_store.write_batch(install.writes()).unwrap();
         let generation = source
             .prepare_state(
                 &CapturedValidation::capture(&source).unwrap().baseline(),

@@ -556,21 +556,22 @@ pub(crate) fn advance(head: &mut StagedTerminalHead, row: &Row) -> Result<()> {
     Ok(())
 }
 
-/// Prepared namespace activation. The coordinator commits replacements and
-/// catalog writes with the enclosing checkpoint/applied cursor before publishing
-/// `view`. Dropping this object leaves only encrypted temporary staging.
+/// Prepared namespace activation. Rows reach a fresh namespace in bounded
+/// batches before the coordinator publishes its catalog binding with the
+/// checkpoint/applied cursor. An abandoned stage remains durably reclaimable.
 pub(crate) struct Installation {
-    replacement: Option<PreparedRows>,
-    namespace: String,
+    rows: Option<PreparedRows>,
     writes: Vec<WriteOp>,
     pub(crate) view: View,
+    // Last: selection-write buffers retire before the stage's descriptor credit.
+    staging: Option<kasumi_store::NamespaceStage>,
 }
 impl Installation {
-    pub(crate) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        self.replacement
-            .as_ref()
-            .map(|rows| vec![rows.replacement(&self.namespace)])
-            .unwrap_or_default()
+    pub(crate) fn stage(&self) -> Result<()> {
+        if let Some(rows) = &self.rows {
+            rows.stage(self.staging.as_ref().context("namespace stage absent")?)?;
+        }
+        Ok(())
     }
     pub(crate) fn writes(&self) -> &[WriteOp] {
         &self.writes
@@ -642,13 +643,13 @@ impl View {
                 );
             }
             return Ok(Installation {
-                replacement: None,
-                namespace: binding.namespace(),
+                rows: None,
+                staging: None,
                 writes: vec![],
                 view,
             });
         }
-        let replacement = match self.source.as_deref() {
+        let rows = match self.source.as_deref() {
             Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
             None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("namespace installation requires verified staged rows"),
@@ -660,12 +661,14 @@ impl View {
             checkpoint_sha256: checkpoint_sha256.into(),
             checkpoint_head: self.head.clone(),
         };
-        let writes = vec![WriteOp::put(
+        let mut writes = vec![WriteOp::put(
             CATALOG,
             checkpoint_sha256.as_bytes(),
             serde_json::to_vec(&binding)?,
         )];
         let namespace = binding.namespace();
+        let staging = kasumi_store::NamespaceStage::begin(store, &namespace)?;
+        writes.push(staging.publication_write());
         let view = View {
             source: Some(Arc::new(Source::Durable(DurableRows {
                 store: store.clone(),
@@ -674,8 +677,8 @@ impl View {
             head: self.head.clone(),
         };
         Ok(Installation {
-            replacement: Some(replacement),
-            namespace,
+            rows: Some(rows),
+            staging: Some(staging),
             writes,
             view,
         })

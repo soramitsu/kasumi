@@ -9,6 +9,10 @@ mod prepared_points;
 pub use prepared_points::{PreparedTenantReadPoints, PreparedTenantReadWorkspace};
 /// A complete namespace replacement, published atomically with binding metadata.
 ///
+/// Remaining step-6 migration boundary: fixed Raft custody and Authority
+/// namespaces still use this path. Engine auxiliary restore/bootstrap does not.
+/// Delete this API after those selectors and their readers migrate together.
+///
 /// An explicit empty replacement removes every current record in the namespace.
 /// Omitting a namespace from the replacement list leaves its records unchanged.
 #[derive(Clone, Copy)]
@@ -630,8 +634,9 @@ pub(crate) fn validate_replacements(
         let namespace = replacement.namespace;
         validate_record(namespace, &[], 0)?;
         ensure!(
-            !is_initial_identity_namespace(namespace),
-            "initial identity namespace cannot be replaced"
+            !is_initial_identity_namespace(namespace)
+                && namespace != crate::generation_stage::OWNERS,
+            "initial identity or stage owner namespace cannot be replaced"
         );
         ensure!(names.insert(namespace), "duplicate replacement namespace");
     }
@@ -655,8 +660,9 @@ pub(crate) fn replace_domain(
     for replacement in replacements {
         let namespace = replacement.namespace;
         ensure!(
-            !is_initial_identity_namespace(namespace),
-            "initial identity namespace cannot be replaced"
+            !is_initial_identity_namespace(namespace)
+                && namespace != crate::generation_stage::OWNERS,
+            "initial identity or stage owner namespace cannot be replaced"
         );
         let prefix = {
             let state = store.state.read();

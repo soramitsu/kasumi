@@ -704,6 +704,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 .snapshot_store
                 .get()
                 .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
+            // The apply owner excludes live candidates while crash leftovers
+            // are reclaimed. Selected namespaces retain their durable owners.
+            kasumi_store::NamespaceStage::reclaim_unpublished(store)?;
             let receipt_installation = generation.receipts.prepare_install(
                 store,
                 &generation.state,
@@ -766,11 +769,12 @@ struct PreparedTenantRestore<'a> {
     selection: Option<crate::application_sources::RestoreSelection>,
     /// The snapshot is this replica's own: its objects are already published.
     reopen: bool,
+    // Drop copied publication writes before the installations' stage credit.
+    writes: Vec<kasumi_store::WriteOp>,
     receipt_installation: crate::mutation_receipt::Installation,
     binding_installation: crate::backup_binding::Installation,
     installation: crate::staged_terminal::Installation,
     target_installation: crate::target_resolution::Installation,
-    writes: Vec<kasumi_store::WriteOp>,
     retirement: Option<kasumi_raft::RetiredSnapshotState>,
     #[cfg(test)]
     _retirement_probe: Option<validation_baseline_tests::RestoreRetirementProbe<'a>>,
@@ -781,6 +785,10 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         self.retirement.clone()
     }
     fn stage_application(&self) -> anyhow::Result<()> {
+        self.receipt_installation.stage()?;
+        self.binding_installation.stage()?;
+        self.installation.stage()?;
+        self.target_installation.stage()?;
         // Reopen's objects are already published; publish repairs the rest.
         if self.reopen {
             return Ok(());
@@ -795,15 +803,6 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         store.check_access()?;
         documents.write_missing(store)
-    }
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        // Document objects never join this one transaction: replacing them
-        // would restage every object the tenant holds.
-        let mut replacements = self.receipt_installation.replacements();
-        replacements.extend(self.binding_installation.replacements());
-        replacements.extend(self.installation.replacements());
-        replacements.extend(self.target_installation.replacements());
-        replacements
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
         &self.writes
@@ -1515,6 +1514,8 @@ impl TenantEngine {
                 "joint receipt bootstrap catalog differs",
             ));
         }
+        // The apply owner excludes another candidate during bounded cleanup.
+        kasumi_store::NamespaceStage::reclaim_unpublished(store).map_err(terminal_error)?;
         let receipt_installation = previous
             .receipts
             .prepare_install(store, &previous.state, &checkpoint, reopen)
@@ -1531,18 +1532,15 @@ impl TenantEngine {
             .target_resolutions
             .prepare_install(store, &previous.state, &checkpoint, reopen)
             .map_err(terminal_error)?;
-        let mut replacements = receipt_installation.replacements();
-        replacements.extend(binding_installation.replacements());
-        replacements.extend(installation.replacements());
-        replacements.extend(target_installation.replacements());
+        receipt_installation.stage().map_err(terminal_error)?;
+        binding_installation.stage().map_err(terminal_error)?;
+        installation.stage().map_err(terminal_error)?;
+        target_installation.stage().map_err(terminal_error)?;
         let mut writes = receipt_installation.writes().to_vec();
         writes.extend_from_slice(binding_installation.writes());
         writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
-        store
-            .replace_namespaces(&replacements, &writes)
-            .map_err(terminal_error)?;
-        drop(replacements);
+        store.write_batch(&writes).map_err(terminal_error)?;
         self.publish_generation(Some(Arc::new(Generation {
             state: previous.state.clone(),
             receipts: receipt_installation.view,

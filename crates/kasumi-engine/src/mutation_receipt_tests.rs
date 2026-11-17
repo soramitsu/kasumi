@@ -641,10 +641,127 @@ async fn durable_with_node() -> (
     let install = empty
         .prepare_install(&store, &state, &"10".repeat(32), false)
         .unwrap();
-    store
-        .replace_namespaces(&install.replacements(), install.writes())
-        .unwrap();
+    install.stage().unwrap();
+    store.write_batch(install.writes()).unwrap();
     (directory, node, store, state, install.view)
+}
+
+#[tokio::test]
+async fn namespace_installation_requires_sealed_rows_and_keeps_old_prefix() -> Result<()> {
+    let (_directory, store, initial, old) = durable().await;
+    let (old_state, old) = commit(&initial, &old, "retained", &applied(1));
+    let old = old.stage()?;
+    let (state, rows) = staging_rows(40);
+    let mut builder =
+        Builder::new(store.scratch_disk(), 64 << 20, "tenant", "incarnation").unwrap();
+    for row in &rows {
+        builder.push(row, &state)?;
+    }
+    let incoming = builder.finish(&state.mutation_receipt_head)?;
+    let checkpoint = "31".repeat(32);
+    let install = incoming.prepare_install(&store, &state, &checkpoint, false)?;
+    assert_eq!(install.writes().len(), 2);
+    assert!(store.write_batch(install.writes()).is_err());
+    assert!(!View::checkpoint_exists(&store, &checkpoint)?);
+    assert_eq!(old.row(1)?.receipt.idempotency_key, "retained");
+
+    install.stage()?;
+    assert!(!View::checkpoint_exists(&store, &checkpoint)?);
+    assert_eq!(old.head(), &old_state.mutation_receipt_head);
+    store.write_batch(install.writes())?;
+    let reopened = incoming.prepare_install(&store, &state, &checkpoint, true)?;
+    assert!(reopened.writes().is_empty());
+    for row in rows {
+        assert_eq!(reopened.view.row(row.ordinal)?.sha256()?, row.sha256()?);
+    }
+    assert_eq!(old.row(1)?.receipt.idempotency_key, "retained");
+    store.shutdown().await?;
+    Ok(())
+}
+
+// Keep lease renewal active while the synchronous streaming fixture runs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn namespace_installation_publishes_receipts_larger_than_one_native_transaction() {
+    const ROWS: u64 = 512;
+    let (_directory, store, initial, old) = durable().await;
+    let (mut state, template) = staging_rows(1);
+    let template = &template[0];
+    state.revision = ROWS;
+    let mut expected = MutationReceiptHead::empty(&state.tenant, &state.incarnation).unwrap();
+    let mut builder = Builder::new(
+        store.scratch_disk(),
+        scratch_limit(state.limits.max_mutation_receipt_bytes).unwrap(),
+        &state.tenant,
+        &state.incarnation,
+    )
+    .unwrap();
+    for ordinal in 1..=ROWS {
+        let mut row = template.clone();
+        row.ordinal = ordinal;
+        row.receipt.idempotency_key = format!("large-install-{ordinal}");
+        row.receipt.recorded_revision = ordinal;
+        row.key = identity("owner", &row.receipt.idempotency_key).unwrap();
+        row.applied = applied(ordinal);
+        row.previous_sha256 = expected.sha256.clone();
+        let collections: Vec<_> = (0..256)
+            .map(|index| format!("{index:03}{}", "c".repeat(253)))
+            .collect();
+        let versions = collections
+            .iter()
+            .map(|collection| (format!("/{collection}/{}", "d".repeat(256)), ordinal))
+            .collect();
+        row.receipt.collections = collections;
+        row.receipt.outcome = Ok(WriteReceipt {
+            revision: ordinal,
+            versions,
+        });
+        builder.push(&row, &state).unwrap();
+        advance(&mut expected, &row).unwrap();
+    }
+    assert!(expected.encoded_bytes > kasumi_kv::MAX_BATCH_BYTES as u64);
+    assert!(expected.encoded_bytes <= state.limits.max_mutation_receipt_bytes);
+    state.mutation_receipt_head = expected.clone();
+    let staged = builder.finish(&expected).unwrap();
+    let checkpoint = "32".repeat(32);
+    let install = staged
+        .prepare_install(&store, &state, &checkpoint, false)
+        .unwrap();
+    // Only one catalog binding and one sealed-stage selection join publication,
+    // independent of the history's row count and more than 96 MiB of metadata.
+    assert_eq!(install.writes().len(), 2);
+    let publication_bytes: usize = install
+        .writes()
+        .iter()
+        .map(|write| match write {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } => namespace.len() + key.len() + value.len(),
+            WriteOp::Delete { namespace, key } => namespace.len() + key.len(),
+        })
+        .sum();
+    assert!(publication_bytes < 4096);
+    install.stage().unwrap();
+    assert!(!View::checkpoint_exists(&store, &checkpoint).unwrap());
+    assert_eq!(old.head(), &initial.mutation_receipt_head);
+    store.write_batch(install.writes()).unwrap();
+    let reopened = staged
+        .prepare_install(&store, &state, &checkpoint, true)
+        .unwrap();
+    assert!(reopened.writes().is_empty());
+    let mut observed = MutationReceiptHead::empty(&state.tenant, &state.incarnation).unwrap();
+    for row in reopened.view.records() {
+        let row = row.unwrap();
+        assert_eq!(
+            row.receipt.idempotency_key,
+            format!("large-install-{}", row.ordinal)
+        );
+        advance(&mut observed, &row).unwrap();
+    }
+    assert_eq!(observed, expected);
+    assert_eq!(old.head().count, 0);
+    store.shutdown().await.unwrap();
 }
 
 #[tokio::test]
@@ -798,7 +915,7 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
         canonical.as_bytes(),
     )?;
     let restored = selected.prepare_install(&store, &state, &checkpoint, true)?;
-    assert!(restored.replacements().is_empty());
+    assert!(restored.writes().is_empty());
     assert_eq!(restored.view.head(), selected.head());
     store.shutdown().await?;
     Ok(())
@@ -883,7 +1000,7 @@ async fn encrypted_reopen_keeps_unapplied_receipt_rows_hidden_until_exact_replay
     let reopened = empty
         .prepare_install(&reopened_store, &initial, &"10".repeat(32), true)
         .unwrap();
-    assert!(reopened.replacements().is_empty());
+    assert!(reopened.writes().is_empty());
     assert!(reopened.view.get(&key).unwrap().is_none());
 
     let mut conflicting = identity.clone();
@@ -926,7 +1043,7 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
     let reopened = staged
         .prepare_install(&store, &first_state, &checkpoint, true)
         .unwrap();
-    assert!(reopened.replacements().is_empty());
+    assert!(reopened.writes().is_empty());
     assert_eq!(reopened.view.head().count, 1);
     assert!(
         reopened
@@ -940,9 +1057,8 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
     let replaced = staged
         .prepare_install(&store, &first_state, &"30".repeat(32), false)
         .unwrap();
-    store
-        .replace_namespaces(&replaced.replacements(), replaced.writes())
-        .unwrap();
+    replaced.stage().unwrap();
+    store.write_batch(replaced.writes()).unwrap();
     assert_eq!(replaced.view.head(), first.head());
     assert_eq!(second.head(), &second_state.mutation_receipt_head);
     assert_eq!(second.row(2).unwrap().receipt.idempotency_key, "second");
@@ -1004,7 +1120,7 @@ async fn reopen_decode_compares_rows_with_their_checkpoint_instead_of_staging() 
     let installed = view
         .prepare_install(&store, &second_state, &checkpoint, true)
         .unwrap();
-    assert!(installed.replacements().is_empty() && installed.writes().is_empty());
+    assert!(installed.writes().is_empty());
     assert_eq!(installed.view.head(), second.head());
     assert_eq!(
         installed

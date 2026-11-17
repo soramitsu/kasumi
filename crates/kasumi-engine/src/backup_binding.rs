@@ -341,8 +341,8 @@ impl View {
                 "application tenant cannot own a Control backup binding table"
             );
             return Ok(Installation {
-                replacement: None,
-                namespace: String::new(),
+                rows: None,
+                staging: None,
                 writes: vec![],
                 view: self.clone(),
             });
@@ -376,8 +376,8 @@ impl View {
                 );
             }
             return Ok(Installation {
-                replacement: None,
-                namespace: binding.namespace(),
+                rows: None,
+                staging: None,
                 writes: vec![],
                 view,
             });
@@ -386,7 +386,7 @@ impl View {
             selected.is_none(),
             "backup binding checkpoint is already installed"
         );
-        let replacement = match self.source.as_deref() {
+        let rows = match self.source.as_deref() {
             Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
             None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("backup binding installation requires verified staged rows"),
@@ -399,11 +399,13 @@ impl View {
             checkpoint_head: self.head.clone(),
         };
         let namespace = binding.namespace();
-        let writes = vec![WriteOp::put(
+        let mut writes = vec![WriteOp::put(
             CATALOG,
             checkpoint_sha256.as_bytes(),
             serde_json::to_vec(&binding)?,
         )];
+        let staging = kasumi_store::NamespaceStage::begin(store, &namespace)?;
+        writes.push(staging.publication_write());
         let view = View {
             source: Some(Arc::new(Source::Durable(DurableRows {
                 store: store.clone(),
@@ -412,8 +414,8 @@ impl View {
             head: self.head.clone(),
         };
         Ok(Installation {
-            replacement: Some(replacement),
-            namespace,
+            rows: Some(rows),
+            staging: Some(staging),
             writes,
             view,
         })
@@ -521,17 +523,18 @@ pub(crate) fn advance(head: &mut BackupBindingHead, row: &Row) -> Result<()> {
     Ok(())
 }
 pub(crate) struct Installation {
-    replacement: Option<PreparedRows>,
-    namespace: String,
+    rows: Option<PreparedRows>,
     writes: Vec<WriteOp>,
     pub(crate) view: View,
+    // Last: selection-write buffers retire before the stage's descriptor credit.
+    staging: Option<kasumi_store::NamespaceStage>,
 }
 impl Installation {
-    pub(crate) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        self.replacement
-            .as_ref()
-            .map(|rows| vec![rows.replacement(&self.namespace)])
-            .unwrap_or_default()
+    pub(crate) fn stage(&self) -> Result<()> {
+        if let Some(rows) = &self.rows {
+            rows.stage(self.staging.as_ref().context("namespace stage absent")?)?;
+        }
+        Ok(())
     }
     pub(crate) fn writes(&self) -> &[WriteOp] {
         &self.writes

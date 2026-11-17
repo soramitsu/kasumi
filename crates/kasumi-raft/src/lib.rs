@@ -303,7 +303,12 @@ pub trait PreparedStateMachineRestore {
     fn stage_application(&self) -> Result<()> {
         Ok(())
     }
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>>;
+    /// Remaining step-6 migration boundary: Authority still replaces its fixed
+    /// namespace. Engine restores stage private auxiliary generations and use
+    /// this empty default. Remove this method with the Authority/custody cutover.
+    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
+        Vec::new()
+    }
     fn application_writes(&self) -> &[kasumi_store::WriteOp];
     /// Called only after durable publication succeeds. A release failure seals
     /// the replica; restart must recover the already committed snapshot exactly.

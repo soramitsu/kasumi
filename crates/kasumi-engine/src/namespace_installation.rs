@@ -1,5 +1,6 @@
-//! Verified replacement rows retained until their namespace publication commits.
-use kasumi_store::{EncryptedTable, NamespaceReplacement};
+//! Verified rows copied to a durable stage before its namespace is selected.
+use anyhow::Result;
+use kasumi_store::{EncryptedTable, NamespaceStage};
 use std::sync::Arc;
 
 pub(crate) enum PreparedRows {
@@ -8,10 +9,10 @@ pub(crate) enum PreparedRows {
 }
 
 impl PreparedRows {
-    pub(crate) fn replacement<'a>(&'a self, namespace: &'a str) -> NamespaceReplacement<'a> {
+    pub(crate) fn stage(&self, stage: &NamespaceStage) -> Result<()> {
         match self {
-            Self::Empty => NamespaceReplacement::empty(namespace),
-            Self::Staged(table) => NamespaceReplacement::from_table(namespace, table),
+            Self::Empty => stage.seal_empty(),
+            Self::Staged(table) => stage.write_table(table),
         }
     }
 }

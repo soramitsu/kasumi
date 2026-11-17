@@ -93,10 +93,12 @@ pub use fixture_node::{NodeFixtureInputs, NodeFixtureStartFailure};
 mod node_disk;
 mod node_file;
 pub use node_file::segment_group::NodeSegmentGroupCleanup;
+mod generation_stage;
 pub mod node_store_ids;
 mod plaintext_scan;
 mod point_read_backing;
 mod read_view;
+pub use generation_stage::NamespaceStage;
 pub use plaintext_scan::{PlaintextRecord, PlaintextScan};
 mod registered_read_scope;
 mod registered_write_scope;
@@ -3076,6 +3078,7 @@ fn write_domain(
     catalog: &KeyCatalog,
     operations: &[WriteOp],
 ) -> Result<()> {
+    generation_stage::validate_transitions(tx, store, state, operations)?;
     let index = state.keys.get(INDEX_KEY).context("index key missing")?;
     let data = state
         .keys

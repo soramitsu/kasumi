@@ -186,9 +186,8 @@ async fn durable() -> (
     let install = empty
         .prepare_install(&store, &state, &"10".repeat(32), false)
         .unwrap();
-    store
-        .replace_namespaces(&install.replacements(), install.writes())
-        .unwrap();
+    install.stage().unwrap();
+    store.write_batch(install.writes()).unwrap();
     (directory, node, store, state, install.view)
 }
 
@@ -343,7 +342,7 @@ async fn checkpoint_catalog_requires_current_writer_bytes_without_repair() -> Re
         canonical.as_bytes(),
     )?;
     let restored = selected.prepare_install(&store, &state, &checkpoint, true)?;
-    assert!(restored.replacements().is_empty());
+    assert!(restored.writes().is_empty());
     assert_eq!(restored.view.head(), selected.head());
     store.shutdown().await?;
     Ok(())
@@ -414,7 +413,7 @@ async fn encrypted_reopen_keeps_unapplied_terminal_rows_hidden_until_exact_repla
     let reopened = empty
         .prepare_install(&reopened_store, &initial, &"10".repeat(32), true)
         .unwrap();
-    assert!(reopened.replacements().is_empty());
+    assert!(reopened.writes().is_empty());
     assert!(reopened.view.get(&key).unwrap().is_none());
 
     let mut conflicting = identity.clone();
@@ -454,7 +453,7 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
     let reopened = staged
         .prepare_install(&store, &first_state, &checkpoint, true)
         .unwrap();
-    assert!(reopened.replacements().is_empty());
+    assert!(reopened.writes().is_empty());
     assert_eq!(reopened.view.head().count, 1);
     assert!(
         reopened
@@ -468,9 +467,8 @@ async fn snapshot_namespace_binding_selects_exact_prefix_and_preserves_older_liv
     let replaced = staged
         .prepare_install(&store, &first_state, &"30".repeat(32), false)
         .unwrap();
-    store
-        .replace_namespaces(&replaced.replacements(), replaced.writes())
-        .unwrap();
+    replaced.stage().unwrap();
+    store.write_batch(replaced.writes()).unwrap();
     assert_eq!(replaced.view.head(), first.head());
     assert_eq!(second.head(), &second_state.staged_terminal_head);
     assert_eq!(second.row(2).unwrap().stage.transaction_id, "second");
