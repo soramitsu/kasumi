@@ -504,7 +504,7 @@ impl Backend {
                 "coverage record exceeds its bounded format"
             );
             add_count(&mut meta.state_bytes, bytes.len() as u64)?;
-            writes.push(WriteOp::put(NS, key.as_bytes(), bytes));
+            writes.push(WriteOp::put(&*self.ns(), key.as_bytes(), bytes));
         }
         if meta
             .state_bytes
@@ -518,7 +518,7 @@ impl Backend {
         }
         meta.revision = revision;
         meta.operational.revision = revision;
-        writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
+        writes.push(WriteOp::put(&*self.ns(), META, serde_json::to_vec(&meta)?));
         *publication_writes = writes;
         Ok(Ok(status))
     }
@@ -626,23 +626,24 @@ impl Backend {
         Ok(())
     }
     pub(super) fn validate_coverage_history(&self, snapshot: &Snapshot) -> Result<()> {
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-            if key.starts_with(b"signer-dispatch/")
-                || key.starts_with(b"signer-coverage/")
-                || key.starts_with(b"signer-dispatch-verifier/")
-                || key.starts_with(b"signer-coverage-permission/")
-            {
-                let key = std::str::from_utf8(key)?;
-                let record = snapshot
-                    .records
-                    .get(key)?
-                    .context("snapshot omits permanent signer coverage history")?;
-                ensure!(
-                    serde_json::to_vec(&record)? == bytes,
-                    "snapshot changes permanent signer coverage history"
-                );
-            }
-            Ok(())
-        })
+        self.store
+            .visit(&self.ns(), MAX_RECORD_BYTES, |key, bytes| {
+                if key.starts_with(b"signer-dispatch/")
+                    || key.starts_with(b"signer-coverage/")
+                    || key.starts_with(b"signer-dispatch-verifier/")
+                    || key.starts_with(b"signer-coverage-permission/")
+                {
+                    let key = std::str::from_utf8(key)?;
+                    let record = snapshot
+                        .records
+                        .get(key)?
+                        .context("snapshot omits permanent signer coverage history")?;
+                    ensure!(
+                        serde_json::to_vec(&record)? == bytes,
+                        "snapshot changes permanent signer coverage history"
+                    );
+                }
+                Ok(())
+            })
     }
 }

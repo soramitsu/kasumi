@@ -3,7 +3,7 @@
 use crate::custody_state::CustodyAudit;
 #[cfg(test)]
 use crate::custody_state::CustodyState;
-use crate::custody_tables::{AUDIT, COMMANDS, CustodyHead, HEAD, HEAD_BYTES, RECORD_BYTES};
+use crate::custody_tables::{CustodyHead, HEAD, HEAD_BYTES, RECORD_BYTES};
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, EncryptedTableBatch, ScratchOperationFailure, TenantStore};
 use kasumi_types::{CustodyReceipt, validate_name};
@@ -254,8 +254,9 @@ impl Records {
                 .get(crate::control::META, HEAD, HEAD_BYTES)?
                 .context("custody point table head absent")?,
         )?;
+        let generation = crate::custody_tables::generation_at(&view)?;
         let mut builder = Builder::new(store.scratch_disk(), head)?;
-        view.visit(COMMANDS, RECORD_BYTES, |key, bytes| {
+        view.visit(generation.namespace(0), RECORD_BYTES, |key, bytes| {
             let receipt: CustodyReceipt = crate::custody_tables::decode_canonical(bytes)?;
             ensure!(
                 key == receipt.command_id.as_bytes(),
@@ -263,14 +264,18 @@ impl Records {
             );
             builder.command(bytes)
         })?;
-        view.visit(AUDIT, RECORD_BYTES, |key, bytes| builder.audit(key, bytes))?;
+        view.visit(generation.namespace(1), RECORD_BYTES, |key, bytes| {
+            builder.audit(key, bytes)
+        })?;
+        view.close()?;
         builder.finish().map_err(ScratchOperationFailure::Operation)
     }
     pub(crate) fn sha256(&self) -> &str {
         &self.sha256
     }
-    pub(crate) fn namespaces(&self) -> [(&str, &EncryptedTable); 2] {
-        [(COMMANDS, &self.commands), (AUDIT, &self.audit)]
+    /// Receipt and audit tables, in the history generation's role order.
+    pub(crate) fn tables(&self) -> [&EncryptedTable; 2] {
+        [&self.commands, &self.audit]
     }
     pub(crate) fn visit(&self, mut visitor: impl FnMut(u8, &[u8]) -> Result<()>) -> Result<()> {
         self.commands.visit(|_, bytes| visitor(1, bytes))?;

@@ -2,9 +2,13 @@
 //! small policy head, new receipt and audit entry publish in one transaction.
 //! Both ordinary commands and canonical snapshots use bounded point records;
 //! retained history does not require an aggregate plaintext allocation.
+//!
+//! The receipt and audit tables form one selected generation. Ordinary
+//! commands append to it; a snapshot that extends the history stages a
+//! complete new generation in bounded batches and selects it with the head.
 use crate::custody_state::{CustodyAudit, CustodyState};
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{TenantStore, WriteOp};
+use kasumi_store::{NamespaceStage, SelectedGeneration, TenantReadView, TenantStore, WriteOp};
 use kasumi_types::{CustodyReceipt, CustodyRequest, Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeMap;
@@ -13,6 +17,10 @@ use std::sync::Arc;
 pub(crate) const HEAD: &[u8] = b"custody_point_tables";
 pub(crate) const COMMANDS: &str = "raft.custody-commands";
 pub(crate) const AUDIT: &str = "raft.custody-audit";
+/// Generation selector key. Stores written before selectors keep their history
+/// in the initial namespaces, which an absent selector names.
+pub(crate) const FAMILY: &str = "raft.custody-history";
+pub(crate) const INITIAL: [&str; 2] = [COMMANDS, AUDIT];
 // A policy can contain two independently bounded 1,024-member administrator
 // sets (current and immutable origin). Keep the existing control-record bound.
 pub(crate) const HEAD_BYTES: usize = 2 << 20;
@@ -217,14 +225,31 @@ pub(crate) fn load_at(reads: &mut impl crate::control::CustodyRead) -> Result<Cu
     })
 }
 
-pub(crate) fn receipt(store: &TenantStore, identity: &str) -> Result<Option<CustodyReceipt>> {
-    store
-        .get_bounded(COMMANDS, identity.as_bytes(), RECORD_BYTES)?
+/// The selected history generation. Only a caller holding the control gate,
+/// which serializes every selection, may read its rows at the latest root.
+pub(crate) fn generation(store: &TenantStore) -> Result<SelectedGeneration> {
+    SelectedGeneration::load(store, FAMILY, &INITIAL)
+}
+
+pub(crate) fn generation_at(view: &TenantReadView) -> Result<SelectedGeneration> {
+    SelectedGeneration::load_at(view, FAMILY, &INITIAL)
+}
+
+/// Local point lookup at one pinned root, so a concurrent selection and the
+/// reclamation of the generation it replaced cannot hide a committed receipt.
+pub(crate) fn receipt(store: &Arc<TenantStore>, identity: &str) -> Result<Option<CustodyReceipt>> {
+    let view = store.read_view()?;
+    let generation = generation_at(&view)?;
+    let receipt = view
+        .get(generation.namespace(0), identity.as_bytes(), RECORD_BYTES)?
         .map(|bytes| decode_canonical(&bytes).context("invalid custody receipt record"))
-        .transpose()
+        .transpose()?;
+    view.close()?;
+    Ok(receipt)
 }
 
 pub(crate) fn transition_writes(
+    generation: &SelectedGeneration,
     head: &CustodyHead,
     receipt: &CustodyReceipt,
     event: &CustodyAudit,
@@ -241,11 +266,15 @@ pub(crate) fn transition_writes(
     );
     let mut writes = vec![
         head.write()?,
-        WriteOp::put(AUDIT, (head.audit - 1).to_be_bytes(), encoded_event),
+        WriteOp::put(
+            generation.namespace(1),
+            (head.audit - 1).to_be_bytes(),
+            encoded_event,
+        ),
     ];
     if !event.replay {
         writes.push(WriteOp::put(
-            COMMANDS,
+            generation.namespace(0),
             receipt.command_id.as_bytes(),
             encoded_receipt,
         ));
@@ -265,9 +294,10 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
             .context("custody point table head absent")?,
     )?;
     head.validate()?;
+    let generation = generation_at(&view)?;
     let mut state = head.policy.clone();
     let mut count = 0u64;
-    view.visit(COMMANDS, RECORD_BYTES, |key, bytes| {
+    view.visit(generation.namespace(0), RECORD_BYTES, |key, bytes| {
         let receipt: CustodyReceipt = decode_canonical(bytes)?;
         ensure!(
             key == receipt.command_id.as_bytes(),
@@ -289,12 +319,12 @@ pub(crate) fn snapshot(store: &Arc<TenantStore>) -> Result<CustodyState> {
     ensure!(count == head.commands, "custody receipt record missing");
     for index in 0..head.audit {
         let event = view
-            .get(AUDIT, &index.to_be_bytes(), RECORD_BYTES)?
+            .get(generation.namespace(1), &index.to_be_bytes(), RECORD_BYTES)?
             .context("custody audit sequence missing")?;
         state.audit.push(decode_canonical(&event)?);
     }
     let mut count = 0u64;
-    view.visit(AUDIT, RECORD_BYTES, |key, _| {
+    view.visit(generation.namespace(1), RECORD_BYTES, |key, _| {
         let index = u64::from_be_bytes(key.try_into().context("invalid custody audit key")?);
         ensure!(index < head.audit, "unexpected custody audit record");
         count = count
@@ -324,10 +354,16 @@ pub(crate) fn prepare_replacement(
     if let Some(previous) = &previous {
         previous.validate()?;
     }
-    for ((namespace, incoming), expected) in replacement.namespaces().into_iter().zip([
-        previous.as_ref().map_or(0, |head| head.commands),
-        previous.as_ref().map_or(0, |head| head.audit),
-    ]) {
+    let generation = generation(store)?;
+    for ((namespace, incoming), expected) in generation
+        .namespaces()
+        .iter()
+        .zip(replacement.tables())
+        .zip([
+            previous.as_ref().map_or(0, |head| head.commands),
+            previous.as_ref().map_or(0, |head| head.audit),
+        ])
+    {
         let mut count = 0u64;
         store.visit(namespace, RECORD_BYTES, |key, bytes| {
             count = count
@@ -346,4 +382,41 @@ pub(crate) fn prepare_replacement(
         );
     }
     Ok(replacement)
+}
+
+/// A complete history generation, staged but not yet selected. Its writes
+/// select it with the replacing head in the caller's one transaction.
+pub(crate) struct StagedHistory {
+    pub(crate) writes: Vec<WriteOp>,
+    // Last: the selection writes retire before the stages' descriptor credit.
+    _stages: [NamespaceStage; 2],
+}
+
+/// Stage `records` when they extend the selected history. The caller holds
+/// the control gate and has run `prepare_replacement`, which proved the
+/// selected generation a byte-identical subset of `records`; equal heads
+/// therefore mean equal history and nothing is staged.
+pub(crate) fn stage_history(
+    store: &Arc<TenantStore>,
+    records: &crate::custody_records::Records,
+) -> Result<Option<StagedHistory>> {
+    let current = store
+        .get_bounded(crate::control::META, HEAD, HEAD_BYTES)?
+        .map(|bytes| decode_canonical::<CustodyHead>(&bytes))
+        .transpose()?;
+    if current.as_ref() == Some(&records.head) {
+        return Ok(None);
+    }
+    // Remove what an interrupted installation staged or retired first.
+    NamespaceStage::reclaim_unselected(store)?;
+    let generation = SelectedGeneration::adopt(store, FAMILY, &INITIAL)?;
+    let [commands, audit] = records.tables();
+    let commands_stage = NamespaceStage::begin_generation(store, COMMANDS)?;
+    commands_stage.write_table(commands)?;
+    let audit_stage = NamespaceStage::begin_generation(store, AUDIT)?;
+    audit_stage.write_table(audit)?;
+    Ok(Some(StagedHistory {
+        writes: generation.switch_writes(store, &[&commands_stage, &audit_stage])?,
+        _stages: [commands_stage, audit_stage],
+    }))
 }

@@ -1,4 +1,5 @@
-//! Actual encrypted replacement tables join snapshot and applied publication.
+//! Actual encrypted tables staged in bounded batches join snapshot and applied
+//! publication through their sealed owner's selection.
 use super::*;
 use crate::test_utils::FixtureResult;
 use sha2::Digest;
@@ -78,26 +79,32 @@ impl JointBackend {
 struct PreparedJoint<'a> {
     backend: &'a JointBackend,
     selected: Selection,
-    replacement: Option<kasumi_store::EncryptedTable>,
-    writes: Vec<WriteOp>,
+    table: Option<kasumi_store::EncryptedTable>,
+    staged: std::sync::OnceLock<(Vec<WriteOp>, kasumi_store::NamespaceStage)>,
 }
 impl crate::PreparedStateMachineRestore for PreparedJoint<'_> {
     fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        self.replacement
-            .as_ref()
-            .map(|table| {
-                vec![kasumi_store::NamespaceReplacement::from_table(
-                    &self.selected.namespace,
-                    table,
-                )]
-            })
-            .unwrap_or_default()
+    fn stage_application(&self) -> Result<()> {
+        let Some(table) = &self.table else {
+            return Ok(());
+        };
+        // An interrupted install left this checkpoint's stage behind.
+        kasumi_store::NamespaceStage::reclaim_unselected(&self.backend.store)?;
+        let stage =
+            kasumi_store::NamespaceStage::begin(&self.backend.store, &self.selected.namespace)?;
+        stage.write_table(table)?;
+        let writes = vec![
+            put(META, b"selected", serde_json::to_vec(&self.selected)?),
+            stage.publication_write(),
+        ];
+        self.staged
+            .set((writes, stage))
+            .map_err(|_| anyhow::anyhow!("joint fixture staged twice"))
     }
     fn application_writes(&self) -> &[WriteOp] {
-        &self.writes
+        self.staged.get().map_or(&[], |(writes, _)| writes)
     }
     fn publish(self: Box<Self>) -> Result<()> {
         // This verifies full point rows and their root after the actual joint
@@ -177,10 +184,10 @@ impl StateMachineBackend for JointBackend {
         bytes.take(2).read_to_end(&mut data)?;
         self.validate_snapshot(&mut data.as_slice())?;
         let selected = selection(context, data[0])?;
-        let (replacement, writes) = match context.mode {
+        let table = match context.mode {
             crate::SnapshotRestoreMode::Reopen => {
                 check_table(&self.store, &selected)?;
-                (None, vec![])
+                None
             }
             crate::SnapshotRestoreMode::Install => {
                 // the KV engine reserves commit headers and admitted index metadata
@@ -194,15 +201,14 @@ impl StateMachineBackend for JointBackend {
                 for ordinal in 0..2 {
                     table.insert(&[ordinal], &row(selected.tag, ordinal))?;
                 }
-                let writes = vec![put(META, b"selected", serde_json::to_vec(&selected)?)];
-                (Some(table), writes)
+                Some(table)
             }
         };
         Ok(Box::new(PreparedJoint {
             backend: self,
             selected,
-            replacement,
-            writes,
+            table,
+            staged: std::sync::OnceLock::new(),
         }))
     }
 }

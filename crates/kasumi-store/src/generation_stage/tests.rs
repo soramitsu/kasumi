@@ -143,7 +143,7 @@ async fn abandoned_stages_are_incremental_restartable_and_fence_stale_tokens() -
     );
     let crash = disk.crash();
     let reopened = pair(crash, scratch.clone(), false).await;
-    NamespaceStage::reclaim_unpublished(reopened.application())?;
+    NamespaceStage::reclaim_unselected(reopened.application())?;
     reopened
         .application()
         .visit("abandoned", 32, |_, _| anyhow::bail!("leaked row"))?;
@@ -413,7 +413,7 @@ async fn every_native_crash_cut_keeps_old_or_complete_new_selection() -> Result<
             old += 1;
             assert!(result.is_err(), "acknowledged selection lost at cut {cut}");
         }
-        NamespaceStage::reclaim_unpublished(reopened.application())?;
+        NamespaceStage::reclaim_unselected(reopened.application())?;
         verify(&reopened, 31, 32)?;
     }
     assert!(old > 0 && new > 0);
@@ -460,6 +460,245 @@ async fn raw_owner_writes_and_corrupt_inventory_cannot_reclaim_initial_identitie
             b"original"
         );
     }
-    assert!(NamespaceStage::reclaim_unpublished(stores.application()).is_err());
+    assert!(NamespaceStage::reclaim_unselected(stores.application()).is_err());
+    Ok(())
+}
+
+const FAMILY: &str = "fixture.family";
+const INITIAL: [&str; 2] = ["fixture.a", "fixture.b"];
+
+// Rows written exactly as a store from before generation selectors wrote them.
+fn legacy_rows(store: &TenantStore, rows: u64) -> Result<()> {
+    for namespace in INITIAL {
+        for row in 0..rows {
+            store.write_batch(&[WriteOp::put(
+                namespace,
+                row.to_be_bytes(),
+                format!("{namespace}/{row}"),
+            )])?;
+        }
+    }
+    Ok(())
+}
+fn rows_at(view: &TenantReadView) -> Result<Vec<Vec<u8>>> {
+    let generation = SelectedGeneration::load_at(view, FAMILY, &INITIAL)?;
+    let mut rows = Vec::new();
+    for namespace in generation.namespaces() {
+        view.visit(namespace, 1024, |_, value| {
+            rows.push(value.to_vec());
+            Ok(())
+        })?;
+    }
+    Ok(rows)
+}
+fn staged(
+    store: &Arc<TenantStore>,
+    scratch: &Arc<ScratchDisk>,
+    rows: u64,
+) -> Result<[NamespaceStage; 2]> {
+    let stage = |base| -> Result<NamespaceStage> {
+        let stage = NamespaceStage::begin_generation(store, base)?;
+        stage.write_table(&source(scratch, rows, 8))?;
+        Ok(stage)
+    };
+    Ok([stage(INITIAL[0])?, stage(INITIAL[1])?])
+}
+fn count(store: &TenantStore, namespace: &str) -> Result<u64> {
+    let mut rows = 0;
+    store.visit(namespace, 1024, |_, _| {
+        rows += 1;
+        Ok(())
+    })?;
+    Ok(rows)
+}
+
+#[tokio::test]
+async fn legacy_family_is_adopted_switched_and_reclaimed_without_touching_pinned_rows() -> Result<()>
+{
+    let (_directory, scratch) = scratch();
+    let stores = pair(FaultBackend::new(), scratch.clone(), true).await;
+    let store = stores.application();
+    legacy_rows(store, 20)?;
+    let legacy = SelectedGeneration::load(store, FAMILY, &INITIAL)?;
+    assert_eq!(legacy.namespaces(), INITIAL);
+    let [a, b] = staged(store, &scratch, 17)?;
+    // Only a recorded predecessor can be replaced.
+    assert!(legacy.switch_writes(store, &[&a, &b]).is_err());
+    let adopted = SelectedGeneration::adopt(store, FAMILY, &INITIAL)?;
+    assert_eq!(adopted.namespaces(), INITIAL);
+    assert_eq!(SelectedGeneration::adopt(store, FAMILY, &INITIAL)?, adopted);
+    let pinned = store.read_view()?;
+    let before = rows_at(&pinned)?;
+    assert_eq!(before.len(), 40);
+    store.write_batch(&adopted.switch_writes(store, &[&a, &b])?)?;
+    let current = SelectedGeneration::load(store, FAMILY, &INITIAL)?;
+    assert_eq!(current.namespaces(), [a.namespace(), b.namespace()]);
+    // Retirement happens only after the selection commits; legacy rows are
+    // byte-identical until the bounded collector removes them.
+    for namespace in INITIAL {
+        assert_eq!(count(store, namespace)?, 20);
+    }
+    NamespaceStage::reclaim_unselected(store)?;
+    for namespace in INITIAL {
+        assert_eq!(count(store, namespace)?, 0);
+        assert!(
+            store
+                .get_bounded(OWNERS, namespace.as_bytes(), OWNER_BYTES)?
+                .is_none()
+        );
+    }
+    assert_eq!(count(store, a.namespace())?, 17);
+    assert_eq!(rows_at(&pinned)?, before);
+    pinned.close()?;
+    let view = store.read_view()?;
+    assert_eq!(rows_at(&view)?.len(), 34);
+    view.close()?;
+    // A selected generation is never collected; its replacement retires it.
+    assert!(NamespaceStage::reclaim(store, a.namespace()).is_err());
+    let [c, d] = staged(store, &scratch, 3)?;
+    store.write_batch(&current.switch_writes(store, &[&c, &d])?)?;
+    NamespaceStage::reclaim_unselected(store)?;
+    assert_eq!(count(store, a.namespace())?, 0);
+    assert_eq!(count(store, c.namespace())?, 3);
+    Ok(())
+}
+
+#[tokio::test]
+async fn selector_changes_are_checked_with_their_owners_inside_the_transaction() -> Result<()> {
+    let (_directory, scratch) = scratch();
+    let stores = pair(FaultBackend::new(), scratch.clone(), true).await;
+    let store = stores.application();
+    legacy_rows(store, 2)?;
+    let adopted = SelectedGeneration::adopt(store, FAMILY, &INITIAL)?;
+    let [a, b] = staged(store, &scratch, 2)?;
+    let writes = adopted.switch_writes(store, &[&a, &b])?;
+    let selector = writes[0].clone();
+    let unchanged = || -> Result<()> {
+        assert_eq!(SelectedGeneration::load(store, FAMILY, &INITIAL)?, adopted);
+        for namespace in INITIAL {
+            assert!(
+                store
+                    .get_bounded(OWNERS, namespace.as_bytes(), OWNER_BYTES)?
+                    .is_none()
+            );
+        }
+        Ok(())
+    };
+    // Without each owner transition, or with a retirement it does not cause.
+    for omitted in 1..writes.len() {
+        let mut partial = writes.clone();
+        partial.remove(omitted);
+        assert!(store.write_batch(&partial).is_err(), "omitted {omitted}");
+        assert!(stores.write_batch(&partial, &[]).is_err());
+        unchanged()?;
+    }
+    assert!(store.write_batch(&writes[2..]).is_err());
+    assert!(store.write_batch(&writes[3..]).is_err());
+    unchanged()?;
+    // Selectors are never deleted, duplicated or used to adopt staged rows.
+    assert!(
+        store
+            .write_batch(&[WriteOp::delete(SELECTIONS, FAMILY.as_bytes())])
+            .is_err()
+    );
+    let mut duplicate = writes.clone();
+    duplicate.push(selector.clone());
+    assert!(store.write_batch(&duplicate).is_err());
+    let [e, f] = staged(store, &scratch, 1)?;
+    let adoption = Selection {
+        version: 1,
+        namespaces: vec![e.namespace().into(), f.namespace().into()],
+    };
+    assert!(
+        store
+            .write_batch(&[adoption.write("fixture.other")?])
+            .is_err()
+    );
+    unchanged()?;
+    store.write_batch(&writes)?;
+    // A stale predecessor cannot select over the generation that replaced it.
+    let [c, d] = staged(store, &scratch, 1)?;
+    assert!(
+        store
+            .write_batch(&adopted.switch_writes(store, &[&c, &d])?)
+            .is_err()
+    );
+    let current = SelectedGeneration::load(store, FAMILY, &INITIAL)?;
+    assert_eq!(current.namespaces(), [a.namespace(), b.namespace()]);
+    store.write_batch(&current.switch_writes(store, &[&c, &d])?)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn every_crash_cut_of_a_switch_keeps_one_complete_generation_and_reclaims_the_rest()
+-> Result<()> {
+    let (_directory, scratch) = scratch();
+    let original = FaultBackend::new();
+    let stores = pair(original.clone(), scratch.clone(), true).await;
+    legacy_rows(stores.application(), 9)?;
+    let starting = original.crash();
+    let switch = |stores: &TenantStorageSet| -> Result<()> {
+        let store = stores.application();
+        let adopted = SelectedGeneration::adopt(store, FAMILY, &INITIAL)?;
+        let [a, b] = staged(store, &scratch, 16)?;
+        stores.write_batch(&adopted.switch_writes(store, &[&a, &b])?, &[])?;
+        NamespaceStage::reclaim_unselected(store)
+    };
+    let measurement = starting.crash();
+    let measured = pair(measurement.clone(), scratch.clone(), false).await;
+    let start = measurement.operations();
+    switch(&measured)?;
+    let mutations = measurement.operations() - start;
+    let (mut old, mut new) = (0, 0);
+    for cut in 0..=mutations {
+        let disk = starting.crash();
+        let stores = pair(disk.clone(), scratch.clone(), false).await;
+        disk.fail_after(cut);
+        let result = switch(&stores);
+        let crashed = disk.crash();
+        disk.disarm();
+        let reopened = pair(crashed, scratch.clone(), false).await;
+        let store = reopened.application();
+        let view = store.read_view()?;
+        let rows = rows_at(&view)?;
+        view.close()?;
+        let generation = SelectedGeneration::load(store, FAMILY, &INITIAL)?;
+        if generation.namespaces() == INITIAL {
+            old += 1;
+            assert_eq!(rows.len(), 18, "legacy rows changed at cut {cut}");
+        } else {
+            new += 1;
+            assert_eq!(rows.len(), 32, "torn generation at cut {cut}");
+        }
+        assert!(result.is_ok() || generation.namespaces() == INITIAL || rows.len() == 32);
+        NamespaceStage::reclaim_unselected(store)?;
+        // Only the selected generation and nothing staged or retired remains.
+        let mut owners = 0;
+        let mut owned = Vec::new();
+        store.visit(OWNERS, OWNER_BYTES, |namespace, bytes| {
+            owners += 1;
+            assert_eq!(Owner::decode(bytes)?.phase, Phase::Selected);
+            owned.push(String::from_utf8(namespace.to_vec())?);
+            Ok(())
+        })?;
+        if generation.namespaces() == INITIAL {
+            assert_eq!(owners, 0, "unselected stage leaked at cut {cut}");
+        } else {
+            assert_eq!(owners, 2);
+            for namespace in INITIAL {
+                assert_eq!(
+                    count(store, namespace)?,
+                    0,
+                    "retired rows leaked at cut {cut}"
+                );
+            }
+            assert!(
+                owned
+                    .iter()
+                    .all(|name| generation.namespaces().contains(name))
+            );
+        }
+    }
+    assert!(old > 0 && new > 0);
     Ok(())
 }

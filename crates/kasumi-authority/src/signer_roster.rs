@@ -51,20 +51,21 @@ impl Backend {
             "verifier pagination revision changed"
         );
         let mut page = BTreeMap::new();
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-            if key.starts_with(b"signer-verifier/") {
-                let Record::Verifier(record) = serde_json::from_slice(bytes)? else {
-                    anyhow::bail!("verifier table record differs")
-                };
-                if after.is_none_or(|identity| *identity < record.enrollment.verifier) {
-                    page.insert(record.enrollment.verifier.clone(), record);
-                    if page.len() > usize::from(limit) + 1 {
-                        page.pop_last();
+        self.store
+            .visit(&self.ns(), MAX_RECORD_BYTES, |key, bytes| {
+                if key.starts_with(b"signer-verifier/") {
+                    let Record::Verifier(record) = serde_json::from_slice(bytes)? else {
+                        anyhow::bail!("verifier table record differs")
+                    };
+                    if after.is_none_or(|identity| *identity < record.enrollment.verifier) {
+                        page.insert(record.enrollment.verifier.clone(), record);
+                        if page.len() > usize::from(limit) + 1 {
+                            page.pop_last();
+                        }
                     }
                 }
-            }
-            Ok(())
-        })?;
+                Ok(())
+            })?;
         let more = page.len() > usize::from(limit);
         if more {
             page.pop_last();
@@ -112,7 +113,7 @@ impl Backend {
                     self.record(&verifier_key(&enrollment.verifier))?.is_none(),
                     "physical verifier identity is permanently allocated"
                 );
-                self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
+                self.store.visit(&self.ns(), MAX_RECORD_BYTES, |key, bytes| {
                     if key.starts_with(b"signer-verifier/") {
                         let Record::Verifier(existing) = serde_json::from_slice(bytes)? else { anyhow::bail!("verifier record type differs") };
                         reject_unless!(existing.enrollment.endpoint != enrollment.endpoint
@@ -249,21 +250,20 @@ impl Backend {
             self.store.scratch_disk().native_cache_config(),
         )?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
-            self.store
-                .read_view()?
-                .visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-                    if key == META {
-                        return Ok(());
-                    }
-                    let record: Record = serde_json::from_slice(bytes)?;
-                    Self::visit_verifier_references(&record, |verifier| {
-                        self.require_enrolled(verifier)
-                    })?;
-                    if matches!(record, Record::Verifier(_) | Record::ControlVerifier(_)) {
-                        records.insert(key, bytes)?;
-                    }
-                    Ok(())
+            let view = self.store.read_view()?;
+            view.visit(&Self::ns_at(&view)?, MAX_RECORD_BYTES, |key, bytes| {
+                if key == META {
+                    return Ok(());
+                }
+                let record: Record = serde_json::from_slice(bytes)?;
+                Self::visit_verifier_references(&record, |verifier| {
+                    self.require_enrolled(verifier)
                 })?;
+                if matches!(record, Record::Verifier(_) | Record::ControlVerifier(_)) {
+                    records.insert(key, bytes)?;
+                }
+                Ok(())
+            })?;
             records.visit(|key, bytes| {
                 Self::hash_roster_record(
                     key,
@@ -537,24 +537,25 @@ impl Backend {
         Ok(())
     }
     pub(super) fn validate_roster_history(&self, snapshot: &Snapshot) -> Result<()> {
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-            if key.starts_with(b"signer-verifier/")
-                || key.starts_with(b"signer-control/")
-                || key.starts_with(b"signer-roster/")
-            {
-                ensure!(
-                    snapshot
-                        .records
-                        .get(std::str::from_utf8(key)?)?
-                        .as_ref()
-                        .map(serde_json::to_vec)
-                        .transpose()?
-                        .as_deref()
-                        == Some(bytes),
-                    "permanent physical verifier identity cannot be removed or substituted"
-                );
-            }
-            Ok(())
-        })
+        self.store
+            .visit(&self.ns(), MAX_RECORD_BYTES, |key, bytes| {
+                if key.starts_with(b"signer-verifier/")
+                    || key.starts_with(b"signer-control/")
+                    || key.starts_with(b"signer-roster/")
+                {
+                    ensure!(
+                        snapshot
+                            .records
+                            .get(std::str::from_utf8(key)?)?
+                            .as_ref()
+                            .map(serde_json::to_vec)
+                            .transpose()?
+                            .as_deref()
+                            == Some(bytes),
+                        "permanent physical verifier identity cannot be removed or substituted"
+                    );
+                }
+                Ok(())
+            })
     }
 }

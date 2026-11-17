@@ -706,7 +706,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
             // The apply owner excludes live candidates while crash leftovers
             // are reclaimed. Selected namespaces retain their durable owners.
-            kasumi_store::NamespaceStage::reclaim_unpublished(store)?;
+            kasumi_store::NamespaceStage::reclaim_unselected(store)?;
             let receipt_installation = generation.receipts.prepare_install(
                 store,
                 &generation.state,
@@ -1515,7 +1515,7 @@ impl TenantEngine {
             ));
         }
         // The apply owner excludes another candidate during bounded cleanup.
-        kasumi_store::NamespaceStage::reclaim_unpublished(store).map_err(terminal_error)?;
+        kasumi_store::NamespaceStage::reclaim_unselected(store).map_err(terminal_error)?;
         let receipt_installation = previous
             .receipts
             .prepare_install(store, &previous.state, &checkpoint, reopen)

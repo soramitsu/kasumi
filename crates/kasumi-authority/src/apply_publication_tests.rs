@@ -1000,6 +1000,90 @@ async fn signer_stage_creation_refusal_retains_registered_original_before_public
     fixture.close().await;
 }
 
+fn authority_rows(store: &TenantStore, namespace: &str) -> usize {
+    let mut rows = 0;
+    store
+        .visit(namespace, MAX_RECORD_BYTES, |_, _| {
+            rows += 1;
+            Ok(())
+        })
+        .unwrap();
+    rows
+}
+
+// State written before generation selectors lives in the initial namespace.
+// A restore stages the complete snapshot elsewhere, selects it with a fixed
+// handful of writes, and only then retires and reclaims the initial rows.
+#[tokio::test]
+async fn restore_stages_and_selects_a_generation_replacing_the_initial_namespace() {
+    let fixture = Fixture::new().await;
+    let store = fixture.stores.application();
+    assert!(
+        store
+            .get("kasumi.app.selection", FAMILY.as_bytes())
+            .unwrap()
+            .is_none()
+    );
+    let rows = authority_rows(store, NS);
+    assert!(rows > 0);
+    let before = serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap();
+    let mut bytes = Vec::new();
+    fixture.backend.snapshot(&mut bytes).unwrap();
+    let pinned = store.read_view().unwrap();
+    let mut selected: Vec<String> = Vec::new();
+    for round in 0..2 {
+        let prepared = fixture
+            .backend
+            .prepare_restore(&restore_test_context(&bytes), &mut bytes.as_slice())
+            .unwrap();
+        assert!(prepared.application_writes().is_empty());
+        prepared.stage_application().unwrap();
+        // Staging changes nothing a reader resolves.
+        assert_eq!(
+            SelectedGeneration::load(store, FAMILY, &[NS])
+                .unwrap()
+                .namespace(0),
+            if round == 0 { NS } else { selected[0].as_str() }
+        );
+        let writes = prepared.application_writes().to_vec();
+        // Selector, consumed sealed owner and retired predecessor only.
+        assert_eq!(writes.len(), 3);
+        let publication: usize = writes
+            .iter()
+            .map(|write| match write {
+                WriteOp::Put {
+                    namespace,
+                    key,
+                    value,
+                } => namespace.len() + key.len() + value.len(),
+                WriteOp::Delete { namespace, key } => namespace.len() + key.len(),
+            })
+            .sum();
+        assert!(publication < 4096);
+        fixture.stores.write_batch(&writes, &[]).unwrap();
+        prepared.publish().unwrap();
+        let generation = SelectedGeneration::load(store, FAMILY, &[NS]).unwrap();
+        assert_ne!(generation.namespace(0), NS);
+        assert_eq!(&*fixture.backend.ns(), generation.namespace(0));
+        assert_eq!(authority_rows(store, generation.namespace(0)), rows);
+        for retired in std::iter::once(NS).chain(selected.iter().map(String::as_str)) {
+            assert_eq!(authority_rows(store, retired), 0);
+        }
+        selected.push(generation.namespace(0).to_owned());
+        assert_eq!(
+            serde_json::to_vec(&fixture.backend.meta().unwrap()).unwrap(),
+            before
+        );
+        let mut again = Vec::new();
+        fixture.backend.snapshot(&mut again).unwrap();
+        assert_eq!(again, bytes);
+    }
+    // A reader pinned before either selection keeps the initial rows.
+    assert!(pinned.get(NS, META, MAX_RECORD_BYTES).unwrap().is_some());
+    pinned.close().unwrap();
+    fixture.close().await;
+}
+
 #[tokio::test]
 async fn snapshot_creation_refusals_keep_original_registered_custody_through_outer_methods() {
     use std::os::unix::fs::PermissionsExt;

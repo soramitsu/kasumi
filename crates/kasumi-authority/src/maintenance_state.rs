@@ -419,14 +419,14 @@ impl Backend {
             })?;
             let previous = self
                 .store
-                .get_bounded(NS, key.as_bytes(), MAX_RECORD_BYTES)?;
+                .get_bounded(&self.ns(), key.as_bytes(), MAX_RECORD_BYTES)?;
             meta.state_bytes = meta
                 .state_bytes
                 .checked_sub(previous.as_ref().map_or(0, |bytes| bytes.len() as u64))
                 .context("maintenance byte accounting underflow")?
                 .checked_add(bytes.len() as u64)
                 .context("maintenance byte accounting overflow")?;
-            writes.push(WriteOp::put(NS, key.as_bytes(), bytes));
+            writes.push(WriteOp::put(&*self.ns(), key.as_bytes(), bytes));
         }
         let reserved = Self::completion_reserve(&meta);
         if meta.state_bytes.saturating_add(reserved).saturating_add(
@@ -444,7 +444,7 @@ impl Backend {
         }
         meta.revision = position.log_id.index;
         writes.push(WriteOp::put(
-            NS,
+            &*self.ns(),
             META,
             ScratchOperationFailure::ordinary(|| Ok(serde_json::to_vec(&meta)?))?,
         ));

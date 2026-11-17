@@ -1527,24 +1527,28 @@ fn publish_snapshot(
     custody
         .writes
         .push(put(META, b"snapshot_coverage", coverage_bytes));
-    let replacements = custody.records.as_ref().map(|records| {
-        records.namespaces().map(|(namespace, table)| {
-            kasumi_store::NamespaceReplacement::from_table(namespace, table)
-        })
-    });
+    // The caller holds the control gate: an extended custody history is staged
+    // in bounded batches and selected below, never replaced in this commit.
+    let custody_store = domains.custody().store();
+    let history = custody
+        .records
+        .as_ref()
+        .map(|records| crate::custody_tables::stage_history(custody_store, records))
+        .transpose()?
+        .flatten();
+    if let Some(history) = &history {
+        custody.writes.extend_from_slice(&history.writes);
+    }
     let mut application = pending.application;
     if let Some(backend) = backend {
         application.extend_from_slice(backend.application_writes());
     }
-    let application_replacements = backend.map_or_else(Vec::new, |b| b.application_replacements());
-    domains.write_batch_replacing(
-        &application,
-        &custody.writes,
-        &application_replacements,
-        replacements
-            .as_ref()
-            .map_or(&[], |namespaces| namespaces.as_slice()),
-    )
+    domains.write_batch(&application, &custody.writes)?;
+    if history.is_some() {
+        drop(history);
+        kasumi_store::NamespaceStage::reclaim_unselected(custody_store)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1670,6 +1674,7 @@ impl StateMachine {
         let domains = StorageHandle::new(domains, lease.clone());
         let backend = StorageHandle::new(backend, lease);
         let captured_domains = domains.clone();
+        let opening_gate = control_gate.clone();
         let captured = store.clone();
         let target = backend.clone();
         let limit = limits.max_snapshot_bytes;
@@ -1691,6 +1696,16 @@ impl StateMachine {
                         captured_domains.custody(),
                         first.as_ref(),
                     )?;
+                    {
+                        // Custody generations an interrupted installation
+                        // staged or retired; selection shares this gate.
+                        let _control = opening_gate
+                            .lock()
+                            .map_err(|_| anyhow::anyhow!("control publication lock poisoned"))?;
+                        kasumi_store::NamespaceStage::reclaim_unselected(
+                            captured_domains.custody().store(),
+                        )?;
+                    }
                     cleanup_snapshots(&captured, limit, &BackgroundCommits::Direct)?;
                     if let Some(snapshot) = load_snapshot(&captured, limit)? {
                         validate_snapshot_coverage(&captured_domains, &snapshot, limit)?;
@@ -1708,12 +1723,7 @@ impl StateMachine {
                             prepared.retirement(),
                         )?;
                         prepared.stage_application()?;
-                        captured_domains.write_batch_replacing(
-                            prepared.application_writes(),
-                            &[],
-                            &prepared.application_replacements(),
-                            &[],
-                        )?;
+                        captured_domains.write_batch(prepared.application_writes(), &[])?;
                         prepared.publish()?;
                         Ok(AppliedState {
                             log_id: snapshot.meta.last_log_id,

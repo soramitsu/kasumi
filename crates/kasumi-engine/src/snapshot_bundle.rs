@@ -980,7 +980,6 @@ mod tests {
             };
             let prepared = engine.prepare_restore(&context, &mut image.reader())?;
             prepared.stage_application()?;
-            assert!(prepared.application_replacements().is_empty());
             store.write_batch(prepared.application_writes())?;
             prepared.publish().map_err(Into::into)
         })

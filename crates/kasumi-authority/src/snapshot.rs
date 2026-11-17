@@ -29,8 +29,9 @@ impl SnapshotRecords {
             visitor(std::str::from_utf8(key)?, &serde_json::from_slice(value)?)
         })
     }
-    pub(super) fn replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        vec![kasumi_store::NamespaceReplacement::from_table(NS, &self.0)]
+    /// Every authenticated record, including metadata: a complete generation.
+    pub(super) fn table(&self) -> &EncryptedTable {
+        &self.0
     }
 }
 fn disk_budget(maximum: u64) -> Result<u64> {
@@ -44,12 +45,14 @@ pub(super) fn write(
     maximum: u64,
     output: &mut dyn Write,
 ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
-    let meta: Meta = kasumi_store::ScratchOperationFailure::ordinary(|| {
-        Ok(serde_json::from_slice(
+    let (namespace, meta) = kasumi_store::ScratchOperationFailure::ordinary(|| {
+        let namespace = Backend::ns_at(view)?;
+        let meta: Meta = serde_json::from_slice(
             &view
-                .get(NS, META, MAX_RECORD_BYTES)?
+                .get(&namespace, META, MAX_RECORD_BYTES)?
                 .context("authority metadata missing")?,
-        )?)
+        )?;
+        Ok((namespace, meta))
     })?;
     let records = SnapshotRecords(EncryptedTable::new(
         view.scratch_disk(),
@@ -57,7 +60,7 @@ pub(super) fn write(
         view.scratch_disk().native_cache_config(),
     )?);
     kasumi_store::ScratchOperationFailure::ordinary(|| {
-        view.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
+        view.visit(&namespace, MAX_RECORD_BYTES, |key, bytes| {
             if key != META {
                 let record: Record = serde_json::from_slice(bytes)?;
                 records.0.insert(key, &serde_json::to_vec(&record)?)?;

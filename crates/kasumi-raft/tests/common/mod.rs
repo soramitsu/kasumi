@@ -55,9 +55,6 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedBackend<'_> {
     fn retirement(&self) -> Option<kasumi_raft::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        vec![]
-    }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
         &[]
     }

@@ -98,7 +98,7 @@ pub mod node_store_ids;
 mod plaintext_scan;
 mod point_read_backing;
 mod read_view;
-pub use generation_stage::NamespaceStage;
+pub use generation_stage::{NamespaceStage, SelectedGeneration};
 pub use plaintext_scan::{PlaintextRecord, PlaintextScan};
 mod registered_read_scope;
 mod registered_write_scope;

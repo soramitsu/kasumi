@@ -141,6 +141,16 @@ async fn permanent_custody_exceeds_former_count_and_snapshot_ceilings_and_reopen
             "configured transfer budget was ignored"
         );
         custody_machine::publish(domains.custody(), &snapshot, 64 << 20)?;
+        // The history was staged in bounded batches into a fresh generation;
+        // its selection joined the closed snapshot's one publication.
+        let generation = custody_tables::generation(domains.custody().store())?;
+        ensure!(
+            generation
+                .namespaces()
+                .iter()
+                .all(|namespace| !custody_tables::INITIAL.contains(&namespace.as_str())),
+            "installed custody history was not staged as a generation"
+        );
         drop(snapshot);
         drop(image);
         drop(log);

@@ -150,6 +150,9 @@ impl TargetFirstMembershipPrebind {
             "raft.custody-snapshot",
             "raft.custody-commands",
             "raft.custody-audit",
+            // Any staged or selected custody generation leaves an owner or selector.
+            "kasumi.app.staging",
+            "kasumi.app.selection",
         ] {
             ensure!(
                 store.scan(namespace)?.is_empty(),
@@ -1425,6 +1428,7 @@ pub(crate) fn apply_custody(
         .checked_add(position.log_id.index)
         .context("custody revision exhausted")?;
     let mut writes = vec![applied_write(position)?];
+    let generation = crate::custody_tables::generation(custody.store())?;
     let prior = crate::custody_tables::receipt(custody.store(), &command.request.command_id)?;
     let result = match head.apply(
         prior,
@@ -1435,7 +1439,10 @@ pub(crate) fn apply_custody(
     ) {
         Ok((next, receipt, event)) => {
             writes.extend(crate::custody_tables::transition_writes(
-                &next, &receipt, &event,
+                &generation,
+                &next,
+                &receipt,
+                &event,
             )?);
             Ok(receipt)
         }

@@ -141,7 +141,11 @@ impl Backend {
                         add_count(&mut meta.state_bytes, u64::try_from(bytes.len())?)?;
                         add_count(&mut meta.lifecycle_epochs, 1)?;
                         add_count(&mut meta.open_control_epochs, 1)?;
-                        writes.push(WriteOp::put(NS, reference.epoch_key()?.as_bytes(), bytes));
+                        writes.push(WriteOp::put(
+                            &*self.ns(),
+                            reference.epoch_key()?.as_bytes(),
+                            bytes,
+                        ));
                     }
                     _ => anyhow::bail!("control epoch anchor type differs"),
                 }
@@ -198,9 +202,13 @@ impl Backend {
                 "permanent control commitment and stop reservation quota exhausted",
             )));
         }
-        writes.push(WriteOp::put(NS, reference.key()?.as_bytes(), bytes));
+        writes.push(WriteOp::put(
+            &*self.ns(),
+            reference.key()?.as_bytes(),
+            bytes,
+        ));
         meta.revision = position.log_id.index;
-        writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
+        writes.push(WriteOp::put(&*self.ns(), META, serde_json::to_vec(&meta)?));
         *publication_writes = writes;
         Ok(Ok(receipt))
     }
@@ -395,23 +403,24 @@ impl Backend {
         Ok(())
     }
     pub(super) fn validate_lifecycle_history(&self, snapshot: &Snapshot) -> Result<()> {
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-            if key.starts_with(b"lc/") {
-                let name = std::str::from_utf8(key)?;
-                ensure!(
-                    snapshot
-                        .records
-                        .get(name)?
-                        .as_ref()
-                        .map(serde_json::to_vec)
-                        .transpose()?
-                        .as_deref()
-                        == Some(bytes),
-                    "permanent control history cannot be removed or substituted"
-                );
-            }
-            Ok(())
-        })
+        self.store
+            .visit(&self.ns(), MAX_RECORD_BYTES, |key, bytes| {
+                if key.starts_with(b"lc/") {
+                    let name = std::str::from_utf8(key)?;
+                    ensure!(
+                        snapshot
+                            .records
+                            .get(name)?
+                            .as_ref()
+                            .map(serde_json::to_vec)
+                            .transpose()?
+                            .as_deref()
+                            == Some(bytes),
+                        "permanent control history cannot be removed or substituted"
+                    );
+                }
+                Ok(())
+            })
     }
 }
 fn same_nodes(

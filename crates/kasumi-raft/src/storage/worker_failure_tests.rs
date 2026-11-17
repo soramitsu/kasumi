@@ -17,9 +17,6 @@ impl crate::PreparedStateMachineRestore for RestoreFailureCandidate<'_> {
     fn retirement(&self) -> Option<crate::RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        vec![]
-    }
     fn application_writes(&self) -> &[WriteOp] {
         &self.writes
     }

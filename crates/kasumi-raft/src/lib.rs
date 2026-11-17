@@ -296,19 +296,16 @@ impl SnapshotRestoreContext {
 
 pub trait PreparedStateMachineRestore {
     fn retirement(&self) -> Option<RetiredSnapshotState>;
-    /// Durably write, in bounded batches before durable publication, rows the
-    /// restored state names that one publication transaction cannot stage. No
-    /// published state may name such a row first, so a failure here or before
-    /// publication leaves the previous snapshot intact.
+    /// Durably write, in bounded batches before durable publication, every
+    /// generation and row the restored state names. No published state may
+    /// name them first, so a failure here or before publication leaves the
+    /// previous snapshot intact.
     fn stage_application(&self) -> Result<()> {
         Ok(())
     }
-    /// Remaining step-6 migration boundary: Authority still replaces its fixed
-    /// namespace. Engine restores stage private auxiliary generations and use
-    /// this empty default. Remove this method with the Authority/custody cutover.
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        Vec::new()
-    }
+    /// Fixed-size writes, including generation selections, that commit with
+    /// the custody selection and applied cursor in one paired transaction.
+    /// Valid only after `stage_application` succeeds.
     fn application_writes(&self) -> &[kasumi_store::WriteOp];
     /// Called only after durable publication succeeds. A release failure seals
     /// the replica; restart must recover the already committed snapshot exactly.

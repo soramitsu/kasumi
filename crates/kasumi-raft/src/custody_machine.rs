@@ -8,7 +8,7 @@ use crate::storage::{SnapshotCoverage, SnapshotEnvelope, SnapshotKind, as_snapsh
 use crate::{BasicNode, LogId, SnapshotBuffer, TypeConfig};
 use anyhow::{Context, Result};
 use kasumi_store::ScratchOperationFailure;
-use kasumi_store::{CustodyStore, WriteOp};
+use kasumi_store::{CustodyStore, NamespaceStage, SelectedGeneration, WriteOp};
 use openraft::{
     EntryPayload, OptionalSend, RaftSnapshotBuilder, Snapshot, SnapshotMeta, StorageError,
     StorageIOError, StoredMembership, storage::RaftStateMachine,
@@ -107,22 +107,34 @@ pub(crate) fn publish(
         .writes
         .push(WriteOp::put(META, b"snapshot_coverage", coverage_bytes));
     install.writes.push(manifest);
-    let mut replacements = install.records.as_ref().map_or_else(Vec::new, |records| {
-        records
-            .namespaces()
-            .map(|(namespace, table)| {
-                kasumi_store::NamespaceReplacement::from_table(namespace, table)
-            })
-            .to_vec()
-    });
-    replacements.push(kasumi_store::NamespaceReplacement::from_table(
-        CLOSED_SNAPSHOT,
-        &chunks,
-    ));
-    custody
-        .store()
-        .replace_namespaces(&replacements, &install.writes)
-        .map_err(Into::into)
+    // Every caller holds the control gate, which serializes custody staging,
+    // selection and reclamation. First remove what an interrupted publication
+    // left, then stage this one's generations in bounded batches.
+    let store = custody.store();
+    NamespaceStage::reclaim_unselected(store)?;
+    let history = install
+        .records
+        .as_ref()
+        .map(|records| crate::custody_tables::stage_history(store, records))
+        .transpose()?
+        .flatten();
+    let generation = SelectedGeneration::adopt(
+        store,
+        crate::custody_snapshot_storage::FAMILY,
+        &[CLOSED_SNAPSHOT],
+    )?;
+    let chunk_stage = NamespaceStage::begin_generation(store, CLOSED_SNAPSHOT)?;
+    chunk_stage.write_table(&chunks)?;
+    install
+        .writes
+        .extend(generation.switch_writes(store, &[&chunk_stage])?);
+    if let Some(history) = &history {
+        install.writes.extend_from_slice(&history.writes);
+    }
+    store.write_batch(&install.writes)?;
+    drop(history);
+    drop(chunk_stage);
+    NamespaceStage::reclaim_unselected(store).map_err(Into::into)
 }
 
 pub(crate) fn load_snapshot(
@@ -1259,6 +1271,197 @@ pub(crate) mod tests {
                 assert!(matches!(cursor, AppliedCursor::Entry(_)));
             }
         }
+        Ok(())
+    }
+
+    fn administrators(
+        request: &RetireSourceRequest,
+        command_id: &str,
+        epoch: u64,
+        administrators: &[&str],
+    ) -> crate::CustodyCommand {
+        let mut command = rotation(request);
+        command.request.command_id = command_id.into();
+        command.request.expected_policy_epoch = epoch;
+        command.request.action = CustodyAction::ReplaceAdministrators(
+            administrators.iter().map(|name| (*name).into()).collect(),
+        );
+        command
+    }
+    async fn commit_entry(
+        log: &mut crate::LogStore,
+        index: u64,
+        command: &crate::CustodyCommand,
+    ) -> Result<()> {
+        log.blocking_append([Entry {
+            initialization: None,
+            log_id: id(index),
+            payload: EntryPayload::Normal(crate::RaftCommand::custody(command)?),
+        }])
+        .await?;
+        log.save_committed(Some(id(index))).await?;
+        Ok(())
+    }
+    fn apply_at(
+        domains: &kasumi_store::TenantStorageSet,
+        index: u64,
+        command: &crate::CustodyCommand,
+    ) -> Result<()> {
+        let (previous, membership) = applied(domains.custody())?;
+        let response = control::apply_custody(
+            domains.custody(),
+            &AppliedEntryContext {
+                log_id: id(index),
+                previous,
+                membership,
+                retirement_seed: None,
+                command_sha256: crate::command::sha256(&command.encoded()?),
+            },
+            command,
+        )?;
+        let outcome: kasumi_types::Result<CustodyReceipt> = serde_json::from_slice(&response)?;
+        let head = control::custody_head(domains.custody())?;
+        outcome
+            .and_then(|receipt| receipt.outcome.map(|_| ()))
+            .with_context(|| {
+                format!(
+                    "custody command {} at {index}: head revision {} base {} epoch {}",
+                    command.request.command_id,
+                    head.policy.revision,
+                    head.policy.origin.revision_base,
+                    head.policy.policy_epoch
+                )
+            })
+    }
+    fn rows(store: &kasumi_store::TenantStore, namespace: &str) -> Result<u64> {
+        let mut rows = 0;
+        store.visit(namespace, 64 << 10, |_, _| {
+            rows += 1;
+            Ok(())
+        })?;
+        Ok(rows)
+    }
+
+    // A replica written before generation selectors keeps its history in the
+    // initial namespaces with no selector. Installing a longer history stages
+    // a complete generation, selects it with the head, then reclaims the
+    // initial rows; ordinary commands afterwards append to the new generation.
+    #[tokio::test]
+    #[allow(
+        clippy::result_large_err,
+        reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+    )]
+    async fn installed_custody_history_replaces_the_initial_layout_by_staged_generation()
+    -> FixtureResult<()> {
+        let disk_memory = kasumi_store::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let scratch_directory = kasumi_store::test_utils::private_tempdir()?;
+        let scratch = kasumi_store::ScratchDisk::fixture(scratch_directory.path(), disk_memory);
+        let mut replicas = Vec::new();
+        let mut directories = Vec::new();
+        // Both replicas retire the same source through the same committed entry.
+        let retirement = retirement_entry()?;
+        for _ in 0..2 {
+            // Each replica owns its custody store.
+            let directory = kasumi_store::test_utils::private_tempdir()?;
+            let persistent = fixture_persistent(directory.path(), &scratch)?;
+            directories.push((directory, persistent.clone()));
+            let disk = FaultBackend::new();
+            let (domains, _, _, mut log) =
+                fixture_on_disk(disk.clone(), true, scratch.clone(), persistent).await?;
+            log.blocking_append([membership(), retirement.clone()])
+                .await?;
+            log.save_committed(Some(id(1))).await?;
+            apply_membership(&domains, &membership(), None)?;
+            assert!(
+                crate::ControlLog::open(domains.custody().clone(), 1, group())?
+                    .recover_retired()?
+            );
+            replicas.push((disk, domains, log));
+        }
+        let origin = control::custody_state(replicas[0].1.custody())?
+            .origin
+            .request;
+        let first = administrators(&origin, "rotate", 1, &["owner", "custodian"]);
+        let second = administrators(&origin, "rotate-2", 2, &["owner", "auditor"]);
+        let third = administrators(&origin, "rotate-3", 3, &["owner"]);
+        for (_, domains, log) in &mut replicas {
+            commit_entry(log, 2, &first).await?;
+            apply_at(domains, 2, &first)?;
+        }
+        commit_entry(&mut replicas[0].2, 3, &second).await?;
+        apply_at(&replicas[0].1, 3, &second)?;
+        let source = control::custody_state(replicas[0].1.custody())?;
+        let snapshot = capture(replicas[0].1.custody())?;
+        let (disk, target, mut log) = replicas.remove(1);
+        let store = target.custody().store();
+        assert!(rows(store, "kasumi.app.selection")? == 0);
+        let initial = crate::custody_tables::INITIAL;
+        assert_eq!(
+            crate::custody_tables::generation(store)?.namespaces(),
+            initial
+        );
+        assert_eq!((rows(store, initial[0])?, rows(store, initial[1])?), (1, 1));
+        let pinned = store.read_view()?;
+        let legacy_receipt = pinned
+            .get(initial[0], b"rotate", 64 << 10)?
+            .context("legacy receipt absent")?
+            .as_bytes()
+            .to_vec();
+        publish(target.custody(), &snapshot)?;
+        let generation = crate::custody_tables::generation(store)?;
+        assert!(
+            generation
+                .namespaces()
+                .iter()
+                .all(|name| !initial.contains(&name.as_str()))
+        );
+        assert_eq!(control::custody_state(target.custody())?, source);
+        // Logical parity: the replica that appended into the initial layout and
+        // the one that installed a staged generation capture the same history.
+        assert_eq!(
+            crate::custody_records::Records::capture(store)?.sha256(),
+            crate::custody_records::Records::capture(replicas[0].1.custody().store())?.sha256()
+        );
+        assert_eq!((rows(store, initial[0])?, rows(store, initial[1])?), (0, 0));
+        assert_eq!(
+            (
+                rows(store, generation.namespace(0))?,
+                rows(store, generation.namespace(1))?
+            ),
+            (2, 2)
+        );
+        // A reader that pinned the initial layout keeps its exact bytes.
+        assert_eq!(
+            pinned
+                .get(initial[0], b"rotate", 64 << 10)?
+                .context("pinned receipt reclaimed")?
+                .as_bytes(),
+            legacy_receipt
+        );
+        pinned.close()?;
+        commit_entry(&mut log, 3, &second).await?;
+        commit_entry(&mut log, 4, &third).await?;
+        apply_at(&target, 4, &third)?;
+        drop(log);
+        drop(target);
+        let (reopened, _, _, _) = fixture_on_disk(
+            disk.crash(),
+            false,
+            scratch.clone(),
+            directories[1].1.clone(),
+        )
+        .await?;
+        let store = reopened.custody().store();
+        assert_eq!(crate::custody_tables::generation(store)?, generation);
+        let state = control::custody_state(reopened.custody())?;
+        assert_eq!(state.commands.len(), 3);
+        assert_eq!(state.commands["rotate"], source.commands["rotate"]);
+        assert!(crate::custody_tables::receipt(store, "rotate-3")?.is_some());
+        assert_eq!(rows(store, generation.namespace(0))?, 3);
+        assert_eq!((rows(store, initial[0])?, rows(store, initial[1])?), (0, 0));
+        // Republishing the same history stages nothing new for it.
+        publish(reopened.custody(), &capture(reopened.custody())?)?;
+        assert_eq!(crate::custody_tables::generation(store)?, generation);
         Ok(())
     }
 

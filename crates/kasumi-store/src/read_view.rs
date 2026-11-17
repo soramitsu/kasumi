@@ -635,8 +635,9 @@ pub(crate) fn validate_replacements(
         validate_record(namespace, &[], 0)?;
         ensure!(
             !is_initial_identity_namespace(namespace)
-                && namespace != crate::generation_stage::OWNERS,
-            "initial identity or stage owner namespace cannot be replaced"
+                && namespace != crate::generation_stage::OWNERS
+                && namespace != crate::generation_stage::SELECTIONS,
+            "initial identity or generation namespace cannot be replaced"
         );
         ensure!(names.insert(namespace), "duplicate replacement namespace");
     }
@@ -661,8 +662,9 @@ pub(crate) fn replace_domain(
         let namespace = replacement.namespace;
         ensure!(
             !is_initial_identity_namespace(namespace)
-                && namespace != crate::generation_stage::OWNERS,
-            "initial identity or stage owner namespace cannot be replaced"
+                && namespace != crate::generation_stage::OWNERS
+                && namespace != crate::generation_stage::SELECTIONS,
+            "initial identity or generation namespace cannot be replaced"
         );
         let prefix = {
             let state = store.state.read();

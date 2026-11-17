@@ -4,7 +4,9 @@ use kasumi_raft::{
     StateMachineBackend,
 };
 use kasumi_serving::*;
-use kasumi_store::{ScratchOperationFailure, TenantStore, WriteOp};
+use kasumi_store::{
+    NamespaceStage, ScratchOperationFailure, SelectedGeneration, TenantStore, WriteOp,
+};
 use kasumi_types::{Error, ErrorCode, RequestContext};
 use serde::{Deserialize, Serialize};
 
@@ -79,7 +81,11 @@ mod activation;
 pub(crate) mod snapshot;
 use snapshot::SnapshotRecords;
 
+/// The initial Authority generation. Stores written before generation
+/// selectors keep their state here; an absent selector names it.
 const NS: &str = "kasumi.independent-authority";
+/// Generation selector key for the Authority state namespace.
+const FAMILY: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
 const MAX_RECORD_BYTES: usize = 256 << 10;
 
@@ -207,6 +213,9 @@ pub(crate) struct Backend {
     initial_signer_certificate: SigningCertificate,
     resource_budget_bytes: u64,
     mutation: Mutex<()>,
+    /// The selected state namespace. Changes only under `mutation`, after the
+    /// selection commits and before the replaced generation is reclaimed.
+    selected: std::sync::RwLock<Arc<str>>,
 }
 fn key_tenant(tenant: &str) -> String {
     format!("t/{tenant}")
@@ -309,8 +318,11 @@ impl Backend {
         resource_budget_bytes: u64,
     ) -> Result<Arc<Self>> {
         Self::validate_store(&store, &installation)?;
+        let selected: Arc<str> = SelectedGeneration::load(&store, FAMILY, &[NS])?
+            .namespace(0)
+            .into();
         let bytes = store
-            .get_bounded(NS, META, MAX_RECORD_BYTES)?
+            .get_bounded(&selected, META, MAX_RECORD_BYTES)?
             .context("authority metadata absent")?;
         let meta: Meta = serde_json::from_slice(&bytes)?;
         ensure!(
@@ -336,7 +348,34 @@ impl Backend {
             initial_signer_certificate: bootstrap.initial_signer_certificate.clone(),
             resource_budget_bytes,
             mutation: Mutex::new(()),
+            selected: std::sync::RwLock::new(selected),
         }))
+    }
+    /// The selected state namespace. Stable for a caller holding `mutation`;
+    /// other readers go through `read_selected`.
+    fn ns(&self) -> Arc<str> {
+        self.selected
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+    /// A lock-free point read. Generation names are never reselected and a
+    /// replaced generation is reclaimed only after `selected` moves on, so a
+    /// read whose namespace is still selected afterwards saw intact state.
+    fn read_selected<T>(&self, read: impl Fn(&str) -> Result<T>) -> Result<T> {
+        loop {
+            let namespace = self.ns();
+            let value = read(&namespace)?;
+            if *self.ns() == *namespace {
+                return Ok(value);
+            }
+        }
+    }
+    /// The selected namespace at a pinned root, for reads through `view`.
+    fn ns_at(view: &kasumi_store::TenantReadView) -> Result<String> {
+        Ok(SelectedGeneration::load_at(view, FAMILY, &[NS])?
+            .namespace(0)
+            .to_owned())
     }
     pub(crate) fn require_genesis(&self, bootstrap: &AuthorityBootstrap) -> Result<()> {
         let _lock = self
@@ -345,14 +384,15 @@ impl Backend {
             .map_err(|_| anyhow::anyhow!("authority state poisoned"))?;
         let expected = serde_json::to_vec(&Self::genesis(&self.installation, bootstrap)?)?;
         let mut found = false;
-        self.store.visit(NS, MAX_RECORD_BYTES, |key, bytes| {
-            ensure!(
-                !found && key == META && bytes == expected,
-                "uninitialized consensus cannot reuse non-genesis authority state"
-            );
-            found = true;
-            Ok(())
-        })?;
+        self.store
+            .visit(&self.ns(), MAX_RECORD_BYTES, |key, bytes| {
+                ensure!(
+                    !found && key == META && bytes == expected,
+                    "uninitialized consensus cannot reuse non-genesis authority state"
+                );
+                found = true;
+                Ok(())
+            })?;
         ensure!(found, "authority metadata absent");
         Ok(())
     }
@@ -360,18 +400,22 @@ impl Backend {
         &self.installation
     }
     fn meta(&self) -> Result<Meta> {
-        Ok(serde_json::from_slice(
-            &self
-                .store
-                .get_bounded(NS, META, MAX_RECORD_BYTES)?
-                .context("authority metadata absent")?,
-        )?)
+        self.read_selected(|namespace| {
+            Ok(serde_json::from_slice(
+                &self
+                    .store
+                    .get_bounded(namespace, META, MAX_RECORD_BYTES)?
+                    .context("authority metadata absent")?,
+            )?)
+        })
     }
     fn record(&self, key: &str) -> Result<Option<Record>> {
-        self.store
-            .get_bounded(NS, key.as_bytes(), MAX_RECORD_BYTES)?
-            .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
-            .transpose()
+        self.read_selected(|namespace| {
+            self.store
+                .get_bounded(namespace, key.as_bytes(), MAX_RECORD_BYTES)?
+                .map(|bytes| serde_json::from_slice(&bytes).map_err(Into::into))
+                .transpose()
+        })
     }
     pub fn tenant_record(&self, tenant: &str) -> Result<Option<TenantRecord>> {
         match self.record(&key_tenant(tenant))? {
@@ -680,7 +724,7 @@ impl Backend {
             );
             let previous = self
                 .store
-                .get_bounded(NS, key.as_bytes(), MAX_RECORD_BYTES)?;
+                .get_bounded(&self.ns(), key.as_bytes(), MAX_RECORD_BYTES)?;
             if let Record::Tenant(record) = &value {
                 let previous_fenced = previous
                     .as_ref()
@@ -727,7 +771,7 @@ impl Backend {
                 .context("authority byte accounting underflow")?
                 .checked_add(bytes.len() as u64)
                 .context("authority byte accounting overflow")?;
-            writes.push(WriteOp::put(NS, key.as_bytes(), bytes));
+            writes.push(WriteOp::put(&*self.ns(), key.as_bytes(), bytes));
         }
         // Every frozen source retains one successful activation receipt plus a
         // maximum-sized tenant update and permanent incarnation record. Other commands cannot spend that reserved
@@ -748,7 +792,7 @@ impl Backend {
             )));
         }
         meta.revision = position.log_id.index;
-        writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
+        writes.push(WriteOp::put(&*self.ns(), META, serde_json::to_vec(&meta)?));
         *publication_writes = writes;
         Ok(Ok(receipt))
     }
@@ -1066,7 +1110,7 @@ impl StateMachineBackend for Backend {
                 let mut meta = self.meta()?;
                 if position.log_id.index > meta.revision {
                     meta.revision = position.log_id.index;
-                    writes.push(WriteOp::put(NS, META, serde_json::to_vec(&meta)?));
+                    writes.push(WriteOp::put(&*self.ns(), META, serde_json::to_vec(&meta)?));
                 }
                 Ok(Vec::new())
             })?,
@@ -1109,6 +1153,7 @@ impl StateMachineBackend for Backend {
         Ok(Box::new(PreparedAuthorityRestore {
             backend: self,
             snapshot,
+            staged: std::sync::OnceLock::new(),
             _mutation_guard: guard,
         }))
     }
@@ -1119,20 +1164,51 @@ impl StateMachineBackend for Backend {
 struct PreparedAuthorityRestore<'a> {
     backend: &'a Backend,
     snapshot: Snapshot,
+    staged: std::sync::OnceLock<StagedAuthority>,
     _mutation_guard: std::sync::MutexGuard<'a, ()>,
+}
+/// The complete restored state in a fresh namespace, awaiting the paired
+/// commit that selects it with the custody applied cursor.
+struct StagedAuthority {
+    writes: Vec<WriteOp>,
+    stage: NamespaceStage,
 }
 impl kasumi_raft::PreparedStateMachineRestore for PreparedAuthorityRestore<'_> {
     fn retirement(&self) -> Option<RetiredSnapshotState> {
         None
     }
-    fn application_replacements(&self) -> Vec<kasumi_store::NamespaceReplacement<'_>> {
-        self.snapshot.records.replacements()
+    fn stage_application(&self) -> Result<()> {
+        ensure!(
+            self.staged.get().is_none(),
+            "authority generation already staged"
+        );
+        let store = &self.backend.store;
+        // The mutation guard excludes apply and every other restore, so what
+        // an interrupted restore staged or retired can be reclaimed first.
+        NamespaceStage::reclaim_unselected(store)?;
+        let generation = SelectedGeneration::adopt(store, FAMILY, &[NS])?;
+        let stage = NamespaceStage::begin_generation(store, NS)?;
+        stage.write_table(self.snapshot.records.table())?;
+        let writes = generation.switch_writes(store, &[&stage])?;
+        self.staged
+            .set(StagedAuthority { writes, stage })
+            .map_err(|_| anyhow::anyhow!("authority generation already staged"))
     }
     fn application_writes(&self) -> &[kasumi_store::WriteOp] {
-        &[]
+        self.staged.get().map_or(&[], |staged| &staged.writes)
     }
     fn publish(self: Box<Self>) -> Result<()> {
-        self.backend.store.check_access()
+        let staged = self
+            .staged
+            .get()
+            .context("authority generation was not staged")?;
+        *self
+            .backend
+            .selected
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = staged.stage.namespace().into();
+        self.backend.store.check_access()?;
+        NamespaceStage::reclaim_unselected(&self.backend.store)
     }
 }
 

@@ -1,13 +1,24 @@
-//! Closed snapshot chunks publish in the same encrypted transaction as permanent
-//! custody tables, the projection and the exact applied cursor.
+//! Closed snapshot chunks form one selected generation. Each publication stages
+//! its chunks in a fresh namespace and selects them in the same encrypted
+//! transaction as permanent custody tables, the projection, the manifest and
+//! the exact applied cursor; the replaced chunks are reclaimed afterwards.
 use crate::control::META;
 use crate::custody_machine::CLOSED_SNAPSHOT;
 use anyhow::{Context, Result, ensure};
-use kasumi_store::{CustodyStore, EncryptedSpool, EncryptedTable, SnapshotImage, WriteOp};
+use kasumi_store::{
+    CustodyStore, EncryptedSpool, EncryptedTable, SelectedGeneration, SnapshotImage,
+    TenantReadView, WriteOp,
+};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 const CHUNK: usize = 64 << 10;
 const MANIFEST: &[u8] = b"closed_snapshot_manifest";
+/// Generation selector key; an absent selector names the initial namespace.
+pub(crate) const FAMILY: &str = "raft.custody-snapshot-chunks";
+
+pub(crate) fn generation_at(view: &TenantReadView) -> Result<SelectedGeneration> {
+    SelectedGeneration::load_at(view, FAMILY, &[CLOSED_SNAPSHOT])
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Manifest {
@@ -36,7 +47,8 @@ pub(crate) fn check_format(custody: &CustodyStore) -> Result<()> {
     if let Some(bytes) = view.get(META, MANIFEST, 4096)? {
         decode_manifest(&bytes)?;
     } else {
-        view.visit(CLOSED_SNAPSHOT, 1, |_, _| {
+        let generation = generation_at(&view)?;
+        view.visit(generation.namespace(0), 1, |_, _| {
             anyhow::bail!("unsupported closed snapshot storage format")
         })
         .context("unsupported closed snapshot storage without a chunk manifest")?;
@@ -98,10 +110,12 @@ pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<Sn
         manifest.bytes <= limit,
         "closed snapshot exceeds byte limit"
     );
+    let generation = generation_at(&view)?;
+    let chunks = generation.namespace(0);
     let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
     for index in 0..manifest.chunks {
         let bytes = view
-            .get(CLOSED_SNAPSHOT, &index.to_be_bytes(), CHUNK)?
+            .get(chunks, &index.to_be_bytes(), CHUNK)?
             .context("closed snapshot chunk missing")?;
         let expected = (manifest.bytes - spool.len()).min(CHUNK as u64) as usize;
         ensure!(
@@ -111,7 +125,7 @@ pub(crate) fn load_image(custody: &CustodyStore, limit: u64) -> Result<Option<Sn
         spool.write_all(&bytes)?;
     }
     let mut count = 0u64;
-    view.visit(CLOSED_SNAPSHOT, CHUNK, |key, _| {
+    view.visit(chunks, CHUNK, |key, _| {
         let index = u64::from_be_bytes(
             key.try_into()
                 .context("invalid closed snapshot chunk key")?,
