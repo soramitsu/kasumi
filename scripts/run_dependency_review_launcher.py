@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Own the frozen native dependency-review runner and all its child groups.
 
-No release acceptance adapter is registered by this prerequisite.
+The attempt is admitted to the native journal before anything is dispatched;
+its outcome names the launcher record as its one product, pass or fail.
 """
 from __future__ import annotations
 
@@ -31,6 +32,8 @@ import assembly_inputs
 import check_dependency_patches
 import dependency_advisory
 import dependency_git
+import dependency_matrix
+import dependency_provenance
 import path_patch_projection
 import repeatable_assembly as owned
 import run_dependency_review_owned as review
@@ -38,7 +41,7 @@ import run_repeatable_assembly_owned as shared
 import release_gate
 from release_gate import inventory, sha256, write_json
 
-SCHEMA = "kasumi-owned-dependency-launcher-v2"
+SCHEMA = "kasumi-owned-dependency-launcher-v3"
 LAUNCHER = "scripts/run_dependency_review_launcher.py"
 TIMEOUT = 86400
 GROUP_LEDGER = "descendant-groups.jsonl"
@@ -54,10 +57,11 @@ def now():
     return dt.datetime.now(dt.timezone.utc).isoformat()
 
 
-def command(inputs, source, evidence, declaration, advisory, output):
+def command(inputs, source, evidence, declaration, advisory, archives, output):
     return [inputs["tools"]["python"]["path"], "-I", "-B", "-S", str(Path(source) / review.RUNNER),
             "--evidence", str(evidence), "--native-inputs", str(declaration),
-            "--advisory-inputs", str(advisory), "--output", str(Path(output) / "review")]
+            "--advisory-inputs", str(advisory), "--upstream-archives", str(archives),
+            "--output", str(Path(output) / "review")]
 
 
 def source_scripts(evidence, source):
@@ -76,6 +80,8 @@ def source_scripts(evidence, source):
               "scripts/check_dependency_patches.py": check_dependency_patches,
               "scripts/dependency_advisory.py": dependency_advisory,
               "scripts/dependency_git.py": dependency_git,
+              "scripts/dependency_matrix.py": dependency_matrix,
+              "scripts/dependency_provenance.py": dependency_provenance,
               "scripts/path_patch_projection.py": path_patch_projection,
               "scripts/repeatable_assembly.py": owned,
               "scripts/run_dependency_review_owned.py": review,
@@ -153,25 +159,43 @@ def original_child_entry(receipt, runner_group):
             "leader_birth": receipt["leader_birth"]}
 
 
-def child_processes(root, inner, selected, runner_group):
+def check_generated(nested, step, planned):
+    """A suite's declared output is its retained directory, by exact inventory."""
+    generated = step.get("generated")
+    if generated is None:
+        return
+    owned.exact(generated, {"source", "path", "files"}, "generated suite output")
+    require(planned["generated_output"] == generated["source"]
+            and generated["path"] == "generated/" + step["id"]
+            and generated["files"]["path"] == generated["path"] + "-files.json"
+            and owned.read(owned.check_ref(nested, generated["files"]))
+            == inventory(nested / generated["path"]),
+            "generated suite output differs from its retained inventory")
+
+
+def child_processes(root, inner, selected, runner_group, provenance_output):
     nested = Path(root) / "review"
-    require(len(inner["steps"]) == len(selected) == 25,
+    require(len(inner["steps"]) == len(selected)
+            and len({planned["id"] for planned in selected}) == len(selected),
             "dependency child command roster differs")
     suite_entries = []
-    for step, (name, command_, kind) in zip(inner["steps"], selected):
+    for step, planned in zip(inner["steps"], selected):
+        name, command_, kind = planned["id"], planned["command"], planned["kind"]
         require(step["id"] == name and step["kind"] == kind and step["command"] == command_,
                 "dependency child command differs")
         receipt, _ = check_child_receipt(nested, step, command_, inner["source_root"], {0})
         stdout = owned.check_ref(nested, step["process"]["stdout"]).read_text(errors="replace")
         stderr = owned.check_ref(nested, step["process"]["stderr"]).read_text(errors="replace")
-        mode = "doc" if name.endswith("-doctests") else "targets" if kind == "rust" else None
         packages = []
         if kind == "verifier":
             manifest = check_dependency_patches.read_json(Path(inner["source_root"]) / "vendor/patch-manifest.json")
             packages = [(p["name"], p["version"], p["path"])
                         for item in manifest["inventories"] for p in item["packages"]]
-        require(step["counts"] == review.parse_counts(kind, stdout, stderr, packages, rust_mode=mode)
+        require(step["counts"] == review.parse_counts(
+                    kind, stdout, stderr, packages, rust_mode=planned["mode"],
+                    launches=planned["launches"], expected_output=provenance_output)
                 and step["counts"]["complete"], "dependency child summary differs from original logs")
+        check_generated(nested, step, planned)
         suite_entries.append(original_child_entry(receipt, runner_group))
     scan = inner["advisory_scan"]["step"]
     advisory = owned.read(owned.check_ref(root, inner["advisory_declaration"]))
@@ -209,7 +233,7 @@ def child_processes(root, inner, selected, runner_group):
     # Git attestation ran before the upstream suites; the advisory scan ran
     # after them. The ledger must preserve that original admission order.
     expected = [*git_entries, *suite_entries, scan_entry]
-    require(len(expected) == len({row["group"] for row in expected}) == 30,
+    require(len(expected) == len({row["group"] for row in expected}),
             "dependency process groups are not distinct")
     return expected
 
@@ -217,7 +241,7 @@ def child_processes(root, inner, selected, runner_group):
 def check_child_custody(rows, closed, census, expected):
     """Join every terminal census row to the corresponding original child."""
     entries = [row for row in rows if row["kind"] == "group"]
-    require(closed and len(entries) == len(expected) == len(census["groups"]) == 30
+    require(closed and expected and len(entries) == len(expected) == len(census["groups"])
             and entries == expected
             and census["schema"] == 1 and census["ledger_closed"] is True
             and census["complete"] is True
@@ -256,6 +280,7 @@ def verify(root):
     record = owned.read(root / "launcher.json")
     owned.exact(record, {"schema", "status", "started_at", "finished_at", "evidence_root",
                          "source_root", "custody_root", "declaration_path", "advisory_declaration_path",
+                         "upstream_archives_path",
                          "source_files_sha256", "source_scripts", "tools", "declaration",
                          "advisory_declaration", "runner_process", "inner_report", "group_ledger",
                          "descendant_census", "error"}, "dependency launcher")
@@ -282,7 +307,7 @@ def verify(root):
     advisory = owned.read(owned.check_ref(root, record["advisory_declaration"]))
     require(record["tools"] == inputs["tools"], "dependency native tools differ")
     selected = command(inputs, source, evidence, record["declaration_path"],
-                       record["advisory_declaration_path"], root)
+                       record["advisory_declaration_path"], record["upstream_archives_path"], root)
     runner = record["runner_process"]
     process = owned.check_owned(root, runner, selected, str(source), TIMEOUT)
     require(runner["id"] == "runner" and runner["executable"]["sha256"] == inputs["tools"]["python"]["sha256"],
@@ -296,6 +321,7 @@ def verify(root):
             and inner["custody_root"] == str(root / "review")
             and inner["declaration_path"] == record["declaration_path"]
             and inner["advisory_declaration_path"] == record["advisory_declaration_path"]
+            and inner["upstream_archives_path"] == record["upstream_archives_path"]
             and inner["source_scripts"] == record["source_scripts"]
             and inner["declaration"]["sha256"] == record["declaration"]["sha256"]
             and inner["advisory_declaration"]["sha256"] == record["advisory_declaration"]["sha256"],
@@ -305,14 +331,28 @@ def verify(root):
             and dt.datetime.fromisoformat(inner["finished_at"]) <= finished,
             "dependency inner interval escapes launcher")
     manifest = check_dependency_patches.read_json(source / "vendor/patch-manifest.json")
-    suites = review.suite_roster(source, manifest)
-    require(inner["suites"] == suites and inner["manifest_sha256"] == sha256(source / "vendor/patch-manifest.json"),
+    suites = dependency_matrix.roster(source, manifest)
+    require(inner["suites"] == suites and inner["excluded"] == dependency_matrix.exclusions(suites)
+            and inner["manifest_sha256"] == sha256(source / "vendor/patch-manifest.json"),
             "dependency upstream suite roster differs")
-    selected_children = review.commands(inputs, source, suites)
-    expected_children = child_processes(root, inner, selected_children, process["process_group"])
+    # Re-derive provenance from the archives the runner retained, not from its
+    # report: a substituted or omitted archive fails here again.
+    archives = root / "review" / review.ARCHIVES
+    provenance = dependency_provenance.verify(source, archives)
+    require(inner["upstream_provenance"] == provenance
+            and provenance["verifier"]["sha256"]
+            == record["source_scripts"][dependency_provenance.VERIFIER]
+            and inner["upstream_archives"] == {
+                path.name: owned.ref(root / "review", path) for path in sorted(archives.iterdir())},
+            "dependency upstream archive provenance differs")
+    selected_children = review.commands(inputs, source, suites, archives)
+    expected_children = child_processes(root, inner, selected_children, process["process_group"],
+                                        dependency_provenance.summary(provenance))
     totals = review.totals_from_steps(inner["steps"])
-    require(inner["totals"] == totals and totals["commands"] == 25
-            and totals["test_commands"] == 21 and totals["failed"] == 0
+    require(inner["totals"] == totals and totals["commands"] == len(selected_children)
+            and totals["test_commands"] == sum(
+                planned["kind"] in {"python", "rust"} for planned in selected_children)
+            and totals["failed"] == 0
             and totals["incomplete_commands"] == totals["failed_commands"] == [],
             "dependency upstream totals differ from original test receipts")
     toolchain = inner["toolchain"]
@@ -385,7 +425,21 @@ def verify(root):
             "groups": [process["process_group"], *(row["group"] for row in expected_children)]}
 
 
-def launch(evidence, declaration, advisory_declaration, output):
+def journal(attempt_root, attempt_id, output, record, dispatched):
+    """Terminate the journaled attempt with whatever the launcher retained."""
+    relative = Path(output).relative_to(Path(attempt_root).resolve(strict=True)).as_posix()
+    runner = record["runner_process"]
+    processes = [] if runner is None else [{"id": "runner", **{
+        key: {**runner[source], "path": relative + "/" + runner[source]["path"]}
+        for key, source in (("receipt", "receipt"), ("log", "stdout"),
+                            ("executable", "executable"))}}]
+    attempt_index.finish_outcome(attempt_root, attempt_id, record["status"], record["finished_at"],
+                                 products={"report": "launcher.json"}, processes=processes,
+                                 dispatch_started=dispatched)
+
+
+def launch(evidence, declaration, advisory_declaration, upstream_archives, output,
+           attempt_root, attempt_id):
     require(sys.version_info >= (3, 11) and sys.flags.isolated and sys.dont_write_bytecode
             and sys.flags.no_site, "dependency launcher requires native Python 3.11+ -I -B -S")
     require(not os.environ.get("PYTHONPATH") and not os.environ.get("PYTHONHOME"),
@@ -395,16 +449,21 @@ def launch(evidence, declaration, advisory_declaration, output):
     evidence = Path(evidence).resolve(strict=True)
     declaration = Path(declaration).resolve(strict=True)
     advisory_declaration = Path(advisory_declaration).resolve(strict=True)
+    upstream_archives = Path(upstream_archives).resolve(strict=True)
     output = Path(output)
     require(output.is_absolute(), "dependency launch output must be absolute")
     output = output.resolve()
     require(not output.is_relative_to(evidence), "dependency launch output overlaps frozen evidence")
+    started_at = now()
+    attempt_index.begin(attempt_root, attempt_id, "dependency-review", output, started_at)
     output.mkdir(exist_ok=False)
     source = evidence / "source"
     path = output / "launcher.json"
-    record = {"schema": SCHEMA, "status": "running", "started_at": now(), "finished_at": None,
+    dispatched = False
+    record = {"schema": SCHEMA, "status": "running", "started_at": started_at, "finished_at": None,
               "evidence_root": str(evidence), "source_root": str(source), "custody_root": str(output),
               "declaration_path": str(declaration), "advisory_declaration_path": str(advisory_declaration),
+              "upstream_archives_path": str(upstream_archives),
               "source_files_sha256": None, "source_scripts": None, "tools": None,
               "declaration": None, "advisory_declaration": None, "runner_process": None,
               "inner_report": None, "group_ledger": None, "descendant_census": None, "error": None}
@@ -437,7 +496,10 @@ def launch(evidence, declaration, advisory_declaration, output):
             write_json(path, record)
             if not census["complete"] or any(row["signals"] for row in census["groups"]):
                 raise ValueError("dependency descendants needed cleanup or were not drained")
-        selected = command(inputs, source, evidence, declaration, advisory_declaration, output)
+        selected = command(inputs, source, evidence, declaration, advisory_declaration,
+                           upstream_archives, output)
+        # From here a missing receipt is uncertainty, not a preflight failure.
+        dispatched = True
         record["runner_process"] = owned.run_owned(
             output, "runner", selected, str(source), environment, TIMEOUT,
             before_cleanup=seal, after_cleanup=drain_children)
@@ -448,13 +510,15 @@ def launch(evidence, declaration, advisory_declaration, output):
         record["finished_at"] = now()
         write_json(path, record)
         verify(output)
-        return record
     except BaseException as error:
-        record["status"] = "failed"
+        record["status"] = "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
         record["error"] = repr(error)
         record["finished_at"] = now()
         write_json(path, record)
+        journal(attempt_root, attempt_id, output, record, dispatched)
         raise
+    journal(attempt_root, attempt_id, output, record, dispatched)
+    return record
 
 
 def main():
@@ -462,9 +526,13 @@ def main():
     parser.add_argument("--evidence", type=Path, required=True)
     parser.add_argument("--native-inputs", type=Path, required=True)
     parser.add_argument("--advisory-inputs", type=Path, required=True)
+    parser.add_argument("--upstream-archives", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--attempt-root", type=Path, required=True)
+    parser.add_argument("--attempt-id", required=True)
     args = parser.parse_args()
-    launch(args.evidence, args.native_inputs, args.advisory_inputs, args.output)
+    launch(args.evidence, args.native_inputs, args.advisory_inputs, args.upstream_archives,
+           args.output, args.attempt_root, args.attempt_id)
     print("Owned dependency review verified: " + str(args.output))
     return 0
 

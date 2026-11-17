@@ -18,6 +18,14 @@ import time
 import gate_process
 from process_ha_topology import regular_bytes, require
 
+SCHEMA = "kasumi-process-ha-owned-v2"
+# A measured interval may run its full 86,400 seconds: the last workload cycle
+# and heartbeat land just after that second, so one heartbeat of slack follows.
+MAX_MEASURED_SECONDS = 86400 + 60
+# Startup and drain are budgeted separately and never borrow measured time.
+MAX_PHASE_SECONDS = 3600
+PHASES = ("startup", "measured", "drain")
+
 
 def durable_json(path, value):
     pending = path.with_name(path.name + ".pending")
@@ -40,19 +48,30 @@ class OwnedProcesses:
 
     Each spawn is an original execution. Restarting requires the previous owned
     process to have terminated and drained, and receives a new receipt. The
-    process deadline covers the whole experiment, including all restarts.
+    measured deadline covers the whole measured interval, including restarts.
+    Optional startup and drain phases have their own budgets outside it; phases
+    only advance, and each budget starts when its phase is entered.
     """
 
-    def __init__(self, output, source, environment, timeout_seconds):
-        require(type(timeout_seconds) in (int, float) and 0 < timeout_seconds <= 86400,
-                "process experiment deadline must be in (0, 86400] seconds")
+    def __init__(self, output, source, environment, timeout_seconds, *,
+                 startup_seconds=0, drain_seconds=0):
+        require(type(timeout_seconds) in (int, float)
+                and 0 < timeout_seconds <= MAX_MEASURED_SECONDS,
+                "process experiment deadline must be in (0, 86460] seconds")
+        require(all(type(value) in (int, float) and 0 <= value <= MAX_PHASE_SECONDS
+                    for value in (startup_seconds, drain_seconds)),
+                "startup and drain budgets must be in [0, 3600] seconds")
         self.output = Path(output)
         require(self.output.is_absolute(), "process output must be absolute")
         self.output.mkdir(mode=0o700)  # Refuse prior evidence rather than overwrite.
         self.source = Path(source).resolve(strict=True)
         self.environment = dict(environment)
-        self.timeout = timeout_seconds
+        self.budgets = {"startup": startup_seconds, "measured": timeout_seconds,
+                        "drain": drain_seconds}
+        self.timeout = startup_seconds + timeout_seconds + drain_seconds
         self.started = time.monotonic()
+        self.phase = "startup" if startup_seconds else "measured"
+        self.phases = {self.phase: 0.0}
         self.attempts = []
         self.active = {}
         self.received = []
@@ -69,12 +88,35 @@ class OwnedProcesses:
         require(not self.closed, "process controller is closed")
         require(len(self.handlers) == 2, "process controller must own signal handlers before spawning")
         require(not self.received, "process controller interrupted")
-        require(time.monotonic() - self.started < self.timeout, "process experiment deadline expired")
+        require(self.elapsed() - self.phases[self.phase] < self.budgets[self.phase],
+                "process experiment " + self.phase + " deadline expired")
+
+    def elapsed(self):
+        return time.monotonic() - self.started
+
+    def enter(self, phase):
+        """Advance to the next phase and return its controller-relative start.
+
+        The finished phase is not re-checked against its budget: the caller
+        ends a measured interval on its own observation, and the offsets
+        retained in every later receipt show how long each phase really ran.
+        """
+        require(not self.closed and not self.received, "process controller is closed or interrupted")
+        require(phase in PHASES and PHASES.index(phase) == PHASES.index(self.phase) + 1
+                and self.budgets[phase] > 0, "process phases only advance into a budgeted phase")
+        self.phase = phase
+        self.phases[phase] = self.elapsed()
+        return self.phases[phase]
 
     def _save(self, attempt):
         durable_json(attempt["receipt_path"], attempt["record"])
 
-    def spawn(self, name, command, expected_executable):
+    def spawn(self, name, command, expected_executable, *, interactive=False):
+        """Start one owned process group.
+
+        An interactive process gets a pipe on standard input and a separate
+        standard-error log, so its standard-output log is exactly its replies.
+        """
         self.check()
         require(isinstance(name, str) and name and all(c in "abcdefghijklmnopqrstuvwxyz0123456789-" for c in name),
                 "invalid process name")
@@ -88,15 +130,18 @@ class OwnedProcesses:
         output = self.output / (identifier + ".log")
         stream = output.open("xb")
         os.chmod(output, 0o600)
-        record = {"schema": "kasumi-process-ha-owned-v1", "id": identifier, "name": name,
+        record = {"schema": SCHEMA, "id": identifier, "name": name,
                   "qualification": "process-custody-only", "command": command,
                   "working_directory": str(self.source), "executable": executable,
                   "status": "starting", "process_group": None, "leader_birth": None,
                   "timeout_seconds": self.timeout, "received_signals": [], "fault": None,
-                  "error": None, "cleanup": None, "process_exit_code": None,
-                  "outputs_stable": False}
-        attempt = {"record": record, "process": None, "stream": stream,
+                  "stop": None, "error": None, "cleanup": None, "process_exit_code": None,
+                  "started_elapsed_seconds": None, "outputs_stable": False}
+        attempt = {"record": record, "process": None, "stream": stream, "errors": None,
                    "receipt_path": self.output / (identifier + ".json"), "log": output}
+        if interactive:
+            attempt["errors"] = (self.output / (identifier + ".stderr.log")).open("xb")
+            os.chmod(attempt["errors"].name, 0o600)
         self.attempts.append(attempt)
         self.active[name] = attempt
         ledger = None
@@ -121,10 +166,13 @@ class OwnedProcesses:
                 require(os.fstat(ledger).st_size + 512 <= gate_process.MAX_GROUP_LEDGER_BYTES,
                         "enclosing process ledger capacity exhausted")
             process = subprocess.Popen(command, executable=executable["path"], cwd=self.source,
-                                       env=self.environment, stdout=stream, stderr=subprocess.STDOUT,
-                                       stdin=subprocess.DEVNULL, start_new_session=True)
+                                       env=self.environment, stdout=stream,
+                                       stderr=attempt["errors"] or subprocess.STDOUT,
+                                       stdin=subprocess.PIPE if interactive else subprocess.DEVNULL,
+                                       start_new_session=True)
             attempt["process"] = process
             record["process_group"] = process.pid
+            record["started_elapsed_seconds"] = self.elapsed()
             identity = gate_process.leader_identity(process.pid)
             require(identity is not None and identity["group"] == process.pid,
                     "spawned process has no live birth witness")
@@ -175,13 +223,66 @@ class OwnedProcesses:
         record["fault"] = {"signal": "SIGKILL", "target": "owned-leader",
                            "observation": str(retained), "observation_sha256": hashlib.sha256(observed).hexdigest(),
                            "semantic_validation": "not-performed-by-process-controller",
-                           "elapsed_seconds": time.monotonic() - self.started, "sent": False}
+                           "elapsed_seconds": self.elapsed(), "sent": False}
         self._save(attempt)
         # The unreaped Popen child still owns this PID. Never signal an arbitrary
         # PID copied from a topology manifest or a prior process receipt.
         process.send_signal(signal.SIGKILL)
         record["fault"]["sent"] = True
-        process.wait(timeout=min(10, max(.1, self.timeout - (time.monotonic() - self.started))))
+        process.wait(timeout=min(10, max(.1, self.timeout - self.elapsed())))
+        return self.finish(name)
+
+    def stop(self, name, grace_seconds=30):
+        """Ask the owned leader for its ordinary SIGTERM shutdown and retain the outcome.
+
+        The receipt distinguishes this requested stop from the forced cleanup
+        an unresponsive process needs: only the latter records drain signals.
+        """
+        self.check()
+        require(name in self.active, "stop target is not owned")
+        attempt = self.active[name]
+        process, record = attempt["process"], attempt["record"]
+        require(process is not None and process.poll() is None, "stop target already exited")
+        identity = gate_process.leader_identity(process.pid)
+        require(identity == {"group": process.pid, "birth": record["leader_birth"]},
+                "stop target birth witness changed")
+        record["stop"] = {"signal": "SIGTERM", "target": "owned-leader",
+                          "elapsed_seconds": self.elapsed(), "sent": False}
+        self._save(attempt)
+        process.send_signal(signal.SIGTERM)
+        record["stop"]["sent"] = True
+        try:
+            process.wait(timeout=min(grace_seconds, max(.1, self.timeout - self.elapsed())))
+        except subprocess.TimeoutExpired:
+            pass  # finish() escalates and records it; the stop is then not clean.
+        return self.finish(name)
+
+    def send(self, name, data):
+        """Write one request to an interactive process's standard input."""
+        self.check()
+        require(name in self.active, "input target is not owned")
+        process = self.active[name]["process"]
+        require(process is not None and process.stdin is not None and process.poll() is None,
+                "interactive process is not accepting input")
+        process.stdin.write(data)
+        process.stdin.flush()
+
+    def end_input(self, name, grace_seconds=30):
+        """Close an interactive process's input and retain its own orderly exit."""
+        self.check()
+        require(name in self.active, "input target is not owned")
+        attempt = self.active[name]
+        process, record = attempt["process"], attempt["record"]
+        require(process is not None and process.stdin is not None, "process is not interactive")
+        record["stop"] = {"signal": "EOF", "target": "owned-leader",
+                          "elapsed_seconds": self.elapsed(), "sent": False}
+        self._save(attempt)
+        process.stdin.close()
+        record["stop"]["sent"] = True
+        try:
+            process.wait(timeout=min(grace_seconds, max(.1, self.timeout - self.elapsed())))
+        except subprocess.TimeoutExpired:
+            pass
         return self.finish(name)
 
     def finish(self, name):
@@ -194,20 +295,30 @@ class OwnedProcesses:
             record["cleanup"] = cleanup
             record["process_exit_code"] = cleanup["process_returncode"]
             record["received_signals"] = list(self.received)
-            record["duration_seconds"] = time.monotonic() - self.started
+            record["finished_elapsed_seconds"] = self.elapsed()
+            record["duration_seconds"] = (
+                0.0 if record["started_elapsed_seconds"] is None
+                else record["finished_elapsed_seconds"] - record["started_elapsed_seconds"])
+            record["phases"] = dict(self.phases)
             try:
                 require(gate_process.executable_identity([record["executable"]["path"]], self.source,
                                                         self.environment) == record["executable"],
                         "executed bytes changed during experiment")
             except Exception as error:
                 record["error"] = record["error"] or repr(error)
-            attempt["stream"].flush()
-            os.fsync(attempt["stream"].fileno())
+            for stream in (attempt["stream"], attempt["errors"]):
+                if stream is not None:
+                    stream.flush()
+                    os.fsync(stream.fileno())
             record["outputs_stable"] = cleanup["drained"]
             record["status"] = "drained" if cleanup["drained"] and not record["error"] else "failed"
             self._save(attempt)
         finally:
             attempt["stream"].close()
+            if attempt["errors"] is not None:
+                attempt["errors"].close()
+            if process is not None and process.stdin is not None:
+                process.stdin.close()
             del self.active[name]
         require(record["cleanup"] and record["cleanup"]["drained"], "owned process group did not drain")
         return record

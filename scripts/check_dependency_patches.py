@@ -10,6 +10,8 @@ import subprocess
 import sys
 import tomllib
 
+import dependency_matrix
+
 
 def unique_object(pairs):
     value = {}
@@ -199,14 +201,40 @@ def verify_selection(root, packages, metadata):
             raise ValueError(f"unrecorded selected vendor package: {package['name']}")
 
 
+def verify_features(packages, metadata):
+    """The features Cargo compiles into Kasumi are exactly the tested product set.
+
+    The upstream suites qualify one reviewed feature set per patched package.
+    A workspace change that enables another vendored feature must fail here,
+    before an untested configuration ships.
+    """
+    product = dependency_matrix.product_features()
+    if set(product) != set(packages):
+        raise ValueError("reviewed feature matrix differs from the reviewed package roster")
+    identities = {package["id"]: package["name"] for package in metadata["packages"]}
+    selected = {}
+    for node in metadata["resolve"]["nodes"]:
+        name = identities.get(node["id"])
+        if name in product:
+            if name in selected or not isinstance(node.get("features"), list):
+                raise ValueError(f"ambiguous resolved features: {name}")
+            selected[name] = sorted(node["features"])
+    if selected != product:
+        raise ValueError("resolved vendored features differ from the reviewed product matrix: "
+                         + json.dumps({name: selected.get(name) for name in sorted(product)
+                                       if selected.get(name) != product[name]}, sort_keys=True))
+
+
 def verify(root):
     root = root.resolve(strict=True)
     packages = verify_sources(root)
     manifest_hash = digest(root / "vendor/patch-manifest.json")
+    # All workspace features: the functional gates build and test that superset.
     metadata = json.loads(subprocess.check_output(
-        ["cargo", "metadata", "--locked", "--format-version", "1"], cwd=root
+        ["cargo", "metadata", "--locked", "--all-features", "--format-version", "1"], cwd=root
     ))
     verify_selection(root, packages, metadata)
+    verify_features(packages, metadata)
     # Recheck after metadata: qualification requires unchanged reviewed inputs.
     if (verify_sources(root) != packages
             or digest(root / "vendor/patch-manifest.json") != manifest_hash):

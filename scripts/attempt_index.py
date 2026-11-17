@@ -593,6 +593,45 @@ def finish(root, attempt_id, receipt):
         return row
 
 
+def finish_outcome(root, attempt_id, status, finished_at, *, products, processes,
+                   dispatch_started, facts=None):
+    """Write a registered kind's outcome record in its output, then terminate it.
+
+    ``products`` maps each retained product id to its path inside the admitted
+    output. ``processes`` holds the attempt's owned process references,
+    relative to the custody root. ``dispatch_started`` separates a preflight
+    failure from an attempt whose child custody is uncertain.
+    """
+    with locked_index(root, shared=True) as (root, _, _, journal):
+        require(attempt_id in journal["entries"], "native attempt has no admission")
+        begin = journal["entries"][attempt_id]["begin"]
+        identity = journal["identity"]
+    output = root / begin["output"]
+    require(type(dispatch_started) is bool, "native attempt dispatch boundary is not explicit")
+    outcome = {**(facts or {}), "schema": KIND_OUTCOMES[begin["kind"]],
+               "attempt_id": attempt_id, "custody_root": str(output), "status": status,
+               "started_at": begin["started_at"], "finished_at": finished_at,
+               "target": identity["target"], "dispatch_started": dispatch_started,
+               "products": [{"id": name, "file": file_ref(output, output / products[name])}
+                            for name in sorted(products)]}
+    path = output / "outcome.json"
+    data = canonical(outcome)
+    file = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    try:
+        while data:
+            count = os.write(file, data)
+            require(count > 0, "attempt outcome write did not progress")
+            data = data[count:]
+        os.fsync(file)
+    finally:
+        os.close(file)
+    fsync_directory(output)
+    return finish(root, attempt_id, {
+        "schema": ACCEPTANCE_SCHEMA, "id": attempt_id, "status": status,
+        "evidence": file_ref(root, path), "domain_observation": None,
+        "started_at": begin["started_at"], "finished_at": finished_at, "processes": processes})
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     commands = parser.add_subparsers(dest="command", required=True)

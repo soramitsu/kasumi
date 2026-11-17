@@ -14,6 +14,8 @@ from unittest.mock import patch
 
 import gate_process
 from process_ha_owned import OwnedProcesses
+
+original = gate_process.drain
 import process_ha_topology as topology
 
 
@@ -218,6 +220,84 @@ class ProcessTests(unittest.TestCase):
                         owner.spawn("node", self.command, self.executable)
             self.assertIsNone(owner.attempts[0]["process"])
             self.assertEqual(ledger.read_bytes(), b"")
+
+    def test_startup_and_drain_budgets_lie_outside_the_measured_interval(self):
+        graceful = [self.executable["path"], "-c",
+                    "import signal, sys, time\n"
+                    "signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))\n"
+                    "time.sleep(60)"]
+        with OwnedProcesses(self.root / "output", self.root, os.environ, .3,
+                            startup_seconds=5, drain_seconds=5) as owner:
+            self.assertEqual((owner.phase, owner.timeout), ("startup", 10.3))
+            owner.spawn("node", graceful, self.executable)
+            time.sleep(.4)                 # Longer than the whole measured budget.
+            owner.assert_alive()           # Startup time is not measured time.
+            measured = owner.enter("measured")
+            self.assertGreaterEqual(measured, .4)
+            time.sleep(.35)
+            with self.assertRaisesRegex(ValueError, "measured deadline expired"):
+                owner.assert_alive()
+            drain = owner.enter("drain")   # Ending the interval is not a deadline failure.
+            self.assertGreaterEqual(drain - measured, .3)
+            with self.assertRaisesRegex(ValueError, "only advance"):
+                owner.enter("measured")
+            time.sleep(.2)
+            record = owner.stop("node")
+        self.assertEqual(record["schema"], "kasumi-process-ha-owned-v2")
+        self.assertEqual((record["stop"]["signal"], record["stop"]["sent"]), ("SIGTERM", True))
+        self.assertEqual((record["process_exit_code"], record["cleanup"]["signals"]), (0, []))
+        self.assertEqual(record["phases"], {"startup": 0.0, "measured": measured, "drain": drain})
+        self.assertGreaterEqual(record["duration_seconds"], .9)
+        self.assertLess(record["duration_seconds"], record["finished_elapsed_seconds"] + .001)
+        self.assertEqual(record["timeout_seconds"], 10.3)
+
+    def test_phase_budgets_are_bounded_and_unbudgeted_phases_cannot_be_entered(self):
+        for options in ({"startup_seconds": 3601}, {"drain_seconds": -1}, {"drain_seconds": True}):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, "budgets"):
+                OwnedProcesses(self.root / "bounded", self.root, os.environ, 30, **options)
+        with self.assertRaisesRegex(ValueError, "86460"):
+            OwnedProcesses(self.root / "bounded", self.root, os.environ, 86461)
+        with OwnedProcesses(self.root / "output", self.root, os.environ, 86460) as owner:
+            self.assertEqual(owner.phase, "measured")
+            with self.assertRaisesRegex(ValueError, "only advance"):
+                owner.enter("drain")
+            with self.assertRaisesRegex(ValueError, "only advance"):
+                owner.enter("startup")
+
+    def test_unresponsive_stop_is_escalated_and_recorded_as_forced(self):
+        stubborn = [self.executable["path"], "-c",
+                    "import signal, time\n"
+                    "signal.signal(signal.SIGTERM, signal.SIG_IGN)\n"
+                    "print('ready', flush=True)\ntime.sleep(60)"]
+        with OwnedProcesses(self.root / "output", self.root, os.environ, 30) as owner:
+            owner.spawn("node", stubborn, self.executable)
+            log = self.root / "output/node-0001.log"
+            until = time.monotonic() + 10
+            while log.read_bytes() != b"ready\n" and time.monotonic() < until:
+                time.sleep(.02)
+            with patch.object(gate_process, "drain", wraps=lambda process: original(process, .2)):
+                record = owner.stop("node", grace_seconds=.2)
+        self.assertEqual(record["cleanup"]["signals"], ["SIGTERM", "SIGKILL"])
+        self.assertEqual(record["process_exit_code"], -signal.SIGKILL)
+
+    def test_interactive_process_keeps_replies_apart_from_diagnostics(self):
+        echo = [self.executable["path"], "-u", "-c",
+                "import sys\nprint('warning', file=sys.stderr)\n"
+                "for line in sys.stdin:\n    print('reply ' + line.strip(), flush=True)"]
+        with OwnedProcesses(self.root / "output", self.root, os.environ, 30) as owner:
+            owner.spawn("session", echo, self.executable, interactive=True)
+            owner.send("session", b"one\n")
+            log = self.root / "output/session-0001.log"
+            until = time.monotonic() + 10
+            while log.read_bytes() != b"reply one\n" and time.monotonic() < until:
+                time.sleep(.02)
+            record = owner.end_input("session")
+            with self.assertRaisesRegex(ValueError, "not owned"):
+                owner.send("session", b"late\n")
+        self.assertEqual(log.read_bytes(), b"reply one\n")
+        self.assertEqual((self.root / "output/session-0001.stderr.log").read_bytes(), b"warning\n")
+        self.assertEqual((record["stop"]["signal"], record["process_exit_code"],
+                          record["cleanup"]["signals"]), ("EOF", 0, []))
 
     def test_deadline_and_changed_executable_identity_cannot_admit(self):
         with OwnedProcesses(self.root / "output", self.root, os.environ, .05) as owner:

@@ -186,7 +186,7 @@ class AcceptanceTests(unittest.TestCase):
                 "emulated": False, "reservation": {"id": "unit-reservation", "starts_at": "2026-01-01T00:00:00+00:00",
                     "ends_at": "2026-01-04T00:00:00+00:00", "cpu_count": 4,
                     "memory_bytes": 16 << 30, "disk_bytes": 128 << 30},
-                "preflight": self.value("host.json", {"schema": 2, "os": "Linux", "machine": "aarch64",
+                "preflight": self.value("host.json", {"schema": 3, "os": "Linux", "machine": "aarch64",
                     "requested_target": acceptance.REFERENCE,
                     "errors": [], "translated": False, "effective_memory_bytes": 16 << 30}),
                 "attestation": self.file("host-attestation.txt")}
@@ -210,7 +210,8 @@ class AcceptanceTests(unittest.TestCase):
                     {"elapsed_seconds": i * 60, "successful_operations": i,
                      "unexpected_errors": 0, "integrity_mismatches": 0} for i in range(1441)]),
                 "maintenance": [{"id": name, "elapsed_seconds": 3600, "log": self.file(name + ".log")}
-                                for name in sorted(acceptance.SCENARIOS["ha-soak"])]}
+                                for name in sorted(acceptance.SCENARIOS["ha-soak"])],
+                "report": self.file("soak-report.json")}
 
     def test_json_rejects_duplicate_keys_and_nonfinite_values(self):
         for value in ('{"schema":1,"schema":2}', '{"value":NaN}', '{"value":Infinity}'):
@@ -444,12 +445,13 @@ class AcceptanceTests(unittest.TestCase):
                 with self.subTest(target=target, change=field, value=value), self.assertRaisesRegex(
                         ValueError, "native host preflight platform differs"):
                     acceptance.check_host(self.root, host, target, started, finished)
-            legacy = dict(preflight)
-            legacy["schema"] = 1
-            host["preflight"] = self.value("host.json", legacy)
-            with self.subTest(target=target, change="old-schema"), self.assertRaisesRegex(
-                    ValueError, "native host preflight failed"):
-                acceptance.check_host(self.root, host, target, started, finished)
+            # Schema 2 never looked for Linux translation; an unchecked or
+            # translated host cannot qualify whatever architecture it reports.
+            for change in ({"schema": 2}, {"translated": None}, {"translated": True}):
+                host["preflight"] = self.value("host.json", {**preflight, **change})
+                with self.subTest(target=target, change=change), self.assertRaisesRegex(
+                        ValueError, "native host preflight failed"):
+                    acceptance.check_host(self.root, host, target, started, finished)
 
     def test_ha_topology_needs_nine_distinct_owned_processes_and_certificates(self):
         binaries = {"kasumid": "a" * 64, "kasumi-authority": "b" * 64}
@@ -459,7 +461,23 @@ class AcceptanceTests(unittest.TestCase):
                 name = f"{role}-{member}"
                 topology.append({"id": name, "role": role, "group": role, "certificate_sha256": f"{index * 3 + member:064x}", "process_id": name})
                 processes.append({"id": name, "executable": {"sha256": binaries["kasumi-authority" if role == "authority" else "kasumid"]}})
-        acceptance.check_topology(topology, processes, binaries, required=True)
+        acceptance.check_topology(topology, processes, binaries, "required")
+        acceptance.check_topology(topology, processes, binaries, "permitted")
+        acceptance.check_topology([], processes, binaries, "permitted")
+        acceptance.check_topology([], processes, binaries, "forbidden")
+        with self.assertRaisesRegex(ValueError, "unexpected HA topology"):
+            acceptance.check_topology(topology, processes, binaries, "forbidden")
+        with self.assertRaisesRegex(ValueError, "three separate three-member groups"):
+            acceptance.check_topology([], processes, binaries, "required")
+        with self.assertRaisesRegex(ValueError, "unknown HA topology policy"):
+            acceptance.check_topology(topology, processes, binaries, True)
+        # Domains whose scenarios involve replicas or membership cannot pass
+        # without the topology; no domain is both required and merely permitted.
+        self.assertLessEqual(acceptance.TOPOLOGY_REQUIRED | acceptance.TOPOLOGY_PERMITTED,
+                             set(acceptance.SCENARIOS))
+        self.assertFalse(acceptance.TOPOLOGY_REQUIRED & acceptance.TOPOLOGY_PERMITTED)
+        self.assertLessEqual({"audit-retention", "observability", "concurrency", "ha-soak"},
+                             acceptance.TOPOLOGY_REQUIRED)
         for change in ("two-members", "shared-process", "shared-certificate", "shared-group", "wrong-binary"):
             nodes, owned = copy.deepcopy(topology), copy.deepcopy(processes)
             if change == "two-members":
@@ -474,7 +492,7 @@ class AcceptanceTests(unittest.TestCase):
             else:
                 owned[0]["executable"]["sha256"] = "c" * 64
             with self.subTest(change=change), self.assertRaises(ValueError):
-                acceptance.check_topology(nodes, owned, binaries, required=True)
+                acceptance.check_topology(nodes, owned, binaries, "required")
 
     def test_archives_reject_duplicate_traversal_and_link_members(self):
         for change in ("duplicate", "escape", "symlink"):
@@ -493,16 +511,93 @@ class AcceptanceTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(ValueError):
                 acceptance.archive_inventory(archive)
 
-    def test_unimplemented_domain_adapters_reject_frozen_readme_and_opaque_passes(self):
-        self.assertEqual(acceptance.DOMAIN_ADAPTERS, {})
+    def test_only_domains_with_a_real_runner_are_registered(self):
+        self.assertEqual(set(acceptance.DOMAIN_ADAPTERS),
+                         {"repeatable-assembly", "dependency-review", "ha-soak", "oci-smoke"})
+        self.assertLessEqual(set(acceptance.DOMAIN_ADAPTERS), set(acceptance.SCENARIOS))
+        self.assertEqual(set(acceptance.SCENARIOS), set(attempt_index.DOMAIN_KINDS))
         source = {"README.md": {"sha256": "a" * 64}}
-        for kind in acceptance.SCENARIOS:
+        for kind in sorted(acceptance.SCENARIOS):
+            # A frozen README as "runner" and a file saying everything passed.
             record = {"schema": acceptance.SCHEMA, "id": kind + ":" + acceptance.REFERENCE,
-                      "status": "passed", "runner": {"source_path": "README.md", "sha256": "a" * 64},
+                      "status": "passed", "identity": {}, "binaries": {},
+                      "configuration_ids": ["unit"],
+                      "runner": {"source_path": "README.md", "sha256": "a" * 64},
+                      "started_at": "2026-01-02T00:00:00+00:00",
+                      "finished_at": "2026-01-03T00:00:00+00:00", "host": {}, "processes": [],
+                      "topology": [], "scenarios": [], "artifacts": {},
                       "details": {"report": self.file("opaque-success.txt", b"all checks passed")}}
             gate = {"id": record["id"], "evidence": self.value("opaque.json", record)}
-            with self.subTest(kind=kind), self.assertRaisesRegex(ValueError, "adapter is not implemented"):
-                acceptance.verify_gate(self.root, gate, {}, source, {}, {}, {}, {})
+            configs = {"unit": {"file": self.file("unit-config.json")}}
+            arguments = (self.root, gate, {}, source, configs, {acceptance.REFERENCE: {}}, {}, {})
+            with self.subTest(kind=kind):
+                if kind in acceptance.DOMAIN_ADAPTERS:
+                    # A registered adapter still refuses an opaque pass.
+                    with self.assertRaises((ValueError, KeyError)):
+                        acceptance.verify_gate(*arguments)
+                else:
+                    with self.assertRaisesRegex(ValueError, "adapter is not implemented: " + kind):
+                        acceptance.verify_gate(*arguments)
+
+    def service(self, **changes):
+        """An owned daemon's terminal receipt as process_ha_owned writes it."""
+        executable = self.file("executables/kasumid")
+        record = {"schema": acceptance.SERVICE_SCHEMA, "id": "data-1-0001", "name": "data-1",
+                  "command": ["/unit/kasumid", "serve", "/unit/config.json"],
+                  "executable": {"path": "/unit/kasumid", "sha256": executable["sha256"]},
+                  "status": "drained", "process_group": 321, "leader_birth": "linux:1",
+                  "timeout_seconds": 93660, "received_signals": [], "fault": None,
+                  "stop": {"signal": "SIGTERM", "target": "owned-leader",
+                           "elapsed_seconds": 86500, "sent": True},
+                  "error": None, "process_exit_code": 0, "outputs_stable": True,
+                  "started_elapsed_seconds": 1, "finished_elapsed_seconds": 86501,
+                  "duration_seconds": 86500,
+                  "cleanup": {"group": 321, "before": [], "after": [], "signals": [],
+                              "errors": [], "drained": True, "process_returncode": 0}}
+        for path, value in changes.items():
+            target = record
+            *parents, leaf = path.split("__")
+            for parent in parents:
+                target = target[parent]
+            target[leaf] = value
+        return {"id": "data-1-0001", "receipt": self.value("service.json", record),
+                "log": self.file("service.log"), "executable": executable}
+
+    def test_daemons_end_by_their_recorded_stop_or_injected_fault_only(self):
+        # A daemon cannot "exit zero undisturbed" like a command: it is stopped
+        # on request, or killed as the fault its scenario injects.
+        self.assertEqual(acceptance.check_processes(self.root, [self.service()], 86600), 86500)
+        fault = {"signal": "SIGKILL", "target": "owned-leader", "sent": True,
+                 "observation": "/unit/observation", "observation_sha256": "a" * 64}
+        acceptance.check_processes(self.root, [self.service(
+            fault=fault, stop=None, process_exit_code=-9, cleanup__process_returncode=-9)], 86600)
+        acceptance.check_processes(self.root, [self.service(stop__signal="EOF")], 86600)
+        for label, changes in (
+                ("forced-cleanup", {"cleanup__signals": ["SIGTERM", "SIGKILL"]}),
+                ("stop-ignored", {"process_exit_code": -9, "cleanup__process_returncode": -9}),
+                ("nonzero-stop", {"process_exit_code": 2, "cleanup__process_returncode": 2}),
+                ("crashed-unrecorded", {"stop": None}),
+                ("two-causes", {"fault": fault}),
+                ("fault-not-sent", {"fault": {**fault, "sent": False}, "stop": None,
+                                    "process_exit_code": -9, "cleanup__process_returncode": -9}),
+                ("fault-survived", {"fault": fault, "stop": None}),
+                ("interrupted", {"received_signals": [15]}),
+                ("undrained", {"cleanup__after": [{"pid": 9}]}),
+                ("controller-error", {"error": "ValueError('changed')"}),
+                ("other-group", {"cleanup__group": 322}),
+                ("too-long", {"duration_seconds": 90000})):
+            with self.subTest(change=label), self.assertRaises(ValueError):
+                acceptance.check_processes(self.root, [self.service(**changes)], 86600)
+        # A failed attempt may retain a crashed daemon, but its custody must be terminal.
+        crashed = {"stop": None, "process_exit_code": 1, "cleanup__process_returncode": 1,
+                   "status": "failed"}
+        acceptance.check_processes(self.root, [self.service(**crashed)], 86600, passed=False)
+        with self.assertRaisesRegex(ValueError, "has not drained"):
+            acceptance.check_processes(self.root, [self.service(
+                **crashed, cleanup__drained=False)], 86600, passed=False)
+        with self.assertRaisesRegex(ValueError, "actual executable is not bound"):
+            acceptance.check_processes(self.root, [self.service(
+                executable__sha256="0" * 64)], 86600)
 
     def test_repeatable_assembly_bridge_binds_exact_selected_primary_receipt(self):
         def fixture(name, consumed=b'{"candidate":"selected"}\n'):
@@ -523,9 +618,11 @@ class AcceptanceTests(unittest.TestCase):
 
         domain, candidate, _ = fixture("valid")
         with patch("repeatable_assembly.domain_adapter") as owned_bridge:
-            acceptance.repeatable_assembly_adapter(self.root, domain, {}, {}, {},
-                                                    {acceptance.REFERENCE: candidate})
+            selected = acceptance.repeatable_assembly_adapter(
+                self.root, domain, {}, {}, {}, {acceptance.REFERENCE: candidate})
             owned_bridge.assert_called_once_with(self.root, domain, {}, {}, {})
+            # The launcher record is the journaled attempt's own evidence.
+            self.assertEqual(selected, "valid/owned/launcher.json")
 
         wrong_primary = copy.deepcopy(candidate)
         wrong_primary["primary"]["functional"] = self.file(
@@ -606,6 +703,8 @@ class AcceptanceTests(unittest.TestCase):
         executable = self.file("owned/blobs/python")
         launcher = self.value("owned/launcher.json", {
             "inner_report": {**inner_ref, "path": "review/attempt.json"}})
+        outcome = {"products": [{"id": "report", "file": {**launcher, "path": "launcher.json"}}]}
+        self.value("owned/outcome.json", outcome)
         launch = {"started_at": "2026-09-24T00:00:00+00:00",
                   "finished_at": "2026-09-24T01:00:00+00:00",
                   "evidence_root": str(self.root),
@@ -637,7 +736,14 @@ class AcceptanceTests(unittest.TestCase):
         candidates = {acceptance.REFERENCE: {"primary": {"functional": selected}}}
         with patch("run_dependency_review_launcher.verify",
                    return_value={"record": launch, "inner": inner}):
-            acceptance.dependency_review_adapter(self.root, domain, files, configs, {}, candidates)
+            self.assertEqual(acceptance.dependency_review_adapter(
+                self.root, domain, files, configs, {}, candidates), "owned/outcome.json")
+            # The journaled outcome must name this exact launcher record.
+            self.value("owned/outcome.json", {"products": [{"id": "report", "file": {
+                **launcher, "path": "launcher.json", "sha256": "0" * 64}}]})
+            with self.assertRaisesRegex(ValueError, "outcome selected another launcher"):
+                acceptance.dependency_review_adapter(self.root, domain, files, configs, {}, candidates)
+            self.value("owned/outcome.json", outcome)
             for change in ("runner", "config", "process", "scenario", "primary"):
                 altered = copy.deepcopy(domain)
                 selected_candidates = copy.deepcopy(candidates)
@@ -681,8 +787,7 @@ class AcceptanceTests(unittest.TestCase):
                     (self.root / changed).write_bytes(b"unvalidated replacement")
                     return {"status": "passed"}
 
-                # Isolate the final observed-input seal from domain adapters,
-                # which deliberately cannot yet produce a passing release.
+                # Isolate the final observed-input seal from the domain adapters.
                 with patch.object(acceptance, "_CLEAN_SOURCE_EXECUTION", True), \
                         patch.object(acceptance, "verify_inputs", side_effect=inspect_then_mutate):
                     with self.assertRaisesRegex(ValueError, "artifact changed"):
@@ -699,11 +804,22 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_executing_attempt_and_package_helpers_match_frozen_source(self):
         scripts = Path(acceptance.__file__).resolve().parent
-        names = ("verify_release_acceptance.py", "package_release.py", "release_gate.py",
-                 "gate_process.py", "assembly_inputs.py", "attempt_index.py")
-        files = {"scripts/" + name: {"sha256": acceptance.sha256(scripts / name)}
-                 for name in names}
+        # The frozen inventory holds every script; whatever local module is
+        # loaded, including an adapter's runner, must match it.
+        files = {"scripts/" + path.name: {"sha256": acceptance.sha256(path)}
+                 for path in scripts.glob("*.py")}
         acceptance.verify_executing_tools(files)
+        import domain_run
+        self.assertIsNotNone(domain_run)
+        for name in ("domain_run.py",):
+            with self.subTest(lazily_loaded=name):
+                changed = copy.deepcopy(files)
+                changed["scripts/" + name]["sha256"] = "0" * 64
+                with self.assertRaisesRegex(ValueError, "differs from final source: " + name):
+                    acceptance.verify_executing_tools(changed)
+                del changed["scripts/" + name]
+                with self.assertRaisesRegex(ValueError, "differs from final source: " + name):
+                    acceptance.verify_executing_tools(changed)
         for name in ("attempt_index.py", "assembly_inputs.py"):
             with self.subTest(name=name):
                 changed = copy.deepcopy(files)
@@ -763,12 +879,28 @@ class AcceptanceTests(unittest.TestCase):
                 patch.object(acceptance, "verify_source", return_value=(first_identity, {}, {})) as source, \
                 patch.object(acceptance, "verify_candidates", return_value=({}, {})), \
                 patch.object(acceptance, "verify_artifacts", return_value={}), \
-                patch.object(acceptance, "verify_gate"), patch.object(acceptance, "verify_attempts"):
+                patch.object(acceptance, "verify_gate", side_effect=lambda root, gate, *_: (
+                    gate["id"].split(":")[0], gate["id"] + "/outcome.json")), \
+                patch.object(acceptance, "verify_attempts") as attempts:
             value = acceptance.verify(self.root / ref["path"], self.root)
             self.assertEqual(value["manifest_sha256"], ref["sha256"])
+            # Every gate's journaled attempt is selected under its own kind.
+            selected = attempts.call_args.args[2]
+            self.assertEqual(len(selected), len(gates))
+            self.assertEqual(selected["ha-soak:" + acceptance.REFERENCE + "/outcome.json"],
+                             "ha-soak")
             self.assertEqual(source.call_count, 2)
             source.side_effect = [(first_identity, {}, {}), ({"source_commit": "2" * 40}, {}, {})]
             with self.assertRaisesRegex(ValueError, "source changed"):
+                acceptance.verify(self.root / ref["path"], self.root)
+        # One journaled attempt cannot satisfy two gates.
+        with patch.object(acceptance, "_CLEAN_SOURCE_EXECUTION", True), \
+                patch.object(acceptance, "check_clean_source_execution"), \
+                patch.object(acceptance, "verify_source", return_value=(first_identity, {}, {})), \
+                patch.object(acceptance, "verify_candidates", return_value=({}, {})), \
+                patch.object(acceptance, "verify_artifacts", return_value={}), \
+                patch.object(acceptance, "verify_gate", return_value=("ha-soak", "shared/outcome.json")):
+            with self.assertRaisesRegex(ValueError, "two gates selected the same journaled attempt"):
                 acceptance.verify(self.root / ref["path"], self.root)
 
     def test_independent_compilation_can_share_host_but_not_build_root_or_environment(self):
@@ -848,15 +980,17 @@ class AcceptanceTests(unittest.TestCase):
         process["receipt"] = self.value("process.json", receipt)
         evidence, ref = self.indexed_attempt("failed-1", [process])
         attempts = [{"id": "failed-1", "receipt": ref}]
-        acceptance.verify_attempts(self.root, attempts, set())
-        with self.assertRaises(ValueError):
-            acceptance.verify_attempts(self.root, attempts, {evidence["path"]})
+        acceptance.verify_attempts(self.root, attempts, {})
+        with self.assertRaisesRegex(ValueError, "selected attempt failed"):
+            acceptance.verify_attempts(self.root, attempts, {evidence["path"]: None})
+        with self.assertRaisesRegex(ValueError, "omitted an on-disk or selected attempt"):
+            acceptance.verify_attempts(self.root, attempts, {"unjournaled/outcome.json": None})
         self.indexed_attempt("omitted-2", [process])
         with self.assertRaisesRegex(ValueError, "omits a native attempt"):
-            acceptance.verify_attempts(self.root, attempts, set())
+            acceptance.verify_attempts(self.root, attempts, {})
         self.value("attempts/omitted/attempt.json", {})
         with self.assertRaises(ValueError):
-            acceptance.verify_attempts(self.root, attempts, set())
+            acceptance.verify_attempts(self.root, attempts, {})
 
     def test_attempt_census_rejects_unfinished_and_aliased_entries(self):
         process, receipt = self.process()
@@ -865,33 +999,33 @@ class AcceptanceTests(unittest.TestCase):
         process["receipt"] = self.value("process.json", receipt)
         _, original = self.indexed_attempt("failed-1", [process])
         retained = [{"id": "failed-1", "receipt": original}]
-        acceptance.verify_attempts(self.root, retained, set())
+        acceptance.verify_attempts(self.root, retained, {})
 
         unfinished = self.root / "attempts/started-but-unfinished"
         unfinished.mkdir()
         (unfinished / "runner.log").write_text("interrupted before terminal receipt\n")
         with self.assertRaisesRegex(ValueError, "no regular terminal receipt"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
         (unfinished / "runner.log").unlink()
         unfinished.rmdir()
 
         stray = self.root / "attempts/stray-file"
         stray.write_text("failed launch\n")
         with self.assertRaisesRegex(ValueError, "unowned entry"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
         stray.unlink()
 
         alias = self.root / "attempts/aliased-attempt"
         alias.symlink_to(self.root / "attempts/failed-1", target_is_directory=True)
         with self.assertRaisesRegex(ValueError, "unowned entry"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
         alias.unlink()
 
         linked_receipt = self.root / "attempts/linked-receipt"
         linked_receipt.mkdir()
         (linked_receipt / "attempt.json").symlink_to(self.root / original["path"])
         with self.assertRaisesRegex(ValueError, "no regular terminal receipt"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
 
     def test_failed_attempt_cannot_claim_drain_of_another_process_group(self):
         process, receipt = self.process()
@@ -928,7 +1062,7 @@ class AcceptanceTests(unittest.TestCase):
         _, ref = self.indexed_attempt("failed-1", [process])
         (self.root / "attempts/index.jsonl").unlink()
         with self.assertRaises(FileNotFoundError):
-            acceptance.verify_attempts(self.root, [{"id": "failed-1", "receipt": ref}], set())
+            acceptance.verify_attempts(self.root, [{"id": "failed-1", "receipt": ref}], {})
 
     def test_owned_dispatch_boundary_is_explicit_without_legacy_or_boolean_aliases(self):
         original_root = self.root
@@ -945,10 +1079,10 @@ class AcceptanceTests(unittest.TestCase):
                 # Each wrong boundary is the original indexed outcome, with
                 # all file hashes and the terminal journal rebuilt around it.
                 if boundary is True:
-                    acceptance.verify_attempts(self.root, retained, set())
+                    acceptance.verify_attempts(self.root, retained, {})
                 else:
                     with self.assertRaisesRegex(ValueError, "dispatch boundary|claims child processes"):
-                        acceptance.verify_attempts(self.root, retained, set())
+                        acceptance.verify_attempts(self.root, retained, {})
         self.root = original_root
 
 

@@ -244,8 +244,9 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
         configs = {"native": {"file": self.file_ref(self.declaration)}}
         return domain, configs, artifacts
 
-    def test_successful_outer_launch_verify_and_disabled_bridge_reject_substitutions(self):
-        self.assertEqual(acceptance.DOMAIN_ADAPTERS, {})
+    def test_successful_outer_launch_verify_and_registered_bridge_reject_substitutions(self):
+        self.assertIs(acceptance.DOMAIN_ADAPTERS["repeatable-assembly"],
+                      acceptance.repeatable_assembly_adapter)
         dispatched = []
         original_run_owned = assembly.run_owned
 
@@ -276,6 +277,8 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
             self.assertEqual(len(parsed["groups"]), 8)
             domain, configs, artifacts = self.domain(result)
             assembly.domain_adapter(self.root, domain, self.files, configs, artifacts)
+            # The journaled launcher record is what the registered adapter selects.
+            self.assertEqual(attempt["evidence"]["path"], domain["details"]["launcher"]["path"])
             missing = copy.deepcopy(domain)
             missing["processes"] = [entry for entry in missing["processes"] if entry["id"] != "runner"]
             with self.assertRaisesRegex(ValueError, "omitted or substituted"):

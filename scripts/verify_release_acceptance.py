@@ -73,20 +73,19 @@ from release_gate import (FORBIDDEN_FIXTURE_FEATURES, TOOLCHAIN,
                           functional_gates, record_compiled_package, sha256)
 
 SCHEMA = "kasumi-release-acceptance-v1"
-# Registrations must be reviewed code in the frozen source: each adapter owns a
-# fixed runner path, reconstructs its exact command from verified inputs, and
-# validates the runner's domain-specific outcomes. The repeatable-assembly
-# bridge below remains unregistered pending native qualification. Deliberately
-# accept no domain until its complete contract is validated; an opaque report
-# and asserted scenario labels cannot certify a release. There is no
-# CLI/manifest switch to override this registry.
-DOMAIN_ADAPTERS = {}
+SERVICE_SCHEMA = "kasumi-process-ha-owned-v2"
+# Domains whose scenarios need the nine-process topology, and domains that may
+# use it. Every other domain must not claim one.
+TOPOLOGY_REQUIRED = frozenset({"ha-faults", "recovery", "capacity-ha", "ha-soak",
+                               "audit-retention", "observability", "concurrency"})
+TOPOLOGY_PERMITTED = frozenset({"backup-cleanup", "key-retention", "providers"})
 OBSERVATIONS = contextvars.ContextVar("release_acceptance_observations", default=None)
 PLATFORMS = tuple(sorted(package.TARGETS))
 LINUX = tuple(target for target in PLATFORMS if "linux" in target)
 REFERENCE = "aarch64-unknown-linux-gnu"
 MIN_CORPUS = 3 << 30
 SOAK_SECONDS = 86400
+HEARTBEAT_SECONDS = 60
 MAX_JSON_BYTES = 16 << 20
 MODES = ("raw", "local", "replicated", "text", "network")
 TENANTS = (1, 100, 1000)
@@ -390,7 +389,8 @@ def check_capacity(root, details, kind):
 
 
 def check_soak(root, details, elapsed):
-    exact(details, {"duration_seconds", "heartbeats", "maintenance"}, "soak details")
+    exact(details, {"duration_seconds", "heartbeats", "maintenance", "report"}, "soak details")
+    reference(root, details["report"])
     duration = number(details["duration_seconds"], "soak duration", SOAK_SECONDS)
     require(elapsed >= duration, "soak duration exceeds observed wall time")
     previous = None
@@ -400,14 +400,16 @@ def check_soak(root, details, elapsed):
         exact(row, {"elapsed_seconds", "successful_operations", "unexpected_errors", "integrity_mismatches"}, "soak heartbeat")
         current = number(row["elapsed_seconds"], "heartbeat time")
         require((previous is None and current == 0) or
-                (previous is not None and 0 < current - previous <= 60), "soak heartbeat gap")
+                (previous is not None and 0 < current - previous <= HEARTBEAT_SECONDS),
+                "soak heartbeat gap")
         require(row["unexpected_errors"] == 0 and type(row["unexpected_errors"]) is int
                 and row["integrity_mismatches"] == 0 and type(row["integrity_mismatches"]) is int,
                 "soak has unexpected errors or integrity mismatches")
         now_operations = uint(row["successful_operations"], "soak operations")
         require(previous is None or now_operations > operations, "soak workload stopped between heartbeats")
         operations, previous, count = now_operations, current, count + 1
-    require(count >= 1441 and previous == duration, "shortened or incomplete soak observations")
+    require(count >= SOAK_SECONDS // HEARTBEAT_SECONDS + 1 and previous == duration,
+            "shortened or incomplete soak observations")
     maintenance = unique(details["maintenance"], "id", "soak maintenance")
     require(set(maintenance) == SCENARIOS["ha-soak"], "soak maintenance coverage missing")
     for event in maintenance.values():
@@ -432,8 +434,9 @@ def check_host(root, host, target, started, finished):
                      ("Darwin", "arm64"): "aarch64-apple-darwin"}.get((native_os, native_machine))
     require(native_target == target,
             "native host preflight platform differs from claimed target")
-    require(preflight.get("schema") == 2 and preflight.get("requested_target") == target
-            and preflight.get("errors") == [] and preflight.get("translated") in (None, False),
+    # Schema 3 checks every platform for translation; an unknown is a failure.
+    require(preflight.get("schema") == 3 and preflight.get("requested_target") == target
+            and preflight.get("errors") == [] and preflight.get("translated") is False,
             "native host preflight failed")
     require(uint(preflight.get("effective_memory_bytes"), "host memory") >= 15 << 30,
             "insufficient native functional memory")
@@ -464,6 +467,9 @@ def check_processes(root, processes, elapsed, passed=True):
         command = record.get("command")
         require(isinstance(command, list) and command and all(isinstance(arg, str) for arg in command)
                 and command[0] == executable["path"], "process command differs from executed identity")
+        if record.get("schema") == SERVICE_SCHEMA:
+            longest = max(longest, check_service(record, elapsed, passed))
+            continue
         require(record.get("status") in ("passed", "failed") and record.get("outputs_stable") is True,
                 "process is not terminal with stable output")
         cleanup = record.get("cleanup")
@@ -489,9 +495,35 @@ def check_processes(root, processes, elapsed, passed=True):
     return longest
 
 
-def check_topology(topology, processes, binaries, required):
+def check_service(record, elapsed, passed):
+    """An owned daemon ends by its controller's recorded stop or injected fault.
+
+    A command must exit zero undisturbed. A daemon cannot: it is stopped on
+    request, or killed as the fault a scenario injects. Its receipt names that
+    single cause, and anything else, including forced cleanup, is a failure.
+    """
+    import domain_run
+
+    if passed:
+        domain_run.service_disposition(record)
+    else:
+        cleanup = record.get("cleanup")
+        group = record.get("process_group")
+        require(record.get("status") in ("drained", "failed") and isinstance(cleanup, dict)
+                and type(group) is int and group > 0 and cleanup.get("group") == group
+                and cleanup.get("drained") is True and cleanup.get("after") == []
+                and cleanup.get("errors") == []
+                and cleanup.get("process_returncode") == record.get("process_exit_code"),
+                "process ownership has not drained")
+    duration = number(record.get("duration_seconds"), "process elapsed time")
+    require(duration <= elapsed + 1, "process duration exceeds attempt wall time")
+    return duration
+
+
+def check_topology(topology, processes, binaries, policy):
     nodes = unique(topology, "id", "HA members")
-    if not required:
+    require(policy in ("required", "permitted", "forbidden"), "unknown HA topology policy")
+    if policy == "forbidden" or (policy == "permitted" and not nodes):
         require(not nodes, "unexpected HA topology for this gate")
         return
     require(len(nodes) == 9, "HA acceptance requires three separate three-member groups")
@@ -558,6 +590,14 @@ def verify_executing_tools(files):
                 "executing verifier imported a different helper: " + name)
         require(files.get("scripts/" + name, {}).get("sha256") == sha256(path),
                 "executing verifier differs from final source: " + name)
+    # Domain adapters import their runner modules on demand. Whatever local
+    # module is loaded by now, adapter or not, must be the frozen source too.
+    for module in tuple(sys.modules.values()):
+        location = getattr(module, "__file__", None)
+        if location is not None and Path(location).resolve().parent == scripts:
+            name = Path(location).resolve().name
+            require(files.get("scripts/" + name, {}).get("sha256") == sha256(scripts / name),
+                    "executing verifier differs from final source: " + name)
 
 
 def verify_source(root, manifest, repository):
@@ -786,12 +826,14 @@ def check_repeatable_assembly_primary(root, domain, candidate):
 
 
 def repeatable_assembly_adapter(root, domain, files, configs, artifacts, candidates):
-    """Acceptance bridge; enable only after the complete native gate qualifies."""
+    """The owned launcher's two original assemblies of the selected primary."""
     import repeatable_assembly
 
     repeatable_assembly.domain_adapter(root, domain, files, configs, artifacts)
     target = domain["id"].split(":", 1)[1]
     check_repeatable_assembly_primary(root, domain, candidates[target])
+    # The owned launcher journals its own record as the attempt's evidence.
+    return domain["details"]["launcher"]["path"]
 
 
 def check_dependency_review_primary(root, domain, candidate):
@@ -954,7 +996,7 @@ def check_native_admin_readback(root, witness, processes, binaries, expected):
 
 
 def dependency_review_adapter(root, domain, files, configs, artifacts, candidates):
-    """Semantic bridge for the owned review; unregistered pending native qualification."""
+    """The owned review: upstream suites, archive provenance, regressions and scan."""
     import run_dependency_review_launcher as owned
 
     root = Path(root).resolve(strict=True)
@@ -1018,6 +1060,39 @@ def dependency_review_adapter(root, domain, files, configs, artifacts, candidate
         if path.is_file():
             reference(root, {"path": path.relative_to(root).as_posix(),
                              "sha256": sha256(path), "bytes": path.stat().st_size})
+    outcome = launch_root / "outcome.json"
+    require(read_json(outcome).get("products") == [
+                {"id": "report", "file": {"path": "launcher.json",
+                                          "sha256": domain["details"]["report"]["sha256"],
+                                          "bytes": domain["details"]["report"]["bytes"]}}],
+            "dependency review outcome selected another launcher record")
+    return outcome.relative_to(root).as_posix()
+
+
+def ha_soak_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_ha_soak
+
+    return run_ha_soak.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_oci_smoke
+
+    return run_oci_smoke.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+# Each registered adapter is reviewed code in the frozen source. It owns a fixed
+# runner, rebuilds that runner's exact commands from verified inputs, recomputes
+# the domain's outcomes from retained receipts and raw rows, and returns the
+# journaled attempt it accepted. A domain with no real runner is not registered
+# and is rejected: an opaque report and asserted scenario labels cannot certify
+# a release. There is no CLI or manifest switch to override this registry.
+DOMAIN_ADAPTERS = {
+    "repeatable-assembly": repeatable_assembly_adapter,
+    "dependency-review": dependency_review_adapter,
+    "ha-soak": ha_soak_adapter,
+    "oci-smoke": oci_smoke_adapter,
+}
 
 
 def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candidates):
@@ -1038,18 +1113,21 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     exact(runner, {"source_path", "sha256"}, "domain runner")
     require(files.get(relative_path(runner["source_path"]), {}).get("sha256") == checksum(runner["sha256"]),
             "domain runner is not frozen source")
-    # A future registered adapter must additionally bind its exact invocation
-    # and independently validate semantic outcomes. This cannot be replaced by
-    # checking that some arbitrary file happens to be in the source inventory.
-    adapter(root, record, files, configs, artifacts, candidates)
+    # The adapter binds the exact invocation and recomputes the outcomes. A
+    # runner that merely appears in the source inventory proves nothing.
+    attempt = adapter(root, record, files, configs, artifacts, candidates)
+    require(isinstance(attempt, str) and attempt, "domain adapter selected no journaled attempt")
     started, finished = timestamp(record["started_at"]), timestamp(record["finished_at"])
     elapsed = (finished - started).total_seconds()
     require(elapsed > 0, "domain gate elapsed time missing")
     check_host(root, record["host"], target, started, finished)
     longest = check_processes(root, record["processes"], elapsed)
     check_topology(record["topology"], record["processes"], binaries[target],
-                   kind in {"ha-faults", "recovery", "capacity-ha", "ha-soak"})
-    if kind not in {"correctness", "dependency-review", "repeatable-assembly"}:
+                   "required" if kind in TOPOLOGY_REQUIRED else
+                   "permitted" if kind in TOPOLOGY_PERMITTED else "forbidden")
+    # An image's daemon runs inside its container; the OCI adapter binds the
+    # candidate bytes through the image's own layer instead.
+    if kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke"}:
         require(binaries[target]["kasumid"] in {process["executable"]["sha256"] for process in record["processes"]},
                 "domain process inventory does not contain the qualified daemon")
     scenarios = unique(record["scenarios"], "id", "domain scenarios")
@@ -1155,6 +1233,7 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
         # user-supplied list of waived checks. Retain their full machine report.
         exact(details, {"report"}, "domain details")
         reference(root, details["report"])
+    return kind, attempt
 
 
 def attempt_namespace(root):
@@ -1180,21 +1259,27 @@ def attempt_namespace(root):
 
 
 def check_pre_dispatch_failure(root, record, admission, outcome):
-    """Retain a failed owned-launcher preflight without inventing a child.
+    """Retain a failed preflight without inventing a child.
 
-    The original launcher records this boundary before invoking its dispatcher.
-    Once dispatch begins, an absent receipt is uncertainty and cannot use this
-    path. Other native dispatchers need their own reviewed contract.
+    The original launcher records this boundary before invoking its
+    dispatcher. Once dispatch begins, an absent receipt is uncertainty and
+    cannot use this path.
     """
+    require(record["status"] in {"failed", "interrupted"} and outcome["dispatch_started"] is False,
+            "empty process custody is not an original pre-dispatch failure")
+    output = root / admission["output"]
+    if admission["kind"] != "repeatable-assembly":
+        # The shared outcome record: nothing owned may exist beside it.
+        require(not any(path.name == "process.json" or path.parent.name == "services"
+                        for path in output.rglob("*")),
+                "pre-dispatch failure retains child output")
+        return
     exact(outcome, {"schema", "status", "attempt_id", "started_at", "finished_at",
                     "evidence_root", "source_root", "declaration_path", "custody_root",
                     "source_files_sha256", "source_scripts", "tools", "declaration",
                     "runner_process", "inner_report", "dispatch_started", "group_ledger",
                     "descendant_census", "error"}, "pre-dispatch owned assembly outcome")
-    require(admission["kind"] == "repeatable-assembly"
-            and record["status"] in {"failed", "interrupted"}
-            and outcome["dispatch_started"] is False
-            and isinstance(outcome["error"], str) and outcome["error"]
+    require(isinstance(outcome["error"], str) and outcome["error"]
             and all(outcome[field] is None for field in
                     ("runner_process", "inner_report", "group_ledger", "descendant_census")),
             "empty process custody is not an original pre-dispatch failure")
@@ -1204,7 +1289,6 @@ def check_pre_dispatch_failure(root, record, admission, outcome):
     exact(declaration, {"path", "sha256", "bytes"}, "pre-dispatch native declaration")
     reference(root, {**declaration,
                      "path": admission["output"] + "/" + relative_path(declaration["path"])})
-    output = root / admission["output"]
     require(not any((output / name).exists() or (output / name).is_symlink()
                     for name in ("runner", "assembly", "descendant-census.json")),
             "pre-dispatch failure retains child output")
@@ -1240,11 +1324,10 @@ def verify_attempts(root, attempts, selected):
                 record["status"] in {"passed", "failed", "interrupted"}, "attempt has no retained terminal result")
         outcome = json_reference(root, record["evidence"])
         admission = admitted[name]["begin"]
-        if admission["kind"] == "repeatable-assembly":
-            require(type(outcome.get("dispatch_started")) is bool,
-                    "owned assembly dispatch boundary is missing or invalid")
-            require(not record["processes"] or outcome["dispatch_started"] is True,
-                    "pre-dispatch attempt claims child processes")
+        require(type(outcome.get("dispatch_started")) is bool,
+                "native attempt dispatch boundary is missing or invalid")
+        require(not record["processes"] or outcome["dispatch_started"] is True,
+                "pre-dispatch attempt claims child processes")
         if record["domain_observation"] is not None:
             reference(root, record["domain_observation"])
         selected_paths.add(record["evidence"]["path"])
@@ -1255,12 +1338,14 @@ def verify_attempts(root, attempts, selected):
             check_pre_dispatch_failure(root, record, admission, outcome)
         if record["evidence"]["path"] in selected:
             require(record["status"] == "passed", "selected attempt failed")
+            require(selected[record["evidence"]["path"]] in (None, admission["kind"]),
+                    "gate selected an attempt of another kind")
         paths.add(attempt["receipt"]["path"])
     require(original_names == set(indexed) == attempt_namespace(root)
             and paths == {"attempts/" + name + "/attempt.json" for name in indexed}
             and journal == attempt_index.file_ref(root, Path(root) / "attempts/index.jsonl")
             and set(indexed) == set(attempt_index.replay(root, complete=True))
-            and selected <= selected_paths,
+            and set(selected) <= selected_paths,
             "attempt history omitted an on-disk or selected attempt")
     reference(root, journal)
 
@@ -1299,11 +1384,16 @@ def verify_inputs(manifest_path, repository):
     identity, files, configs = verify_source(root, manifest, repository.resolve(strict=True))
     candidates, binaries = verify_candidates(root, manifest, identity)
     artifacts = verify_artifacts(root, manifest, files, candidates, binaries)
+    # Journaled attempt evidence -> the kind of gate that selected it.
+    selected = {}
     for gate in gates.values():
-        verify_gate(root, gate, identity, files, configs, binaries, artifacts, candidates)
-    selected = {gate["evidence"]["path"] for gate in gates.values()}
-    selected |= {candidate["primary"]["functional"]["path"] for candidate in candidates.values()}
-    selected |= {candidate["independent"]["path"] for candidate in candidates.values()}
+        kind, attempt = verify_gate(root, gate, identity, files, configs, binaries, artifacts,
+                                    candidates)
+        require(attempt not in selected, "two gates selected the same journaled attempt")
+        selected[attempt] = kind
+    for candidate in candidates.values():
+        selected[candidate["primary"]["functional"]["path"]] = None
+        selected[candidate["independent"]["path"]] = None
     verify_attempts(root, manifest["attempts"], selected)
     require(verify_source(root, manifest, repository.resolve(strict=True))[0] == identity,
             "frozen source changed during verification")

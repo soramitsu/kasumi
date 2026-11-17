@@ -91,6 +91,41 @@ class AttemptIndexTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "reuses an id or output"):
             self.begin()
 
+    def test_shared_outcome_writer_binds_products_and_the_dispatch_boundary(self):
+        output = self.root / "review-one"
+        index.begin(self.root, "review-one", "dependency-review", output, self.started)
+        output.mkdir()
+        (output / "launcher.json").write_text('{"status":"passed"}\n')
+        with self.assertRaisesRegex(ValueError, "dispatch boundary is not explicit"):
+            index.finish_outcome(self.root, "review-one", "passed", self.finished,
+                                 products={"report": "launcher.json"}, processes=[],
+                                 dispatch_started=1)
+        row = index.finish_outcome(self.root, "review-one", "passed", self.finished,
+                                   products={"report": "launcher.json"}, processes=[],
+                                   dispatch_started=True, facts={"qualification": "qualifying"})
+        outcome = json.loads((output / "outcome.json").read_text())
+        self.assertEqual(outcome["schema"], "kasumi-native-dependency-review-outcome-v1")
+        self.assertEqual((outcome["target"], outcome["dispatch_started"], outcome["qualification"]),
+                         (TARGET, True, "qualifying"))
+        self.assertEqual(outcome["products"], [{"id": "report", "file": index.file_ref(
+            output, output / "launcher.json")}])
+        self.assertEqual(row["receipt"]["path"], "attempts/review-one/attempt.json")
+        self.assertEqual(set(index.replay(self.root)), {"review-one"})
+        # The outcome is written once; a second terminal cannot replace it.
+        with self.assertRaises((ValueError, FileExistsError)):
+            index.finish_outcome(self.root, "review-one", "failed", self.finished,
+                                 products={}, processes=[], dispatch_started=True)
+        # A passed outcome must retain its kind's whole product roster.
+        other = self.root / "review-two"
+        index.begin(self.root, "review-two", "dependency-review", other, self.started)
+        other.mkdir()
+        with self.assertRaisesRegex(ValueError, "product roster differs"):
+            index.finish_outcome(self.root, "review-two", "passed", self.finished,
+                                 products={}, processes=[], dispatch_started=True)
+        with self.assertRaisesRegex(ValueError, "no admission"):
+            index.finish_outcome(self.root, "never-admitted", "failed", self.finished,
+                                 products={}, processes=[], dispatch_started=False)
+
     def test_unregistered_kind_is_rejected_before_admission(self):
         original = self.journal.read_bytes()
         with self.assertRaisesRegex(ValueError, "unknown native attempt kind"):

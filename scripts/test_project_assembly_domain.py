@@ -116,7 +116,6 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(len(value["derived"]["archives"]), 2)
         self.assertTrue((self.output / "collection/assembly/assembly/attempt.json").exists())
         self.assertEqual(acceptance.read_json(self.output / "projection.json"), value)
-        self.assertEqual(acceptance.DOMAIN_ADAPTERS, {})
 
     def test_external_producer_digest_is_required(self):
         with self.assertRaisesRegex(ValueError, "external digest"):

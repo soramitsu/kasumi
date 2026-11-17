@@ -151,9 +151,13 @@ class MetadataCustodyTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "symbolic link"):
             package.verify_metadata_capture(directory, self.target, self.inputs)
 
-    def test_metadata_primitive_does_not_register_a_final_acceptance_domain(self):
+    def test_metadata_primitive_is_not_itself_an_acceptance_adapter(self):
         import verify_release_acceptance as acceptance
-        self.assertNotIn("repeatable-assembly", acceptance.DOMAIN_ADAPTERS)
+        # Repeatable assembly is accepted only through the owned launcher's
+        # bridge; capturing metadata proves no domain on its own.
+        self.assertIs(acceptance.DOMAIN_ADAPTERS["repeatable-assembly"],
+                      acceptance.repeatable_assembly_adapter)
+        self.assertFalse(hasattr(package, "domain_adapter"))
 
 
 if __name__ == "__main__":

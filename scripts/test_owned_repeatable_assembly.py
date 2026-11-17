@@ -227,9 +227,10 @@ class OwnedRunnerTests(unittest.TestCase):
         receipt = attempt_index.file_ref(self.root,
                                         self.root / "attempts/failed-preflight/attempt.json")
         retained = [{"id": "failed-preflight", "receipt": receipt}]
-        acceptance.verify_attempts(self.root, retained, set())
+        acceptance.verify_attempts(self.root, retained, {})
         with self.assertRaisesRegex(ValueError, "selected attempt failed"):
-            acceptance.verify_attempts(self.root, retained, {"failed-launch/launcher.json"})
+            acceptance.verify_attempts(self.root, retained,
+                                       {"failed-launch/launcher.json": "repeatable-assembly"})
 
         original = assembly.read(output / "launcher.json")
         self.assertIs(original["dispatch_started"], False)
@@ -237,22 +238,22 @@ class OwnedRunnerTests(unittest.TestCase):
         self.assertEqual(declaration.read_bytes(), self.declaration.read_bytes())
         declaration.write_text("changed original preflight input")
         with self.assertRaisesRegex(ValueError, "artifact changed"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
         declaration.write_bytes(self.declaration.read_bytes())
 
         # Hiding an original child behind an empty roster is not preflight.
         (output / "runner").mkdir()
         with self.assertRaisesRegex(ValueError, "retains child output"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
         (output / "runner").rmdir()
         ledger = output / "descendant-groups.jsonl"
         ledger.write_bytes(b"")
-        acceptance.verify_attempts(self.root, retained, set())
+        acceptance.verify_attempts(self.root, retained, {})
         ledger.write_text(json.dumps({"schema": 1, "kind": "group", "group": 123,
                                     "owner_pid": 456, "executable_sha256": "a" * 64,
                                     "leader_birth": "linux:789"}) + "\n")
         with self.assertRaisesRegex(ValueError, "retains child admissions"):
-            acceptance.verify_attempts(self.root, retained, set())
+            acceptance.verify_attempts(self.root, retained, {})
 
     def test_dispatcher_uncertainty_cannot_be_relabelled_as_pre_dispatch_failure(self):
         write_json(self.evidence / "source-files.json", {})
@@ -270,7 +271,7 @@ class OwnedRunnerTests(unittest.TestCase):
         receipt = attempt_index.file_ref(self.root,
                                         self.root / "attempts/uncertain-dispatch/attempt.json")
         with self.assertRaisesRegex(ValueError, "not an original pre-dispatch failure"):
-            acceptance.verify_attempts(self.root, [{"id": "uncertain-dispatch", "receipt": receipt}], set())
+            acceptance.verify_attempts(self.root, [{"id": "uncertain-dispatch", "receipt": receipt}], {})
 
     def test_locked_spawn_ledger_seals_admission_and_binds_original_group(self):
         ledger = self.root / "groups.jsonl"

@@ -43,7 +43,8 @@ class DependencyPatchTests(unittest.TestCase):
                 "id": identity, "name": package["name"], "version": package["version"],
                 "source": None, "manifest_path": str(self.root / package["path"] / "Cargo.toml"),
             })
-            self.metadata["resolve"]["nodes"].append({"id": identity})
+            self.metadata["resolve"]["nodes"].append({"id": identity, "features": ["std"]})
+        self.product = {"library": ["std"], "library-macros": ["std"]}
 
     def write(self, relative, value, mode=0o644):
         path = self.root / relative
@@ -226,9 +227,43 @@ class DependencyPatchTests(unittest.TestCase):
             self.manifest["inventories"][0]["files"]["library/src/lib.rs"] = record
             self.save_manifest()
             return json.dumps(self.metadata).encode()
-        with patch.object(checker.subprocess, "check_output", side_effect=metadata_with_mutation):
+        with patch.object(checker.subprocess, "check_output", side_effect=metadata_with_mutation), \
+                patch.object(checker.dependency_matrix, "product_features",
+                             return_value=self.product):
             with self.assertRaisesRegex(ValueError, "manifest changed"):
                 checker.verify(self.root)
+
+    def test_resolved_features_must_equal_the_tested_product_matrix(self):
+        packages = checker.verify_sources(self.root)
+        with patch.object(checker.dependency_matrix, "product_features",
+                          return_value=self.product):
+            checker.verify_features(packages, self.metadata)
+            # A workspace change enabled a feature no upstream suite qualified.
+            drifted = copy.deepcopy(self.metadata)
+            drifted["resolve"]["nodes"][0]["features"] = ["nightly", "std"]
+            with self.assertRaisesRegex(ValueError, "differ from the reviewed product matrix"):
+                checker.verify_features(packages, drifted)
+            dropped = copy.deepcopy(self.metadata)
+            dropped["resolve"]["nodes"].pop()
+            with self.assertRaisesRegex(ValueError, "differ from the reviewed product matrix"):
+                checker.verify_features(packages, dropped)
+            repeated = copy.deepcopy(self.metadata)
+            repeated["resolve"]["nodes"].append(repeated["resolve"]["nodes"][0])
+            with self.assertRaisesRegex(ValueError, "ambiguous resolved features"):
+                checker.verify_features(packages, repeated)
+        # The matrix must name exactly the reviewed packages: an omitted
+        # package cannot pass by having no product row.
+        with patch.object(checker.dependency_matrix, "product_features",
+                          return_value={"library": ["std"]}):
+            with self.assertRaisesRegex(ValueError, "differs from the reviewed package roster"):
+                checker.verify_features(packages, self.metadata)
+
+    def test_frozen_matrix_names_exactly_the_reviewed_packages(self):
+        source = Path.cwd().resolve()
+        reviewed = {package["name"]
+                    for inventory in checker.read_json(source / "vendor/patch-manifest.json")
+                    ["inventories"] for package in inventory["packages"]}
+        self.assertEqual(set(checker.dependency_matrix.product_features()), reviewed)
 
 
 if __name__ == "__main__":

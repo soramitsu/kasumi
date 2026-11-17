@@ -454,7 +454,7 @@ def main():
 
 
 def domain_adapter(root, domain, files, configs, artifacts):
-    """Acceptance bridge, still unregistered pending native runner validation."""
+    """Bind a repeatable-assembly gate to the owned launcher's original run."""
     import verify_release_acceptance as acceptance
     import run_repeatable_assembly_owned as owned
     exact(domain["details"], {"launcher", "report", "second_package", "second_source"},

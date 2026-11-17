@@ -11,6 +11,48 @@ import sys
 from release_gate import sha256, write_json
 
 MIN_MEMORY_BYTES = 15 << 30
+SCHEMA = 3
+ELF_MACHINE = {"x86_64": 62, "aarch64": 183}
+
+
+def linux_emulation(machine, proc=Path("/proc")):
+    """Find evidence that this Linux userland is translated, not native.
+
+    A translated process reports the architecture it emulates, so ``uname``
+    alone proves nothing. Two kernel facts do not follow the emulation: the
+    kernel's own architecture, and a registered binary-format handler that
+    runs this architecture's executables through an interpreter such as
+    qemu-user or Rosetta. A native host has no handler for its own format.
+    Hardware virtualisation of the same architecture is native and is not
+    reported here.
+    """
+    findings = []
+    try:
+        kernel = (proc / "sys/kernel/arch").read_text().strip()
+    except OSError:
+        kernel = None
+    if kernel is not None and kernel != machine:
+        findings.append("kernel architecture " + kernel + " differs from userland " + machine)
+    handlers = proc / "sys/fs/binfmt_misc"
+    expected = ELF_MACHINE.get(machine)
+    if expected is not None and handlers.is_dir():
+        for entry in sorted(handlers.iterdir()):
+            if entry.name in ("register", "status") or not entry.is_file():
+                continue
+            lines = entry.read_text().splitlines()
+            fields = dict(line.split(" ", 1) for line in lines if " " in line)
+            try:
+                magic = bytes.fromhex(fields.get("magic", ""))
+                mask = bytes.fromhex(fields.get("mask", "ff" * len(magic)))
+            except ValueError:
+                raise ValueError("unreadable binary-format handler: " + entry.name) from None
+            if (lines[:1] == ["enabled"] and fields.get("offset", "0") == "0" and len(magic) >= 20
+                    and len(mask) >= 20 and magic[:4] == b"\x7fELF"
+                    and int.from_bytes(magic[18:20], "little")
+                    == expected & int.from_bytes(mask[18:20], "little")):
+                findings.append("binary-format handler " + entry.name + " runs " + machine
+                                + " executables through " + fields.get("interpreter", "an interpreter"))
+    return kernel, findings
 
 
 def linux_effective_memory(physical, membership, root=Path("/sys/fs/cgroup")):
@@ -70,10 +112,19 @@ def main():
     if free < 64 << 30:
         errors.append("functional acceptance requires at least 64 GiB free disk")
     translated = None
+    emulation = None
     memory = None
     effective_memory = None
     cgroup_limits = {}
     if system == "Linux":
+        try:
+            kernel, findings = linux_emulation(machine)
+            translated = bool(findings)
+            emulation = {"kernel_architecture": kernel, "findings": findings}
+        except (OSError, ValueError) as error:
+            errors.append("native execution could not be verified: " + str(error))
+        if translated:
+            errors.append("translated execution cannot satisfy the native host gate")
         memory = os.sysconf("SC_PHYS_PAGES") * os.sysconf("SC_PAGE_SIZE")
         try:
             effective_memory, cgroup_limits = linux_effective_memory(
@@ -101,7 +152,7 @@ def main():
                                     text=True, timeout=10, check=False)
             versions[name] = {"executable": executable, "exit_code": result.returncode,
                               "stdout": result.stdout, "stderr": result.stderr}
-    record = {"schema": 2, "os": system, "system": platform.platform(), "machine": machine,
+    record = {"schema": SCHEMA, "os": system, "system": platform.platform(), "machine": machine,
               "requested_target": args.target, "cpu_count": os.cpu_count(),
               "free_disk_bytes": free, "memory_bytes": memory, "python": sys.version,
               "effective_memory_bytes": effective_memory, "cgroup_limits": cgroup_limits,
@@ -109,7 +160,7 @@ def main():
               "tools": versions,
               "ci": {name: os.environ.get(name) for name in
                      ("GITHUB_SHA", "GITHUB_RUN_ID", "GITHUB_RUN_ATTEMPT", "RUNNER_NAME", "RUNNER_ARCH")},
-              "translated": translated, "errors": errors,
+              "translated": translated, "emulation": emulation, "errors": errors,
               "scope": "functional host preflight; capacity and endurance require separate resource admission"}
     write_json(args.output, record)
     if errors:

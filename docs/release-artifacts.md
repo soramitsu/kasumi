@@ -245,38 +245,41 @@ documents runner platforms and hosted limits. This workflow uses explicit
 acceptance hosts because the ordinary hosted disk allocation is smaller than
 the observed full debug-test and release-build workspace.
 
-## OCI image recipe
+## OCI image
 
-The runtime recipe in `release/oci/Dockerfile` uses an exact Debian Bookworm slim
-index; `release/oci/base-image.json` retains its resolved platform manifests.
-Build only from the candidate directory produced by the matching packager:
+`scripts/oci_image.py` assembles the image without a container build, so the
+same inputs always produce the same archive bytes. It takes the pinned Debian
+Bookworm slim base as an OCI layout whose platform manifest must hash to the
+digest in `release/oci/base-image.json`, and the candidate package produced by
+the matching packager:
 
 ```sh
-docker buildx build --platform linux/arm64 \
-  --file /absolute/evidence/final-functional/source/release/oci/Dockerfile \
-  --output type=oci,dest=/absolute/artifacts/kasumi-linux-arm64.oci.tar \
-  /absolute/artifacts/candidate-001
+python3 scripts/oci_image.py --base-layout /absolute/base-layout \
+  --package /absolute/artifacts/candidate-001 \
+  --target aarch64-unknown-linux-gnu \
+  --output /absolute/artifacts/kasumi-linux-arm64.oci.tar
 ```
 
-Select `linux/amd64` only for the independently validated Linux x86-64 candidate.
-The packager supplies the minimal build context and binary SHA-256 list; the
-image checks those exact copied executables. It contains the full candidate
-notices and Cargo SBOM under `/opt/kasumi` and runs as UID/GID 65532. Initialize
-and serve with the same private mounted data volume and user. The initialization
-directory must be absent. Initialization remains offline and loopback-bound;
+Select `x86_64-unknown-linux-gnu` only for the independently validated Linux
+x86-64 candidate. The assembler adds one uncompressed layer: the delivered
+package under `/opt/kasumi` (binaries, notices and Cargo SBOM) and an empty
+private `/var/lib/kasumi` owned by the numeric runtime user 65532:65532, which
+has no passwd entry. The default entrypoint serves
+`/var/lib/kasumi/installation/kasumi.json`; initialize into that mounted volume
+first, as the same user. Initialization remains offline and loopback-bound;
 network exposure requires an explicit listener and TLS client configuration.
 Use `/opt/kasumi/bin/kasumi-authority` as an explicit entrypoint for a separately
 installed authority group. No installation identity or fixture state is baked in.
 
-Record the BuildKit version/image, OCI digest, base package inventory and a full
-image SBOM, then exercise offline initialization, restart and shutdown with the
-exported image before accepting it. An initial ARM64 recipe smoke built and ran
-a Docker image using historical `8e90ff2` production binaries, including offline
-initialization, authenticated access, backup verification and restart. That
-source's workspace gate failed. The smoke does not approve those binaries or
-replace an actual final candidate, OCI-layout export and platform SBOM gate.
-Its failures and exact environment are retained in
-`docs/evidence/linux-image-systemd-smoke-20260908`.
+It also writes the image SBOM, which lists what the dependency SBOM cannot: the
+base image and every installed Debian package, read from the base layers' dpkg
+database. `verify` recomputes the image, candidate binary and SBOM bindings from
+the archive alone. `scripts/run_oci_smoke.py` is the acceptance producer: it
+verifies the archive, loads it into a native container runtime, initializes a
+fresh volume, makes authenticated native and MCP requests before and after a
+restart, and requires a zero exit on the stop signal. The `oci-smoke` adapter in
+`scripts/verify_release_acceptance.py` checks that run. No image built from
+current source has passed it yet.
 
 ## systemd installation
 

@@ -13,8 +13,11 @@ import sys
 import tempfile
 import unittest
 
+import check_dependency_patches
 import dependency_advisory as advisory
 import dependency_git
+import dependency_matrix
+import dependency_provenance
 import path_patch_projection
 import repeatable_assembly as owned
 import run_dependency_review_owned as runner
@@ -203,10 +206,45 @@ class DependencyRunnerTests(unittest.TestCase):
     def test_owned_launcher_argv_includes_both_input_declarations(self):
         inputs = {"tools": {"python": {"path": "/native/python"}}}
         self.assertEqual(launcher.command(inputs, "/frozen/source", "/frozen", "/native.json",
-                                          "/advisories.json", "/attempt"),
+                                          "/advisories.json", "/crates", "/attempt"),
                          ["/native/python", "-I", "-B", "-S", "/frozen/source/scripts/run_dependency_review_owned.py",
                           "--evidence", "/frozen", "--native-inputs", "/native.json",
-                         "--advisory-inputs", "/advisories.json", "--output", "/attempt/review"])
+                          "--advisory-inputs", "/advisories.json", "--upstream-archives", "/crates",
+                          "--output", "/attempt/review"])
+
+    def test_launcher_journals_its_record_with_or_without_a_dispatched_runner(self):
+        import attempt_index
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            attempt_index.create(root, "unit-journal", "unit-host", runner.REFERENCE)
+            started = "2026-09-24T00:00:00+00:00"
+            for attempt, dispatched in (("review-preflight", False), ("review-failed", True)):
+                output = root / attempt
+                attempt_index.begin(root, attempt, "dependency-review", output, started)
+                output.mkdir()
+                record = {"status": "failed", "finished_at": "2026-09-24T00:00:10+00:00",
+                          "runner_process": None}
+                if dispatched:
+                    files = {}
+                    for name in ("process.json", "stdout.log", "python"):
+                        (output / name).write_text(name)
+                        files[name] = owned.ref(output, output / name)
+                    record["runner_process"] = {"id": "runner", "receipt": files["process.json"],
+                                                "stdout": files["stdout.log"],
+                                                "stderr": files["stdout.log"],
+                                                "executable": files["python"]}
+                (output / "launcher.json").write_text(json.dumps(record))
+                launcher.journal(root, attempt, output, record, dispatched)
+                outcome = json.loads((output / "outcome.json").read_text())
+                self.assertEqual((outcome["status"], outcome["dispatch_started"]),
+                                 ("failed", dispatched))
+                receipt = json.loads((root / "attempts" / attempt / "attempt.json").read_text())
+                self.assertEqual([item["id"] for item in receipt["processes"]],
+                                 ["runner"] if dispatched else [])
+                if dispatched:
+                    self.assertEqual(receipt["processes"][0]["log"]["path"],
+                                     attempt + "/stdout.log")
+            self.assertEqual(set(attempt_index.replay(root)), {"review-preflight", "review-failed"})
 
     def test_owned_dependency_primary_rejects_substitution_and_mutation(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -431,108 +469,160 @@ class DependencyRunnerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "original process identity"):
             launcher.original_child_entry(missing_birth, runner_group)
 
-    def make_roster(self, root):
-        inventories = []
-        for relative, names in runner.EXPECTED.items():
-            path = root / relative
-            path.mkdir(parents=True)
-            files = {"Cargo.toml": {}}
-            if relative.endswith("openraft-0.9.25"):
-                members = ("openraft", "memstore", "macros", "tests", "rocksstore", "sledstore")
-                excluded = ("cluster_benchmark", "stores/rocksstore-v2", "examples/memstore",
-                            "examples/raft-kv-memstore", "examples/raft-kv-memstore-singlethreaded",
-                            "examples/raft-kv-memstore-generic-snapshot-data",
-                            "examples/raft-kv-memstore-opendal-snapshot-data",
-                            "examples/raft-kv-rocksdb")
-                (path / "Cargo.toml").write_text(
-                    '[workspace]\nmembers = ' + repr(list(members)).replace("'", '"') +
-                    '\nexclude = ' + repr(list(excluded)).replace("'", '"') + '\n')
-                files.update({name + "/Cargo.toml": {} for name in members + excluded})
-            else:
-                (path / "Cargo.toml").write_text(
-                    '[package]\nname = "' + next(iter(names)) + '"\nversion = "1.0.0"\n')
-            files["Cargo.lock"] = {}
-            inventories.append({"path": relative, "files": files,
-                                "packages": [{"name": name, "version": "1.0.0",
-                                              "path": relative, "patch": True}
-                                             for name in sorted(names)]})
-        return {"format": 2, "inventories": inventories}
+    def frozen_roster(self):
+        source = Path.cwd().resolve()
+        manifest = check_dependency_patches.read_json(source / "vendor/patch-manifest.json")
+        return source, manifest, dependency_matrix.roster(source, manifest)
 
-    def test_every_reviewed_root_and_openraft_workspace_is_selected(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            suites = runner.suite_roster(root, self.make_roster(root))
-            self.assertEqual({s["root"] for s in suites}, set(runner.EXPECTED))
-            self.assertEqual(sum(s["workspace"] for s in suites), 1)
-            openraft_suite = next(s for s in suites if s["workspace"])
-            self.assertEqual(len(openraft_suite["excluded_unlocked"]), 8)
-            inputs = {"tools": {name: {"path": "/native/" + name}
-                                for name in ("python", "cargo", "rustc")}}
-            selected = runner.commands(inputs, root, suites)
-            self.assertEqual(len(selected), 21)
-            self.assertEqual(len({name for name, _, _ in selected}), 21)
-            self.assertEqual(sum(kind == "rust" for _, _, kind in selected), 16)
-            self.assertTrue(all("--locked" in command and "--offline" in command
-                                for _, command, kind in selected if kind == "rust"))
-            serde = [(name, command) for name, command, kind in selected
-                     if kind == "rust" and name.startswith("serde-json-")]
-            self.assertEqual(len(serde), 8)
-            expected_features = {
-                "default": [],
-                "arbitrary-precision": ["--features", "arbitrary_precision"],
-                "raw-value": ["--features", "raw_value"],
-                "combined": ["--features", "arbitrary_precision,raw_value,float_roundtrip,preserve_order"],
-            }
-            for label, features in expected_features.items():
-                for kind in ("all-targets", "doctests"):
-                    command = next(command for name, command in serde
-                                   if name == "serde-json-1-0-151-" + label + "-" + kind)
-                    self.assertNotIn("--all-features", command)
-                    self.assertEqual(command[command.index("--offline") + 1:command.index("--no-fail-fast")],
-                                     features)
-            self.assertTrue(all("--all-features" in command for name, command, kind in selected
-                                if kind == "rust" and not name.startswith("serde-json-")))
-            locked_manifests = {command[command.index("--manifest-path") + 1]
-                                for _, command, kind in selected if kind == "rust"}
-            self.assertEqual(locked_manifests,
-                             {str(root / suite["root"] / "Cargo.toml") for suite in suites})
-            openraft = [command for name, command, _ in selected if name.startswith("openraft-")]
-            self.assertEqual(len(openraft), 2)
-            self.assertTrue(all("--workspace" in command for command in openraft))
+    def test_every_reviewed_root_runs_an_explicit_stable_matrix(self):
+        source, manifest, suites = self.frozen_roster()
+        self.assertEqual({suite["root"] for suite in suites}, set(dependency_matrix.MATRIX))
+        self.assertEqual(sum(suite["workspace"] for suite in suites), 1)
+        openraft = next(suite for suite in suites if suite["workspace"])
+        self.assertEqual(len(openraft["excluded_unlocked"]), 8)
+        self.assertEqual([member["member"] for member in openraft["excluded_members"]],
+                         ["rocksstore", "sledstore"])
+        inputs = {"tools": {name: {"path": "/native/" + name}
+                            for name in ("python", "cargo", "rustc")}}
+        selected = runner.commands(inputs, Path("/frozen/source"), suites, Path("/custody/crates"))
+        names = [step["id"] for step in selected]
+        self.assertEqual(len(names), len(set(names)))
+        self.assertEqual(names[:6], ["cargo-version", "rustc-version", "python-version",
+                                     "official-verifier", "upstream-provenance",
+                                     "python-regressions"])
+        self.assertEqual(selected[4]["command"],
+                         ["/native/python", "-B", "-S",
+                          "/frozen/source/scripts/dependency_provenance.py",
+                          "--archives", "/custody/crates"])
+        rust = [step for step in selected if step["kind"] == "rust"]
+        self.assertEqual(len(rust), len(selected) - 6)
+        unbuildable = {feature["name"] for suite in suites for package in suite["packages"]
+                       for feature in package["excluded_features"]
+                       if feature["class"] != "unselected"}
+        self.assertEqual(unbuildable, {"bench", "bt", "nightly", "reqwest-native-tls"})
+        for step in rust:
+            command = step["command"]
+            with self.subTest(step=step["id"]):
+                self.assertIn("--locked", command)
+                self.assertIn("--offline", command)
+                # No blanket selection: nightly features, external stores and
+                # runtime-launching targets cannot enter through a wildcard.
+                for forbidden in ("--all-features", "--workspace", "--all-targets", "--tests",
+                                  "test_with_js", "test_with_python", "test_expand",
+                                  "openraft-rocksstore", "openraft-sledstore"):
+                    self.assertNotIn(forbidden, command)
+                if "--features" in command:
+                    enabled = set(command[command.index("--features") + 1].split(","))
+                    self.assertFalse(enabled & unbuildable)
+                if step["mode"] == "doc":
+                    self.assertEqual(step["launches"], 1)
+        # Each memory-safety regression names a command that still exists.
+        self.assertLessEqual({case["step"] for case in runner.MEMORY_SAFETY}, set(names))
+        # Only the OpenRaft integration suite declares a generated output.
+        self.assertEqual({step["id"]: step["generated_output"] for step in selected
+                          if step["generated_output"]},
+                         {"openraft-0-9-25-tests-upstream-stable-targets":
+                          "vendor/openraft-0.9.25/tests/_log"})
+        serde = {step["id"]: step["command"] for step in rust
+                 if step["id"].startswith("serde-json-")}
+        self.assertEqual(len(serde), 10)
+        self.assertEqual(serde["serde-json-1-0-151-default-targets"].count("--features"), 0)
 
     def test_missing_reviewed_root_and_integration_suite_fail_closed(self):
+        source, manifest, _ = self.frozen_roster()
+        missing = copy.deepcopy(manifest)
+        missing["inventories"].pop()
+        with self.assertRaisesRegex(ValueError, "incomplete"):
+            dependency_matrix.roster(source, missing)
+        absent = copy.deepcopy(manifest)
+        openraft = next(item for item in absent["inventories"]
+                        if item["path"].endswith("openraft-0.9.25"))
+        openraft["files"].pop("tests/Cargo.toml")
+        with self.assertRaisesRegex(ValueError, "members differ"):
+            dependency_matrix.roster(source, absent)
+
+    def test_generated_suite_output_leaves_the_frozen_source_for_custody(self):
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            manifest = self.make_roster(root)
-            missing = copy.deepcopy(manifest)
-            missing["inventories"].pop()
-            with self.assertRaisesRegex(ValueError, "incomplete"):
-                runner.suite_roster(root, missing)
-            openraft = next(item for item in manifest["inventories"]
-                            if item["path"].endswith("openraft-0.9.25"))
-            openraft["files"].pop("tests/Cargo.toml")
-            with self.assertRaisesRegex(ValueError, "not all reviewed"):
-                runner.suite_roster(root, manifest)
+            root = Path(directory).resolve()
+            source, output = root / "source", root / "review"
+            logs = source / "vendor/openraft-0.9.25/tests/_log"
+            logs.mkdir(parents=True)
+            (logs / "ut.log").write_text("suite log\n")
+            output.mkdir()
+            step = {"id": "openraft-suite-targets",
+                    "generated_output": "vendor/openraft-0.9.25/tests/_log"}
+            retained = runner.retain_generated(step, source, output)
+            self.assertFalse(logs.exists())
+            self.assertEqual(retained["path"], "generated/openraft-suite-targets")
+            self.assertEqual((output / retained["path"] / "ut.log").read_text(), "suite log\n")
+            launcher.check_generated(output, {"id": step["id"], "generated": retained}, step)
+            (output / retained["path"] / "ut.log").write_text("rewritten\n")
+            with self.assertRaisesRegex(ValueError, "retained inventory"):
+                launcher.check_generated(output, {"id": step["id"], "generated": retained}, step)
+            # An undeclared write stays in the source for the caller to reject.
+            self.assertIsNone(runner.retain_generated(
+                {"id": "other", "generated_output": None}, source, output))
+            logs.parent.rmdir()
+            logs.parent.symlink_to(root, target_is_directory=True)
+            with self.assertRaisesRegex(ValueError, "aliased"):
+                runner.retain_generated({**step, "id": "aliased"}, source, output)
+
+    def test_upstream_archives_are_retained_by_name_and_reject_aliases(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory).resolve()
+            supplied, output = root / "crates", root / "review"
+            supplied.mkdir()
+            output.mkdir()
+            (supplied / "alpha-1.0.0.crate").write_bytes(b"published archive bytes")
+            copied, retained = runner.retain_archives(output, supplied)
+            self.assertEqual(copied, output / runner.ARCHIVES)
+            self.assertEqual(set(retained), {"alpha-1.0.0.crate"})
+            self.assertEqual(retained["alpha-1.0.0.crate"]["sha256"],
+                             hashlib.sha256(b"published archive bytes").hexdigest())
+            second = root / "second"
+            second.mkdir()
+            (supplied / "linked.crate").symlink_to(supplied / "alpha-1.0.0.crate")
+            with self.assertRaisesRegex(ValueError, "not a regular file"):
+                runner.retain_archives(second, supplied)
 
     def test_machine_counts_reject_missing_summary_or_missing_package(self):
         rust = runner.parse_counts("rust", "test result: ok. 3 passed; 0 failed; 1 ignored; 0 measured; 0 filtered out; finished in 0.1s\n"
                                    "test thing ... FAILED\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n",
                                    "     Running unittests src/lib.rs (/tmp/a)\n"
-                                   "     Running tests/integration.rs (/tmp/b)\n", [], rust_mode="targets")
+                                   "     Running tests/integration.rs (/tmp/b)\n", [], rust_mode="targets",
+                                   launches=2)
         self.assertEqual((rust["suites"], rust["tests"], rust["failed"]), (2, 4, 1))
         self.assertEqual(rust["launched"], 2)
         self.assertEqual(rust["failed_names"], ["thing"])
         self.assertTrue(rust["complete"])
         self.assertFalse(runner.parse_counts("rust", "compiler failed", "", [],
-                                             rust_mode="targets")["complete"])
+                                             rust_mode="targets", launches=1)["complete"])
+        one = ("test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n",
+               "     Running unittests src/lib.rs (/tmp/a)\n")
+        self.assertTrue(runner.parse_counts("rust", *one, [], rust_mode="targets",
+                                            launches=1)["complete"])
+        # Cargo skipped a named executable, or the expected count is unknown.
+        self.assertFalse(runner.parse_counts("rust", *one, [], rust_mode="targets",
+                                             launches=2)["complete"])
+        self.assertFalse(runner.parse_counts("rust", *one, [], rust_mode="targets")["complete"])
         self.assertFalse(runner.parse_counts("rust", "test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.1s\n",
                                              "     Running unittests src/lib.rs (/tmp/a)\n"
                                              "     Running tests/integration.rs (/tmp/b)\n",
-                                             [], rust_mode="targets")["complete"])
+                                             [], rust_mode="targets", launches=2)["complete"])
         self.assertTrue(runner.parse_counts("rust", "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n",
-                                            "   Doc-tests rmcp\n", [], rust_mode="doc")["complete"])
+                                            "   Doc-tests rmcp\n", [], rust_mode="doc",
+                                            launches=1)["complete"])
         self.assertFalse(runner.parse_counts("rust", "test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.0s\n",
-                                             "", [], rust_mode="doc")["complete"])
+                                             "", [], rust_mode="doc", launches=1)["complete"])
+        expected_output = "upstream alpha 1.0.0 " + "a" * 64 + " changed=1 added=0 removed=0\n"
+        self.assertTrue(runner.parse_counts("provenance", expected_output, "", [],
+                                            expected_output=expected_output)["complete"])
+        for stdout, stderr in ((expected_output + "extra\n", ""), (expected_output, "warning\n"),
+                               ("", ""), (expected_output.replace("a", "b"), "")):
+            self.assertFalse(runner.parse_counts("provenance", stdout, stderr, [],
+                                                 expected_output=expected_output)["complete"])
+        self.assertFalse(runner.parse_counts("provenance", "", "", [],
+                                             expected_output="")["complete"])
         self.assertEqual(runner.parse_counts("python", "", "Ran 16 tests in 0.1s\n\nOK\n", [])["tests"], 16)
         self.assertFalse(runner.parse_counts("python", "", "OK\n", [])["complete"])
         expected = [("rmcp", "3.2.0", "vendor/rmcp-3.2.0")]
