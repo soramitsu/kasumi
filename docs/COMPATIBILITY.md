@@ -1,6 +1,42 @@
-# Service compatibility evidence
+# Compatibility
 
-## OpenBao Transit
+## Deployed persisted formats
+
+[CONTRIBUTING.md](../CONTRIBUTING.md) keeps old-format decoders out of the
+tree, with one exception: a live deployment (BOI) serves a standalone store
+that commit `12140939` first wrote and later builds (`cf9959f1` when this was
+written) have served since. Every later build must open that store as it is,
+give the same answers and keep writing, compacting, snapshotting and
+reopening it, with no migration. A change may not renumber, remove,
+reinterpret or refuse anything listed here; a new field needs a value the
+deployed bytes already imply. Formats no deployment wrote (`KASUMI-KVROOT001`
+through `004`, redb files, single-file nodes) stay refused.
+
+The [deployed-format fixtures](../tests/deployed-format/README.md) are that
+store in small, written by those commits' own `kasumid`: killed while its
+root listed garbage, recovered and stopped cleanly, then served by
+`cf9959f1`.
+
+| Pinned representation | Test |
+| --- | --- |
+| `KASUMI-KVROOT005` root slots: format version 4, directory format tag at 20..24 (zero, Fixed), group at 24..40, retired checkpoint bytes 64..128, sealed segment at 128, garbage count at 152 and records from 160, directory commit at 2208..2384, compaction cycle at 2384..4080, CRC-32C last | `kasumi-kv` `tests/deployed_format.rs`: `root_slots_keep_the_deployed_layout_and_garbage_tags` |
+| Root garbage tags 1 (segment) and 3 (directory arena), and reopening a root that lists them | the same, `the_killed_group_opens_and_the_clean_stop_after_it_kept_its_keys` and `deployed_groups_open_compact_write_and_reopen_with_the_same_rows` |
+| `KASUMI-KVSEG0004` segments with the relocation and maintenance records of a deployed compaction cycle, `KASUMI-KVARENA01` arenas, Fixed 16 KiB `KASUMI-KVDIR0002` directory pages; a Fixed group stays Fixed after the current code compacts and writes it | `segments_and_fixed_directory_arenas_keep_the_deployed_headers` and the reopen test above |
+| `KASUMI-NODE-SEG1` store envelope kinds 1 root, 2 segment, 4 directory arena | `kasumi-store` `tests/deployed_format.rs`: `every_deployed_node_file_has_its_ready_envelope_of_kind_1_2_or_4` |
+| Tenant audit archive objects and chain, file keyrings, the `KSMBND01` backup destination marker | the other tests in `kasumi-store` `tests/deployed_format.rs` |
+| Engine snapshots: embedded `KASUMID1` (`LocalSnapshotArchive::Embedded`, written by `12140939`) and by-reference `KASUMIL1` (written by `cf9959f1`), each followed by a journal tail | `kasumi-server` `runtime::deployed_format_tests` |
+| `TenantState`: the tenant's receipt head, schema activations and audit retention; Control's `backup_binding_head` over its kind 24 records, one per verified backup; serialized `Policy` and `Limits` (`deny_unknown_fields`) | the same tests, against the writing build's readback |
+| Encrypted records and wrapped keys of the node, Control, tenant, custody and security stores; documents, structured, unique, multikey, decimal and text indexes and 22 queries; permanent mutation receipts; bootstrap manifests; credential family records; installation marker, `kasumi.json` and client profiles | the same tests |
+
+Each `kasumi-server` test serves a copy with the current runtime, compares
+every answer with what the writing build recorded, then writes, snapshots,
+runs a compaction cycle, stops, checks the root, envelope and directory bytes
+it left and reopens. Not covered: a restore of a deployed backup, staged
+transactions, lifecycle and retirement records, and replicated groups.
+
+## Service compatibility evidence
+
+### OpenBao Transit
 
 The opt-in integration test ran successfully on 2026-09-05 with the official
 [OpenBao v2.6.2 release](https://github.com/openbao/openbao/releases/tag/v2.6.2),
@@ -30,7 +66,7 @@ Vault interoperability. Production key-service deployment is an independent
 operational responsibility. Vault remains covered by wire-compatible fixtures
 until a live Vault test is recorded.
 
-## S3-compatible backup storage
+### S3-compatible backup storage
 
 The SigV4 implementation matches an AWS published signing vector. Local TLS
 tests validate signed PUT/GET, session tokens, create-only object writes,

@@ -49,6 +49,10 @@ authorization to recover a historical receipt.
 Before the first release, update the canonical APIs, required configuration and
 formats directly. Do not introduce compatibility aliases or old-format decoders.
 Update native clients, examples, documentation and rejection tests together.
+The one exception is state a deployed store already holds: it must stay
+readable and writable, and
+[deployed persisted formats](docs/COMPATIBILITY.md#deployed-persisted-formats)
+lists it with the tests that hold it.
 
 Pull requests should state the concrete behavior changed, relevant limits, and
 which checks actually ran. Preserve failed evidence; never present old-source

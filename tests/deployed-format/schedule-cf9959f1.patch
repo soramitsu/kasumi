@@ -1,0 +1,46 @@
+--- a/crates/kasumi-kv/src/disk_maintenance.rs
++++ b/crates/kasumi-kv/src/disk_maintenance.rs
+@@ -110,7 +110,13 @@
+     fn default() -> Self {
+         Self {
+             growth_percent: 200,
+-            slack_bytes: 256 << 20,
++            // Fixture generation only (scripts/deployed_format_fixture): when
++            // the variable is set, a compaction cycle becomes due after that
++            // much growth instead of 256 MiB. Only scheduling changes.
++            slack_bytes: std::env::var("KASUMI_FIXTURE_COMPACTION_SLACK_BYTES")
++                .ok()
++                .and_then(|value| value.parse().ok())
++                .unwrap_or(256 << 20),
+             slack_files: 16,
+             retained_garbage_percent: 25,
+             inline_units: 32,
+--- a/crates/kasumi-raft/src/local.rs
++++ b/crates/kasumi-raft/src/local.rs
+@@ -24,6 +24,17 @@
+ // requires no heartbeat or periodic background task.
+ const SNAPSHOT_INTERVAL: u64 = 5000;
+ 
++/// Fixture generation only (scripts/deployed_format_fixture): when the
++/// variable is set, snapshots are scheduled after that many entries instead of
++/// 5000. Nothing about what a snapshot contains or how it is stored changes.
++fn snapshot_interval() -> u64 {
++    std::env::var("KASUMI_FIXTURE_SNAPSHOT_INTERVAL")
++        .ok()
++        .and_then(|value| value.parse().ok())
++        .filter(|entries| *entries > 0)
++        .unwrap_or(SNAPSHOT_INTERVAL)
++}
++
+ pub(crate) struct LocalGroup<M: RaftStateMachine<TypeConfig>> {
+     /// The group identity, only for operator diagnostics.
+     group: Arc<str>,
+@@ -257,7 +268,7 @@
+             term,
+             id,
+             snapshot_index: applied.map(|log| log.index),
+-            snapshot_interval: SNAPSHOT_INTERVAL,
++            snapshot_interval: snapshot_interval(),
+             #[cfg(any(test, feature = "test-utils"))]
+             joined: Default::default(),
+         };

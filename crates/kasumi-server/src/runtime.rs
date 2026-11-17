@@ -7306,6 +7306,10 @@ mod audit_tests;
 #[path = "runtime_observability_tests.rs"]
 mod observability_tests;
 
+#[cfg(test)]
+#[path = "runtime_deployed_format_tests.rs"]
+mod deployed_format_tests;
+
 impl crate::startup_owner::Runtime for NodeRuntime {
     fn handoff(&mut self) -> Result<()> {
         // Ticket::claim calls this synchronously while retaining the entire

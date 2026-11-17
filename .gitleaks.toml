@@ -550,6 +550,8 @@ regexTarget = "line"
 regexes = ['''^\s*"key_lineage_digest":\s*"[a-f0-9]{64}"[,]?\s*$''']
 paths = [
     '''(?:^|/)docs/evidence/linux\-image\-systemd\-smoke\-20260908/kasumi\-oci\-recipe\-42bf607\-backup\-verify\.log$''',
+    # Backup checkpoints of the disposable deployed-format fixture installation.
+    '''(?:^|/)tests/deployed\-format/(?:12140939\-clean|12140939\-killed|cf9959f1\-clean)\.manifest\.json$''',
 ]
 
 # File scanning splits large files into blocks. These exact reviewed checksum
@@ -851,4 +853,16 @@ regexTarget = "match"
 regexes = ['''\A\-\-\-\-\-BEGIN\ PRIVATE\ KEY\-\-\-\-\-\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQga2vmznub/pOKVNb5\ndyzlCefJmBfwrhSmY/qjh9XZu1KhRANCAAR3U06VfZfT27RLfo6ZxuQdovxN/Bl5\nyLmpI1UotAIjXVP59MAsp6XB7XaadPbVSAM6VsOFQ/g9nzBiAh2UVkq3\n\-\-\-\-\-END\ PRIVATE\ KEY\-\-\-\-\-\z''']
 paths = [
     '''(?:^|/)crates/kasumi-client/src/installed-pool-test-key\.pem$''',
+]
+
+# The CA key of the disposable installation behind the deployed-format
+# fixtures (tests/deployed-format/README.md), the one key whose PEM text
+# stays literal in the packed stream. It signs nothing outside those copies.
+[[rules.allowlists]]
+description = "Exact CA key of the deployed-format fixture installation"
+condition = "AND"
+regexTarget = "match"
+regexes = ['''\A\-\-\-\-\-BEGIN\ PRIVATE\ KEY\-\-\-\-\-\nMIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQg8AG1Bn\/NfR\/rCeu3\n6ulTr2uOj973ra0jLLOq4\+71tuGhRANCAASzAaND\/GfdtTH2sOdUc9yDnRn9FAwx\nowOmf5IoGRvPJod6Z7\+tneDPnOGwWhq5dAouEGoDj2xzcg4ZYATrlnpf\n\-\-\-\-\-END\ PRIVATE\ KEY\-\-\-\-\-\z''']
+paths = [
+    '''(?:^|/)tests/deployed\-format/fixtures\.kfx$''',
 ]
