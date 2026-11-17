@@ -6,6 +6,16 @@ fn main() -> std::process::ExitCode {
 }
 
 async fn async_main() -> std::process::ExitCode {
+    let mut daemon = false;
+    let status = invoked(&mut daemon).await;
+    // Returning drops the Tokio runtime under every retained owner: join the
+    // process-wide registries first, whether the command succeeded or not.
+    kasumi_server::process_drain::finish(status, daemon).await
+}
+
+/// The command's own exit status. `serving` is set once `serve` is selected:
+/// only the daemon logs its drained exit.
+async fn invoked(serving: &mut bool) -> std::process::ExitCode {
     if kasumi_server::logging::initialize().is_err() {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;
@@ -20,6 +30,7 @@ async fn async_main() -> std::process::ExitCode {
     }
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let daemon = args.first().is_some_and(|value| value == "serve");
+    *serving = daemon;
     if daemon {
         // An invoked command keeps the default hook's message on its terminal;
         // the daemon's stderr is the journal.

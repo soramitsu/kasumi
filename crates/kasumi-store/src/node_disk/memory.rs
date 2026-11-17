@@ -29,6 +29,13 @@ impl NodeDisk {
         // No third map and no post-publication expansion allocation exist.
         let ledgers = banks::<AccountedInode>(retained)?;
         let custody = file::CustodySlots::required_bytes(config.max_open_files)?;
+        let children = add(
+            kasumi_serving::BlockingChildren::required_bytes(Self::filesystem_children_capacity(
+                config,
+            )?)
+            .ok_or_else(disk_memory::overflow)?,
+            ALLOCATION_HEADROOM,
+        )?;
         let live = banks::<Weak<file::FileOwner>>(
             usize::try_from(handles).map_err(|_| disk_memory::overflow())?,
         )?;
@@ -134,7 +141,7 @@ impl NodeDisk {
             add(
                 ledgers,
                 add(
-                    add(live, custody)?,
+                    add(live, add(custody, children)?)?,
                     add(add(owners, directory_owners)?, add(census, roots)?)?,
                 )?,
             )?,

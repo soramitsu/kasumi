@@ -132,6 +132,16 @@ owners retained for 60 seconds, kasumid logs
 "active" while retrying; the store then recovers on the next start exactly as
 after a crash.
 
+Before any exit, `kasumid` and `kasumi-authority` (their offline commands
+included) join every process-wide owner registry: cancelled or refused opens
+and operator commands that are still closing their runtime, serving
+supervisors, background workers and blocking children whose caller was
+cancelled or timed out. A daemon that stops cleanly logs `daemon_stopped` and
+then `process_drained`. An owner's failure found there is logged as
+`process_drain_failed` with its registry name and makes the exit non-zero.
+After the same 60 seconds the process logs `process_drain_retained` and
+`daemon_exit_with_retained_owners` and exits non-zero.
+
 Node status from the command line uses an admin client profile (`kasumictl
 example-config` shows its shape) and exits non-zero unless the endpoint
 answered 200:

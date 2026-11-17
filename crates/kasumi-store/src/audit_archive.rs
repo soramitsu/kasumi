@@ -845,13 +845,21 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
             segment,
             _path_charge: path_charge,
         };
-        tokio::task::spawn_blocking(move || work.run()).await?
+        // The disk owns the child: a cancelled caller neither detaches the
+        // publication nor loses its failure or panic.
+        self.disk
+            .filesystem_child(crate::FilesystemEffect::Write, move || work.run())
+            .await
     }
     async fn read(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
         let root = self.root.clone();
         let disk = self.disk.clone();
         let link = link.clone();
-        tokio::task::spawn_blocking(move || read_file(&root, &disk, &link)).await?
+        self.disk
+            .filesystem_child(crate::FilesystemEffect::Read, move || {
+                read_file(&root, &disk, &link)
+            })
+            .await
     }
     fn deletes_objects(&self) -> bool {
         true
@@ -859,7 +867,11 @@ impl AuditArchiveDestination for FilesystemAuditArchive {
     async fn delete(&self, links: &[AuditArchiveLink]) -> Result<Vec<AuditObjectDeletion>> {
         let archive = self.share();
         let links = links.to_vec();
-        tokio::task::spawn_blocking(move || archive.delete_blocking(&links)).await?
+        self.disk
+            .filesystem_child(crate::FilesystemEffect::Write, move || {
+                archive.delete_blocking(&links)
+            })
+            .await
     }
 }
 

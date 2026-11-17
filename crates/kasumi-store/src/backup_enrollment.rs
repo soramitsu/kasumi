@@ -279,6 +279,11 @@ impl EnrolledRoot {
     pub(crate) fn path(&self) -> &Path {
         &self.root.2
     }
+
+    /// The installed disk whose retained descriptor this root is verified on.
+    pub(crate) fn disk(&self) -> &Arc<crate::NodeDisk> {
+        &self.root.1
+    }
 }
 
 /// A root below another enrolled root would place its directory and marker in

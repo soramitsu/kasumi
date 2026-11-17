@@ -1,9 +1,30 @@
 # Proposed filesystem job ownership
 
-Status: **proposed and unimplemented**. This document records a read-only audit
-and an implementation proposal. It is not evidence that the ownership gaps are
-fixed or that any release gate passes. No Rust source edits or builds were made
-for this audit.
+Status: **partly implemented**. This document records a read-only audit and an
+implementation proposal. It is not evidence that any release gate passes.
+
+Implemented since the audit, in a smaller form than the `FilesystemIoOwner`
+proposed below: every filesystem archive and backup destination method, the
+full-backup audit-cache read and `VerificationDeadline::blocking` start their
+child through a retained `kasumi_serving::BlockingChildren` table. The store's
+table belongs to the installed `NodeDisk` (its closures hold the disk; the
+table holds only handles and outcomes, so there is no cycle) and the engine's
+to the node's memory core. A cancelled caller or drain waiter leaves the exact
+handle there; drains join in place and repeat the same original evidence for a
+panic, an unobserved write failure or an unexplained worker failure. A child
+whose caller has left destroys its own output, and the resources it retains,
+when it returns. The disk counts each child (`filesystem_jobs`, under its
+census lock) from before dispatch until its output is disposed of, and both
+`pause` and the idle census refuse while one is outstanding, so a queued child
+that has not opened its file yet still fences them. A failure
+keeps its slot, so evidence is bounded without closing admission at the first
+one. The table's backing is part of the owner's funded metadata.
+
+Still unimplemented from this proposal: charged output handoff, a per-startup-scope
+owner with its own admitted capacity, the `SecurityAudit` worker/store shutdown
+split, and regression cases 1, 6, 9 and 10 below. An abandoned read's failure
+and a create-only conflict found before any effect are classified as ordinary
+outcomes; other write failures are not.
 
 Implementation must happen in `/Users/mtakemiya/dev/kasumi` on `master` only.
 This is the first release: replace the affected contracts directly. Do not add

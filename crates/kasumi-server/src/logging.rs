@@ -115,6 +115,50 @@ pub(crate) fn drain_failed(
     );
 }
 
+/// One process-wide registry's final drain returned an owner's failure. Only
+/// the registry's fixed name is public; a typed drain adds its component
+/// labels, and the text goes to a private file as for any other drain.
+pub(crate) fn process_drain_failed(registry: &'static str, error: &anyhow::Error) {
+    if let Some(failure) = error
+        .chain()
+        .find_map(|cause| cause.downcast_ref::<kasumi_types::drain::DrainFailure>())
+    {
+        tracing::error!(
+            event = "process_drain_failed",
+            registry,
+            "a process-wide registry drained with a retained owner failure"
+        );
+        return drain_failed("process_registry_drain_failed", failure, None);
+    }
+    let path = crate::startup_preparation::diagnostic_path("drain");
+    let written =
+        crate::startup_preparation::write_private_text(&path, &format!("{error:?}")).is_ok();
+    tracing::error!(
+        event = "process_drain_failed",
+        registry,
+        diagnostic_written = written,
+        diagnostic_path = %path.display(),
+        "a process-wide registry drained with a retained owner failure; its text is in diagnostic_path"
+    );
+}
+
+/// The final drain's grace expired with an owner still retained.
+pub(crate) fn process_drain_retained(grace: std::time::Duration) {
+    tracing::error!(
+        event = "process_drain_retained",
+        grace_secs = grace.as_secs(),
+        "a process-wide registry still retained an owner when the exit grace expired"
+    );
+}
+
+/// Every process-wide registry joined its owners after the daemon stopped.
+pub fn process_drained() {
+    tracing::info!(
+        event = "process_drained",
+        "process-wide startup, serving and child registries drained"
+    );
+}
+
 /// A family has used its whole renewal budget. This is logged when the last
 /// renewal is issued, so at most once per earned renewal, not per refusal.
 pub(crate) fn credential_renewal_budget_spent(family: uuid::Uuid) {

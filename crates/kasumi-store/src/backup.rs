@@ -817,14 +817,21 @@ impl FilesystemBackupDestination {
         self.root.path()
     }
 
+    /// The installed disk owns the blocking child. A cancelled caller leaves
+    /// it running there, and the disk's drain joins it and keeps its panic or
+    /// its unobserved write failure.
     async fn verified<T: Send + 'static>(
         &self,
+        effect: crate::FilesystemEffect,
         operation: impl FnOnce(&crate::backup_sessions::filesystem::Directory) -> Result<T>
         + Send
         + 'static,
     ) -> Result<T> {
         let root = self.root.clone();
-        tokio::task::spawn_blocking(move || root.run(operation)).await?
+        self.root
+            .disk()
+            .filesystem_child(effect, move || root.run(operation))
+            .await
     }
 }
 
@@ -843,8 +850,10 @@ impl BackupDestination for FilesystemBackupDestination {
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
         );
-        self.verified(move |root| root.put(session, slot, &encrypted))
-            .await
+        self.verified(crate::FilesystemEffect::Write, move |root| {
+            root.put(session, slot, &encrypted)
+        })
+        .await
     }
     async fn session_get(
         &self,
@@ -853,8 +862,10 @@ impl BackupDestination for FilesystemBackupDestination {
         max_bytes: usize,
     ) -> Result<Option<Vec<u8>>> {
         let limit = max_bytes.min(self.max_bytes);
-        self.verified(move |root| root.get(session, slot, limit))
-            .await
+        self.verified(crate::FilesystemEffect::Read, move |root| {
+            root.get(session, slot, limit)
+        })
+        .await
     }
     async fn session_objects(
         &self,
@@ -862,7 +873,10 @@ impl BackupDestination for FilesystemBackupDestination {
         limit: usize,
     ) -> Result<crate::BackupSessionObjectPage> {
         let proof = aborted.clone();
-        self.verified(move |root| root.list(&proof, limit)).await
+        self.verified(crate::FilesystemEffect::Read, move |root| {
+            root.list(&proof, limit)
+        })
+        .await
     }
     async fn session_delete(
         &self,
@@ -875,22 +889,29 @@ impl BackupDestination for FilesystemBackupDestination {
         );
         let proof = aborted.clone();
         let objects = objects.to_vec();
-        self.verified(move |root| root.delete(&proof, &objects))
-            .await
+        self.verified(crate::FilesystemEffect::Write, move |root| {
+            root.delete(&proof, &objects)
+        })
+        .await
     }
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         ensure!(
             encrypted.len() <= self.max_bytes,
             "backup exceeds destination byte limit"
         );
-        self.verified(move |root| root.put_backup(id, &encrypted))
-            .await
+        self.verified(crate::FilesystemEffect::Write, move |root| {
+            root.put_backup(id, &encrypted)
+        })
+        .await
     }
 
     // The retained root resolves the object; no caller path is reopened.
     async fn get(&self, id: Uuid, max_bytes: usize) -> Result<Vec<u8>> {
         let limit = self.max_bytes.min(max_bytes);
-        self.verified(move |root| root.get_backup(id, limit)).await
+        self.verified(crate::FilesystemEffect::Read, move |root| {
+            root.get_backup(id, limit)
+        })
+        .await
     }
 }
 

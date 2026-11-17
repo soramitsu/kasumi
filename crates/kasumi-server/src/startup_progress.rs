@@ -128,6 +128,11 @@ pub(crate) fn stopping() {
     systemd::notify("STOPPING=1\nSTATUS=draining");
 }
 
+/// How long a failed open, an incomplete serving drain or the final process
+/// drain may keep an owner retained before the process exits instead (see
+/// `retained_for` and `process_drain::finish`).
+pub const RETAINED_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
+
 /// A failed open, or a stopping daemon, can retain native owners and retry their
 /// drain indefinitely (the library keeps exact ownership rather than guess). A
 /// daemon process does not need to: exiting releases every owner, and the store
@@ -139,6 +144,9 @@ pub enum Retained {
     Startup,
     /// The serving drain after shutdown is retrying.
     Drain,
+    /// The final process-wide drain outlived its grace
+    /// (`process_drain::drain`).
+    Exit,
 }
 
 impl Retained {
@@ -146,14 +154,17 @@ impl Retained {
         match self {
             Self::Startup => "startup",
             Self::Drain => "drain",
+            Self::Exit => "exit",
         }
     }
     fn signal(self) -> &'static tokio::sync::watch::Sender<bool> {
         static STARTUP: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
         static DRAIN: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
+        static EXIT: OnceLock<tokio::sync::watch::Sender<bool>> = OnceLock::new();
         match self {
             Self::Startup => &STARTUP,
             Self::Drain => &DRAIN,
+            Self::Exit => &EXIT,
         }
         .get_or_init(|| tokio::sync::watch::channel(false).0)
     }

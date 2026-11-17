@@ -16,6 +16,9 @@ struct Registry {
     // Joined failures must outlive a cancelled drain that is still awaiting
     // another owner. Clear only when returning them to a caller without a yield.
     failure: Option<anyhow::Error>,
+    // The process's final drain is joining this registry: an open accepted
+    // now would start after that census and be dropped with the runtime.
+    sealed: bool,
 }
 type Tasks = AsyncMutex<Registry>;
 
@@ -171,6 +174,11 @@ where
 {
     let (send, receive) = oneshot::channel();
     let mut tasks = tasks.lock().await;
+    // Refuse before reaping: a prior failure belongs to the final drain then.
+    anyhow::ensure!(
+        !tasks.sealed,
+        "the process is exiting; no new open is admitted"
+    );
     while let Some(index) = tasks
         .handles
         .iter()
@@ -216,8 +224,14 @@ async fn deliver<T: Runtime>(outcome: Result<T>, send: oneshot::Sender<Ticket<T>
     Ok(())
 }
 
-/// Stop admitting new open calls before this final drain. Cancellation retains
-/// every unfinished handle; committed runtimes are never closed by this registry.
+/// Refuse every later open of `kind` for the rest of the process. Only the
+/// process's final drain seals, so that no owner it must join starts after it.
+pub(crate) async fn seal(kind: Kind) {
+    tasks(kind).lock().await.sealed = true;
+}
+
+/// Join every retained open. Cancellation retains every unfinished handle;
+/// committed runtimes are never closed by this registry.
 pub(crate) async fn drain(kind: Kind) -> Result<()> {
     drain_tasks(tasks(kind)).await
 }

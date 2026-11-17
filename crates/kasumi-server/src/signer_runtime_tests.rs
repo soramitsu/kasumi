@@ -195,7 +195,7 @@ async fn filesystem_backup_open_requires_original_encrypted_verifier_owner() {
     use kasumi_store::{BackupDestination, FilesystemBackupDestination};
     let fixture = Fixture::new();
     fixture.initialize().await.unwrap();
-    InitializeSignerVerifier::drain_initializations()
+    crate::startup_owner::drain(crate::startup_owner::Kind::SignerVerifier)
         .await
         .unwrap();
     let disk = fixture.persistent().unwrap();

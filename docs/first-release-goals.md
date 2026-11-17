@@ -1413,9 +1413,33 @@ does not establish historical dispatch.
 ### G07 — Response fencing and retained task/drain ownership
 
 [Filesystem job ownership](filesystem-job-ownership-plan.md) records the remaining
-unimplemented archive/backup child registry, pre-open disk fence, output-charge
-handoff, constructor plumbing and shutdown order. A caller retaining a resource
-charge does not by itself retain the actual child outcome.
+unimplemented output-charge handoff, per-scope constructor plumbing and
+worker/store shutdown split. A caller retaining a resource charge
+does not by itself retain the actual child outcome.
+
+The actual blocking children are now retained. Filesystem archive and backup
+operations run on a bounded table held by their installed `NodeDisk`; the
+full-backup audit-cache read and every `VerificationDeadline::blocking` worker
+run on one held by the node's memory core (`kasumi_serving::BlockingChildren`).
+A cancelled or expired caller gives up only its claim on the output; a present
+caller joins its own child in the owner's slot. A child whose caller has left
+destroys its output itself, so the charge and work registration it retains
+never wait for a drain to release a database's work fence. A disk counts each
+of its children from before dispatch until that disposition, and `pause` and
+its idle census refuse while one is outstanding, even one that has not opened
+its file yet. `NodeRuntime`,
+`AuthorityRuntime` and startup-resource shutdown, and `NodeStore::shutdown`,
+join the unclaimed handles in place before the stores those children use
+close; a panic, an unobserved write failure or an unexplained worker failure
+is a typed drain issue that a cancelled or repeated drain reports again.
+`kasumid` and `kasumi-authority` (offline commands included) run
+`process_drain::finish` before every exit, for at most the retained grace: it
+seals and joins the process-wide serving and startup registries, joins
+background custody, then seals and joins the child tables of every installed
+disk and of the installed core, so nothing is admitted after its census and a
+store dropped without shutting down still has its children joined. It exits
+nonzero when an owner failed or is still retained. The installed, separate-process and full-suite qualification of this
+source remains open.
 
 The fixed startup-scope foundation is integrated in pending source. It admits
 its core census and resource cells, preserves original outcomes through canceled

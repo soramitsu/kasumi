@@ -8,9 +8,10 @@ its original runtime until shutdown has completed. Neither cancellation nor a
 failed drain authorizes fresh admission, another physical file open or reuse of
 a stopped serving instance.
 
-`NodeRuntime::drain_startups` and `AuthorityRuntime::drain_startups` join their
-registered startup owners. Callers must stop admitting new opens before a final
-drain. Cancelling a drain retains unfinished handles. Terminal tasks are joined
+Every binary's exit runs `process_drain::finish`, which seals each startup
+registry (a later open is refused before it starts) and then joins its
+registered owners within the retained grace; `NodeRuntime::drain_startups`
+joins the data registry alone. Cancelling a drain retains unfinished handles. Terminal tasks are joined
 and removed during the next admission or explicit drain; committed runtime
 handles are never shut down by this registry. The successful recipient is then
 responsible for normal runtime shutdown.

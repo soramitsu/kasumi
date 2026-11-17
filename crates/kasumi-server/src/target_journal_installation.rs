@@ -54,11 +54,6 @@ pub(crate) async fn initialize_with_storage(
     Ok(())
 }
 
-/// Join cancelled installation attempts and preserve their original failures.
-pub async fn drain_initializations() -> Result<()> {
-    crate::startup_owner::drain(crate::startup_owner::Kind::TargetJournal).await
-}
-
 struct Initialized;
 impl crate::startup_owner::Runtime for Initialized {
     fn close(

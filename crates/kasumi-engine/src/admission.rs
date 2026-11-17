@@ -442,6 +442,9 @@ pub struct MemoryCore {
     storage_census: kasumi_store::StorageCensus,
     startups: Mutex<startup::Census>,
     snapshot_work: Mutex<snapshot_work::Census>,
+    // Blocking verification and backup children of admitted operations. Each
+    // child retains its operation's reservation, never this core's owner.
+    blocking_children: kasumi_serving::BlockingChildren,
     sampler: Option<std::thread::JoinHandle<()>>,
     data: Arc<MemoryState>,
 }
@@ -531,6 +534,25 @@ impl MemoryCore {
     pub fn installed(config: AdmissionConfig) -> anyhow::Result<Arc<Self>> {
         installed::select(config)
     }
+    pub(crate) fn blocking_children(&self) -> &kasumi_serving::BlockingChildren {
+        &self.blocking_children
+    }
+    /// Refuse every later blocking child of the process's installed core. Only
+    /// the process's final drain seals, before it joins that core's children.
+    pub fn seal_installed_blocking_children() {
+        if let Some(core) = installed::current() {
+            core.blocking_children.seal();
+        }
+    }
+    /// Join the blocking children of the process's installed core before the
+    /// process exits, whichever runtime facades were dropped or never closed.
+    /// A process that installed no core has none.
+    pub async fn drain_installed_blocking_children() -> kasumi_types::drain::DrainResult {
+        match installed::current() {
+            Some(core) => core.blocking_children.drain().await,
+            None => Ok(()),
+        }
+    }
     /// Explicit core injection must preserve the complete configured policy.
     pub fn require_policy(&self, config: &AdmissionConfig) -> anyhow::Result<()> {
         anyhow::ensure!(
@@ -545,12 +567,17 @@ impl MemoryCore {
         let data = arc_bytes::<MemoryState>()?;
         let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
         let snapshot_work = snapshot_work::Census::required_bytes(config.max_inflight_operations)?;
+        let children =
+            kasumi_serving::BlockingChildren::required_bytes(config.max_inflight_operations)
+                .and_then(|bytes| bytes.checked_add(ALLOCATION_ALLOWANCE))
+                .ok_or_else(|| anyhow::anyhow!("blocking child table size overflow"))?;
         let storage = kasumi_store::StorageCensus::required_bytes(config.max_reservations)?;
         arc_bytes::<Self>()?
             .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
             .and_then(|bytes| bytes.checked_add(data))
             .and_then(|bytes| bytes.checked_add(startups))
             .and_then(|bytes| bytes.checked_add(snapshot_work))
+            .and_then(|bytes| bytes.checked_add(children))
             .and_then(|bytes| bytes.checked_add(storage))
             .and_then(|bytes| bytes.checked_add(source))
             .and_then(|bytes| bytes.checked_add(clock))
@@ -605,6 +632,12 @@ impl MemoryCore {
         let snapshot_work = Mutex::new(snapshot_work::Census::allocate(
             prepared.config.max_inflight_operations,
         )?);
+        // Every live child retains its operation's reservation, so the
+        // operation bound is also the bound on children that can run at once.
+        let blocking_children = kasumi_serving::BlockingChildren::new(
+            "admitted blocking child",
+            prepared.config.max_inflight_operations,
+        )?;
         let mut slots = Vec::new();
         slots.try_reserve_exact(prepared.config.max_reservations)?;
         for index in 0..prepared.config.max_reservations {
@@ -646,6 +679,7 @@ impl MemoryCore {
             storage_census,
             startups,
             snapshot_work,
+            blocking_children,
             sampler: None,
             data,
         });
@@ -1331,6 +1365,16 @@ impl NodeAdmission {
         *slot = Some(Arc::downgrade(&owner));
         Ok(owner)
     }
+    /// Join the blocking verification and backup children accepted on this
+    /// node's core, including those whose callers were cancelled or timed out.
+    /// A panic, or a failure no caller received, is reported here and by every
+    /// repeated call; cancelling a call leaves each handle with the core.
+    /// The children's own stores stay open through their work registrations,
+    /// so call this after the databases shut down and before the node closes.
+    pub async fn drain_blocking_children(&self) -> kasumi_types::drain::DrainResult {
+        self.core.blocking_children.drain().await
+    }
+
     pub async fn drain_snapshot_startups(&self) -> kasumi_types::drain::DrainResult {
         use kasumi_types::drain::DrainCompletion;
         let mut report = self.snapshot_startup_drain.lock().await;
@@ -1447,6 +1491,19 @@ impl Drop for OrdinaryProtection {
     }
 }
 impl Reservation {
+    /// The node's table of blocking children. A child started here stays with
+    /// the installed core when its caller is cancelled or times out, and
+    /// `NodeAdmission::drain_blocking_children` joins it.
+    pub(crate) fn blocking_children(&self) -> &kasumi_serving::BlockingChildren {
+        &self.core.blocking_children
+    }
+
+    /// The core itself, for a caller that hands this reservation to its child
+    /// and must not keep the charge alive while it waits.
+    pub(crate) fn blocking_owner(&self) -> Arc<MemoryCore> {
+        self.core.clone()
+    }
+
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
         self.reserve_additional_raw(bytes)
             .map_err(|error| match error {

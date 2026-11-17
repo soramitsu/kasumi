@@ -577,11 +577,6 @@ impl InitializeSignerVerifier {
         .await?;
         Ok(())
     }
-    /// Stop admitting new initializations before joining abandoned operations.
-    /// Cancellation retains the exact pending task and its original failure.
-    pub async fn drain_initializations() -> Result<()> {
-        crate::startup_owner::drain(crate::startup_owner::Kind::SignerVerifier).await
-    }
     async fn initialize_owned(
         self,
         storage: crate::runtime_memory::RuntimeStorage,

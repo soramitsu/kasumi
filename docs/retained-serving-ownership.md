@@ -21,11 +21,11 @@ retried with a 1-to-30-second backoff. A typed Complete failure ends cleanup whi
 preserving its original issue objects; an opaque failure never proves completion.
 
 A waiter acknowledges the result only after joining the exact supervisor. The
-registry retains unacknowledged outcomes and their metadata charge. The explicit
-`NodeRuntime::drain_serving` and `AuthorityRuntime::drain_serving` methods stop and
-join their process-kind inventories after the operator stops admitting new
-instances. Cancelling a drain preserves each unfinished handle and each observed
-error. Tests use a private registry or an exact database-ID selector so they never
+registry retains unacknowledged outcomes and their metadata charge. Before a
+binary returns from `main`, `process_drain::finish` seals both process-kind
+registries, so a late registration is refused and a late owner is only closed,
+then stops and joins every inventory within the retained grace. Cancelling a
+drain preserves each unfinished handle and each observed error. Tests use a private registry or an exact database-ID selector so they never
 stop other test instances.
 
 If the supervisor itself is aborted, the registry still has the actual composite.

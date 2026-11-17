@@ -104,6 +104,7 @@ mod registered_read_scope;
 mod registered_write_scope;
 pub use registered_write_scope::{NodeScopedWriteFailure, NodeScopedWriteRetirement};
 mod visit_record;
+pub(crate) use node_disk::FilesystemEffect;
 pub use node_disk::{
     CensusCancellation, DirectoryPolicy, DiskWork, FileAllocationPolicy, NodeDisk, NodeDiskConfig,
     NodeDiskDirectory, NodeDiskDirectoryCloseError, NodeDiskDirectoryCursor,
@@ -1125,6 +1126,8 @@ pub(crate) struct RegisteredNodeBody {
 
 #[cfg(test)]
 mod composite_node_tests;
+#[cfg(test)]
+mod filesystem_children_tests;
 mod node_lifecycle;
 impl RegisteredNodeBody {
     fn prepare(
@@ -1723,10 +1726,26 @@ impl NodeStore {
                 .is_some_and(|disk| disk.fixture_lease_time())
     }
 
+    /// Join the blocking archive and backup children of this node's installed
+    /// disk, keeping their panics and unobserved write failures. A runtime
+    /// calls this before it closes a store those children may still use;
+    /// `shutdown` repeats it before the node database closes.
+    pub async fn drain_filesystem_children(&self) -> DrainResult {
+        match &self.body().persistent_disk {
+            Some(disk) => disk.drain_filesystem_children().await,
+            None => Ok(()),
+        }
+    }
+
     /// Stop new database work, drain cache warming and retained initializers, then close
     /// the database. The caller first drains its tenant and Raft workers. Busy retains
     /// the exact database and all physical charges for a later shutdown retry.
     pub async fn shutdown(&self) -> DrainResult {
+        // An abandoned archive publication may still record into a tenant of
+        // this node. Join every child of the disk while the database still
+        // accepts that write; a failure is reported below and never stops the
+        // close. Nothing has changed yet if this wait is cancelled.
+        let children = self.drain_filesystem_children().await;
         // Mark the database stopped before sealing the opening. A worker step
         // that the seal refuses (`DatabaseClosed`) is a clean stop only while
         // the database already reports stopped; sealing first left a window in
@@ -1740,6 +1759,9 @@ impl NodeStore {
         self.body().db.run_after_shutdown_seal_for_test();
         self.body().cache_warmer.stop(self);
         let mut report = self.body().shutdown_report.lock().await;
+        if let Err(failure) = &children {
+            report.merge(failure);
+        }
         let lifecycle = &self.body().lifecycle;
         lifecycle.begin_shutdown();
         lifecycle.enter_resource(node_lifecycle::NodeResource::Cache);

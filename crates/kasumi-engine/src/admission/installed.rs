@@ -32,9 +32,16 @@ impl Registry {
     }
 }
 
+static INSTALLED: Registry = Registry::new();
+
 pub(super) fn select(config: AdmissionConfig) -> anyhow::Result<Arc<MemoryCore>> {
-    static INSTALLED: Registry = Registry::new();
     INSTALLED.select(config)
+}
+
+/// The process's installed core, if a runtime selected one. Only the final
+/// process drain asks; it waits out a concurrent selection.
+pub(super) fn current() -> Option<Arc<MemoryCore>> {
+    INSTALLED.0.lock().clone()
 }
 
 #[cfg(test)]

@@ -5,7 +5,10 @@ use kasumi_types::drain::{DrainCompletion, DrainReport, DrainResult};
 use std::{
     future::Future,
     pin::Pin,
-    sync::{Arc, Mutex, OnceLock},
+    sync::{
+        Arc, Mutex, OnceLock,
+        atomic::{AtomicBool, Ordering},
+    },
     task::Poll,
     time::Duration,
 };
@@ -43,7 +46,23 @@ pub(crate) enum Kind {
     Data,
     Authority,
 }
-type Registry = Mutex<Vec<Arc<Job>>>;
+#[derive(Default)]
+struct Registry {
+    jobs: Mutex<Vec<Arc<Job>>>,
+    // Set under `jobs` by the process's final drain. A runtime admitted after
+    // that census would be dropped with the Tokio runtime, never joined.
+    sealed: AtomicBool,
+}
+impl Registry {
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, Vec<Arc<Job>>>> {
+        self.jobs.lock()
+    }
+    fn refuse_sealed(&self) -> Option<anyhow::Error> {
+        self.sealed
+            .load(Ordering::Acquire)
+            .then(|| anyhow::anyhow!("the process is exiting; no runtime is admitted to serve"))
+    }
+}
 fn registry(kind: Kind) -> &'static Arc<Registry> {
     static DATA: OnceLock<Arc<Registry>> = OnceLock::new();
     static AUTHORITY: OnceLock<Arc<Registry>> = OnceLock::new();
@@ -276,6 +295,9 @@ fn prior_failure(entries: &[Arc<Job>], identity: uuid::Uuid) -> Option<anyhow::E
 }
 fn check_admission(registry: &Registry, identity: uuid::Uuid) -> Result<()> {
     let mut entries = registry.lock().unwrap_or_else(|p| p.into_inner());
+    if let Some(sealed) = registry.refuse_sealed() {
+        return Err(sealed);
+    }
     entries.retain(|job| !job.reap_acknowledged());
     prior_failure(&entries, identity).map_or(Ok(()), Err)
 }
@@ -315,14 +337,17 @@ fn begin(
     });
     let mut entries = registry.lock().unwrap_or_else(|p| p.into_inner());
     entries.retain(|job| !job.reap_acknowledged());
-    let refused = prior_failure(&entries, job.identity);
+    // A refused owner is still registered, and its supervisor only closes it.
+    let refused = registry
+        .refuse_sealed()
+        .or_else(|| prior_failure(&entries, job.identity));
     let admitted = refused.is_none();
     if let Some(error) = refused {
         job.state
             .lock()
             .unwrap_or_else(|p| p.into_inner())
             .report
-            .record("serving replacement admission", 0, error);
+            .record("serving admission", 0, error);
     }
     // All synchronous steps occur before the returned future exists. Dropping
     // even an unpolled waiter leaves the exact owner and supervisor registered.
@@ -349,8 +374,20 @@ fn begin(
     }
 }
 
-/// Stop opening/serving new instances before this final process drain. Cancelling
-/// this call leaves its census and every original error in the registry.
+/// Refuse every later serving registration of `kind` for the rest of the
+/// process. Only the process's final drain seals, before its census.
+pub(crate) fn seal(kind: Kind) {
+    seal_registry(registry(kind));
+}
+fn seal_registry(registry: &Registry) {
+    // Under the census lock: a `begin` either registered before this seal,
+    // and the drain's census holds it, or observes the seal and refuses.
+    let _entries = registry.lock().unwrap_or_else(|p| p.into_inner());
+    registry.sealed.store(true, Ordering::Release);
+}
+
+/// Join every registered instance. Cancelling this call leaves its census and
+/// every original error in the registry.
 pub(crate) async fn drain(kind: Kind) -> Result<()> {
     drain_registry(registry(kind)).await
 }

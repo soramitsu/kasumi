@@ -3,7 +3,7 @@
 use anyhow::{Context, Result, bail};
 use kasumi_server::runtime::{NodeRuntime, RuntimeConfig, example_config};
 use kasumi_server::serve_options::{self, ServeCommand, ServeOptions};
-use kasumi_server::startup_progress::{self, Retained};
+use kasumi_server::startup_progress::{self, RETAINED_GRACE, Retained};
 
 const USAGE: &str = "\
 usage: kasumid <command> [arguments]
@@ -80,6 +80,16 @@ fn main() -> std::process::ExitCode {
 }
 
 async fn async_main() -> std::process::ExitCode {
+    let mut daemon = false;
+    let status = invoked(&mut daemon).await;
+    // Returning drops the Tokio runtime under every retained owner: join the
+    // process-wide registries first, whether the command succeeded or not.
+    kasumi_server::process_drain::finish(status, daemon).await
+}
+
+/// The command's own exit status. `daemon` is set once `serve` is selected:
+/// only the daemon logs its drained exit.
+async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
     if kasumi_server::logging::initialize().is_err() {
         eprintln!("{{\"level\":\"ERROR\",\"event\":\"logging_initialization_failed\"}}");
         return std::process::ExitCode::FAILURE;
@@ -140,6 +150,7 @@ async fn async_main() -> std::process::ExitCode {
     // the daemon's stderr is the journal.
     kasumi_server::logging::install_panic_hook();
     kasumi_server::logging::daemon_starting();
+    *daemon = true;
     startup_progress::begin();
     match serve(options).await {
         Ok(()) => {
@@ -205,10 +216,6 @@ async fn serve(options: ServeOptions) -> Result<()> {
     signal.abort();
     result
 }
-
-/// How long a failed open or an incomplete drain may keep retrying before the
-/// daemon exits instead (see `startup_progress::retained_for`).
-const RETAINED_GRACE: std::time::Duration = std::time::Duration::from_secs(60);
 
 async fn run(arguments: &[String]) -> Result<()> {
     if kasumi_server::standalone_cli::command(arguments).await? {

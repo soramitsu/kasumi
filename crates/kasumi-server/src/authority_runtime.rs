@@ -260,11 +260,6 @@ impl AuthorityRuntime {
         .await
     }
 
-    /// Join cancelled/incomplete opens after stopping new startup admission.
-    pub async fn drain_startups() -> Result<()> {
-        crate::startup_owner::drain(crate::startup_owner::Kind::Authority).await
-    }
-
     /// Close an opened runtime that has not entered its consuming serve loop.
     pub async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         use crate::runtime_drain::observe;
@@ -284,6 +279,19 @@ impl AuthorityRuntime {
             report,
             &mut retained,
             self.audit.admission().drain_snapshot_startups().await,
+        );
+        // Join the blocking children that cancelled or expired callers left
+        // with the node's core and its disk, before the stores they may still
+        // use are closed.
+        observe(
+            report,
+            &mut retained,
+            self.audit.admission().drain_blocking_children().await,
+        );
+        observe(
+            report,
+            &mut retained,
+            self.node.drain_filesystem_children().await,
         );
         observe(report, &mut retained, self.stores.shutdown().await);
         observe(report, &mut retained, self.audit.shutdown().await);
@@ -525,11 +533,6 @@ impl AuthorityRuntime {
             },
             shutdown,
         )
-    }
-
-    /// Stop opening new instances before joining all retained serving owners.
-    pub async fn drain_serving() -> Result<()> {
-        crate::serving_owner::drain(crate::serving_owner::Kind::Authority).await
     }
 
     async fn serve_owned(

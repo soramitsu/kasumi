@@ -509,3 +509,39 @@ fn serving_registration_retains_memory_without_an_inflight_operation_slot() {
     drop(registration);
     assert_eq!(admission.snapshot().reserved_bytes, bookkeeping);
 }
+
+#[tokio::test]
+async fn sealed_registry_refuses_registration_and_only_closes_a_late_owner() {
+    let registry = Arc::new(Registry::default());
+    seal_registry(&registry);
+    let (mut late, owner, registration) = fixture(false, false);
+    assert!(check_admission(&registry, registration.identity).is_err());
+    // An owner opened before the seal is still registered and closed, never
+    // served: the final drain's census then holds it.
+    let (_stop, shutdown) = watch::channel(false);
+    let waiter = begin(registry.clone(), registration, owner, shutdown);
+    tokio::time::timeout(Duration::from_secs(5), late.closing.notified())
+        .await
+        .unwrap();
+    let mut entered = Box::pin(late.entered.notified());
+    pending(&mut entered).await;
+    drop(entered);
+    late.release();
+    let error = tokio::time::timeout(Duration::from_secs(5), waiter)
+        .await
+        .unwrap()
+        .unwrap_err();
+    let refusal = &error
+        .downcast_ref::<kasumi_types::drain::DrainFailure>()
+        .unwrap()
+        .issues()[0];
+    assert_eq!(refusal.component(), "serving admission");
+    assert!(
+        refusal
+            .error()
+            .to_string()
+            .contains("no runtime is admitted to serve")
+    );
+    late.reopened().await;
+    drain_registry(&registry).await.unwrap();
+}

@@ -5,7 +5,8 @@
 
 Creates a private temporary installation on three unused loopback ports. Checks
 optional collection/index defaults, authenticated conditional writes, exact
-idempotent replay, stop/resume persistence, and owned process/file cleanup.
+idempotent replay, stop/resume persistence, the daemon's process-wide registry
+drain on SIGTERM, and owned process/file cleanup.
 The real `kasumid init` invocation deliberately interleaves its directory and
 options. No software is compiled and no release/performance claim is made.
 
@@ -119,6 +120,22 @@ def stopped(directory, remove):
         require(not directory.exists(), "stop --remove left the installation behind")
 
 
+def stop_events(log):
+    """The daemon's structured event names from its last stop request onward."""
+    events = []
+    with Path(log).open(encoding="utf-8", errors="replace") as lines:
+        for line in lines:
+            try:
+                event = json.loads(line).get("fields", {}).get("event")
+            except (ValueError, AttributeError):
+                continue
+            if event == "daemon_stopping":
+                events = []
+            if event:
+                events.append(event)
+    return events
+
+
 def exercise(arguments):
     binaries = Path(arguments.bin_dir).resolve()
     for name in ("kasumid", "kasumictl"):
@@ -171,6 +188,18 @@ def exercise(arguments):
         stopped(directory, remove=False)
         require(profile.is_file(), "stop without remove deleted the installation")
         result["checks"].append("stop_preserving_data")
+
+        # SIGTERM ends in the process-wide registry drain, after the serving
+        # drain, with no owner failed or still retained at exit.
+        step = "sigterm_process_drain"
+        events = stop_events(directory / "server.log")
+        require("daemon_stopped" in events and "process_drained" in events
+                and events.index("daemon_stopped") < events.index("process_drained"),
+                "SIGTERM did not end in the process-wide registry drain")
+        require(not {"process_drain_failed", "process_drain_retained",
+                     "daemon_exit_with_retained_owners"} & set(events),
+                "the process-wide registry drain did not finish cleanly")
+        result["checks"].append("sigterm_process_drain")
 
         step = "resume"
         dev.resume(SimpleNamespace(directory=str(directory), bin_dir=str(binaries), allow_sleep=True))

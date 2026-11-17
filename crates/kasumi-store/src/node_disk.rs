@@ -56,6 +56,30 @@ pub use file::NodeDiskFile;
 pub(crate) use file::{FailedCloseReport, FailedFileTransfer, NodeDiskCloseOutcome};
 use ledger::AccountedInode;
 
+/// Whether an abandoned filesystem child's failure is an outcome that only
+/// this disk's drain can still report.
+#[derive(Clone, Copy)]
+pub(crate) enum FilesystemEffect {
+    Read,
+    Write,
+}
+
+/// One accepted archive or backup child, from before its dispatch until its
+/// output is disposed of.
+struct FilesystemJob(Arc<NodeDisk>);
+impl FilesystemJob {
+    fn accept(disk: &Arc<NodeDisk>) -> Self {
+        // One per call in flight: a refused start drops its job at once.
+        disk.lock_state().filesystem_jobs += 1;
+        Self(disk.clone())
+    }
+}
+impl Drop for FilesystemJob {
+    fn drop(&mut self) {
+        self.0.lock_state().filesystem_jobs -= 1;
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct NodeDiskConfig {
@@ -525,6 +549,9 @@ struct State {
     transaction_files: u64,
     transaction_descriptors: u32,
     transaction_witnesses: u32,
+    // Accepted archive and backup children whose output is not yet disposed
+    // of. A queued child holds no file yet, but will open one.
+    filesystem_jobs: usize,
     directory_bytes: u64,
     directories: u64,
     refusals: RefusalLedger<5>,
@@ -543,6 +570,7 @@ impl State {
             && self.open_directory_cursors == 0
             && self.census_streams.outstanding() == 0
             && self.transaction_witnesses == 0
+            && self.filesystem_jobs == 0
     }
 
     fn namespace_witnesses(&self) -> u32 {
@@ -584,6 +612,9 @@ pub struct NodeDisk {
     /// unit's extents up to it only overstates charges and promises.
     unit: u64,
     state: Mutex<State>,
+    // Blocking archive and backup children on this disk. Their closures hold
+    // this disk; the table holds only their handles and outcomes.
+    filesystem_children: kasumi_serving::BlockingChildren,
     #[cfg(test)]
     available_override: Mutex<Option<u64>>,
     #[cfg(test)]
@@ -918,6 +949,10 @@ impl NodeDisk {
             .reserve_installed(requirement.registry_bytes)?;
         // The new fixed bank has no failure path after configured-root FD acquisition.
         let file_custody = file::CustodySlots::new(config.max_open_files)?;
+        let filesystem_children = kasumi_serving::BlockingChildren::new(
+            "filesystem child",
+            Self::filesystem_children_capacity(config)?,
+        )?;
         #[cfg(test)]
         let assigned = match &selection {
             DeviceSelection::Assigned(devices) => Some(devices),
@@ -1030,6 +1065,7 @@ impl NodeDisk {
                 transaction_files: 0,
                 transaction_descriptors: 0,
                 transaction_witnesses: 0,
+                filesystem_jobs: 0,
                 directory_bytes: totals.directory_bytes,
                 directories: totals.directories,
                 refusals: RefusalLedger::default(),
@@ -1037,6 +1073,7 @@ impl NodeDisk {
                 file_custody,
                 accounted,
             }),
+            filesystem_children,
             #[cfg(test)]
             available_override: Mutex::new(None),
             #[cfg(test)]
@@ -1465,6 +1502,104 @@ impl NodeDisk {
         self.filesystem_available_override.lock().unwrap()[index] = available;
     }
 
+    /// One slot for every file owner a child could hold at once: a child
+    /// beyond that could not open its file either.
+    fn filesystem_children_capacity(config: &NodeDiskConfig) -> io::Result<usize> {
+        usize::try_from(config.max_open_files).map_err(|_| disk_memory::overflow())
+    }
+
+    /// Run one archive or backup operation on a blocking child this disk
+    /// retains. A cancelled caller gives up only its claim: the child runs to
+    /// its end, its panic or unobserved write failure stays in this disk's
+    /// drain report, and `drain_filesystem_children` joins it.
+    pub(crate) async fn filesystem_child<T: Send + 'static>(
+        self: &Arc<Self>,
+        effect: FilesystemEffect,
+        run: impl FnOnce() -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        // Counted under the census lock from before dispatch: pause and the
+        // idle census see a child that has not opened its file yet.
+        let job = FilesystemJob::accept(self);
+        let call = self.filesystem_children.start(move || {
+            // The output carries the job to its disposition: its caller, or
+            // the child itself when that caller has left.
+            run().map(|value| (value, job)).map_err(|error| {
+                // An abandoned read changed nothing that anyone must be told.
+                // Of a write, only the create-only conflict found before any
+                // effect is a known outcome; with context it is not bare.
+                let known = match effect {
+                    FilesystemEffect::Read => true,
+                    FilesystemEffect::Write => {
+                        error.chain().len() == 1
+                            && error
+                                .downcast_ref::<io::Error>()
+                                .is_some_and(|error| error.kind() == io::ErrorKind::AlreadyExists)
+                    }
+                };
+                if known {
+                    kasumi_serving::ChildFailure::Stopped(error)
+                } else {
+                    kasumi_serving::ChildFailure::Failed(error)
+                }
+            })
+        })?;
+        let (value, _job) = call.wait().await??;
+        Ok(value)
+    }
+
+    /// Join every archive and backup child accepted on this disk. Call before
+    /// closing a store those children may still write to. A cancelled call
+    /// leaves each handle here; a repeated one reports the same failures.
+    pub async fn drain_filesystem_children(&self) -> kasumi_types::drain::DrainResult {
+        self.filesystem_children.drain().await
+    }
+
+    /// The `index`th disk this process installed. The registry keeps every
+    /// installed owner, so a store dropped without shutting down leaves its
+    /// disk, and the disk's children, reachable here.
+    fn installed_owner(index: usize) -> Option<Arc<Self>> {
+        registry()
+            .lock()
+            .iter()
+            .filter_map(|entry| match &entry.registration {
+                Registration::Installed(owner) => Some(owner.clone()),
+                Registration::Preparing(_) | Registration::Transition => None,
+            })
+            .nth(index)
+    }
+
+    /// Refuse every later archive or backup child on every installed disk.
+    /// Only the process's final drain seals, before it joins those children.
+    pub fn seal_installed_filesystem_children() {
+        for entry in registry().lock().iter() {
+            if let Registration::Installed(owner) = &entry.registration {
+                owner.filesystem_children.seal();
+            }
+        }
+    }
+
+    /// Join the archive and backup children of every installed disk before
+    /// the process exits, whichever stores were dropped or never shut down.
+    /// Cancellation leaves every handle with its disk.
+    pub async fn drain_installed_filesystem_children() -> kasumi_types::drain::DrainResult {
+        let mut report = kasumi_types::drain::DrainReport::default();
+        // New disks go to the head of the list, so an install during this
+        // walk repeats one drain rather than skipping a disk.
+        let mut index = 0;
+        while let Some(disk) = Self::installed_owner(index) {
+            if let Err(failure) = disk.drain_filesystem_children().await {
+                report.merge(&failure);
+            }
+            index += 1;
+        }
+        report.complete()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn filesystem_children_running(&self) -> usize {
+        self.filesystem_children.running()
+    }
+
     /// Seal new mutation admission before waiting for file/backend/directory owners to drain.
     /// This never releases physical charges, filesystem promises, or root locks.
     pub fn pause(&self) -> Result<()> {
@@ -1477,7 +1612,8 @@ impl NodeDisk {
                 && state.file_custody.retained_attempts() == 0
                 && state.open_directories == 0
                 && state.open_directory_cursors == 0
-                && state.census_streams.outstanding() == 0,
+                && state.census_streams.outstanding() == 0
+                && state.filesystem_jobs == 0,
             "persistent file or directory owners are still live"
         );
         Ok(())

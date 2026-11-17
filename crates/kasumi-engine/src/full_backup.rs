@@ -615,24 +615,38 @@ impl Database {
             };
             work.check()?;
             let source_link = link.clone();
-            let task = tokio::task::spawn_blocking(move || -> Result<_> {
-                work.check()?;
-                let placement = work.store.tenant_audit_archive().map_err(|_| {
-                    Error::new(ErrorCode::Unavailable, "backup audit cache unavailable")
-                })?;
-                let bytes = placement.cache().read_blocking(&source_link).map_err(|_| {
-                    Error::new(
-                        ErrorCode::Unavailable,
-                        "backup audit dependency unavailable",
-                    )
-                })?;
-                work.check()?;
-                // Retain the exact store, byte reservation and work registration
-                // until the bounded result itself is consumed or dropped.
-                Ok((bytes, work))
-            });
+            // The node's memory core owns this child: a cancelled backup
+            // gives up only its claim, and the node's drain joins the read
+            // and keeps its panic. A read changes nothing, so its failure is
+            // only ever this caller's.
+            let read = reservation
+                .blocking_children()
+                .start(move || {
+                    let read = || -> Result<_> {
+                        work.check()?;
+                        let placement = work.store.tenant_audit_archive().map_err(|_| {
+                            Error::new(ErrorCode::Unavailable, "backup audit cache unavailable")
+                        })?;
+                        let bytes =
+                            placement.cache().read_blocking(&source_link).map_err(|_| {
+                                Error::new(
+                                    ErrorCode::Unavailable,
+                                    "backup audit dependency unavailable",
+                                )
+                            })?;
+                        work.check()?;
+                        Ok(bytes)
+                    };
+                    // Retain the exact store, byte reservation and work registration
+                    // until the bounded result itself is consumed or dropped.
+                    match read() {
+                        Ok(bytes) => Ok((bytes, work)),
+                        Err(error) => Err(kasumi_serving::ChildFailure::Stopped(error)),
+                    }
+                })
+                .map_err(crate::backup_verify::child_refused)?;
             let (ciphertext, ownership) = tokio::select! {
-                result = task => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit read failed"))??,
+                result = read.wait() => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit read failed"))??,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             let reference = tokio::select! {

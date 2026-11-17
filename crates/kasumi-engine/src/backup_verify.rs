@@ -135,6 +135,47 @@ pub(crate) async fn verify_indexed_audit_dependency(
         .clone())
 }
 
+/// What a blocking worker's failure leaves in the node's drain report when no
+/// caller receives it. Typed native custody stays with its own registry; the
+/// report keeps a marker, as a database drain does for a failed custody detach.
+pub(crate) trait WorkerFailure: From<anyhow::Error> + Send + 'static {
+    fn unclaimed(self) -> anyhow::Error;
+}
+impl WorkerFailure for anyhow::Error {
+    fn unclaimed(self) -> anyhow::Error {
+        self
+    }
+}
+impl WorkerFailure for kasumi_store::ScratchOperationFailure {
+    fn unclaimed(self) -> anyhow::Error {
+        match self {
+            Self::Operation(original) => original,
+            custody => anyhow::anyhow!("{custody}"),
+        }
+    }
+}
+impl WorkerFailure for crate::SnapshotFailure {
+    fn unclaimed(self) -> anyhow::Error {
+        self.into_scratch_failure().unclaimed()
+    }
+}
+struct Unclaimed<E>(E);
+impl<E: WorkerFailure> From<Unclaimed<E>> for anyhow::Error {
+    fn from(failure: Unclaimed<E>) -> Self {
+        failure.0.unclaimed()
+    }
+}
+
+/// A node's table of blocking children started nothing: every slot holds a
+/// running child or retained evidence, or the process is exiting.
+pub(crate) fn child_refused(refused: kasumi_serving::ChildRefused) -> Error {
+    let code = match refused {
+        kasumi_serving::ChildRefused::Full => ErrorCode::ResourceExhausted,
+        kasumi_serving::ChildRefused::Sealed => ErrorCode::Unavailable,
+    };
+    Error::new(code, refused.to_string())
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct VerificationDeadline(tokio::time::Instant);
 impl VerificationDeadline {
@@ -169,6 +210,11 @@ impl VerificationDeadline {
         )
         .into()
     }
+    /// Run `work` on a blocking child that the node's memory core retains.
+    /// An expired deadline or a cancelled caller gives up only its claim: the
+    /// child keeps its reservation and work registration until it returns, and
+    /// `NodeAdmission::drain_blocking_children` joins it. Its panic, or a
+    /// failure that neither this caller nor a stop explains, stays there.
     pub async fn blocking<T, E, F>(
         self,
         reservation: Arc<Reservation>,
@@ -177,56 +223,73 @@ impl VerificationDeadline {
     ) -> std::result::Result<T, E>
     where
         T: Send + 'static,
-        E: From<anyhow::Error> + Send + 'static,
+        E: WorkerFailure,
         F: FnOnce() -> std::result::Result<T, E> + Send + 'static,
     {
         struct Resources {
             _reservation: Arc<Reservation>,
             _registration: Option<Arc<VerificationWork>>,
         }
-        struct Output<T, E> {
-            value: std::result::Result<T, E>,
+        impl Resources {
+            /// The operation's own deadline or cancellation told it to stop.
+            fn stopped<E: From<anyhow::Error>>(&self, deadline: VerificationDeadline) -> Option<E> {
+                if let Err(expired) = deadline.check() {
+                    return Some(E::from(expired));
+                }
+                let work = self._registration.as_ref()?;
+                work.check()
+                    .err()
+                    .map(|original| E::from(anyhow::Error::new(original)))
+            }
+        }
+        struct Output<T> {
+            value: T,
             // Output/state drops before resources; resources drop their byte
             // charge before the work registration permits shutdown to drain.
             _resources: Resources,
         }
         let phase = VerificationPhase::start("verification.blocking_wait", Some(self));
-        let output = self
-            .run(tokio::task::spawn_blocking(move || {
-                let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
-                let resources = Resources {
-                    _reservation: reservation,
-                    _registration: registration,
-                };
-                let value = (|| {
-                    self.check().map_err(E::from)?;
-                    if let Some(work) = &resources._registration {
-                        work.check()
-                            .map_err(|original| E::from(anyhow::Error::new(original)))?;
-                    }
-                    let result = work()?;
-                    self.check().map_err(E::from)?;
-                    if let Some(work) = &resources._registration {
-                        work.check()
-                            .map_err(|original| E::from(anyhow::Error::new(original)))?;
-                    }
-                    Ok(result)
-                })();
-                if value.is_ok() {
-                    phase.complete();
+        self.check().map_err(E::from)?;
+        // The child takes the reservation whole. This waiter keeps only the
+        // core whose table owns the child, never a share of the charge.
+        let owner = reservation.blocking_owner();
+        let started = owner.blocking_children().start(move || {
+            let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
+            let resources = Resources {
+                _reservation: reservation,
+                _registration: registration,
+            };
+            if let Some(stop) = resources.stopped(self) {
+                return Err(kasumi_serving::ChildFailure::Stopped(Unclaimed(stop)));
+            }
+            let value = work().map_err(|error| {
+                // A stopped operation's worker reports that stop in its own
+                // words. Any other failure is the worker's, and is retained
+                // when no caller is left to receive it.
+                match resources.stopped::<E>(self) {
+                    Some(_) => kasumi_serving::ChildFailure::Stopped(Unclaimed(error)),
+                    None => kasumi_serving::ChildFailure::Failed(Unclaimed(error)),
                 }
-                Output {
-                    value,
-                    _resources: resources,
-                }
-            }))
-            .await
-            .map_err(E::from)?
-            .map_err(|original| E::from(anyhow::Error::new(original)))?;
-        if output.value.is_ok() {
+            })?;
+            if let Some(stop) = resources.stopped(self) {
+                return Err(kasumi_serving::ChildFailure::Stopped(Unclaimed(stop)));
+            }
             phase.complete();
-        }
-        output.value
+            Ok(Output {
+                value,
+                _resources: resources,
+            })
+        });
+        let waited = match started {
+            Ok(call) => self.run(call.wait()).await,
+            Err(refused) => Err(child_refused(refused).into()),
+        };
+        let output = waited
+            .map_err(E::from)?
+            .map_err(|lost| E::from(anyhow::Error::new(lost)))?
+            .map_err(|failure| failure.0)?;
+        phase.complete();
+        Ok(output.value)
     }
 }
 
@@ -976,6 +1039,202 @@ mod tests {
         release.send(()).unwrap();
         tokio::time::timeout(std::time::Duration::from_secs(2), fence.drain())
             .await
+            .unwrap();
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        assert_eq!(slots.available_permits(), 1);
+        assert_eq!(admission.snapshot().inflight_operations, 0);
+    }
+
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    #[derive(Debug)]
+    struct WorkerFault(u64);
+    impl std::fmt::Display for WorkerFault {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "original verification worker fault {}", self.0)
+        }
+    }
+    impl std::error::Error for WorkerFault {}
+
+    /// A real verification child that holds until released, with the caller
+    /// that awaits it under `timeout_ms`.
+    fn held_child(
+        admission: &Arc<NodeAdmission>,
+        registration: Option<Arc<VerificationWork>>,
+        timeout_ms: u64,
+        finish: impl FnOnce() -> anyhow::Result<()> + Send + 'static,
+    ) -> (
+        tokio::task::JoinHandle<anyhow::Result<()>>,
+        tokio::sync::oneshot::Receiver<()>,
+        std::sync::mpsc::Sender<()>,
+    ) {
+        let reservation = Arc::new(admission.reserve(1 << 20, None).unwrap());
+        let (started, entered) = tokio::sync::oneshot::channel();
+        let (release, ready) = std::sync::mpsc::channel::<()>();
+        let deadline = VerificationDeadline::new(timeout_ms).unwrap();
+        let caller = tokio::spawn(async move {
+            deadline
+                .blocking(reservation, registration, move || -> anyhow::Result<()> {
+                    let _ = started.send(());
+                    let _ = ready.recv();
+                    finish()
+                })
+                .await
+        });
+        (caller, entered, release)
+    }
+
+    async fn pending_once(
+        drain: &mut std::pin::Pin<Box<impl Future<Output = kasumi_types::drain::DrainResult>>>,
+    ) {
+        std::future::poll_fn(|cx| {
+            assert!(drain.as_mut().poll(cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn expired_worker_is_joined_by_the_node_drain_and_its_stop_is_not_evidence() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (caller, entered, release) = held_child(&admission, None, 1_000, || {
+            anyhow::bail!("worker noticed its expired deadline")
+        });
+        entered.await.unwrap();
+        assert!(caller.await.unwrap().is_err());
+
+        // The deadline took only the caller: the node still owns the child.
+        let mut first = Box::pin(admission.drain_blocking_children());
+        pending_once(&mut first).await;
+        drop(first);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            1 << 20
+        );
+        release.send(()).unwrap();
+        tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        assert_eq!(admission.snapshot().inflight_operations, 0);
+    }
+
+    #[tokio::test]
+    async fn cancelled_caller_leaves_the_workers_later_failure_to_the_node_drain() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (caller, entered, release) =
+            held_child(&admission, None, 60_000, || Err(WorkerFault(7).into()));
+        entered.await.unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+
+        let mut first = Box::pin(admission.drain_blocking_children());
+        pending_once(&mut first).await;
+        drop(first);
+        release.send(()).unwrap();
+        let failure = tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(
+            failure.completion(),
+            kasumi_types::drain::DrainCompletion::Complete
+        );
+        assert_eq!(failure.issues().len(), 1);
+        let original = &failure.issues()[0];
+        assert_eq!(original.component(), "admitted blocking child");
+        assert_eq!(original.error().downcast_ref::<WorkerFault>().unwrap().0, 7);
+        let repeated = admission.drain_blocking_children().await.unwrap_err();
+        assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+            original,
+            &repeated.issues()[0]
+        ));
+        // The failed worker released its own charge; only its outcome stays.
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+
+        // A failure its caller receives is that caller's alone.
+        let (caller, entered, release) =
+            held_child(&admission, None, 60_000, || Err(WorkerFault(9).into()));
+        entered.await.unwrap();
+        release.send(()).unwrap();
+        let received = caller.await.unwrap().unwrap_err();
+        assert_eq!(received.downcast_ref::<WorkerFault>().unwrap().0, 9);
+        let repeated = admission.drain_blocking_children().await.unwrap_err();
+        assert_eq!(repeated.issues().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn worker_panic_reaches_its_caller_and_the_node_drain() {
+        for cancelled in [false, true] {
+            let admission = NodeAdmission::new(Default::default()).unwrap();
+            let (caller, entered, release) = held_child(&admission, None, 60_000, || {
+                panic!("original verification worker panic")
+            });
+            entered.await.unwrap();
+            if cancelled {
+                caller.abort();
+                assert!(caller.await.unwrap_err().is_cancelled());
+                release.send(()).unwrap();
+            } else {
+                release.send(()).unwrap();
+                let error = caller.await.unwrap().unwrap_err();
+                assert!(error.is::<kasumi_serving::ChildLost>());
+            }
+            let failure = tokio::time::timeout(WAIT, admission.drain_blocking_children())
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(failure.issues().len(), 1);
+            assert!(
+                failure.issues()[0]
+                    .error()
+                    .downcast_ref::<tokio::task::JoinError>()
+                    .unwrap()
+                    .is_panic()
+            );
+            // Unwinding released the worker's charge with its captured owners.
+            assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn shutdown_during_verification_waits_for_the_abandoned_worker() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let fence = Arc::new(crate::admission::WorkFence::default());
+        let slots = Arc::new(tokio::sync::Semaphore::new(1));
+        let registration = VerificationWork::new(
+            fence.begin(Default::default()).unwrap(),
+            slots.clone().try_acquire_owned().unwrap(),
+        );
+        let (caller, entered, release) =
+            held_child(&admission, Some(registration), 60_000, || Ok(()));
+        entered.await.unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+
+        // The database's work fence and the node's drain both wait for the
+        // real worker; neither its charge nor its query slot is released.
+        fence.seal();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(25), fence.drain())
+                .await
+                .is_err()
+        );
+        let mut first = Box::pin(admission.drain_blocking_children());
+        pending_once(&mut first).await;
+        drop(first);
+        assert_eq!(
+            crate::test_utils::reserved_payload_bytes(&admission),
+            1 << 20
+        );
+        assert_eq!(slots.available_permits(), 0);
+
+        release.send(()).unwrap();
+        tokio::time::timeout(WAIT, fence.drain()).await.unwrap();
+        tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
             .unwrap();
         assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert_eq!(slots.available_permits(), 1);

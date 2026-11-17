@@ -88,6 +88,18 @@ impl Resources {
                     retained = Some(failure);
                 }
             }
+            // A cancelled or expired caller left its blocking child with this
+            // freshly installed core. Join it before the stores below close.
+            if let Err(failure) = admission.drain_blocking_children().await {
+                report.merge(&failure);
+            }
+        }
+        // Only this scope's own nodes: a borrowed node's disk serves a live
+        // runtime, whose own shutdown joins its archive and backup children.
+        for node in &self.owned_nodes {
+            if let Err(failure) = node.drain_filesystem_children().await {
+                report.merge(&failure);
+            }
         }
         for audit in &self.audits {
             if let Err(failure) = audit.shutdown().await {

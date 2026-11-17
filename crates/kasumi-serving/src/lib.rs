@@ -37,6 +37,9 @@ pub use background_work::{
     pending_background_custody,
 };
 
+mod blocking_children;
+pub use blocking_children::{BlockingChildren, Call, ChildFailure, ChildLost, ChildRefused};
+
 mod live_signer;
 pub use live_signer::*;
 

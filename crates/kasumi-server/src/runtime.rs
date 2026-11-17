@@ -1260,6 +1260,8 @@ impl NodeRuntime {
 
     /// Join cancelled/incomplete opens after stopping new startup admission.
     /// Runtimes already handed to their callers retain their ordinary ownership.
+    /// A binary's exit joins this registry with every other one through
+    /// `process_drain::finish`.
     pub async fn drain_startups() -> Result<()> {
         crate::startup_owner::drain(crate::startup_owner::Kind::Data).await
     }
@@ -2077,11 +2079,6 @@ impl NodeRuntime {
         )
     }
 
-    /// Stop opening new instances before joining all retained serving owners.
-    pub async fn drain_serving() -> Result<()> {
-        crate::serving_owner::drain(crate::serving_owner::Kind::Data).await
-    }
-
     async fn serve_owned(
         &mut self,
         tasks: &mut ServingTasks,
@@ -2487,6 +2484,24 @@ impl NodeRuntime {
                 &mut self.startup_drain,
                 &mut retained,
                 manager.readiness.probe.drain_after_group_shutdown().await,
+            );
+        }
+        // An expired or cancelled verification, restore or backup caller left
+        // its blocking child with the node's memory core. Each child kept its
+        // own database open through its work registration; join them all and
+        // keep their outcomes before any node-level store closes.
+        observe(
+            &mut self.startup_drain,
+            &mut retained,
+            self.audit.admission().drain_blocking_children().await,
+        );
+        // Likewise for the archive and backup children of each installed disk:
+        // an abandoned publication may still record into the audit store.
+        for node in &self.owned_nodes {
+            observe(
+                &mut self.startup_drain,
+                &mut retained,
+                node.drain_filesystem_children().await,
             );
         }
         for store in &self.startup_stores {

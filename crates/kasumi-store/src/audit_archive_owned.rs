@@ -873,4 +873,140 @@ mod tests {
         assert_eq!(private_files::file_identity(&target).unwrap(), identity);
         assert!(!source.exists());
     }
+
+    const WAIT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    /// An archive whose publication stops between its rename and its readback,
+    /// while the published handle is open, until released.
+    fn paused_archive(
+        root: &Path,
+        memory: &Arc<crate::test_utils::TestDiskMemory>,
+    ) -> (
+        Arc<FilesystemAuditArchive>,
+        std::sync::mpsc::Receiver<()>,
+        std::sync::mpsc::SyncSender<()>,
+    ) {
+        let (entered, paused) = std::sync::mpsc::sync_channel::<()>(1);
+        let (release, held) = std::sync::mpsc::sync_channel::<()>(1);
+        let held = Mutex::new(held);
+        let archive = FilesystemAuditArchive::open_fixture(root, memory.clone())
+            .unwrap()
+            .with_publication_hook(move |_| {
+                entered.send(()).unwrap();
+                held.lock().unwrap().recv_timeout(WAIT).unwrap();
+            });
+        (Arc::new(archive), paused, release)
+    }
+
+    #[tokio::test]
+    async fn cancelled_publication_stays_with_the_disk_until_its_child_finishes() {
+        let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+        let (_source, segment) = prepared_segment(&memory).await;
+        let directory = crate::test_utils::private_tempdir().unwrap();
+        let root = directory.path().join("owned");
+        let (archive, paused, release) = paused_archive(&root, &memory);
+        let disk = archive.disk.clone();
+        let before = disk.snapshot();
+        let caller = tokio::spawn({
+            let archive = archive.clone();
+            let segment = segment.share().unwrap();
+            async move { archive.publish(&segment).await }
+        });
+        tokio::task::spawn_blocking(move || paused.recv_timeout(WAIT))
+            .await
+            .unwrap()
+            .unwrap();
+        caller.abort();
+        assert!(caller.await.unwrap_err().is_cancelled());
+
+        // The cancelled caller closed nothing: the real child still holds the
+        // published handle, and a drain waits for it.
+        assert_eq!(disk.filesystem_children_running(), 1);
+        assert_eq!(disk.snapshot().open_files, before.open_files + 1);
+        let mut first = Box::pin(disk.drain_filesystem_children());
+        std::future::poll_fn(|cx| {
+            assert!(std::future::Future::poll(first.as_mut(), cx).is_pending());
+            std::task::Poll::Ready(())
+        })
+        .await;
+        drop(first);
+        assert_eq!(disk.snapshot().open_files, before.open_files + 1);
+
+        release.send(()).unwrap();
+        tokio::time::timeout(WAIT, disk.drain_filesystem_children())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(disk.filesystem_children_running(), 0);
+        assert_eq!(disk.snapshot().open_files, before.open_files);
+        assert_eq!(disk.snapshot().phase, crate::NodeDiskPhase::Open);
+        // The abandoned publication completed exactly; nothing wrote later.
+        assert_eq!(names(&root).len(), 1);
+        assert_eq!(
+            archive.read(&segment.reference.object).await.unwrap(),
+            segment.ciphertext
+        );
+    }
+
+    #[tokio::test]
+    async fn publication_child_panic_is_lost_to_no_one() {
+        for cancelled in [false, true] {
+            let memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
+            let (_source, segment) = prepared_segment(&memory).await;
+            let directory = crate::test_utils::private_tempdir().unwrap();
+            let (entered, paused) = std::sync::mpsc::sync_channel::<()>(1);
+            let (release, held) = std::sync::mpsc::sync_channel::<()>(1);
+            let held = Mutex::new(held);
+            let archive = Arc::new(
+                FilesystemAuditArchive::open_fixture(directory.path().join("owned"), memory)
+                    .unwrap()
+                    .with_publication_hook(move |_| {
+                        entered.send(()).unwrap();
+                        held.lock().unwrap().recv_timeout(WAIT).unwrap();
+                        panic!("original publication child panic");
+                    }),
+            );
+            let disk = archive.disk.clone();
+            let caller = tokio::spawn({
+                let archive = archive.clone();
+                let segment = segment.share().unwrap();
+                async move { archive.publish(&segment).await }
+            });
+            tokio::task::spawn_blocking(move || paused.recv_timeout(WAIT))
+                .await
+                .unwrap()
+                .unwrap();
+            if cancelled {
+                caller.abort();
+                assert!(caller.await.unwrap_err().is_cancelled());
+                release.send(()).unwrap();
+            } else {
+                release.send(()).unwrap();
+                // A waiting caller learns that its child ended without an output.
+                let error = caller.await.unwrap().unwrap_err();
+                assert!(error.is::<kasumi_serving::ChildLost>());
+            }
+            let failure = tokio::time::timeout(WAIT, disk.drain_filesystem_children())
+                .await
+                .unwrap()
+                .unwrap_err();
+            assert_eq!(
+                failure.completion(),
+                kasumi_types::drain::DrainCompletion::Complete
+            );
+            assert_eq!(failure.issues().len(), 1);
+            assert!(
+                failure.issues()[0]
+                    .error()
+                    .downcast_ref::<tokio::task::JoinError>()
+                    .unwrap()
+                    .is_panic()
+            );
+            let repeated = disk.drain_filesystem_children().await.unwrap_err();
+            assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                &failure.issues()[0],
+                &repeated.issues()[0]
+            ));
+        }
+    }
 }
