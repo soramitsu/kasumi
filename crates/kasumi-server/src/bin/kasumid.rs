@@ -43,14 +43,6 @@ Credentials and keys:
                                              admit only listed client certificates on the
                                              native and administrative listeners; apply
                                              with SIGHUP (enable: at the next start)
-  maintenance bind-credentials <configuration.json>
-                                             bind every profile's native credential to its own
-                                             client certificate and give MCP its own audience and
-                                             profile (daemon and watchers stopped; resumable)
-  maintenance split-credentials <configuration.json>
-                                             give an installation from before the credential
-                                             split separate application and operator profiles
-                                             (daemon and default.json watcher stopped; resumable)
 
 Storage:
   maintenance move-tenant-audit-cache <configuration.json> <current-cache-directory>

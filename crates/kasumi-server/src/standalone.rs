@@ -1,10 +1,6 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
-#[path = "standalone_credential_binding.rs"]
-mod credential_binding;
 #[path = "standalone_credential_recovery.rs"]
 mod credential_recovery;
-#[path = "standalone_credential_split.rs"]
-mod credential_split;
 #[path = "standalone_tenant_staging.rs"]
 mod tenant_staging;
 use crate::{
@@ -15,9 +11,7 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
-pub use credential_binding::{CredentialBindingReport, bind_credentials};
 pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
-pub use credential_split::{CredentialSplitReport, split_credentials};
 use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
 use kasumi_store::{
     DiskWork, FileKeyProvider, NodeDisk, NodeDiskConfig, NodeDiskFile, NodeStore, StorageAccess,
@@ -1020,29 +1014,6 @@ async fn rotate_certificates_owned(
     }
     .await;
     owner.finish(result).await
-}
-
-/// Create `specification`'s family, or replay its original issuance, and
-/// renew it when that issuance has expired or soon will: a rerun of an
-/// interrupted migration publishes a live token for the same family.
-fn live_credential(
-    credentials: &LocalCredentials,
-    specification: CreateCredential,
-    actor: &str,
-) -> Result<kasumi_types::IssuedCredential> {
-    let family_id = specification.family_id;
-    let issued = credentials.create(specification, actor)?;
-    let now = kasumi_clock::EpochClock::system()?.now_ms()?;
-    if issued.expires_at_ms > now.saturating_add(300_000) {
-        return Ok(issued);
-    }
-    credentials.renew(
-        &kasumi_types::RenewCredential {
-            family_id,
-            renewal_id: Uuid::new_v4(),
-        },
-        actor,
-    )
 }
 
 /// The generated client identities this installation's profiles use, by name:
@@ -2094,3 +2065,7 @@ mod online_recovery_tests;
 #[cfg(test)]
 #[path = "standalone_client_pins_tests.rs"]
 mod client_pins_tests;
+
+#[cfg(test)]
+#[path = "standalone_credential_tests.rs"]
+mod credential_tests;

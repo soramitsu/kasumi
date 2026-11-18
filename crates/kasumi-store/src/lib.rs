@@ -1610,6 +1610,9 @@ impl NodeStore {
         Ok(self.body().db.begin_read()?.generation())
     }
 
+    // Cache controls and observations for fixtures. Production nodes take the
+    // cache from their native storage configuration and the background warmer.
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
@@ -1625,10 +1628,12 @@ impl NodeStore {
         self.body().db.configure_cache(config)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
         self.body().db.cache_stats()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn warm_cache(
         &self,
         work_limit: usize,
@@ -1636,6 +1641,7 @@ impl NodeStore {
         self.body().db.warm_cache(work_limit)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn warm_cache_if_needed(
         &self,
         work_limit: usize,
@@ -1643,12 +1649,14 @@ impl NodeStore {
         self.body().db.warm_cache_if_needed(work_limit)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn cache_warmup_status(
         &self,
     ) -> Result<kasumi_kv::CacheWarmupStatus, kasumi_kv::StorageError> {
         self.body().db.cache_warmup_status()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
         self.body().db.request_cache_warm_retry()
     }

@@ -1,5 +1,5 @@
 use super::*;
-use crate::admission::{AdmissionConfig, MemorySource, startup::StartupSpec};
+use crate::admission::{AdmissionConfig, MemorySource};
 use std::sync::atomic::{AtomicBool, AtomicUsize};
 use std::task::Poll;
 use std::time::Duration;
@@ -224,23 +224,36 @@ async fn unused_accepted_loan_and_full_census_refuse_before_named_factory() {
 }
 
 #[tokio::test]
-async fn repeated_old_scope_cannot_remove_reused_typed_terminal_and_foreign_lookup_is_absent() {
+async fn repeated_old_retirement_cannot_remove_reused_typed_terminal_and_foreign_lookup_is_absent()
+{
     let core = core();
     let other_core = self::core();
+    let gate = Arc::new(Gate::default());
+    gate.released.store(true, Ordering::Release);
     let old = core
-        .prepare_startup_scope(StartupSpec { resources: 1 })
-        .unwrap();
+        .prepare_prepaid_startup::<Terminal>()
+        .unwrap()
+        .install(())
+        .unwrap()
+        .begin()
+        .unwrap()
+        .spawn(worker, (gate, None));
+    old.join_worker().await;
+    assert!(old.take_output().await.is_some());
+    assert!(old.retire_empty().await);
     let old_id = old.id();
-    drop(old.drain().await);
     let owner = core
         .prepare_prepaid_startup::<Terminal>()
         .unwrap()
         .install(())
         .unwrap();
     let id = owner.id();
-    assert_eq!(id.slot(), old_id.slot);
-    assert_ne!(id.generation(), old_id.generation);
-    drop(old.drain().await);
+    assert_eq!(id.slot(), old_id.slot());
+    assert_ne!(id.generation(), old_id.generation());
+    // The retired facade still satisfies its own retirement checks; only its
+    // generation keeps it from removing the seat's new owner.
+    assert!(!old.retire_empty().await);
+    assert!(core.prepaid_startup::<Terminal>(old_id).is_none());
     assert!(core.prepaid_startup::<Terminal>(id).is_some());
     assert!(core.prepaid_startup::<Other>(id).is_none());
     assert!(other_core.prepaid_startup::<Terminal>(id).is_none());
@@ -498,4 +511,114 @@ async fn exact_success_facade_handoff_is_once_and_same_original_credit_outlives_
         core.snapshot().live_reservations,
         baseline.live_reservations
     );
+}
+
+// Each iteration selects an actual State/value-Mutex/worker-Mutex control. The
+// joint charge is refunded only by that control's actual deallocation,
+// whichever concurrently dropped alias is last. The terminal is inline and
+// owns no resource backing; generic F/Tokio task backing remains separate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn prepaid_startup_actual_three_controls_retire_before_original_joint_charge() {
+    #[derive(Default)]
+    struct ControlTerminal {
+        entered: bool,
+        returned: bool,
+    }
+    impl StartupTerminal for ControlTerminal {
+        type Plan<'a> = ();
+        type Output = ();
+        fn backing(_: &()) -> anyhow::Result<StartupBacking> {
+            Ok(StartupBacking::empty())
+        }
+        fn allocate(_: (), _: SharedBudgetCharge) -> Self {
+            Self::default()
+        }
+        fn begin(&mut self) -> bool {
+            if self.entered {
+                return false;
+            }
+            self.entered = true;
+            true
+        }
+        fn retirement_ready(&self) -> bool {
+            self.entered && self.returned
+        }
+        fn claim_output(&mut self) -> Option<()> {
+            self.retirement_ready().then_some(())
+        }
+    }
+    async fn finish_control(mut loan: StartupTerminalLoan<ControlTerminal>, _: ()) {
+        loan.returned = true;
+    }
+
+    for selected in 0..3 {
+        let core = core();
+        let baseline = core.snapshot();
+        let required = PrepaidStartup::<ControlTerminal>::required_bytes(&()).unwrap();
+        let owner = core
+            .prepare_prepaid_startup::<ControlTerminal>()
+            .unwrap()
+            .install(())
+            .unwrap();
+        let installed = core.snapshot();
+        assert_eq!(installed.reserved_bytes, baseline.reserved_bytes + required);
+        assert_eq!(installed.live_reservations, baseline.live_reservations + 1);
+        assert_eq!(installed.inflight_operations, baseline.inflight_operations);
+        let addresses = owner.control_addresses();
+        assert_ne!(addresses[0], addresses[1]);
+        assert_ne!(addresses[0], addresses[2]);
+        assert_ne!(addresses[1], addresses[2]);
+        let id = owner.id();
+        let running = owner.begin().unwrap().spawn(finish_control, ());
+        drop(owner);
+        running.join_worker().await;
+        running
+            .with_worker_report(|report| {
+                assert!(report.entered());
+                assert!(report.returned());
+                assert!(!report.handle_retained());
+                assert!(report.original().is_none());
+                assert!(report.poll_panic().is_none());
+                assert!(report.factory_panic().is_none());
+                assert!(report.dispatch_error().is_none());
+                assert!(report.dispatch_panic().is_none());
+                assert!(report.handle_disposal_entered());
+                assert!(report.handle_disposal_returned());
+                assert!(report.handle_disposal_panic().is_none());
+            })
+            .expect("actual joined worker report is available");
+        assert!(running.retire_empty().await);
+        assert!(core.prepaid_startup::<ControlTerminal>(id).is_none());
+        let charged = core.snapshot();
+        assert_eq!(charged.reserved_bytes, installed.reserved_bytes);
+        assert_eq!(charged.live_reservations, installed.live_reservations);
+        assert_eq!(charged.inflight_operations, installed.inflight_operations);
+        let copies: [_; 8] = std::array::from_fn(|_| running.clone());
+        drop(running);
+        crate::allocation_tests::check_deallocation(
+            addresses[selected],
+            move || {
+                let rendezvous = Arc::new(std::sync::Barrier::new(copies.len()));
+                std::thread::scope(|scope| {
+                    for copy in copies {
+                        let rendezvous = rendezvous.clone();
+                        scope.spawn(move || {
+                            rendezvous.wait();
+                            drop(copy);
+                        });
+                    }
+                });
+            },
+            || {
+                let paused = core.snapshot();
+                assert_eq!(paused.reserved_bytes, charged.reserved_bytes);
+                assert_eq!(paused.live_reservations, charged.live_reservations);
+                assert_eq!(paused.inflight_operations, charged.inflight_operations);
+            },
+        );
+        let released = core.snapshot();
+        assert_eq!(released.reserved_bytes, baseline.reserved_bytes);
+        assert_eq!(released.live_reservations, baseline.live_reservations);
+        assert_eq!(released.inflight_operations, baseline.inflight_operations);
+    }
 }

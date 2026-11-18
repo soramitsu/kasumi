@@ -1880,12 +1880,12 @@ seam does not move postings, unique maps, Tantivy state or row directories to
 disk, and its collection metadata and allocation admission remain part of the
 open memory-accounting work.
 
-The existing `admission::snapshot_work` foundation retains the actual blocking
-child, output and original failure in an admitted census. It has no production
-query adapter yet. Merely changing `QueryOutput` or `SnapshotOutput` to carry an
-`anyhow::Error` is insufficient: an abandoned join handle eventually destroys
-that output. Adapt the retained operation owner before installing a fallible
-disk source, including explicit source-close failure and unclaimed output
+The unwired `admission::snapshot_work` census and its query-source adapter were
+deleted; a fallible disk source needs its retained owner built into the live
+Database and its shutdown drain. Merely changing `QueryOutput` or
+`SnapshotOutput` to carry an `anyhow::Error` is insufficient: an abandoned join
+handle eventually destroys that output. Build that retained operation owner
+before installing a fallible disk source, including explicit source-close failure and unclaimed output
 cleanup; uncertain native ownership stays retained. A resident-only adapter
 cannot be used as evidence that this failure path is qualified.
 The initial resident adapter can use `Infallible` as its source failure type,

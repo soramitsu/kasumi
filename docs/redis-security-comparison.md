@@ -202,13 +202,10 @@ it is higher wherever a listener is reachable from a network.
    `..::an_expired_bound_credential_recovers_only_from_its_own_certificate` and
    `..::a_family_written_before_binding_keeps_its_exact_record_and_renews_unbound`,
    and on a served installation by
-   `standalone::credential_binding::tests::a_new_installation_binds_native_credentials_and_separates_mcp`.
+   `standalone::credential_tests::a_new_installation_binds_native_credentials_and_separates_mcp`.
    What remains: binding does not help against theft of a token together
-   with its certificate's private key. An installation from before this
-   change keeps unbound tokens, usable on MCP and from any admitted
-   certificate, until the operator runs `kasumid maintenance bind-credentials`
-   (`..::bind_credentials_rebinds_every_profile_once_and_finishes_after_an_interruption`);
-   profiles outside `profiles/` need new bound credentials. External OAuth
+   with its certificate's private key. A family issued unbound stays
+   unbound until it is replaced with `kasumid credential create`. External OAuth
    issuers' tokens are bound only if the issuer adds `cnf`; set
    `require_certificate_binding` to refuse those that do not.
 5. **Fixed: client certificates could not be revoked (was low-medium).**
@@ -251,19 +248,12 @@ it is higher wherever a listener is reachable from a network.
    through an installed profile. Administrator recovery issues only the
    administrator grant's own actions, and certificate rotation replaces every
    generated client certificate the installation's profiles use. Covered by
-   `standalone::credential_split::tests::a_new_installation_gives_each_profile_only_its_own_authority`
+   `standalone::credential_tests::a_new_installation_gives_each_profile_only_its_own_authority`
    (the application writes and renews itself but cannot create collections,
    activate schema, read the service audit or administer credentials; the
    operator administers and activates schema with read assertions but cannot
-   write). An installation from before this change keeps its single
-   credential until the operator runs `kasumid maintenance split-credentials`
-   with the daemon stopped, which journals the new families, removes document
-   write from the tenant administrator's grant, publishes the split profiles,
-   and revokes the old family; a rerun finishes an interrupted split
-   (`..::a_pre_split_installation_is_split_once_and_finishes_after_an_interruption`).
-   What remains: the profiles sit under one operating-system account unless
-   the operator moves the operator and Control files elsewhere, and an
-   installation that never runs the migration keeps the old risk.
+   write). What remains: the profiles sit under one operating-system account
+   unless the operator moves the operator and Control files elsewhere.
 7. **Fixed: configuration and CA files were read without ownership checks
    (was low).** Secret files were checked; trust roots, the authentication
    configuration and operator request files were not. They are all read

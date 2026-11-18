@@ -1,7 +1,7 @@
-//! Hooks are forwarded by the existing Engine test global allocator. No second
+//! The Engine test binary's one global allocator and its observers. No second
 //! allocator, provider substitute, production hook or borrowed pointer escapes.
 use std::{
-    alloc::Layout,
+    alloc::{GlobalAlloc, Layout, System},
     cell::Cell,
     sync::{
         Mutex,
@@ -158,7 +158,9 @@ pub(crate) fn measure_topology_input<T>(work: impl FnOnce() -> T) -> (T, i64, i6
     let counts = measurement.finish();
     (result, counts.live, counts.peak, counts.allocations)
 }
-pub(crate) fn check_topology_input_drop(
+/// Pause the actual deallocation of the allocation at `address` while
+/// `dispose` drops its owner on another thread, run `check`, then let it finish.
+pub(crate) fn check_deallocation(
     address: usize,
     dispose: impl FnOnce() + Send + 'static,
     check: impl FnOnce(),
@@ -193,4 +195,43 @@ pub(crate) fn check_mutation_change_tree_drop(
     observer.join().unwrap();
     assert!(BODY.finished.load(Ordering::Acquire));
     assert_eq!(BODY.count.load(Ordering::Acquire), 1);
+}
+
+struct ObservedSystem;
+#[global_allocator]
+static ALLOCATOR: ObservedSystem = ObservedSystem;
+// SAFETY: every allocation operation is forwarded unchanged to System. The
+// observers use only atomics, thread-local counters and yield_now, never
+// allocation, dereference of observed payload pointers, formatting, or user
+// callbacks.
+unsafe impl GlobalAlloc for ObservedSystem {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let pointer = unsafe { System.alloc(layout) };
+        if !pointer.is_null() {
+            allocated(layout.size());
+        }
+        pointer
+    }
+    unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        let pointer = unsafe { System.alloc_zeroed(layout) };
+        if !pointer.is_null() {
+            allocated(layout.size());
+        }
+        pointer
+    }
+    unsafe fn realloc(&self, pointer: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        let moved = unsafe { System.realloc(pointer, layout, size) };
+        if !moved.is_null() {
+            reallocated(layout.size(), size);
+        }
+        moved
+    }
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        let watched = before_deallocate(pointer, layout);
+        let sources =
+            crate::application_sources::tests::allocation_tails::before_deallocate(pointer, layout);
+        unsafe { System.dealloc(pointer, layout) };
+        crate::application_sources::tests::allocation_tails::after_deallocate(sources);
+        deallocated(layout.size(), watched);
+    }
 }

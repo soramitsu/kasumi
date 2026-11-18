@@ -56,6 +56,7 @@ pub use root::{
 pub use segment::MAX_BATCH_OPERATIONS;
 pub use tables::*;
 
+#[cfg(any(test, feature = "test-utils"))]
 pub mod backends {
     pub use crate::group::InMemoryGroup;
 }

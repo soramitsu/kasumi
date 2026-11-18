@@ -909,6 +909,7 @@ impl NodeSegmentGroup {
         })
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn disk(&self) -> &Arc<NodeDisk> {
         &self.disk
     }

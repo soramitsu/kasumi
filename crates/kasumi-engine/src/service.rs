@@ -4239,9 +4239,3 @@ mod tests {
         fixture.close().await;
     }
 }
-
-// Component qualification only; production wiring requires the exact per-Database
-// source-worker registry and shutdown drain described in this module.
-#[cfg(test)]
-#[path = "query_source_work.rs"]
-mod query_source_work;

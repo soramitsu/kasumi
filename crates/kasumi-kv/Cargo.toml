@@ -7,7 +7,14 @@ license.workspace = true
 repository.workspace = true
 description = "Kasumi's append-only transactional byte-key storage core."
 
+[features]
+# Crash/fault simulation backends for tests. Never enabled by a release build.
+test-utils = []
+
 [dependencies]
 libc = "0.2"
 lz4_flex = { version = "=0.13.1", default-features = false, features = ["std", "safe-encode", "safe-decode"] }
 sha2.workspace = true
+
+[dev-dependencies]
+kasumi-kv = { path = ".", features = ["test-utils"] }

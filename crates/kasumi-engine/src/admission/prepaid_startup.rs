@@ -1,5 +1,5 @@
-//! Already paid typed startup terminals in the existing strong startup census.
-use super::{CensusOwner, MemoryCore, next_generation};
+//! Already paid typed startup terminals in the strong startup census.
+use super::{MemoryCore, next_generation};
 use kasumi_types::{Error, ErrorCode, Result, SharedBudgetCharge};
 use std::{
     alloc::Layout,
@@ -147,7 +147,9 @@ impl<T: StartupTerminal> PrepaidStartup<T> {
             .shared::<tokio::sync::Mutex<Worker>>()?
             .include(T::backing(plan)?)?
             .bytes()
-            .checked_add(SharedBudgetCharge::required_bytes::<super::Reservation>()?)
+            .checked_add(SharedBudgetCharge::required_bytes::<
+                crate::admission::Reservation,
+            >()?)
             .ok_or_else(|| anyhow::anyhow!("startup terminal quote overflow"))
     }
     fn state(&self) -> &State<T> {
@@ -315,7 +317,7 @@ impl<T: StartupTerminal> PrepaidStartup<T> {
             if slot.generation != self.id().generation {
                 return false;
             }
-            let Some(CensusOwner::Terminal(owner)) = slot.owner.as_ref() else {
+            let Some(owner) = slot.owner.as_ref() else {
                 return false;
             };
             if !owner.same::<T>(self) {
@@ -546,7 +548,7 @@ impl<T: StartupTerminal> PreparedStartup<T> {
         let mut census = self.core.startups.lock().unwrap_or_else(|p| p.into_inner());
         let slot = &mut census.slots[self.id.slot];
         assert!(slot.reserved && slot.generation == self.id.generation && slot.owner.is_none());
-        slot.owner = Some(CensusOwner::Terminal(owner.erased()));
+        slot.owner = Some(owner.erased());
         self.installed = true;
         drop(census);
         Ok(owner)
@@ -595,20 +597,14 @@ impl MemoryCore {
         if slot.generation != id.generation {
             return None;
         }
-        match slot.owner.as_ref()? {
-            CensusOwner::Terminal(owner) => owner.typed(),
-            CensusOwner::Scope(_) => None,
-        }
+        slot.owner.as_ref()?.typed()
     }
     pub fn prepaid_startup_at<T: StartupTerminal>(
         &self,
         index: usize,
     ) -> Option<PrepaidStartup<T>> {
         let census = self.startups.lock().unwrap_or_else(|p| p.into_inner());
-        match census.slots.get(index)?.owner.as_ref()? {
-            CensusOwner::Terminal(owner) => owner.typed(),
-            CensusOwner::Scope(_) => None,
-        }
+        census.slots.get(index)?.owner.as_ref()?.typed()
     }
 }
 

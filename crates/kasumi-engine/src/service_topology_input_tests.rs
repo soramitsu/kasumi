@@ -113,7 +113,7 @@ async fn topology_input_credit_survives_actual_child_after_caller_cancellation()
 
 #[tokio::test]
 async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit() {
-    use crate::allocation_tests::check_topology_input_drop;
+    use crate::allocation_tests::check_deallocation;
     let fixture = CredentialFixture::new().await;
     let node = fixture.db.admission().clone();
     let before = node.snapshot();
@@ -138,7 +138,7 @@ async fn topology_input_refused_actual_proposal_destroys_json_before_its_credit(
     };
     let jobs = proposal_jobs::Jobs::default();
     jobs.drain().await.unwrap(); // actual closed registry refuses before polling
-    check_topology_input_drop(
+    check_deallocation(
         address,
         move || {
             let error = jobs.start(work, command, 8 << 20, None).err().unwrap();

@@ -1,6 +1,6 @@
 use super::*;
 use crate::admission::AdmissionConfig;
-use crate::allocation_tests::{check_topology_input_drop, measure_topology_input};
+use crate::allocation_tests::{check_deallocation, measure_topology_input};
 use kasumi_types::control_topology::{ControlNode, DeploymentMode, TenantRoute};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -154,7 +154,7 @@ fn topology_input_denial_same_core_and_ordered_unpolled_destruction() {
         std::future::pending::<()>().await;
         drop(command);
     };
-    check_topology_input_drop(
+    check_deallocation(
         address,
         move || drop(future),
         || {

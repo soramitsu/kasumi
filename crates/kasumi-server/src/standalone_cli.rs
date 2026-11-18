@@ -198,22 +198,6 @@ pub async fn command(arguments: &[String]) -> Result<bool> {
                     crate::standalone::rotate_certificates(Path::new(configuration)).await?
                 );
             }
-            "bind-credentials" => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &crate::standalone::bind_credentials(Path::new(configuration)).await?
-                    )?
-                );
-            }
-            "split-credentials" => {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(
-                        &crate::standalone::split_credentials(Path::new(configuration)).await?
-                    )?
-                );
-            }
             _ => anyhow::bail!("unknown maintenance operation"),
         },
         [command, rest @ ..] if command == "init" => match parse_init(rest)? {

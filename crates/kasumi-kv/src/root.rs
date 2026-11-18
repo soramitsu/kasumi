@@ -119,6 +119,7 @@ pub enum RootSlot {
 }
 
 impl RootSlot {
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn index(self) -> usize {
         match self {
             Self::A => 0,

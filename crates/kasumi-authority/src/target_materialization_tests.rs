@@ -1923,6 +1923,16 @@ async fn three_actual_materializations_initialize_and_commit_completion_with_res
         .await
         .unwrap();
     assert_eq!(recovered.observation().fact, first);
+    // The completed image survives restart with the source's data at its
+    // original version and without a pending-restore marker.
+    let generation = selected.owner.database().engine().generation().unwrap();
+    assert!(generation.state.pending_restore.is_none());
+    let restored =
+        kasumi_engine::test_utils::fixture_document(&generation, "history", "immutable").unwrap();
+    assert_eq!(restored.body, serde_json::json!({"source":"unchanged"}));
+    assert!(restored.version <= f.target.checkpoint.revision);
+    drop(restored);
+    drop(generation);
     let resigned = f.signers[&selected.id]
         .sign_completed(&recovered, &selected.operation)
         .await

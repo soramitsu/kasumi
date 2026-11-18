@@ -301,6 +301,7 @@ impl NodeDatabase {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
@@ -311,6 +312,7 @@ impl NodeDatabase {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
         match self.accepted().map_err(|error| error.0)? {
             Accepted::Direct(database) => database.cache_stats(),
@@ -318,6 +320,7 @@ impl NodeDatabase {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn warm_cache(
         &self,
         work_limit: usize,
@@ -347,6 +350,7 @@ impl NodeDatabase {
         }
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
         match self.accepted().map_err(|error| error.0)? {
             Accepted::Direct(database) => database.request_cache_warm_retry(),

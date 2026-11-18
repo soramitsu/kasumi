@@ -132,26 +132,6 @@ The tenant policy grants `application` read and write and `administrator` read, 
 
 Administer the tenant through the operator profile, for example `kasumictl --profile /var/lib/kasumi/profiles/operator.json create-collection invoices.json`. `kasumictl --profile` selects administration for an administrative command and the data CLI for any other; `--config <client.json>` still takes an explicit admin client file.
 
-### Installations from before the split
-
-An installation initialized before this change has one generated tenant credential: `profiles/default.json` is the tenant `administrator` with read, write, admin and audit, and every profile shares `profiles/client.pem`. It keeps working unchanged. To give it the layout above, stop `kasumid` and the `profiles/default.json` watcher, then run:
-
-```sh
-kasumid maintenance split-credentials /var/lib/kasumi/kasumi.json
-```
-
-The command removes document write from the tenant policy's tenant-wide `administrator` grant and grants `application` read and write; other grants are kept. It creates the application and operator families and the operator's and the Control profile's own client certificates, publishes `profiles/operator.json`, rewrites `profiles/default.json` and its token for the application (same certificate, so a client that rereads the token moves over without changes), moves `profiles/control.json` to its own certificate (its credential is unchanged), removes the stopped watcher's renewal journal and revokes the old family. It journals the new families in `profiles/credential-split.json` first, so rerunning it after any interruption finishes the same split; on an installation that is already split it changes nothing. Afterwards start `kasumid`, restart the `default.json` watcher, start one for `operator.json`, and move any administrative tooling that used `default.json` or its token (an `admin-client.json`, backup commands) to `operator.json`. Until it runs, the old installation keeps the old risk: whoever holds the application's credential administers the tenant.
-
-### Installations from before certificate binding
-
-An installation initialized before certificate binding accepts its native tokens from any admitted client certificate and on MCP. It keeps working unchanged. To bind it, stop `kasumid` and every credential watcher of a profile in `profiles/`, then run:
-
-```sh
-kasumid maintenance bind-credentials /var/lib/kasumi/kasumi.json
-```
-
-For every profile in `profiles/` whose family is native and unbound, the command creates a family with the same specification bound to the certificate that profile presents, publishes its token and profile in place, removes a stopped watcher's renewal journal of the old family and revokes the old family. It writes `profiles/mcp.json` and `profiles/mcp.token` with an MCP credential for the application's principal, then sets `auth.mcp_audience` and `auth.require_certificate_binding` in `kasumi.json`. It journals every family in `profiles/credential-binding.json` first, so rerunning it after any interruption finishes the same migration; on a binding installation it changes nothing. Afterwards start `kasumid` and the watchers (the MCP watcher with the Control profile), and give MCP clients `profiles/mcp.token`. Profiles outside `profiles/`, and copies of profiles, still name unbound families that the binding installation now refuses: issue them bound credentials with `credential create` and revoke the old families. Until the command runs, the installation keeps the old risk: a copied token works from any certificate the CA issued, and a native token works on MCP.
-
 ### Client certificate admission
 
 A new installation's native and administrative listeners admit a client certificate only if the installation CA issued it (chain, validity and client-authentication usage, as before) and its SHA-256 pin is listed in `tls/client-pins.json`. Both listeners name that file as `client_certificate_pins` in `kasumi.json`; the installer lists the three generated client certificates under their names (`client`, `operator-client`, `control-client`). An unlisted certificate fails the TLS handshake before any request is read. MCP takes no client certificate and is unaffected.
@@ -165,7 +145,7 @@ kasumid client-certificate remove /var/lib/kasumi/kasumi.json SHA256_PIN_HEX
 
 `enroll` accepts only a certificate the listeners would verify anyway: issued by their `client_ca`, currently valid, for client authentication. `remove` takes the certificate or its 64-digit pin. Both edit the file only. Send `kasumid` SIGHUP (or restart it) to apply them: the reload rereads certificates, keys, CAs and allowlists together, and a missing or malformed allowlist refuses the whole reload and keeps the previous generation (a TLS reload failure is logged as `tls_reload_failed`). The same file fails startup. After a reload, every new handshake is checked against the new list, and sessions cannot resume across it. Connections that were already established drain within the listener's drain limit, so in-flight work may finish: removal is not instantaneous request revocation. When a certificate is compromised, remove it and also revoke the credential families that used it (`kasumid credential revoke`).
 
-`maintenance rotate-certificates` admits each replacement client certificate before installing it and retires the certificates it replaced, by name, once the profiles are updated. `maintenance split-credentials` admits the certificates it creates.
+`maintenance rotate-certificates` admits each replacement client certificate before installing it and retires the certificates it replaced, by name, once the profiles are updated.
 
 A listener that names no allowlist checks the CA only, as an installation from before this change does; such an installation keeps working unchanged. A named file that lists nothing admits no one. To turn admission on for an older installation, run `kasumid client-certificate enable /var/lib/kasumi/kasumi.json`: it lists the certificate of every profile in `profiles/` in `tls/client-pins.json`, then names that file on both listeners. Rerunning it after an interruption finishes the same change. Enroll any other client certificate (copied profiles, scrapers, other hosts) first, then restart `kasumid`, which enforces the list from then on. Until then the older installation keeps the CA-only risk: any certificate the CA ever issued is admitted until it expires.
 
@@ -179,7 +159,7 @@ runtime, and reread the separate bearer file for each request. See the
 rejected; issue current credentials and profiles before changing a consumer to
 this format. This does not alter an installed tenant or its stored documents.
 
-MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/mcp.token>` and the current MCP protocol headers. MCP tokens have their own audience (`auth.mcp_audience`): MCP refuses native tokens, and the native listeners refuse MCP tokens. A Control administrator issues further MCP credentials with `credential create` and a request whose `audience` is `mcp`. On an installation from before audience separation, MCP takes the application's native token (`profiles/default.token`) until `maintenance bind-credentials` runs. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
+MCP accepts preconfigured local bearer tokens over TLS. Supply `Authorization: Bearer <token from profiles/mcp.token>` and the current MCP protocol headers. MCP tokens have their own audience (`auth.mcp_audience`): MCP refuses native tokens, and the native listeners refuse MCP tokens. A Control administrator issues further MCP credentials with `credential create` and a request whose `audience` is `mcp`. A configuration without `auth.mcp_audience`, which `kasumid init` never writes, has MCP accept native tokens instead. Both OAuth protected-resource discovery URLs return 404, and authentication challenges contain only `Bearer`. Discovery metadata and `resource_metadata` challenges are advertised when an external OAuth provider is installed through `auth.source.kind = "external_oauth"`.
 
 Local credentials expire after one hour. Keep each client credential file renewed:
 

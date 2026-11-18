@@ -183,7 +183,6 @@ pub(crate) use document_read_scope::DocumentReadBudget;
 mod disk_memory;
 pub(crate) use disk_memory::ProposalBudget;
 mod installed;
-pub mod snapshot_work;
 pub mod startup;
 
 pub(crate) trait MemorySource: Send + Sync {
@@ -431,7 +430,7 @@ fn arc_bytes<T>() -> anyhow::Result<u64> {
         .ok_or_else(|| anyhow::anyhow!("memory owner size overflow"))
 }
 
-/// Shared resource accounting and the bounded strong startup-scope census.
+/// Shared resource accounting and the bounded strong startup-terminal census.
 /// Runtime admission fences remain separate; a resident lease retains this core.
 ///
 /// `new` creates an independent governor for an explicit embedding policy.
@@ -441,7 +440,6 @@ fn arc_bytes<T>() -> anyhow::Result<u64> {
 pub struct MemoryCore {
     storage_census: kasumi_store::StorageCensus,
     startups: Mutex<startup::Census>,
-    snapshot_work: Mutex<snapshot_work::Census>,
     // Blocking verification and backup children of admitted operations. Each
     // child retains its operation's reservation, never this core's owner.
     blocking_children: kasumi_serving::BlockingChildren,
@@ -566,7 +564,6 @@ impl MemoryCore {
         let clock = arc_bytes::<SystemLeaseClock>()?;
         let data = arc_bytes::<MemoryState>()?;
         let startups = startup::Census::required_bytes(config.max_startup_scopes)?;
-        let snapshot_work = snapshot_work::Census::required_bytes(config.max_inflight_operations)?;
         let children =
             kasumi_serving::BlockingChildren::required_bytes(config.max_inflight_operations)
                 .and_then(|bytes| bytes.checked_add(ALLOCATION_ALLOWANCE))
@@ -576,7 +573,6 @@ impl MemoryCore {
             .checked_add(allocation_bytes::<ChargeSlot>(config.max_reservations)?)
             .and_then(|bytes| bytes.checked_add(data))
             .and_then(|bytes| bytes.checked_add(startups))
-            .and_then(|bytes| bytes.checked_add(snapshot_work))
             .and_then(|bytes| bytes.checked_add(children))
             .and_then(|bytes| bytes.checked_add(storage))
             .and_then(|bytes| bytes.checked_add(source))
@@ -629,9 +625,6 @@ impl MemoryCore {
         let startups = Mutex::new(startup::Census::allocate(
             prepared.config.max_startup_scopes,
         )?);
-        let snapshot_work = Mutex::new(snapshot_work::Census::allocate(
-            prepared.config.max_inflight_operations,
-        )?);
         // Every live child retains its operation's reservation, so the
         // operation bound is also the bound on children that can run at once.
         let blocking_children = kasumi_serving::BlockingChildren::new(
@@ -678,7 +671,6 @@ impl MemoryCore {
         let core = Arc::new(Self {
             storage_census,
             startups,
-            snapshot_work,
             blocking_children,
             sampler: None,
             data,

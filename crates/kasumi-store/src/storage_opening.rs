@@ -237,6 +237,7 @@ impl OpeningFile {
             Self::Synthetic { .. } => Err(io::ErrorKind::Unsupported.into()),
         }
     }
+    #[cfg(any(test, feature = "test-utils"))]
     fn cache_limit(&self) -> u64 {
         match self {
             Self::Physical(file) => file.disk().native_storage_config().cache.byte_limit,
@@ -1036,6 +1037,7 @@ impl RegisteredNodeOpening {
             .ok_or(kasumi_kv::StorageError::DatabaseClosed)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn configure_cache(
         &self,
         config: kasumi_kv::CacheConfig,
@@ -1049,10 +1051,12 @@ impl RegisteredNodeOpening {
         .configure_cache(config)
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn cache_stats(&self) -> Result<kasumi_kv::CacheStats, kasumi_kv::StorageError> {
         self.admit_call()?.cache_stats()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn warm_cache(
         &self,
         work_limit: usize,
@@ -1073,6 +1077,7 @@ impl RegisteredNodeOpening {
         self.admit_call()?.cache_warmup_status()
     }
 
+    #[cfg(any(test, feature = "test-utils"))]
     pub fn request_cache_warm_retry(&self) -> Result<(), kasumi_kv::StorageError> {
         self.admit_call()?.request_cache_warm_retry()
     }

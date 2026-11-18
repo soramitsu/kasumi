@@ -1883,6 +1883,7 @@ dependencies = [
 name = "kasumi-kv"
 version = "0.1.0"
 dependencies = [
+ "kasumi-kv",
  "libc",
  "lz4_flex",
  "sha2",

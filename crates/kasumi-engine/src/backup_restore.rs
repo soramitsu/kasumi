@@ -357,9 +357,7 @@ pub(super) async fn load_authorized(
             _ => anyhow::bail!("restore requires a permanently completed backup session"),
         };
         anyhow::ensure!(
-            bound_checkpoint
-                .as_ref()
-                .is_none_or(|expected| expected == &completed),
+            bound_checkpoint == completed,
             "completed session differs from authorized checkpoint"
         );
         let bound_checkpoint = Some(completed);

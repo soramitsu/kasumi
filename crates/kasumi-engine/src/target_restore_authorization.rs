@@ -4,8 +4,6 @@ use super::*;
 use crate::target_invocation::TargetLifecycleInvocation;
 
 pub(crate) enum RestoreAuthorization<'a> {
-    /// Existing explicitly authorized source-backup Data/Admin path.
-    Data(&'a RequestContext),
     Local(&'a LocalRestoreRequest),
     /// Only the native closed target runner can obtain the opaque issuer grant.
     Lifecycle(&'a TargetLifecycleInvocation),
@@ -17,7 +15,6 @@ impl RestoreAuthorization<'_> {
         audit: &SecurityAudit,
     ) -> anyhow::Result<()> {
         match self {
-            Self::Data(context) => restore_access(target, audit, context).await,
             Self::Local(request) => {
                 request
                     .source_context
@@ -62,16 +59,6 @@ impl RestoreAuthorization<'_> {
     ) -> anyhow::Result<()> {
         self.check_access(target, audit).await?;
         match self {
-            Self::Data(context) => {
-                context.authorization.require_database(&state.incarnation)?;
-                if context.tenant != state.tenant
-                    || !state.policy.allows(context, None, Action::Admin)
-                {
-                    return Err(restore_denial(audit, context, ErrorCode::Forbidden)
-                        .await
-                        .into());
-                }
-            }
             Self::Local(request) => {
                 let context = &request.source_context;
                 anyhow::ensure!(
@@ -111,42 +98,27 @@ impl RestoreAuthorization<'_> {
         }
         self.check_access(target, audit).await
     }
+    /// Every remaining authorization names its exact checkpoint.
     pub fn bound_checkpoint(
         &self,
         target: &TenantStore,
         backup_id: uuid::Uuid,
-    ) -> anyhow::Result<Option<FullBackupCheckpoint>> {
+    ) -> anyhow::Result<FullBackupCheckpoint> {
         let expected = match self {
-            Self::Local(request) => Some(request.checkpoint.clone()),
-            Self::Lifecycle(invocation) => Some(
-                invocation
-                    .gate()
-                    .current()?
-                    .commitment()
-                    .intent
-                    .request
-                    .checkpoint
-                    .clone(),
-            ),
-            Self::Data(_) => target
-                .storage_access()
-                .serving_gate()
-                .map(|gate| gate.recovery_checkpoint())
-                .transpose()?
-                .flatten(),
+            Self::Local(request) => request.checkpoint.clone(),
+            Self::Lifecycle(invocation) => invocation
+                .gate()
+                .current()?
+                .commitment()
+                .intent
+                .request
+                .checkpoint
+                .clone(),
         };
-        if let Some(checkpoint) = &expected {
-            anyhow::ensure!(
-                checkpoint.tenant == target.tenant() && checkpoint.backup_id == backup_id,
-                "restore request differs from exact authorized backup"
-            );
-        }
-        if target.storage_access().serving_gate().is_some() {
-            anyhow::ensure!(
-                expected.is_some(),
-                "independent target has no authorized backup checkpoint"
-            );
-        }
+        anyhow::ensure!(
+            expected.tenant == target.tenant() && expected.backup_id == backup_id,
+            "restore request differs from exact authorized backup"
+        );
         Ok(expected)
     }
 }
