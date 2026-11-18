@@ -84,7 +84,6 @@ impl Row {
         self.validate_position()?;
         ensure!(
             state.tenant == crate::control::CONTROL_TENANT
-                && state.lifecycle_control.is_some()
                 && self.ordinal > 0
                 && self.key == self.record.claim.session_id.to_string()
                 && digest(&self.previous_sha256)
@@ -243,7 +242,6 @@ impl View {
             self.head == state.backup_binding_head
                 && (self.head.count == 0
                     || (state.tenant == crate::control::CONTROL_TENANT
-                        && state.lifecycle_control.is_some()
                         && self.head.origin_incarnation == state.incarnation))
                 && (state.tenant == crate::control::CONTROL_TENANT
                     || (self.head.count == 0 && self.source.is_none()))
@@ -541,13 +539,11 @@ impl Installation {
     }
 }
 
-#[cfg(test)]
 pub(crate) struct Pending {
     previous: View,
     head: BackupBindingHead,
     row: Row,
 }
-#[cfg(test)]
 impl Pending {
     pub(crate) fn prepare(previous: &View, state: &TenantState, row: Row) -> Result<Self> {
         ensure!(

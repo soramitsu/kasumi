@@ -754,6 +754,12 @@ async fn serving_expiry_rejects_queued_effect_and_late_read_or_committed_ack_the
 async fn serving_expiry_suppresses_long_backup_verification_and_post_publication_proof() {
     let mut fixture = ServingFixture::new().await;
     let db = fixture.leader("backup-expiry initial").await;
+    // This lease-expiry test uses a single durable Control writer alongside the
+    // original publisher. Elect that same publisher after reopen so both phases
+    // consult the very same Control journal.
+    let publisher = db.group.node_id();
+    let (control, operator) = backup_test_control(&db, &fixture.context, true).await.unwrap();
+    db.install_backup_control(&control, &operator).unwrap();
     db.mutate(fixture.context.clone(), credential_batch("read"))
         .await
         .unwrap();
@@ -785,6 +791,8 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
         1000,
     )
     .await;
+    control.shutdown().await.unwrap();
+    drop(control);
     let result = match result {
         Ok((true, result)) => result,
         other => {
@@ -796,10 +804,18 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
     assert!(result.is_err());
     drop(db);
     fixture.reopen("backup-expiry reopen").await;
+    let publisher_db = fixture.databases.iter().find(|database| database.group.node_id() == publisher).unwrap().clone();
+    let (control, operator) = backup_test_control(&publisher_db, &fixture.context, false).await.unwrap();
+    publisher_db.install_backup_control(&control, &operator).unwrap();
     let mut expired = false;
-    for attempt in 0..3 {
-        let phase = format!("backup-expiry capture attempt {}", attempt + 1);
-        let db = fixture.leader(&phase).await;
+    for _ in 0..3 {
+        publisher_db.group.raft().trigger().elect().await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while publisher_db.barrier().await.is_err() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }).await.expect("original backup publisher did not regain quorum");
+        let db = publisher_db.clone();
         let session_id = uuid::Uuid::new_v4();
         let result = expire_paused_backup(
             db.backup_checkpoint(fixture.context.clone(), &paused, session_id),
@@ -894,6 +910,8 @@ async fn serving_expiry_suppresses_long_backup_verification_and_post_publication
             }
         }
     }
+    control.shutdown().await.unwrap();
+    drop((control, publisher_db));
     if expired {
         fixture.drain_after_expiry().await;
     } else {

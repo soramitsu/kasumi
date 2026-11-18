@@ -137,6 +137,25 @@ impl AdmittedBackupBundle {
     }
 }
 
+impl TenantStore {
+    /// Retain the original committed ciphertext under this installation's memory owner.
+    pub fn bound_backup_intent(
+        &self,
+        record: &kasumi_types::BackupBindingRecord,
+    ) -> Result<AdmittedBackupBundle> {
+        self.check_access()?;
+        record.validate()?;
+        ensure!(
+            record.claim.tenant == self.tenant(),
+            "backup Control row belongs to another tenant"
+        );
+        AdmittedBackupBundle::copy_from(
+            &record.claim.intent_ciphertext,
+            self.plaintext_memory_owner(),
+        )
+    }
+}
+
 impl AsRef<[u8]> for AdmittedBackupBundle {
     fn as_ref(&self) -> &[u8] {
         self.as_bytes()
@@ -686,6 +705,11 @@ pub trait BackupDestination: Send + Sync {
     /// state lock. Async callers invoke this from a blocking context such as
     /// `tokio::task::spawn_blocking`, never directly on a runtime worker.
     fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding>;
+    /// Recheck the installed identity before asynchronous session operations.
+    /// Implementations that touch disk transfer this work to their disk owner.
+    async fn verified_namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        self.namespace_binding()
+    }
     /// Publishing is create-only: an existing backup must never be overwritten.
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()>;
     /// Enforce the caller's expected object bound before allocation and while
@@ -839,6 +863,13 @@ impl FilesystemBackupDestination {
 impl BackupDestination for FilesystemBackupDestination {
     fn namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
         self.root.binding()
+    }
+    async fn verified_namespace_binding(&self) -> Result<kasumi_types::BackupNamespaceBinding> {
+        let root = self.root.clone();
+        self.root
+            .disk()
+            .filesystem_child(crate::FilesystemEffect::Read, move || root.binding())
+            .await
     }
     async fn session_put(
         &self,

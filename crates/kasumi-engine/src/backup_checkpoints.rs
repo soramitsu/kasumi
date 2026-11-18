@@ -123,6 +123,17 @@ impl Database {
         destination: &dyn BackupDestination,
         session_id: uuid::Uuid,
     ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
+        self.backup_checkpoint_at(context, destination, session_id, None)
+            .await
+    }
+
+    async fn backup_checkpoint_at(
+        &self,
+        context: RequestContext,
+        destination: &dyn BackupDestination,
+        session_id: uuid::Uuid,
+        alias: Option<&str>,
+    ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         let mut publication_admitted = false;
         let result = self
             .session_work(|| async {
@@ -181,7 +192,7 @@ impl Database {
                     }
                     publication_admitted = true;
                     let (mut expected, session) = self
-                        .publish_full_backup(context.clone(), destination, session_id)
+                        .publish_full_backup(context.clone(), destination, session_id, alias)
                         .await?;
                     let proof = self
                         .verify_pending_backup_checkpoint(
@@ -245,9 +256,14 @@ impl Database {
     ) -> std::result::Result<VerifiedBackupCheckpoint, crate::SnapshotFailure> {
         let result = async {
             self.engine.authorize(&context, None, Action::Admin)?;
-            let destination = self.archive_destination(destination)?;
-            self.backup_checkpoint(context.clone(), destination.as_ref(), session_id)
-                .await
+            let installed = self.archive_destination(destination)?;
+            self.backup_checkpoint_at(
+                context.clone(),
+                installed.as_ref(),
+                session_id,
+                Some(destination),
+            )
+            .await
         }
         .await;
         self.audit_snapshot_write_result(&context, result).await

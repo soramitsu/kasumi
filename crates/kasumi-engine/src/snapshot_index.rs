@@ -134,8 +134,7 @@ impl StagedSnapshot {
                                 get_record(&image, &index, &(0, String::new(), String::new()))?;
                             ensure!(
                                 matches!(header, Some(Record::Header(head))
-                        if head.tenant == crate::control::CONTROL_TENANT
-                        && head.lifecycle_control.is_some()),
+                        if head.tenant == crate::control::CONTROL_TENANT),
                                 "backup binding point row requires installed Control"
                             );
                         }

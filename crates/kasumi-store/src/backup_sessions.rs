@@ -13,6 +13,8 @@ use uuid::Uuid;
 pub(crate) mod filesystem;
 
 pub const MAX_SESSION_RECORD_BYTES: usize = 64 << 10;
+pub const MAX_ENCRYPTED_SESSION_RECORD_BYTES: usize =
+    MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84;
 pub const MAX_SESSION_GC_OBJECTS: usize = 256;
 /// Control records live outside the only deletable subtree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -263,7 +265,7 @@ pub async fn verify_backup_session(
         .session_get(
             session,
             BackupSessionSlot::Intent,
-            MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84,
+            MAX_ENCRYPTED_SESSION_RECORD_BYTES,
         )
         .await?
     else {
@@ -286,7 +288,7 @@ pub async fn verify_backup_session(
         .session_get(
             session,
             BackupSessionSlot::Outcome,
-            MAX_SESSION_RECORD_BYTES + crate::backup::HEADER_LIMIT + 84,
+            MAX_ENCRYPTED_SESSION_RECORD_BYTES,
         )
         .await?;
     let outcome = if let Some(bytes) = &outcome_bytes {
@@ -385,6 +387,9 @@ impl BackupDestination for BackupSessionObjects<'_> {
     /// blocking verification.
     fn namespace_binding(&self) -> Result<BackupNamespaceBinding> {
         self.destination.namespace_binding()
+    }
+    async fn verified_namespace_binding(&self) -> Result<BackupNamespaceBinding> {
+        self.destination.verified_namespace_binding().await
     }
     async fn put(&self, id: Uuid, encrypted: BackupUpload) -> Result<()> {
         self.destination

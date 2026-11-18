@@ -571,6 +571,9 @@ impl BackupDestination for CredentialPausedDestination {
     fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
         kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
     }
+    async fn verified_namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+        self.inner.verified_namespace_binding().await
+    }
     async fn session_put(
         &self,
         session: uuid::Uuid,

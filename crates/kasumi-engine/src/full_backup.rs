@@ -212,6 +212,7 @@ impl Database {
         context: RequestContext,
         destination: &dyn BackupDestination,
         session_id: uuid::Uuid,
+        alias: Option<&str>,
     ) -> Result<(PublishedRoot, kasumi_store::VerifiedBackupSession)> {
         self.access()?;
         self.engine.authorize(&context, None, Action::Admin)?;
@@ -250,9 +251,10 @@ impl Database {
         };
         intent.validate()?;
         let intent_bytes = self
-            .store
-            .encrypt_session_record(state.revision, &intent)
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "backup intent encryption failed"))?;
+            .claim_backup_intent(&context, destination, &intent, &generation, alias)
+            .await?;
+        self.engine
+            .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
         destination
             .session_put(
                 session_id,

@@ -36,6 +36,8 @@ use sha2::{Digest, Sha256};
 pub use snapshot_api::PreparedSnapshotRestore;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{Arc, Mutex};
+#[path = "backup_claim_state.rs"]
+pub(crate) mod backup_claim;
 #[path = "history_state.rs"]
 pub(crate) mod history;
 #[path = "lease_retention.rs"]
@@ -583,6 +585,11 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         if bytes.starts_with(target::PREFIX) {
             return self
                 .apply_target(position, bytes, publisher)
+                .map_err(Into::into);
+        }
+        if bytes.starts_with(backup_claim::PREFIX) {
+            return self
+                .apply_backup_claim(position, bytes, publisher)
                 .map_err(Into::into);
         }
         if bytes.starts_with(tenant_audit::PREFIX) {

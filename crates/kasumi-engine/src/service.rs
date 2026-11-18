@@ -41,6 +41,8 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
 mod backup_checkpoints;
+#[path = "backup_control_service.rs"]
+mod backup_control_service;
 #[path = "backup_sessions.rs"]
 mod backup_sessions;
 #[path = "change_feed.rs"]
@@ -1179,6 +1181,7 @@ pub struct Database {
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
+    backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
     archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
@@ -1580,6 +1583,7 @@ impl Database {
             selection_rebase_warned: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             proposals: proposal_jobs::Jobs::default(),
+            backup_control: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
@@ -3757,6 +3761,7 @@ mod tests {
     include!("service_snapshot_audit_tests.rs");
     include!("service_snapshot_admission_tests.rs");
     include!("service_credential_tests.rs");
+    include!("service_backup_claim_tests.rs");
     include!("service_proposal_tests.rs");
     include!("service_group_commit_tests.rs");
     include!("service_topology_input_tests.rs");

@@ -34,8 +34,8 @@ mod catalog_read_budget;
 mod key_access_denied;
 pub use backup_sessions::{
     BackupSessionObject, BackupSessionObjectPage, BackupSessionObjects, BackupSessionSlot,
-    MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES, VerifiedBackupAbort, VerifiedBackupSession,
-    verify_backup_session,
+    MAX_ENCRYPTED_SESSION_RECORD_BYTES, MAX_SESSION_GC_OBJECTS, MAX_SESSION_RECORD_BYTES,
+    VerifiedBackupAbort, VerifiedBackupSession, verify_backup_session,
 };
 mod background_pace;
 pub use background_pace::{

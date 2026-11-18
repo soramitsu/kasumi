@@ -700,6 +700,7 @@ impl Administration {
             generations.insert((name, incarnation), tenant);
         }
         let control_context = crate::runtime::configured_control_context(&config.control)?;
+        registry.install_backup_control(&control, &control_context)?;
         registry.observe_membership(&control)?;
         let readiness = crate::readiness::Coverage::new(&admission)?;
         // Protected observations keep one pre-reserved workspace, so node
