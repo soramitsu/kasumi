@@ -4,7 +4,7 @@ async fn backup_test_control(
     source: &Arc<Database>,
     context: &RequestContext,
     create: bool,
-) -> anyhow::Result<(Arc<Database>, RequestContext)> {
+) -> std::result::Result<(Arc<Database>, RequestContext), crate::SnapshotFailure> {
     let node = source.store.node_store().clone();
     let tenant = crate::control::CONTROL_TENANT.to_owned();
     let keys = Arc::new(LocalKeyProvider::new([0x4a; 32]));
@@ -38,7 +38,7 @@ async fn backup_test_control(
 
 #[tokio::test]
 async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_intent()
--> anyhow::Result<()> {
+-> std::result::Result<(), crate::SnapshotFailure> {
     let fixture = CredentialFixture::new().await;
     let (control, operator) = backup_test_control(&fixture.db, &fixture.context, true).await?;
     fixture.db.install_backup_control(&control, &operator)?;
