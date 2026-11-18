@@ -169,7 +169,10 @@ def execute(run, pack, units, plan_file):
     target = run.bind()
     require(target in acceptance.LINUX and sys.platform == "linux", "systemd smoke runs on a native Linux candidate host")
     tools = read_tools(run)
-    details = {"tools":tools,"artifacts":{},"polls":{},"installed":{},"certificates":{}}
+    functional = run.evidence / "evidence.json"
+    require(owned.sha256(Path(tools["python"])) == owned.read(functional)["python_executable"]["sha256"],
+            "systemd probe interpreter differs from the native functional tool")
+    details = {"functional_sha256":owned.sha256(functional),"tools":tools,"artifacts":{},"polls":{},"installed":{},"certificates":{}}
     run.report["details"] = details
     plan = owned.read(run.configuration("systemd-plan",plan_file))
     owned.exact(plan,{"schema","data_client","authority_client"},"systemd smoke plan")
@@ -258,7 +261,10 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     target = report["target"]
     require(target in acceptance.LINUX and not domain["topology"], "systemd smoke requires the native Linux target")
     details,params = report["details"],report["invocation"]["parameters"]
-    owned.exact(details,{"tools","artifacts","polls","installed","certificates"},"original systemd run")
+    owned.exact(details,{"functional_sha256","tools","artifacts","polls","installed","certificates"},"original systemd run")
+    primary = candidates[target]["primary"]["functional"]
+    require(details["functional_sha256"] == primary["sha256"], "systemd smoke consumed another functional candidate")
+    python_hash = acceptance.json_reference(root,primary)["python_executable"]["sha256"]
     owned.exact(params,{"package","systemd-data","systemd-authority"},"delivered systemd paths")
     required = {"package:"+target,"systemd-data","systemd-authority"}
     require(domain["artifacts"] == details["artifacts"] ==
@@ -286,6 +292,8 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
         original = facts["receipts"][name]
         record = original["record"]
         expected = domain["binaries"].get(Path(command[0]).name)
+        if command[0] == tools["python"]:
+            expected = python_hash
         output = owned.check_ref(custody,item["log"])
         require(not original["service"] and record["command"] == command and original["exit_code"] == 0
                 and record["executable"]["path"] == command[0] and (expected is None or record["executable"]["sha256"] == expected)
