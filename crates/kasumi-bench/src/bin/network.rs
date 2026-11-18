@@ -595,6 +595,7 @@ async fn run(
     config: CaseConfig,
     root: &Path,
     allow_writes: bool,
+    retain_samples: bool,
     mut checkpoint: impl FnMut(&CaseReport) -> Result<()>,
 ) -> Result<CaseReport> {
     validate(&config)?;
@@ -684,7 +685,9 @@ async fn run(
                 break;
             }
         }
-        result.measurements.push(samples.finish());
+        result
+            .measurements
+            .push(samples.finish_with_samples(retain_samples));
         checkpoint(&result)?;
     }
     if targets.iter().all(|target| target.query.is_some()) {
@@ -698,7 +701,9 @@ async fn run(
                 break;
             }
         }
-        result.measurements.push(samples.finish());
+        result
+            .measurements
+            .push(samples.finish_with_samples(retain_samples));
         checkpoint(&result)?;
     }
     result.phase = "completed".into();
@@ -714,20 +719,48 @@ fn save(path: &Path, report: &Report) -> Result<()> {
     std::fs::rename(tmp, path)?;
     Ok(())
 }
+fn raw_baseline(mut args: impl Iterator<Item = String>) -> Result<()> {
+    let tenants: usize = args.next().context("tenant count required")?.parse()?;
+    let documents: usize = args.next().context("document count required")?.parse()?;
+    let operations: usize = args.next().context("operation count required")?.parse()?;
+    let output = PathBuf::from(args.next().context("report path required")?);
+    ensure!(args.next().is_none(), "extra raw baseline arguments");
+    let mut corpus = kasumi_bench::raw::RawCorpus::new(tenants)?;
+    let bytes = corpus.load(documents)?;
+    let measurement = corpus.measure(operations, true)?;
+    let failed = measurement.failed();
+    let mut file = std::fs::File::create_new(output)?;
+    serde_json::to_writer(
+        &mut file,
+        &json!({
+            "format": "kasumi-raw-matrix-v1", "tenants": tenants, "documents": documents,
+            "payload_bytes": bytes, "provider": "none", "measurement": measurement,
+            "executable_sha256": hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)),
+        }),
+    )?;
+    file.sync_all()?;
+    ensure!(!failed, "raw baseline failed");
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let config_path = PathBuf::from(
-        args.next()
-            .context("usage: kasumi-bench-network CONFIG.json OUTPUT.json [--allow-writes]")?,
-    );
+    let first = args.next().context("usage: kasumi-bench-network CONFIG.json OUTPUT.json [--allow-writes] [--retain-samples], or --raw-baseline TENANTS DOCUMENTS OPERATIONS OUTPUT.json")?;
+    if first == "--raw-baseline" {
+        return raw_baseline(args);
+    }
+    let config_path = PathBuf::from(first);
     let output = PathBuf::from(args.next().context("report path required")?);
-    let allow_writes = match args.next().as_deref() {
-        None => false,
-        Some("--allow-writes") => true,
-        _ => anyhow::bail!("unknown argument"),
-    };
-    ensure!(args.next().is_none(), "extra arguments");
+    let mut allow_writes = false;
+    let mut retain_samples = false;
+    for arg in args {
+        match arg.as_str() {
+            "--allow-writes" if !allow_writes => allow_writes = true,
+            "--retain-samples" if !retain_samples => retain_samples = true,
+            _ => anyhow::bail!("unknown or repeated argument: {arg}"),
+        }
+    }
     let config: Configuration = serde_json::from_slice(&std::fs::read(&config_path)?)?;
     ensure!(!config.cases.is_empty(), "at least one case required");
     let mut report=Report{format:1,created_unix_ms:SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),os:std::env::consts::OS.into(),architecture:std::env::consts::ARCH.into(),build_profile:if cfg!(debug_assertions){"debug"}else{"release"}.into(),executable_sha256:hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)),logical_cpus:std::thread::available_parallelism().ok().map(usize::from),evidence_status:"Preliminary development measurement; repeat on quiet host with stable server/client source".into(),notes:vec!["Real authenticated TLS 1.3 network requests. Native RPC additionally requires mTLS and pins the server certificate against the configured CA.".into(),"Credentials and document/query values are omitted from this report. Credential count is configured token sources, not a claim of verified distinct tenants.".into(),"Connections and one warmup point read per credential are excluded from measured API latency. Requests are sequential and no automatic retries are attempted.".into(),"Server replication, KMS, hardware, and audit configuration must be disclosed separately for comparison; this client does not infer their guarantees.".into(),"Writes occur only with --allow-writes and a replacement body on every dedicated target. Query measurements consume all historical pages.".into()],cases:Vec::new(),failures:Vec::new()};
@@ -739,7 +772,7 @@ async fn main() -> Result<()> {
     for case in config.cases {
         eprintln!("running network case {}", case.name);
         let name = case.name.clone();
-        let result = run(case, root, allow_writes, |partial| {
+        let result = run(case, root, allow_writes, retain_samples, |partial| {
             if let Some(previous) = report
                 .cases
                 .iter_mut()

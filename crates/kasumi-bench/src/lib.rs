@@ -1,3 +1,5 @@
+pub mod raw;
+
 use serde::Serialize;
 use std::time::{Duration, Instant};
 
@@ -50,6 +52,9 @@ pub struct Measurement {
     /// failed-attempt delay. Failed latency remains separate below.
     pub latency: Option<Latency>,
     pub failed_attempts: Vec<FailedAttempt>,
+    /// Successful operations in issue order, before percentile sorting.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub successful_elapsed_ns: Option<Vec<u64>>,
 }
 impl Measurement {
     pub fn failed(&self) -> bool {
@@ -112,6 +117,11 @@ impl Samples {
         }
     }
     pub fn finish(self) -> Measurement {
+        self.finish_with_samples(false)
+    }
+
+    pub fn finish_with_samples(self, retain: bool) -> Measurement {
+        let successful_elapsed_ns = retain.then(|| self.succeeded.clone());
         let successful_operations = self.succeeded.len();
         let failed_operations = self.failures.len();
         Measurement {
@@ -126,6 +136,7 @@ impl Samples {
             latency: (!self.succeeded.is_empty())
                 .then(|| latency(self.succeeded, self.started.elapsed())),
             failed_attempts: self.failures,
+            successful_elapsed_ns,
         }
     }
 }
@@ -133,6 +144,30 @@ impl Samples {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn ordered_samples_keep_real_durations_before_sorting_and_a_failed_tail() {
+        let mut samples = Samples::new("ordered", 5);
+        for nanos in [400, 200, 300] {
+            assert!(samples.record(Duration::from_nanos(nanos), Ok(())));
+        }
+        assert!(!samples.record(Duration::from_micros(1), Err(anyhow::anyhow!("failure"))));
+        let measured = samples.finish_with_samples(true);
+        assert_eq!(
+            measured.successful_elapsed_ns.as_deref(),
+            Some([400, 200, 300].as_slice())
+        );
+        assert_eq!(measured.failed_attempts[0].operation_index, 3);
+        assert_eq!(measured.failed_operations, 1);
+        assert_eq!(measured.unattempted_operations, 1);
+        assert_eq!(measured.latency.unwrap().p50_microseconds, 0.3);
+        assert!(
+            Samples::new("other", 1)
+                .finish()
+                .successful_elapsed_ns
+                .is_none()
+        );
+    }
+
     #[test]
     fn a_failure_keeps_prior_samples_and_never_counts_unattempted_work() {
         let mut samples = Samples::new("mixed", 1000);

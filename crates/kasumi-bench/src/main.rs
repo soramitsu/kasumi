@@ -1,7 +1,10 @@
 //! Reproducible local benchmark. Test-only wrapping is explicit in every report;
 //! it performs authenticated encryption but excludes network Transit latency.
 use anyhow::{Context, Result, ensure};
-use kasumi_bench::{Measurement, Samples};
+use kasumi_bench::{
+    Measurement, Samples,
+    raw::{RawCorpus, document_body as body},
+};
 use kasumi_engine::{
     Database, ReplicaPlacement, ReplicatedBootstrap, SECURITY_TENANT, SecurityAudit,
     initialize_replicated, open_local, open_replicated,
@@ -13,7 +16,7 @@ use serde::Serialize;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::BTreeSet,
     hint::black_box,
     path::{Path, PathBuf},
     sync::Arc,
@@ -28,6 +31,7 @@ struct Options {
     modes: Vec<String>,
     output: PathBuf,
     work_parent: Option<PathBuf>,
+    retain_samples: bool,
 }
 impl Options {
     fn parse() -> Result<Self> {
@@ -43,6 +47,7 @@ impl Options {
             ],
             output: PathBuf::from("kasumi-benchmark.json"),
             work_parent: None,
+            retain_samples: false,
         };
         let mut args = std::env::args().skip(1);
         while let Some(arg) = args.next() {
@@ -52,9 +57,14 @@ impl Options {
                 options.operations = 32;
                 continue;
             }
+            if arg == "--retain-samples" {
+                ensure!(!options.retain_samples, "duplicate --retain-samples");
+                options.retain_samples = true;
+                continue;
+            }
             if arg == "--help" {
                 println!(
-                    "kasumi-bench [--smoke] [--documents 1000000] [--tenants 1,100,1000] [--operations 10000] [--modes raw,local,replicated,text] [--output report.json] [--work-parent /directory]\nDefaults run every requested local mode. Network transport benchmarks require a separate authenticated endpoint runner; this harness never labels in-process calls as RPC/MCP."
+                    "kasumi-bench [--smoke] [--documents 1000000] [--tenants 1,100,1000] [--operations 10000] [--modes raw,local,replicated,text] [--output report.json] [--work-parent /directory] [--retain-samples]\nDefaults run every requested local mode. Network transport benchmarks require a separate authenticated endpoint runner; this harness never labels in-process calls as RPC/MCP."
                 );
                 std::process::exit(0);
             }
@@ -147,13 +157,6 @@ struct Report {
     failures: Vec<String>,
 }
 
-fn body(ordinal: usize, version: usize, tenants: usize) -> Value {
-    let local_ordinal = ordinal / tenants;
-    let mut value = json!({"ordinal":ordinal,"version":version,"text":format!("searchable document token{:04} feature{:04} {} revision{version} ",local_ordinal%1000,local_ordinal%1000,if local_ordinal.is_multiple_of(1000) {"図書館"}else{"動物"}),"padding":""});
-    let encoded = serde_json::to_vec(&value).unwrap().len();
-    value["padding"] = Value::String("x".repeat(1024usize.saturating_sub(encoded)));
-    value
-}
 fn context(tenant: usize) -> RequestContext {
     RequestContext {
         authorization: kasumi_types::RequestAuthorization::service_identity(),
@@ -233,32 +236,13 @@ fn definition(text: bool) -> CollectionDefinition {
 fn raw(options: &Options, tenants: usize) -> Result<Case> {
     let baseline_rss_bytes = rss();
     let opened = Instant::now();
-    let mut maps: Vec<HashMap<String, Value>> = (0..tenants).map(|_| HashMap::new()).collect();
+    let mut corpus = RawCorpus::new(tenants)?;
     let open_seconds = opened.elapsed().as_secs_f64();
     let empty_rss_bytes = rss();
     let started = Instant::now();
-    let mut payload_bytes = 0;
-    for ordinal in 0..options.documents {
-        let value = body(ordinal, 0, tenants);
-        payload_bytes += serde_json::to_vec(&value)?.len();
-        maps[ordinal % tenants].insert(ordinal.to_string(), value);
-    }
+    let payload_bytes = corpus.load(options.documents)?;
     let load_seconds = started.elapsed().as_secs_f64();
-    let keys: Vec<_> = (0..options.operations)
-        .map(|i| ((i.wrapping_mul(7919)) % options.documents).to_string())
-        .collect();
-    let mut samples = Samples::new("raw_hashmap_borrowed_lookup", keys.len());
-    for (i, key) in keys.iter().enumerate() {
-        let ordinal = (i.wrapping_mul(7919)) % options.documents;
-        let start = Instant::now();
-        black_box(
-            maps[ordinal % tenants]
-                .get(key)
-                .context("raw document missing")?,
-        );
-        samples.record(start.elapsed(), Ok(()));
-    }
-    let measurement = samples.finish();
+    let measurement = corpus.measure(options.operations, options.retain_samples)?;
     Ok(Case { mode:"raw".into(),tenants,documents:options.documents,replicas:1,security_audit_stores:0,raft_timing_milliseconds:None,payload_bytes,open_seconds,baseline_rss_bytes,empty_rss_bytes,collection_setup_seconds:None,empty_index_rss_bytes:None,load_seconds,resident_rss_bytes:rss(),after_workload_rss_bytes:rss(),after_recovery_rss_bytes:None,peak_rss_bytes:peak_rss(),disk_bytes:0,shutdown_seconds:None,recovery_seconds:None,measurements:vec![measurement],notes:vec!["Borrowed map lookup only: no authentication, cloning, schema checks, consistency barrier, indexing, or durability. Timer overhead is included.".into()] })
 }
 
@@ -692,7 +676,7 @@ async fn workload(
             break;
         }
     }
-    samples.finish()
+    samples.finish_with_samples(options.retain_samples)
 }
 async fn queries(
     databases: &Databases,
@@ -744,7 +728,7 @@ async fn queries(
             break;
         }
     }
-    samples.finish()
+    samples.finish_with_samples(options.retain_samples)
 }
 
 fn checkpoint(
@@ -944,6 +928,7 @@ mod tests {
             modes: vec!["local".into()],
             output: dir.path().join("result.json"),
             work_parent: None,
+            retain_samples: false,
         };
         for name in [
             "embedded_authorized_owned_point_get",
