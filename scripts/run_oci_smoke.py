@@ -75,7 +75,7 @@ def plan(parameters, image, python, probe):
         "printf '%s' '" + json.dumps(inputs[key], sort_keys=True, separators=(",", ":"))
         + "' > " + INPUTS + "/" + key + ".json" for key in sorted(inputs))
     profile = INSTALLATION + "/profiles/"
-    ready = [runtime, "exec", name, CONTROL, "--profile", profile + "operator.json", "ready"]
+    ready = [runtime, "exec", name, CONTROL, "--profile", profile + "control.json", "ready"]
     native = [runtime, "exec", name, CONTROL, "--profile", profile + "default.json", "collections"]
     publish = [runtime, "exec", "--user", "0", name, "/bin/sh", "-c",
                "rm -rf /export/installation && cp -R " + INSTALLATION

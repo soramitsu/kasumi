@@ -414,6 +414,8 @@ class SmokeTests(ImageFixture):
         self.assertEqual(init[-2:], ["--tenant", "smoke"])
         self.assertEqual(sum(argument.startswith("--") and argument.endswith("-policy")
                              for argument in init), 2)
+        for step in ("ready-start", "ready-restart"):
+            self.assertEqual(commands[step][-3:], ["--profile", smoke.INSTALLATION + "/profiles/control.json", "ready"])
         self.assertIn("kasumi-smoke-oci-1:/var/lib/kasumi", commands["start"])
         self.assertEqual(commands["mcp"][:5], ["/usr/bin/python3", "-I", "-B", "-S",
                                                "/frozen/scripts/mcp_probe.py"])
