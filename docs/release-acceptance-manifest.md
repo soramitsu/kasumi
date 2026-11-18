@@ -223,6 +223,27 @@ The structural workload validators enforce:
   crossings of all permanent-history lifetime categories, key-retention pages
   no larger than 256, and complete current-epoch readiness above 128 groups.
 
+The concurrency producer runs all nine separately enrolled processes on native
+Linux ARM64. Start it from the frozen source with the same isolated interpreter
+and attempt journal as the other domain runners.
+
+```sh
+python3 -I -B -S scripts/run_concurrency.py --evidence "$functional" \
+  --journal "$journal" --attempt-id "$attempt" --output "$output" \
+  --topology "$nine_member_plan" --plan "$concurrency_plan"
+```
+
+Use plan schema `kasumi-concurrency-plan-v1`. Supply `data_profile` and
+`operator_profile` as absolute paths to installed profiles for the same tenant
+incarnation. The operator profile selects the current data leader's
+administrative endpoint. Supply a fresh `collection` name and a registered
+backup `destination`. The runner creates the declared collection, verifies
+both document versions after atomic writes, reads coherent snapshots, checks
+the new physical Raft snapshot position, creates and verifies a backup
+checkpoint and commits a fresh membership log entry for the enrolled voters.
+The fixed workloads retain complete original session replies, operation times,
+maintenance receipts and the nine original process drains.
+
 Latency sample rows contain `sequence`, `elapsed_ns`, and `status`. A
 measurement declares `name`, `requested_operations`, `attempted_operations`,
 `successful_operations`, `failed_operations`, `unattempted_operations`, and

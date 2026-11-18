@@ -1094,6 +1094,12 @@ def check_readiness_epoch(value):
     return value
 
 
+def concurrency_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_concurrency
+
+    return run_concurrency.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def benchmark_matrix_adapter(root, domain, files, configs, artifacts, candidates):
     import run_benchmark_matrix_owned
 
@@ -1126,6 +1132,7 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
     "benchmark-matrix": benchmark_matrix_adapter,
+    "concurrency": concurrency_adapter,
     "correctness": correctness_adapter,
     "backup-cleanup": backup_cleanup_adapter,
     "providers": providers_adapter,
@@ -1201,7 +1208,8 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
         check_soak(root, details, elapsed)
         require(longest >= details["duration_seconds"], "soak has no process retained for full duration")
     elif kind == "concurrency":
-        exact(details, {"workloads"}, "concurrent workloads")
+        exact(details, {"workloads", "report"}, "concurrent workloads")
+        reference(root, details["report"])
         workloads = unique(details["workloads"], "name", "concurrent workloads")
         require(set(workloads) == SCENARIOS[kind], "concurrent workload roster differs")
         for work in workloads.values():

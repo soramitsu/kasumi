@@ -89,7 +89,8 @@ def retain(root, path):
     return ref(root, destination)
 
 
-def run_owned(root, name, command, source, environment, timeout, *, before_cleanup=None, after_cleanup=None):
+def run_owned(root, name, command, source, environment, timeout, *, before_cleanup=None, after_cleanup=None,
+              observe_process=None):
     """Always retain the original child outcome, including an interrupted attempt."""
     directory = root / name
     directory.mkdir(exist_ok=False)
@@ -97,9 +98,14 @@ def run_owned(root, name, command, source, environment, timeout, *, before_clean
     require(command[0] == executable["path"], "assembly command must select an absolute executable")
     retained = retain(root, Path(executable["path"]))
     require(retained["sha256"] == executable["sha256"], "executable changed before dispatch")
+    def observe(record):
+        write_json(directory / "process.json", record)
+        if observe_process is not None:
+            observe_process(record)
+
     with (directory / "stdout.log").open("xb") as stdout, (directory / "stderr.log").open("xb") as stderr:
         process = gate_process.run(command, source, environment, stdout, timeout,
-                                  lambda value: write_json(directory / "process.json", value), stderr=stderr,
+                                  observe, stderr=stderr,
                                   before_cleanup=before_cleanup, after_cleanup=after_cleanup)
     process["outputs_stable"] = bool(process["cleanup"]["drained"] and not process["cleanup"]["errors"])
     process["stdout"] = ref(root, directory / "stdout.log")
