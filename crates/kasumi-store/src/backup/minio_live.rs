@@ -2,7 +2,11 @@
 //! Uses only an explicitly supplied local Docker socket, bounded resources, TLS,
 //! ephemeral credentials and one uniquely named test container.
 use super::*;
-use std::process::{Command, Output, Stdio};
+use std::{
+    os::unix::fs::{DirBuilderExt, PermissionsExt},
+    process::{Command, Output, Stdio},
+    sync::RwLock,
+};
 
 const IMAGE: &str =
     "minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e";
@@ -56,9 +60,13 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             && !workdir.contains(','),
         "fixture paths must be explicit absolute paths"
     );
-    let root = tempfile::tempdir_in(&workdir)?;
+    let root = tempfile::Builder::new()
+        .permissions(std::fs::Permissions::from_mode(0o700))
+        .tempdir_in(&workdir)?;
     let certs = root.path().join("certs");
-    std::fs::create_dir(&certs)?;
+    std::fs::DirBuilder::new().mode(0o700).create(&certs)?;
+    let objects = root.path().join("objects");
+    std::fs::DirBuilder::new().mode(0o700).create(&objects)?;
     let certificate =
         rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()])?;
     let ca = certificate.cert.pem().into_bytes();
@@ -90,58 +98,72 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         "type=bind,source={},target=/certs,readonly",
         certs.display()
     );
-    let output = container
-        .docker()
-        .args([
-            "run",
-            "--detach",
-            "--name",
-            &container.name,
-            "--pull",
-            "never",
-            "--memory",
-            "512m",
-            "--cpus",
-            "1",
-            "--pids-limit",
-            "128",
-            "--security-opt",
-            "no-new-privileges",
-            "--cap-drop",
-            "ALL",
-            "--read-only",
-            "--tmpfs",
-            "/data:rw,size=268435456,mode=0700",
-            "--tmpfs",
-            "/tmp:rw,size=16777216",
-            "--publish",
-            "127.0.0.1::9000",
-            "--mount",
-            &mount,
-            "--env",
-            "MINIO_ROOT_USER",
-            "--env",
-            "MINIO_ROOT_PASSWORD",
-            "--env",
-            "MINIO_BROWSER=off",
-            IMAGE,
-            "server",
-            "/data",
-            "--address",
-            ":9000",
-            "--console-address",
-            "127.0.0.1:9001",
-            "--certs-dir",
-            "/certs",
-            "--quiet",
-        ])
-        .env("MINIO_ROOT_USER", &user)
-        .env("MINIO_ROOT_PASSWORD", password.as_str())
-        .output()?;
-    ensure!(
-        output.status.success(),
-        "starting bounded MinIO fixture failed"
-    );
+    let data_mount = format!("type=bind,source={},target=/data", objects.display());
+    let port = std::net::TcpListener::bind("127.0.0.1:0")?
+        .local_addr()?
+        .port();
+    let publish = format!("127.0.0.1:{port}:9000");
+    let start = |secret: &str| -> Result<String> {
+        let output = container
+            .docker()
+            .args([
+                "run",
+                "--detach",
+                "--name",
+                &container.name,
+                "--pull",
+                "never",
+                "--memory",
+                "512m",
+                "--cpus",
+                "1",
+                "--pids-limit",
+                "128",
+                "--security-opt",
+                "no-new-privileges",
+                "--cap-drop",
+                "ALL",
+                "--read-only",
+                "--mount",
+                &data_mount,
+                "--tmpfs",
+                "/tmp:rw,size=16777216",
+                "--publish",
+                &publish,
+                "--mount",
+                &mount,
+                "--env",
+                "MINIO_ROOT_USER",
+                "--env",
+                "MINIO_ROOT_PASSWORD",
+                "--env",
+                "MINIO_BROWSER=off",
+                IMAGE,
+                "server",
+                "/data",
+                "--address",
+                ":9000",
+                "--console-address",
+                "127.0.0.1:9001",
+                "--certs-dir",
+                "/certs",
+                "--quiet",
+            ])
+            .env("MINIO_ROOT_USER", &user)
+            .env("MINIO_ROOT_PASSWORD", secret)
+            .output()?;
+        ensure!(
+            output.status.success(),
+            "starting bounded MinIO fixture failed"
+        );
+        let id = std::str::from_utf8(&output.stdout)?.trim().to_owned();
+        ensure!(
+            id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()),
+            "unexpected MinIO container identity"
+        );
+        Ok(id)
+    };
+    let first_id = start(&password)?;
     let port = container.run(&["port", &container.name, "9000/tcp"])?;
     let address: std::net::SocketAddr = std::str::from_utf8(&port.stdout)?.trim().parse()?;
     ensure!(
@@ -150,6 +172,7 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
     );
     let endpoint = format!("https://127.0.0.1:{}", address.port());
     let bucket = format!("kasumi-{}", Uuid::new_v4().simple());
+    let credential = Arc::new(RwLock::new(password.clone()));
     let make = || S3BackupConfig {
         endpoint: endpoint.clone(),
         region: "us-east-1".into(),
@@ -157,10 +180,10 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         prefix: "encrypted/backups".into(),
         credential: {
             let user = user.clone();
-            let password = password.clone();
+            let credential = credential.clone();
             Arc::new(move || {
                 Ok(Zeroizing::new(serde_json::json!({
-                "access_key_id": user, "secret_access_key": password.as_str(), "session_token": null
+                "access_key_id": user, "secret_access_key": credential.read().expect("test credential lock").as_str(), "session_token": null
             }).to_string()))
             })
         },
@@ -168,22 +191,25 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
         max_bytes: 4 << 20,
     };
     let destination = S3BackupDestination::new(make())?;
-    tokio::time::timeout(std::time::Duration::from_secs(45), async {
-        loop {
-            if destination
-                .client
-                .get(format!("{endpoint}/minio/health/live"))
-                .send()
-                .await
-                .is_ok_and(|r| r.status().is_success())
-            {
-                return;
+    let wait_ready = || async {
+        tokio::time::timeout(std::time::Duration::from_secs(45), async {
+            loop {
+                if destination
+                    .client
+                    .get(format!("{endpoint}/minio/health/live"))
+                    .send()
+                    .await
+                    .is_ok_and(|r| r.status().is_success())
+                {
+                    return;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        }
-    })
-    .await
-    .context("MinIO TLS readiness failed")?;
+        })
+        .await
+        .context("MinIO TLS readiness failed")
+    };
+    wait_ready().await?;
     let bucket_url = destination.endpoint.join(&bucket)?;
     let headers =
         destination.signed_headers("PUT", &bucket_url, &[], time::OffsetDateTime::now_utc())?;
@@ -224,6 +250,28 @@ async fn actual_minio_tls_sigv4_encrypted_roundtrip_create_only_and_access_denia
             .await
             .is_err()
     );
+    container.run(&["stop", "--time", "30", &container.name])?;
+    let exit = container.run(&[
+        "inspect",
+        "--format",
+        "{{.State.ExitCode}}",
+        &container.name,
+    ])?;
+    ensure!(
+        std::str::from_utf8(&exit.stdout)?.trim() == "0",
+        "MinIO did not stop cleanly"
+    );
+    container.run(&["rm", &container.name])?;
+    let replacement = Zeroizing::new(Uuid::new_v4().simple().to_string());
+    let next_id = start(&replacement)?;
+    ensure!(first_id != next_id, "MinIO service was not replaced");
+    wait_ready().await?;
+    ensure!(
+        destination.get(id, 16 << 20).await.is_err(),
+        "previous MinIO credential was accepted after rotation"
+    );
+    *credential.write().expect("test credential lock") = replacement;
+    assert_eq!(destination.get(id, 16 << 20).await?, bytes.as_bytes());
     let recovered =
         EncryptedBackup::from_bytes(&destination.get(id, 16 << 20).await?, 1 << 20, &store)?
             .decrypt_fixture("customer", provider, &store)
