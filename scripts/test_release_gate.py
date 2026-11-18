@@ -74,7 +74,7 @@ class ReleaseGateTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "paths differ"):
                 verify()
 
-    def test_roster_is_exactly_the_23_gates_with_openraft_custody_commands(self):
+    def test_roster_matches_all_frozen_gates_with_openraft_custody_commands(self):
         gates = release_gate.functional_gates(3, "/native/python3")
         self.assertEqual([name for name, _ in gates], [
             "toolchain", "format", "python", "dependency-patches", "lru",
@@ -83,7 +83,7 @@ class ReleaseGateTests(unittest.TestCase):
             "openraft-integration", "openraft-singlethreaded", "openraft-clippy", "workspace",
             "workspace-docs", "clippy", "network-features", "network-driver",
             "production-features", "production"])
-        self.assertEqual(len(dict(gates)), 23)
+        self.assertEqual(len(dict(gates)), 22)
         self.assertEqual([name for name, *_ in release_gate.VENDOR_SUITES],
                          [name for name, _ in gates[4:16]])
         # docs/evidence/openraft-canonical-20260920 attempts 46-49, under the
