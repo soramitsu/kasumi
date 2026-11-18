@@ -25,8 +25,6 @@ mod tests;
 
 pub use builder::{BulkBuilder, RowSink, stage_tree};
 pub use cache::{PageCache, PageCacheStats};
-#[cfg(test)]
-use cursor::Entries;
 pub use cursor::{Direction, TreeReader};
 pub use editor::{
     EDIT_JOURNAL, Edit, EditWorkspace, TreeEdit, edit_tree, edit_tree_staged,
