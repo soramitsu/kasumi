@@ -36,6 +36,44 @@ class ReleaseGateTests(unittest.TestCase):
             release_gate.dispatch_gates(gates, source, output, os.environ.copy(), 5, record, original)
         return output, record
 
+    def test_export_must_match_committed_bytes_modes_and_file_set(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            (repo / ".gitattributes").write_text("/docs/evidence export-ignore\n")
+            evidence = repo / "docs" / "evidence"
+            evidence.mkdir(parents=True)
+            (evidence / "raw").write_text("separate evidence")
+            program = repo / "tool"
+            program.write_text("original")
+            program.chmod(0o755)
+            git = ["git", "-C", str(repo)]
+            subprocess.run(git + ["add", "."], check=True)
+            subprocess.run(git + ["-c", "user.name=test", "-c", "user.email=test@invalid",
+                                  "commit", "-qm", "source"], check=True)
+            archive, source = root / "source.tar", root / "source"
+            subprocess.run(git + ["archive", "-o", str(archive), "HEAD"], check=True)
+            release_gate.extract_source(archive, source)
+
+            def verify():
+                release_gate.verify_export(repo, "HEAD", source, release_gate.inventory(source))
+
+            verify()
+            self.assertFalse((source / "docs/evidence/raw").exists())
+            program = source / "tool"
+            program.write_text("modified")
+            with self.assertRaisesRegex(ValueError, "bytes or mode"):
+                verify()
+            program.write_text("original")
+            program.chmod(0o644)
+            with self.assertRaisesRegex(ValueError, "bytes or mode"):
+                verify()
+            program.unlink()
+            with self.assertRaisesRegex(ValueError, "paths differ"):
+                verify()
+
     def test_roster_is_exactly_the_23_gates_with_openraft_custody_commands(self):
         gates = release_gate.functional_gates(3, "/native/python3")
         self.assertEqual([name for name, _ in gates], [

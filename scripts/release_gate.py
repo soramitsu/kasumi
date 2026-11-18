@@ -194,6 +194,35 @@ def inventory(directory):
     return result
 
 
+def verify_export(repository, commit, directory, files):
+    """Compare every exported file and mode with the committed Git tree."""
+    listing = subprocess.check_output(["git", "-C", str(repository), "ls-tree", "-rz", commit])
+    expected = {}
+    for entry in listing.split(b"\0"):
+        if not entry:
+            continue
+        metadata, name = entry.split(b"\t", 1)
+        mode, kind, oid = metadata.split()
+        path = os.fsdecode(name)
+        if path.startswith("docs/evidence/"):
+            continue
+        if kind != b"blob" or mode not in (b"100644", b"100755"):
+            raise ValueError("unsupported committed source entry: " + path)
+        expected[path] = (mode == b"100755", oid.decode("ascii"))
+    if expected.keys() != files.keys():
+        raise ValueError("archive paths differ from Git tree: "
+                         + repr(sorted(expected.keys() ^ files.keys())[:20]))
+    for path, (executable, oid) in expected.items():
+        entry = files[path]
+        digest = hashlib.new("sha1" if len(oid) == 40 else "sha256")
+        digest.update(f"blob {entry['bytes']}\0".encode("ascii"))
+        with (Path(directory) / path).open("rb") as source:
+            for block in iter(lambda: source.read(1 << 20), b""):
+                digest.update(block)
+        if digest.hexdigest() != oid or entry["executable"] != executable:
+            raise ValueError("archive bytes or mode differ from Git tree: " + path)
+
+
 def memory_observation(membership=Path("/proc/self/cgroup"), root=Path("/sys/fs/cgroup")):
     """Retain raw visible cgroup counters, including child OOM events.
 
@@ -517,6 +546,7 @@ def main():
         record["runner_inputs"] = verify_runner_inputs(source)
         write_json(output / "evidence.json", record)
         original = inventory(source)
+        verify_export(repository, commit, source, original)
         write_json(output / "source-files.json", original)
         record["source_files_sha256"] = sha256(output / "source-files.json")
         record["lockfile_sha256"] = sha256(source / "Cargo.lock")
