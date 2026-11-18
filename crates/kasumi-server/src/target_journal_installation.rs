@@ -4,7 +4,7 @@ use crate::{
     runtime::{RuntimeConfig, file_secret},
     target_runtime_config::TargetRecoveryConfig,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use kasumi_engine::{TargetJournal, TargetJournalInstallation};
 use kasumi_store::{NodeStore, StorageAccess, TenantStore, node_store_ids};
 use std::{path::Path, sync::Arc};
