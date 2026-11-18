@@ -835,7 +835,7 @@ mod cold_document_accounting_tests {
                     records: vec![event],
                     record_bytes: 0,
                 });
-                let header = crate::snapshot_codec::change_header(commit);
+                let header = crate::snapshot_codec::change_header(&commit);
                 assert_eq!(
                     feed(10, &commit).unwrap(),
                     record(&Record::Change(10, Arc::new(header))).unwrap()
