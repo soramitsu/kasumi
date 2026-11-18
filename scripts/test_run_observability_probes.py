@@ -2,6 +2,7 @@ import json
 import unittest
 import uuid
 
+import installed_observation as installed
 import run_observability_probes as obs
 import verify_release_acceptance as acceptance
 
@@ -24,6 +25,41 @@ class Observability(unittest.TestCase):
                 "readiness_coverage": {"membership_epoch": self.epoch, "covered_epoch": self.epoch, "complete": True,
                 "fresh": True, "expected_groups": 129, "examined_groups": 129, "healthy_groups": healthy,
                 "detail_limit": 128, "oldest_probe_age_seconds": 0.5, **change}}
+
+    def test_installed_metrics_bind_two_disk_budgets_and_the_actual_authority(self):
+        value = self.ready(129)
+        value["lifecycle"] = "serving"
+        for group in value["groups"]:
+            group.update(store_available=True, routed=True, authority_required=True, authority_remaining_seconds=4.5)
+        metrics = {"ready": 1, "local_group_details": 128}
+        for key in ("healthy", "examined", "expected"):
+            metrics["readiness_groups_" + key] = 129
+        for key, count in self.epoch.items():
+            metrics["readiness_epoch_" + key] = metrics["readiness_covered_epoch_" + key] = count
+        for n, disk in enumerate(("persistent_disk", "scratch_disk"), 1):
+            value[disk] = {"charged_bytes": 10, "max_bytes": n * 100}
+            metrics[disk + "_max_bytes"] = n * 100
+            metrics[disk + "_charged_bytes"] = 11
+        text = "".join(f"kasumi_{key} {v}\n" for key, v in metrics.items())
+        self.assertEqual(installed.measurements(value, text, 129, "tenant-7"), self.epoch)
+        for bad in (text.replace("scratch_disk_max_bytes 200", "scratch_disk_max_bytes 100"),
+                    text.replace("readiness_epoch_actual_membership 0", "readiness_epoch_actual_membership 1")):
+            with self.assertRaises(ValueError):
+                installed.measurements(value, bad, 129, "tenant-7")
+        value["groups"][7]["authority_remaining_seconds"] = 0
+        with self.assertRaises(ValueError):
+            installed.measurements(value, text, 129, "tenant-7")
+
+    def test_installed_protected_phase_requires_the_same_private_record(self):
+        req = {"operation_id": str(uuid.uuid4()), "source_incarnation": str(uuid.uuid4())}
+        record = {"request": req, "phase": "finished", "pending_phase": None,
+                  "created_revision": 8, "updated_revision": 19}
+        observed = {"operation_id": req["operation_id"], "phase": "finished", "terminal": True,
+                    "phase_pending": False, "updated_revision": 19}
+        installed.recovery(req, record, record, observed)
+        for changed in ({"updated_revision": 18}, {"operation_id": str(uuid.uuid4())}, {"terminal": False}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                installed.recovery(req, record, record, {**observed, **changed})
 
     def test_each_epoch_component_must_be_an_exact_integer_and_match(self):
         for key in self.epoch:

@@ -1094,6 +1094,12 @@ def check_readiness_epoch(value):
     return value
 
 
+def observability_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_installed_observability
+
+    return run_installed_observability.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def concurrency_adapter(root, domain, files, configs, artifacts, candidates):
     import run_concurrency
 
@@ -1133,6 +1139,7 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 DOMAIN_ADAPTERS = {
     "benchmark-matrix": benchmark_matrix_adapter,
     "concurrency": concurrency_adapter,
+    "observability": observability_adapter,
     "correctness": correctness_adapter,
     "backup-cleanup": backup_cleanup_adapter,
     "providers": providers_adapter,

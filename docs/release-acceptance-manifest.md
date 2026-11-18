@@ -244,6 +244,31 @@ checkpoint and commits a fresh membership log entry for the enrolled voters.
 The fixed workloads retain complete original session replies, operation times,
 maintenance receipts and the nine original process drains.
 
+The observability runner uses this same admitted topology on the native ARM64
+reference. Its measurement checks protected data-node health, capacity, over
+128 healthy local groups and a fresh coverage epoch after an applied membership
+change. It resolves a new backup through its durable status and verifies the
+checkpoint, then compares private recovery records with protected HTTP responses
+through activation and completion. It also replays the seven frozen server
+cases that exercise denials, archive outages, issuer replacement and redaction.
+
+```sh
+python3 -I -B -S scripts/run_installed_observability.py --evidence "$functional" \
+  --topology "$topology" --plan "$observability_plan" --journal "$journal" \
+  --attempt-id "$attempt" --output "$new_output"
+```
+
+The plan uses schema `kasumi-installed-observability-v1`. Set `observer_profile`
+to a Control administrative credential for the observed data endpoint and
+`operator_profile` to the measured tenant operator on the same data leader.
+`control_profile` names the separate Control quorum. `destination` selects an
+installed backup alias. `recovery_request` is the absolute path to an original
+`RecoveryStart` for this disposable qualification tenant. The runner advances
+that operation to completion. The observed node hosts at least 129 tenants
+and the measured tenant appears on its bounded detail page. Profile and input
+paths are absolute. The runner preserves startup and membership-settling
+failures with their original process receipts.
+
 Latency sample rows contain `sequence`, `elapsed_ns`, and `status`. A
 measurement declares `name`, `requested_operations`, `attempted_operations`,
 `successful_operations`, `failed_operations`, `unattempted_operations`, and
