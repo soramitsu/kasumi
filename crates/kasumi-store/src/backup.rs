@@ -138,6 +138,21 @@ impl AdmittedBackupBundle {
 }
 
 impl TenantStore {
+    pub fn bound_backup_terminal(
+        &self,
+        record: &kasumi_types::BackupBindingRecord,
+        terminal: &kasumi_types::BackupBindingTerminal,
+    ) -> Result<AdmittedBackupBundle> {
+        self.check_access()?;
+        record.validate()?;
+        terminal.validate(&record.claim)?;
+        ensure!(
+            record.claim.tenant == self.tenant(),
+            "backup Control decision belongs to another tenant"
+        );
+        AdmittedBackupBundle::copy_from(&terminal.ciphertext, self.plaintext_memory_owner())
+    }
+
     /// Retain the original committed ciphertext under this installation's memory owner.
     pub fn bound_backup_intent(
         &self,

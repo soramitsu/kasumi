@@ -138,6 +138,23 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
             .await?
             .is_none()
     );
+    // Stop between the Control terminal commit and the remote outcome creation.
+    // Competing aborts must recover the original randomized bytes.
+    first.session_put(id, kasumi_store::BackupSessionSlot::Intent, bound.try_clone()?.into()).await?;
+    let verified = fixture.db.backup_session(&fixture.context, first.as_ref(), id).await?.unwrap();
+    let winner = BackupSessionOutcome::Aborted {
+        intent_ciphertext_sha256: verified.intent_ciphertext_sha256().into(),
+        session_id: id, principal: fixture.context.principal.clone(), reason: "first abort wins".into(),
+    };
+    let selected = fixture.db.select_backup_terminal(&fixture.context, first.as_ref(), &verified, &winner).await?;
+    let loser = BackupSessionOutcome::Aborted {
+        intent_ciphertext_sha256: verified.intent_ciphertext_sha256().into(),
+        session_id: id, principal: fixture.context.principal.clone(), reason: "late contender".into(),
+    };
+    let retry = fixture.db.select_backup_terminal(&fixture.context, first.as_ref(), &verified, &loser).await?;
+    assert_eq!(selected.as_bytes(), retry.as_bytes());
+    assert_eq!(fixture.db.backup_session_status(fixture.context.clone(), request("first")).await?.outcome.as_ref(), Some(&winner));
+    assert!(first.session_get(id, kasumi_store::BackupSessionSlot::Outcome, selected.len()).await?.is_none());
     let aborted = fixture
         .db
         .abort_backup_session(
@@ -160,6 +177,8 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
             .unwrap(),
         bound.as_bytes()
     );
+    assert_eq!(aborted.outcome.as_ref(), Some(&winner));
+    assert_eq!(first.session_get(id, kasumi_store::BackupSessionSlot::Outcome, selected.len()).await?.unwrap(), selected.as_bytes());
     control.group.snapshot().await?;
     control.shutdown().await?;
     drop(control);
@@ -172,6 +191,11 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
         .unwrap()
         .record;
     assert_eq!(durable, record);
+    let decided = reopened.engine.generation()?.backup_bindings.terminal(id)?.unwrap();
+    assert_eq!(decided.record, record);
+    let terminal = decided.terminal.unwrap();
+    assert_eq!(terminal.outcome, winner);
+    assert_eq!(terminal.ciphertext, selected.as_bytes());
     reopened.shutdown().await?;
     fixture.close().await;
     Ok(())

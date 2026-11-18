@@ -81,6 +81,7 @@ pub(crate) fn row(state: &TenantState, bytes: &[u8], session_id: uuid::Uuid) -> 
         intent_ciphertext: bytes.into(),
     };
     Row {
+        terminal: None,
         ordinal: 1,
         key: session_id.to_string(),
         previous_sha256: state.backup_binding_head.sha256.clone(),

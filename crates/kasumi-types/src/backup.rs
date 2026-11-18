@@ -136,6 +136,17 @@ impl std::fmt::Debug for BackupBindingClaim {
 }
 
 impl BackupBindingClaim {
+    pub fn intent(&self) -> BackupSessionIntent {
+        BackupSessionIntent {
+            session_id: self.session_id,
+            tenant: self.tenant.clone(),
+            source_incarnation: self.source_incarnation.clone(),
+            revision: self.revision,
+            principal: self.principal.clone(),
+            request_id: self.request_id.clone(),
+        }
+    }
+
     /// Validate the exact persistent value before any proposed Control write.
     /// Equality is byte-for-byte, including command identity and ciphertext;
     /// there is no alias or old-format equivalence rule for a reused UUID.
@@ -167,6 +178,42 @@ impl BackupBindingClaim {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,
                 "backup binding intent ciphertext digest differs",
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// The winning, immutable Control decision. The destination receives the same
+/// ciphertext even after loss of the original caller or a process restart.
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct BackupBindingTerminal {
+    pub outcome: BackupSessionOutcome,
+    pub ciphertext_sha256: String,
+    pub ciphertext: Vec<u8>,
+}
+
+impl std::fmt::Debug for BackupBindingTerminal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackupBindingTerminal")
+            .field("ciphertext_sha256", &self.ciphertext_sha256)
+            .field("ciphertext_length", &self.ciphertext.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl BackupBindingTerminal {
+    pub fn validate(&self, claim: &BackupBindingClaim) -> Result<()> {
+        self.outcome
+            .validate(&claim.intent(), &claim.intent_ciphertext_sha256)?;
+        if self.ciphertext.is_empty()
+            || self.ciphertext.len() > MAX_BACKUP_BINDING_INTENT_BYTES
+            || self.ciphertext_sha256 != format!("{:x}", Sha256::digest(&self.ciphertext))
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid backup terminal ciphertext",
             ));
         }
         Ok(())

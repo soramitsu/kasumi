@@ -26,6 +26,14 @@ fn digest(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
+fn point_key(session: uuid::Uuid, terminal: bool) -> String {
+    if terminal {
+        format!("terminal/{session}")
+    } else {
+        session.to_string()
+    }
+}
+
 fn id_key(key: &str) -> Vec<u8> {
     [b"id/".as_slice(), key.as_bytes()].concat()
 }
@@ -41,6 +49,8 @@ pub(crate) struct Row {
     pub previous_sha256: String,
     pub applied: crate::staged_terminal::AppliedIdentity,
     pub record: BackupBindingRecord,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<kasumi_types::BackupBindingTerminal>,
 }
 impl Row {
     pub(crate) fn sha256(&self) -> Result<String> {
@@ -85,7 +95,7 @@ impl Row {
         ensure!(
             state.tenant == crate::control::CONTROL_TENANT
                 && self.ordinal > 0
-                && self.key == self.record.claim.session_id.to_string()
+                && self.key == point_key(self.record.claim.session_id, self.terminal.is_some())
                 && digest(&self.previous_sha256)
                 && self.applied.incarnation == state.incarnation
                 && self.applied.revision > state.revision_base
@@ -98,6 +108,19 @@ impl Row {
     }
     fn validate_position(&self) -> Result<()> {
         self.record.validate()?;
+        ensure!(
+            self.key == point_key(self.record.claim.session_id, self.terminal.is_some()),
+            "backup binding kind or session differs"
+        );
+        if let Some(decision) = &self.terminal {
+            decision.validate(&self.record.claim)?;
+            ensure!(
+                matches!(self.applied.origin, crate::staged_terminal::AppliedOrigin::Raft { index, term, .. }
+                if index > self.record.position.index && term >= self.record.position.term),
+                "terminal precedes its claimed position"
+            );
+            return Ok(());
+        }
         ensure!(
             self.record.position.command_sha256 == self.applied.command_sha256
                 && matches!(
@@ -202,9 +225,10 @@ impl View {
         )?;
         ensure!(
             digest(&index.sha256)
-                && uuid::Uuid::parse_str(&index.key)
+                && uuid::Uuid::parse_str(index.key.strip_prefix("terminal/").unwrap_or(&index.key))
                     .ok()
-                    .is_some_and(|id| !id.is_nil() && id.to_string() == index.key),
+                    .is_some_and(|id| !id.is_nil()
+                        && point_key(id, index.key.starts_with("terminal/")) == index.key),
             "backup binding ordinal identity invalid"
         );
         Ok(index)
@@ -253,8 +277,22 @@ impl View {
     }
     pub(crate) fn get(&self, session: uuid::Uuid) -> Result<Option<Row>> {
         ensure!(!session.is_nil(), "nil backup binding point identity");
-        let key = session.to_string();
-        let Some(bytes) = self.bytes(&id_key(&key))? else {
+        self.point(&point_key(session, false))
+    }
+    pub(crate) fn terminal(&self, session: uuid::Uuid) -> Result<Option<Row>> {
+        let row = self.point(&point_key(session, true))?;
+        if let Some(terminal) = &row {
+            ensure!(
+                self.get(session)?.is_some_and(
+                    |claim| claim.record == terminal.record && claim.ordinal < terminal.ordinal
+                ),
+                "terminal backup decision differs from its original claim"
+            );
+        }
+        Ok(row)
+    }
+    fn point(&self, key: &str) -> Result<Option<Row>> {
+        let Some(bytes) = self.bytes(&id_key(key))? else {
             return Ok(None);
         };
         let row: Row = serde_json::from_slice(&bytes)?;
@@ -292,9 +330,9 @@ impl View {
         Ok(Some(row))
     }
     pub(crate) fn row(&self, ordinal: u64) -> Result<Row> {
-        let id = uuid::Uuid::parse_str(&self.index(ordinal)?.key)?;
+        let key = self.index(ordinal)?.key;
         let row = self
-            .get(id)?
+            .point(&key)?
             .context("backup binding indexed point missing")?;
         ensure!(row.ordinal == ordinal, "backup binding ordinal redirected");
         Ok(row)
@@ -366,7 +404,7 @@ impl View {
             for old in self.records() {
                 let old = old?;
                 let actual = view
-                    .get(old.record.claim.session_id)?
+                    .point(&old.key)?
                     .context("backup binding checkpoint row missing")?;
                 ensure!(
                     actual.sha256()? == old.sha256()?,
@@ -477,6 +515,17 @@ impl Builder {
             self.table.get(&id_key(&row.key))?.is_none(),
             "duplicate permanent backup binding identity"
         );
+        if row.terminal.is_some() {
+            let claim = self
+                .table
+                .get(&id_key(&row.record.claim.session_id.to_string()))?
+                .context("backup terminal is missing its original claim")?;
+            let original: Row = serde_json::from_slice(&claim)?;
+            ensure!(
+                original.terminal.is_none() && original.record == row.record,
+                "backup terminal claim differs"
+            );
+        }
         advance(&mut self.head, row)?;
         self.table
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
@@ -551,10 +600,18 @@ impl Pending {
             "backup binding starting prefix differs"
         );
         ensure!(
-            previous.get(row.record.claim.session_id)?.is_none(),
+            previous.point(&row.key)?.is_none(),
             "cannot rewrite permanent backup binding"
         );
         row.validate(state)?;
+        if row.terminal.is_some() {
+            ensure!(
+                previous
+                    .get(row.record.claim.session_id)?
+                    .is_some_and(|r| r.record == row.record),
+                "backup terminal requires the exact committed claim"
+            );
+        }
         let mut head = previous.head.clone();
         advance(&mut head, &row)?;
         ensure!(

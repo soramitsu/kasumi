@@ -218,6 +218,9 @@ impl VerifiedBackupSession {
     pub fn outcome(&self) -> Option<&BackupSessionOutcome> {
         self.outcome.as_ref()
     }
+    pub fn outcome_ciphertext_sha256(&self) -> Option<&str> {
+        self.outcome_ciphertext_sha256.as_deref()
+    }
     pub fn intent_ciphertext_sha256(&self) -> &str {
         &self.intent_ciphertext_sha256
     }

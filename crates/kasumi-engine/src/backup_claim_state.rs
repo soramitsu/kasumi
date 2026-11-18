@@ -16,11 +16,16 @@ pub(crate) struct ClaimCommand {
     pub epoch: u64,
     pub timestamp_ms: u64,
     pub claim: BackupBindingClaim,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub terminal: Option<BackupBindingTerminal>,
 }
 
 impl ClaimCommand {
     pub(crate) fn encode(&self) -> anyhow::Result<Vec<u8>> {
         self.claim.validate()?;
+        if let Some(terminal) = &self.terminal {
+            terminal.validate(&self.claim)?;
+        }
         let mut bytes = PREFIX.to_vec();
         serde_json::to_writer(&mut bytes, self)?;
         ensure!(
@@ -44,6 +49,10 @@ impl TenantEngine {
         );
         let command: ClaimCommand = super::decode_canonical_json(&bytes[PREFIX.len()..])?;
         command.claim.validate()?;
+        if let Some(terminal) = &command.terminal {
+            terminal.validate(&command.claim)?;
+        }
+        let is_terminal = command.terminal.is_some();
         ensure!(
             hex::encode(Sha256::digest(bytes)) == position.command_sha256,
             "Control claim differs from applied command identity"
@@ -85,29 +94,33 @@ impl TenantEngine {
         }
         let mut pending = None;
         if outcome.is_ok() {
-            if let Some(old) = previous.backup_bindings.get(command.claim.session_id)? {
-                if old.record.claim != command.claim {
+            let session = command.claim.session_id;
+            let claim = previous.backup_bindings.get(session)?;
+            let existing = if is_terminal {
+                previous.backup_bindings.terminal(session)?
+            } else {
+                claim.clone()
+            };
+            if is_terminal
+                && !claim
+                    .as_ref()
+                    .is_some_and(|old| old.record.claim == command.claim)
+            {
+                outcome = Err(Error::new(
+                    ErrorCode::Conflict,
+                    "terminal decision lacks its original backup claim",
+                ));
+            } else if let Some(old) = existing {
+                if old.record.claim != command.claim || old.terminal != command.terminal {
                     outcome = Err(Error::new(
                         ErrorCode::Conflict,
-                        "backup session UUID is already bound",
+                        "backup session already has an immutable decision",
                     ));
                 }
             } else {
-                let row = Row {
-                    ordinal: state
-                        .backup_binding_head
-                        .count
-                        .checked_add(1)
-                        .context("backup claim ordinal exhausted")?,
-                    key: command.claim.session_id.to_string(),
-                    previous_sha256: state.backup_binding_head.sha256.clone(),
-                    applied: AppliedIdentity::ordered(
-                        &state.incarnation,
-                        state.revision,
-                        command.timestamp_ms,
-                        position,
-                    )?,
-                    record: BackupBindingRecord {
+                let record = match claim {
+                    Some(claim) => claim.record,
+                    None => BackupBindingRecord {
                         claim: command.claim,
                         position: BackupBindingPosition {
                             term: position.log_id.leader_id.term,
@@ -115,6 +128,27 @@ impl TenantEngine {
                             command_sha256: position.command_sha256.clone(),
                         },
                     },
+                };
+                let row = Row {
+                    key: if is_terminal {
+                        format!("terminal/{session}")
+                    } else {
+                        session.to_string()
+                    },
+                    record,
+                    terminal: command.terminal,
+                    ordinal: state
+                        .backup_binding_head
+                        .count
+                        .checked_add(1)
+                        .context("backup claim ordinal exhausted")?,
+                    previous_sha256: state.backup_binding_head.sha256.clone(),
+                    applied: AppliedIdentity::ordered(
+                        &state.incarnation,
+                        state.revision,
+                        command.timestamp_ms,
+                        position,
+                    )?,
                 };
                 if state
                     .backup_binding_head
@@ -136,7 +170,12 @@ impl TenantEngine {
         let event = AuditEvent {
             event_id: format!("{}:{}", state.incarnation, state.revision),
             principal: command.context.principal,
-            action: "backup_session_claim".into(),
+            action: if is_terminal {
+                "backup_session_terminal"
+            } else {
+                "backup_session_claim"
+            }
+            .into(),
             request_id: command.context.request_id,
             timestamp_ms: command.timestamp_ms,
             data_revision: Some(state.revision),

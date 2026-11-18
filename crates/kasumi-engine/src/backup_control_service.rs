@@ -19,6 +19,11 @@ fn wrong_owner() -> Error {
     )
 }
 
+pub(super) struct SelectedBackup {
+    pub record: BackupBindingRecord,
+    pub terminal: Option<BackupBindingTerminal>,
+}
+
 impl Database {
     /// Install the opened Control owner and its live operator. A restarted
     /// source must install its own handle before starting new sessions.
@@ -62,7 +67,7 @@ impl Database {
         &self,
         operator: &RequestContext,
         id: uuid::Uuid,
-    ) -> Result<Option<BackupBindingRecord>> {
+    ) -> Result<Option<SelectedBackup>> {
         self.engine.authorize(operator, None, Action::Admin)?;
         let fence = self.response_fence(operator)?;
         let token = QueryCancellation::default();
@@ -75,33 +80,38 @@ impl Database {
             .retained_read(token, move |_workspace, token| {
                 let _registration = registration;
                 token.check()?;
-                generation
-                    .backup_bindings
-                    .get(id)
-                    .map(|row| row.map(|row| row.record))
-                    .map_err(|_| {
-                        Error::new(ErrorCode::Corruption, "Control backup binding read failed")
-                    })
+                let read = || -> anyhow::Result<_> {
+                    let claim = generation.backup_bindings.get(id)?;
+                    let terminal = generation.backup_bindings.terminal(id)?;
+                    Ok(claim.map(|row| SelectedBackup {
+                        record: row.record,
+                        terminal: terminal.and_then(|t| t.terminal),
+                    }))
+                };
+                read().map_err(|_| {
+                    Error::new(ErrorCode::Corruption, "Control backup binding read failed")
+                })
             })
             .await?;
         fence.check()?;
         Ok(value)
     }
 
-    pub(super) async fn backup_owner(
+    pub(super) async fn selected_backup(
         &self,
         context: &RequestContext,
         destination: &dyn BackupDestination,
         id: uuid::Uuid,
-    ) -> Result<Option<BackupBindingRecord>> {
+    ) -> Result<Option<SelectedBackup>> {
         self.engine.authorize(context, None, Action::Admin)?;
         let fence = self.response_fence(context)?;
         let Some((control, operator)) = self.backup_authority()? else {
             return Ok(None);
         };
-        let Some(record) = control.control_binding_point(&operator, id).await? else {
+        let Some(selected) = control.control_binding_point(&operator, id).await? else {
             return Ok(None);
         };
+        let record = &selected.record;
         let generation = self.engine.generation()?;
         if record.claim.tenant != context.tenant
             || (record.claim.source_incarnation != generation.incarnation()
@@ -121,7 +131,19 @@ impl Database {
             return Err(wrong_owner());
         }
         fence.check()?;
-        Ok(Some(record))
+        Ok(Some(selected))
+    }
+
+    pub(super) async fn backup_owner(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        id: uuid::Uuid,
+    ) -> Result<Option<BackupBindingRecord>> {
+        Ok(self
+            .selected_backup(context, destination, id)
+            .await?
+            .map(|selected| selected.record))
     }
 
     pub(super) async fn require_backup_effect(
@@ -173,7 +195,7 @@ impl Database {
                 .encrypt_session_record(intent.revision, intent)
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "backup intent encryption failed"))
         };
-        let Some((control, mut operator)) = self.backup_authority()? else {
+        let Some((control, operator)) = self.backup_authority()? else {
             return encrypt();
         };
         let prior = self
@@ -203,54 +225,8 @@ impl Database {
                 intent_ciphertext: bytes.as_bytes().to_vec(),
             };
             claim.validate()?;
-            operator.request_id = claim.command_id.to_string();
-            let cancellation = QueryCancellation::default();
-            let source_work = self.work.begin(cancellation.clone())?;
-            let control_work = control.work.begin(cancellation.clone())?;
-            let reservation = control
-                .admission()
-                .reserve(16 << 20, Some(cancellation.clone()))?;
-            let control_epoch = control.engine.generation()?.state.policy_epoch;
-            let engine = self.engine.clone();
-            let store = self.store.clone();
-            let actor = context.clone();
-            let db = control.clone();
-            control.proposals.prepare(control.admission())?;
-            let proposal = control.proposals.start_task(async move {
-                let _owners = (source_work, control_work, reservation);
-                let _gate = db.proposal_gate.lock().await;
-                let preflight = || -> Result<()> {
-                    cancellation.check()?;
-                    store.check_access().map_err(|_| unavailable())?;
-                    engine.authorize_release(&actor, None, Action::Admin, epoch)?;
-                    db.access()?;
-                    db.engine
-                        .authorize_release(&operator, None, Action::Admin, control_epoch)?;
-                    db.engine.admit_publication()
-                };
-                if let Err(denied) = preflight() {
-                    return Ok(Err(denied));
-                }
-                let command = crate::state::backup_claim::ClaimCommand {
-                    timestamp_ms: now_ms()?,
-                    epoch: control_epoch,
-                    context: operator,
-                    claim,
-                };
-                let bytes = db
-                    .group
-                    .write(kasumi_raft::ApplicationProposal::generated(
-                        command.encode()?,
-                    ))
-                    .await?;
-                Ok(serde_json::from_slice::<Result<()>>(&bytes)?)
-            })?;
-            let result = proposal.wait(Duration::from_secs(30)).await?;
-            if let Err(error) = result
-                && error.code != ErrorCode::Conflict
-            {
-                return Err(error);
-            }
+            self.propose_backup_binding(context, epoch, control, operator, claim, None)
+                .await?;
             self.backup_owner(context, destination, intent.session_id)
                 .await?
                 .ok_or_else(unavailable)?
@@ -267,5 +243,122 @@ impl Database {
         self.store
             .bound_backup_intent(&row)
             .map_err(|_| unavailable())
+    }
+    async fn propose_backup_binding(
+        &self,
+        context: &RequestContext,
+        epoch: u64,
+        control: Arc<Database>,
+        mut operator: RequestContext,
+        claim: BackupBindingClaim,
+        terminal: Option<BackupBindingTerminal>,
+    ) -> Result<()> {
+        operator.request_id = if terminal.is_some() {
+            uuid::Uuid::new_v4().to_string()
+        } else {
+            claim.command_id.to_string()
+        };
+        let cancellation = QueryCancellation::default();
+        let source_work = self.work.begin(cancellation.clone())?;
+        let control_work = control.work.begin(cancellation.clone())?;
+        let reservation = control
+            .admission()
+            .reserve(16 << 20, Some(cancellation.clone()))?;
+        let control_epoch = control.engine.generation()?.state.policy_epoch;
+        let engine = self.engine.clone();
+        let store = self.store.clone();
+        let actor = context.clone();
+        let db = control.clone();
+        control.proposals.prepare(control.admission())?;
+        let proposal = control.proposals.start_task(async move {
+            let _owners = (source_work, control_work, reservation);
+            let _gate = db.proposal_gate.lock().await;
+            let preflight = || -> Result<()> {
+                cancellation.check()?;
+                store.check_access().map_err(|_| unavailable())?;
+                engine.authorize_release(&actor, None, Action::Admin, epoch)?;
+                db.access()?;
+                db.engine
+                    .authorize_release(&operator, None, Action::Admin, control_epoch)?;
+                db.engine.admit_publication()
+            };
+            if let Err(denied) = preflight() {
+                return Ok(Err(denied));
+            }
+            let command = crate::state::backup_claim::ClaimCommand {
+                timestamp_ms: now_ms()?,
+                epoch: control_epoch,
+                context: operator,
+                claim,
+                terminal,
+            };
+            let bytes = db
+                .group
+                .write(kasumi_raft::ApplicationProposal::generated(
+                    command.encode()?,
+                ))
+                .await?;
+            Ok(serde_json::from_slice::<Result<()>>(&bytes)?)
+        })?;
+        let result = proposal.wait(Duration::from_secs(30)).await?;
+        if let Err(error) = result
+            && error.code != ErrorCode::Conflict
+        {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    /// Select the encrypted winner in Control before creating the remote
+    /// terminal object. Concurrent Abort and Complete callers read one winner.
+    pub(super) async fn select_backup_terminal(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        session: &VerifiedBackupSession,
+        proposed: &BackupSessionOutcome,
+    ) -> Result<AdmittedBackupBundle> {
+        let epoch = self.engine.generation()?.state.policy_epoch;
+        self.require_backup_effect(context, destination, session)
+            .await?;
+        let encrypt = || self.store.encrypt_backup_session_outcome(session, proposed);
+        let Some((control, operator)) = self.backup_authority()? else {
+            return encrypt()
+                .await
+                .map_err(super::backup_sessions::storage_error);
+        };
+        let id = session.intent().session_id;
+        let mut selected = self
+            .selected_backup(context, destination, id)
+            .await?
+            .ok_or_else(wrong_owner)?;
+        if selected.terminal.is_none() {
+            let bytes = encrypt()
+                .await
+                .map_err(super::backup_sessions::storage_error)?;
+            let terminal = BackupBindingTerminal {
+                outcome: proposed.clone(),
+                ciphertext_sha256: hex::encode(Sha256::digest(bytes.as_bytes())),
+                ciphertext: bytes.as_bytes().to_vec(),
+            };
+            terminal.validate(&selected.record.claim)?;
+            self.propose_backup_binding(
+                context,
+                epoch,
+                control,
+                operator,
+                selected.record.claim,
+                Some(terminal),
+            )
+            .await?;
+            selected = self
+                .selected_backup(context, destination, id)
+                .await?
+                .ok_or_else(wrong_owner)?;
+        }
+        let decision = selected.terminal.ok_or_else(unavailable)?;
+        self.store
+            .bound_backup_terminal(&selected.record, &decision)
+            .map_err(super::backup_sessions::storage_error)
     }
 }
