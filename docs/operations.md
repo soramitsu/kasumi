@@ -595,3 +595,12 @@ requires qualification before deployment.
 The optional runtime field `tenant_historical_keys` maps a locally configured tenant or Control to its additional file or Transit key providers. The security audit uses its own `security_audit.historical_keys` list. Each list supplements that domain's installed primary. Historical providers need unwrap permission. New records and live catalogs continue to use the writable primary.
 
 Startup opens the providers and binds their identities and TLS trust to the encrypted store before replay. Preserve this roster across restarts. A moved file keyring with the same identity or refreshed Transit credential can reopen the same roster. Omitting an enrolled roster or changing its resource or CA causes startup to fail. Standalone operator backups include configured historical file keyrings. External providers require their own key backup. Key retirement still requires a complete dependency inventory.
+
+
+The private `kasumid key-retention read <profile> <request-json>` command accepts the
+application or Control administrator profile for the requested scope. The initial
+request includes an explicit null cursor and a limit from 1 to 256. To continue,
+copy the returned cursor into the same request. The local report identifies each
+installed application and custody catalog, exact wrapping versions, the current
+tenant audit archive head and missing sources. A rotation or membership change
+expires the cursor. An incomplete report cannot authorize retiring a key.

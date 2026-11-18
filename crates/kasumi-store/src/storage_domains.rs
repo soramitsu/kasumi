@@ -876,6 +876,37 @@ impl TenantStorageSet {
     pub fn application(&self) -> &Arc<TenantStore> {
         &self.application
     }
+    /// Observe both currently installed key catalogs at one local position.
+    /// The callback receives wrapping identities only. Catalog ciphertext and
+    /// unwrapped keys never leave their owners. Rotation may proceed after the
+    /// visit; the digest binds a continuation to this exact observed pair.
+    pub fn visit_key_retention_catalogs(
+        &self,
+        mut visit: impl FnMut(bool, Uuid, &str, &str, u64) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        self.check_access()?;
+        let fingerprint = {
+            let app = self.application.catalog.read();
+            let custody = self.custody.store().catalog.read();
+            let mut digest = sha2::Sha256::new();
+            digest.update(b"kasumi.retained-catalog-pair.v1");
+            for (is_custody, catalog) in [(false, &*app), (true, &*custody)] {
+                serde_json::to_writer(&mut digest, catalog)?;
+                for wrapped in catalog.keys.values() {
+                    visit(
+                        is_custody,
+                        catalog.catalog_id,
+                        &wrapped.provider,
+                        &wrapped.key_ref,
+                        wrapped.version,
+                    )?;
+                }
+            }
+            digest.finalize().into()
+        };
+        self.check_access()?;
+        Ok(fingerprint)
+    }
     pub fn custody(&self) -> &Arc<CustodyStore> {
         &self.custody
     }

@@ -55,6 +55,8 @@ mod full_backup;
 mod history_export;
 #[path = "history_reads.rs"]
 mod history_reads;
+#[path = "key_retention_service.rs"]
+mod key_retention;
 #[path = "point_read.rs"]
 mod point_read;
 pub use custody_service::{CustodyResponseFence, RetiredCustody};
@@ -1289,7 +1291,10 @@ fn release_action(kind: &str) -> Action {
         | "tenant_audit_capacity"
         | "tenant_audit_verify"
         | "tenant_audit_export" => Action::Audit,
-        "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
+        "schema_activation_status"
+        | "schema_read"
+        | "policy_limits_read"
+        | "read_key_retention" => Action::Admin,
         _ => Action::Read,
     }
 }

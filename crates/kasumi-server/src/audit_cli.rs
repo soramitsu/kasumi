@@ -46,6 +46,30 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
 }
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
+        [command, action, profile, input] if command == "key-retention" && action == "read" => {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let request: ReadKeyRetentionRequest =
+                serde_json::from_slice(&private_files::read(Path::new(input), 128 << 10)?)?;
+            ensure!(
+                matches!((&request.scope, &profile.resource),
+                (KeyRetentionScope::Tenant { tenant }, CredentialResource::Database { .. }) if tenant == &profile.tenant)
+                    || matches!(
+                        (&request.scope, &profile.resource),
+                        (
+                            KeyRetentionScope::Control {},
+                            CredentialResource::Control { .. }
+                        )
+                    ),
+                "key retention scope differs from the selected profile"
+            );
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let page = client
+                .read_key_retention(&profile.bearer()?, &request)
+                .await?;
+            println!("{}", serde_json::to_string_pretty(&page)?);
+            Ok(true)
+        }
         [command, action, profile]
             if command == "tenant-audit" && matches!(action.as_str(), "status" | "capacity") =>
         {

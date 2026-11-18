@@ -791,9 +791,9 @@ impl NativeAdmin {
             .max_decoding_message_size(MAX_REQUEST_BYTES)
             .max_encoding_message_size(MAX_RESPONSE_BYTES)
     }
-    async fn tenant_audit_input<Q: serde::de::DeserializeOwned>(
+    async fn private_read_input<Q: serde::de::DeserializeOwned>(
         &self,
-        request: Request<TenantAuditJsonRequest>,
+        request: Request<PrivateReadJsonRequest>,
     ) -> Result<
         (
             Q,
@@ -814,16 +814,16 @@ impl NativeAdmin {
         Ok((input, context, database, fence))
     }
 
-    async fn tenant_audit_reply<T: serde::Serialize + Send + Sync + 'static>(
+    async fn private_read_reply<T: serde::Serialize + Send + Sync + 'static>(
         &self,
         context: &RequestContext,
         result: kasumi_types::Result<kasumi_engine::AdmittedOutput<T>>,
         fence: kasumi_engine::ResponseFence<'static>,
-    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
         let output = result.map_err(|error| self.registry.status(context, error))?;
         response_owner::PendingReply::new(output, fence)
             .convert(|value, fence| {
-                Ok(TenantAuditJsonResponse {
+                Ok(PrivateReadJsonResponse {
                     response_json: response_owner::encode_json(value, fence)?,
                 })
             })
@@ -942,14 +942,29 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn read_key_retention(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::ReadKeyRetentionRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.read_key_retention(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
     async fn tenant_audit_status(
         &self,
-        request: Request<TenantAuditJsonRequest>,
-    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
         let (_, context, database, fence) = self
-            .tenant_audit_input::<kasumi_types::TenantAuditStatusRequest>(request)
+            .private_read_input::<kasumi_types::TenantAuditStatusRequest>(request)
             .await?;
-        self.tenant_audit_reply(
+        self.private_read_reply(
             &context,
             database.tenant_audit_status(&context).await,
             fence,
@@ -959,12 +974,12 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
 
     async fn tenant_audit_capacity(
         &self,
-        request: Request<TenantAuditJsonRequest>,
-    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
         let (_, context, database, fence) = self
-            .tenant_audit_input::<kasumi_types::TenantAuditCapacityRequest>(request)
+            .private_read_input::<kasumi_types::TenantAuditCapacityRequest>(request)
             .await?;
-        self.tenant_audit_reply(
+        self.private_read_reply(
             &context,
             database.tenant_audit_capacity(&context).await,
             fence,
@@ -974,12 +989,12 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
 
     async fn verify_tenant_audit(
         &self,
-        request: Request<TenantAuditJsonRequest>,
-    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
         let (input, context, database, fence) = self
-            .tenant_audit_input::<kasumi_types::TenantAuditVerifyRequest>(request)
+            .private_read_input::<kasumi_types::TenantAuditVerifyRequest>(request)
             .await?;
-        self.tenant_audit_reply(
+        self.private_read_reply(
             &context,
             database.verify_tenant_audit(&context, input).await,
             fence,
@@ -989,12 +1004,12 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
 
     async fn export_tenant_audit(
         &self,
-        request: Request<TenantAuditJsonRequest>,
-    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
         let (input, context, database, fence) = self
-            .tenant_audit_input::<kasumi_types::TenantAuditExportRequest>(request)
+            .private_read_input::<kasumi_types::TenantAuditExportRequest>(request)
             .await?;
-        self.tenant_audit_reply(
+        self.private_read_reply(
             &context,
             database.export_tenant_audit(&context, input).await,
             fence,

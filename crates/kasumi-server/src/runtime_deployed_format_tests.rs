@@ -1076,6 +1076,76 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
             .code
             == kasumi_types::ErrorCode::Forbidden
     );
+    let key_request = kasumi_types::ReadKeyRetentionRequest {
+        scope: kasumi_types::KeyRetentionScope::Tenant {
+            tenant: TENANT.to_owned(),
+        },
+        cursor: None,
+        limit: 1,
+    };
+    let keys = database
+        .read_key_retention(&administrator(), key_request.clone())
+        .await?;
+    keys.validate(&key_request)?;
+    ensure!(matches!(
+        &keys.coverage,
+        kasumi_types::KeyRetentionCoverage::Incomplete { .. }
+    ));
+    ensure!(
+        keys.entries.len() == 1
+            && matches!(
+                &keys.entries[0].reference,
+                kasumi_types::KeyReference::Catalog { .. }
+            )
+    );
+    let cursor = keys
+        .next_cursor
+        .as_ref()
+        .context("distinct application and custody catalogs must paginate")?
+        .clone();
+    drop(keys);
+    let next_request = kasumi_types::ReadKeyRetentionRequest {
+        cursor: Some(cursor.clone()),
+        ..key_request.clone()
+    };
+    let next = database
+        .read_key_retention(&administrator(), next_request.clone())
+        .await?;
+    next.validate(&next_request)?;
+    ensure!(
+        next.entries
+            .first()
+            .is_some_and(|entry| *entry > cursor.after)
+    );
+    drop(next);
+    let mut stale = cursor;
+    stale.inventory_sha256 = if stale.inventory_sha256 == "0".repeat(64) {
+        "1".repeat(64)
+    } else {
+        "0".repeat(64)
+    };
+    let stale = kasumi_types::ReadKeyRetentionRequest {
+        cursor: Some(stale),
+        ..key_request.clone()
+    };
+    ensure!(
+        database
+            .read_key_retention(&administrator(), stale)
+            .await
+            .unwrap_err()
+            .code
+            == kasumi_types::ErrorCode::CursorExpired
+    );
+    let mut unprivileged = administrator();
+    unprivileged.scopes.remove(&Action::Admin);
+    ensure!(
+        database
+            .read_key_retention(&unprivileged, key_request)
+            .await
+            .unwrap_err()
+            .code
+            == kasumi_types::ErrorCode::Forbidden
+    );
     let reopened_manifest = snapshot_manifest(database.stores().application())?;
     ensure!(
         reopened_manifest == selected,

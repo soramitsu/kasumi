@@ -54,10 +54,11 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
   // Reads the application or Control stream bound to the verified credential.
-  rpc TenantAuditStatus(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
-  rpc TenantAuditCapacity(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
-  rpc VerifyTenantAudit(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
-  rpc ExportTenantAudit(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
+  rpc ReadKeyRetention(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc TenantAuditStatus(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc TenantAuditCapacity(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc VerifyTenantAudit(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc ExportTenantAudit(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc ControlSignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SecurityAuditStatus(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditExport(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
@@ -103,8 +104,8 @@ service KasumiAdmin {
 message GetRequest { string collection = 1; string id = 2; }
 // An absent document is an ordinary result; a missing collection is NOT_FOUND.
 message GetResponse { optional Document document = 1; }
-message TenantAuditJsonRequest { bytes request_json = 1; }
-message TenantAuditJsonResponse { bytes response_json = 1; }
+message PrivateReadJsonRequest { bytes request_json = 1; }
+message PrivateReadJsonResponse { bytes response_json = 1; }
 message SecurityAuditJsonRequest { bytes request_json = 1; }
 message SecurityAuditJsonResponse { bytes response_json = 1; }
 message CredentialJsonRequest { bytes request_json = 1; }

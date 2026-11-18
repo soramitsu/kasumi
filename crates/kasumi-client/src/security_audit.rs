@@ -160,10 +160,10 @@ fn validate_archives(
 fn tenant_request(
     bearer: &str,
     value: &impl Serialize,
-) -> Result<tonic::Request<proto::TenantAuditJsonRequest>, ClientError> {
+) -> Result<tonic::Request<proto::PrivateReadJsonRequest>, ClientError> {
     let mut request = authorized(
         bearer,
-        proto::TenantAuditJsonRequest {
+        proto::PrivateReadJsonRequest {
             request_json: encode(value)?,
         },
     )?;
@@ -172,7 +172,7 @@ fn tenant_request(
 }
 
 fn tenant_response<T: DeserializeOwned>(
-    response: proto::TenantAuditJsonResponse,
+    response: proto::PrivateReadJsonResponse,
 ) -> Result<T, ClientError> {
     if response.response_json.len() > kasumi_types::MAX_TENANT_AUDIT_PAGE_BYTES {
         return Err(invalid("tenant audit response exceeds its bound"));
@@ -181,6 +181,22 @@ fn tenant_response<T: DeserializeOwned>(
 }
 
 impl KasumiAdminClient {
+    pub async fn read_key_retention(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::ReadKeyRetentionRequest,
+    ) -> Result<kasumi_types::KeyRetentionPage, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let message = self.inner.read_key_retention(input).await?.into_inner();
+        if message.response_json.len() > kasumi_types::MAX_KEY_RETENTION_PAGE_BYTES {
+            return Err(invalid("key retention page exceeds its bound"));
+        }
+        let page: kasumi_types::KeyRetentionPage = serde_json::from_slice(&message.response_json)?;
+        page.validate(request).map_err(invalid)?;
+        Ok(page)
+    }
+
     /// Inspect the application or Control audit stream of the bearer.
     pub async fn tenant_audit_status(
         &mut self,

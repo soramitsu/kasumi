@@ -18,6 +18,7 @@ pub const MAX_KEY_PROVIDER_BYTES: usize = 1024;
 pub const MAX_KEY_REF_BYTES: usize = 8192;
 pub const MAX_KEY_DEPENDENCIES: usize = 4096;
 pub const MAX_KEY_RETENTION_PAGE_ENTRIES: u16 = 256;
+pub const MAX_KEY_RETENTION_PAGE_BYTES: usize = 1 << 20;
 pub const MAX_MISSING_KEY_DEPENDENCIES: usize = 64;
 
 /// One installed wrapping resource. Each retained version is a separate
@@ -322,6 +323,8 @@ impl KeyRetentionEntry {
 #[serde(deny_unknown_fields)]
 pub struct KeyRetentionCursor {
     pub scope_sha256: String,
+    /// Binds the observed catalog contents even across rotations without a Raft command.
+    pub inventory_sha256: String,
     pub coverage_revision: u64,
     pub membership_epoch: u64,
     /// Last emitted entry; the next page starts strictly after it.
@@ -331,6 +334,7 @@ pub struct KeyRetentionCursor {
 impl KeyRetentionCursor {
     pub fn validate(&self) -> Result<()> {
         validate_sha256(&self.scope_sha256)?;
+        validate_sha256(&self.inventory_sha256)?;
         self.after.validate()
     }
 
@@ -532,6 +536,13 @@ impl KeyRetentionPage {
         }
         if let Some(next) = &self.next_cursor {
             next.require_current(&request.scope, revision, epoch)?;
+            if request
+                .cursor
+                .as_ref()
+                .is_some_and(|previous| previous.inventory_sha256 != next.inventory_sha256)
+            {
+                return Err(invalid("key retention continuation changed its inventory"));
+            }
             if self.entries.last() != Some(&next.after) {
                 return Err(invalid("key retention continuation differs from page"));
             }
@@ -822,6 +833,7 @@ mod tests {
     fn cursor(scope: &KeyRetentionScope, after: KeyRetentionEntry) -> KeyRetentionCursor {
         KeyRetentionCursor {
             scope_sha256: scope.sha256().unwrap(),
+            inventory_sha256: "e".repeat(64),
             coverage_revision: 10,
             membership_epoch: 3,
             after,
