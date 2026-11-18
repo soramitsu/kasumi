@@ -363,6 +363,7 @@ fn saturating_i64(value: i128) -> i64 {
     i64::try_from(value).unwrap_or(if value < 0 { i64::MIN } else { i64::MAX })
 }
 pub(crate) struct LocalObservation {
+    pub backup_sessions: Option<kasumi_engine::ControlBackupSessions>,
     pub admission: AdmissionSnapshot,
     pub persistent_disk: kasumi_store::NodeDiskSnapshot,
     pub scratch_disk: kasumi_store::ScratchDiskSnapshot,
@@ -548,6 +549,7 @@ struct Observation {
     service_audit: ServiceAuditObservation,
     standalone_recovery_pending: Option<bool>,
     credential_expires_at_ms: Option<u64>,
+    backup_sessions: Option<kasumi_engine::ControlBackupSessions>,
     backup_requests: std::collections::BTreeMap<&'static str, RequestCounts>,
     #[serde(skip)]
     standalone: bool,
@@ -1122,6 +1124,7 @@ impl Service {
             },
             standalone_recovery_pending: observed.standalone_recovery_pending,
             credential_expires_at_ms: context.authorization.expires_at_ms(),
+            backup_sessions: observed.backup_sessions,
             backup_requests: BACKUP_OPERATIONS
                 .into_iter()
                 .zip(
@@ -1832,6 +1835,27 @@ impl Observation {
         if !dedicated.is_empty() {
             storage_families(&mut out, "kasumi_local_group_storage_", &dedicated);
         }
+        writeln!(out, "# TYPE kasumi_control_backup_sessions gauge").unwrap();
+        for (state, count) in [
+            (
+                "claimed_without_terminal",
+                self.backup_sessions.map(|s| s.claimed_without_terminal),
+            ),
+            ("completed", self.backup_sessions.map(|s| s.completed)),
+            ("aborted", self.backup_sessions.map(|s| s.aborted)),
+        ] {
+            match count {
+                Some(value) => writeln!(
+                    out,
+                    "kasumi_control_backup_sessions{{state=\"{state}\"}} {value}"
+                ),
+                None => writeln!(
+                    out,
+                    "kasumi_control_backup_sessions{{state=\"{state}\"}} NaN"
+                ),
+            }
+            .unwrap();
+        }
         writeln!(out, "# TYPE kasumi_backup_requests_inflight gauge").unwrap();
         for (operation, counts) in &self.backup_requests {
             writeln!(
@@ -2183,6 +2207,7 @@ mod tests {
             },
             standalone_recovery_pending: samples.then_some(false),
             credential_expires_at_ms: Some(1_000),
+            backup_sessions: None,
             backup_requests: BACKUP_OPERATIONS
                 .into_iter()
                 .map(|operation| (operation, RequestCounts::default()))

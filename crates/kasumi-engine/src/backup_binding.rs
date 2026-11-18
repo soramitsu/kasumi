@@ -180,8 +180,48 @@ impl Source {
         Ok(result)
     }
 }
+/// Outcomes in this locally applied Control binding ledger. Destination-only
+/// sessions that predate Control binding have no entry here.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+pub struct ControlBackupSessions {
+    pub claimed_without_terminal: u64,
+    pub completed: u64,
+    pub aborted: u64,
+    pub last_binding_revision: u64,
+}
+
+impl ControlBackupSessions {
+    fn advanced(mut self, row: &Row) -> Result<Self> {
+        let count = match row.terminal.as_ref().map(|terminal| &terminal.outcome) {
+            None => &mut self.claimed_without_terminal,
+            Some(outcome) => {
+                self.claimed_without_terminal = self
+                    .claimed_without_terminal
+                    .checked_sub(1)
+                    .context("backup terminal without an outstanding claim")?;
+                match outcome {
+                    kasumi_types::BackupSessionOutcome::Complete { .. } => &mut self.completed,
+                    kasumi_types::BackupSessionOutcome::Aborted { .. } => &mut self.aborted,
+                }
+            }
+        };
+        *count = count
+            .checked_add(1)
+            .context("Control backup session count overflow")?;
+        self.last_binding_revision = row.applied.revision;
+        Ok(self)
+    }
+}
+
+impl crate::Generation {
+    pub fn control_backup_sessions(&self) -> Option<ControlBackupSessions> {
+        (self.tenant() == crate::control::CONTROL_TENANT).then_some(self.backup_bindings.sessions)
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct View {
+    sessions: ControlBackupSessions,
     source: Option<Arc<Source>>,
     head: BackupBindingHead,
 }
@@ -195,6 +235,7 @@ impl std::fmt::Debug for View {
 impl View {
     pub(crate) fn empty(incarnation: &str) -> Result<Self> {
         Ok(Self {
+            sessions: ControlBackupSessions::default(),
             source: None,
             head: BackupBindingHead::empty(incarnation)?,
         })
@@ -237,6 +278,16 @@ impl View {
         ensure!(
             digest(&self.head.sha256),
             "invalid backup binding head digest"
+        );
+        ensure!(
+            self.sessions
+                .completed
+                .checked_add(self.sessions.aborted)
+                .and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(self.sessions.claimed_without_terminal))
+                == Some(self.head.count)
+                && self.sessions.last_binding_revision == self.head.last_applied_revision,
+            "Control backup session counts differ from selected prefix"
         );
         if self.head.count == 0 {
             ensure!(
@@ -398,6 +449,7 @@ impl View {
                     store: store.clone(),
                     binding: binding.clone(),
                 }))),
+                sessions: self.sessions,
                 head: self.head.clone(),
             };
             view.validate_state(state)?;
@@ -447,6 +499,7 @@ impl View {
                 store: store.clone(),
                 binding,
             }))),
+            sessions: self.sessions,
             head: self.head.clone(),
         };
         Ok(Installation {
@@ -489,6 +542,7 @@ impl View {
 }
 
 pub(crate) struct Builder {
+    sessions: ControlBackupSessions,
     table: Arc<EncryptedTable>,
     head: BackupBindingHead,
 }
@@ -499,6 +553,7 @@ impl Builder {
         incarnation: &str,
     ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         Ok(Self {
+            sessions: ControlBackupSessions::default(),
             table: Arc::new(EncryptedTable::new(
                 disk,
                 limit,
@@ -527,6 +582,7 @@ impl Builder {
             );
         }
         advance(&mut self.head, row)?;
+        self.sessions = self.sessions.advanced(row)?;
         self.table
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;
         self.table.insert(
@@ -544,6 +600,7 @@ impl Builder {
             "backup binding stream final root/count/bytes differ"
         );
         Ok(View {
+            sessions: self.sessions,
             source: Some(Arc::new(Source::Staged(self.table))),
             head: self.head,
         })
@@ -589,6 +646,7 @@ impl Installation {
 }
 
 pub(crate) struct Pending {
+    sessions: ControlBackupSessions,
     previous: View,
     head: BackupBindingHead,
     row: Row,
@@ -619,6 +677,7 @@ impl Pending {
             "backup binding table budget exhausted"
         );
         Ok(Self {
+            sessions: previous.sessions.advanced(&row)?,
             previous: previous.clone(),
             head,
             row,
@@ -658,6 +717,7 @@ impl Pending {
             }
         }
         let view = View {
+            sessions: self.sessions,
             source: self.previous.source,
             head: self.head,
         };

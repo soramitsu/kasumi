@@ -104,6 +104,9 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
         control.engine.generation()?.state.backup_binding_head.count,
         1
     );
+    let before_terminal = control.engine.generation()?;
+    let initial_counts = before_terminal.control_backup_sessions().unwrap();
+    assert_eq!((initial_counts.claimed_without_terminal, initial_counts.completed, initial_counts.aborted), (1, 0, 0));
     assert!(record.position.term > 0 && record.position.index > 0);
     let request = |alias: &str| BackupSessionRequest {
         destination: alias.into(),
@@ -153,6 +156,11 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
     };
     let retry = fixture.db.select_backup_terminal(&fixture.context, first.as_ref(), &verified, &loser).await?;
     assert_eq!(selected.as_bytes(), retry.as_bytes());
+    let final_counts = control.engine.generation()?.control_backup_sessions().unwrap();
+    assert_eq!((final_counts.claimed_without_terminal, final_counts.completed, final_counts.aborted), (0, 0, 1));
+    assert!(final_counts.last_binding_revision > initial_counts.last_binding_revision);
+    assert_eq!(before_terminal.control_backup_sessions(), Some(initial_counts));
+
     assert_eq!(fixture.db.backup_session_status(fixture.context.clone(), request("first")).await?.outcome.as_ref(), Some(&winner));
     assert!(first.session_get(id, kasumi_store::BackupSessionSlot::Outcome, selected.len()).await?.is_none());
     let aborted = fixture

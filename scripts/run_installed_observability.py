@@ -115,6 +115,9 @@ def live(paths, plan, request, original, custody, inputs, command, settled):
     due = acceptance.uint(group["retention"]["archive_backlog_bytes"], "observed tenant backlog")
     require(group["audit_maintenance"] is not None and probes.gauge(metrics, "service_audit_archive_backlog_bytes") >= 0,
             "the protected release omits audit retention observations")
+    before = query("control-backup-before", [*ctl, control, "health"], "backup-outcomes")["backup_sessions"]
+    for field in ("claimed_without_terminal", "completed", "aborted", "last_binding_revision"):
+        acceptance.uint(before[field], "pre-backup Control ledger " + field)
     created = query("backup-create", [server, "backup", "create", operator, plan["destination"],
                                      str(original / "checkpoint.json")])
     session = io.uuid_string(created["session_id"])
@@ -130,6 +133,19 @@ def live(paths, plan, request, original, custody, inputs, command, settled):
         acceptance.checksum(checkpoint[digest])
     acceptance.checksum(result["outcome"]["intent_ciphertext_sha256"])
     acceptance.checksum(result["source_purpose_sha256"])
+    def committed_backup(value):
+        sessions = value["backup_sessions"]
+        return (sessions is not None and sessions["completed"] == before["completed"] + 1
+                and sessions["aborted"] == before["aborted"]
+                and sessions["claimed_without_terminal"] == before["claimed_without_terminal"]
+                and sessions["last_binding_revision"] > before["last_binding_revision"])
+    settled("control-backup-after", [*ctl, control, "health"], committed_backup)
+    counters = run("control-backup-metrics", [*ctl, control, "metrics"], "backup-outcomes").decode().splitlines()
+    for state in ("claimed_without_terminal", "completed", "aborted"):
+        count = before[state] + int(state == "completed")
+        require(counters.count(f'kasumi_control_backup_sessions{{state="{state}"}} {count}') == 1,
+                "protected metric differs from the selected Control backup ledger")
+
     identifier = io.uuid_string(request["operation_id"])
     committed = query("recovery-start", [server, "control-recovery", "start", control, plan["recovery_request"],
                                          str(original / "recovery-attempt.json"), "60000"])

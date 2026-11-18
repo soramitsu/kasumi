@@ -397,6 +397,8 @@ async fn selected_checkpoint_reopens_exact_row_and_rejects_changed_head() {
         .prepare_install(&store, &selected_state, &checkpoint, true)
         .unwrap()
         .view;
+    assert_eq!(reopened.sessions, selected.sessions);
+    assert_eq!(reopened.sessions.claimed_without_terminal, 1);
     assert_eq!(
         reopened
             .get(session_id)

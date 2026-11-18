@@ -599,6 +599,13 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     assert_eq!(value["standalone_recovery_pending"], false);
     assert_eq!(value["backup_requests"]["create"]["inflight"], 0);
     assert_eq!(
+        value["backup_sessions"],
+        serde_json::json!({
+            "claimed_without_terminal": 0, "completed": 0, "aborted": 0,
+            "last_binding_revision": 0,
+        })
+    );
+    assert_eq!(
         value["service_audit"]["retention"]["archive_backlog_bytes"],
         0
     );

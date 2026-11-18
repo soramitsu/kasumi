@@ -24,6 +24,7 @@ impl Administration {
         let authority_required = self.config.mode == crate::runtime::DeploymentMode::Replicated;
         let mut groups = Vec::with_capacity(roster.len());
         let mut stores = Vec::with_capacity(roster.len());
+        let mut backup_sessions = None;
         for (tenant, incarnation) in roster {
             let control = tenant == crate::runtime::CONTROL_TENANT;
             let routed = if control {
@@ -86,6 +87,9 @@ impl Administration {
                     && managed.store.check_access().is_ok()
                     && let Ok(generation) = managed.database.engine().generation()
                 {
+                    if control {
+                        backup_sessions = generation.control_backup_sessions();
+                    }
                     let retention = generation.audit_retention();
                     let budget = &generation.limits().audit_retention;
                     observation.capacity = Some(CapacityObservation {
@@ -148,6 +152,7 @@ impl Administration {
                 None
             };
         Ok(LocalObservation {
+            backup_sessions,
             admission: self.admission.snapshot(),
             persistent_disk: self.node.persistent_disk().snapshot(),
             scratch_disk: self.node.scratch_disk().snapshot(),
