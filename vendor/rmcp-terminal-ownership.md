@@ -1,12 +1,12 @@
-# rmcp 3.2.0 terminal HTTP ownership
+# rmcp 3.11.0 terminal HTTP ownership
 
-The published `rmcp` 3.2.0 archive has SHA-256
-`42b6914fac0be956fe704a38239c3f44a9f841d1b06a5713d2f638065593f5b5`.
+The published `rmcp` 3.11.0 archive has SHA-256
+`391f153431ab68664d946513ea0cb3edbca78eaf99c5a983036cacab6220d85b`.
 Its `.cargo_vcs_info.json` names upstream revision
-`51ccb42993d6eb5075399672ce7a0c21a0e55eea` and path `crates/rmcp`.
-The complete published source and original lockfile are retained. The archive
-omits its license file despite declaring Apache-2.0; `LICENSE` is copied from
-[the exact upstream revision](https://raw.githubusercontent.com/modelcontextprotocol/rust-sdk/51ccb42993d6eb5075399672ce7a0c21a0e55eea/LICENSE). `patch-manifest.json` fixes every resulting source digest.
+`165f8fd514afb8f6d1be3e86260ee9abfce58541` and path `crates/rmcp`.
+The published archive includes its Apache-2.0 license and lockfile. The manifest
+records every file, including the changes to the HTTP transport, peer request handling and the additional
+terminal custody regression module.
 
 ## Reviewed ownership problem
 
@@ -35,7 +35,7 @@ mode.
 The terminal path preserves the upstream Host/Origin, Accept/Content-Type,
 bounded-body, standard-header, protocol-header and protocol-metadata validators.
 It preserves JSON-RPC request identity, metadata, original HTTP parts/extensions,
-client information and the originating-request scope. SDK `Service::handle_request`
+client information, originating request ID and originating protocol version. SDK `Service::handle_request`
 still performs protocol/capability checks and method dispatch.
 
 The handler is polled directly inside the HTTP future. This path never constructs
@@ -50,7 +50,10 @@ their existing engine ownership; this patch does not change that contract.
 Only one terminal JSON-RPC request/response is supported. Inbound asynchronous
 notifications/responses/errors are explicitly rejected. Outbound peer requests
 and notifications are observed inline and reject the response; a message queued
-in the handler's final poll is checked before terminal publication. No action
+in the handler's final poll is checked before terminal publication. The peer also
+notifies the terminal owner if upstream protocol enforcement rejects an outbound
+request before it can reach the channel. This wakes a pending handler and makes
+the refusal visible even when the handler consumes its local error. No action
 is silently acknowledged and dropped, and no SSE fallback runs.
 
 Server cancellation and unsupported outbound transport attach the typed
@@ -59,7 +62,7 @@ withholds that response and returns `UnknownOutcome` if mutation dispatch has
 started. The original credential deadline, final body materialization and
 retained database response fence remain in the Kasumi adapter.
 
-## Validation
+## Original 3.2.0 validation
 
 The nine added `terminal_stateless_tests` passed on native macOS ARM64 with
 Rust 1.97.1. They execute without a Tokio runtime (an SDK `tokio::spawn` would
@@ -71,11 +74,13 @@ SDK Clippy attempt failed on 11 existing upstream findings in unchanged code
 (`collapsible_if`, `result_large_err`, `type_complexity`, and `question_mark`);
 that failure is retained and is not claimed as a passing gate.
 
-Required commands, using a separate target directory during parallel work:
+## 3.11.0 checks
+
+Run the focused protocol and custody checks on the upgraded candidate:
 
 ```sh
-cargo test --manifest-path vendor/rmcp-3.2.0/Cargo.toml --locked --features transport-streamable-http-server --lib terminal_stateless_tests
-cargo test --manifest-path vendor/rmcp-3.2.0/Cargo.toml --locked --features client,transport-streamable-http-server,reqwest --test test_streamable_http_json_response --test test_streamable_http_standard_headers --test test_streamable_http_protocol_version --test test_stateless_protocol_version --test test_protocol_version_negotiation --test test_server_discover
+cargo test --manifest-path vendor/rmcp-3.11.0/Cargo.toml --locked --features transport-streamable-http-server --lib terminal_stateless_tests
+cargo test --manifest-path vendor/rmcp-3.11.0/Cargo.toml --locked --features client,transport-streamable-http-server,reqwest --test test_streamable_http_json_response --test test_streamable_http_standard_headers --test test_streamable_http_protocol_version --test test_stateless_protocol_version --test test_protocol_version_negotiation --test test_server_discover
 cargo test --locked -p kasumi-server --lib mcp::credential_tests -- --test-threads=1
 python3 scripts/check_dependency_patches.py
 ```

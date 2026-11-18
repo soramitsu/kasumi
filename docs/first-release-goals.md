@@ -1798,7 +1798,7 @@ name five vendor roots with six packages. `vendor/patch-manifest.json`
 | `vendor/bitmaps-3.2.1` | `bitmaps` (patched) | `published_crate_sha256` |
 | `vendor/lru-0.16.4` | `lru` (patched) | `published_crate_sha256` |
 | `vendor/serde_json-1.0.151` | `serde_json` (patched) | `published_crate_sha256` |
-| `vendor/rmcp-3.2.0` | `rmcp` (patched) | `published_crate_sha256` |
+| `vendor/rmcp-3.11.0` | `rmcp` (patched) | `published_crate_sha256` |
 
 Any G11 statement below that mentions redb or "seven" vendored packages
 describes the redb-era roster and is historical.

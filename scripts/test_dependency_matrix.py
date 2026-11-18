@@ -50,7 +50,7 @@ class DependencyMatrixTests(unittest.TestCase):
         self.assertEqual(excluded["test_local_client_handler"], "unselected")
         run = {name for case in rmcp["cases"] for name in case["tests"]}
         self.assertFalse(run & set(excluded))
-        self.assertEqual(len(run) + len(excluded), 82)
+        self.assertEqual(len(run) + len(excluded), 101)
         openraft = self.package(suites, "openraft")
         classes = {feature["name"]: feature["class"] for feature in openraft["excluded_features"]}
         self.assertEqual((classes["bench"], classes["bt"]), ("nightly-only", "nightly-only"))
@@ -93,14 +93,14 @@ class DependencyMatrixTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "unknown dependency suite exclusion class"):
                 matrix.roster(self.source, self.manifest)
         changed = copy.deepcopy(matrix.MATRIX)
-        changed["vendor/rmcp-3.2.0"]["packages"]["."]["excluded_targets"]["test_removed"] = {
+        changed["vendor/rmcp-3.11.0"]["packages"]["."]["excluded_targets"]["test_removed"] = {
             "class": "external-runtime", "reason": "stale"}
         with patch.object(matrix, "MATRIX", changed):
             with self.assertRaisesRegex(ValueError, "excludes an absent test target"):
                 matrix.roster(self.source, self.manifest)
 
     def test_target_needing_features_no_single_case_enables_is_not_dropped(self):
-        self.edit("vendor/rmcp-3.2.0/Cargo.toml", '[[test]]\nname = "test_cache_hints"\n',
+        self.edit("vendor/rmcp-3.11.0/Cargo.toml", '[[test]]\nname = "test_cache_hints"\n',
                   '[[test]]\nname = "test_cache_hints"\nrequired-features = ["not-a-feature"]\n')
         with self.assertRaisesRegex(ValueError, "run by no matrix case: test_cache_hints"):
             matrix.roster(self.source, self.manifest)

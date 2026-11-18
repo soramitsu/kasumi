@@ -33,7 +33,7 @@ The generic number deserializer also retains larger integers on that exact map
 path through Serde enum buffering; explicit typed 128-bit requests stay exact.
 Both upstream MIT and Apache-2.0 licenses remain in the vendored directory.
 
-## rmcp 3.2.0
+## rmcp 3.11.0
 
 The terminal stateless HTTP constructor executes the handler inside its calling
 HTTP future, preserving SDK validation while avoiding detached service, handler

@@ -338,8 +338,8 @@ class DependencyRunnerTests(unittest.TestCase):
             lock = Path(directory) / "Cargo.lock"
             lock.write_text(projected)
             packages = advisory.locked_packages(lock)
-            rmcp = packages[("rmcp", "3.2.0")]
-            finding = {"kind": "unsound", "package": {"name": "rmcp", "version": "3.2.0",
+            rmcp = packages[("rmcp", "3.11.0")]
+            finding = {"kind": "unsound", "package": {"name": "rmcp", "version": "3.11.0",
                        "source": rmcp["source"], "checksum": rmcp["checksum"]},
                        "advisory": {"id": "RUSTSEC-2099-9999", "package": "rmcp"}}
             report = {"database": {"advisory-count": 1},
@@ -349,7 +349,7 @@ class DependencyRunnerTests(unittest.TestCase):
                       "vulnerabilities": {"found": False, "count": 0, "list": []},
                       "warnings": {"unsound": [finding]}}
             parsed = advisory.parse_report(report, packages)
-            self.assertIn(("RUSTSEC-2099-9999", "rmcp", "3.2.0"), parsed)
+            self.assertIn(("RUSTSEC-2099-9999", "rmcp", "3.11.0"), parsed)
             with self.assertRaisesRegex(ValueError, "undisposed"):
                 advisory.reconcile(parsed, {}, {})
             wrong_source = copy.deepcopy(report)
@@ -621,18 +621,18 @@ class DependencyRunnerTests(unittest.TestCase):
                                              expected_output="")["complete"])
         self.assertEqual(runner.parse_counts("python", "", "Ran 16 tests in 0.1s\n\nOK\n", [])["tests"], 16)
         self.assertFalse(runner.parse_counts("python", "", "OK\n", [])["complete"])
-        expected = [("rmcp", "3.2.0", "vendor/rmcp-3.2.0")]
-        self.assertTrue(runner.parse_counts("verifier", "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
+        expected = [("rmcp", "3.11.0", "vendor/rmcp-3.11.0")]
+        self.assertTrue(runner.parse_counts("verifier", "verified rmcp 3.11.0 (vendor/rmcp-3.11.0)\n",
                                             "", expected)["complete"])
-        self.assertFalse(runner.parse_counts("verifier", "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\nextra\n",
+        self.assertFalse(runner.parse_counts("verifier", "verified rmcp 3.11.0 (vendor/rmcp-3.11.0)\nextra\n",
                                              "", expected)["complete"])
-        self.assertFalse(runner.parse_counts("verifier", "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
+        self.assertFalse(runner.parse_counts("verifier", "verified rmcp 3.11.0 (vendor/rmcp-3.11.0)\n",
                                              "cargo warning\n", expected)["complete"])
-        ordered = [("rmcp", "3.2.0", "vendor/rmcp-3.2.0"),
+        ordered = [("rmcp", "3.11.0", "vendor/rmcp-3.11.0"),
                    ("openraft", "0.9.25", "vendor/openraft-0.9.25/openraft")]
         self.assertFalse(runner.parse_counts("verifier",
                                              "verified openraft 0.9.25 (vendor/openraft-0.9.25/openraft)\n"
-                                             "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
+                                             "verified rmcp 3.11.0 (vendor/rmcp-3.11.0)\n",
                                              "", ordered)["complete"])
         self.assertFalse(runner.parse_counts("verifier", "", "", expected)["complete"])
 

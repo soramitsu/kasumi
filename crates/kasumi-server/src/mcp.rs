@@ -25,7 +25,7 @@ use rmcp::{
         CallToolRequestParams, CallToolResponse, CallToolResult, ErrorData, Implementation,
         InitializeRequestParams, InitializeResult, JsonRpcResponse, JsonRpcVersion2_0,
         ListToolsResult, PaginatedRequestParams, ProtocolVersion, RequestId, ServerCapabilities,
-        ServerInfo, Tool, ToolAnnotations,
+        ServerConfig, Tool, ToolAnnotations,
     },
     service::RequestContext as McpRequestContext,
     transport::streamable_http_server::{
@@ -1017,8 +1017,8 @@ impl ServerHandler for KasumiMcp {
             rmcp::model::InitializeResultMethod,
         >())
     }
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_protocol_version(ProtocolVersion::V_2026_07_28)
             .with_server_info(Implementation::new("kasumi", env!("CARGO_PKG_VERSION")))
             .with_instructions("Call kasumi_collections first to learn schemas and indexed fields. Query with JSON Pointer filters such as {\"/status\":\"open\"}; write with atomic, idempotent kasumi_mutate batches. Identity and tenant come from the access token. Administration uses the separate native admin service.")

@@ -26,7 +26,7 @@ TOOLCHAIN = "1.97.1"
 FORBIDDEN_FIXTURE_FEATURES = frozenset({"test-utils", "embedded-fixture", "loopback-fixture"})
 
 _SERDE_JSON = ("--manifest-path", "vendor/serde_json-1.0.151/Cargo.toml")
-_RMCP = ("--manifest-path", "vendor/rmcp-3.2.0/Cargo.toml")
+_RMCP = ("--manifest-path", "vendor/rmcp-3.11.0/Cargo.toml")
 _OPENRAFT = ("--manifest-path", "vendor/openraft-0.9.25/Cargo.toml")
 _OPENRAFT_FEATURES = "serde,storage-v2,single-term-leader,generic-snapshot-data"
 

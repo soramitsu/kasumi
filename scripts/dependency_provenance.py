@@ -42,10 +42,10 @@ UPSTREAM_DELTA = {
         "changed": ("Cargo.toml", "src/number.rs", "src/raw.rs", "src/value/de.rs"),
         "added": ("tests/literal_keys.rs",),
         "removed": ()},
-    "vendor/rmcp-3.2.0": {
-        "changed": ("src/transport/streamable_http_server.rs",
+    "vendor/rmcp-3.11.0": {
+        "changed": ("src/service.rs", "src/transport/streamable_http_server.rs",
                     "src/transport/streamable_http_server/tower.rs"),
-        "added": ("LICENSE", "src/transport/streamable_http_server/terminal_stateless_tests.rs"),
+        "added": ("src/transport/streamable_http_server/terminal_stateless_tests.rs",),
         "removed": ()},
 }
 # Roots admitted by a review record instead of a published archive.
