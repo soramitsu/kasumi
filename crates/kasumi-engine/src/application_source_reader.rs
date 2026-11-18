@@ -44,7 +44,7 @@ impl SelectedApplication {
         id: &str,
         admit: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<Option<crate::application_records::PrimaryPoint>> {
-        self.with_snapshot_records(state, |tree, _| {
+        self.with_snapshot_records(state, |tree, _, _| {
             crate::application_records::snapshot_point(tree, collection, id, state.revision, admit)
         })
     }
@@ -57,6 +57,7 @@ impl SelectedApplication {
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
             &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+            u32,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
         use kasumi_store::{application_manifest::ApplicationManifest, ordered_pages::TreeReader};
@@ -99,7 +100,7 @@ impl SelectedApplication {
             let tree =
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
-            read(&tree, &memory).map(Some)
+            read(&tree, &memory, manifest.layout_epoch).map(Some)
         })();
         let close = reader.close();
         match (outcome, close) {

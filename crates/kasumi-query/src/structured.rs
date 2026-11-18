@@ -823,6 +823,54 @@ impl Structured {
             .collect())
     }
 
+    /// A complete single-field predicate can stream its exact ID set without
+    /// visiting documents or materializing the complement of a universe.
+    pub(crate) fn stored_presence<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+        &self,
+        source: &S,
+        node: &Node<'_>,
+        cap: usize,
+        cancellation: &QueryCancellation,
+        memory: &mut crate::QueryMemory<W>,
+    ) -> ReadResult<Option<IdSet>, S::Failure> {
+        let Node::Leaf {
+            path,
+            test: Test::Exists(present),
+        } = node
+        else {
+            return Ok(None);
+        };
+        let Some(field) = self.fields.keys().position(|key| key == *path) else {
+            return Ok(None);
+        };
+        let mut ids = IdSet::new();
+        let available = source.visit_field_presence(field, *present, cancellation, |id| {
+            cancellation.check()?;
+            check_size(ids.len() + 1, cap)?;
+            // The set is privately built. Charge a whole 16-slot imbl node
+            // plus its edges for each new ID, and the ID's own string backing.
+            memory.reserve(crate::allocation::add(
+                2048,
+                crate::allocation::string_clone_bytes(id)?,
+            )?)?;
+            if ids
+                .get_max()
+                .is_some_and(|previous: &String| previous.as_str() >= id)
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "unordered field presence index",
+                ));
+            }
+            ids.insert(id.to_owned());
+            Ok(())
+        })?;
+        if !available && !ids.is_empty() {
+            return Err(Error::new(ErrorCode::Corruption, "partial field presence index").into());
+        }
+        Ok(available.then_some(ids))
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn candidates<S: DocumentSource + ?Sized>(
         &self,

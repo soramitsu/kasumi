@@ -133,6 +133,18 @@ impl ReadFailure<Infallible> {
 pub trait DocumentSource: crate::CollectionRecords {
     /// Indexes captured with this exact source, including verified hydration.
     fn indexes(&self) -> &crate::QueryIndexes;
+    /// Visit one field's ordered presence or absence postings if this exact
+    /// generation has published them. An unsupported layout returns false
+    /// before lending any IDs. An installed but unreadable index returns an error.
+    fn visit_field_presence(
+        &self,
+        _field: usize,
+        _present: bool,
+        _cancellation: &QueryCancellation,
+        _lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        Ok(false)
+    }
     /// Check cancellation before/after read work and immediately before lending.
     /// An expected version requires presence and an exact version match.
     fn with_record<T>(
@@ -199,6 +211,23 @@ impl<S: DocumentSource + ?Sized> crate::CollectionRecords for BoundSource<'_, S>
 impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
     fn indexes(&self) -> &crate::QueryIndexes {
         self.source.indexes()
+    }
+    fn visit_field_presence(
+        &self,
+        field: usize,
+        present: bool,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> kasumi_types::Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        self.check()?;
+        let available = self
+            .source
+            .visit_field_presence(field, present, cancellation, |id| {
+                self.check()?;
+                lend(id)
+            })?;
+        self.check()?;
+        Ok(available)
     }
     fn with_record<T>(
         &self,

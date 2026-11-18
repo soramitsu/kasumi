@@ -67,7 +67,8 @@ pub(crate) fn stage(
     let stage = NamespaceStage::begin_generation(store, PAGE_FAMILY)?;
     let records = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
         application_records::visit_all(
-            state,
+            generation,
+            kasumi_store::application_manifest::FIELD_POSTINGS_LAYOUT,
             &bindings,
             store.plaintext_memory_owner(),
             |key, value| builder.push(key, value),
@@ -133,7 +134,8 @@ pub(crate) fn verify(
             .collect();
         let mut expected = Sha256::new();
         application_records::visit_all(
-            state,
+            generation,
+            manifest.layout_epoch,
             &bindings,
             store.plaintext_memory_owner(),
             |key, value| {

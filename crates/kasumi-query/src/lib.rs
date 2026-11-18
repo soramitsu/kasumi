@@ -148,6 +148,29 @@ impl QueryIndexes {
                 .collect(),
         )
     }
+    /// Stream the two disjoint ID sets for every indexed field. The field
+    /// ordinal follows the same sorted path map used by the planner. An empty
+    /// array or explicit null has a present posting; a missing path has one
+    /// absent posting. No document body is opened during publication.
+    pub fn visit_field_presence<E>(
+        &self,
+        mut emit: impl FnMut(&str, usize, bool, &str) -> std::result::Result<(), E>,
+    ) -> std::result::Result<(), E> {
+        for (name, indexes) in &self.collections {
+            for (field, index) in indexes.structured.fields.values().enumerate() {
+                if let Some(absent) = index.entries.get(&Scalar::Missing) {
+                    for id in absent {
+                        emit(name, field, false, id)?;
+                    }
+                }
+                for id in &index.present {
+                    emit(name, field, true, id)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Plan bounded candidates using maintained structured indexes without
     /// reading document bodies. Explicit scans are resolved by the service.
     pub fn indexed_candidate_ids<S: DocumentSource + ?Sized, W: QueryWorkspace>(
@@ -195,15 +218,24 @@ impl QueryIndexes {
             128,
         )?)?;
         indexes.structured.validate(&filter, false)?;
-        let candidates = indexes.structured.candidates(
+        let candidates = match indexes.structured.stored_presence(
             source,
             &filter,
-            &indexes.structured.ids,
-            false,
-            false,
             limits.max_query_candidates,
             cancellation,
-        )?;
+            memory,
+        )? {
+            Some(ids) => ids,
+            None => indexes.structured.candidates(
+                source,
+                &filter,
+                &indexes.structured.ids,
+                false,
+                false,
+                limits.max_query_candidates,
+                cancellation,
+            )?,
+        };
         let mut retained = allocation::vec_bytes::<String>(candidates.len())?;
         memory.reserve(retained)?;
         let mut ids = Vec::with_capacity(candidates.len());
@@ -643,15 +675,29 @@ impl QueryIndexes {
             })
             .transpose()?;
         let universe = text_ids.as_ref().unwrap_or(&structured.ids);
-        let candidates = structured.candidates(
-            source,
-            &filter,
-            universe,
-            request.allow_scan,
-            true,
-            limits.max_query_candidates,
-            cancellation,
-        )?;
+        let disk_ids = if text_ids.is_none() {
+            structured.stored_presence(
+                source,
+                &filter,
+                limits.max_query_candidates,
+                cancellation,
+                memory,
+            )?
+        } else {
+            None
+        };
+        let candidates = match disk_ids {
+            Some(ids) => ids,
+            None => structured.candidates(
+                source,
+                &filter,
+                universe,
+                request.allow_scan,
+                true,
+                limits.max_query_candidates,
+                cancellation,
+            )?,
+        };
         if request.is_aggregate() {
             let (response, retained) = aggregate(
                 source,

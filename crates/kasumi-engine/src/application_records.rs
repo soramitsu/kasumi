@@ -78,6 +78,39 @@ pub(crate) fn document_key(collection: &str, id: &str) -> Vec<u8> {
     KeyBuilder::new(3).text(collection).text(id).finish()
 }
 
+/// Document identifiers cannot contain control characters, so their UTF-8
+/// suffix sorts in document order and needs no additional tuple escaping.
+fn presence_prefix(collection: &str, field: usize, present: bool) -> Vec<u8> {
+    let mut key = KeyBuilder::new(24).text(collection).finish();
+    key.extend_from_slice(&(field as u64).to_be_bytes());
+    key.push(u8::from(present));
+    key
+}
+
+pub(crate) fn visit_field_presence(
+    reader: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    field: usize,
+    present: bool,
+    mut visit: impl FnMut(&str) -> Result<bool>,
+) -> Result<()> {
+    use kasumi_store::ordered_pages::Direction;
+    let prefix = presence_prefix(collection, field, present);
+    reader.scan(
+        std::ops::Bound::Included(&prefix),
+        Direction::Forward,
+        &mut |key, value| {
+            let Some(id) = key.strip_prefix(prefix.as_slice()) else {
+                return Ok(false);
+            };
+            anyhow::ensure!(value.is_empty(), "field presence row carries a payload");
+            let id = std::str::from_utf8(id)?;
+            validate_name(id)?;
+            visit(id)
+        },
+    )
+}
+
 fn archive_key(collection: &str, id: &str) -> Vec<u8> {
     KeyBuilder::new(4).text(collection).text(id).finish()
 }
@@ -187,11 +220,13 @@ type RecordVisitor<'a> = dyn FnMut(Vec<u8>, DurableRecord<'_>) -> Result<()> + '
 
 /// Each value borrows the selected generation until its bounded write completes.
 pub(crate) fn visit_all(
-    state: &TenantState,
+    generation: &crate::Generation,
+    layout: u32,
     bindings: &BTreeMap<&'static str, &[u8]>,
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     mut emit: impl FnMut(&[u8], &[u8]) -> Result<()>,
 ) -> Result<()> {
+    let state = &generation.state;
     // Header projections and tuple key framing use a bounded per-visit workspace.
     let _framing = memory.clone().reserve_installed(64 << 10)?;
     let mut visit = |key: Vec<u8>, record: DurableRecord<'_>| {
@@ -369,7 +404,17 @@ pub(crate) fn visit_all(
         &recovery.completion_history,
         DurableRecord::RecoveryCompletionHistory,
         &mut visit,
-    )
+    )?;
+    if layout >= kasumi_store::application_manifest::FIELD_POSTINGS_LAYOUT {
+        generation
+            .indexes
+            .visit_field_presence(|collection, field, present, id| {
+                let mut key = presence_prefix(collection, field, present);
+                key.extend_from_slice(id.as_bytes());
+                emit(&key, &[])
+            })?;
+    }
+    Ok(())
 }
 
 fn visit_map<'a, V: Clone>(

@@ -1437,7 +1437,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         scopes: std::collections::BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
         request_id: "snapshot-primary-point".into(),
     };
-    let body = serde_json::json!({"value": "persisted"});
+    let body = serde_json::json!({"value": "persisted", "nil": null, "empty": []});
     source_db
         .administer(
             context.clone(),
@@ -1446,7 +1446,22 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 write_mode: kasumi_types::CollectionWriteMode::Mutable,
                 retention_class: kasumi_types::CollectionRetentionClass::Operational,
                 schema: serde_json::json!({"type": "object"}),
-                indexes: vec![],
+                indexes: [
+                    ("missing", kasumi_types::ScalarType::String),
+                    ("nil", kasumi_types::ScalarType::String),
+                    ("empty", kasumi_types::ScalarType::StringArray),
+                ]
+                .into_iter()
+                .map(|(name, kind)| kasumi_types::IndexDefinition {
+                    name: name.to_owned(),
+                    fields: vec![kasumi_types::IndexField {
+                        path: format!("/{name}"),
+                        kind,
+                    }],
+                    unique: false,
+                    text: None,
+                })
+                .collect(),
                 strict_read_audit: false,
             }),
         )
@@ -1612,10 +1627,58 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         ))?,
         Some(crate::application_records::PrimaryPoint::Missing)
     ));
+    {
+        use kasumi_query::DocumentSource;
+        let docs = reopened.document_source("docs")?;
+        let cancellation = kasumi_query::QueryCancellation::default();
+        for (ordinal, path, present) in [
+            (0, "/empty", true),
+            (1, "/missing", false),
+            (2, "/nil", true),
+        ] {
+            for expected in [true, false] {
+                let mut disk = Vec::new();
+                let available = docs
+                    .visit_field_presence(ordinal, expected, &cancellation, |id| {
+                        disk.push(id.to_owned());
+                        Ok(())
+                    })
+                    .map_err(crate::index_source::into_anyhow)?;
+                assert!(available, "installed field directory absent after reopen");
+                let mut query = kasumi_types::QueryRequest::new("docs");
+                query.filter = if expected {
+                    kasumi_types::Filter::new().exists(path)
+                } else {
+                    kasumi_types::Filter::new().missing(path)
+                };
+                let mut memory =
+                    kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
+                let ids = reopened
+                    .indexes
+                    .indexed_candidate_ids(
+                        &docs,
+                        &query,
+                        &reopened.state.limits,
+                        &cancellation,
+                        &mut memory,
+                    )
+                    .map_err(crate::index_source::into_anyhow)?;
+                assert_eq!(ids, disk);
+                assert_eq!(
+                    ids,
+                    if expected == present {
+                        vec!["point"]
+                    } else {
+                        vec![]
+                    }
+                );
+            }
+        }
+    }
     let mut visited = Vec::new();
     let feed = &reopened.state.change_feed;
     selection
-        .with_snapshot_records(&reopened.state, |tree, memory| {
+        .with_snapshot_records(&reopened.state, |tree, memory, _| {
             let snapshot_feed = crate::application_records::SnapshotFeed { tree, memory };
             snapshot_feed.visit(
                 feed.first_available_sequence(),

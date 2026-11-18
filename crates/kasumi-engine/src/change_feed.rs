@@ -163,7 +163,7 @@ impl Database {
                 // A deployed pre-directory snapshot and an ordinary entry still
                 // use their own pinned generation. A bad installed tree fails.
                 let result = if let Some(selection) = selection {
-                    selection.with_snapshot_records(state, |tree, memory| {
+                    selection.with_snapshot_records(state, |tree, memory, _| {
                         Ok(read.build(&actor, token, Some(crate::application_records::SnapshotFeed { tree, memory })))
                     }).map_err(document_load_error)?
                 } else { None };

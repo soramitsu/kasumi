@@ -173,6 +173,55 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         self.generation.indexes.as_ref()
     }
 
+    fn visit_field_presence(
+        &self,
+        field: usize,
+        present: bool,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        self.check_deadline()?;
+        cancellation.check()?;
+        let state = &self.generation.state;
+        let Some(selection) = self
+            .generation
+            .application_selection
+            .get()
+            .filter(|selection| selection.has_exact_snapshot(state.revision_base, state.revision))
+        else {
+            return Ok(false);
+        };
+        let mut failure = None;
+        let selected = selection
+            .with_snapshot_records(state, |tree, _, layout| {
+                if layout < kasumi_store::application_manifest::FIELD_POSTINGS_LAYOUT {
+                    return Ok(false);
+                }
+                crate::application_records::visit_field_presence(
+                    tree,
+                    &self.collection,
+                    field,
+                    present,
+                    |id| {
+                        let result = cancellation
+                            .check()
+                            .and_then(|()| self.check_deadline())
+                            .and_then(|()| lend(id));
+                        failure = result.err();
+                        Ok(failure.is_none())
+                    },
+                )?;
+                Ok(true)
+            })
+            .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        self.check_deadline()?;
+        cancellation.check()?;
+        Ok(selected.unwrap_or(false))
+    }
+
     fn with_record<T>(
         &self,
         id: &str,

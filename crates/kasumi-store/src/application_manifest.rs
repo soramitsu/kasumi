@@ -17,6 +17,8 @@ pub const PAGE_FAMILY: &str = "kasumi.app.pages";
 /// first manifest selects a staged space and retires this one.
 pub const INITIAL_PAGE_SPACE: [&str; 1] = ["kasumi.app.pages"];
 const FORMAT: u32 = 1;
+/// Adds structured field-presence postings after the original record families.
+pub const FIELD_POSTINGS_LAYOUT: u32 = 2;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -57,7 +59,7 @@ impl ApplicationManifest {
             revision,
             revision_base,
             snapshot_sha256,
-            layout_epoch: 1,
+            layout_epoch: FIELD_POSTINGS_LAYOUT,
             page_space: page_space.into(),
             records,
             document_count,
@@ -81,7 +83,7 @@ impl ApplicationManifest {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.format == FORMAT && self.layout_epoch == 1,
+            self.format == FORMAT && (1..=FIELD_POSTINGS_LAYOUT).contains(&self.layout_epoch),
             "unsupported application manifest format"
         );
         ensure!(
