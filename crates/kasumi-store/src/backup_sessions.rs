@@ -328,7 +328,8 @@ impl TenantStore {
     ) -> Result<Option<VerifiedBackupSession>> {
         self.check_access()?;
         let result =
-            verify_backup_session(destination, session, self, self.provider.clone()).await?;
+            verify_backup_session(destination, session, self, self.archive_read_provider()?)
+                .await?;
         self.check_access()?;
         Ok(result)
     }
@@ -347,7 +348,7 @@ impl TenantStore {
             "backup session tenant differs"
         );
         let bytes = session
-            .encrypt_outcome(value, self.provider.clone())
+            .encrypt_outcome(value, self.archive_read_provider()?)
             .await?;
         self.check_access()?;
         Ok(bytes)

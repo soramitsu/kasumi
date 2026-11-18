@@ -219,8 +219,37 @@ impl crate::runtime::RuntimeConfig {
         store: &Arc<kasumi_store::TenantStore>,
         cache: Option<Arc<FilesystemAuditArchive>>,
     ) -> Result<()> {
-        // Resolve before creating even the local cache or reading a credential.
+        self.install_tenant_archives_with(store, cache, Arc::new(crate::runtime::file_secret))
+    }
+
+    pub(crate) fn install_tenant_archives_with(
+        &self,
+        store: &Arc<kasumi_store::TenantStore>,
+        cache: Option<Arc<FilesystemAuditArchive>>,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<()> {
         let placement = self.tenant_audit_placement(store.tenant())?;
+        let resolver = self
+            .tenant_historical_keys
+            .get(store.tenant())
+            .map(|history| -> Result<_> {
+                let primary = if store.tenant() == crate::runtime::CONTROL_TENANT {
+                    &self.control.keys
+                } else {
+                    &self
+                        .tenants
+                        .iter()
+                        .find(|t| t.tenant == store.tenant())
+                        .context("tenant archive primary missing")?
+                        .keys
+                };
+                Ok(crate::local_recovery::keys::RecoveryKeys::open_with(
+                    primary, history, credential,
+                )?
+                .into_resolver())
+            })
+            .transpose()?;
+        store.install_archive_read_keys(resolver)?;
         let cache = match cache {
             Some(cache) => cache,
             None => {

@@ -18,7 +18,7 @@ impl TenantStore {
             "encrypted object identity mismatch"
         );
         let contents = encrypted
-            .decrypt(&self.tenant, self.provider.clone(), self)
+            .decrypt(&self.tenant, self.archive_read_provider()?, self)
             .await?;
         self.check_access()?;
         Ok(contents)

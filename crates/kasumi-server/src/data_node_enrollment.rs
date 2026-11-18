@@ -360,7 +360,7 @@ async fn initialize_domain(
             grant.check()?;
         }
         let application_provider = application.provider(credential.clone())?;
-        let custody_provider = custody.provider(credential)?;
+        let custody_provider = custody.provider(credential.clone())?;
         let stores = TenantStorageSet::initialize_catalogs(
             node.clone(),
             tenant.into(),
@@ -376,7 +376,7 @@ async fn initialize_domain(
             crate::startup_preparation::checkpoint(config.database_id, "ha-control-pair");
         }
         let app = stores.application().clone();
-        config.install_tenant_audit_archive(&app, None)?;
+        config.install_tenant_archives_with(&app, None, credential)?;
         if let Some(grant) = grant {
             grant.check()?;
         }

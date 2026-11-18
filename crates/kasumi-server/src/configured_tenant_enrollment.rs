@@ -534,8 +534,11 @@ impl Administration {
                     .resources
                     .stores
                     .push(stores.custody().store().clone());
-                self.config
-                    .install_tenant_audit_archive(stores.application(), None)?;
+                self.config.install_tenant_archives_with(
+                    stores.application(),
+                    None,
+                    self.credential.clone(),
+                )?;
                 self.check_enrollment(&prepared.invocation)?;
                 grant.check()?;
                 let bootstrap = self
@@ -615,8 +618,11 @@ impl Administration {
                 .resources
                 .stores
                 .push(stores.custody().store().clone());
-            self.config
-                .install_tenant_audit_archive(stores.application(), None)?;
+            self.config.install_tenant_archives_with(
+                stores.application(),
+                None,
+                self.credential.clone(),
+            )?;
             let constructor_index = crate::administration::original_serving_runtime::OriginalRecoveries::configured_index(&self.config, name)?;
             let mut constructor_seat = self.original_recoveries.claim(constructor_index).await;
             let opened = constructor_seat.run_snapshot(kasumi_engine::open_existing_replicated(

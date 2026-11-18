@@ -618,6 +618,32 @@ fn mutate<T>(
     Ok(output.expect("successful stage body"))
 }
 
+/// Install one immutable encrypted identity in the same native transaction
+/// that tests its predecessor. Independent opens cannot select different bytes.
+pub(crate) fn bind_immutable(
+    store: &TenantStore,
+    namespace: &str,
+    key: &[u8],
+    value: &[u8],
+) -> Result<()> {
+    mutate(store, &[namespace], |tx, state, catalog| {
+        if let Some(old) = read_record(tx, store, state, namespace, key, value.len())? {
+            ensure!(
+                old.value.as_slice() == value,
+                "installed immutable identity differs"
+            );
+            return Ok(());
+        }
+        write_domain(
+            tx,
+            store,
+            state,
+            catalog,
+            &[WriteOp::put(namespace, key, value)],
+        )
+    })
+}
+
 struct StageRecord {
     value: Zeroizing<Vec<u8>>,
     _memory: DiskMemoryLease,

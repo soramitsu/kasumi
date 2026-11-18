@@ -263,10 +263,11 @@ impl TenantStore {
     ) -> Result<VerifiedAuditSegment> {
         let _access = AccessGuard(self);
         self.check_access()?;
+        let reader = self.archive_read_provider()?;
         let verifier = HistoricalAuditVerifier::new(
             &self.tenant,
             source_purpose,
-            self.provider.as_ref(),
+            reader.as_ref(),
             &self.access,
         )?;
         let verified = dependency.verify(&verifier).await?;
@@ -290,10 +291,11 @@ impl TenantStore {
     ) -> Result<VerifiedAuditSegment> {
         let _access = AccessGuard(self);
         self.check_access()?;
+        let reader = self.archive_read_provider()?;
         AuditDecoder {
             tenant: &self.tenant,
             purpose: self.access.purpose(),
-            provider: self.provider.as_ref(),
+            provider: reader.as_ref(),
             clock: self.clock.as_ref(),
         }
         .decode(bytes, expected, || self.check_access())

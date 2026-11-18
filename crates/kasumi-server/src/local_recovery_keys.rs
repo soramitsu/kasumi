@@ -56,6 +56,10 @@ impl RecoveryKeys {
         Ok(Self { resolver, binding })
     }
 
+    pub(crate) fn into_resolver(self) -> Arc<HistoricalKeyResolver> {
+        self.resolver
+    }
+
     pub(crate) fn digest(&self) -> Result<String> {
         use sha2::{Digest, Sha256};
         let mut hash = Sha256::new();

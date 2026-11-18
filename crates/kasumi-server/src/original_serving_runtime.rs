@@ -1788,7 +1788,7 @@ impl Administration {
             // Replay requires the configured tenant audit placement, installed on
             // this fresh store exactly as at startup; none is selected by default.
             self.config
-                .install_tenant_audit_archive(stores.application(), None)
+                .install_tenant_archives_with(stores.application(), None, self.credential.clone())
                 .context(RecoverStage::StorageOpen)?;
             let _reservation = self
                 .admission

@@ -199,6 +199,8 @@ fn validate_installed_incarnation(incarnation: Option<&str>, fixture: bool) -> R
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct SecurityAuditConfig {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_keys: Vec<KeyProviderSettings>,
     pub keys: KeyProviderSettings,
     pub retention: kasumi_types::AuditRetentionBudget,
     #[serde(default)]
@@ -212,6 +214,17 @@ pub struct SecurityAuditConfig {
 impl SecurityAuditConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         self.retention.validate()?;
+        ensure!(
+            self.historical_keys.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+            "too many historical security audit keys"
+        );
+        let mut resources = BTreeSet::from([self.keys.validate()?]);
+        for key in &self.historical_keys {
+            ensure!(
+                resources.insert(key.validate()?),
+                "duplicate security audit wrapping resource"
+            );
+        }
         if let Some(archive) = &self.archive {
             archive.validate()?;
         }
@@ -237,6 +250,7 @@ impl SecurityAuditConfig {
         store: Arc<kasumi_store::TenantStore>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<SecurityAudit>> {
+        self.install_archive_keys(&store, Arc::new(file_secret))?;
         let archive = self.destination(&store)?;
         SecurityAudit::initialize_with_archive(store, self.retention.clone(), archive, admission)
     }
@@ -246,6 +260,36 @@ impl SecurityAuditConfig {
         store: Arc<kasumi_store::TenantStore>,
         admission: Arc<kasumi_engine::admission::NodeAdmission>,
     ) -> Result<Arc<SecurityAudit>> {
+        self.open_with(store, admission, Arc::new(file_secret))
+    }
+
+    fn install_archive_keys(
+        &self,
+        store: &kasumi_store::TenantStore,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<()> {
+        let resolver = if self.historical_keys.is_empty() {
+            None
+        } else {
+            Some(
+                crate::local_recovery::keys::RecoveryKeys::open_with(
+                    &self.keys,
+                    &self.historical_keys,
+                    credential,
+                )?
+                .into_resolver(),
+            )
+        };
+        store.install_archive_read_keys(resolver)
+    }
+
+    fn open_with(
+        &self,
+        store: Arc<kasumi_store::TenantStore>,
+        admission: Arc<kasumi_engine::admission::NodeAdmission>,
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<Arc<SecurityAudit>> {
+        self.install_archive_keys(&store, credential)?;
         let archive = self.destination(&store)?;
         SecurityAudit::open_with_archive(store, self.retention.clone(), archive, admission)
     }
@@ -273,6 +317,10 @@ pub struct ReplicationConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RuntimeConfig {
+    /// Additional read-only wrapping resources for retained tenant objects.
+    /// Every configured roster binds to its encrypted application store.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub tenant_historical_keys: BTreeMap<String, Vec<KeyProviderSettings>>,
     /// Required explicit placement for exactly Control and configured tenants.
     #[serde(deserialize_with = "crate::audit_destination::deserialize_tenant_audit_placements")]
     pub tenant_audit_placements:
@@ -392,6 +440,7 @@ impl RuntimeConfig {
         self.security_audit.validate()?;
         let mut key_refs = BTreeSet::new();
         for transit in std::iter::once(&self.security_audit.keys)
+            .chain(&self.security_audit.historical_keys)
             .chain([&self.control.keys, &self.control.custody_keys])
             .chain(self.signer_verifier.iter().map(|verifier| &verifier.keys))
             .chain(
@@ -404,6 +453,20 @@ impl RuntimeConfig {
                 key_refs.insert(transit.validate()?),
                 "application, custody, control, security, and signer trust domains require distinct wrapping keys"
             );
+        }
+        for (tenant, roster) in &self.tenant_historical_keys {
+            ensure!(
+                self.tenant_audit_placements.contains_key(tenant)
+                    && !roster.is_empty()
+                    && roster.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+                "historical read keys require a configured tenant and a bounded nonempty roster"
+            );
+            for key in roster {
+                ensure!(
+                    key_refs.insert(key.validate()?),
+                    "historical key duplicates a configured wrapping resource"
+                );
+            }
         }
         validate_initial_policy(&self.control.initial_policy)?;
         configured_control_context(&self.control)?;
@@ -549,6 +612,7 @@ impl RuntimeConfig {
     pub(crate) fn validate_selected_key_domains(&self, tenants: &[&TenantConfig]) -> Result<()> {
         let mut identities = BTreeSet::new();
         for settings in std::iter::once(&self.security_audit.keys)
+            .chain(&self.security_audit.historical_keys)
             .chain([&self.control.keys, &self.control.custody_keys])
             .chain(self.signer_verifier.iter().map(|verifier| &verifier.keys))
             .chain(
@@ -561,6 +625,18 @@ impl RuntimeConfig {
                 identities.insert(serde_json::to_string(&settings.identity_descriptor()?)?),
                 "installed key domains share a wrapping identity"
             );
+        }
+        for tenant in
+            std::iter::once(CONTROL_TENANT).chain(tenants.iter().map(|t| t.tenant.as_str()))
+        {
+            if let Some(history) = self.tenant_historical_keys.get(tenant) {
+                for key in history {
+                    ensure!(
+                        identities.insert(serde_json::to_string(&key.identity_descriptor()?)?),
+                        "installed historical key overlaps another wrapping resource"
+                    );
+                }
+            }
         }
         Ok(())
     }
@@ -1469,7 +1545,7 @@ impl NodeRuntime {
         config.validate_selected_key_domains(&selected_tenants)?;
         let audit = config
             .security_audit
-            .open(security_store, admission.clone())?;
+            .open_with(security_store, admission.clone(), credential.clone())?;
         pending.audits.push(audit.clone());
         auth.install_audit(audit.clone())?;
         mcp_auth.install_audit(audit.clone())?;
@@ -1526,6 +1602,7 @@ impl NodeRuntime {
             let mut constructor_seat = pending.original_recoveries.as_ref().expect("installed original inventory").claim(0).await;
             Self::open_database(
                 &config,
+                credential.clone(),
                 control_stores,
                 config.control.initial_policy.clone(),
                 config.control.initial_limits.clone(),
@@ -1701,6 +1778,7 @@ impl NodeRuntime {
                 let mut constructor_seat = runtime.original_recoveries.as_ref().expect("same installed original inventory").claim(tenant_index + 1).await;
                 let opened = Self::open_database(
                     &config,
+                    credential.clone(),
                     stores,
                     tenant.initial_policy.clone(),
                     tenant.initial_limits.clone(),
@@ -1880,6 +1958,7 @@ impl NodeRuntime {
     #[allow(clippy::too_many_arguments)]
     async fn open_database(
         config: &RuntimeConfig,
+        credential: crate::serving_runtime::CredentialSource,
         stores: Arc<TenantStorageSet>,
         policy: Policy,
         limits: Limits,
@@ -1902,7 +1981,7 @@ impl NodeRuntime {
                     };
                 }
                 let store = stores.application().clone();
-                config.install_tenant_audit_archive(&store, None)?;
+                config.install_tenant_archives_with(&store, None, credential)?;
                 #[cfg(test)]
                 lifecycle_tests::refuse_database_open_for_test(
                     config.database_id,
@@ -2842,6 +2921,7 @@ pub fn example_config(
     Ok(RuntimeConfig {
         persistent_disk,
         scratch_disk,
+        tenant_historical_keys: BTreeMap::new(),
         tenant_audit_placements: BTreeMap::from([
             (
                 CONTROL_TENANT.into(),
@@ -2940,6 +3020,7 @@ pub fn example_config(
             incarnation: Some(uuid::Uuid::from_u128(2).to_string()),
         },
         security_audit: SecurityAuditConfig {
+            historical_keys: Vec::new(),
             keys: transit("kasumi-node-security", "KASUMI_SECURITY_TRANSIT_TOKEN"),
             retention: kasumi_types::AuditRetentionBudget::default(),
             archive: None,

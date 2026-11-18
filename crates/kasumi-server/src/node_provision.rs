@@ -109,6 +109,7 @@ mod tests {
         let keys = directory.path().join("security.json");
         kasumi_store::FileKeyProvider::initialize(&keys, "security")?;
         let security = crate::runtime::SecurityAuditConfig {
+            historical_keys: Vec::new(),
             keys: crate::runtime::KeyProviderSettings::File { path: keys },
             retention: Default::default(),
             archive: None,

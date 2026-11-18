@@ -589,3 +589,9 @@ Control voter. Enrollment persists the shared routing catalog in Control genesis
 and creates only the local Control and service-security stores. It needs no
 tenant key providers. Data-only operation through a remote Control quorum still
 requires qualification before deployment.
+
+### Historical wrapping keys for retained objects
+
+The optional runtime field `tenant_historical_keys` maps a locally configured tenant or Control to its additional file or Transit key providers. The security audit uses its own `security_audit.historical_keys` list. Each list supplements that domain's installed primary. Historical providers need unwrap permission. New records and live catalogs continue to use the writable primary.
+
+Startup opens the providers and binds their identities and TLS trust to the encrypted store before replay. Preserve this roster across restarts. A moved file keyring with the same identity or refreshed Transit credential can reopen the same roster. Omitting an enrolled roster or changing its resource or CA causes startup to fail. Standalone operator backups include configured historical file keyrings. External providers require their own key backup. Key retirement still requires a complete dependency inventory.

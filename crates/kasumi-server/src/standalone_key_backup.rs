@@ -73,6 +73,23 @@ pub(crate) fn create(config: &RuntimeConfig, output: &Path) -> Result<()> {
             &tenant.custody_keys,
         ));
     }
+    for (index, provider) in config.security_audit.historical_keys.iter().enumerate() {
+        inputs.push((
+            format!("security-historical:{index}"),
+            format!("security-historical-{index}-keys.json"),
+            provider,
+        ));
+    }
+    for (tenant, history) in &config.tenant_historical_keys {
+        let id = hex::encode(Sha256::digest(tenant.as_bytes()));
+        for (index, provider) in history.iter().enumerate() {
+            inputs.push((
+                format!("historical:{tenant}:{index}"),
+                format!("historical-{id}-{index}-keys.json"),
+                provider,
+            ));
+        }
+    }
     ensure!(
         inputs
             .iter()

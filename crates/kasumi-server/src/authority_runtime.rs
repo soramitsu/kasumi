@@ -172,6 +172,12 @@ impl AuthorityRuntimeConfig {
                 == roots.len(),
             "authority/control/security/signer-trust wrapping roots must be independent"
         );
+        for key in &self.security_audit.historical_keys {
+            ensure!(
+                !roots.contains(&key.validate()?),
+                "historical audit wrapping resource overlaps an authority key"
+            );
+        }
         self.security_audit.validate()?;
         Ok(())
     }

@@ -12,6 +12,7 @@ pub use application_bootstrap::{
     APPLICATION_BOOTSTRAP_CHUNK_BYTES, APPLICATION_BOOTSTRAP_MANIFEST_BYTES,
     ApplicationBootstrapManifest,
 };
+mod archive_keys;
 mod archive_objects;
 mod audit_archive;
 pub use audit_archive::{
@@ -2103,6 +2104,7 @@ pub struct TenantStore {
     lease_failure: AtomicU8,
     background: AsyncMutex<BackgroundTasks>,
     audit_placement: Mutex<Option<Arc<TenantAuditPlacement>>>,
+    archive_keys: Mutex<Option<archive_keys::ArchiveKeys>>,
     live_trust: Mutex<
         BTreeMap<
             String,
@@ -2211,6 +2213,7 @@ impl TenantStore {
             lease_failure: AtomicU8::new(0),
             background: AsyncMutex::new(BackgroundTasks::default()),
             audit_placement: Mutex::new(None),
+            archive_keys: Mutex::new(None),
             live_trust: Mutex::new(BTreeMap::new()),
             cached_rows: Default::default(),
         })

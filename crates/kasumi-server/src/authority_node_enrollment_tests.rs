@@ -182,6 +182,7 @@ impl Fixture {
             keys: keys("application")?,
             custody_keys: keys("custody")?,
             security_audit: SecurityAuditConfig {
+                historical_keys: Vec::new(),
                 keys: keys("security")?,
                 retention: Default::default(),
                 archive: None,
