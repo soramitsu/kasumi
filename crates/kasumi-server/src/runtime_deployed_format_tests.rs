@@ -870,6 +870,10 @@ async fn remove_in_flight(database: &Database, manifest: &Value) -> Result<()> {
 }
 
 async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
+    // These historical stores retain the same installed node identity. Only one
+    // copy may own its serving registration in this test process at a time.
+    static DEPLOYED_NODE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _node = DEPLOYED_NODE.lock().await;
     let fixture = match &source {
         Source::Packed(_, fixture) => Some(*fixture),
         Source::Directory(_) => None,
