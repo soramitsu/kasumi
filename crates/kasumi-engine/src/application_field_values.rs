@@ -3,7 +3,7 @@
 //! the authenticated dictionary then stream only the matching document IDs.
 use super::KeyBuilder;
 use anyhow::{Context, Result, ensure};
-use kasumi_query::{FieldPostingRow, FieldValue, QueryIndexes};
+use kasumi_query::{FieldPostingRow, FieldPredicate, FieldValue, QueryIndexes};
 use kasumi_store::ordered_pages::{Direction, MAX_VALUE_BYTES, TreeReader};
 use std::{cmp::Ordering, ops::Bound};
 
@@ -44,25 +44,19 @@ pub(super) fn publish(
     })
 }
 
-pub(crate) fn visit_value_ids(
+/// Return the insertion rank and whether its value equals the target.
+fn lookup(
     reader: &TreeReader<'_>,
-    collection: &str,
-    field: usize,
-    target: &FieldValue<'_>,
+    field: &[u8],
+    count: u64,
+    target: FieldValue<'_>,
     mut check: impl FnMut() -> Result<()>,
-    mut visit: impl FnMut(&str) -> Result<bool>,
-) -> Result<()> {
-    let field = field_key(collection, field);
-    let mut end = reader.with_value(&field, 8, |value| {
-        Ok(u64::from_be_bytes(
-            value.context("missing field dictionary")?.try_into()?,
-        ))
-    })?;
-    let mut start = 0;
+) -> Result<(u64, bool)> {
+    let (mut start, mut end) = (0, count);
     while start < end {
         check()?;
         let mid = start + (end - start) / 2;
-        let tag = reader.with_value(&ranked(&field, mid, 0), 1, |value| {
+        let tag = reader.with_value(&ranked(field, mid, 0), 1, |value| {
             let Some(&[tag @ 0..=5]) = value else {
                 anyhow::bail!("invalid field dictionary tag")
             };
@@ -70,7 +64,7 @@ pub(crate) fn visit_value_ids(
         })?;
         let order = match tag.cmp(&target.tag) {
             Ordering::Equal if tag >= 4 => {
-                reader.with_value(&ranked(&field, mid, 1), MAX_VALUE_BYTES, |value| {
+                reader.with_value(&ranked(field, mid, 1), MAX_VALUE_BYTES, |value| {
                     Ok(value
                         .context("missing field dictionary payload")?
                         .cmp(target.bytes.as_ref()))
@@ -81,22 +75,84 @@ pub(crate) fn visit_value_ids(
         match order {
             Ordering::Less => start = mid + 1,
             Ordering::Greater => end = mid,
-            Ordering::Equal => {
-                let prefix = ranked(&field, mid, 2);
-                return reader.scan(
-                    Bound::Included(&prefix),
-                    Direction::Forward,
-                    &mut |key, value| {
-                        let Some(id) = key.strip_prefix(prefix.as_slice()) else {
-                            return Ok(false);
-                        };
-                        ensure!(value.is_empty(), "field posting carries a payload");
-                        let id = std::str::from_utf8(id)?;
-                        kasumi_types::validate_name(id)?;
-                        visit(id)
-                    },
-                );
-            }
+            Ordering::Equal => return Ok((mid, true)),
+        }
+    }
+    Ok((start, false))
+}
+
+pub(crate) fn visit_value_ids(
+    reader: &TreeReader<'_>,
+    collection: &str,
+    ordinal: usize,
+    predicate: FieldPredicate<'_>,
+    mut check: impl FnMut() -> Result<()>,
+    mut visit: impl FnMut(&str) -> Result<bool>,
+) -> Result<()> {
+    let field = field_key(collection, ordinal);
+    let count = reader.with_value(&field, 8, |value| {
+        Ok(u64::from_be_bytes(
+            value.context("missing field dictionary")?.try_into()?,
+        ))
+    })?;
+    let mut find = |value, kind| {
+        lookup(
+            reader,
+            &field,
+            count,
+            FieldValue::predicate(value, kind)?,
+            &mut check,
+        )
+    };
+    let (start, end) = match predicate {
+        FieldPredicate::Equals { value, kind } => {
+            let (at, found) = find(value, kind)?;
+            (at, at + u64::from(found))
+        }
+        FieldPredicate::Range { lower, upper, kind } => {
+            // Missing and null sort ahead of every comparable scalar.
+            let null = serde_json::Value::Null;
+            let (value, exclusive) = match lower {
+                Bound::Unbounded => (&null, true),
+                Bound::Included(value) => (value, false),
+                Bound::Excluded(value) => (value, true),
+            };
+            let (rank, found) = find(value, kind)?;
+            let start = rank + u64::from(exclusive && found);
+            let end = match upper {
+                Bound::Included(value) => {
+                    let (at, found) = find(value, kind)?;
+                    at + u64::from(found)
+                }
+                Bound::Excluded(value) => find(value, kind)?.0,
+                Bound::Unbounded => count,
+            };
+            (start, end)
+        }
+        FieldPredicate::Exists(_) => {
+            anyhow::bail!("presence requires the field presence directory")
+        }
+    };
+    for rank in start..end {
+        check()?;
+        let prefix = ranked(&field, rank, 2);
+        let mut keep_going = true;
+        reader.scan(
+            Bound::Included(&prefix),
+            Direction::Forward,
+            &mut |key, value| {
+                let Some(id) = key.strip_prefix(prefix.as_slice()) else {
+                    return Ok(false);
+                };
+                ensure!(value.is_empty(), "field posting carries a payload");
+                let id = std::str::from_utf8(id)?;
+                kasumi_types::validate_name(id)?;
+                keep_going = visit(id)?;
+                Ok(keep_going)
+            },
+        )?;
+        if !keep_going {
+            break;
         }
     }
     Ok(())

@@ -850,8 +850,14 @@ impl Structured {
                 value,
                 kind: index.kind,
             },
-            _ => return Ok(None),
+            Test::Range { lower, upper } => crate::FieldPredicate::Range {
+                lower: *lower,
+                upper: *upper,
+                kind: index.kind,
+            },
+            Test::In(_) => return Ok(None),
         };
+        let ordered_by_value = matches!(predicate, crate::FieldPredicate::Range { .. });
         let mut ids = IdSet::new();
         let available = source.visit_field_posting(field, predicate, cancellation, |id| {
             cancellation.check()?;
@@ -862,10 +868,15 @@ impl Structured {
                 2048,
                 crate::allocation::string_clone_bytes(id)?,
             )?)?;
-            if ids
-                .get_max()
-                .is_some_and(|previous: &String| previous.as_str() >= id)
-            {
+            // A range visits one ID-ordered posting per scalar value. A
+            // non-array field can contribute an ID to only one such posting.
+            let invalid_order = if ordered_by_value {
+                ids.contains(id)
+            } else {
+                ids.get_max()
+                    .is_some_and(|previous: &String| previous.as_str() >= id)
+            };
+            if invalid_order {
                 return Err(Error::new(
                     ErrorCode::Corruption,
                     "unordered field postings",

@@ -214,15 +214,15 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                             visit,
                         )?;
                     }
-                    kasumi_query::FieldPredicate::Equals { value, kind }
+                    kasumi_query::FieldPredicate::Equals { .. }
+                    | kasumi_query::FieldPredicate::Range { .. }
                         if layout >= kasumi_store::application_manifest::FIELD_VALUES_LAYOUT =>
                     {
-                        let target = kasumi_query::FieldValue::predicate(value, kind)?;
                         crate::application_records::visit_value_ids(
                             tree,
                             &self.collection,
                             field,
-                            &target,
+                            predicate,
                             || Ok(check()?),
                             visit,
                         )?;

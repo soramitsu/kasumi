@@ -3,13 +3,21 @@
 use crate::{QueryIndexes, Scalar};
 use kasumi_types::{Result, ScalarType};
 use serde_json::Value;
-use std::borrow::Cow;
+use std::{borrow::Cow, ops::Bound};
 
 /// A field index selected by the current query plan.
 #[derive(Clone, Copy)]
 pub enum FieldPredicate<'a> {
     Exists(bool),
-    Equals { value: &'a Value, kind: ScalarType },
+    Equals {
+        value: &'a Value,
+        kind: ScalarType,
+    },
+    Range {
+        lower: Bound<&'a Value>,
+        upper: Bound<&'a Value>,
+        kind: ScalarType,
+    },
 }
 
 /// Type tag and ordered payload in a selected field dictionary.

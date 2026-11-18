@@ -1469,8 +1469,15 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .await?;
     source_db
         .mutate(
-            context,
+            context.clone(),
             kasumi_types::MutationBatch::new().upsert("docs", "point", body.clone()),
+        )
+        .await?;
+    let second_body = serde_json::json!({"value": "zulu"});
+    source_db
+        .mutate(
+            context,
+            kasumi_types::MutationBatch::new().upsert("docs", "alpha", second_body.clone()),
         )
         .await?;
     let expected = source_db
@@ -1670,15 +1677,80 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     )
                     .map_err(crate::index_source::into_anyhow)?;
                 assert_eq!(ids, disk);
-                assert_eq!(
-                    ids,
-                    if expected == present {
-                        vec!["point"]
-                    } else {
-                        vec![]
-                    }
-                );
+                let mut expected_ids = Vec::new();
+                if !expected {
+                    expected_ids.push("alpha");
+                }
+                if expected == present {
+                    expected_ids.push("point");
+                }
+                assert_eq!(ids, expected_ids);
             }
+        }
+        // Value order is opposite to ID order across these two postings.
+        // Both the disk visitor and the caller-facing ID-ordered result matter.
+        use std::ops::Bound::{Excluded, Included, Unbounded};
+        let lo = serde_json::json!("persisted");
+        let hi = serde_json::json!("zulu");
+        let mut disk_ids = Vec::new();
+        assert!(
+            docs.visit_field_posting(
+                3,
+                kasumi_query::FieldPredicate::Range {
+                    lower: Included(&lo),
+                    upper: Included(&hi),
+                    kind: kasumi_types::ScalarType::String,
+                },
+                &cancellation,
+                |id| {
+                    disk_ids.push(id.to_owned());
+                    Ok(())
+                },
+            )
+            .map_err(crate::index_source::into_anyhow)?
+        );
+        assert_eq!(disk_ids, ["point", "alpha"]);
+        for (ordinal, path, lower, upper, expected_ids) in [
+            (
+                3,
+                "/value",
+                Included(&lo),
+                Included(&hi),
+                vec!["alpha", "point"],
+            ),
+            (3, "/value", Excluded(&lo), Unbounded, vec!["alpha"]),
+            (3, "/value", Unbounded, Excluded(&hi), vec!["point"]),
+            (3, "/value", Included(&lo), Excluded(&lo), vec![]),
+            (3, "/value", Included(&hi), Included(&lo), vec![]),
+            (2, "/nil", Unbounded, Included(&hi), vec![]),
+            (1, "/missing", Unbounded, Included(&hi), vec![]),
+        ] {
+            let mut filter = kasumi_types::Filter::new();
+            filter = match lower {
+                Included(value) => filter.gte(path, value.clone()),
+                Excluded(value) => filter.gt(path, value.clone()),
+                Unbounded => filter,
+            };
+            filter = match upper {
+                Included(value) => filter.lte(path, value.clone()),
+                Excluded(value) => filter.lt(path, value.clone()),
+                Unbounded => filter,
+            };
+            let mut query = kasumi_types::QueryRequest::new("docs");
+            query.filter = filter;
+            let mut memory =
+                kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
+            let (ids, _) = reopened
+                .indexes
+                .indexed_candidate_ids(
+                    &docs,
+                    &query,
+                    &reopened.state.limits,
+                    &cancellation,
+                    &mut memory,
+                )
+                .map_err(crate::index_source::into_anyhow)?;
+            assert_eq!(ids, expected_ids, "indexed range for field {ordinal}");
         }
         for (needle, expected) in [("persisted", 1), ("other", 0)] {
             let value = serde_json::json!(needle);
@@ -1722,14 +1794,18 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 reopened.state.revision,
                 |sequence, revision, ordinal, count, record| {
                     assert_eq!(record.collection, "docs");
-                    assert_eq!(record.id, "point");
+                    let expected = match record.id.as_str() {
+                        "point" => &body,
+                        "alpha" => &second_body,
+                        _ => panic!("unexpected change-feed identity"),
+                    };
                     let document = record
                         .document
                         .as_ref()
                         .unwrap()
                         .load_owned(reopened.document_resolver())
                         .map_err(crate::service::document_load_error)?;
-                    assert_eq!(document.as_ref().body, body);
+                    assert_eq!(&document.as_ref().body, expected);
                     visited.push((sequence, revision, ordinal, count));
                     Ok(true)
                 },
@@ -1737,8 +1813,9 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             Ok(())
         })?
         .expect("reopened change directory");
-    assert_eq!(visited.len(), 1);
+    assert_eq!(visited.len(), 2);
     assert_eq!((visited[0].0, visited[0].2, visited[0].3), (1, 0, 1));
+    assert_eq!((visited[1].0, visited[1].2, visited[1].3), (2, 0, 1));
     assert!(!CellRef::ptr_eq(&installed_cell, &reopened_cell));
     let reconstructed = reopening_bootstrap
         .application_selection
