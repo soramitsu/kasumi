@@ -450,7 +450,14 @@ def check_host(root, host, target, started, finished):
     uint(reservation["disk_bytes"], "reserved disk", 64 << 30)
 
 
-def check_processes(root, processes, elapsed, passed=True):
+def domain_expected_exits(kind):
+    if kind == "installed":
+        import run_installed
+        return run_installed.EXPECTED_REFUSALS
+    return {}
+
+
+def check_processes(root, processes, elapsed, passed=True, expected_exits=None):
     processes = unique(processes, "id", "owned processes")
     require(processes, "missing process custody")
     longest = 0
@@ -488,7 +495,8 @@ def check_processes(root, processes, elapsed, passed=True):
                     "timeout_seconds": record.get("timeout_seconds"), "timed_out": record.get("timed_out"),
                     "received_signals": record.get("received_signals"), "process_error": record.get("error")}
             number(record.get("timeout_seconds"), "original process deadline", 1)
-            package.verify_process_receipt(root, gate, record["timeout_seconds"])
+            package.verify_process_receipt(root, gate, record["timeout_seconds"],
+                                           (expected_exits or {}).get(process["id"], 0))
         duration = number(record.get("duration_seconds"), "process elapsed time")
         require(duration <= elapsed + 1, "process duration exceeds attempt wall time")
         longest = max(longest, duration)
@@ -859,12 +867,11 @@ def check_dependency_review_primary(root, domain, candidate):
             "dependency review consumed another primary functional receipt")
 
 
-def check_native_admin_readback(root, witness, processes, binaries, expected):
+def check_native_admin_readback(root, witness, processes, binaries, expected, original_root=None):
     """Check native policy/schema observations against independently pinned intent.
 
-    This is an unregistered semantic component. A future owned installed-domain
-    runner must prove dispatch order, input bytes at dispatch, endpoint custody,
-    and full process ownership before its adapter may use this check.
+    The caller binds dispatch order, endpoint custody and original process identity.
+    Transported receipts retain the producing host’s original argument paths.
     """
     exact(expected, {"admin_config_sha256", "tenant", "incarnation", "policy",
                      "limits", "collections"}, "pinned administrative intent")
@@ -952,8 +959,10 @@ def check_native_admin_readback(root, witness, processes, binaries, expected):
                 isinstance(executable["path"], str) and Path(executable["path"]).is_absolute()
                 and executable["sha256"] == binaries["kasumictl"],
                 "native admin process identity is malformed")
-        command = [executable["path"], "--config", str(config_path), operation,
-                   str(request_path)]
+        local_root = Path(root).resolve(strict=True)
+        original = Path(original_root) if original_root is not None else local_root
+        command = [executable["path"], "--config", str(original / config_path.relative_to(local_root)), operation,
+                   str(original / request_path.relative_to(local_root))]
         require(receipt.get("command") == command and receipt.get("status") == "passed"
                 and receipt.get("outputs_stable") is True and receipt.get("exit_code") == 0,
                 "native admin command or outcome differs from readback contract")
@@ -1124,6 +1133,11 @@ def systemd_smoke_adapter(root, domain, files, configs, artifacts, candidates):
     return run_systemd_smoke.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def installed_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_installed
+    return run_installed.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def package_smoke_adapter(root, domain, files, configs, artifacts, candidates):
     import run_package_smoke
 
@@ -1155,6 +1169,7 @@ DOMAIN_ADAPTERS = {
     "oci-smoke": oci_smoke_adapter,
     "package-smoke": package_smoke_adapter,
     "systemd-smoke": systemd_smoke_adapter,
+    "installed": installed_adapter,
 }
 
 
@@ -1184,7 +1199,7 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     elapsed = (finished - started).total_seconds()
     require(elapsed > 0, "domain gate elapsed time missing")
     check_host(root, record["host"], target, started, finished)
-    longest = check_processes(root, record["processes"], elapsed)
+    longest = check_processes(root, record["processes"], elapsed, expected_exits=domain_expected_exits(kind))
     check_topology(record["topology"], record["processes"], binaries[target],
                    "required" if kind in TOPOLOGY_REQUIRED else
                    "permitted" if kind in TOPOLOGY_PERMITTED else "forbidden")
@@ -1398,7 +1413,8 @@ def verify_attempts(root, attempts, selected):
         selected_paths.add(record["evidence"]["path"])
         elapsed = (timestamp(record["finished_at"]) - timestamp(record["started_at"])).total_seconds()
         if record["processes"]:
-            check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed")
+            check_processes(root, record["processes"], elapsed, passed=record["status"] == "passed",
+                            expected_exits=domain_expected_exits(admission["kind"]))
         else:
             check_pre_dispatch_failure(root, record, admission, outcome)
         if record["evidence"]["path"] in selected:

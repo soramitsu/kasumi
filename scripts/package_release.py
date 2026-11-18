@@ -231,7 +231,7 @@ def verify_evidence(directory):
     return record, production, hosts[0], binaries
 
 
-def verify_process_receipt(directory, gate, timeout):
+def verify_process_receipt(directory, gate, timeout, expected_exit=0):
     if not gate.get("process") or not gate.get("process_sha256"):
         raise ValueError("gate process evidence is missing; rerun frozen gates")
     path = verify_file(directory, gate["process"], gate["process_sha256"])
@@ -247,9 +247,9 @@ def verify_process_receipt(directory, gate, timeout):
         raise ValueError("gate executable identity is missing or differs from the command")
     cleanup = process.get("cleanup")
     group = process.get("process_group")
-    if (process.get("status") != "passed" or process.get("outputs_stable") is not True
+    if (process.get("status") != ("passed" if expected_exit == 0 else "failed") or process.get("outputs_stable") is not True
             or process.get("command") != gate["command"]
-            or process.get("exit_code") != 0 or process.get("process_exit_code") != 0
+            or process.get("exit_code") != expected_exit or process.get("process_exit_code") != expected_exit
             or process.get("timeout_seconds") != timeout or gate.get("timeout_seconds") != timeout
             or process.get("timed_out") is not False or gate.get("timed_out") is not False
             or process.get("received_signals") != [] or gate.get("received_signals") != []
@@ -259,7 +259,7 @@ def verify_process_receipt(directory, gate, timeout):
             or cleanup.get("group") != group or cleanup.get("drained") is not True
             or cleanup.get("before") != [] or cleanup.get("after") != []
             or cleanup.get("signals") != [] or cleanup.get("errors") != []
-            or cleanup.get("process_returncode") != 0 or gate.get("process_cleanup") != cleanup):
+            or cleanup.get("process_returncode") != expected_exit or gate.get("process_cleanup") != cleanup):
         raise ValueError("gate process did not finish with exact drained ownership")
     return process
 

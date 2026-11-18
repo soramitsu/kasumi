@@ -355,3 +355,21 @@ These are candidate artifacts. Complete cross-platform functional validation,
 external-service/recovery/capacity/retention/performance gates and the actual
 24-hour soak remain required before release publication. OCI assembly, full
 platform SBOMs and bit-identical compiler-build acceptance remain separate work.
+
+Run the installed lifecycle on each of the three native targets with the frozen
+functional interpreter. Allocate four consecutive free loopback ports and a
+new custody directory under the native attempt journal.
+
+```sh
+"$PYTHON" -I -B -S "$FUNCTIONAL/source/scripts/run_installed.py" \
+  --evidence "$FUNCTIONAL" --journal "$JOURNAL" --output "$INSTALLED_RUN" \
+  --attempt-id "$ATTEMPT_ID" --base-port "$PORT"
+```
+
+The runner creates a private standalone installation, exercises authenticated
+native and MCP operations, rotates credentials and keys, and reads the
+checkpoint after an exclusive offline restore. It verifies both local
+discovery suppression and the metadata returned for an explicitly configured
+loopback HTTPS issuer. Its journal retains the original outcomes of credential
+and exclusive-lock refusals. Preserve the entire custody directory with the
+functional evidence for that target.
