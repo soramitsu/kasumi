@@ -1075,6 +1075,12 @@ def ha_soak_adapter(root, domain, files, configs, artifacts, candidates):
     return run_ha_soak.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def package_smoke_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_package_smoke
+
+    return run_package_smoke.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
     import run_oci_smoke
 
@@ -1092,6 +1098,7 @@ DOMAIN_ADAPTERS = {
     "dependency-review": dependency_review_adapter,
     "ha-soak": ha_soak_adapter,
     "oci-smoke": oci_smoke_adapter,
+    "package-smoke": package_smoke_adapter,
 }
 
 
