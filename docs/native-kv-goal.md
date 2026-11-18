@@ -36,9 +36,11 @@ the current implementation.
 5. Qualify capacity, recovery, and performance against the release ledger. A
    passing unit suite alone does not close the production release goal.
 
-This is the first release, so backward compatibility is forbidden. The new
-format must identify itself distinctly and reject every older physical format;
-do not add a migration, fallback reader or dual-write path.
+The November deployed-format amendment requires read, write, snapshot,
+compaction and reopen on the installations from `12140939` and `cf9959f1`.
+Keep their root and envelope decoding and directory encodings at the storage
+boundary. New groups use LZ4. Other predecessor formats follow the original
+cutover contract. See the [first-release goals](first-release-goals.md).
 
 ## 2026-10-05 verification and remaining ownership work
 

@@ -12,8 +12,12 @@ implementation and qualification of the new goals remain open.
 
 ## Current verified status
 
-Updated 2026-10-05. **No source revision is release-qualified.** The table
-lists current `master` and every frozen attempt of the first-release cohort
+The [November 18 integration record](first-release-integration-20261118.md)
+tracks the native KV takeover, source identities, component runs, outstanding
+engineering and host requirements. **No source revision is release-qualified.**
+
+The following table records the October 5 assessment. The table
+lists October’s `master` and every frozen attempt of the first-release cohort
 chain, newest first. That chain is every attempt that has a
 `first-release-*-check-*` or `first-release-*-interrupted-*` evidence
 directory: fifteen attempts from 2026-09-09 to 2026-09-20. The
