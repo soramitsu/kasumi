@@ -3144,6 +3144,13 @@ impl AdminClientConfig {
         self.protected_http(reqwest::Method::GET, route).await
     }
 
+    /// Read the protected projection of one committed Control recovery.
+    pub async fn observe_recovery(&self, operation: uuid::Uuid) -> Result<(u16, String)> {
+        ensure!(!operation.is_nil(), "nil recovery operation");
+        self.protected_http(reqwest::Method::GET, &format!("/recovery/{operation}"))
+            .await
+    }
+
     /// Ask the node to start a storage compaction cycle on every database it
     /// owns at the next maintenance step (`POST /maintenance/compaction`).
     pub async fn request_compaction(&self) -> Result<(u16, String)> {
@@ -3172,7 +3179,7 @@ impl AdminClientConfig {
             .http2_prior_knowledge()
             .timeout(std::time::Duration::from_secs(30))
             .build()?;
-        let response = client
+        let mut response = client
             .request(
                 method,
                 format!("{}{route}", self.endpoint.trim_end_matches('/')),
@@ -3182,9 +3189,24 @@ impl AdminClientConfig {
             .await
             .with_context(|| format!("{route} request failed"))?;
         let status = response.status().as_u16();
-        let body = response.bytes().await?;
-        ensure!(body.len() <= 1 << 20, "observation response exceeds 1 MiB");
-        Ok((status, String::from_utf8_lossy(&body).into_owned()))
+        const LIMIT: usize = 1 << 20;
+        ensure!(
+            response.content_length().is_none_or(|n| n <= LIMIT as u64),
+            "observation response exceeds 1 MiB"
+        );
+        let mut body = Vec::new();
+        while let Some(chunk) = response.chunk().await? {
+            ensure!(
+                chunk.len() <= LIMIT - body.len(),
+                "observation response exceeds 1 MiB"
+            );
+            body.try_reserve_exact(chunk.len())?;
+            body.extend_from_slice(&chunk);
+        }
+        Ok((
+            status,
+            String::from_utf8(body).context("invalid UTF-8 in observation response")?,
+        ))
     }
 }
 

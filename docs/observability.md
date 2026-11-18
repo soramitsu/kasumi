@@ -68,6 +68,10 @@ phase at its reported revision and may be superseded by a later transition.
 The route does not reveal the recovery request, target placement, or dispatch
 inputs. The protected 1 MiB response limit and original release checks apply.
 
+An installed Control administrator can read the same response with
+`kasumictl --profile <control-profile> recovery-observation <operation-uuid>`.
+The command prints the protected response and exits successfully on HTTP 200.
+
 Control administrator authorization itself requires a current Control quorum
 barrier. If that cannot be established, all protected endpoints return 503
 (`control_quorum`); they do not release counters using an old policy. On HA
