@@ -1180,6 +1180,7 @@ pub struct Database {
     stores: Arc<TenantStorageSet>,
     store: Arc<TenantStore>,
     cursors: Mutex<HashMap<String, Cursor>>,
+    audit_cursor_key: std::sync::OnceLock<ring::hmac::Key>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
     archive_flights: history_export::ArchiveFlights,
@@ -1284,7 +1285,7 @@ impl std::ops::Deref for ResponseDatabase<'_> {
 fn release_action(kind: &str) -> Action {
     match kind {
         "receipt" | "mutation_capacity_admission" => Action::Write,
-        "tenant_audit_status" | "tenant_audit_capacity" => Action::Audit,
+        "tenant_audit_status" | "tenant_audit_capacity" | "tenant_audit_verify" => Action::Audit,
         "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
         _ => Action::Read,
     }
@@ -1552,6 +1553,7 @@ impl Database {
             stores,
             store,
             cursors: Mutex::new(HashMap::new()),
+            audit_cursor_key: Default::default(),
             archive_destinations: Mutex::new(BTreeMap::new()),
             archive_flights: Default::default(),
             query_slots: Arc::new(tokio::sync::Semaphore::new(4)),

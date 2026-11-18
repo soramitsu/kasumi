@@ -321,12 +321,13 @@ pub enum AuditObjectCheck {
     Unavailable,
 }
 
-/// Paged verification walks the same anchored archive chain as archive pages.
+/// Verification starts at the captured archive head and follows authenticated
+/// predecessor links. Each continuation belongs to the issuing database.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TenantAuditVerifyRequest {
     #[serde(deserialize_with = "crate::require_explicit_option")]
-    pub cursor: Option<TenantAuditArchiveCursor>,
+    pub cursor: Option<String>,
     pub limit: u16,
 }
 impl TenantAuditVerifyRequest {
@@ -336,8 +337,18 @@ impl TenantAuditVerifyRequest {
             MAX_TENANT_AUDIT_VERIFY_LIMIT,
             "tenant audit verification limit must be 1..8",
         )?;
-        if let Some(cursor) = &self.cursor {
-            cursor.validate()?;
+        if let Some(cursor) = &self.cursor
+            && (cursor.len() < 66
+                || cursor.len() > 8192
+                || !cursor.len().is_multiple_of(2)
+                || !cursor
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid tenant audit continuation",
+            ));
         }
         Ok(())
     }
@@ -347,10 +358,11 @@ impl TenantAuditVerifyRequest {
 #[serde(deny_unknown_fields)]
 pub struct TenantAuditObjectVerification {
     pub index: u64,
-    pub reference: AuditArchiveReference,
-    /// The replica's local cache copy.
+    pub object: AuditArchiveLink,
+    /// The full authenticated reference if at least one copy was verified.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub reference: Option<AuditArchiveReference>,
     pub cache: AuditObjectCheck,
-    /// The installed external or local-replica archive destination copy.
     pub destination: AuditObjectCheck,
 }
 
@@ -360,26 +372,85 @@ pub struct TenantAuditVerificationPage {
     pub tenant: String,
     pub incarnation: String,
     pub stream_id: Uuid,
-    pub next_index: u64,
     pub through_index: u64,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub snapshot_head: Option<AuditArchiveLink>,
     pub results: Vec<TenantAuditObjectVerification>,
+    /// If both copies were inaccessible, resume at the same unverified object.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub cursor: Option<String>,
 }
+
 impl TenantAuditVerificationPage {
-    pub fn cursor(&self) -> Option<TenantAuditArchiveCursor> {
-        (self.next_index < self.through_index).then(|| TenantAuditArchiveCursor {
-            tenant: self.tenant.clone(),
-            incarnation: self.incarnation.clone(),
-            stream_id: self.stream_id,
-            next_index: self.next_index,
-            through_index: self.through_index,
-            snapshot_head: self.snapshot_head.clone(),
-            previous: self
-                .results
-                .last()
-                .map(|result| result.reference.object.clone()),
-        })
+    pub fn validate(&self, request: &TenantAuditVerifyRequest) -> Result<()> {
+        request.validate()?;
+        let invalid = || {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid tenant audit verification page",
+            )
+        };
+        if !identity_valid(&self.tenant, &self.incarnation)
+            || self.stream_id.is_nil()
+            || self.results.len() > usize::from(request.limit)
+            || self
+                .snapshot_head
+                .as_ref()
+                .is_some_and(|link| link.validate().is_err())
+            || self.snapshot_head.is_none() != (self.through_index == 0)
+            || self.results.is_empty() != (self.through_index == 0)
+        {
+            return Err(invalid());
+        }
+        let mut expected = if request.cursor.is_none() {
+            self.snapshot_head.as_ref()
+        } else {
+            self.results.first().map(|row| &row.object)
+        };
+        let mut remaining = if request.cursor.is_none() {
+            self.through_index
+        } else {
+            self.results
+                .first()
+                .map_or(Some(0), |row| row.index.checked_add(1))
+                .ok_or_else(invalid)?
+        };
+        for (offset, row) in self.results.iter().enumerate() {
+            let verified = row.cache == AuditObjectCheck::Verified
+                || row.destination == AuditObjectCheck::Verified;
+            if row.object.validate().is_err()
+                || row.index >= self.through_index
+                || row.index.checked_add(1) != Some(remaining)
+                || Some(&row.object) != expected
+                || row.reference.is_some() != verified
+            {
+                return Err(invalid());
+            }
+            if let Some(reference) = &row.reference {
+                reference.validate()?;
+                if reference.stream_id != self.stream_id
+                    || reference.object != row.object
+                    || reference.previous.is_some() != (row.index > 0)
+                {
+                    return Err(invalid());
+                }
+                remaining = row.index;
+                expected = reference.previous.as_ref();
+            } else if offset + 1 != self.results.len() {
+                return Err(invalid());
+            }
+        }
+        if self.cursor.is_some() != (remaining > 0) {
+            return Err(invalid());
+        }
+        if self.cursor.is_some() {
+            TenantAuditVerifyRequest {
+                cursor: self.cursor.clone(),
+                limit: 1,
+            }
+            .validate()?;
+        }
+        Ok(())
     }
 }
 
@@ -628,7 +699,7 @@ mod tests {
         }
         for limit in 1..=MAX_TENANT_AUDIT_VERIFY_LIMIT {
             TenantAuditVerifyRequest {
-                cursor: Some(archive_cursor()),
+                cursor: Some("ab".repeat(64)),
                 limit,
             }
             .validate()
@@ -776,12 +847,13 @@ mod tests {
             tenant: "tenant-a".into(),
             incarnation: incarnation(),
             stream_id: Uuid::from_u128(3),
-            next_index: 1,
-            through_index: 2,
-            snapshot_head: Some(link(4, 10)),
+            cursor: None,
+            through_index: 1,
+            snapshot_head: Some(reference.object.clone()),
             results: vec![TenantAuditObjectVerification {
                 index: 0,
-                reference,
+                object: reference.object.clone(),
+                reference: Some(reference),
                 cache: AuditObjectCheck::Verified,
                 destination: AuditObjectCheck::Unavailable,
             }],
@@ -793,9 +865,12 @@ mod tests {
             decode_exact::<TenantAuditVerificationPage>(&bytes, 1 << 20, "verification").unwrap(),
             verification
         );
-        let cursor = verification.cursor().unwrap();
-        cursor.validate().unwrap();
-        assert_eq!(cursor.previous, Some(link(0, 4)));
+        verification
+            .validate(&TenantAuditVerifyRequest {
+                cursor: None,
+                limit: 1,
+            })
+            .unwrap();
         let mut unknown = encoded.clone();
         unknown["results"][0]["cache"] = json!("skipped");
         assert!(serde_json::from_value::<TenantAuditVerificationPage>(unknown).is_err());

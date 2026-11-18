@@ -204,6 +204,19 @@ impl KasumiAdminClient {
         Ok(result)
     }
 
+    pub async fn verify_tenant_audit(
+        &mut self,
+        bearer: &str,
+        request: &kasumi_types::TenantAuditVerifyRequest,
+    ) -> Result<kasumi_types::TenantAuditVerificationPage, ClientError> {
+        request.validate().map_err(invalid)?;
+        let input = tenant_request(bearer, request)?;
+        let page: kasumi_types::TenantAuditVerificationPage =
+            tenant_response(self.inner.verify_tenant_audit(input).await?.into_inner())?;
+        page.validate(request).map_err(invalid)?;
+        Ok(page)
+    }
+
     pub async fn security_audit_status(
         &mut self,
         bearer: &str,

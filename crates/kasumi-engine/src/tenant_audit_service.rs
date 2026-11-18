@@ -1,5 +1,7 @@
 //! Private observations of a tenant's retained audit stream at one quorum position.
 use super::*;
+#[path = "tenant_audit_verify.rs"]
+mod verification;
 
 impl Database {
     pub async fn tenant_audit_status(

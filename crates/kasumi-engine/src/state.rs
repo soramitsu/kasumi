@@ -22,7 +22,7 @@ pub(crate) use mutation_capacity::admit_mutation_capacity;
 #[path = "snapshot_api.rs"]
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
-mod snapshot_bundle;
+pub(crate) mod snapshot_bundle;
 #[path = "snapshot_encoding_failure.rs"]
 pub(crate) mod snapshot_encoding_failure;
 #[path = "snapshot_validation.rs"]
@@ -4097,7 +4097,9 @@ pub(crate) fn read_audit_action(event: &AuditEvent) -> Result<Action> {
             Ok(Action::Read)
         }
         "receipt" | "mutation_capacity_admission" => Ok(Action::Write),
-        "tenant_audit_status" | "tenant_audit_capacity" => Ok(Action::Audit),
+        "tenant_audit_status" | "tenant_audit_capacity" | "tenant_audit_verify" => {
+            Ok(Action::Audit)
+        }
         "schema_activation_status" | "schema_read" | "policy_limits_read" => Ok(Action::Admin),
         _ => Err(Error::new(
             ErrorCode::InvalidArgument,

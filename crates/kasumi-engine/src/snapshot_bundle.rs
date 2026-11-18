@@ -345,6 +345,15 @@ pub(crate) fn verify_dependency(
     link: &AuditArchiveLink,
 ) -> Result<AuditArchiveReference> {
     let inspected = InspectedAuditDependency::from_link(bytes, link)?;
+    verify_inspected_dependency(state, source, store, &inspected)
+}
+
+pub(crate) fn verify_inspected_dependency(
+    state: &TenantState,
+    source: &StoragePurpose,
+    store: &TenantStore,
+    inspected: &InspectedAuditDependency<'_>,
+) -> Result<AuditArchiveReference> {
     ensure!(
         inspected.source_tenant() == state.tenant
             && inspected.reference().stream_id == state.audit_retention.stream_id,
@@ -358,10 +367,10 @@ pub(crate) fn verify_dependency(
             inspected.source_purpose() == source,
             "Control audit source purpose differs"
         );
-        runtime.block_on(store.decrypt_audit_segment(bytes, inspected.reference()))?
+        runtime.block_on(inspected.verify_current(store))?
     } else {
         crate::authorize_audit_source(state, source, inspected.source_purpose())?;
-        runtime.block_on(store.verify_historical_audit(&inspected, inspected.source_purpose()))?
+        runtime.block_on(store.verify_historical_audit(inspected, inspected.source_purpose()))?
     };
     Ok(verified.reference().clone())
 }

@@ -186,6 +186,12 @@ impl<'a> InspectedAuditDependency<'a> {
     pub fn reference(&self) -> &AuditArchiveReference {
         &self.reference
     }
+    /// Verify this exact inspected object with the currently installed store.
+    pub async fn verify_current(&self, store: &TenantStore) -> Result<VerifiedAuditSegment> {
+        store
+            .decrypt_audit_segment(self.bytes, &self.reference)
+            .await
+    }
     pub async fn verify(
         &self,
         verifier: &HistoricalAuditVerifier<'_>,
@@ -547,6 +553,9 @@ impl TenantAuditPlacement {
     pub fn cache(&self) -> &Arc<FilesystemAuditArchive> {
         &self.cache
     }
+    pub async fn read_destination(&self, link: &AuditArchiveLink) -> Result<Vec<u8>> {
+        self.destination.read(link).await
+    }
     pub fn destination_identity(&self) -> String {
         self.destination.identity()
     }
@@ -807,16 +816,22 @@ fn read_object(
     durable: bool,
 ) -> Result<Vec<u8>> {
     let length = file.observed_len()?;
-    ensure!(
-        length <= MAX_AUDIT_SEGMENT_BYTES as u64,
-        "invalid audit archive object"
-    );
+    if length > MAX_AUDIT_SEGMENT_BYTES as u64 {
+        return Err(kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "invalid audit archive object",
+        )
+        .into());
+    }
     let mut bytes = vec![0; usize::try_from(length)?];
     file.read_exact_at(&mut bytes, 0)?;
-    ensure!(
-        hex::encode(Sha256::digest(&bytes)) == link.ciphertext_sha256,
-        "audit archive readback mismatch"
-    );
+    if hex::encode(Sha256::digest(&bytes)) != link.ciphertext_sha256 {
+        return Err(kasumi_types::Error::new(
+            kasumi_types::ErrorCode::Corruption,
+            "audit archive readback mismatch",
+        )
+        .into());
+    }
     if durable {
         file.sync_all_and_parent()?;
     }
@@ -924,11 +939,15 @@ impl AuditArchiveDestination for S3AuditArchive {
             .destination
             .get(link.object_id, MAX_AUDIT_SEGMENT_BYTES)
             .await?;
-        ensure!(
-            bytes.len() <= MAX_AUDIT_SEGMENT_BYTES
-                && hex::encode(Sha256::digest(&bytes)) == link.ciphertext_sha256,
-            "audit archive readback mismatch"
-        );
+        if bytes.len() > MAX_AUDIT_SEGMENT_BYTES
+            || hex::encode(Sha256::digest(&bytes)) != link.ciphertext_sha256
+        {
+            return Err(kasumi_types::Error::new(
+                kasumi_types::ErrorCode::Corruption,
+                "audit archive readback mismatch",
+            )
+            .into());
+        }
         Ok(bytes)
     }
 }

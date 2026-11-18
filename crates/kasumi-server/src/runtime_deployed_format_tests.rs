@@ -1012,6 +1012,19 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
             && capacity.stream_id == audit.position.stream_id
             && capacity.capacity.budget() == audit.budget
     );
+    let request = kasumi_types::TenantAuditVerifyRequest {
+        cursor: None,
+        limit: 1,
+    };
+    let verified = database
+        .verify_tenant_audit(&administrator(), request.clone())
+        .await?;
+    verified.validate(&request)?;
+    ensure!(
+        verified.stream_id == audit.position.stream_id
+            && verified.through_index == audit.position.archive_segments
+    );
+    drop(verified);
     drop((capacity, audit, generation));
     let mut reader = administrator();
     reader.scopes.remove(&Action::Audit);

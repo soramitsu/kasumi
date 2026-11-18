@@ -796,6 +796,7 @@ impl NativeAdmin {
         request: Request<TenantAuditJsonRequest>,
     ) -> Result<
         (
+            Q,
             RequestContext,
             Arc<kasumi_engine::Database>,
             kasumi_engine::ResponseFence<'static>,
@@ -803,14 +804,14 @@ impl NativeAdmin {
         Status,
     > {
         let context = verified(&self.auth, &request).await?;
-        let _: Q = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let input: Q = decode_json(&request.into_inner().request_json).map_err(status)?;
         let database = self.database(&context).await?;
         let fence = self
             .auth
             .audit_result(&context, database.admitted_response_fence(&context))
             .await
             .map_err(status)?;
-        Ok((context, database, fence))
+        Ok((input, context, database, fence))
     }
 
     async fn tenant_audit_reply<T: serde::Serialize + Send + Sync + 'static>(
@@ -945,7 +946,7 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         &self,
         request: Request<TenantAuditJsonRequest>,
     ) -> Result<Response<TenantAuditJsonResponse>, Status> {
-        let (context, database, fence) = self
+        let (_, context, database, fence) = self
             .tenant_audit_input::<kasumi_types::TenantAuditStatusRequest>(request)
             .await?;
         self.tenant_audit_reply(
@@ -960,12 +961,27 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         &self,
         request: Request<TenantAuditJsonRequest>,
     ) -> Result<Response<TenantAuditJsonResponse>, Status> {
-        let (context, database, fence) = self
+        let (_, context, database, fence) = self
             .tenant_audit_input::<kasumi_types::TenantAuditCapacityRequest>(request)
             .await?;
         self.tenant_audit_reply(
             &context,
             database.tenant_audit_capacity(&context).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn verify_tenant_audit(
+        &self,
+        request: Request<TenantAuditJsonRequest>,
+    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .tenant_audit_input::<kasumi_types::TenantAuditVerifyRequest>(request)
+            .await?;
+        self.tenant_audit_reply(
+            &context,
+            database.verify_tenant_audit(&context, input).await,
             fence,
         )
         .await

@@ -79,8 +79,30 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
             println!("{json}");
         }
+        [command, action, profile, input] if command == "tenant-audit" && action == "verify" => {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let expected = match profile.resource {
+                CredentialResource::Database { incarnation }
+                | CredentialResource::Control { incarnation } => incarnation,
+                _ => anyhow::bail!("tenant audit requires a database or Control credential"),
+            };
+            let request: TenantAuditVerifyRequest =
+                serde_json::from_slice(&private_files::read(Path::new(input), 32 << 10)?)?;
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let page = client
+                .verify_tenant_audit(&profile.bearer()?, &request)
+                .await?;
+            ensure!(
+                page.tenant == profile.tenant && page.incarnation == expected.to_string(),
+                "tenant audit verification belongs to a different tenant incarnation"
+            );
+            println!("{}", serde_json::to_string_pretty(&page)?);
+        }
         [command, ..] if command == "tenant-audit" => {
-            anyhow::bail!("usage: kasumid tenant-audit status|capacity PROFILE")
+            anyhow::bail!(
+                "usage: kasumid tenant-audit status|capacity PROFILE | tenant-audit verify PROFILE REQUEST_JSON"
+            )
         }
         [command, action, profile] if command == "audit" && action == "status" => {
             let profile = ClientProfile::load(Path::new(profile))?;
