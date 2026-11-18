@@ -255,6 +255,14 @@ kasumid recover-administrator /var/lib/kasumi/kasumi.json /var/lib/kasumi/recove
 
 Wrapping-key rotation retains previous generations and rewraps installed catalogs. Signer rotation retains previous verification keys. Certificate rotation retains the CA and replaces the listener and generated client keys and certificates as one generation. It first journals the rotation in encrypted security storage. It then writes every new key and certificate into `tls/generation-<id>` (listeners) and `profiles/generation-<id>` (client identities) and publishes each directory with one rename once it is complete and synced; files are never rewritten in place. It admits the new client certificates, switches `kasumi.json` to the new listener files in one atomic replacement, commits the new local Control certificate pin, and moves every profile inside the installation's `profiles` directory to the new pins and its new client identity, each in one atomic replacement. Only then does it retire the replaced client certificates, delete the replaced files it generated in `tls/` and `profiles/`, and clear the journal. Startup, a SIGHUP reload and clients therefore always read a complete certificate and key pair. If the command is interrupted, `kasumid` refuses to start, and administrator and credential recovery, wrapping-key rotation, the audit cache move and local recovery refuse to run, until `maintenance rotate-certificates` is rerun; the rerun resumes the same generation and never replaces one it already published. The command prints the new pins and client identity files: update copied or external profiles, and anything else that names the old files, before reconnecting. Listener files the configuration named outside `tls/` are left in place.
 
+For a generated native profile, certificate rotation also moves the enrolled
+family binding and its current signed bearer to the new certificate. The bearer
+keeps its original issuance ID, expiry, signing generation, principal, scopes
+and database incarnation. Expired credentials still need their usual renewal
+or recovery, and revoked families stay revoked. The command takes each
+affected profile's watcher lock. Stop any active credential watcher before
+rotation and restart it after the new generation is published.
+
 The tenant audit cache move copies the installed cache to the configured
 `tenant_audit_cache`, verifies every local archive chain in the copy, switches
 the stored placements and only then removes the old directory. Its procedure,

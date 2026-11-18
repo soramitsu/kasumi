@@ -209,6 +209,30 @@ fn record(store: &TenantStore, operation: Uuid) -> Result<Journal> {
     );
     Ok(journal)
 }
+/// A published recovery profile retains its original token filename through
+/// subsequent renewals. Resolve that exception from the recovery transaction.
+pub(crate) fn check_rotation_profile(
+    store: &TenantStore,
+    path: &Path,
+    profile: &kasumi_client::ClientProfile,
+) -> Result<()> {
+    let operation = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .and_then(|s| s.strip_prefix("recovery-"))
+        .and_then(|s| Uuid::parse_str(s).ok())
+        .context("substituted installed bearer path")?;
+    let journal = record(store, operation)?;
+    let issuance = journal.profile_renewal.unwrap_or(journal.target_family);
+    ensure!(
+        journal.status.client_profile.as_deref() == Some(path)
+            && journal.target_family == profile.family_id
+            && profile.bearer_file == path.with_file_name(format!("recovery-{issuance}.token")),
+        "installed bearer path differs from its recovery transaction"
+    );
+    Ok(())
+}
+
 fn persist(store: &TenantStore, journal: &Journal) -> Result<()> {
     store.write_batch(&[WriteOp::put(
         OPERATIONS,

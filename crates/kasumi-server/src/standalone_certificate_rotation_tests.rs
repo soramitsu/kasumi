@@ -209,6 +209,8 @@ fn an_interrupted_rotation_resumes_from_every_boundary_and_never_names_a_mixed_p
             "admitted",
             "configuration",
             "topology",
+            "credential-ledger",
+            "credential",
             "profile",
             "retired-pin",
             "retired-file",
@@ -302,5 +304,117 @@ fn a_damaged_published_generation_stops_the_rerun() -> Result<()> {
         assert_eq!(after.admin.tls, before.admin.tls);
         assert!(rotation_fenced(&configuration, &storage).await?);
         Ok(())
+    })
+}
+
+#[test]
+fn rotation_rebinds_the_exact_original_issuance_and_leaves_revoked_families_revoked() -> Result<()>
+{
+    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+    fn claims(profile: &ClientProfile) -> Result<serde_json::Value> {
+        let token = profile.bearer()?;
+        let payload = token.split('.').nth(1).context("missing test JWT")?;
+        Ok(serde_json::from_slice(&URL_SAFE_NO_PAD.decode(payload)?)?)
+    }
+    super::super::ownership_tests::run_large_fixture("certificate-bound families", || async {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+            &directory.path().join("kasumi"),
+            "tenant",
+        )
+        .await?;
+        let configuration = installation.configuration;
+        let config = RuntimeConfig::load(&configuration)?;
+        let profiles = installation_root(&config)?.join("profiles");
+        let operator = ClientProfile::load(&profiles.join("operator.json"))?;
+        let revoked = operator.bearer()?;
+        let mut owner = OperatorState::open(&config, storage.clone()).await?;
+        owner.credentials.revoke(operator.family_id, "test")?;
+        owner.finish(Ok(())).await?;
+        let original = ClientProfile::load(&profiles.join("control.json"))?;
+        let old_claims = claims(&original)?;
+        let mcp = ClientProfile::load(&profiles.join("mcp.json"))?.bearer()?;
+        rotate_certificates_with_storage(&configuration, storage.clone()).await?;
+        let control = ClientProfile::load(&profiles.join("control.json"))?;
+        let mut expected = old_claims.clone();
+        let pin = TlsFiles::from(control.identity.clone())
+            .load()?
+            .certificate_pin();
+        expected["cnf"] = serde_json::json!({"x5t#S256":URL_SAFE_NO_PAD.encode(pin)});
+        assert_ne!(old_claims["cnf"], expected["cnf"]);
+        assert_eq!(claims(&control)?, expected);
+        let config = RuntimeConfig::load(&configuration)?;
+        let mut owner = OperatorState::open(&config, storage).await?;
+        assert_eq!(
+            owner
+                .credentials
+                .status(control.family_id)?
+                .specification
+                .certificate_binding(),
+            Some(pin)
+        );
+        assert!(
+            owner
+                .credentials
+                .status(operator.family_id)?
+                .revoked_at_ms
+                .is_some()
+        );
+        assert!(*operator.bearer()? == *revoked);
+        assert_eq!(
+            *ClientProfile::load(&profiles.join("mcp.json"))?.bearer()?,
+            *mcp
+        );
+        owner.finish(Ok(())).await
+    })
+}
+
+#[test]
+fn substituted_bearer_path_and_family_cannot_receive_rotated_credentials() -> Result<()> {
+    super::super::ownership_tests::run_large_fixture("substituted certificate profile", || async {
+        let directory = kasumi_store::test_utils::private_tempdir()?;
+        let (installation, storage) = crate::runtime_storage_fixtures::initialize_standalone(
+            &directory.path().join("kasumi"),
+            "tenant",
+        )
+        .await?;
+        let config = RuntimeConfig::load(&installation.configuration)?;
+        let profiles = installation_root(&config)?.join("profiles");
+        let path = profiles.join("control.json");
+        let control = ClientProfile::load(&path)?;
+        let original = control.bearer()?;
+        let other = ClientProfile::load(&profiles.join("operator.json"))?;
+        let copied = profiles.join("copied.token");
+        private_files::create(&copied, original.as_bytes())?;
+        let mut owner = OperatorState::open(&config, storage).await?;
+        for substitute in [
+            ClientProfile {
+                bearer_file: copied.clone(),
+                ..control.clone()
+            },
+            ClientProfile {
+                family_id: other.family_id,
+                ..control.clone()
+            },
+        ] {
+            let changed = owner.credentials.rotate_installed_certificate(
+                &path,
+                &substitute,
+                || {
+                    Ok(TlsFiles::from(control.identity.clone())
+                        .load()?
+                        .certificate_pin())
+                },
+                [99; 32],
+                || Ok(()),
+            );
+            assert!(changed.is_err());
+        }
+        assert!(*control.bearer()? == *original);
+        assert_eq!(
+            private_files::read(&copied, 32 << 10)?.as_slice(),
+            original.as_bytes()
+        );
+        owner.finish(Ok(())).await
     })
 }

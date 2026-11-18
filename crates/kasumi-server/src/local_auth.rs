@@ -17,6 +17,9 @@ use std::{
 use uuid::Uuid;
 use zeroize::{Zeroize, Zeroizing};
 
+#[path = "local_auth_certificate_rotation.rs"]
+mod certificate_rotation;
+
 const FAMILIES: &str = "local-credential-families";
 const ISSUANCES: &str = "local-credential-issuances";
 const EVENTS: &str = "local-credential-events";

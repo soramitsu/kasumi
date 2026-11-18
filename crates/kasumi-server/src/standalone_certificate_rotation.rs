@@ -118,7 +118,14 @@ pub(super) async fn rotate(
     let mcp_pin = hex::encode(config.mcp.tls.load()?.certificate_pin());
     commit_topology(owner, &mcp_pin, attempt).await?;
     boundary(&root, "topology")?;
-    publish_profiles(&root, &journal, &generation, &native_pin, &admin_pin)?;
+    publish_profiles(
+        &root,
+        &journal,
+        &generation,
+        &native_pin,
+        &admin_pin,
+        &owner.credentials,
+    )?;
     for (name, pin) in &client_pins {
         crate::client_pins::retire_configured(&config, name, *pin)?;
         boundary(&root, "retired-pin")?;
@@ -356,6 +363,7 @@ fn publish_profiles(
     generation: &Generation,
     native_pin: &str,
     admin_pin: &str,
+    credentials: &LocalCredentials,
 ) -> Result<()> {
     for (path, mut profile) in installed_profiles(&root.join("profiles"))? {
         let before = serde_json::to_vec_pretty(&profile)?;
@@ -365,12 +373,19 @@ fn publish_profiles(
             member.certificate_pins = BTreeSet::from([admin_pin.to_owned()]);
         }
         let identity = TlsFiles::from(profile.identity.clone());
-        if let Some(name) = journal
-            .clients
-            .iter()
-            .find_map(|(name, replaced)| (*replaced == identity).then_some(name))
-        {
-            profile.identity = generation.clients[name].clone().into();
+        if let Some(name) = journal.clients.iter().find_map(|(name, replaced)| {
+            (*replaced == identity || generation.clients[name] == identity).then_some(name)
+        }) {
+            let next = &generation.clients[name];
+            credentials.rotate_installed_certificate(
+                &path,
+                &profile,
+                || Ok(journal.clients[name].load()?.certificate_pin()),
+                next.load()?.certificate_pin(),
+                || boundary(root, "credential-ledger"),
+            )?;
+            boundary(root, "credential")?;
+            profile.identity = next.clone().into();
         }
         let after = serde_json::to_vec_pretty(&profile)?;
         if after == before {
