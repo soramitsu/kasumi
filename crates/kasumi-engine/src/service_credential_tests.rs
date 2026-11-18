@@ -571,7 +571,9 @@ impl BackupDestination for CredentialPausedDestination {
     fn namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
         kasumi_store::BackupDestination::namespace_binding(self.inner.as_ref())
     }
-    async fn verified_namespace_binding(&self) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
+    async fn verified_namespace_binding(
+        &self,
+    ) -> anyhow::Result<kasumi_types::BackupNamespaceBinding> {
         self.inner.verified_namespace_binding().await
     }
     async fn session_put(
@@ -867,5 +869,82 @@ async fn oversized_request_ids_are_refused_before_any_proposal() {
         ("mutation", bounded.request_id.as_str())
     );
     drop(generation);
+    fixture.close().await;
+}
+
+#[tokio::test]
+async fn tenant_audit_export_keeps_its_end_across_new_events_and_rejects_changed_cursors() {
+    let fixture = CredentialFixture::new().await;
+    let db = &fixture.db;
+    let mut auditor = fixture.context.clone();
+    auditor.scopes.insert(Action::Audit);
+    let policy = Policy {
+        grants: vec![Grant {
+            principal: auditor.principal.clone(),
+            collection: None,
+            actions: auditor.scopes.clone(),
+        }],
+        strict_read_audit: false,
+    };
+    db.administer(
+        fixture.context.clone(),
+        Operation::SetPolicy(policy.clone()),
+    )
+    .await
+    .unwrap();
+    let request = TenantAuditExportRequest {
+        cursor: None,
+        limit: 1,
+    };
+    let page = db
+        .export_tenant_audit(&auditor, request.clone())
+        .await
+        .unwrap();
+    page.validate(&request).unwrap();
+    assert_eq!(page.records[0].sequence, 0);
+    let cursor = page.cursor().unwrap();
+    db.mutate(auditor.clone(), credential_batch("after-capture"))
+        .await
+        .unwrap();
+    let request = TenantAuditExportRequest {
+        cursor: Some(cursor.clone()),
+        limit: 10,
+    };
+    let later = db
+        .export_tenant_audit(&auditor, request.clone())
+        .await
+        .unwrap();
+    later.validate(&request).unwrap();
+    assert_eq!(later.records[0].sequence, 1);
+    assert_eq!(later.through_sequence, page.through_sequence);
+    let mut forged = cursor.clone();
+    let tag = forged.ticket.as_mut().unwrap();
+    let replacement = if tag.ends_with('a') { "b" } else { "a" };
+    tag.replace_range(tag.len() - 1.., replacement);
+    assert_eq!(
+        db.export_tenant_audit(
+            &auditor,
+            TenantAuditExportRequest {
+                cursor: Some(forged),
+                limit: 1
+            }
+        )
+        .await
+        .unwrap_err()
+        .code,
+        ErrorCode::CursorExpired
+    );
+    let mut changed = policy;
+    changed.strict_read_audit = true;
+    db.administer(auditor.clone(), Operation::SetPolicy(changed))
+        .await
+        .unwrap();
+    assert_eq!(
+        db.export_tenant_audit(&auditor, request)
+            .await
+            .unwrap_err()
+            .code,
+        ErrorCode::CursorExpired
+    );
     fixture.close().await;
 }

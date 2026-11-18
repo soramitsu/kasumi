@@ -987,6 +987,21 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         .await
     }
 
+    async fn export_tenant_audit(
+        &self,
+        request: Request<TenantAuditJsonRequest>,
+    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .tenant_audit_input::<kasumi_types::TenantAuditExportRequest>(request)
+            .await?;
+        self.tenant_audit_reply(
+            &context,
+            database.export_tenant_audit(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
     async fn control_signer_maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,

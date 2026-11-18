@@ -1,5 +1,7 @@
 //! Private observations of a tenant's retained audit stream at one quorum position.
 use super::*;
+#[path = "tenant_audit_export.rs"]
+mod export;
 #[path = "tenant_audit_verify.rs"]
 mod verification;
 

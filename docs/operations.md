@@ -434,6 +434,23 @@ the tenant and incarnation, revision, retention budget, archive head, hot tail
 and stream position. The existing `kasumid audit status <control-profile>`
 reports the node's service-security audit stream.
 
+Use `kasumid tenant-audit capacity PROFILE` to inspect hot and archive budgets
+and a pending publication. For a chronological export, make an owner-only
+request file with `{"cursor":null,"limit":64}` and run
+`kasumid tenant-audit export PROFILE REQUEST_JSON`. Each response fixes the
+exclusive end and numbers every event. To continue while `next_sequence`
+is below `through_sequence`, supply the page fields except `records` as
+`cursor` and keep the original ticket. The Rust client exposes this as
+`page.cursor()`. Preserve completed pages before advancing.
+
+For archive verification, run `kasumid tenant-audit verify PROFILE REQUEST_JSON`
+with `{"cursor":null,"limit":4}`. Read each cache and destination result.
+Pages follow the immutable predecessor chain from its captured head. Send
+the returned cursor string in the next request. When neither copy verifies,
+the continuation retries that object. A page can verify up to eight objects.
+Both operations recheck the audit grant before releasing data. A changed
+policy, expired cursor or restarted issuing database requires a fresh capture.
+
 ## Recovery procedures
 
 Before reopening an offline volume, compare its incarnation and recovery point

@@ -299,6 +299,16 @@ pub(super) fn verify_chain_in(
     cache: &kasumi_store::FilesystemAuditArchive,
     check: impl Fn() -> Result<()>,
 ) -> Result<()> {
+    visit_chain(generation, store, cache, check, |_| Ok(()))
+}
+
+fn visit_chain(
+    generation: &Generation,
+    store: &TenantStore,
+    cache: &kasumi_store::FilesystemAuditArchive,
+    check: impl Fn() -> Result<()>,
+    mut visit: impl FnMut(&AuditArchiveReference) -> Result<()>,
+) -> Result<()> {
     check()?;
     store.check_access()?;
     let source = store.storage_access().purpose();
@@ -325,6 +335,7 @@ pub(super) fn verify_chain_in(
                 && counts.archive_records <= retention.archive_segments,
             "local audit archive budget exceeded"
         );
+        visit(&reference)?;
         expected = reference.previous;
     }
     ensure!(
@@ -345,7 +356,11 @@ pub(crate) fn verify_dependency(
     link: &AuditArchiveLink,
 ) -> Result<AuditArchiveReference> {
     let inspected = InspectedAuditDependency::from_link(bytes, link)?;
-    verify_inspected_dependency(state, source, store, &inspected)
+    Ok(
+        verify_inspected_dependency(state, source, store, &inspected)?
+            .reference()
+            .clone(),
+    )
 }
 
 pub(crate) fn verify_inspected_dependency(
@@ -353,7 +368,7 @@ pub(crate) fn verify_inspected_dependency(
     source: &StoragePurpose,
     store: &TenantStore,
     inspected: &InspectedAuditDependency<'_>,
-) -> Result<AuditArchiveReference> {
+) -> Result<kasumi_store::VerifiedAuditSegment> {
     ensure!(
         inspected.source_tenant() == state.tenant
             && inspected.reference().stream_id == state.audit_retention.stream_id,
@@ -372,7 +387,7 @@ pub(crate) fn verify_inspected_dependency(
         crate::authorize_audit_source(state, source, inspected.source_purpose())?;
         runtime.block_on(store.verify_historical_audit(inspected, inspected.source_purpose()))?
     };
-    Ok(verified.reference().clone())
+    Ok(verified)
 }
 
 struct Decoder<'a> {
@@ -619,7 +634,17 @@ fn read_inner(
         let retention = &generation.state.audit_retention;
         if form == ArchiveForm::LocalReference {
             // Nothing is copied: the exact chain must already be in this cache.
-            verify_local_chain(&generation, store)?;
+            if retention.archive_segments == 0 {
+                verify_local_chain(&generation, store)?;
+            } else {
+                let placement = store.tenant_audit_archive()?;
+                let mut directory =
+                    crate::tenant_audit_directory::Rebuild::new(store, retention.archive_segments)?;
+                visit_chain(&generation, store, placement.cache(), check, |reference| {
+                    directory.visit(reference)
+                })?;
+                directory.finish()?;
+            }
             ensure!(
                 decoder.tag()? == END,
                 "a local snapshot carries no archive record"
@@ -635,7 +660,10 @@ fn read_inner(
             .map(|head| head.object.clone());
         if expected.is_some() {
             let placement = store.tenant_audit_archive()?;
+            let mut directory =
+                crate::tenant_audit_directory::Rebuild::new(store, retention.archive_segments)?;
             while let Some(link) = expected {
+                check()?;
                 ensure!(
                     decoder.tag()? == ARCHIVE,
                     "snapshot archive dependency missing"
@@ -651,6 +679,7 @@ fn read_inner(
                         "snapshot archive head differs"
                     );
                 }
+                directory.visit(&reference)?;
                 expected = reference.previous.clone();
                 decoder.counts.record(true, length)?;
                 ensure!(
@@ -664,6 +693,7 @@ fn read_inner(
                     .cache()
                     .publish_blocking(&store.copy_audit_segment(reference, &ciphertext)?)?;
             }
+            directory.finish()?;
         }
         ensure!(
             decoder.counts.archive_bytes == retention.archive_bytes
@@ -1052,6 +1082,22 @@ mod tests {
                     .read_blocking(&reference.object)
                     .unwrap()
             );
+        }
+        let head = references.last().unwrap();
+        for reference in &references {
+            for sequence in reference.object.first_sequence..reference.object.next_sequence {
+                assert_eq!(
+                    &crate::tenant_audit_directory::containing(
+                        &target_store,
+                        head,
+                        references.len() as u64,
+                        sequence,
+                        || Ok(())
+                    )
+                    .unwrap(),
+                    reference
+                );
+            }
         }
         source_store.shutdown().await.unwrap();
         // The replacement is independently sufficient to create and reinstall

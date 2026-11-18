@@ -103,6 +103,7 @@ impl TenantAuditStatus {
             snapshot_segments: self.position.archive_segments,
             snapshot_tail_sha256: self.hot_tail_sha256.clone(),
             previous_record_sha256: None,
+            ticket: None,
         }
     }
 }
@@ -127,11 +128,20 @@ pub struct TenantAuditCursor {
     /// preceding page. Binds the continuation to that prefix.
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub previous_record_sha256: Option<String>,
+    /// Expiry and authentication tag issued with this continuation.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub ticket: Option<String>,
 }
 impl TenantAuditCursor {
     pub fn validate(&self) -> Result<()> {
         if !identity_valid(&self.tenant, &self.incarnation)
             || self.stream_id.is_nil()
+            || self.ticket.as_ref().is_some_and(|tag| {
+                tag.len() != 80
+                    || !tag
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            })
             || self.next_sequence > self.through_sequence
             || !record_anchors_valid(
                 self.next_sequence,
@@ -206,9 +216,61 @@ pub struct TenantAuditPage {
     /// the request cursor's anchor when the page returned no record.
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub previous_record_sha256: Option<String>,
+    /// Expiry and authentication tag issued with this continuation.
+    #[serde(deserialize_with = "crate::require_explicit_option")]
+    pub ticket: Option<String>,
     pub records: Vec<TenantAuditRecord>,
 }
 impl TenantAuditPage {
+    pub fn validate(&self, request: &TenantAuditExportRequest) -> Result<()> {
+        request.validate()?;
+        let invalid = || {
+            Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid tenant audit export page",
+            )
+        };
+        let end = self.resumed();
+        end.validate()?;
+        let start = request
+            .cursor
+            .as_ref()
+            .map_or(0, |cursor| cursor.next_sequence);
+        if self.records.len() > usize::from(request.limit)
+            || start.checked_add(self.records.len() as u64) != Some(self.next_sequence)
+            || self.records.is_empty() && self.next_sequence < self.through_sequence
+            || self.ticket.is_some() != (self.next_sequence < self.through_sequence)
+        {
+            return Err(invalid());
+        }
+        if let Some(original) = &request.cursor
+            && (original.tenant != self.tenant
+                || original.incarnation != self.incarnation
+                || original.stream_id != self.stream_id
+                || original.through_sequence != self.through_sequence
+                || original.snapshot_head != self.snapshot_head
+                || original.snapshot_segments != self.snapshot_segments
+                || original.snapshot_tail_sha256 != self.snapshot_tail_sha256)
+        {
+            return Err(invalid());
+        }
+        for (index, record) in self.records.iter().enumerate() {
+            if start.checked_add(index as u64) != Some(record.sequence) {
+                return Err(invalid());
+            }
+        }
+        let previous = match self.records.last() {
+            Some(record) => Some(record.event_sha256()?),
+            None => request
+                .cursor
+                .as_ref()
+                .and_then(|cursor| cursor.previous_record_sha256.clone()),
+        };
+        if self.previous_record_sha256 != previous {
+            return Err(invalid());
+        }
+        Ok(())
+    }
     /// This page's own anchors as a continuation, even when it is complete.
     pub fn resumed(&self) -> TenantAuditCursor {
         TenantAuditCursor {
@@ -221,6 +283,7 @@ impl TenantAuditPage {
             snapshot_segments: self.snapshot_segments,
             snapshot_tail_sha256: self.snapshot_tail_sha256.clone(),
             previous_record_sha256: self.previous_record_sha256.clone(),
+            ticket: self.ticket.clone(),
         }
     }
     pub fn cursor(&self) -> Option<TenantAuditCursor> {
@@ -480,6 +543,7 @@ mod tests {
             snapshot_segments: 2,
             snapshot_tail_sha256: Some("e".repeat(64)),
             previous_record_sha256: Some("d".repeat(64)),
+            ticket: None,
         }
     }
 
@@ -769,6 +833,7 @@ mod tests {
             snapshot_segments: 2,
             snapshot_tail_sha256: Some("e".repeat(64)),
             previous_record_sha256: Some(record.event_sha256().unwrap()),
+            ticket: None,
             records: vec![record],
         };
         let bytes = serde_json::to_vec(&page).unwrap();

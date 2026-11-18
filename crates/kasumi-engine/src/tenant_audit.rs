@@ -587,6 +587,7 @@ impl TenantEngine {
             // copy, so a transient destination outage cannot poison Raft replay.
             let segment = store.copy_audit_segment(reference.clone(), ciphertext)?;
             placement.cache().publish_blocking(&segment)?;
+            crate::tenant_audit_directory::append(store, retention.archive_segments, &reference)?;
             store.check_access()?;
             for _ in 0..reference.record_count {
                 next.audits

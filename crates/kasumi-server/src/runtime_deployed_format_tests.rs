@@ -1024,6 +1024,46 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         verified.stream_id == audit.position.stream_id
             && verified.through_index == audit.position.archive_segments
     );
+    let request = kasumi_types::TenantAuditExportRequest {
+        cursor: None,
+        limit: 1,
+    };
+    let page = database
+        .export_tenant_audit(&administrator(), request.clone())
+        .await?;
+    page.validate(&request)?;
+    ensure!(
+        page.stream_id == audit.position.stream_id
+            && page.through_sequence == audit.position.next_sequence
+    );
+    if let Some(cursor) = page.cursor() {
+        let next = kasumi_types::TenantAuditExportRequest {
+            cursor: Some(cursor.clone()),
+            limit: 1,
+        };
+        let next_page = database
+            .export_tenant_audit(&administrator(), next.clone())
+            .await?;
+        next_page.validate(&next)?;
+        ensure!(next_page.records[0].sequence == cursor.next_sequence);
+        let mut unsigned = cursor;
+        unsigned.ticket = None;
+        ensure!(
+            database
+                .export_tenant_audit(
+                    &administrator(),
+                    kasumi_types::TenantAuditExportRequest {
+                        cursor: Some(unsigned),
+                        limit: 1
+                    }
+                )
+                .await
+                .unwrap_err()
+                .code
+                == kasumi_types::ErrorCode::CursorExpired
+        );
+    }
+    drop(page);
     drop(verified);
     drop((capacity, audit, generation));
     let mut reader = administrator();

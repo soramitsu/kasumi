@@ -78,13 +78,16 @@ fn check_copy(
         store,
         &inspected,
     ) {
-        Ok(reference) => (AuditObjectCheck::Verified, Some(reference)),
+        Ok(segment) => (
+            AuditObjectCheck::Verified,
+            Some(segment.reference().clone()),
+        ),
         Err(failure) => (copy_failure(&failure), None),
     }
 }
 
 impl Database {
-    fn audit_token_key(&self) -> Result<&hmac::Key> {
+    pub(super) fn audit_token_key(&self) -> Result<&hmac::Key> {
         if self.audit_cursor_key.get().is_none() {
             let key = hmac::Key::generate(hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
                 .map_err(|_| Error::new(ErrorCode::Unavailable, "audit cursor key unavailable"))?;

@@ -57,6 +57,7 @@ service KasumiAdmin {
   rpc TenantAuditStatus(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
   rpc TenantAuditCapacity(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
   rpc VerifyTenantAudit(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
+  rpc ExportTenantAudit(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
   rpc ControlSignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SecurityAuditStatus(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditExport(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);

@@ -4097,9 +4097,10 @@ pub(crate) fn read_audit_action(event: &AuditEvent) -> Result<Action> {
             Ok(Action::Read)
         }
         "receipt" | "mutation_capacity_admission" => Ok(Action::Write),
-        "tenant_audit_status" | "tenant_audit_capacity" | "tenant_audit_verify" => {
-            Ok(Action::Audit)
-        }
+        "tenant_audit_status"
+        | "tenant_audit_capacity"
+        | "tenant_audit_verify"
+        | "tenant_audit_export" => Ok(Action::Audit),
         "schema_activation_status" | "schema_read" | "policy_limits_read" => Ok(Action::Admin),
         _ => Err(Error::new(
             ErrorCode::InvalidArgument,

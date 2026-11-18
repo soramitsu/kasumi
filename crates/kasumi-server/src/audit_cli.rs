@@ -79,29 +79,47 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
             println!("{json}");
         }
-        [command, action, profile, input] if command == "tenant-audit" && action == "verify" => {
+        [command, action, profile, input]
+            if command == "tenant-audit" && matches!(action.as_str(), "verify" | "export") =>
+        {
             let profile = ClientProfile::load(Path::new(profile))?;
             let expected = match profile.resource {
                 CredentialResource::Database { incarnation }
                 | CredentialResource::Control { incarnation } => incarnation,
                 _ => anyhow::bail!("tenant audit requires a database or Control credential"),
             };
-            let request: TenantAuditVerifyRequest =
-                serde_json::from_slice(&private_files::read(Path::new(input), 32 << 10)?)?;
+            let input = private_files::read(Path::new(input), 32 << 10)?;
             let mut client =
                 kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-            let page = client
-                .verify_tenant_audit(&profile.bearer()?, &request)
-                .await?;
+            let bearer = profile.bearer()?;
+            let (json, tenant, incarnation) = if action == "export" {
+                let page = client
+                    .export_tenant_audit(&bearer, &serde_json::from_slice(&input)?)
+                    .await?;
+                (
+                    serde_json::to_string_pretty(&page)?,
+                    page.tenant,
+                    page.incarnation,
+                )
+            } else {
+                let page = client
+                    .verify_tenant_audit(&bearer, &serde_json::from_slice(&input)?)
+                    .await?;
+                (
+                    serde_json::to_string_pretty(&page)?,
+                    page.tenant,
+                    page.incarnation,
+                )
+            };
             ensure!(
-                page.tenant == profile.tenant && page.incarnation == expected.to_string(),
-                "tenant audit verification belongs to a different tenant incarnation"
+                tenant == profile.tenant && incarnation == expected.to_string(),
+                "tenant audit page belongs to a different tenant incarnation"
             );
-            println!("{}", serde_json::to_string_pretty(&page)?);
+            println!("{json}");
         }
         [command, ..] if command == "tenant-audit" => {
             anyhow::bail!(
-                "usage: kasumid tenant-audit status|capacity PROFILE | tenant-audit verify PROFILE REQUEST_JSON"
+                "usage: kasumid tenant-audit status|capacity PROFILE | tenant-audit verify|export PROFILE REQUEST_JSON"
             )
         }
         [command, action, profile] if command == "audit" && action == "status" => {

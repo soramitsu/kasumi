@@ -67,6 +67,7 @@ mod snapshot_index;
 mod staged_terminal;
 mod state;
 mod target_resolution;
+mod tenant_audit_directory;
 pub use bootstrap::{
     ControlGenesis, ControlLifecycleGenesis, LocalRestoreRequest, MaterializedTargetReplica,
     OpenedReplica, ReplicaPlacement, ReplicatedBootstrap, ReplicatedGenesis, RestoreSource,
