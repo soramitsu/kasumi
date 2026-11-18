@@ -6,6 +6,14 @@ The repository supplies a [systemd unit template](../deploy/kasumi.service),
 not an installed or running production service. Validate the template on the
 chosen distribution before enabling it.
 
+## Protected readiness coverage
+
+The administrative TLS endpoints require the installed client identity and Control bearer. In the JSON returned by `/ready`, `readiness_coverage.membership_epoch` identifies the current topology version, installed-route generation and effective Raft membership generation. The `covered_epoch` field identifies the worker's last retained complete sweep. A null value means that no complete sweep is retained. A stale or partial sweep cannot establish readiness. Compare both full tuples together with `complete`, `fresh`, and the expected and examined group counts. The detail page contains up to 128 groups. A completed negative group probe counts as examined and contributes to the separate healthy-group count.
+
+The corresponding protected Prometheus families use `kasumi_readiness_epoch_` and `kasumi_readiness_covered_epoch_` followed by `topology_version`, `installed_routes` or `actual_membership`. The protected JSON preserves the exact unsigned integer values across the full range.
+
+The frozen native component probe retains the original HTTP replies and a committed recovery readback. Invoke `scripts/run_observability_probes.py` with `python3 -I -B -S`, an accepted `--evidence` directory, the native `--journal`, and a fresh `--attempt-id` and `--output`. Its journal entry is a component rehearsal. Final G11 acceptance additionally requires the installed three-member data, Control and authority groups, durable backup inventory, issuer and membership observations, and the full scenario roster.
+
 ## Build and configuration
 
 ```sh

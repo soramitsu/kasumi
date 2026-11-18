@@ -99,6 +99,8 @@ pub(crate) struct Coverage {
 #[derive(Serialize)]
 pub(crate) struct Status {
     pub membership_epoch: Epoch,
+    /// Epoch of the last completed sweep still retained by the worker.
+    pub covered_epoch: Option<Epoch>,
     pub expected_groups: Option<usize>,
     pub examined_groups: usize,
     pub healthy_groups: usize,
@@ -110,6 +112,7 @@ pub(crate) struct Status {
 impl Status {
     pub(crate) fn ready(&self) -> bool {
         self.complete
+            && self.covered_epoch == Some(self.membership_epoch)
             && self.fresh
             && self
                 .expected_groups
@@ -221,6 +224,7 @@ impl Coverage {
         Snapshot {
             status: Status {
                 membership_epoch: epoch,
+                covered_epoch: state.completed.as_ref().map(|sweep| sweep.epoch),
                 expected_groups: selected.map(|s| s.expected),
                 examined_groups: selected.map_or(0, |s| s.examined),
                 healthy_groups: selected.map_or(0, |s| s.healthy),

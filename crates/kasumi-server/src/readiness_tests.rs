@@ -159,6 +159,10 @@ fn every_membership_epoch_component_fences_original_release_and_requires_new_swe
     let now = Instant::now();
     complete(&coverage, 1, now);
     let token = coverage.snapshot(epoch(), now).token.unwrap();
+    assert_eq!(
+        coverage.snapshot(epoch(), now).status.covered_epoch,
+        Some(epoch())
+    );
     for changed in [
         Epoch {
             topology_version: 2,
@@ -175,6 +179,8 @@ fn every_membership_epoch_component_fences_original_release_and_requires_new_swe
     ] {
         assert!(!coverage.check(token, changed, now));
         let snapshot = coverage.snapshot(changed, now);
+        assert_eq!(snapshot.status.membership_epoch, changed);
+        assert_eq!(snapshot.status.covered_epoch, Some(epoch()));
         assert!(snapshot.status.expected_groups.is_none());
         assert!(!snapshot.status.ready());
         assert!(snapshot.token.is_none());

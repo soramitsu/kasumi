@@ -1840,7 +1840,13 @@ impl Fixture {
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
         assert_eq!(response.headers()["cache-control"], "no-store");
-        let value: serde_json::Value = response.json().await.unwrap();
+        crate::observability::test_evidence::native_observation("recovery-status", serde_json::json!({
+            "operation_id":operation_id, "phase":expected.phase, "updated_revision":expected.updated_revision,
+            "phase_pending":expected.pending_phase.is_some(), "terminal":expected.phase.terminal()
+        }));
+        let value: serde_json::Value = serde_json::from_slice(
+            &crate::observability::test_evidence::observed_reply("recovery-status", response).await
+        ).unwrap();
         assert_eq!(value.as_object().unwrap().len(), 5);
         assert_eq!(value["operation_id"], operation_id.to_string());
         assert_eq!(

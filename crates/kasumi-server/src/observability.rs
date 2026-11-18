@@ -25,6 +25,10 @@ use std::{
 };
 use uuid::Uuid;
 
+#[cfg(test)]
+#[path = "observability_test_evidence.rs"]
+pub(crate) mod test_evidence;
+
 const MAX_RESPONSE_BYTES: usize = 1 << 20;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -1594,6 +1598,30 @@ impl Observation {
             .unwrap();
         }
         let coverage = &self.readiness_coverage;
+        gauge!(
+            "readiness_epoch_topology_version",
+            coverage.membership_epoch.topology_version
+        );
+        gauge!(
+            "readiness_epoch_installed_routes",
+            coverage.membership_epoch.installed_routes
+        );
+        gauge!(
+            "readiness_epoch_actual_membership",
+            coverage.membership_epoch.actual_membership
+        );
+        gauge!(
+            "readiness_covered_epoch_topology_version",
+            coverage.covered_epoch.map(|epoch| epoch.topology_version)
+        );
+        gauge!(
+            "readiness_covered_epoch_installed_routes",
+            coverage.covered_epoch.map(|epoch| epoch.installed_routes)
+        );
+        gauge!(
+            "readiness_covered_epoch_actual_membership",
+            coverage.covered_epoch.map(|epoch| epoch.actual_membership)
+        );
         gauge!("readiness_coverage_complete", coverage.complete);
         gauge!("readiness_coverage_fresh", coverage.fresh);
         gauge!("readiness_groups_expected", coverage.expected_groups);
@@ -2120,6 +2148,11 @@ mod tests {
                     installed_routes: 1,
                     actual_membership: 0,
                 },
+                covered_epoch: samples.then_some(crate::readiness::Epoch {
+                    topology_version: 1,
+                    installed_routes: 1,
+                    actual_membership: 0,
+                }),
                 expected_groups: samples.then_some(2),
                 examined_groups: 2,
                 healthy_groups: 2,

@@ -1081,6 +1081,13 @@ def providers_adapter(root, domain, files, configs, artifacts, candidates):
     return run_providers.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def check_readiness_epoch(value):
+    exact(value, {"topology_version", "installed_routes", "actual_membership"}, "readiness epoch")
+    for component in value:
+        uint(value[component], "readiness epoch " + component)
+    return value
+
+
 def correctness_adapter(root, domain, files, configs, artifacts, candidates):
     import run_correctness
 
@@ -1245,8 +1252,8 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     elif kind == "observability":
         exact(details, {"groups", "membership_epoch", "covered_epoch", "coverage_complete", "report"}, "observability details")
         uint(details["groups"], "readiness groups", 129)
-        require(uint(details["membership_epoch"], "membership epoch", 1) == details["covered_epoch"]
-                and type(details["covered_epoch"]) is int and details["coverage_complete"] is True,
+        require(check_readiness_epoch(details["membership_epoch"]) == check_readiness_epoch(details["covered_epoch"])
+                and details["coverage_complete"] is True,
                 "readiness lacks complete current membership coverage")
         reference(root, details["report"])
     else:
