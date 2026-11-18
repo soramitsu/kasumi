@@ -31,6 +31,27 @@ and fallback paths; explicitly reject unsupported inputs. Preserve the document
 model and supported Rust, gRPC and MCP interfaces without preserving obsolete
 prototype shapes.
 
+### Deployed formats and release scope, November 2026
+
+Both deployed revisions `12140939` and `cf9959f1` are supported persistence
+inputs. Kasumi must open them, accept writes and reopen the result. The
+exception covers KV roots and Store envelopes, Fixed directories, serialized
+limits and tenant state (including backup binding heads), snapshot record
+kinds, embedded KASUMIL1 images, bootstrap and recovery records. Keep the
+persistence decoding at the storage boundary. New groups default to LZ4.
+Existing groups continue using their persisted directory encoding.
+
+BOI's fresh installation decision applies to BOI's own release window. A
+broader retirement of either deployed format requires an explicit decision
+from the format owner. The BOI environment owner controls live installation.
+
+The adopted November plan defers the optional anti-rollback witness in
+September decision 6 beyond this release. Installed storage remains a trusted
+boundary. The capacity, nine-process HA, full-duration soak, 19 acceptance
+domains and three native targets remain release requirements. The working
+checkout for this integration is `/Users/takemiyamakoto/dev/kasumi` on
+`master`. All takeover commits are local.
+
 The earlier compatibility audit found nested administrative DTO leniency,
 noncanonical ordinary Raft command replay and omission of the local JWT
 access-use claim (`target/first-release-compatibility-audit/README.md`). Current
