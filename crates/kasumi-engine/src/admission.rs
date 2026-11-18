@@ -1496,6 +1496,45 @@ impl Reservation {
         self.core.clone()
     }
 
+    /// The installed core owns the blocking join. A disappearing request can
+    /// discard its reply, while the drain still observes the worker's terminal
+    /// error or panic. The worker owns the reservation through its last read.
+    pub(crate) async fn retained_read<T: Send + 'static>(
+        self,
+        token: QueryCancellation,
+        read: impl FnOnce(Self, &QueryCancellation) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let owner = self.blocking_owner();
+        let call = owner
+            .blocking_children()
+            .start(move || {
+                token
+                    .check()
+                    .map_err(kasumi_serving::ChildFailure::Stopped)?;
+                read(self, &token).map_err(|error| {
+                    if error.code == ErrorCode::CursorExpired
+                        || token.check().err().as_ref() == Some(&error)
+                    {
+                        kasumi_serving::ChildFailure::Stopped(error)
+                    } else {
+                        kasumi_serving::ChildFailure::Failed(error)
+                    }
+                })
+            })
+            .map_err(|refused| match refused {
+                kasumi_serving::ChildRefused::Full => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "blocking read capacity exhausted",
+                ),
+                kasumi_serving::ChildRefused::Sealed => {
+                    Error::new(ErrorCode::Unavailable, "blocking read owner sealed")
+                }
+            })?;
+        call.wait()
+            .await
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "blocking read worker failed"))?
+    }
+
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {
         self.reserve_additional_raw(bytes)
             .map_err(|error| match error {
@@ -1829,6 +1868,36 @@ mod tests {
             Ok(self.rss.load(Ordering::SeqCst))
         }
     }
+    #[tokio::test]
+    async fn cancelled_read_retains_a_later_storage_error_and_releases_its_reservation() {
+        let (node, _, _) = fixture();
+        let token = QueryCancellation::default();
+        let reservation = node.reserve(1, Some(token.clone())).unwrap();
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel();
+        let reader = tokio::spawn(reservation.retained_read(
+            token.clone(),
+            move |_workspace, _token| {
+                entered.send(()).unwrap();
+                wait.recv().unwrap();
+                Err::<(), _>(Error::new(
+                    ErrorCode::Corruption,
+                    "retained encrypted page failed",
+                ))
+            },
+        ));
+        started.await.unwrap();
+        token.cancel();
+        reader.abort();
+        assert!(reader.await.unwrap_err().is_cancelled());
+        release.send(()).unwrap();
+        let failure = node.drain_blocking_children().await.unwrap_err();
+        let retained = failure.issues()[0].error().downcast_ref::<Error>().unwrap();
+        assert_eq!(retained.code, ErrorCode::Corruption);
+        assert_eq!(retained.message, "retained encrypted page failed");
+        assert!(node.reserve(1, None).is_ok());
+    }
+
     fn fixture() -> (Arc<NodeAdmission>, Arc<Memory>, Arc<Clock>) {
         let clock = Arc::new(Clock::default());
         let memory = Arc::new(Memory {

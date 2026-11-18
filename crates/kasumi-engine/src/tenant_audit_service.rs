@@ -38,19 +38,14 @@ impl Database {
         reservation.reserve_additional(1 << 20)?;
         let engine = self.engine.clone();
         let caller = context.clone();
-        let ((capacity, epoch, strict), mut reservation) = tokio::task::spawn_blocking(move || {
-            let _registration = registration;
-            token.check()?;
-            let value = engine.audit_capacity_observation(&caller)?;
-            Ok::<_, Error>((value, reservation))
-        })
-        .await
-        .map_err(|_| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "tenant audit observation worker failed",
-            )
-        })??;
+        let ((capacity, epoch, strict), mut reservation) = reservation
+            .retained_read(token, move |reservation, token| {
+                let _registration = registration;
+                token.check()?;
+                let value = engine.audit_capacity_observation(&caller)?;
+                Ok::<_, Error>((value, reservation))
+            })
+            .await?;
         self.finish_tenant_audit_read(
             context,
             capacity.revision,

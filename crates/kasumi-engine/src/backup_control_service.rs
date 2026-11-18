@@ -71,20 +71,19 @@ impl Database {
         let reservation = self.admission().reserve(8 << 20, Some(token.clone()))?;
         self.barrier().await?;
         let generation = self.engine.generation()?;
-        let value = tokio::task::spawn_blocking(move || {
-            let _registration = registration;
-            let _workspace = reservation;
-            token.check()?;
-            generation
-                .backup_bindings
-                .get(id)
-                .map(|row| row.map(|row| row.record))
-                .map_err(|_| {
-                    Error::new(ErrorCode::Corruption, "Control backup binding read failed")
-                })
-        })
-        .await
-        .map_err(|_| unavailable())??;
+        let value = reservation
+            .retained_read(token, move |_workspace, token| {
+                let _registration = registration;
+                token.check()?;
+                generation
+                    .backup_bindings
+                    .get(id)
+                    .map(|row| row.map(|row| row.record))
+                    .map_err(|_| {
+                        Error::new(ErrorCode::Corruption, "Control backup binding read failed")
+                    })
+            })
+            .await?;
         fence.check()?;
         Ok(value)
     }

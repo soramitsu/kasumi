@@ -238,73 +238,73 @@ impl Database {
         if cursor.next_sequence.saturating_sub(1) < state.audit_retention.pruned_before {
             reservation.reserve_additional(4 * MAX_AUDIT_SEGMENT_BYTES as u64)?;
         }
-        let (mut page, mut reservation) = tokio::task::spawn_blocking(move || {
-            let _registration = registration;
-            let state = &generation.state;
-            let check = || {
-                token.check()?;
-                if clock.now() >= Duration::from_millis(expires) {
-                    return Err(expired());
-                }
-                Ok(())
-            };
-            check()?;
-            // Appends and new pruning preserve a captured root. Verify its
-            // last range still names the same immutable prefix on this replica.
-            if let Some(root) = &cursor.snapshot_head {
-                let retention = &state.audit_retention;
-                let head = retention.archive_head.as_ref().ok_or_else(expired)?;
-                let selected = crate::tenant_audit_directory::containing(
-                    &store,
-                    head,
-                    retention.archive_segments,
-                    root.next_sequence.checked_sub(1).ok_or_else(expired)?,
-                    || check().map_err(Into::into),
-                )
-                .map_err(read_error)?;
-                if selected.object != *root {
-                    return Err(expired());
-                }
-            }
-            if let Some(previous_sequence) = cursor.next_sequence.checked_sub(1) {
-                let previous = TenantAuditCursor {
-                    next_sequence: previous_sequence,
-                    ..cursor.clone()
+        let (mut page, mut reservation) = reservation
+            .retained_read(token, move |reservation, token| {
+                let _registration = registration;
+                let state = &generation.state;
+                let check = || {
+                    token.check()?;
+                    if clock.now() >= Duration::from_millis(expires) {
+                        return Err(expired());
+                    }
+                    Ok(())
                 };
-                let records = events(&store, state, &previous, 1, check)?;
-                let record = records.first().ok_or_else(expired)?;
-                if Some(record.event_sha256()?) != cursor.previous_record_sha256 {
-                    return Err(expired());
+                check()?;
+                // Appends and new pruning preserve a captured root. Verify its
+                // last range still names the same immutable prefix on this replica.
+                if let Some(root) = &cursor.snapshot_head {
+                    let retention = &state.audit_retention;
+                    let head = retention.archive_head.as_ref().ok_or_else(expired)?;
+                    let selected = crate::tenant_audit_directory::containing(
+                        &store,
+                        head,
+                        retention.archive_segments,
+                        root.next_sequence.checked_sub(1).ok_or_else(expired)?,
+                        || check().map_err(Into::into),
+                    )
+                    .map_err(read_error)?;
+                    if selected.object != *root {
+                        return Err(expired());
+                    }
                 }
-            }
-            let rows = events(&store, state, &cursor, limit, check)?;
-            let previous = match rows.last() {
-                Some(row) => Some(row.event_sha256()?),
-                None => cursor.previous_record_sha256,
-            };
-            let next = cursor
-                .next_sequence
-                .checked_add(rows.len() as u64)
-                .ok_or_else(expired)?;
-            Ok::<_, Error>((
-                TenantAuditPage {
-                    tenant: cursor.tenant,
-                    incarnation: cursor.incarnation,
-                    stream_id: cursor.stream_id,
-                    through_sequence: cursor.through_sequence,
-                    next_sequence: next,
-                    snapshot_head: cursor.snapshot_head,
-                    snapshot_segments: cursor.snapshot_segments,
-                    snapshot_tail_sha256: cursor.snapshot_tail_sha256,
-                    previous_record_sha256: previous,
-                    ticket: None,
-                    records: rows,
-                },
-                reservation,
-            ))
-        })
-        .await
-        .map_err(|_| Error::new(ErrorCode::Unavailable, "tenant audit export worker failed"))??;
+                if let Some(previous_sequence) = cursor.next_sequence.checked_sub(1) {
+                    let previous = TenantAuditCursor {
+                        next_sequence: previous_sequence,
+                        ..cursor.clone()
+                    };
+                    let records = events(&store, state, &previous, 1, check)?;
+                    let record = records.first().ok_or_else(expired)?;
+                    if Some(record.event_sha256()?) != cursor.previous_record_sha256 {
+                        return Err(expired());
+                    }
+                }
+                let rows = events(&store, state, &cursor, limit, check)?;
+                let previous = match rows.last() {
+                    Some(row) => Some(row.event_sha256()?),
+                    None => cursor.previous_record_sha256,
+                };
+                let next = cursor
+                    .next_sequence
+                    .checked_add(rows.len() as u64)
+                    .ok_or_else(expired)?;
+                Ok::<_, Error>((
+                    TenantAuditPage {
+                        tenant: cursor.tenant,
+                        incarnation: cursor.incarnation,
+                        stream_id: cursor.stream_id,
+                        through_sequence: cursor.through_sequence,
+                        next_sequence: next,
+                        snapshot_head: cursor.snapshot_head,
+                        snapshot_segments: cursor.snapshot_segments,
+                        snapshot_tail_sha256: cursor.snapshot_tail_sha256,
+                        previous_record_sha256: previous,
+                        ticket: None,
+                        records: rows,
+                    },
+                    reservation,
+                ))
+            })
+            .await?;
         if page.next_sequence < page.through_sequence {
             let digest = tag_input(context, epoch, expires, &page.resumed())?;
             page.ticket = Some(hex::encode(

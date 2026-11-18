@@ -173,74 +173,69 @@ impl Database {
         if position.remaining > 0 {
             reservation.reserve_additional(4 * MAX_AUDIT_SEGMENT_BYTES as u64)?;
         }
-        let (position, results, mut reservation) = tokio::task::spawn_blocking(move || {
-            let _registration = registration;
-            let mut rows = Vec::with_capacity(usize::from(limit));
-            while let Some(link) = position.next.clone() {
-                if rows.len() == usize::from(limit) {
-                    break;
-                }
-                token.check()?;
-                if clock.now() >= position.expires {
-                    return Err(expired());
-                }
-                let placement = store.tenant_audit_archive().map_err(|_| {
-                    Error::new(ErrorCode::Unavailable, "tenant audit placement unavailable")
-                })?;
-                let index = position.remaining.checked_sub(1).ok_or_else(expired)?;
-                let state = &generation.state;
-                let (cache, cached) =
-                    check_copy(state, &store, &link, placement.cache().read_blocking(&link));
-                token.check()?;
-                let remote =
-                    tokio::runtime::Handle::current().block_on(placement.read_destination(&link));
-                let (destination, external) = check_copy(state, &store, &link, remote);
-                if cached
-                    .as_ref()
-                    .zip(external.as_ref())
-                    .is_some_and(|(a, b)| a != b)
-                {
-                    return Err(Error::new(
-                        ErrorCode::Corruption,
-                        "verified audit copies differ",
-                    ));
-                }
-                let reference = cached.or(external);
-                if let Some(r) = &reference {
-                    if r.previous.is_some() != (index > 0)
-                        || (index + 1 == state.audit_retention.archive_segments
-                            && state.audit_retention.archive_head.as_ref() != Some(r))
+        let (position, results, mut reservation) = reservation
+            .retained_read(token, move |reservation, token| {
+                let _registration = registration;
+                let mut rows = Vec::with_capacity(usize::from(limit));
+                while let Some(link) = position.next.clone() {
+                    if rows.len() == usize::from(limit) {
+                        break;
+                    }
+                    token.check()?;
+                    if clock.now() >= position.expires {
+                        return Err(expired());
+                    }
+                    let placement = store.tenant_audit_archive().map_err(|_| {
+                        Error::new(ErrorCode::Unavailable, "tenant audit placement unavailable")
+                    })?;
+                    let index = position.remaining.checked_sub(1).ok_or_else(expired)?;
+                    let state = &generation.state;
+                    let (cache, cached) =
+                        check_copy(state, &store, &link, placement.cache().read_blocking(&link));
+                    token.check()?;
+                    let remote = tokio::runtime::Handle::current()
+                        .block_on(placement.read_destination(&link));
+                    let (destination, external) = check_copy(state, &store, &link, remote);
+                    if cached
+                        .as_ref()
+                        .zip(external.as_ref())
+                        .is_some_and(|(a, b)| a != b)
                     {
                         return Err(Error::new(
                             ErrorCode::Corruption,
-                            "tenant audit archive count or head differs",
+                            "verified audit copies differ",
                         ));
                     }
-                    position.next = r.previous.clone();
-                    position.remaining = index;
+                    let reference = cached.or(external);
+                    if let Some(r) = &reference {
+                        if r.previous.is_some() != (index > 0)
+                            || (index + 1 == state.audit_retention.archive_segments
+                                && state.audit_retention.archive_head.as_ref() != Some(r))
+                        {
+                            return Err(Error::new(
+                                ErrorCode::Corruption,
+                                "tenant audit archive count or head differs",
+                            ));
+                        }
+                        position.next = r.previous.clone();
+                        position.remaining = index;
+                    }
+                    let blocked = reference.is_none();
+                    rows.push(TenantAuditObjectVerification {
+                        index,
+                        object: link,
+                        reference,
+                        cache,
+                        destination,
+                    });
+                    if blocked {
+                        break;
+                    }
                 }
-                let blocked = reference.is_none();
-                rows.push(TenantAuditObjectVerification {
-                    index,
-                    object: link,
-                    reference,
-                    cache,
-                    destination,
-                });
-                if blocked {
-                    break;
-                }
-            }
-            token.check()?;
-            Ok::<_, Error>((position, rows, reservation))
-        })
-        .await
-        .map_err(|_| {
-            Error::new(
-                ErrorCode::Unavailable,
-                "tenant audit verification worker failed",
-            )
-        })??;
+                token.check()?;
+                Ok::<_, Error>((position, rows, reservation))
+            })
+            .await?;
         let cursor = position
             .next
             .as_ref()
