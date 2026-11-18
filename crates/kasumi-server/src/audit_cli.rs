@@ -46,21 +46,41 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
 }
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
-        [command, action, profile] if command == "tenant-audit" && action == "status" => {
+        [command, action, profile]
+            if command == "tenant-audit" && matches!(action.as_str(), "status" | "capacity") =>
+        {
             let profile = ClientProfile::load(Path::new(profile))?;
-            let mut client =
-                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-            let status = client.tenant_audit_status(&profile.bearer()?).await?;
             let expected = match profile.resource {
                 CredentialResource::Database { incarnation }
                 | CredentialResource::Control { incarnation } => incarnation,
-                _ => anyhow::bail!("tenant audit status requires a database or Control credential"),
+                _ => anyhow::bail!("tenant audit requires a database or Control credential"),
+            };
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let bearer = profile.bearer()?;
+            let (json, tenant, incarnation) = if action == "status" {
+                let result = client.tenant_audit_status(&bearer).await?;
+                (
+                    serde_json::to_string_pretty(&result)?,
+                    result.tenant,
+                    result.incarnation,
+                )
+            } else {
+                let result = client.tenant_audit_capacity(&bearer).await?;
+                (
+                    serde_json::to_string_pretty(&result)?,
+                    result.tenant,
+                    result.incarnation,
+                )
             };
             ensure!(
-                status.tenant == profile.tenant && status.incarnation == expected.to_string(),
-                "tenant audit status belongs to a different tenant incarnation"
+                tenant == profile.tenant && incarnation == expected.to_string(),
+                "tenant audit observation belongs to a different tenant incarnation"
             );
-            println!("{}", serde_json::to_string_pretty(&status)?);
+            println!("{json}");
+        }
+        [command, ..] if command == "tenant-audit" => {
+            anyhow::bail!("usage: kasumid tenant-audit status|capacity PROFILE")
         }
         [command, action, profile] if command == "audit" && action == "status" => {
             let profile = ClientProfile::load(Path::new(profile))?;

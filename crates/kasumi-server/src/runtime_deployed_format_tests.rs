@@ -1004,7 +1004,15 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     let generation = database.engine().generation()?;
     ensure!(audit.tenant == TENANT && audit.incarnation == generation.incarnation());
     ensure!(audit.position.stream_id == generation.audit_retention().stream_id);
-    drop((audit, generation));
+    let capacity = database.tenant_audit_capacity(&administrator()).await?;
+    capacity.validate()?;
+    ensure!(
+        capacity.tenant == audit.tenant
+            && capacity.incarnation == audit.incarnation
+            && capacity.stream_id == audit.position.stream_id
+            && capacity.capacity.budget() == audit.budget
+    );
+    drop((capacity, audit, generation));
     let mut reader = administrator();
     reader.scopes.remove(&Action::Audit);
     ensure!(

@@ -157,29 +157,49 @@ fn validate_archives(
     }
     Ok(())
 }
+fn tenant_request(
+    bearer: &str,
+    value: &impl Serialize,
+) -> Result<tonic::Request<proto::TenantAuditJsonRequest>, ClientError> {
+    let mut request = authorized(
+        bearer,
+        proto::TenantAuditJsonRequest {
+            request_json: encode(value)?,
+        },
+    )?;
+    request.set_timeout(std::time::Duration::from_secs(30));
+    Ok(request)
+}
+
+fn tenant_response<T: DeserializeOwned>(
+    response: proto::TenantAuditJsonResponse,
+) -> Result<T, ClientError> {
+    if response.response_json.len() > kasumi_types::MAX_TENANT_AUDIT_PAGE_BYTES {
+        return Err(invalid("tenant audit response exceeds its bound"));
+    }
+    Ok(serde_json::from_slice(&response.response_json)?)
+}
+
 impl KasumiAdminClient {
     /// Inspect the application or Control audit stream of the bearer.
     pub async fn tenant_audit_status(
         &mut self,
         bearer: &str,
     ) -> Result<kasumi_types::TenantAuditStatus, ClientError> {
-        let mut input = authorized(
-            bearer,
-            proto::TenantAuditJsonRequest {
-                request_json: encode(&kasumi_types::TenantAuditStatusRequest {})?,
-            },
-        )?;
-        input.set_timeout(std::time::Duration::from_secs(30));
-        let bytes = self
-            .inner
-            .tenant_audit_status(input)
-            .await?
-            .into_inner()
-            .response_json;
-        if bytes.len() > kasumi_types::MAX_TENANT_AUDIT_PAGE_BYTES {
-            return Err(invalid("tenant audit status exceeds its bound"));
-        }
-        let result: kasumi_types::TenantAuditStatus = serde_json::from_slice(&bytes)?;
+        let input = tenant_request(bearer, &kasumi_types::TenantAuditStatusRequest {})?;
+        let result: kasumi_types::TenantAuditStatus =
+            tenant_response(self.inner.tenant_audit_status(input).await?.into_inner())?;
+        result.validate().map_err(invalid)?;
+        Ok(result)
+    }
+
+    pub async fn tenant_audit_capacity(
+        &mut self,
+        bearer: &str,
+    ) -> Result<kasumi_types::TenantAuditCapacity, ClientError> {
+        let input = tenant_request(bearer, &kasumi_types::TenantAuditCapacityRequest {})?;
+        let result: kasumi_types::TenantAuditCapacity =
+            tenant_response(self.inner.tenant_audit_capacity(input).await?.into_inner())?;
         result.validate().map_err(invalid)?;
         Ok(result)
     }

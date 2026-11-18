@@ -37,6 +37,28 @@ pub struct TenantAuditCapacityRequest {}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct TenantAuditCapacity {
+    pub tenant: String,
+    pub incarnation: String,
+    pub revision: u64,
+    pub stream_id: Uuid,
+    pub capacity: crate::AuditCapacity,
+}
+
+impl TenantAuditCapacity {
+    pub fn validate(&self) -> Result<()> {
+        if !identity_valid(&self.tenant, &self.incarnation) || self.stream_id.is_nil() {
+            return Err(Error::new(
+                ErrorCode::InvalidArgument,
+                "invalid tenant audit capacity identity",
+            ));
+        }
+        self.capacity.validate()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TenantAuditStatus {
     pub tenant: String,
     pub incarnation: String,

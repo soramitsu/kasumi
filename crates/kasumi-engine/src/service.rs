@@ -1281,7 +1281,7 @@ impl std::ops::Deref for ResponseDatabase<'_> {
 fn release_action(kind: &str) -> Action {
     match kind {
         "receipt" | "mutation_capacity_admission" => Action::Write,
-        "tenant_audit_status" => Action::Audit,
+        "tenant_audit_status" | "tenant_audit_capacity" => Action::Audit,
         "schema_activation_status" | "schema_read" | "policy_limits_read" => Action::Admin,
         _ => Action::Read,
     }

@@ -791,6 +791,46 @@ impl NativeAdmin {
             .max_decoding_message_size(MAX_REQUEST_BYTES)
             .max_encoding_message_size(MAX_RESPONSE_BYTES)
     }
+    async fn tenant_audit_input<Q: serde::de::DeserializeOwned>(
+        &self,
+        request: Request<TenantAuditJsonRequest>,
+    ) -> Result<
+        (
+            RequestContext,
+            Arc<kasumi_engine::Database>,
+            kasumi_engine::ResponseFence<'static>,
+        ),
+        Status,
+    > {
+        let context = verified(&self.auth, &request).await?;
+        let _: Q = decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.admitted_response_fence(&context))
+            .await
+            .map_err(status)?;
+        Ok((context, database, fence))
+    }
+
+    async fn tenant_audit_reply<T: serde::Serialize + Send + Sync + 'static>(
+        &self,
+        context: &RequestContext,
+        result: kasumi_types::Result<kasumi_engine::AdmittedOutput<T>>,
+        fence: kasumi_engine::ResponseFence<'static>,
+    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        let output = result.map_err(|error| self.registry.status(context, error))?;
+        response_owner::PendingReply::new(output, fence)
+            .convert(|value, fence| {
+                Ok(TenantAuditJsonResponse {
+                    response_json: response_owner::encode_json(value, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, context)
+            .await
+    }
+
     async fn database(
         &self,
         context: &RequestContext,
@@ -905,28 +945,30 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         &self,
         request: Request<TenantAuditJsonRequest>,
     ) -> Result<Response<TenantAuditJsonResponse>, Status> {
-        let context = verified(&self.auth, &request).await?;
-        let _: kasumi_types::TenantAuditStatusRequest =
-            decode_json(&request.into_inner().request_json).map_err(status)?;
-        let database = self.database(&context).await?;
-        let fence = self
-            .auth
-            .audit_result(&context, database.admitted_response_fence(&context))
-            .await
-            .map_err(status)?;
-        let result = database
-            .tenant_audit_status(&context)
-            .await
-            .map_err(|error| self.registry.status(&context, error))?;
-        response_owner::PendingReply::new(result, fence)
-            .convert(|value, fence| {
-                Ok(TenantAuditJsonResponse {
-                    response_json: response_owner::encode_json(value, fence)?,
-                })
-            })
-            .map_err(status)?
-            .release(&self.auth, &context)
-            .await
+        let (context, database, fence) = self
+            .tenant_audit_input::<kasumi_types::TenantAuditStatusRequest>(request)
+            .await?;
+        self.tenant_audit_reply(
+            &context,
+            database.tenant_audit_status(&context).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn tenant_audit_capacity(
+        &self,
+        request: Request<TenantAuditJsonRequest>,
+    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        let (context, database, fence) = self
+            .tenant_audit_input::<kasumi_types::TenantAuditCapacityRequest>(request)
+            .await?;
+        self.tenant_audit_reply(
+            &context,
+            database.tenant_audit_capacity(&context).await,
+            fence,
+        )
+        .await
     }
 
     async fn control_signer_maintenance(

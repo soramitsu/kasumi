@@ -185,6 +185,47 @@ fn matches_prefix(reference: &AuditArchiveReference, retention: &AuditRetentionS
                 .map(|head| head.object.clone())
 }
 
+fn pending_publication(
+    store: &kasumi_store::TenantStore,
+    state: &TenantState,
+) -> Result<Option<AuditArchiveLink>> {
+    let Some(bytes) = store
+        .get_bounded(PREPARATION, b"pending", MAX_COMMAND)
+        .map_err(|err| {
+            err.downcast_ref::<Error>().cloned().unwrap_or_else(|| {
+                Error::new(
+                    ErrorCode::AuditUnavailable,
+                    "tenant audit preparation could not be read",
+                )
+            })
+        })?
+    else {
+        return Ok(None);
+    };
+    let inspect = || -> anyhow::Result<_> {
+        let (reference, ciphertext) = decode(&bytes)?;
+        let object = InspectedAuditDependency::from_link(ciphertext, &reference.object)?;
+        ensure!(
+            object.reference() == &reference && object.source_tenant() == state.tenant,
+            "stored audit preparation identity differs"
+        );
+        if !matches_prefix(&reference, &state.audit_retention) {
+            return Ok(None);
+        }
+        let root = store.storage_access().purpose();
+        if root != object.source_purpose() {
+            crate::authorize_audit_source(state, root, object.source_purpose())?;
+        }
+        Ok(Some(reference.object))
+    };
+    inspect().map_err(|_| {
+        Error::new(
+            ErrorCode::Corruption,
+            "invalid persisted tenant audit preparation",
+        )
+    })
+}
+
 fn verify_prefix(
     state: &TenantState,
     store: &kasumi_store::TenantStore,
@@ -312,6 +353,62 @@ impl TenantEngine {
             "raw audit pruning requires fixture storage"
         );
         self.prepare_audit_prune_inner()
+    }
+
+    /// The apply lock pins the committed prefix across the local Store read.
+    /// Preparation publishes its pending row atomically. A concurrent retry
+    /// may replace that row, while this observation describes one exact read.
+    pub(crate) fn audit_capacity_observation(
+        &self,
+        context: &RequestContext,
+    ) -> Result<(TenantAuditCapacity, u64, bool)> {
+        let _apply = self.apply_lock.lock().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "tenant apply ownership unavailable")
+        })?;
+        let generation = self.generation()?;
+        let state = &generation.state;
+        self.authorize_release(context, None, Action::Audit, state.policy_epoch)?;
+        let has_reservation = self
+            .audit_maintenance
+            .lock()
+            .map_err(|_| {
+                Error::new(
+                    ErrorCode::Unavailable,
+                    "tenant maintenance ownership unavailable",
+                )
+            })?
+            .is_some();
+        if !has_reservation {
+            return Err(Error::new(
+                ErrorCode::AuditUnavailable,
+                "tenant audit maintenance is not installed",
+            ));
+        }
+        let store = self
+            .snapshot_store
+            .get()
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "tenant storage is unavailable"))?;
+        let pending = pending_publication(store, state)?;
+        let observation = TenantAuditCapacity {
+            tenant: state.tenant.clone(),
+            incarnation: state.incarnation.clone(),
+            revision: state.revision,
+            stream_id: state.audit_retention.stream_id,
+            capacity: AuditCapacity::new(
+                &state.audit_retention,
+                &state.limits.audit_retention,
+                crate::audit_maintenance::NodeAuditMaintenance::WORKSPACE_BYTES,
+                pending,
+            ),
+        };
+        observation
+            .validate()
+            .map_err(|error| Error::new(ErrorCode::Corruption, error.message))?;
+        Ok((
+            observation,
+            state.policy_epoch,
+            state.policy.strict_read_audit,
+        ))
     }
 
     /// Cheap preflight for periodic maintenance. Preparation rechecks its own
@@ -925,6 +1022,10 @@ mod tests {
         let pending = store.get(PREPARATION, b"pending").unwrap().unwrap();
         let (reference, _) = decode(&pending).unwrap();
         assert_eq!(
+            pending_publication(&store, &before.state).unwrap().as_ref(),
+            Some(&reference.object)
+        );
+        assert_eq!(
             engine.generation().unwrap().state.audit_retention,
             before.state.audit_retention
         );
@@ -948,6 +1049,11 @@ mod tests {
         archive.fail.store(true, Ordering::SeqCst);
         apply(engine.clone(), command, 51).await.unwrap().unwrap();
         let current = engine.generation().unwrap();
+        assert!(
+            pending_publication(&store, &current.state)
+                .unwrap()
+                .is_none()
+        );
         assert_eq!(
             current.state.audit_retention.archive_head.as_ref(),
             Some(&reference)
