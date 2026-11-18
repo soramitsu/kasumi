@@ -1,4 +1,6 @@
 //! Secure, exclusive first-release standalone installation and operator tools.
+#[path = "standalone_certificate_rotation.rs"]
+mod certificate_rotation;
 #[path = "standalone_credential_recovery.rs"]
 mod credential_recovery;
 #[path = "standalone_tenant_staging.rs"]
@@ -11,6 +13,7 @@ use crate::{
     serving_runtime::TenantServingConfig,
 };
 use anyhow::{Context, Result, ensure};
+pub(crate) use certificate_rotation::pending as certificate_rotation_pending;
 pub use credential_recovery::{CredentialRecoveryReport, recover_existing_credentials};
 use kasumi_client::{ProfileAuthorityEndpoint, ProfileTlsFiles};
 use kasumi_store::{
@@ -859,8 +862,9 @@ async fn rotate_signing_key_owned(
     owner.finish(result).await
 }
 
-/// Offline certificate/key replacement keeps the installed CA identity. Local
-/// generated profiles are updated to the exact new native/admin leaf pins.
+/// Offline replacement of the listener and generated client certificates under
+/// the installed CA, published as one recoverable generation
+/// (`standalone_certificate_rotation.rs`). Rerun it after an interruption.
 pub async fn rotate_certificates(configuration: &Path) -> Result<serde_json::Value> {
     let config = RuntimeConfig::load(configuration)?;
     let storage = crate::runtime_memory::RuntimeStorage::installed(&config.admission)?;
@@ -883,7 +887,12 @@ async fn rotate_certificates_owned(
     let mut owner = OperatorState::open(&config, storage).await?;
     let result = async {
         let audit = owner.audit.clone();
-        crate::local_recovery::require_runtime_ready(audit.store())?;
+        // A pending rotation is what this command resumes; only an unfinished
+        // local recovery stops it.
+        ensure!(
+            !crate::local_recovery::runtime_pending(audit.store())?,
+            "standalone recovery is incomplete; resume or stop the recorded local operation first"
+        );
         let operation = Uuid::new_v4().to_string();
         audit
             .record(operator_event(
@@ -891,113 +900,7 @@ async fn rotate_certificates_owned(
                 kasumi_engine::SecurityOutcome::Started,
             ))
             .await?;
-        let result = async {
-            let root = installation_root(&config)?;
-            let ca_key_pem = private_files::read(&root.join("operator/ca-key.pem"), 1 << 20)?;
-            let ca_pem = private_files::read(&root.join("tls/ca.pem"), 1 << 20)?;
-            // Rustls checks the certificate's public key against the private key before
-            // any leaf is generated or replaced. Parsing two PEM files is insufficient.
-            let ca_identity = kasumi_transport::TlsIdentity::from_pem(&ca_pem, &ca_key_pem)?;
-            kasumi_transport::server_config(
-                &ca_identity,
-                kasumi_transport::ClientAuthentication::OAuth,
-            )?;
-            let ca_key = rcgen::KeyPair::from_pem(std::str::from_utf8(&ca_key_pem)?)?;
-            let issuer = rcgen::Issuer::from_ca_cert_pem(std::str::from_utf8(&ca_pem)?, &ca_key)?;
-            let clients = installed_client_identities(root)?;
-            let mut replacements = Vec::with_capacity(3 + clients.len());
-            for (name, files, client_auth) in [
-                ("mcp".to_owned(), config.mcp.tls.clone(), false),
-                ("native".to_owned(), config.native.tls.clone(), false),
-                ("admin".to_owned(), config.admin.tls.clone(), false),
-            ]
-            .into_iter()
-            .chain(clients.into_iter().map(|(name, files)| (name, files, true)))
-            {
-                let (certificate_pem, key_pem) = leaf(&name, &issuer, client_auth)?;
-                let identity = kasumi_transport::TlsIdentity::from_pem(
-                    certificate_pem.as_bytes(),
-                    key_pem.as_bytes(),
-                )?;
-                kasumi_transport::server_config(
-                    &identity,
-                    kasumi_transport::ClientAuthentication::OAuth,
-                )?;
-                replacements.push((name, client_auth, files, key_pem, certificate_pem));
-            }
-            // Admit every replacement client certificate before any is
-            // installed; the ones they replace are retired at the end.
-            let mut admitted = Vec::new();
-            for (name, client_auth, _, _, certificate_pem) in &replacements {
-                if *client_auth {
-                    let pin = kasumi_transport::certificate_pin(certificate_pem.as_bytes())?;
-                    crate::client_pins::enroll_configured(&config, pin, name)?;
-                    admitted.push((name.clone(), pin));
-                }
-            }
-            for (_, _, files, key_pem, certificate_pem) in replacements {
-                private_files::replace(&files.private_key, key_pem.as_bytes())?;
-                private_files::replace(&files.certificate, certificate_pem.as_bytes())?;
-            }
-            let native_pin = hex::encode(config.native.tls.load()?.certificate_pin());
-            let admin_pin = hex::encode(config.admin.tls.load()?.certificate_pin());
-            let control = owner.control().await?;
-            let control_result = async {
-                let context = offline_context(&control)?;
-                let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
-                plane.require_initialized(&context).await?;
-                {
-                    let mut topology = plane
-                        .topology(&context)
-                        .await?
-                        .context("installed Control topology is missing")?;
-                    let node = topology
-                        .topology
-                        .nodes
-                        .get_mut(&1)
-                        .context("standalone control node is missing")?;
-                    node.certificate_pins =
-                        BTreeSet::from([hex::encode(config.mcp.tls.load()?.certificate_pin())]);
-                    plane
-                        .replace_topology(
-                            context,
-                            topology.topology,
-                            kasumi_types::Precondition::Version(topology.version),
-                            format!("certificate-rotation-{operation}"),
-                        )
-                        .await?;
-                }
-                Ok::<_, anyhow::Error>(())
-            }
-            .await;
-            control.shutdown().await?;
-            control_result?;
-            for entry in std::fs::read_dir(root.join("profiles"))? {
-                let path = entry?.path();
-                if path
-                    .extension()
-                    .is_some_and(|extension| extension == "json")
-                    && let Ok(mut profile) = ClientProfile::load(&path)
-                {
-                    profile.native_certificate_pin = native_pin.clone();
-                    // Generated profiles name only this installation's admin
-                    // listener. Pin its current leaf even after an interrupted
-                    // rotation replaced the leaf these profiles still pin.
-                    for member in profile.administrative_members.values_mut() {
-                        member.certificate_pins = BTreeSet::from([admin_pin.clone()]);
-                    }
-                    private_files::replace(&path, &serde_json::to_vec_pretty(&profile)?)?;
-                }
-            }
-            for (name, pin) in admitted {
-                crate::client_pins::retire_configured(&config, &name, pin)?;
-            }
-            Ok::<_, anyhow::Error>(serde_json::json!({
-                "native_certificate_pin": native_pin,
-                "admin_certificate_pin": admin_pin,
-            }))
-        }
-        .await;
+        let result = certificate_rotation::rotate(configuration, &owner, &operation).await;
         let recorded = audit
             .record(operator_event(
                 &operation,
@@ -1008,43 +911,11 @@ async fn rotate_certificates_owned(
                 },
             ))
             .await;
-
         recorded?;
         result
     }
     .await;
     owner.finish(result).await
-}
-
-/// The generated client identities this installation's profiles use, by name:
-/// `profiles/client.pem` always, and each other identity in `profiles/` that a
-/// profile there names with the generated file names. An identity elsewhere
-/// is not the installation's to replace.
-fn installed_client_identities(root: &Path) -> Result<BTreeMap<String, TlsFiles>> {
-    let profiles = root.join("profiles");
-    let mut identities =
-        BTreeMap::from([("client".to_owned(), identity_files(&profiles, "client"))]);
-    for entry in std::fs::read_dir(&profiles)? {
-        let path = entry?.path();
-        if path
-            .extension()
-            .is_some_and(|extension| extension == "json")
-            && let Ok(profile) = ClientProfile::load(&path)
-            && let Some(name) = profile
-                .identity
-                .certificate
-                .file_stem()
-                .and_then(|stem| stem.to_str())
-        {
-            let generated = identity_files(&profiles, name);
-            if profile.identity.certificate == generated.certificate
-                && profile.identity.private_key == generated.private_key
-            {
-                identities.insert(name.to_owned(), generated);
-            }
-        }
-    }
-    Ok(identities)
 }
 
 pub async fn backup_operator_keys(configuration: &Path, output: &Path) -> Result<()> {

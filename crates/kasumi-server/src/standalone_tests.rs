@@ -851,8 +851,12 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     rotate_certificates_with_storage(&installation.configuration, storage.clone())
         .await
         .unwrap();
+    // The configuration now names the new listener generation.
+    let rotated = RuntimeConfig::load(&installation.configuration).unwrap();
+    assert_ne!(rotated.admin.tls, config.admin.tls);
+    assert!(!config.admin.tls.certificate.exists());
     let admin_pin = BTreeSet::from([hex::encode(
-        config.admin.tls.load().unwrap().certificate_pin(),
+        rotated.admin.tls.load().unwrap().certificate_pin(),
     )]);
     // Rotation admitted the replacements and retired the replaced ones.
     let new_pins = client_pins();

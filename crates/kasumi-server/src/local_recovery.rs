@@ -347,6 +347,11 @@ pub(crate) fn require_runtime_ready(store: &TenantStore) -> Result<()> {
         !runtime_pending(store)?,
         "standalone recovery is incomplete; resume or stop the recorded local operation before serving"
     );
+    // Its profiles, pins and Control topology may still name either generation.
+    ensure!(
+        !crate::standalone::certificate_rotation_pending(store)?,
+        "a certificate rotation is incomplete; rerun `kasumid maintenance rotate-certificates` before serving"
+    );
     Ok(())
 }
 
@@ -1645,6 +1650,10 @@ impl Operator {
     fn publish_profile(&self, journal: &mut Journal) -> Result<()> {
         let request = &journal.status.request;
         let root = crate::standalone::installation_root(&self.config)?;
+        // The application's client identity, wherever the latest certificate
+        // rotation published it.
+        let identity =
+            crate::standalone::ClientProfile::load(&root.join("profiles/default.json"))?.identity;
         let profile_path = root
             .join("profiles")
             .join(format!("recovery-{}.json", request.operation_id));
@@ -1681,12 +1690,9 @@ impl Operator {
                     .auth
                     .require_certificate_binding
                     .then(|| {
-                        crate::runtime::TlsFiles {
-                            certificate: root.join("profiles/client.pem"),
-                            private_key: root.join("profiles/client-key.pem"),
-                        }
-                        .load()
-                        .map(|identity| hex::encode(identity.certificate_pin()))
+                        crate::runtime::TlsFiles::from(identity.clone())
+                            .load()
+                            .map(|identity| hex::encode(identity.certificate_pin()))
                     })
                     .transpose()?,
                 audience: Default::default(),
@@ -1747,10 +1753,7 @@ impl Operator {
                 },
             )]),
             mcp_endpoint: self.config.mcp.protocol.public_url.clone(),
-            identity: kasumi_client::ProfileTlsFiles {
-                certificate: root.join("profiles/client.pem"),
-                private_key: root.join("profiles/client-key.pem"),
-            },
+            identity,
             server_ca: root.join("tls/ca.pem"),
             native_certificate_pin: hex::encode(self.config.native.tls.load()?.certificate_pin()),
             bearer_file,

@@ -251,8 +251,10 @@ scrape_configs:
 ```
 
 The scraper must run under an operator-controlled identity permitted to read these
-private files. Keep the selected profile's credential watcher running and update
-the scraper's trust and certificate files during explicit rotation. A dedicated
+private files. Keep the selected profile's credential watcher running. Certificate rotation
+publishes new client certificate files under `profiles/generation-<id>` and
+deletes the old ones: point the scraper at the files `profiles/control.json`
+names afterwards. A dedicated
 credential family can be revoked independently, but it still requires current
 Control administrator policy. A copied profile does not renew itself.
 
