@@ -7,6 +7,10 @@ use serde::Serialize;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+#[path = "application_feed_records.rs"]
+mod feed;
+pub(crate) use feed::SnapshotFeed;
+
 /// Order-preserving tuple encoding: each component escapes 0x00 as 0x00 0xFF
 /// and ends with 0x00 0x01, so a shorter component sorts before its extensions.
 struct KeyBuilder(Vec<u8>);

@@ -1612,6 +1612,35 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         ))?,
         Some(crate::application_records::PrimaryPoint::Missing)
     ));
+    let mut visited = Vec::new();
+    let feed = &reopened.state.change_feed;
+    selection
+        .with_snapshot_records(&reopened.state, |tree, memory| {
+            let snapshot_feed = crate::application_records::SnapshotFeed { tree, memory };
+            snapshot_feed.visit(
+                feed.first_available_sequence(),
+                feed.first_available_sequence(),
+                feed.next_sequence,
+                reopened.state.revision,
+                |sequence, revision, ordinal, count, record| {
+                    assert_eq!(record.collection, "docs");
+                    assert_eq!(record.id, "point");
+                    let document = record
+                        .document
+                        .as_ref()
+                        .unwrap()
+                        .load_owned(reopened.document_resolver())
+                        .map_err(crate::service::document_load_error)?;
+                    assert_eq!(document.as_ref().body, body);
+                    visited.push((sequence, revision, ordinal, count));
+                    Ok(true)
+                },
+            )?;
+            Ok(())
+        })?
+        .expect("reopened change directory");
+    assert_eq!(visited.len(), 1);
+    assert_eq!((visited[0].0, visited[0].2, visited[0].3), (1, 0, 1));
     assert!(!CellRef::ptr_eq(&installed_cell, &reopened_cell));
     let reconstructed = reopening_bootstrap
         .application_selection

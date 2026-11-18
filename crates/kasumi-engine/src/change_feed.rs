@@ -15,6 +15,23 @@ struct FeedRead {
     registration: Arc<WorkRegistration>,
 }
 impl FeedRead {
+    fn build(
+        &mut self,
+        actor: &RequestContext,
+        token: &QueryCancellation,
+        source: Option<crate::application_records::SnapshotFeed<'_, '_>>,
+    ) -> Result<ChangeFeedPage> {
+        build_change_feed_page(
+            &self.generation.state,
+            self.generation.document_resolver(),
+            actor,
+            &self.request,
+            token,
+            self.memory.as_mut().expect("feed workspace present"),
+            source,
+        )
+    }
+
     fn prepare_release(&mut self) -> Result<()> {
         let memory = self.memory.as_mut().expect("feed workspace present");
         memory.reserve(OUTPUT_CHARGE_BYTES)?;
@@ -138,10 +155,19 @@ impl Database {
         let owner = memory.workspace().blocking_owner();
         let read = tokio::select! {
             result = owner.read_child(cancellation.clone(), None, move |token| {
-                read.page = Some(build_change_feed_page(
-                    &read.generation.state, read.generation.document_resolver(), &actor,
-                    &read.request, token, read.memory.as_mut().expect("feed workspace present"),
-                )?);
+                let generation = read.generation.clone();
+                let state = &generation.state;
+                let selection = generation.application_selection.get().filter(|s| {
+                    s.has_exact_snapshot(state.revision_base, state.revision)
+                });
+                // A deployed pre-directory snapshot and an ordinary entry still
+                // use their own pinned generation. A bad installed tree fails.
+                let result = if let Some(selection) = selection {
+                    selection.with_snapshot_records(state, |tree, memory| {
+                        Ok(read.build(&actor, token, Some(crate::application_records::SnapshotFeed { tree, memory })))
+                    }).map_err(document_load_error)?
+                } else { None };
+                read.page = Some(match result { Some(page) => page?, None => read.build(&actor, token, None)? });
                 read.prepare_release()?;
                 Ok(read)
             }) => result?,
@@ -211,6 +237,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
     request: &ReadChangeFeed,
     cancellation: &QueryCancellation,
     memory: &mut QueryMemory<W>,
+    disk: Option<crate::application_records::SnapshotFeed<'_, '_>>,
 ) -> Result<ChangeFeedPage> {
     memory.scope(|memory| {
         cancellation.check()?;
@@ -243,7 +270,11 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 cursor.after_sequence
             }
         };
-        let first_available_sequence = feed.first_available_sequence();
+        let first_available_sequence = feed
+            .next_sequence
+            .checked_sub(feed.event_count as u64)
+            .filter(|sequence| *sequence > 0)
+            .ok_or_else(|| Error::new(ErrorCode::Corruption, "invalid change feed bounds"))?;
         if after + 1 < first_available_sequence {
             return Ok((
                 ChangeFeedPage::RetentionGap {
@@ -291,26 +322,17 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 "change feed cursor exceeds result budget",
             ));
         }
-        let start = feed
-            .commits
-            .range(..=after + 1)
-            .next_back()
-            .map_or(after + 1, |(&sequence, _)| sequence);
         let mut examined = 0usize;
-        'commits: for (_, commit) in feed.commits.range(start..) {
-            for (ordinal, record) in commit.records.iter().enumerate() {
-                let sequence = commit.first_sequence + ordinal as u64;
-                if sequence <= after {
-                    continue;
-                }
+        let mut append =
+            |sequence, revision, ordinal, count, record: &ChangeRecord| -> Result<bool> {
                 cancellation.check()?;
                 if examined >= 1000 || events.len() >= request.limit {
-                    break 'commits;
+                    return Ok(false);
                 }
                 examined += 1;
                 if !request.collections.contains(&record.collection) {
                     next.after_sequence = sequence;
-                    continue;
+                    return Ok(examined < 1000);
                 }
                 let document = record
                     .document
@@ -334,9 +356,9 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 let decoded = document.as_ref().map(AsRef::as_ref);
                 let borrowed = BorrowedEvent {
                     sequence,
-                    revision: commit.revision,
+                    revision,
                     ordinal,
-                    commit_event_count: commit.records.len(),
+                    commit_event_count: count,
                     collection: &record.collection,
                     id: &record.id,
                     document: decoded,
@@ -354,7 +376,7 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                             "change event exceeds page byte budget",
                         ));
                     }
-                    break 'commits;
+                    return Ok(false);
                 }
                 if events.len() == capacity {
                     return Err(Error::new(
@@ -365,9 +387,9 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 memory.reserve(kasumi_query::change_event_clone_bytes(record, decoded)?)?;
                 let event = ChangeEvent {
                     sequence,
-                    revision: commit.revision,
+                    revision,
                     ordinal,
-                    commit_event_count: commit.records.len(),
+                    commit_event_count: count,
                     collection: record.collection.clone(),
                     id: record.id.clone(),
                     document: decoded.cloned(),
@@ -375,6 +397,37 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 bytes += event_bytes;
                 next.after_sequence = sequence;
                 events.push(event);
+                Ok(examined < 1000 && events.len() < request.limit)
+            };
+        if let Some(disk) = disk {
+            disk.visit(
+                first_available_sequence,
+                after + 1,
+                feed.next_sequence,
+                state.revision,
+                append,
+            )?;
+        } else {
+            let start = feed
+                .commits
+                .range(..=after + 1)
+                .next_back()
+                .map_or(after + 1, |(&sequence, _)| sequence);
+            'commits: for (_, commit) in feed.commits.range(start..) {
+                for (ordinal, record) in commit.records.iter().enumerate() {
+                    let sequence = commit.first_sequence + ordinal as u64;
+                    if sequence > after
+                        && !append(
+                            sequence,
+                            commit.revision,
+                            ordinal,
+                            commit.records.len(),
+                            record,
+                        )?
+                    {
+                        break 'commits;
+                    }
+                }
             }
         }
         cancellation.check()?;

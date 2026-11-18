@@ -44,16 +44,31 @@ impl SelectedApplication {
         id: &str,
         admit: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<Option<crate::application_records::PrimaryPoint>> {
+        self.with_snapshot_records(state, |tree, _| {
+            crate::application_records::snapshot_point(tree, collection, id, state.revision, admit)
+        })
+    }
+
+    /// Lend a verified application directory only at its exact selected revision.
+    /// A deployed snapshot without a manifest must use its original reader.
+    pub(crate) fn with_snapshot_records<T>(
+        &self,
+        state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
         use kasumi_store::{application_manifest::ApplicationManifest, ordered_pages::TreeReader};
         ensure!(
             self.has_exact_snapshot(state.revision_base, state.revision),
-            "primary point requires the exact selected snapshot"
+            "record read requires the exact selected snapshot"
         );
         let roots = self
             .cell
             .roots
             .upgrade()
-            .context("selected primary installation absent")?;
+            .context("selected record installation absent")?;
         let snapshot = self
             .cell
             .position
@@ -79,12 +94,12 @@ impl SelectedApplication {
                     && manifest.revision == state.revision
                     && manifest.document_count == state.document_count
                     && manifest.logical_bytes == state.logical_bytes,
-                "selected primary snapshot identity differs"
+                "selected record snapshot identity differs"
             );
             let tree =
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
-            crate::application_records::snapshot_point(&tree, collection, id, state.revision, admit)
-                .map(Some)
+            let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
+            read(&tree, &memory).map(Some)
         })();
         let close = reader.close();
         match (outcome, close) {
