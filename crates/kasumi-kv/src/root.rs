@@ -1255,6 +1255,33 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_mirror_repair_always_preserves_the_selected_generation() {
+        for effect in [GroupOp::RootWrite, GroupOp::RootSync] {
+            for timing in [FaultTiming::BeforeEffect, FaultTiming::AfterEffect] {
+                let (group, root) = published(2);
+                let (next, _) = root.reserve_segment(None).unwrap();
+                group.fail(GroupOp::RootSync, 2, FaultTiming::BeforeEffect);
+                publish_root(&group, &root, &next).unwrap_err();
+                let torn = group.crash_torn_root(RootSlot::A, 64);
+                let (selected_root, slot, mirrored) = selected(&torn);
+                assert_eq!(selected_root, next);
+                assert!(!mirrored);
+                torn.fail(effect, 1, timing);
+                repair_mirror(&torn, &selected_root, slot).unwrap_err();
+                let restarted = torn.crash();
+                let (recovered, recovered_slot, mirrored) = selected(&restarted);
+                assert_eq!(recovered, next);
+                assert_eq!(
+                    mirrored,
+                    effect == GroupOp::RootSync && timing == FaultTiming::AfterEffect
+                );
+                repair_mirror(&restarted, &recovered, recovered_slot).unwrap();
+                assert_eq!(selected(&restarted.crash()), (next, RootSlot::A, true));
+            }
+        }
+    }
+
+    #[test]
     fn unmirrored_new_root_beside_the_previous_generation_is_selected() {
         let (group, root) = published(2);
         let (next, _) = root.reserve_segment(None).unwrap();
