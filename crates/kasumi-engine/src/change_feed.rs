@@ -127,17 +127,26 @@ impl Database {
                 ));
             }
         }
-        read.page = Some(build_change_feed_page(
-            state,
-            read.generation.document_resolver(),
-            context,
-            &read.request,
-            &cancellation,
-            read.memory.as_mut().expect("feed workspace present"),
-        )?);
-        // No page allocation follows this transition. Strict auditing gets the
-        // completed operation slot while its immutable output retains the bytes.
-        read.prepare_release()?;
+        // Resolving an after-image can enter the native store. Hold the page's
+        // original workspace, source, registration and permit in the child.
+        let memory = read.memory.as_mut().expect("feed workspace present");
+        memory.reserve(
+            crate::snapshot_codec::inspect_typed_json_work(context)
+                .map_err(|e| Error::new(ErrorCode::ResourceExhausted, e.to_string()))?,
+        )?;
+        let actor = context.clone();
+        let owner = memory.workspace().blocking_owner();
+        let read = tokio::select! {
+            result = owner.read_child(cancellation.clone(), None, move |token| {
+                read.page = Some(build_change_feed_page(
+                    &read.generation.state, read.generation.document_resolver(), &actor,
+                    &read.request, token, read.memory.as_mut().expect("feed workspace present"),
+                )?);
+                read.prepare_release()?;
+                Ok(read)
+            }) => result?,
+            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+        };
         let state = &read.generation.state;
         let releases = read
             .request

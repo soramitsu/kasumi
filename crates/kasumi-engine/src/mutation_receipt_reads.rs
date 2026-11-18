@@ -3,6 +3,9 @@
 //! read floor precedes I/O; structural decode admission precedes the row DTO.
 use super::*;
 const POINT_READ_BYTES: u64 = 8 << 20;
+fn receipt_deadline() -> Error {
+    Error::new(ErrorCode::Unavailable, "mutation receipt deadline exceeded")
+}
 pub(super) struct ReceiptRead {
     pub receipt: Option<StoredReceipt>,
     pub revision: u64,
@@ -21,10 +24,7 @@ impl Database {
     ) -> Result<ReceiptRead> {
         context.authorization.check_live()?;
         if tokio::time::Instant::now() >= deadline {
-            return Err(Error::new(
-                ErrorCode::Unavailable,
-                "mutation receipt deadline exceeded",
-            ));
+            return Err(receipt_deadline());
         }
         self.access()?;
         validate_name(&context.principal)?;
@@ -46,6 +46,8 @@ impl Database {
             return Err(Error::new(ErrorCode::Forbidden, "receipt tenant differs"));
         }
         let key = staged_digest(&(&context.principal, idempotency_key))?.0;
+        let owner = reservation.blocking_owner();
+        let token = cancellation.clone();
         let work = ReceiptWork {
             generation,
             context: context.clone(),
@@ -54,11 +56,10 @@ impl Database {
             reservation,
             registration,
         };
-        let worker = tokio::task::spawn_blocking(move || work.run(&key));
+        let worker = owner.read_child(token, Some(receipt_deadline), move |_| work.run(&key));
         tokio::time::timeout_at(deadline, worker)
             .await
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "mutation receipt deadline exceeded"))?
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "mutation receipt worker failed"))?
+            .map_err(|_| receipt_deadline())?
     }
 }
 /// Storage and decoded workspace drop before the shutdown registration on every
@@ -77,10 +78,7 @@ impl ReceiptWork {
             self.cancellation.check()?;
             self.context.authorization.check_live()?;
             if tokio::time::Instant::now() >= self.deadline {
-                anyhow::bail!(Error::new(
-                    ErrorCode::Unavailable,
-                    "mutation receipt deadline exceeded"
-                ));
+                anyhow::bail!(receipt_deadline());
             }
             Ok(())
         };

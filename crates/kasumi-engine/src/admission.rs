@@ -535,6 +535,44 @@ impl MemoryCore {
     pub(crate) fn blocking_children(&self) -> &kasumi_serving::BlockingChildren {
         &self.blocking_children
     }
+    /// Run a read whose captures already own their workspace, registration and
+    /// selected source. Preserve its actual join when the request disappears.
+    pub(crate) async fn read_child<T: Send + 'static>(
+        &self,
+        token: QueryCancellation,
+        deadline_error: Option<fn() -> Error>,
+        read: impl FnOnce(&QueryCancellation) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let call = self
+            .blocking_children()
+            .start(move || {
+                token
+                    .check()
+                    .map_err(kasumi_serving::ChildFailure::Stopped)?;
+                read(&token).map_err(|error| {
+                    if error.code == ErrorCode::CursorExpired
+                        || deadline_error.is_some_and(|expired| error == expired())
+                        || token.check().err().as_ref() == Some(&error)
+                    {
+                        kasumi_serving::ChildFailure::Stopped(error)
+                    } else {
+                        kasumi_serving::ChildFailure::Failed(error)
+                    }
+                })
+            })
+            .map_err(|refused| match refused {
+                kasumi_serving::ChildRefused::Full => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "blocking read capacity exhausted",
+                ),
+                kasumi_serving::ChildRefused::Sealed => {
+                    Error::new(ErrorCode::Unavailable, "blocking read owner sealed")
+                }
+            })?;
+        call.wait()
+            .await
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "blocking read worker failed"))?
+    }
     /// Refuse every later blocking child of the process's installed core. Only
     /// the process's final drain seals, before it joins that core's children.
     pub fn seal_installed_blocking_children() {
@@ -1504,35 +1542,9 @@ impl Reservation {
         token: QueryCancellation,
         read: impl FnOnce(Self, &QueryCancellation) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        let owner = self.blocking_owner();
-        let call = owner
-            .blocking_children()
-            .start(move || {
-                token
-                    .check()
-                    .map_err(kasumi_serving::ChildFailure::Stopped)?;
-                read(self, &token).map_err(|error| {
-                    if error.code == ErrorCode::CursorExpired
-                        || token.check().err().as_ref() == Some(&error)
-                    {
-                        kasumi_serving::ChildFailure::Stopped(error)
-                    } else {
-                        kasumi_serving::ChildFailure::Failed(error)
-                    }
-                })
-            })
-            .map_err(|refused| match refused {
-                kasumi_serving::ChildRefused::Full => Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "blocking read capacity exhausted",
-                ),
-                kasumi_serving::ChildRefused::Sealed => {
-                    Error::new(ErrorCode::Unavailable, "blocking read owner sealed")
-                }
-            })?;
-        call.wait()
+        self.blocking_owner()
+            .read_child(token, None, move |token| read(self, token))
             .await
-            .map_err(|_| Error::new(ErrorCode::Unavailable, "blocking read worker failed"))?
     }
 
     pub(crate) fn reserve_additional(&mut self, bytes: u64) -> Result<()> {

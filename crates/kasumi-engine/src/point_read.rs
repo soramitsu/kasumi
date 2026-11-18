@@ -137,8 +137,13 @@ impl PointRead {
         // This bounds native work only. Queueing and the existing read barrier
         // do not consume the selected source's native operation allowance.
         let deadline = tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT;
-        let worker_cancellation = cancellation.clone();
-        let worker = tokio::task::spawn_blocking(move || {
+        let owner = self
+            .memory
+            .as_ref()
+            .expect("point workspace present")
+            .workspace()
+            .blocking_owner();
+        let worker = owner.read_child(cancellation.clone(), None, move |worker_cancellation| {
             let _permit = permit;
             worker_cancellation.check()?;
             let generation = self.generation.as_ref().expect("selected point generation");
@@ -157,8 +162,7 @@ impl PointRead {
         });
         tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| point_deadline_error())?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "point read worker failed"))?,
+                .map_err(|_| point_deadline_error())?,
             _ = cancelled(cancellation) => Err(cancelled_error()),
         }
     }
