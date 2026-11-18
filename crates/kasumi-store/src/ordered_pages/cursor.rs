@@ -112,6 +112,7 @@ impl<'s> TreeReader<'s> {
     }
 
     pub fn read_value(&self, value: &ValueRef<'_>, out: &mut Vec<u8>) -> Result<()> {
+        self.source.check_access()?;
         match value {
             ValueRef::Inline(bytes) => {
                 out.clear();
@@ -119,7 +120,31 @@ impl<'s> TreeReader<'s> {
                 out.extend_from_slice(bytes);
                 Ok(())
             }
-            ValueRef::Overflow(overflow) => read_overflow(self.source, self.space, overflow, out),
+            ValueRef::Overflow(overflow) => {
+                let len = usize::try_from(overflow.len)?;
+                ensure!(len <= MAX_VALUE_BYTES, "overflow value exceeds bound");
+                out.clear();
+                out.try_reserve_exact(len)?;
+                let result = visit_overflow(self.source, self.space, overflow, |bytes| {
+                    out.extend_from_slice(bytes)
+                });
+                if result.is_err() {
+                    out.clear();
+                }
+                result
+            }
+        }
+    }
+
+    /// Verify the entire value while retaining at most one overflow chunk.
+    pub fn value_sha256(&self, value: &ValueRef<'_>) -> Result<[u8; 32]> {
+        self.source.check_access()?;
+        match value {
+            ValueRef::Inline(bytes) => Ok(Sha256::digest(bytes).into()),
+            ValueRef::Overflow(overflow) => {
+                visit_overflow(self.source, self.space, overflow, |_| {})?;
+                Ok(overflow.sha256)
+            }
         }
     }
 
@@ -311,7 +336,6 @@ impl<'s> TreeReader<'s> {
             return Ok(0);
         };
         let mut pages = 0u64;
-        let mut value = Vec::new();
         let mut pending = vec![(root, None::<Vec<u8>>, None::<Vec<u8>>)];
         while let Some((page_ref, low, high)) = pending.pop() {
             let page = self.load(&page_ref, low.as_deref(), high.as_deref())?;
@@ -319,7 +343,7 @@ impl<'s> TreeReader<'s> {
             if page.is_leaf() {
                 for index in 0..page.len() {
                     if let overflow @ ValueRef::Overflow(_) = page.value(index) {
-                        self.read_value(&overflow, &mut value)?;
+                        self.value_sha256(&overflow)?;
                     }
                 }
                 continue;

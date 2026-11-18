@@ -692,35 +692,32 @@ fn balance(
 }
 
 /// Read and authenticate an overflow value through the same source.
-pub(crate) fn read_overflow(
+fn visit_overflow(
     source: &dyn PageSource,
     space: &str,
     overflow: &OverflowRef,
-    out: &mut Vec<u8>,
+    mut visit: impl FnMut(&[u8]),
 ) -> Result<()> {
-    let len = usize::try_from(overflow.len)?;
-    ensure!(len <= MAX_VALUE_BYTES, "overflow value exceeds bound");
-    out.clear();
-    out.try_reserve_exact(len)?;
+    let mut remaining = usize::try_from(overflow.len)?;
+    ensure!(remaining <= MAX_VALUE_BYTES, "overflow value exceeds bound");
     let mut digest = Sha256::new();
     for chunk in 0..overflow.chunks() {
         source.check_access()?;
-        let expected = (len - out.len()).min(OVERFLOW_CHUNK_BYTES);
+        let expected = remaining.min(OVERFLOW_CHUNK_BYTES);
         let row = source
             .read_row(space, &overflow.chunk_key(chunk), OVERFLOW_CHUNK_BYTES)?
             .context("overflow chunk missing")?;
-        ensure!(
-            row.as_bytes().len() == expected,
-            "overflow chunk length differs"
-        );
-        digest.update(row.as_bytes());
-        out.extend_from_slice(row.as_bytes());
+        let bytes = row.as_bytes();
+        ensure!(bytes.len() == expected, "overflow chunk length differs");
+        digest.update(bytes);
+        visit(bytes);
+        remaining -= expected;
     }
     ensure!(
-        <[u8; 32]>::from(digest.finalize()) == overflow.sha256,
+        remaining == 0 && <[u8; 32]>::from(digest.finalize()) == overflow.sha256,
         "overflow value hash differs"
     );
-    Ok(())
+    source.check_access()
 }
 
 /// Encode `value` for a leaf: inline, or as fresh overflow chunks emitted
