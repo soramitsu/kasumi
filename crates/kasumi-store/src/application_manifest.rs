@@ -1,14 +1,10 @@
-//! The selected application manifest: one bounded record per tenant naming
-//! the page space and record tree of its application generation. It commits
-//! in the same paired native transaction that advances custody's applied
-//! cursor, so a reader of one root sees one exact applied generation.
+//! A bounded snapshot record naming its application descriptor tree. The
+//! application manifest, selected page space and authenticated Raft snapshot
+//! publish in one paired native transaction. Captures after that position can
+//! append log entries while existing readers retain their original root.
 //!
-//! Page spaces form a Store generation family. Ordinary edits stay inside
-//! the selected space; a bulk-built generation is staged into a fresh space
-//! and selected together with its manifest, and the replaced space is retired
-//! and reclaimed in bounded batches. An absent manifest means a store written
-//! before manifests existed: its logical records are untouched and still
-//! authoritative.
+//! Deployed snapshots precede manifests. Their original authenticated image
+//! remains readable, and the next snapshot can create the descriptor tree.
 use super::*;
 use crate::ordered_pages::TreeRoot;
 
@@ -31,6 +27,8 @@ pub struct ApplicationManifest {
     /// The logical revision this generation was applied at.
     pub revision: u64,
     pub revision_base: u64,
+    /// Identity of the exact Raft snapshot whose application records this tree indexes.
+    pub snapshot_sha256: [u8; 32],
     /// Local layout evolution; never a logical schema epoch or version.
     pub layout_epoch: u32,
     pub page_space: String,
@@ -46,6 +44,7 @@ impl ApplicationManifest {
         incarnation: &str,
         revision: u64,
         revision_base: u64,
+        snapshot_sha256: [u8; 32],
         page_space: &str,
         records: TreeRoot,
         document_count: u64,
@@ -57,6 +56,7 @@ impl ApplicationManifest {
             incarnation: incarnation.into(),
             revision,
             revision_base,
+            snapshot_sha256,
             layout_epoch: 1,
             page_space: page_space.into(),
             records,
@@ -88,6 +88,8 @@ impl ApplicationManifest {
             self.revision >= self.revision_base && !self.page_space.is_empty(),
             "invalid application manifest"
         );
+        kasumi_types::validate_name(&self.tenant)?;
+        kasumi_types::validate_name(&self.incarnation)?;
         validate_record(&self.page_space, &[], 0)
     }
 
@@ -106,7 +108,12 @@ impl ApplicationManifest {
     /// The manifest at a pinned root; every page read through `view` belongs
     /// to it even while a later generation replaces its space.
     pub fn load_at(view: &TenantReadView) -> Result<Option<Self>> {
+        let selected = SelectedGeneration::load_at(view, PAGE_FAMILY, &INITIAL_PAGE_SPACE)?;
         let Some(bytes) = view.get(MANIFESTS, CURRENT, MAX_MANIFEST_BYTES)? else {
+            ensure!(
+                selected.namespace(0) == INITIAL_PAGE_SPACE[0],
+                "selected application page space has no manifest"
+            );
             return Ok(None);
         };
         let manifest = Self::decode(bytes.as_bytes())?;
@@ -114,7 +121,6 @@ impl ApplicationManifest {
             manifest.tenant == view.tenant_store().tenant(),
             "application manifest tenant differs"
         );
-        let selected = SelectedGeneration::load_at(view, PAGE_FAMILY, &INITIAL_PAGE_SPACE)?;
         manifest.check_selection(&selected)?;
         Ok(Some(manifest))
     }

@@ -273,11 +273,12 @@ pub(crate) fn records_with_resolver<'a>(
                     })
             })),
             5 | 24 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
-            6 => Box::new(state.staged_transactions.iter().map(|(key, value)| {
-                let mut header = value.clone();
-                header.chunks.clear();
-                Record::Stage(key.clone(), header)
-            })),
+            6 => Box::new(
+                state
+                    .staged_transactions
+                    .iter()
+                    .map(|(key, value)| Record::Stage(key.clone(), stage_header(value))),
+            ),
             7 => Box::new(state.staged_transactions.iter().flat_map(|(key, value)| {
                 value
                     .chunks
@@ -291,8 +292,7 @@ pub(crate) fn records_with_resolver<'a>(
                     .map(|key| Record::ActiveStage(key.clone())),
             ),
             9 => Box::new(state.change_feed.commits.iter().map(|(i, value)| {
-                let mut header = value.as_ref().clone();
-                header.records.clear();
+                let header = change_header(value);
                 Record::Change(*i, Arc::new(header))
             })),
             10 => unreachable!("change-feed loans handled above"),
@@ -369,6 +369,34 @@ pub(crate) fn records_with_resolver<'a>(
             .filter(move |record| primary.as_ref().is_none_or(|p| &record.order().1 == p))
             .map(Ok),
     ))
+}
+
+/// Project a feed commit without retaining any of its separately emitted events.
+pub(crate) fn change_header(commit: &ChangeCommit) -> ChangeCommit {
+    ChangeCommit {
+        revision: commit.revision,
+        first_sequence: commit.first_sequence,
+        records: Vec::new(),
+        record_bytes: commit.record_bytes,
+    }
+}
+
+/// Chunks are emitted independently. Project the header without copying the chunk map.
+pub(crate) fn stage_header(value: &StagedTransaction) -> StagedTransaction {
+    StagedTransaction {
+        scope: value.scope.clone(),
+        transaction_id: value.transaction_id.clone(),
+        manifest_digest: value.manifest_digest.clone(),
+        manifest: value.manifest.clone(),
+        chunks: Default::default(),
+        stored_chunk_bytes: value.stored_chunk_bytes,
+        uploaded_payload_bytes: value.uploaded_payload_bytes,
+        uploaded_operations: value.uploaded_operations,
+        uploaded_read_assertions: value.uploaded_read_assertions,
+        expires_at_ms: value.expires_at_ms,
+        ttl_ms: value.ttl_ms,
+        outcome: value.outcome.clone(),
+    }
 }
 
 /// The header's copy of the Control state; intents and changes are records.

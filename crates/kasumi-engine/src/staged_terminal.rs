@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 const MAX_ROW_BYTES: usize = 2 << 20;
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES;
-const CATALOG: &str = "staged-terminal-catalog";
+pub(crate) const CATALOG: &str = "staged-terminal-catalog";
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
     canonical_bytes
         .checked_mul(8)

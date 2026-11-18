@@ -823,6 +823,7 @@ fn select_staged(
         "incarnation",
         2,
         0,
+        [3; 32],
         stage.namespace(),
         *root,
         root.count(),
@@ -831,6 +832,37 @@ fn select_staged(
     writes.push(manifest.write()?);
     writes.push(WriteOp::put(ROOTS, b"current", root.encode()));
     stores.write_batch(&writes, &[WriteOp::put("position", b"applied", b"staged")])
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_selected_page_space_requires_its_manifest_and_reclaims_only_its_family() -> Result<()> {
+    let (_directory, scratch) = scratch();
+    let stores = pair(FaultBackend::new(), scratch, true).await;
+    let store = stores.application();
+    let generation = SelectedGeneration::adopt(store, FAMILY, &[SPACE])?;
+    let unrelated = NamespaceStage::begin_generation(store, "other.snapshot.pages")?;
+    let (orphan, _) = stage(store, 4, 211)?;
+    let (selected, root) = stage(store, 8, 149)?;
+    select_staged(&stores, &generation, &selected, &root)?;
+    NamespaceStage::reclaim_family(store, FAMILY)?;
+    assert_eq!(space_rows(store, orphan.namespace())?, 0);
+    unrelated.seal_empty()?;
+    let view = store.read_view()?;
+    assert_eq!(
+        ApplicationManifest::load_at(&view)?
+            .context("missing manifest")?
+            .records,
+        root
+    );
+    store.write_batch(&[WriteOp::delete(
+        crate::application_manifest::MANIFESTS,
+        b"current",
+    )])?;
+    let missing = store.read_view()?;
+    assert!(ApplicationManifest::load_at(&missing).is_err());
+    missing.close()?;
+    assert!(ApplicationManifest::load_at(&view)?.is_some());
+    view.close()
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

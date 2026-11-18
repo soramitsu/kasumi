@@ -953,6 +953,19 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     })
     .await?;
     let store = database.stores().application().clone();
+    let snapshot_manifest = |store: &Arc<TenantStore>| -> Result<_> {
+        let view = store.read_view()?;
+        let selected = kasumi_store::application_manifest::ApplicationManifest::load_at(&view)?
+            .context("new snapshot has no application descriptor manifest")?;
+        view.close()?;
+        ensure!(
+            selected.tenant == TENANT
+                && selected.document_count > 0
+                && selected.records.count() >= selected.document_count
+        );
+        Ok(selected)
+    };
+    let selected = snapshot_manifest(&store)?;
     let cycles = store.storage_maintenance_status()?.cycles_completed;
     let control = configured_control_context(&copy.config.control)?;
     let requested = serving
@@ -986,6 +999,11 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     // Second open: this build's own snapshot of the deployed state.
     let serving = Serving::start(&copy).await?;
     let database = serving.database()?;
+    let reopened_manifest = snapshot_manifest(database.stores().application())?;
+    ensure!(
+        reopened_manifest == selected,
+        "compaction or reopen changed the selected application snapshot"
+    );
     ensure!(
         answers(&database, manifest).await? == expected,
         "answers changed across the restart"

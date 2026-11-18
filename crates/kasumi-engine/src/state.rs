@@ -474,6 +474,7 @@ fn capture_tenant_snapshot(
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("snapshot storage not installed"))?;
         let checkpoint_generation = generation.clone();
+        let checkpoint_store = engine.application_sources.get().map(|_| store.clone());
         Ok(
             kasumi_raft::CapturedSnapshot::new(retirement, move |writer| {
                 write(&generation, &store, writer).map_err(Into::into)
@@ -495,6 +496,14 @@ fn capture_tenant_snapshot(
                     &checkpoint_generation.state,
                     &context.checkpoint_sha256()?,
                 )?);
+                if let Some(store) = &checkpoint_store {
+                    crate::application_checkpoint::stage(
+                        store,
+                        &checkpoint_generation,
+                        context,
+                        &mut writes,
+                    )?;
+                }
                 Ok(writes)
             }),
         )
@@ -739,6 +748,11 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             writes.extend_from_slice(binding_installation.writes());
             writes.extend_from_slice(installation.writes());
             writes.extend_from_slice(target_installation.writes());
+            if context.mode == kasumi_raft::SnapshotRestoreMode::Reopen {
+                crate::application_checkpoint::verify(store, &generation, context)?;
+            } else if selection.is_some() {
+                crate::application_checkpoint::stage(store, &generation, context, &mut writes)?;
+            }
             let retirement = custody_snapshot::retired(&generation.state)?;
             #[cfg(test)]
             let retirement_probe =

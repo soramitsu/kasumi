@@ -361,11 +361,26 @@ impl NamespaceStage {
     /// generation a selector retired. Checkpoint-bound selected namespaces
     /// require the future snapshot/reference reachability collector.
     pub fn reclaim_unselected(store: &Arc<TenantStore>) -> Result<()> {
+        Self::reclaim_matching(store, |_| true)
+    }
+
+    /// Reclaim generations made by this family's exclusive staging owner.
+    /// Other families can stage concurrently.
+    pub fn reclaim_family(store: &Arc<TenantStore>, family: &str) -> Result<()> {
+        validate_target(family)?;
+        Self::reclaim_matching(store, |namespace| {
+            namespace == family
+                || namespace
+                    .rsplit_once('@')
+                    .is_some_and(|(base, id)| base == family && Uuid::parse_str(id).is_ok())
+        })
+    }
+
+    fn reclaim_matching(store: &Arc<TenantStore>, matches: impl Fn(&str) -> bool) -> Result<()> {
         let view = store.read_view()?;
         view.visit(OWNERS, OWNER_BYTES, |namespace, bytes| {
-            let owner = Owner::decode(bytes)?;
-            if owner.phase != Phase::Selected {
-                let namespace = std::str::from_utf8(namespace)?;
+            let namespace = std::str::from_utf8(namespace)?;
+            if matches(namespace) && Owner::decode(bytes)?.phase != Phase::Selected {
                 while !Self::reclaim(store, namespace)? {}
             }
             Ok(())

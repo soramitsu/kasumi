@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 const MAX_ROW_BYTES: usize = MAX_TARGET_COMPLETION_RECORD_BYTES as usize + (64 << 10);
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES + 64;
-const CATALOG: &str = "target-resolution-catalog";
+pub(crate) const CATALOG: &str = "target-resolution-catalog";
 pub(crate) fn scratch_limit(table_budget: u64) -> Result<u64> {
     table_budget
         .checked_mul(8)

@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 const MAX_ROW_BYTES: usize = 2 << 20;
 pub(crate) const MAX_SNAPSHOT_RECORD_BYTES: usize = MAX_ROW_BYTES + 256;
-const CATALOG: &str = "backup-binding-catalog";
+pub(crate) const CATALOG: &str = "backup-binding-catalog";
 
 pub(crate) fn scratch_limit(canonical_bytes: u64) -> Result<u64> {
     // Bound temporary working copies, indexes and commit overhead separately

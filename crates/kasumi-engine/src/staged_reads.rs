@@ -51,7 +51,7 @@ impl Database {
         // resamples the state or silently advances the selected terminal prefix.
         let terminals = generation.terminals.clone();
         let selected_status = selected.map(StagedTransaction::status);
-        let selected = selected.map(header);
+        let selected = selected.map(crate::snapshot_codec::stage_header);
         let mut state = crate::snapshot_codec::metadata(&generation.state);
         state.restore_lineage = generation.state.restore_lineage.clone();
         // Scope and manifest authorization do not read target lifecycle history.
@@ -223,22 +223,6 @@ fn metadata_workspace(
 
 // Never clone the uploaded chunk map just to clear it. Only the admitted header
 // and the separately sized received-index response leave the selected generation.
-fn header(stage: &StagedTransaction) -> StagedTransaction {
-    StagedTransaction {
-        scope: stage.scope.clone(),
-        transaction_id: stage.transaction_id.clone(),
-        manifest_digest: stage.manifest_digest.clone(),
-        manifest: stage.manifest.clone(),
-        chunks: Default::default(),
-        stored_chunk_bytes: stage.stored_chunk_bytes,
-        uploaded_payload_bytes: stage.uploaded_payload_bytes,
-        uploaded_operations: stage.uploaded_operations,
-        uploaded_read_assertions: stage.uploaded_read_assertions,
-        expires_at_ms: stage.expires_at_ms,
-        ttl_ms: stage.ttl_ms,
-        outcome: stage.outcome.clone(),
-    }
-}
 fn point_error(error: anyhow::Error) -> Error {
     error
         .downcast_ref::<Error>()
