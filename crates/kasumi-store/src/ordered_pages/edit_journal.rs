@@ -139,7 +139,7 @@ fn reclaim(store: &TenantStore, owner: &[u8], state: &[u8]) -> Result<u64> {
         while rows.offset < entries.len() {
             let disposition = rows.take(1)?[0];
             ensure!(
-                [b'+', b'-'].contains(&disposition) && seen < STAGE_ROWS,
+                b"+-".contains(&disposition) && seen < STAGE_ROWS,
                 "invalid edit disposition"
             );
             let tag = *rows
