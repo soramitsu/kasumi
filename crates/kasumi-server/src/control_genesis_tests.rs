@@ -433,3 +433,83 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn dedicated_control_enrolls_its_voters_and_remote_routes_without_local_data() -> Result<()> {
+    use kasumi_engine::control::{ControlNode, TenantRoute};
+    let dir = kasumi_store::test_utils::private_tempdir()?;
+    let (mut config, storage) = config(dir.path())?;
+    let tenant = config.tenants.remove(0);
+    config.tenant_audit_placements.remove(&tenant.tenant);
+    let remote = ControlTopology {
+        nodes: (4..=6)
+            .map(|id| {
+                (
+                    id,
+                    ControlNode {
+                        endpoint: format!("https://data-{id}.example"),
+                        failure_domain: format!("data-zone-{id}"),
+                        certificate_pins: BTreeSet::from([format!("{id:064x}")]),
+                    },
+                )
+            })
+            .collect(),
+        tenants: BTreeMap::from([(
+            tenant.tenant.clone(),
+            TenantRoute {
+                incarnation: tenant.incarnation.context("fixture incarnation missing")?,
+                mode: RouteMode::Replicated,
+                voters: BTreeSet::from([4, 5, 6]),
+            },
+        )]),
+    };
+    config.control.remote_data = Some(remote.clone());
+    config.validate()?;
+    let genesis = bootstrap(&config)?;
+    assert_eq!(
+        genesis.voters.keys().copied().collect::<Vec<_>>(),
+        [1, 2, 3]
+    );
+    let ReplicatedGenesis::Control(genesis) = genesis.genesis else {
+        unreachable!()
+    };
+    assert_eq!(genesis.topology.tenants, remote.tenants);
+    assert_eq!(genesis.topology.nodes.len(), 6);
+    for alias in ["id", "endpoint", "pin", "route"] {
+        let mut bad = remote.clone();
+        let peer = &config.replication.as_ref().unwrap().peers[0];
+        match alias {
+            "id" => {
+                bad.nodes.insert(peer.node_id, bad.nodes[&4].clone());
+            }
+            "endpoint" => bad
+                .nodes
+                .get_mut(&4)
+                .unwrap()
+                .endpoint
+                .clone_from(&peer.endpoint),
+            "pin" => {
+                bad.nodes.get_mut(&4).unwrap().certificate_pins =
+                    peer.certificate_pins.iter().cloned().collect();
+            }
+            _ => {
+                bad.tenants.get_mut(&tenant.tenant).unwrap().voters = BTreeSet::from([1, 4, 5]);
+            }
+        }
+        assert!(dedicated_topology(&config, &bad).is_err(), "{alias}");
+    }
+    crate::data_node_enrollment::initialize_with_storage(config.clone(), storage.clone()).await?;
+    let (node, security) = existing(&config, &storage).await?;
+    crate::node_enrollment::require_complete(
+        &security,
+        config.database_id,
+        crate::node_enrollment::Kind::Data,
+    )?;
+    assert!(
+        crate::node_enrollment::tenant_record(&security, crate::runtime::CONTROL_TENANT)?.is_some()
+    );
+    assert!(crate::node_enrollment::tenant_record(&security, &tenant.tenant)?.is_none());
+    security.shutdown().await?;
+    node.shutdown().await?;
+    Ok(())
+}

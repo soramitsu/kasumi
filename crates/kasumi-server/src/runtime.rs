@@ -152,6 +152,10 @@ pub struct TenantConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlConfig {
+    /// For a dedicated Control voter, the approved placement of remote data
+    /// groups. Its replication listener and peers remain the Control group.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_data: Option<kasumi_engine::control::ControlTopology>,
     /// Explicit installed closed lifecycle protocol; absence disables this service.
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub lifecycle: Option<crate::lifecycle_runtime::LifecycleRuntimeConfig>,
@@ -376,10 +380,15 @@ impl RuntimeConfig {
             Authenticator::mcp(self.auth.clone())?,
         )?;
         ensure!(
-            (!self.tenants.is_empty() || self.target_recovery.is_some())
+            (!self.tenants.is_empty()
+                || self.target_recovery.is_some()
+                || self.control.remote_data.is_some())
                 && self.tenants.len() <= 10_000,
-            "configure 1–10000 tenants"
+            "configure at most 10000 tenants and an explicit role for a node with no tenants"
         );
+        if let Some(remote) = &self.control.remote_data {
+            crate::control_genesis::dedicated_topology(self, remote)?;
+        }
         self.security_audit.validate()?;
         let mut key_refs = BTreeSet::new();
         for transit in std::iter::once(&self.security_audit.keys)
@@ -2187,6 +2196,9 @@ impl NodeRuntime {
         use kasumi_engine::control::{
             ControlNode, ControlTopology, DeploymentMode as Mode, TenantRoute,
         };
+        if let Some(remote) = &self.config.control.remote_data {
+            return crate::control_genesis::dedicated_topology(&self.config, remote);
+        }
         let (nodes, voters, mode) = if let Some(replication) = &self.config.replication {
             (
                 replication.control_nodes()?,
@@ -2915,6 +2927,7 @@ pub fn example_config(
         native: mutual(9444),
         admin: mutual(9445),
         control: ControlConfig {
+            remote_data: None,
             lifecycle: None,
             startup_principal: None,
             keys: transit("kasumi-control", "KASUMI_CONTROL_TRANSIT_TOKEN"),

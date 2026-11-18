@@ -544,3 +544,23 @@ Check strict-read audit failure and node pressure using the same policies and
 budgets as production. The repository's loopback/VM tests establish software
 behavior; they do not measure a selected provider's network, storage or power
 failure characteristics.
+
+### Dedicated Control voter enrollment
+
+For each dedicated Control voter, configure replicated mode and an empty
+`tenants` array. Use the Control process's own database ID, TLS identity and
+private storage. The top-level `replication` roster contains its Control peers
+and the three original Control voters. Give the three voters distinct failure
+domains. Install an audit placement for `__kasumi_control` and the configured
+Control and service-security key providers.
+
+Set `control.remote_data` to a topology object with `nodes` and `tenants`.
+Supply each data node's HTTPS endpoint, failure domain and certificate pins.
+Each tenant route specifies its incarnation, `"mode": "replicated"`, and three
+data voter IDs. For an initially empty routing catalog, use an empty object for
+each map. Data and Control node IDs, endpoints and TLS pins are separate.
+Run `kasumid check-config` and then `kasumid provision-node` on each new
+Control voter. Enrollment persists the shared routing catalog in Control genesis
+and creates only the local Control and service-security stores. It needs no
+tenant key providers. Data-only operation through a remote Control quorum still
+requires qualification before deployment.

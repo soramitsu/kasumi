@@ -1665,6 +1665,10 @@ impl Administration {
         if let Err(error) = self.close_retired_generations().await {
             outcome.failed(ReconcileStep::RetiredGenerations, &error);
         }
+        if self.config.control.remote_data.is_some() {
+            // Every routed application is owned by remote data voters.
+            return Ok(());
+        }
         let topology =
             ControlPlane::local_topology(&self.control).context(ReconcileStep::ControlTopology)?;
         let topology = &topology.topology;
