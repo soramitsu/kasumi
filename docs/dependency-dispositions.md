@@ -7,9 +7,8 @@ until reviewed. No version-only ignore is sufficient for a source patch.
 
 | Advisory or source defect | Disposition |
 | --- | --- |
-| RUSTSEC-2025-0167, bitmaps unsound byte access | Vendored validation and removal of mutable byte access. Verify exact input hashes and run both runtime and compile-fail regressions. |
+| RUSTSEC-2026-0292, imbl-sized-chunks | imbl 7.0.2 selects imbl-sized-chunks 0.2.0, the first patched version. This also removes bitmaps and both of its advisories (RUSTSEC-2025-0167 and RUSTSEC-2026-0247) from the workspace lockfile. Retain the earlier fork and regression history at commit 402238db. |
 | RUSTSEC-2026-0253, lru panic safety | Minimal upstream ordering backport to the compatible 0.16.4 API. Verify exact input hashes and panic/eviction regression. |
-| RUSTSEC-2026-0247, bitmaps unmaintained | Kasumi owns the small vendored patch and review surface. Retain MPL source/license and monitor replacement options. This maintenance advisory remains visible. |
 | RUSTSEC-2023-0089, atomic-polyfill unmaintained | Disabled postcard's unused default heapless-cas feature. Kasumi uses its allocated encoding API; removing heapless also removes atomic-polyfill from the lockfile. Final platform graphs must confirm continued absence. |
 | RUSTSEC-2025-0134, rustls-pemfile unmaintained | Replaced direct transport use with rustls-pki-types PEM APIs; removed from the integration lockfile. Final platform graphs must confirm its continued absence. |
 | GHSA-2mjx-qc3c-rqvc (RUSTSEC-2026-0285), GHSA-c8m5-c952-6cm4 (RUSTSEC-2026-0346), GHSA-h2v8-394m-p7vv (RUSTSEC-2026-0348), GHSA-w44r-93j7-qv28 (RUSTSEC-2026-0349), rustls | Updated the workspace lockfile from 0.23.43 to 0.23.46, which fixes all four advisories. Only rustls's version and checksum change; persisted formats and the remaining dependency graph are unchanged. Retain TLS listener, client, cluster transport and affected-crate test evidence with the release. |

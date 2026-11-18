@@ -132,7 +132,7 @@ fn main() -> anyhow::Result<()> {
         let (owned, shared) = diagnostics(hasher.clone(), batch);
         clone_counts.push(json!({"batch_operations":batch,"owned_payload_clones":owned,"arc_payload_clones":shared,"owned_payload_clones_per_update":owned as f64/UPDATES as f64}));
     }
-    let evidence = json!({"mechanism":"imbl 7.0.1 immutable-generation leaf updates; identical RandomState cloned across variants",
+    let evidence = json!({"mechanism":"imbl immutable-generation leaf updates; identical RandomState cloned across variants",
         "documents":DOCUMENTS,"updates_per_sample":UPDATES,"samples":SAMPLES,"architecture":std::env::consts::ARCH,"os":std::env::consts::OS,
         "limitations":"Microbenchmark excludes validation, Raft, KV durability and index updates. Timing is exploratory, not publication capacity evidence; inspect competing_work metadata. RandomState is identical within a run but randomized between runs.",
         "competing_work":std::env::var("KASUMI_MAP_BENCH_CONTEXT").unwrap_or_else(|_| "Machine isolation was not asserted; record concurrent workloads separately.".into()),

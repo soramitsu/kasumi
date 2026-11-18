@@ -2,7 +2,7 @@
 
 The operator supplies a review declaration before the owned native run. The
 runner binds its bytes and independently derives findings from retained scanner
-stdout over the audited registry-source projection. Three known decisions stay
+stdout over the audited registry-source projection. Reviewed source-patch regressions stay
 mandatory even if the scanner's advisory database changes.
 """
 from __future__ import annotations
@@ -21,11 +21,8 @@ from release_gate import inventory, sha256, write_json
 
 SCHEMA = "kasumi-dependency-advisory-inputs-v2"
 KNOWN = {
-    ("RUSTSEC-2025-0167", "bitmaps", "3.2.1"): ("source-patched", "vendor/bitmaps-3.2.1",
-                                                   {"bitmaps-invalid-bool", "bitmaps-no-mutable-bytes"}),
     ("RUSTSEC-2026-0253", "lru", "0.16.4"): ("source-patched", "vendor/lru-0.16.4",
                                                {"lru-panicking-drop", "lru-mut-iterator"}),
-    ("RUSTSEC-2026-0247", "bitmaps", "3.2.1"): ("accepted-residual-risk", "vendor/bitmaps-3.2.1", set()),
 }
 MAX_AGE_HOURS = 72
 
@@ -134,7 +131,7 @@ def inspect_declaration(value, source, projected_lock, now, regressions,
                 "known advisory is absent from declared database")
         decisions[key] = entry
     require(set(KNOWN) <= set(decisions), "required source advisory dispositions are absent")
-    require({"atomic-polyfill", "rustls-pemfile"}.isdisjoint({name for name, _ in packages}),
+    require({"atomic-polyfill", "rustls-pemfile", "bitmaps"}.isdisjoint({name for name, _ in packages}),
             "removed legacy dependencies returned to frozen lock")
     return observed, decisions, packages
 
@@ -204,10 +201,8 @@ def reconcile(findings, decisions, verdicts):
     for key, decision in decisions.items():
         known = KNOWN.get(key)
         require(known is not None, "disposition has no reviewed source mapping")
-        if decision["decision"] == "source-patched":
-            require(all(verdicts.get(case) == "passed" for case in decision["regressions"]),
-                    "source patch lacks named passing regressions")
-        else:
-            require(key == ("RUSTSEC-2026-0247", "bitmaps", "3.2.1"),
-                    "unreviewed residual risk cannot be accepted")
+        require(decision["decision"] == "source-patched" and known[0] == "source-patched",
+                "unreviewed residual risk cannot be accepted")
+        require(all(verdicts.get(case) == "passed" for case in decision["regressions"]),
+                "source patch lacks named passing regressions")
     return [{**finding, "decision": decisions[key]} for key, finding in sorted(findings.items())]

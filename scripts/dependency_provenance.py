@@ -32,12 +32,8 @@ MAX_MEMBERS = 4096
 # Reviewed differences from each published archive. ``added`` and ``changed``
 # name vendored files; ``removed`` names archive members that are not vendored.
 # The rmcp entry follows vendor/rmcp-terminal-ownership.md and the vendored
-# sources; the other three were derived from the published archives.
+# sources; the remaining entries were derived from the published archives.
 UPSTREAM_DELTA = {
-    "vendor/bitmaps-3.2.1": {
-        "changed": ("src/bitmap.rs", "src/lib.rs"),
-        "added": ("Cargo.lock",),
-        "removed": (".github/dependabot.yml", ".github/workflows/ci.yml", ".gitignore")},
     "vendor/lru-0.16.4": {
         "changed": ("src/lib.rs",),
         "added": ("Cargo.lock",),

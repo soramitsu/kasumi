@@ -44,11 +44,6 @@ _RMCP_UNSELECTED = ("auth", "auth-client-credentials-jwt", "local", "request-sta
 
 # root -> member directory ("." is the root package) -> reviewed selection.
 MATRIX = {
-    "vendor/bitmaps-3.2.1": {
-        "packages": {".": {
-            "name": "bitmaps", "product": ("default", "std"),
-            "cases": (_case("product"),)}},
-    },
     "vendor/lru-0.16.4": {
         "packages": {".": {
             "name": "lru", "product": ("default", "hashbrown"),

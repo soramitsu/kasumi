@@ -36,7 +36,6 @@ _OPENRAFT_FEATURES = "serde,storage-v2,single-term-leader,generic-snapshot-data"
 # rows repeat the custody commands retained by
 # docs/evidence/openraft-canonical-20260920 attempts 46-49.
 VENDOR_SUITES = (
-    ("bitmaps", "test", ("--manifest-path", "vendor/bitmaps-3.2.1/Cargo.toml"), ()),
     ("lru", "test", ("--manifest-path", "vendor/lru-0.16.4/Cargo.toml"), ()),
     ("serde-json-default", "test", _SERDE_JSON, ()),
     ("serde-json-number", "test", _SERDE_JSON + ("--features", "arbitrary_precision"), ()),

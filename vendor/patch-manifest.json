@@ -6,75 +6,6 @@
         ".cargo_vcs_info.json": {
           "bytes": 94,
           "mode": "0o644",
-          "sha256": "1c51972d9ddda18a22a3b36ec940f550a17ee9b3ea551cfa0354a5642e5f27da"
-        },
-        "CHANGELOG.md": {
-          "bytes": 2558,
-          "mode": "0o644",
-          "sha256": "da68818d220c1338a2eee001f875463926df6eebf575d06b877d24dc8829b5d0"
-        },
-        "CODE_OF_CONDUCT.md": {
-          "bytes": 3226,
-          "mode": "0o644",
-          "sha256": "3db9f112c815ffef9a6f51eef2f5f6a3f3c2900510c243f26ad890321b888473"
-        },
-        "Cargo.lock": {
-          "bytes": 9439,
-          "mode": "0o644",
-          "sha256": "d9c6b0df60660be9e2cb1acdd252ef51a55c85401a92fc7f4f384d6fcc35543c"
-        },
-        "Cargo.toml": {
-          "bytes": 987,
-          "mode": "0o644",
-          "sha256": "5a9b049f95e78a49a2172c158945e65d723fa719f8f0939c0a47e8be3472c856"
-        },
-        "Cargo.toml.orig": {
-          "bytes": 473,
-          "mode": "0o644",
-          "sha256": "e9c1a3981a3523327ccb8e27797e12f0a78270733a400b65a1c128f44349a679"
-        },
-        "LICENCE.md": {
-          "bytes": 15550,
-          "mode": "0o644",
-          "sha256": "e6b6566f085df5746515c6d7e2edcaec0d2b77d527ac40d91409d783fb6c8508"
-        },
-        "README.md": {
-          "bytes": 1436,
-          "mode": "0o644",
-          "sha256": "d6783b57b194d82de11e8e2f78204ef93272a85915d9060ab7e0806b3b2c336f"
-        },
-        "src/bitmap.rs": {
-          "bytes": 23439,
-          "mode": "0o644",
-          "sha256": "ed9ff7bcb14817d2c7b8cd034beb9ef8c5491f391b1c27f8e73a66196e4efea7"
-        },
-        "src/lib.rs": {
-          "bytes": 2748,
-          "mode": "0o644",
-          "sha256": "9df6d1f9dfc421e0faad8c857bfaf763115a25444335fced74917509d8d356f4"
-        },
-        "src/types.rs": {
-          "bytes": 42910,
-          "mode": "0o644",
-          "sha256": "bff4aef1f2fdc28884b455b184c0e6163d181a77186a00c523c93245acebf802"
-        }
-      },
-      "packages": [
-        {
-          "name": "bitmaps",
-          "patch": true,
-          "path": "vendor/bitmaps-3.2.1",
-          "version": "3.2.1"
-        }
-      ],
-      "path": "vendor/bitmaps-3.2.1",
-      "published_crate_sha256": "a1d084b0137aaa901caf9f1e8b21daa6aa24d41cd806e111335541eff9683bd6"
-    },
-    {
-      "files": {
-        ".cargo_vcs_info.json": {
-          "bytes": 94,
-          "mode": "0o644",
           "sha256": "7a68c67510ce26df83afd5f412590d0cf8a0a7321000016f18fc6bb298ce0e8d"
         },
         "CHANGELOG.md": {
@@ -4531,9 +4462,9 @@
   ],
   "support_files": {
     "README.md": {
-      "bytes": 8949,
+      "bytes": 8225,
       "mode": "0o644",
-      "sha256": "5933fd1bbb7f196a32fd07fe48ba5e5af9f111289b24d8c8e655b7302a43a486"
+      "sha256": "a7b6d0dbe897fc32238ae972c926ad34e4b57b8c1c2766a9a6fa5847f491efb5"
     },
     "reviews/openraft-0.9.25/custody-checkpoint.json": {
       "bytes": 9351,

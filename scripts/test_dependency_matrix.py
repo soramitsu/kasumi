@@ -72,7 +72,7 @@ class DependencyMatrixTests(unittest.TestCase):
             matrix.roster(self.source, self.manifest)
 
     def test_product_default_drift_is_not_silently_tested_as_product(self):
-        self.edit("vendor/bitmaps-3.2.1/Cargo.toml", 'default = ["std"]', "default = []")
+        self.edit("vendor/lru-0.16.4/Cargo.toml", 'default = ["hashbrown"]', "default = []")
         with self.assertRaisesRegex(ValueError, "unclassified|product case differs"):
             matrix.roster(self.source, self.manifest)
 

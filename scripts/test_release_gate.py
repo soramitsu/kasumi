@@ -77,7 +77,7 @@ class ReleaseGateTests(unittest.TestCase):
     def test_roster_is_exactly_the_23_gates_with_openraft_custody_commands(self):
         gates = release_gate.functional_gates(3, "/native/python3")
         self.assertEqual([name for name, _ in gates], [
-            "toolchain", "format", "python", "dependency-patches", "bitmaps", "lru",
+            "toolchain", "format", "python", "dependency-patches", "lru",
             "serde-json-default", "serde-json-number", "serde-json-raw", "serde-json-combined",
             "rmcp-terminal-ownership", "rmcp-upstream-protocol", "openraft-units",
             "openraft-integration", "openraft-singlethreaded", "openraft-clippy", "workspace",

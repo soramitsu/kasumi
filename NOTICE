@@ -6,9 +6,9 @@ The source retains third-party license and notice texts in vendor/ and
 release/licenses/. Binary distributions include THIRD-PARTY-NOTICES.txt,
 THIRD-PARTY-NOTICES.json and the referenced original texts in licenses/.
 
-The vendored bitmaps and lru sources contain Kasumi's documented memory-safety
-fixes. Their upstream notices and licenses remain in the vendored directories;
-patch provenance and review details are in vendor/README.md.
+The vendored lru source contains Kasumi's documented memory-safety fixes.
+Its upstream notices and license are in vendor/lru-0.16.4/. Patch provenance
+and review details are in vendor/README.md.
 
 The vendored serde_json source contains Kasumi's documented literal JSON key
 decoding correction. Its original MIT and Apache-2.0 license texts remain in

@@ -1760,7 +1760,12 @@ replicated readiness remain open.
 
 ### G11 — Acceptance manifest, infrastructure and dependencies
 
-**Current dependency roster (2026-09-26).** redb is removed, as the
+**Dependency roster update (2026-11-18).** imbl 7.0.2 selects imbl-sized-chunks
+0.2.0 and removes bitmaps from the workspace. The four retained vendor roots
+supply lru, serde_json, rmcp, openraft and openraft-macros. The earlier roster
+and its evidence below describe the September checkpoint.
+
+**Historical dependency roster (2026-09-26).** redb is removed, as the
 [native KV engine goal](native-kv-goal.md) requires, and `Cargo.lock` has no
 redb package. The `[patch.crates-io]` table and the workspace exclude list
 name five vendor roots with six packages. `vendor/patch-manifest.json`

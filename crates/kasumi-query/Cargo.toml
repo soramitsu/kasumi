@@ -12,7 +12,7 @@ kasumi-types.workspace = true
 serde.workspace = true
 sha2.workspace = true
 serde_json.workspace = true
-imbl = { version = "7.0.1", features = ["serde"] }
+imbl = { version = "7.0.2", features = ["serde"] }
 bigdecimal = "0.4.10"
 jsonschema = { version = "0.52.1", default-features = false, features = ["arbitrary-precision"] }
 tantivy = { version = "0.26.1", default-features = false, features = ["lz4-compression"] }

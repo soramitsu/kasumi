@@ -73,12 +73,6 @@ PYTHON_RESULT = re.compile(r"^Ran (\d+) tests? in [0-9.]+s$", re.M)
 VERIFIED = re.compile(r"^verified ([\w-]+) (\S+) \((vendor/[^)]+)\)$", re.M)
 TEST_VERDICT = re.compile(r"^test (.+?) \.\.\. (ok|FAILED|ignored)(?: .*)?$", re.M)
 MEMORY_SAFETY = (
-    {"id": "bitmaps-invalid-bool", "step": "bitmaps-3-2-1-product-targets",
-     "name": "bitmap::test::one_bit_decode_rejects_all_invalid_bool_representations",
-     "source": "vendor/bitmaps-3.2.1/src/bitmap.rs", "advisory": "RUSTSEC-2025-0167"},
-    {"id": "bitmaps-no-mutable-bytes", "step": "bitmaps-3-2-1-product-doctests",
-     "name": "src/lib.rs - (line {line})", "source": "vendor/bitmaps-3.2.1/src/lib.rs",
-     "advisory": "RUSTSEC-2025-0167"},
     {"id": "lru-panicking-drop", "step": "lru-0-16-4-product-targets",
      "name": "tests::pop_panicking_key_drop_preserves_list",
      "source": "vendor/lru-0.16.4/src/lib.rs", "advisory": "RUSTSEC-2026-0253"},
@@ -291,19 +285,11 @@ def named_memory_safety(source, files, steps, output):
         require(files[case["source"]]["sha256"] == sha256(source_file),
                 "memory-safety regression source differs")
         name = case["name"]
-        if "{line}" in name:
-            lines = source_file.read_text().splitlines()
-            markers = [index + 1 for index, line in enumerate(lines)
-                       if line.strip() == "//! ```compile_fail" and
-                       any("Kasumi's security patch removes mutable byte access" in previous
-                           for previous in lines[max(0, index - 5):index])]
-            require(len(markers) == 1, "bitmap compile-fail regression is absent")
-            name = name.format(line=markers[0])
         log = step["process"]["stdout"]
         transcript = owned.check_ref(output, log).read_text(errors="replace") + "\n" + \
             owned.check_ref(output, step["process"]["stderr"]).read_text(errors="replace")
         found = [status for test, status in TEST_VERDICT.findall(transcript)
-                 if test == name or test == name + " - compile fail"]
+                 if test == name]
         require(found == ["ok"], "named memory-safety regression did not pass exactly once: " + case["id"])
         results.append({**case, "name": name, "source_sha256": files[case["source"]]["sha256"],
                         "log": log, "verdict": "passed"})

@@ -105,13 +105,6 @@ class DependencyRunnerTests(unittest.TestCase):
             logs = {}
             for case in runner.MEMORY_SAFETY:
                 name = case["name"]
-                if "{line}" in name:
-                    lines = (source / case["source"]).read_text().splitlines()
-                    line = next(index + 1 for index, text in enumerate(lines)
-                                if text.strip() == "//! ```compile_fail" and
-                                any("Kasumi's security patch removes mutable byte access" in previous
-                                    for previous in lines[max(0, index - 5):index]))
-                    name = name.format(line=line) + " - compile fail"
                 logs.setdefault(case["step"], []).append("test " + name + " ... ok")
             steps = []
             for name, lines in logs.items():
@@ -169,7 +162,7 @@ class DependencyRunnerTests(unittest.TestCase):
                 value, source, projected_lock, when.isoformat(),
                 {case["id"] for case in runner.MEMORY_SAFETY}, "a" * 40)
             self.assertEqual(observed, database_files)
-            self.assertEqual(len(mapped), 3)
+            self.assertEqual(set(mapped), set(advisory.KNOWN))
             self.assertEqual(len(packages), len(advisory.locked_packages(projected_lock)))
             report = {"database": {"advisory-count": 3},
                       "lockfile": {"dependency-count": len(packages)},
