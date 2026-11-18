@@ -129,6 +129,10 @@ impl NamespaceStage {
         &self.namespace
     }
 
+    pub(crate) fn memory(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+        self.store.scratch_disk().memory().clone()
+    }
+
     /// The fixed-size selection write joins the checkpoint binding and applied
     /// cursor in the existing paired transaction. Store rejects it unless this
     /// exact owner has sealed successfully; it cannot select an abandoned stage.
@@ -149,6 +153,16 @@ impl NamespaceStage {
     /// retrying the same owner accepts only identical bytes and exact coverage.
     /// A sealed token is ready for publication and cannot be written again.
     pub fn write_table(&self, source: &EncryptedTable) -> Result<()> {
+        self.write_rows(|row| source.visit(|key, value| row(key, value)))
+    }
+
+    /// `write_table` for rows produced while staging, such as a bulk-built
+    /// ordered tree: `produce` hands each row to the callback in turn, and
+    /// the stage seals once it returns.
+    pub fn write_rows(
+        &self,
+        produce: impl FnOnce(&mut dyn FnMut(&[u8], &[u8]) -> Result<()>) -> Result<()>,
+    ) -> Result<()> {
         let _memory = self
             .store
             .scratch_disk()
@@ -170,7 +184,7 @@ impl NamespaceStage {
         let mut records = 0u64;
         let mut bytes = 0u64;
         let mut digest = Sha256::new();
-        source.visit(|key, value| {
+        produce(&mut |key, value| {
             validate_record(&self.namespace, key, value.len())?;
             let framed = self
                 .namespace
