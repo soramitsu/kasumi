@@ -68,7 +68,7 @@ pub(crate) fn stage(
     let records = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
         application_records::visit_all(
             generation,
-            kasumi_store::application_manifest::FIELD_POSTINGS_LAYOUT,
+            kasumi_store::application_manifest::FIELD_VALUES_LAYOUT,
             &bindings,
             store.plaintext_memory_owner(),
             |key, value| builder.push(key, value),

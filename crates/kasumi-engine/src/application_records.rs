@@ -9,7 +9,10 @@ use std::sync::Arc;
 
 #[path = "application_feed_records.rs"]
 mod feed;
+#[path = "application_field_values.rs"]
+mod field_values;
 pub(crate) use feed::SnapshotFeed;
+pub(crate) use field_values::visit_value_ids;
 
 /// Order-preserving tuple encoding: each component escapes 0x00 as 0x00 0xFF
 /// and ends with 0x00 0x01, so a shorter component sorts before its extensions.
@@ -413,6 +416,9 @@ pub(crate) fn visit_all(
                 key.extend_from_slice(id.as_bytes());
                 emit(&key, &[])
             })?;
+    }
+    if layout >= kasumi_store::application_manifest::FIELD_VALUES_LAYOUT {
+        field_values::publish(&generation.indexes, &mut emit)?;
     }
     Ok(())
 }

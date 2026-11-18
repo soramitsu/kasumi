@@ -173,10 +173,10 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         self.generation.indexes.as_ref()
     }
 
-    fn visit_field_presence(
+    fn visit_field_posting(
         &self,
         field: usize,
-        present: bool,
+        predicate: kasumi_query::FieldPredicate<'_>,
         cancellation: &QueryCancellation,
         mut lend: impl FnMut(&str) -> Result<()>,
     ) -> ReadResult<bool, Self::Failure> {
@@ -194,23 +194,41 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         let mut failure = None;
         let selected = selection
             .with_snapshot_records(state, |tree, _, layout| {
-                if layout < kasumi_store::application_manifest::FIELD_POSTINGS_LAYOUT {
-                    return Ok(false);
+                let check = || {
+                    cancellation.check()?;
+                    self.check_deadline()
+                };
+                let visit = |id: &str| {
+                    failure = check().and_then(|()| lend(id)).err();
+                    Ok(failure.is_none())
+                };
+                match predicate {
+                    kasumi_query::FieldPredicate::Exists(present)
+                        if layout >= kasumi_store::application_manifest::FIELD_POSTINGS_LAYOUT =>
+                    {
+                        crate::application_records::visit_field_presence(
+                            tree,
+                            &self.collection,
+                            field,
+                            present,
+                            visit,
+                        )?;
+                    }
+                    kasumi_query::FieldPredicate::Equals { value, kind }
+                        if layout >= kasumi_store::application_manifest::FIELD_VALUES_LAYOUT =>
+                    {
+                        let target = kasumi_query::FieldValue::predicate(value, kind)?;
+                        crate::application_records::visit_value_ids(
+                            tree,
+                            &self.collection,
+                            field,
+                            &target,
+                            || Ok(check()?),
+                            visit,
+                        )?;
+                    }
+                    _ => return Ok(false),
                 }
-                crate::application_records::visit_field_presence(
-                    tree,
-                    &self.collection,
-                    field,
-                    present,
-                    |id| {
-                        let result = cancellation
-                            .check()
-                            .and_then(|()| self.check_deadline())
-                            .and_then(|()| lend(id));
-                        failure = result.err();
-                        Ok(failure.is_none())
-                    },
-                )?;
                 Ok(true)
             })
             .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;

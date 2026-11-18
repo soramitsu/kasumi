@@ -1450,6 +1450,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     ("missing", kasumi_types::ScalarType::String),
                     ("nil", kasumi_types::ScalarType::String),
                     ("empty", kasumi_types::ScalarType::StringArray),
+                    ("value", kasumi_types::ScalarType::String),
                 ]
                 .into_iter()
                 .map(|(name, kind)| kasumi_types::IndexDefinition {
@@ -1639,10 +1640,15 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             for expected in [true, false] {
                 let mut disk = Vec::new();
                 let available = docs
-                    .visit_field_presence(ordinal, expected, &cancellation, |id| {
-                        disk.push(id.to_owned());
-                        Ok(())
-                    })
+                    .visit_field_posting(
+                        ordinal,
+                        kasumi_query::FieldPredicate::Exists(expected),
+                        &cancellation,
+                        |id| {
+                            disk.push(id.to_owned());
+                            Ok(())
+                        },
+                    )
                     .map_err(crate::index_source::into_anyhow)?;
                 assert!(available, "installed field directory absent after reopen");
                 let mut query = kasumi_types::QueryRequest::new("docs");
@@ -1673,6 +1679,35 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                     }
                 );
             }
+        }
+        for (needle, expected) in [("persisted", 1), ("other", 0)] {
+            let value = serde_json::json!(needle);
+            let mut rows = Vec::new();
+            assert!(
+                docs.visit_field_posting(
+                    3,
+                    kasumi_query::FieldPredicate::Equals {
+                        value: &value,
+                        kind: kasumi_types::ScalarType::String
+                    },
+                    &cancellation,
+                    |id| {
+                        rows.push(id.to_owned());
+                        Ok(())
+                    }
+                )
+                .map_err(crate::index_source::into_anyhow)?
+            );
+            let mut memory =
+                kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
+            let mut query = kasumi_types::QueryRequest::new("docs");
+            query.filter = kasumi_types::Filter::new().eq("/value", value);
+            let result = crate::test_utils::fixture_query(&reopened, &query, &mut memory)?;
+            assert_eq!(rows.len(), expected);
+            assert_eq!(
+                result.rows.iter().map(|row| &row.id).collect::<Vec<_>>(),
+                rows.iter().collect::<Vec<_>>()
+            );
         }
     }
     let mut visited = Vec::new();

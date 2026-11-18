@@ -133,13 +133,13 @@ impl ReadFailure<Infallible> {
 pub trait DocumentSource: crate::CollectionRecords {
     /// Indexes captured with this exact source, including verified hydration.
     fn indexes(&self) -> &crate::QueryIndexes;
-    /// Visit one field's ordered presence or absence postings if this exact
+    /// Visit one field's ordered postings if this exact
     /// generation has published them. An unsupported layout returns false
     /// before lending any IDs. An installed but unreadable index returns an error.
-    fn visit_field_presence(
+    fn visit_field_posting(
         &self,
         _field: usize,
-        _present: bool,
+        _predicate: crate::FieldPredicate<'_>,
         _cancellation: &QueryCancellation,
         _lend: impl FnMut(&str) -> kasumi_types::Result<()>,
     ) -> ReadResult<bool, Self::Failure> {
@@ -212,17 +212,17 @@ impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
     fn indexes(&self) -> &crate::QueryIndexes {
         self.source.indexes()
     }
-    fn visit_field_presence(
+    fn visit_field_posting(
         &self,
         field: usize,
-        present: bool,
+        predicate: crate::FieldPredicate<'_>,
         cancellation: &QueryCancellation,
         mut lend: impl FnMut(&str) -> kasumi_types::Result<()>,
     ) -> ReadResult<bool, Self::Failure> {
         self.check()?;
         let available = self
             .source
-            .visit_field_presence(field, present, cancellation, |id| {
+            .visit_field_posting(field, predicate, cancellation, |id| {
                 self.check()?;
                 lend(id)
             })?;

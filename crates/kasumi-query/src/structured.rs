@@ -825,7 +825,7 @@ impl Structured {
 
     /// A complete single-field predicate can stream its exact ID set without
     /// visiting documents or materializing the complement of a universe.
-    pub(crate) fn stored_presence<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
+    pub(crate) fn stored_posting<S: DocumentSource + ?Sized, W: crate::QueryWorkspace>(
         &self,
         source: &S,
         node: &Node<'_>,
@@ -833,18 +833,27 @@ impl Structured {
         cancellation: &QueryCancellation,
         memory: &mut crate::QueryMemory<W>,
     ) -> ReadResult<Option<IdSet>, S::Failure> {
-        let Node::Leaf {
-            path,
-            test: Test::Exists(present),
-        } = node
+        let Node::Leaf { path, test } = node else {
+            return Ok(None);
+        };
+        let Some((field, (_, index))) = self
+            .fields
+            .iter()
+            .enumerate()
+            .find(|(_, (key, _))| key.as_str() == *path)
         else {
             return Ok(None);
         };
-        let Some(field) = self.fields.keys().position(|key| key == *path) else {
-            return Ok(None);
+        let predicate = match test {
+            Test::Exists(present) => crate::FieldPredicate::Exists(*present),
+            Test::Eq(value) | Test::Contains(value) => crate::FieldPredicate::Equals {
+                value,
+                kind: index.kind,
+            },
+            _ => return Ok(None),
         };
         let mut ids = IdSet::new();
-        let available = source.visit_field_presence(field, *present, cancellation, |id| {
+        let available = source.visit_field_posting(field, predicate, cancellation, |id| {
             cancellation.check()?;
             check_size(ids.len() + 1, cap)?;
             // The set is privately built. Charge a whole 16-slot imbl node
@@ -859,14 +868,14 @@ impl Structured {
             {
                 return Err(Error::new(
                     ErrorCode::Corruption,
-                    "unordered field presence index",
+                    "unordered field postings",
                 ));
             }
             ids.insert(id.to_owned());
             Ok(())
         })?;
         if !available && !ids.is_empty() {
-            return Err(Error::new(ErrorCode::Corruption, "partial field presence index").into());
+            return Err(Error::new(ErrorCode::Corruption, "partial field postings").into());
         }
         Ok(available.then_some(ids))
     }

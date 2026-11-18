@@ -26,7 +26,9 @@ pub use allocation::{
 mod page;
 use page::PageWriter;
 pub use page::{PageBound, copy_page, copy_page_from_source};
+mod field_postings;
 mod scalar;
+pub use field_postings::{FieldPostingRow, FieldPredicate, FieldValue};
 mod search;
 mod seek;
 mod select;
@@ -218,7 +220,7 @@ impl QueryIndexes {
             128,
         )?)?;
         indexes.structured.validate(&filter, false)?;
-        let candidates = match indexes.structured.stored_presence(
+        let candidates = match indexes.structured.stored_posting(
             source,
             &filter,
             limits.max_query_candidates,
@@ -676,7 +678,7 @@ impl QueryIndexes {
             .transpose()?;
         let universe = text_ids.as_ref().unwrap_or(&structured.ids);
         let disk_ids = if text_ids.is_none() {
-            structured.stored_presence(
+            structured.stored_posting(
                 source,
                 &filter,
                 limits.max_query_candidates,
