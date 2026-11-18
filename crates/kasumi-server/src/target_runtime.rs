@@ -85,6 +85,8 @@ macro_rules! snapshot_ensure {
 fn missing_target_owner(message: impl Into<String>) -> Error {
     Error::new(ErrorCode::Unavailable, message)
 }
+#[path = "target_cleanup.rs"]
+mod cleanup;
 #[path = "target_membership_status.rs"]
 mod initial_membership_status;
 #[path = "target_start_status.rs"]
@@ -1619,7 +1621,37 @@ impl TargetRecoveryRuntime {
             }
             op.check()?;
         }
+        // Every acquisition, including one retained after a failed earlier
+        // binding, is bound before any catalog work.
+        self.bind_generation_node(g, op, key)?;
         Ok(())
+    }
+    /// Bind the storage the original materialization created before any
+    /// catalog work; every later opening must find that same directory.
+    /// Storage opened before its binding was recorded is bound by the store
+    /// identity its root carries, which the opening verified.
+    fn bind_generation_node(
+        &self,
+        g: &Generation,
+        op: &TargetOperation,
+        key: &GenerationKey,
+    ) -> Result<()> {
+        let node = g.node.as_ref().context("target node is not retained")?;
+        let binding = kasumi_engine::TargetFileBinding {
+            tenant: key.0.clone(),
+            target_incarnation: key.1,
+            path: self.path(key)?,
+            directory: node.physical_identity()?.directory,
+            node_store_id: self.generation_file_id(key)?,
+        };
+        match self.journal.materialization_file_binding(&key.0, key.1)? {
+            Some(bound) => ensure!(
+                bound == binding,
+                "target storage differs from its originally bound directory"
+            ),
+            None => self.journal.bind_materialization_file(op, &binding)?,
+        }
+        op.check()
     }
     async fn prepare_generation_stores(
         &self,
@@ -2191,34 +2223,28 @@ impl TargetRecoveryRuntime {
         op.check()?;
         self.journal.stop(op, proof)?;
         let path = self.path(key)?;
-        if target_file_exists(&path)? {
-            // Permanent journal stop and joined generation owners precede this
-            // exact Prepared/Ready file claim. No KV engine or application keys open.
-            let node = NodeStore::claim_cleanup(
-                &path,
-                self.generation_file_id(key)?,
-                self.audit.store().persistent_disk().clone(),
-                self.audit.store().persistent_disk().native_storage_config(),
-            )?;
-            ensure!(
-                kasumi_store::private_files::directory_identity(&path)?
-                    == node.directory_identity()?,
-                "target cleanup path changed after ownership"
-            );
-            op.check()?;
-            node.delete()?;
-        } else {
-            // A path-based NotFound is only a hint. Verify it against the
-            // installed, enrolled parent before signing an absence claim.
-            target_absence_from_installed_disk(
-                &self.config.persistent_disk,
-                self.audit.store().persistent_disk(),
-                &path,
-            )?;
-        }
-        // Keep the same enrolled parent directory under physical ownership
-        // through both exact unlink and the absent-file cleanup case.
-        self.generation_directory.sync_all()?;
+        // Permanent journal stop and joined generation owners precede this
+        // exact claim of the originally bound storage. No KV engine or
+        // application keys open; the durable terminal outcome follows the
+        // confirmed deletion and parent sync.
+        cleanup::delete_exact(
+            &JournalCleanup {
+                journal: &self.journal,
+                op,
+                key,
+            },
+            &cleanup::TargetStorage {
+                disk: self.audit.store().persistent_disk(),
+                config: &self.config.persistent_disk,
+                parent: &self.generation_directory,
+            },
+            &cleanup::TargetFile {
+                tenant: &key.0,
+                target: key.1,
+                path: &path,
+                node_store_id: self.generation_file_id(key)?,
+            },
+        )?;
         op.check()?;
         self.journal.stop(op, proof)?;
         let intent = op
@@ -2326,6 +2352,31 @@ impl TargetRecoveryRuntime {
         report.outcome(retained)
     }
 }
+/// The target journal's cleanup records under one StopLocal operation.
+struct JournalCleanup<'a> {
+    journal: &'a TargetJournal,
+    op: &'a TargetOperation,
+    key: &'a GenerationKey,
+}
+impl cleanup::CleanupLedger for JournalCleanup<'_> {
+    fn binding(&self) -> Result<Option<kasumi_engine::TargetFileBinding>> {
+        self.journal
+            .materialization_file_binding(&self.key.0, self.key.1)
+    }
+    fn bind(&self, binding: &kasumi_engine::TargetFileBinding) -> Result<()> {
+        self.journal.bind_materialization_file(self.op, binding)
+    }
+    fn cleanup(&self) -> Result<Option<kasumi_engine::TargetCleanup>> {
+        self.journal.target_cleanup(&self.key.0, self.key.1)
+    }
+    fn record(&self, cleanup: &kasumi_engine::TargetCleanup) -> Result<()> {
+        self.journal.record_target_cleanup(self.op, cleanup)
+    }
+    fn check(&self) -> Result<()> {
+        self.op.check()
+    }
+}
+
 // StopLocal resolves this exact path before it can claim or unlink a target
 // inode. A retained managed-directory failure is a custody fence, not an
 // absent-file observation from which cleanup evidence could be signed.

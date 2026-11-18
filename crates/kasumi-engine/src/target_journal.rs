@@ -142,6 +142,40 @@ struct FileCreation {
     materialization_command_id: Uuid,
 }
 
+/// The exact storage an original materialization created: its installed
+/// path, the identity of the directory created there and the store identity
+/// its root carries. Recorded before any catalog is initialized.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetFileBinding {
+    pub tenant: String,
+    pub target_incarnation: Uuid,
+    pub path: std::path::PathBuf,
+    pub directory: kasumi_store::private_files::DirectoryIdentity,
+    pub node_store_id: Uuid,
+}
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetCleanupStage {
+    /// Exact deletion of the bound storage has begun.
+    Deleting,
+    /// Deletion, or the absence of any storage, is confirmed after the
+    /// parent directory sync. Terminal.
+    Deleted,
+}
+/// Durable local cleanup progress of one permanently stopped target.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetCleanup {
+    pub tenant: String,
+    pub target_incarnation: Uuid,
+    pub stage: TargetCleanupStage,
+    /// Absent only for a target that never had storage bound.
+    pub binding: Option<TargetFileBinding>,
+}
+// One fixed charge covers a cleanup record and its single terminal rewrite.
+const CLEANUP_RESERVE: usize = 4 << 10;
+
 /// One journal-selected file operation. Only the first durably accepted
 /// original materialization may create; replay always requires a ready file.
 /// An uncertain commit or lost creation response never becomes a new creator.
@@ -424,6 +458,27 @@ impl TargetJournal {
                 journal.decode_serving_candidate(key, value)?;
             } else if key.starts_with(b"activation/") {
                 journal.decode_projection_record(key, value)?;
+            } else if key.starts_with(b"binding/") {
+                let binding: TargetFileBinding = decode_current(value)?;
+                journal.validate_binding(&binding)?;
+                ensure!(
+                    key == binding_key(&binding.tenant, binding.target_incarnation),
+                    "journal file binding key differs"
+                );
+                charged = charged
+                    .checked_add(value.len() as u64)
+                    .context("journal binding bytes exhausted")?;
+            } else if key.starts_with(b"cleanup/") {
+                let cleanup: TargetCleanup = decode_current(value)?;
+                journal.validate_cleanup(&cleanup)?;
+                ensure!(
+                    key == cleanup_key(&cleanup.tenant, cleanup.target_incarnation)
+                        && value.len() <= CLEANUP_RESERVE,
+                    "journal cleanup key differs"
+                );
+                charged = charged
+                    .checked_add(CLEANUP_RESERVE as u64)
+                    .context("journal cleanup bytes exhausted")?;
             } else if key.starts_with(b"stop/") {
                 let stop: TargetJournalStop = decode_current(value)?;
                 journal.validate_stop(&stop)?;
@@ -743,6 +798,210 @@ impl TargetJournal {
         })
     }
 
+    fn validate_binding(&self, binding: &TargetFileBinding) -> Result<()> {
+        kasumi_types::validate_name(&binding.tenant)?;
+        let key = file_key(&binding.tenant, binding.target_incarnation);
+        let file: FileCreation = decode_current(
+            &self
+                .store
+                .get_bounded(NS, &key, MAX_RECORD)?
+                .context("target file binding has no original creation")?,
+        )?;
+        self.validate_file_creation(&key, &file)?;
+        ensure!(
+            binding.path.is_absolute()
+                && binding.node_store_id
+                    == kasumi_store::node_store_ids::target_generation(
+                        self.installed.root.control_incarnation,
+                        &binding.tenant,
+                        binding.target_incarnation,
+                        &self.installed.node.verifier,
+                    )?,
+            "target file binding names another store"
+        );
+        Ok(())
+    }
+    fn validate_cleanup(&self, cleanup: &TargetCleanup) -> Result<()> {
+        kasumi_types::validate_name(&cleanup.tenant)?;
+        ensure!(
+            self.store
+                .get_bounded(
+                    NS,
+                    &stop_key(&cleanup.tenant, cleanup.target_incarnation),
+                    MAX_RECORD,
+                )?
+                .is_some(),
+            "target cleanup precedes its permanent stop"
+        );
+        match &cleanup.binding {
+            Some(binding) => {
+                ensure!(
+                    binding.tenant == cleanup.tenant
+                        && binding.target_incarnation == cleanup.target_incarnation,
+                    "target cleanup binding names another target"
+                );
+                self.validate_binding(binding)?;
+            }
+            None => ensure!(
+                cleanup.stage == TargetCleanupStage::Deleted,
+                "target deletion in progress has no binding"
+            ),
+        }
+        Ok(())
+    }
+
+    /// Record the exact storage the original materialization created, before
+    /// any catalog is initialized. Repeating it must name the same storage.
+    pub fn bind_materialization_file(
+        &self,
+        op: &TargetOperation,
+        binding: &TargetFileBinding,
+    ) -> Result<()> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let intent = self.intent(op)?;
+        let request = &intent.intent.request;
+        ensure!(
+            request.tenant == binding.tenant
+                && request.target_incarnation == binding.target_incarnation,
+            "target file binding belongs to another phase"
+        );
+        self.validate_binding(binding)?;
+        let key = binding_key(&binding.tenant, binding.target_incarnation);
+        if let Some(old) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
+            ensure!(
+                decode_current::<TargetFileBinding>(&old)? == *binding,
+                "target file is bound to other storage"
+            );
+            op.check()?;
+            return Ok(());
+        }
+        let bytes = serde_json::to_vec(binding)?;
+        let mut metadata = self.metadata()?;
+        metadata.charged_bytes = metadata
+            .charged_bytes
+            .checked_add(bytes.len() as u64)
+            .context("journal binding bytes exhausted")?;
+        ensure!(
+            metadata.charged_bytes <= self.limits.max_metadata_bytes,
+            "target file binding exceeds permanent journal capacity"
+        );
+        op.check()?;
+        self.store
+            .write_batch(&[
+                WriteOp::put(NS, key, bytes),
+                WriteOp::put(NS, b"metadata", serde_json::to_vec(&metadata)?),
+            ])
+            .map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
+    }
+
+    pub fn materialization_file_binding(
+        &self,
+        tenant: &str,
+        target: Uuid,
+    ) -> Result<Option<TargetFileBinding>> {
+        kasumi_types::validate_name(tenant)?;
+        let Some(bytes) = self
+            .store
+            .get_bounded(NS, &binding_key(tenant, target), MAX_RECORD)?
+        else {
+            return Ok(None);
+        };
+        let binding: TargetFileBinding = decode_current(&bytes)?;
+        ensure!(
+            binding.tenant == tenant && binding.target_incarnation == target,
+            "journal file binding key differs"
+        );
+        self.validate_binding(&binding)?;
+        Ok(Some(binding))
+    }
+
+    pub fn target_cleanup(&self, tenant: &str, target: Uuid) -> Result<Option<TargetCleanup>> {
+        kasumi_types::validate_name(tenant)?;
+        let Some(bytes) = self
+            .store
+            .get_bounded(NS, &cleanup_key(tenant, target), MAX_RECORD)?
+        else {
+            return Ok(None);
+        };
+        let cleanup: TargetCleanup = decode_current(&bytes)?;
+        ensure!(
+            cleanup.tenant == tenant && cleanup.target_incarnation == target,
+            "journal cleanup key differs"
+        );
+        self.validate_cleanup(&cleanup)?;
+        Ok(Some(cleanup))
+    }
+
+    /// Advance the local cleanup of a permanently stopped target. Only a first
+    /// record, an exact replay, or Deleting to Deleted of the same binding is
+    /// accepted: the terminal outcome never changes.
+    pub fn record_target_cleanup(
+        &self,
+        op: &TargetOperation,
+        cleanup: &TargetCleanup,
+    ) -> Result<()> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let intent = self.intent(op)?;
+        let request = &intent.intent.request;
+        ensure!(
+            request.phase == LifecyclePhase::StopLocal
+                && request.tenant == cleanup.tenant
+                && request.target_incarnation == cleanup.target_incarnation,
+            "target cleanup belongs to another phase"
+        );
+        self.validate_cleanup(cleanup)?;
+        let bytes = serde_json::to_vec(cleanup)?;
+        ensure!(
+            bytes.len() <= CLEANUP_RESERVE,
+            "target cleanup record exceeds its reserve"
+        );
+        let key = cleanup_key(&cleanup.tenant, cleanup.target_incarnation);
+        let mut writes = vec![WriteOp::put(NS, key.clone(), bytes)];
+        match self.store.get_bounded(NS, &key, MAX_RECORD)? {
+            Some(old) => {
+                let old: TargetCleanup = decode_current(&old)?;
+                if old == *cleanup {
+                    op.check()?;
+                    return Ok(());
+                }
+                ensure!(
+                    old.stage == TargetCleanupStage::Deleting
+                        && cleanup.stage == TargetCleanupStage::Deleted
+                        && old.binding == cleanup.binding,
+                    "target cleanup outcome differs"
+                );
+            }
+            None => {
+                let mut metadata = self.metadata()?;
+                metadata.charged_bytes = metadata
+                    .charged_bytes
+                    .checked_add(CLEANUP_RESERVE as u64)
+                    .context("journal cleanup bytes exhausted")?;
+                ensure!(
+                    metadata.charged_bytes <= self.limits.max_metadata_bytes,
+                    "target cleanup exceeds permanent journal capacity"
+                );
+                writes.push(WriteOp::put(
+                    NS,
+                    b"metadata",
+                    serde_json::to_vec(&metadata)?,
+                ));
+            }
+        }
+        op.check()?;
+        self.store.write_batch(&writes).map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
+    }
+
     fn validate_stop(&self, stop: &TargetJournalStop) -> Result<()> {
         self.validate_intent(&stop.intent)?;
         let intent = &stop.intent.intent.request;
@@ -883,6 +1142,12 @@ fn file_key(tenant: &str, id: Uuid) -> Vec<u8> {
 }
 fn stop_key(tenant: &str, id: Uuid) -> Vec<u8> {
     format!("stop/{tenant}/{id}").into_bytes()
+}
+fn binding_key(tenant: &str, id: Uuid) -> Vec<u8> {
+    format!("binding/{tenant}/{id}").into_bytes()
+}
+fn cleanup_key(tenant: &str, id: Uuid) -> Vec<u8> {
+    format!("cleanup/{tenant}/{id}").into_bytes()
 }
 
 impl TargetJournalIntent {

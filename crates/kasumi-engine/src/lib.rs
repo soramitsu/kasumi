@@ -142,9 +142,10 @@ mod target_journal;
 pub use target_journal::{
     AcceptedInitialDispatchPrebind, InitialDispatchReservation, InitialDispatchStatus,
     InitialInitializePermit, MaterializationFile, MaterializationNode,
-    ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetJournal,
-    TargetJournalInstallation, TargetJournalIntent, VerifiedInitialMembership,
-    VerifiedTargetInitializationAssociation, VerifiedTargetServingProjection,
+    ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetCleanup, TargetCleanupStage,
+    TargetFileBinding, TargetJournal, TargetJournalInstallation, TargetJournalIntent,
+    VerifiedInitialMembership, VerifiedTargetInitializationAssociation,
+    VerifiedTargetServingProjection,
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};

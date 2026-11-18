@@ -1989,3 +1989,54 @@ async fn target_first_entry_rejects_missing_invalid_and_substituted_original_cau
     stores.shutdown().await?;
     Ok(())
 }
+
+// A cleanup record exists only after its permanent stop, and a file binding
+// only for a target file the journal's original materialization created.
+#[tokio::test]
+async fn cleanup_and_binding_records_require_their_stop_and_original_creation() -> Result<()> {
+    let f = Fixture::new().await?;
+    drop(f.create()?);
+    let target = Uuid::new_v4();
+    let cleanup = TargetCleanup {
+        tenant: "documents".into(),
+        target_incarnation: target,
+        stage: TargetCleanupStage::Deleted,
+        binding: None,
+    };
+    let key = cleanup_key("documents", target);
+    write_plaintext_copy_for_fixture(&f.store, NS, &key, serde_json::to_vec(&cleanup)?.as_slice())?;
+    let error = f
+        .reopen()
+        .err()
+        .expect("cleanup without a stop must reject");
+    assert!(
+        format!("{error:#}").contains("target cleanup precedes its permanent stop"),
+        "{error:#}"
+    );
+    f.store.write_batch(&[WriteOp::delete(NS, key)])?;
+    let binding = TargetFileBinding {
+        tenant: "documents".into(),
+        target_incarnation: target,
+        path: f.directory.path().join("persistent/targets/target.kv"),
+        directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
+        node_store_id: kasumi_store::node_store_ids::target_generation(
+            f.installed.root.control_incarnation,
+            "documents",
+            target,
+            &f.installed.node.verifier,
+        )?,
+    };
+    let key = binding_key("documents", target);
+    write_plaintext_copy_for_fixture(&f.store, NS, &key, serde_json::to_vec(&binding)?.as_slice())?;
+    let error = f
+        .reopen()
+        .err()
+        .expect("binding without its creation must reject");
+    assert!(
+        format!("{error:#}").contains("no original creation"),
+        "{error:#}"
+    );
+    f.store.write_batch(&[WriteOp::delete(NS, key)])?;
+    f.reopen()?.shutdown().await?;
+    Ok(())
+}
