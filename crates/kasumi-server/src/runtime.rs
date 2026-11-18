@@ -1186,15 +1186,10 @@ impl crate::serving_owner::Owner for NodeServing {
             // A queued reconciliation must not start rebuilding a tenant while
             // shutdown joins maintenance. Already admitted recovery still owns
             // its management guard and is joined to its terminal outcome.
-            if let Some(manager) = &self.runtime.administration {
-                manager.close_management_admission();
-            }
+            self.runtime.seal_database_admission();
             self.runtime
                 .telemetry
                 .set_lifecycle(crate::observability::Lifecycle::Draining);
-            for lease in &self.runtime.serving_leases {
-                lease.close();
-            }
             #[cfg(test)]
             crate::startup_preparation::failure_checkpoint(self.runtime.config.database_id).await;
             let mut retained = None;
@@ -2411,11 +2406,24 @@ impl NodeRuntime {
         }
     }
 
+    // Seal client work at the front door. The serving grant also guards the
+    // Store's post-commit access check, so its renewal must remain live while
+    // the local Raft state machine finishes entries already sent to apply.
+    fn seal_database_admission(&self) {
+        for tenant in std::iter::once(&self.control).chain(self.tenants.iter()) {
+            tenant.database.seal_admission();
+        }
+        if let Some(manager) = &self.administration {
+            manager.close_management_admission();
+        }
+    }
+
     pub async fn shutdown(&mut self) -> kasumi_types::drain::DrainResult {
         use crate::runtime_drain::observe;
         if self.closed {
             return self.startup_drain.complete();
         }
+        self.seal_database_admission();
         self.telemetry
             .set_lifecycle(crate::observability::Lifecycle::Draining);
         let mut retained = None;
@@ -2428,9 +2436,6 @@ impl NodeRuntime {
                 anyhow::anyhow!("original recovery custody remains retained"),
             );
             retained = Some(kasumi_types::drain::DrainFailure::retained(issue));
-        }
-        for lease in &self.serving_leases {
-            lease.close();
         }
         observe(
             &mut self.startup_drain,
@@ -2469,17 +2474,6 @@ impl NodeRuntime {
             }
             outcome => outcome,
         };
-        for lease in &self.serving_leases {
-            let reported = self
-                .administration
-                .as_ref()
-                .is_some_and(|manager| manager.superseded_lease(lease));
-            observe(
-                &mut self.startup_drain,
-                &mut retained,
-                superseded(lease.shutdown().await, reported),
-            );
-        }
         if let Some(manager) = &self.administration {
             observe(
                 &mut self.startup_drain,
@@ -2518,6 +2512,21 @@ impl NodeRuntime {
                 &mut retained,
                 superseded(tenant.database.shutdown().await, reported),
             );
+        }
+        // Startup can also retain a lease before its database was published.
+        // A retained database drain must keep authorization for its retry.
+        if retained.is_none() {
+            for lease in &self.serving_leases {
+                let reported = self
+                    .administration
+                    .as_ref()
+                    .is_some_and(|manager| manager.superseded_lease(lease));
+                observe(
+                    &mut self.startup_drain,
+                    &mut retained,
+                    superseded(lease.shutdown().await, reported),
+                );
+            }
         }
         for (index, source) in self.custody_sources.iter().enumerate() {
             if let Some(cluster) = &self.cluster
@@ -2594,6 +2603,11 @@ impl NodeRuntime {
                 &mut retained,
                 node.drain_filesystem_children().await,
             );
+        }
+        if retained.is_some() {
+            // An unfinished tenant may still use its startup stores, the audit
+            // sink and the issuer verifier. Their owners survive cancellation.
+            return self.startup_drain.outcome(retained);
         }
         for store in &self.startup_stores {
             observe(
@@ -6689,6 +6703,25 @@ mod lifecycle_tests {
                 fixture_stage!("lost Start and Initialize reply status checked");
             }
             fixture_operation(|| recovery.close_targets()).await;
+            if protected_prepare_only {
+                // Pause the real serving owner between its client fence and its
+                // Raft join. Closing the shared independent grant here used to
+                // deny a follower's post-commit acknowledgment during shutdown.
+                let source = &databases[0];
+                source.stores().check_access().unwrap();
+                let pause =
+                    crate::startup_preparation::pause_failure(configurations[0].database_id);
+                stops[0].send_replace(true);
+                tokio::time::timeout(fixture_node_drain_timeout(), pause.entered())
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    source.check_serving().unwrap_err().code,
+                    kasumi_types::ErrorCode::Unavailable
+                );
+                source.stores().check_access().unwrap();
+                pause.release();
+            }
             for stop in &stops {
                 stop.send_replace(true);
             }

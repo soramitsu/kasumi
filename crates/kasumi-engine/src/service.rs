@@ -1711,7 +1711,9 @@ impl Database {
         if let Err(failure) = self.group.shutdown().await {
             report.merge(&failure);
             if failure.completion() == DrainCompletion::Retained {
-                retained = Some(failure);
+                // The retry still owns its writer, selected roots and both
+                // physical key domains. Its caller has sealed new requests.
+                return report.outcome(Some(failure));
             }
         }
         // Accepted proposals, backup producers and the actual Raft/local

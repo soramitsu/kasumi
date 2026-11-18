@@ -1631,6 +1631,14 @@ impl Administration {
     /// The active guard remains valid so admitted recovery can finish normally.
     pub(crate) fn close_management_admission(&self) {
         self.gate.close();
+        for tenant in self
+            .generations
+            .read()
+            .unwrap_or_else(|p| p.into_inner())
+            .values()
+        {
+            tenant.database.seal_admission();
+        }
     }
 
     /// Fixed closure cause and key-lease class of a node control plane that
@@ -1824,9 +1832,7 @@ impl Administration {
             .cloned()
             .collect::<Vec<_>>();
         for tenant in &generations {
-            if let Some(lease) = &tenant.lease {
-                lease.close();
-            }
+            tenant.database.seal_admission();
         }
         for (index, tenant) in generations.into_iter().enumerate() {
             if let Some(network) = &self.cluster {
@@ -1856,18 +1862,19 @@ impl Administration {
                     )));
                 }
             }
+            if let Err(failure) = tenant.database.shutdown().await {
+                report.merge(&failure);
+                if failure.completion() == DrainCompletion::Retained {
+                    retained = Some(failure);
+                    continue;
+                }
+            }
             if let Some(lease) = &tenant.lease
                 && let Err(error) = lease.shutdown().await
             {
                 report.merge(&error);
                 if error.completion() == DrainCompletion::Retained {
                     retained = Some(error);
-                }
-            }
-            if let Err(failure) = tenant.database.shutdown().await {
-                report.merge(&failure);
-                if failure.completion() == DrainCompletion::Retained {
-                    retained = Some(failure);
                 }
             }
         }
