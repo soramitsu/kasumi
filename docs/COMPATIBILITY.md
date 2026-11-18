@@ -42,8 +42,7 @@ The opt-in integration test ran successfully on 2026-09-05 with the official
 [OpenBao v2.6.2 release](https://github.com/openbao/openbao/releases/tag/v2.6.2),
 Darwin ARM64. The downloaded archive SHA-256 was
 `4e495376174accc0e014d31e9901f518a974f966850c839f626347eaac05fd52`.
-This verifies the adapter against an actual server. OpenBao's development mode
-is used only for the local test, as described in its
+This verifies the adapter against an actual server. That run used OpenBao's development mode, as described in its
 [installation documentation](https://openbao.org/docs/install/).
 
 ```sh
@@ -78,7 +77,7 @@ The opt-in real MinIO test passed on 2026-09-05 using official release
 It verifies signed bucket creation, encrypted upload/download/decryption,
 create-only overwrite rejection, wrong credentials, untrusted TLS certificates,
 missing objects and bounded downloads. The temporary local container is capped
-at 512 MiB and one CPU and is removed afterward. Its tmpfs storage establishes
+at 512 MiB and one CPU and is removed afterward. That run used tmpfs and establishes
 protocol interoperability, not a remote storage service's durability.
 
 Use the explicit local Docker socket/config and pinned-image instructions in
@@ -91,3 +90,18 @@ cargo test -p kasumi-store --lib actual_minio --locked -- --ignored
 Externally operated S3 services remain untested. Their TLS 1.3 support, SigV4
 behavior, consistency and durable-storage configuration need deployment-specific
 verification.
+
+### First-release provider qualification
+
+On each Linux target, use the accepted native functional run, the official OpenBao 2.6.2 archive for its architecture, an offline uncompressed OCI-layout tar of the pinned MinIO release, and an isolated test runtime configuration selecting a tenant Transit key and an S3 destination. The OCI export must include the published multiarchitecture index and the native manifest, config and layers. The runner verifies the original index digest, reads the final native executable through its verified image layers and binds its digest to each service process.
+
+```sh
+python3 -I -B -S scripts/run_providers.py \
+  --evidence "$FUNCTIONAL" --journal "$JOURNAL" --output "$ATTEMPT_DIR" \
+  --attempt-id "$ATTEMPT_ID" --openbao "$OPENBAO_ARCHIVE" \
+  --minio "$MINIO_OCI_ARCHIVE" --runtime "$TEST_RUNTIME_JSON"
+```
+
+The candidate daemon validates the test configuration. The two store test binaries from the same native build exercise actual Transit and S3 operations, rejected former credentials, successful refresh and ciphertext readback across service restarts. The runner retains the separate service and test process receipts. On the approved Linux host, run the standalone MinIO test as well to cover the pinned image's container entry point and its container resource limits. For the native runner, retain the enclosing host's enforced limits and resource measurements with the host receipt.
+
+The macOS ARM64 OpenBao subtest can run against its official Darwin archive. The combined macOS-client/remote-Linux-MinIO case requires independently bound Linux service receipts and remains open.

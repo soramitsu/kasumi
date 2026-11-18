@@ -1075,6 +1075,12 @@ def ha_soak_adapter(root, domain, files, configs, artifacts, candidates):
     return run_ha_soak.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def providers_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_providers
+
+    return run_providers.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def correctness_adapter(root, domain, files, configs, artifacts, candidates):
     import run_correctness
 
@@ -1101,6 +1107,7 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
     "correctness": correctness_adapter,
+    "providers": providers_adapter,
     "repeatable-assembly": repeatable_assembly_adapter,
     "dependency-review": dependency_review_adapter,
     "ha-soak": ha_soak_adapter,
