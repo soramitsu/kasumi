@@ -1075,6 +1075,12 @@ def ha_soak_adapter(root, domain, files, configs, artifacts, candidates):
     return run_ha_soak.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def correctness_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_correctness
+
+    return run_correctness.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def package_smoke_adapter(root, domain, files, configs, artifacts, candidates):
     import run_package_smoke
 
@@ -1094,6 +1100,7 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # and is rejected: an opaque report and asserted scenario labels cannot certify
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
+    "correctness": correctness_adapter,
     "repeatable-assembly": repeatable_assembly_adapter,
     "dependency-review": dependency_review_adapter,
     "ha-soak": ha_soak_adapter,
