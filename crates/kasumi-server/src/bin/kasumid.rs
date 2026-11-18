@@ -54,6 +54,7 @@ Backups, audit and recovery:
   backup status|verify <operator-profile> <destination> <session-uuid>
   backup abort <operator-profile> <destination> <session-uuid> <reason>
   backup cleanup <operator-profile> <destination> <session-uuid> <max-objects>
+  tenant-audit status <tenant-or-control-profile>
   audit status <control-profile>
   audit export|archives <control-profile> <request.json> <output.json>
   audit verify <control-profile> <stream-uuid> <index>
