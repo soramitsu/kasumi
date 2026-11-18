@@ -981,11 +981,26 @@ impl Administration {
                 let state = source.database.engine().generation()?;
                 let metrics = source.database.raft_group().metrics();
                 let control_metrics = self.control.raft_group().metrics();
+                let applied_membership =
+                    metrics
+                        .membership_config
+                        .log_id()
+                        .as_ref()
+                        .filter(|membership| {
+                            metrics
+                                .last_applied
+                                .as_ref()
+                                .is_some_and(|applied| membership.index <= applied.index)
+                        });
                 Ok(
                     serde_json::json!({"incarnation":state.incarnation(),"revision":state.revision(),"suspended":state.suspended(),"pending_restore":state.pending_restore(),
                     "mode":if source.database.raft_group().is_local() { "standalone" } else { "replicated" },
                     "observation":"local_committed_state","retired":state.retired(),"node_id":metrics.id,
                     "leader":metrics.current_leader,
+                    "raft_snapshot_index":metrics.snapshot.map(|log| log.index),
+                    "raft_membership_index":applied_membership.map(|log| log.index),
+                    "raft_applied_index":metrics.last_applied.map(|log| log.index),
+                    "raft_voters":applied_membership.map(|_| metrics.membership_config.membership().voter_ids().collect::<Vec<_>>()),
                     "control_leader":control_metrics.current_leader,
                     "control_topology_version": if context.tenant==crate::runtime::CONTROL_TENANT {
                         state.local_control_topology_version()
