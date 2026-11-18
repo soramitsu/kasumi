@@ -36,7 +36,7 @@ def driver(evidence, functional):
     return package.verify_file(evidence / "target", path, digest), digest
 
 
-def project(root, name, native, operations, destination):
+def project(root, name, native, operations, destination, replay=False):
     require(native["name"] == name and native["failed_attempts"] == [], "benchmark workload failed or changed")
     counts = {key: native[key] for key in ("requested_operations", "attempted_operations", "successful_operations",
                                           "failed_operations", "unattempted_operations")}
@@ -52,15 +52,20 @@ def project(root, name, native, operations, destination):
             and latency["p50_microseconds"] == ordered[(operations * 50 + 99) // 100 - 1] / 1000
             and latency["p99_microseconds"] == ordered[(operations * 99 + 99) // 100 - 1] / 1000
             and latency["max_microseconds"] == ordered[-1] / 1000, "native percentiles and sample stream differ")
-    with destination.open("x") as stream:
-        for number, elapsed in enumerate(rows):
-            stream.write(json.dumps({"sequence": number, "elapsed_ns": elapsed, "status": "passed"}) + "\n")
+    expected_rows = ({"sequence": number, "elapsed_ns": elapsed, "status": "passed"} for number, elapsed in enumerate(rows))
+    if replay:
+        require(list(acceptance.rows(root, owned.ref(root, destination))) == list(expected_rows),
+                "retained rows differ from native operation durations")
+    else:
+        with destination.open("x") as stream:
+            for row in expected_rows:
+                stream.write(json.dumps(row) + "\n")
     measurement = {"name": name, **counts, "samples": owned.ref(root, destination)}
     acceptance.check_samples(root, measurement, minimum=operations)
     return measurement
 
 
-def raw_case(root, report, digest, tenants, documents=DOCUMENTS, operations=OPERATIONS):
+def raw_case(root, report, digest, tenants, documents=DOCUMENTS, operations=OPERATIONS, replay=False):
     acceptance.exact(report, {"format", "tenants", "documents", "payload_bytes", "provider",
                               "measurement", "executable_sha256"}, "original raw map report")
     require(report["format"] == "kasumi-raw-matrix-v1" and report["executable_sha256"] == digest
@@ -69,7 +74,7 @@ def raw_case(root, report, digest, tenants, documents=DOCUMENTS, operations=OPER
             and type(report["payload_bytes"]) is int and report["payload_bytes"] == documents * 1024
             and report["provider"] == "none", "wrong raw executable or incomplete corpus")
     name = "raw-" + str(tenants)
-    measured = project(root, "raw_hashmap_borrowed_lookup", report["measurement"], operations, root / (name + ".jsonl"))
+    measured = project(root, "raw_hashmap_borrowed_lookup", report["measurement"], operations, root / (name + ".jsonl"), replay)
     return {"id": name, "mode": "raw", "tenants": tenants, "documents": documents,
             "provider": "none", "workloads": [measured]}
 
@@ -92,7 +97,7 @@ def network_inputs(config, tenants):
     return protocols
 
 
-def network_samples(root, original, protocols, digest, tenants):
+def network_samples(root, original, protocols, digest, tenants, replay=False):
     require(original["format"] == 1 and original["executable_sha256"] == digest and not original["failures"],
             "live network driver failed or changed")
     by_protocol = acceptance.unique(original["cases"], "protocol", "network protocols")
@@ -105,7 +110,7 @@ def network_samples(root, original, protocols, digest, tenants):
         measurements = acceptance.unique(case["measurements"], "name", "network measurements")
         require(set(measurements) == acceptance.NETWORK_WORKLOADS, "network workload roster differs")
         for name, native in sorted(measurements.items()):
-            measured = project(root, name, native, OPERATIONS, root / f"network-{tenants}-{protocol}-{name}.jsonl")
+            measured = project(root, name, native, OPERATIONS, root / f"network-{tenants}-{protocol}-{name}.jsonl", replay)
             measured["name"] = protocol + ":" + name
             readings.append(measured)
     return readings

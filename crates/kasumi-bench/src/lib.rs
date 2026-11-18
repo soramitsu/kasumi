@@ -1,3 +1,5 @@
+#[cfg(any(feature = "installed-embedded", feature = "embedded-fixture"))]
+pub mod embedded;
 pub mod raw;
 
 use serde::Serialize;

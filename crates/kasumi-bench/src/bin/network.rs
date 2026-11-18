@@ -1,5 +1,8 @@
 //! Live TLS endpoint measurements. Each request reads a fresh private credential
 //! file snapshot; secrets are never reported. Writes require --allow-writes.
+#[cfg(feature = "installed-embedded")]
+#[path = "../installed_matrix.rs"]
+mod installed_matrix;
 use anyhow::{Context, Result, ensure};
 use kasumi_bench::{Measurement, Samples};
 use kasumi_client::proto;
@@ -719,6 +722,20 @@ fn save(path: &Path, report: &Report) -> Result<()> {
     std::fs::rename(tmp, path)?;
     Ok(())
 }
+fn original_outputs(files: &[(&str, &Path)]) -> Result<()> {
+    let mut hashes = BTreeMap::new();
+    for (name, path) in files {
+        let mut hash = Sha256::new();
+        std::io::copy(&mut std::fs::File::open(path)?, &mut hash)?;
+        hashes.insert(*name, hex::encode(hash.finalize()));
+    }
+    println!(
+        "{}",
+        json!({"schema":"kasumi-benchmark-outputs-v1", "files":hashes})
+    );
+    Ok(())
+}
+
 fn raw_baseline(mut args: impl Iterator<Item = String>) -> Result<()> {
     let tenants: usize = args.next().context("tenant count required")?.parse()?;
     let documents: usize = args.next().context("document count required")?.parse()?;
@@ -729,7 +746,7 @@ fn raw_baseline(mut args: impl Iterator<Item = String>) -> Result<()> {
     let bytes = corpus.load(documents)?;
     let measurement = corpus.measure(operations, true)?;
     let failed = measurement.failed();
-    let mut file = std::fs::File::create_new(output)?;
+    let mut file = std::fs::File::create_new(&output)?;
     serde_json::to_writer(
         &mut file,
         &json!({
@@ -740,13 +757,26 @@ fn raw_baseline(mut args: impl Iterator<Item = String>) -> Result<()> {
     )?;
     file.sync_all()?;
     ensure!(!failed, "raw baseline failed");
-    Ok(())
+    original_outputs(&[("case.json", &output)])
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
     let first = args.next().context("usage: kasumi-bench-network CONFIG.json OUTPUT.json [--allow-writes] [--retain-samples], or --raw-baseline TENANTS DOCUMENTS OPERATIONS OUTPUT.json")?;
+    #[cfg(feature = "installed-embedded")]
+    if first == "--installed-matrix" {
+        let config = PathBuf::from(
+            args.next()
+                .context("installed case configuration required")?,
+        );
+        let output = PathBuf::from(args.next().context("fresh output directory required")?);
+        ensure!(
+            args.next().as_deref() == Some("--allow-writes") && args.next().is_none(),
+            "installed benchmark requires explicit --allow-writes"
+        );
+        return installed_matrix::run(&config, &output).await;
+    }
     if first == "--raw-baseline" {
         return raw_baseline(args);
     }
@@ -762,13 +792,29 @@ async fn main() -> Result<()> {
         }
     }
     let config: Configuration = serde_json::from_slice(&std::fs::read(&config_path)?)?;
+    let config_path = std::fs::canonicalize(config_path)?;
+    run_configured(
+        config,
+        config_path
+            .parent()
+            .context("configuration parent missing")?,
+        &output,
+        allow_writes,
+        retain_samples,
+    )
+    .await
+}
+
+async fn run_configured(
+    config: Configuration,
+    root: &Path,
+    output: &Path,
+    allow_writes: bool,
+    retain_samples: bool,
+) -> Result<()> {
     ensure!(!config.cases.is_empty(), "at least one case required");
     let mut report=Report{format:1,created_unix_ms:SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis(),os:std::env::consts::OS.into(),architecture:std::env::consts::ARCH.into(),build_profile:if cfg!(debug_assertions){"debug"}else{"release"}.into(),executable_sha256:hex::encode(Sha256::digest(std::fs::read(std::env::current_exe()?)?)),logical_cpus:std::thread::available_parallelism().ok().map(usize::from),evidence_status:"Preliminary development measurement; repeat on quiet host with stable server/client source".into(),notes:vec!["Real authenticated TLS 1.3 network requests. Native RPC additionally requires mTLS and pins the server certificate against the configured CA.".into(),"Credentials and document/query values are omitted from this report. Credential count is configured token sources, not a claim of verified distinct tenants.".into(),"Connections and one warmup point read per credential are excluded from measured API latency. Requests are sequential and no automatic retries are attempted.".into(),"Server replication, KMS, hardware, and audit configuration must be disclosed separately for comparison; this client does not infer their guarantees.".into(),"Writes occur only with --allow-writes and a replacement body on every dedicated target. Query measurements consume all historical pages.".into()],cases:Vec::new(),failures:Vec::new()};
-    save(&output, &report)?;
-    let config_path = std::fs::canonicalize(config_path)?;
-    let root = config_path
-        .parent()
-        .context("configuration parent missing")?;
+    save(output, &report)?;
     for case in config.cases {
         eprintln!("running network case {}", case.name);
         let name = case.name.clone();
@@ -782,7 +828,7 @@ async fn main() -> Result<()> {
             } else {
                 report.cases.push(partial.clone());
             }
-            save(&output, &report)
+            save(output, &report)
         })
         .await;
         match result {
@@ -800,7 +846,7 @@ async fn main() -> Result<()> {
             }
             Err(error) => report.failures.push(format!("case={name}: {error:#}")),
         }
-        save(&output, &report)?;
+        save(output, &report)?;
     }
     eprintln!("network benchmark report: {}", output.display());
     ensure!(

@@ -1094,6 +1094,12 @@ def check_readiness_epoch(value):
     return value
 
 
+def benchmark_matrix_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_benchmark_matrix_owned
+
+    return run_benchmark_matrix_owned.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def correctness_adapter(root, domain, files, configs, artifacts, candidates):
     import run_correctness
 
@@ -1119,6 +1125,7 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # and is rejected: an opaque report and asserted scenario labels cannot certify
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
+    "benchmark-matrix": benchmark_matrix_adapter,
     "correctness": correctness_adapter,
     "backup-cleanup": backup_cleanup_adapter,
     "providers": providers_adapter,
@@ -1186,7 +1193,8 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     require(set(consumed) == expected_artifacts, "gate artifact coverage is incomplete")
     details = record["details"]
     if kind == "benchmark-matrix":
-        check_benchmarks(root, details)
+        exact(details, {"cases", "report"}, "owned benchmark details")
+        check_benchmarks(root, {"cases": details["cases"]})
     elif kind.startswith("capacity-"):
         check_capacity(root, details, kind)
     elif kind == "ha-soak":

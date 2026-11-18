@@ -230,6 +230,51 @@ the raw `samples` file. Missing/truncated/duplicate samples cannot be replaced
 by a percentile summary. The existing benchmark report's summaries and
 fixture-based matrix do not satisfy this contract.
 
+### Running the native benchmark matrix
+
+On the native Linux ARM64 reference host, run the following command from the
+frozen source export. The functional evidence must contain the production
+benchmark driver built with the `installed-embedded` feature.
+
+```sh
+python3 -I -B -S scripts/run_benchmark_matrix_owned.py \
+  --evidence /release/functional --journal /release/runs \
+  --output /release/runs/matrix-01 --attempt-id matrix-01 \
+  --plans /release/matrix-inputs
+```
+
+The runner creates the raw cases itself. Supply one plan per installed case
+using `local`, `replicated`, `text` and `network` at 1, 100 and 1,000 tenants.
+Each filename follows the pattern `local-1.json`. A local plan has this shape.
+
+```json
+{
+  "mode": "local",
+  "documents": 1000000,
+  "operations": 1000,
+  "nodes": [{"path": "/release/local-1/kasumi.json", "sha256": "<SHA-256 of those bytes>"}],
+  "tenants": {"bench-0000": {"administrator": "bench-admin", "application": "bench-app"}}
+}
+```
+
+Use dedicated enrolled storage with a fresh `docs` collection name. Each
+plan must name the exact installed tenants and their existing principals. The
+runner opens the production node and its enrolled application and custody key
+providers. The administrator creates the collection. The application must have
+read and write grants. For replicated cases supply the three distinct enrolled
+data-voter configurations and their live authority dependencies. The runner
+checks the effective voters on each tenant. It drains all opened nodes after
+each case and preserves their data and original failed operations.
+
+A network plan also names a `network` object with the absolute path and
+SHA-256 of a network-driver configuration. Use the owned node's loopback
+endpoints and both `grpc` and `mcp` cases, named for their protocols.
+Each case lists a dedicated write body, a complete-page query on `docs` and
+a matching credential for every installed tenant. In sorted tenant order use
+document IDs `"0"`, `"1"` and so on. Keep secret values in their private
+credential files. The driver checks the tenant claim and uses normal TLS and
+server authorization for every wire operation.
+
 ## Process and failed-attempt evidence
 
 Every owned process has an ID plus `receipt`, `log`, and `executable` file
