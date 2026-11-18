@@ -27,13 +27,15 @@ def require(value, message):
         raise ValueError(message)
 
 
-def probe(installation, mapped):
+def probe(installation, mapped, profile_name="mcp.json"):
     """``installation`` is the path the profile names; ``mapped`` is where it is readable."""
     def local(path):
         relative = Path(path).relative_to(installation)
         return str(Path(mapped) / relative)
 
-    profile = json.loads(Path(local(Path(installation) / "profiles/mcp.json")).read_text())
+    require(Path(profile_name).name == profile_name and profile_name.endswith(".json"),
+            "MCP profile must name one installed profile")
+    profile = json.loads(Path(local(Path(installation) / "profiles" / profile_name)).read_text())
     config = json.loads(Path(local(Path(installation) / "kasumi.json")).read_text())
     url = urlsplit(profile["mcp_endpoint"])
     require(url.scheme == "https" and url.hostname == "localhost" and url.port
@@ -79,9 +81,10 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n", 1)[0])
     parser.add_argument("--installation", required=True)
     parser.add_argument("--mapped", required=True)
+    parser.add_argument("--profile-name", default="mcp.json")
     args = parser.parse_args(argv)
     try:
-        print(json.dumps(probe(args.installation, args.mapped), sort_keys=True))
+        print(json.dumps(probe(args.installation, args.mapped, args.profile_name), sort_keys=True))
     except (OSError, ValueError, KeyError, TypeError, ssl.SSLError, http.client.HTTPException) as error:
         print("MCP probe failed: " + type(error).__name__ + ": " + str(error), file=sys.stderr)
         return 1

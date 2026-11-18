@@ -186,7 +186,7 @@ def lifecycle(run):
     def data(name, profile, *args, scenario=None, expected=0):
         return obj(name, [ctl, "--profile", profile, *args], scenario, expected)
 
-    def mcp(name, scenario):
+    def mcp(name, scenario, profile_name=None):
         result = command(
             name,
             [
@@ -196,6 +196,7 @@ def lifecycle(run):
                 root,
                 "--mapped",
                 root,
+                *(["--profile-name", profile_name] if profile_name else []),
             ],
             scenario,
         )
@@ -679,6 +680,36 @@ def lifecycle(run):
         result["document"]["body"] == json.loads(body),
         "newly recovered administrator cannot read the activated checkpoint",
     )
+    # Restore fences the original database incarnation. Exercise certificate
+    # rotation with an MCP family issued for the activated checkpoint.
+    mcp_family = str(uuid.uuid5(uuid.NAMESPACE_URL, run.attempt + "/restored-mcp"))
+    mcp_request = run.input(
+        "restored-mcp-request",
+        {
+            "family_id": mcp_family,
+            "tenant": package.TENANT,
+            "resource": {"kind": "database", "incarnation": restored},
+            "principal": "application",
+            "scopes": ["read"],
+            "audience": "mcp",
+        },
+    )
+    issued = obj(
+        "restored-mcp-issue",
+        [
+            node,
+            "credential",
+            "create",
+            recovery / "control.json",
+            mcp_request,
+            profiles / "restored-mcp.json",
+        ],
+        "certificate-rotation",
+    )
+    require(
+        issued["family_id"] == mcp_family, "new MCP profile belongs to another family"
+    )
+    mcp("restored-mcp-before", "certificate-rotation", "restored-mcp.json")
     run.stop("exclusive-stopped-admin-recovery")
     issuer_port = p["base_port"] + 3
     issuer = f"https://localhost:{issuer_port}"
@@ -758,7 +789,7 @@ def lifecycle(run):
     run.serve()
     listeners(6)
     ready(6)
-    live = mcp("mcp-rotated", "certificate-rotation")
+    live = mcp("mcp-rotated", "certificate-rotation", "restored-mcp.json")
     require(
         live["certificate_sha256"] == renewed_tls["tls"]["mcp"],
         "running daemon lost certificate rotation",
