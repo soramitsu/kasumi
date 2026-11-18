@@ -1151,6 +1151,14 @@ mod tests {
         // the snapshot while the original source is unavailable.
         let recaptured = capture(target.clone()).await.unwrap();
         assert_eq!(snapshot, recaptured);
+        println!(
+            "KASUMI_AUDIT_COMPONENT {}",
+            serde_json::json!({
+                "case":"replacement","source_bundle_sha256":hex::encode(sha2::Sha256::digest(&snapshot)),
+                "replacement_bundle_sha256":hex::encode(sha2::Sha256::digest(&recaptured)),
+                "replacement":target.generation().unwrap().state.audit_retention,"chain":references,
+            })
+        );
         restore(target.clone(), recaptured).await.unwrap();
         tokio::task::spawn_blocking(move || target.restore_candidate(&logical))
             .await

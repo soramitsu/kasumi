@@ -1577,6 +1577,13 @@ fn verified_point_history_crosses_former_count_limit_before_a_real_new_mutation(
         PREVIOUS_LIMIT + 1
     );
     assert_eq!(restored.generation().unwrap().state.document_count, 1);
+    println!(
+        "KASUMI_AUDIT_COMPONENT {}",
+        serde_json::json!({
+            "case":"mutation-receipts","restored_count":restored.generation().unwrap().state.mutation_receipt_head.count,
+            "prior_count":PREVIOUS_LIMIT,
+        })
+    );
 }
 
 fn inconsistent_generation(previous: &Arc<Generation>, fault: usize) -> Arc<Generation> {
