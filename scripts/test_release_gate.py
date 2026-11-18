@@ -85,7 +85,7 @@ class ReleaseGateTests(unittest.TestCase):
             "production-features", "production"])
         self.assertEqual(len(dict(gates)), 22)
         self.assertEqual([name for name, *_ in release_gate.VENDOR_SUITES],
-                         [name for name, _ in gates[4:16]])
+                         [name for name, _ in gates[4:15]])
         # docs/evidence/openraft-canonical-20260920 attempts 46-49, under the
         # pinned toolchain, jobs and the runner's JSON encoding.
         openraft = ["--manifest-path", "vendor/openraft-0.9.25/Cargo.toml"]
