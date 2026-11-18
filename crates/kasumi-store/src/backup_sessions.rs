@@ -633,13 +633,58 @@ mod tests {
                 .is_empty()
         );
         assert!(destination.session_objects(&proof, 257).await.is_err());
-        assert!(
-            verify_backup_session(&destination, id, &store, keys)
+        let binding = destination.namespace_binding().unwrap();
+        let intent = destination
+            .session_get(id, BackupSessionSlot::Intent, MAX_SESSION_RECORD_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        let outcome = destination
+            .session_get(id, BackupSessionSlot::Outcome, MAX_SESSION_RECORD_BYTES)
+            .await
+            .unwrap()
+            .unwrap();
+        let root = dir.path().join("backup");
+        let disk = crate::test_utils::fixture_directory_owner(&root, fixture_memory).unwrap();
+        drop(proof);
+        drop(destination);
+        let destination = FilesystemBackupDestination::open_enrolled(
+            &root,
+            crate::MAX_BACKUP_BUNDLE_BYTES,
+            disk,
+            &binding,
+        )
+        .unwrap();
+        assert_eq!(destination.namespace_binding().unwrap(), binding);
+        assert_eq!(
+            destination
+                .session_get(id, BackupSessionSlot::Intent, MAX_SESSION_RECORD_BYTES)
                 .await
                 .unwrap()
+                .unwrap(),
+            intent
+        );
+        assert_eq!(
+            destination
+                .session_get(id, BackupSessionSlot::Outcome, MAX_SESSION_RECORD_BYTES)
+                .await
                 .unwrap()
-                .aborted()
-                .is_ok()
+                .unwrap(),
+            outcome
+        );
+        let proof = verify_backup_session(&destination, id, &store, keys)
+            .await
+            .unwrap()
+            .unwrap()
+            .aborted()
+            .unwrap();
+        assert!(
+            destination
+                .session_objects(&proof, 256)
+                .await
+                .unwrap()
+                .objects
+                .is_empty()
         );
         assert_eq!(
             destination.get(shared, 1024).await.unwrap(),

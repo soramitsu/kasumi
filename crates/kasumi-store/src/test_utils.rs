@@ -1296,7 +1296,7 @@ impl kasumi_kv::SegmentGroupBackend for FaultBackend {
 // Select that owner using the destination as a prospective leaf; for an existing
 // directory, retain the original fixture root selection via a child anchor.
 // Consumer constructors then perform exact managed open_or_create acquisition.
-fn fixture_directory_owner(
+pub(crate) fn fixture_directory_owner(
     root: &std::path::Path,
     memory: std::sync::Arc<dyn crate::NodeDiskMemoryAdmission>,
 ) -> anyhow::Result<std::sync::Arc<crate::NodeDisk>> {
