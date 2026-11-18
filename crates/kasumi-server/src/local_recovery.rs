@@ -24,6 +24,8 @@ const INSTALLATION: &str = "standalone-recovery-installation";
 const MAX_RECORD: usize = 2 << 20;
 #[path = "local_recovery_archives.rs"]
 mod archives;
+#[path = "local_recovery_keys.rs"]
+mod keys;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,6 +37,8 @@ pub struct LocalRecoveryStart {
     pub checkpoint: FullBackupCheckpoint,
     pub source_purpose: StoragePurpose,
     pub source_keys: KeyProviderSettings,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_source_keys: Vec<KeyProviderSettings>,
     pub source_principal: String,
     /// Installed alias; neither the backup graph nor a client chooses endpoints.
     pub destination: String,
@@ -66,13 +70,13 @@ impl LocalRecoveryStart {
             matches!(&self.source_purpose, StoragePurpose::Standalone { installation_id, tenant, incarnation } if !installation_id.is_nil() && tenant == &self.tenant && incarnation.to_string() == self.checkpoint.source_incarnation),
             "standalone recovery requires the exact standalone source storage purpose"
         );
-        match &self.source_keys {
-            KeyProviderSettings::File { path } => {
-                ensure!(path.is_absolute(), "source keyring path must be absolute")
-            }
-            KeyProviderSettings::Transit(settings) => {
-                settings.validate()?;
-            }
+        ensure!(
+            self.historical_source_keys.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+            "too many historical recovery providers"
+        );
+        self.source_keys.validate()?;
+        for source in &self.historical_source_keys {
+            source.validate()?;
         }
         Ok(())
     }
@@ -642,7 +646,11 @@ async fn start_owned(
             database_group: None,
             target_preparation: TargetPreparation::Uncreated,
             archive_directory: None,
-            source_provider: request.source_keys.identity_descriptor()?,
+            source_provider: keys::RecoveryKeys::open(
+                &request.source_keys,
+                &request.historical_source_keys,
+            )?
+            .binding(),
             application_provider: tenant.keys.identity_descriptor()?,
             custody_provider: tenant.custody_keys.identity_descriptor()?,
             target_family: Uuid::new_v4(),
@@ -1123,6 +1131,10 @@ impl Operator {
         let request = journal.status.request.clone();
         let outcome: GenerationRecord = decode(&self.store().get(GENERATIONS, request.target_incarnation.as_bytes())?.context("target generation reservation missing")?)?;
         ensure!(matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id), "target generation is permanently stopped or substituted");
+        let source_keys = (mode == TargetOpen::Materialize).then(|| {
+            keys::RecoveryKeys::open(&request.source_keys, &request.historical_source_keys)?
+                .bound(&request.source_keys, &journal.source_provider)
+        }).transpose()?;
         let destinations = crate::backup_destination_installation::open_destinations(
             &self.config.backup_destinations,
             self.store().persistent_disk().clone(),
@@ -1138,9 +1150,6 @@ impl Operator {
         let path = journal.target_directory.join("node.kv");
         let tenant = self.config.tenants.iter().find(|tenant| tenant.tenant == request.tenant).context("installed tenant missing")?;
         ensure!(journal.application_provider == tenant.keys.identity_descriptor()? && journal.custody_provider == tenant.custody_keys.identity_descriptor()?, "local target wrapping-key identity differs");
-        if mode == TargetOpen::Materialize {
-            ensure!(journal.source_provider == request.source_keys.identity_descriptor()?, "local source wrapping-key identity differs");
-        }
         let source = Arc::new(crate::runtime::file_secret);
         let application = tenant.keys.provider(source.clone())?;
         let custody = tenant.custody_keys.provider(source)?;
@@ -1209,7 +1218,7 @@ impl Operator {
                 destination_alias: request.destination.clone(),
                 destination: destinations.get(&request.destination)
                     .context("local recovery destination is no longer installed")?.clone(),
-                keys: request.source_keys.provider(Arc::new(crate::runtime::file_secret))?,
+                keys: source_keys.context("local restoration lacks bound source keys")?,
                 timeout_ms: request.phase_timeout_ms,
             };
             self.prepare_stage(journal, TargetPreparation::MaterializationDispatched)?;

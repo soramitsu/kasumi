@@ -201,6 +201,7 @@ async fn backup(
                 incarnation,
             },
             source_keys: configured.keys.clone(),
+            historical_source_keys: Vec::new(),
             source_principal: "administrator".into(),
             destination: "local".into(),
             phase_timeout_ms: 60_000,
