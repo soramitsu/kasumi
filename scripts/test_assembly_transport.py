@@ -28,8 +28,10 @@ class AssemblyTransportTests(unittest.TestCase):
         self.assembly = self.root / "owned"
         self.assembly.mkdir(mode=0o700)
         (self.assembly / "assembly").mkdir(mode=0o700)
-        (self.assembly / "empty").mkdir(mode=0o750)
-        (self.assembly / ("dir-" + "あ" * 60)).mkdir(mode=0o750)
+        for name in ("empty", "dir-" + "あ" * 60):
+            directory = self.assembly / name
+            directory.mkdir(mode=0o700)
+            directory.chmod(0o750)
         (self.assembly / "launcher.json").write_bytes(b'{"status":"passed"}\n')
         (self.assembly / "assembly/attempt.json").write_bytes(b'{"status":"passed"}\n')
         script = self.assembly / "assembly" / ("unicode-" + "あ" * 60)
