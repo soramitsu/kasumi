@@ -154,6 +154,36 @@ async fn start(
             Ok((AuthorityMaintenanceResponse::Operation { status }, fence)) => {
                 if fence.release().await.is_ok() {
                     assert_eq!(status.command, command);
+                    if crate::observability::test_evidence::enabled() {
+                        let (label, target, requested) = match &command.action {
+                            AuthorityMaintenanceAction::SetCapacity { .. } => {
+                                ("issuer-capacity", None, None)
+                            }
+                            AuthorityMaintenanceAction::EnrollLearner { node_id, .. } => {
+                                ("issuer-enroll", Some(*node_id), None)
+                            }
+                            AuthorityMaintenanceAction::ReplaceVoters { voters } => {
+                                ("issuer-replace", None, Some(voters))
+                            }
+                            AuthorityMaintenanceAction::RevokeMember { node_id } => {
+                                ("issuer-revoke", Some(*node_id), None)
+                            }
+                            _ => return status,
+                        };
+                        let observer = leader(services).await;
+                        let raft = observer.raft_group().raft().metrics().borrow().clone();
+                        crate::observability::test_evidence::native_observation(
+                            label,
+                            serde_json::json!({
+                                "operation_id": command.operation_id, "command_sha256": status.command_sha256,
+                                "admitted_revision": status.admitted_revision, "progress_revision":status.progress_revision,
+                                "phase":status.phase, "voters_before":configuration.membership.voters,
+                                "effective_voters":raft.membership_config.voter_ids().collect::<BTreeSet<_>>(),
+                                "leader":raft.current_leader, "observer":raft.id, "term":raft.current_term,
+                                "target":target, "requested_voters":requested
+                            }),
+                        );
+                    }
                     return status;
                 }
             }
@@ -429,6 +459,14 @@ async fn actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member() 
             .bootstrap_fingerprint(current_id, "authority-maintenance")
             .await
             .is_err()
+    );
+    crate::observability::test_evidence::native_observation(
+        "issuer-peer-denial",
+        serde_json::json!({
+            "removed":removed, "remaining_refusals":networks.iter().enumerate()
+                .filter(|(i, network)| *i as u64 + 1 != removed && network.authorize("authority-maintenance", removed).is_err())
+                .count()
+        }),
     );
     shutdown.send(true).unwrap();
     for task in tasks {

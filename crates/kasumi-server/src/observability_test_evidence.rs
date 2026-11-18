@@ -1,3 +1,7 @@
+pub(crate) fn enabled() -> bool {
+    std::env::var("KASUMI_CAPTURE_PROTECTED_RESPONSES").as_deref() == Ok("1")
+}
+
 /// Capture the actual bounded TLS reply in the original libtest output on an
 /// explicit evidence run. Only public response metadata and its body leave
 /// the fixture. Client request headers and private test credentials stay local.
@@ -20,7 +24,7 @@ pub(crate) async fn observed_reply(label: &str, mut response: reqwest::Response)
         );
         body.extend_from_slice(&chunk);
     }
-    if std::env::var("KASUMI_CAPTURE_PROTECTED_RESPONSES").as_deref() == Ok("1") {
+    if enabled() {
         println!(
             "kasumi-protected-response {}",
             serde_json::json!({
@@ -34,7 +38,7 @@ pub(crate) async fn observed_reply(label: &str, mut response: reqwest::Response)
 
 /// Emit only the independently read public identifiers and outcomes.
 pub(crate) fn native_observation(label: &str, fields: serde_json::Value) {
-    if std::env::var("KASUMI_CAPTURE_PROTECTED_RESPONSES").as_deref() == Ok("1") {
+    if enabled() {
         println!(
             "kasumi-native-observation {}",
             serde_json::json!({"id":label, "fields":fields})

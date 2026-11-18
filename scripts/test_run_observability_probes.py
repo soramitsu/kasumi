@@ -79,6 +79,32 @@ class Observability(unittest.TestCase):
         with self.assertRaises(ValueError):
             obs.verified("backup", native("completed-session-status", {**row, "checkpoint_revision": 10}))
 
+    def test_authority_records_actual_quorum_and_persisted_voter_replacement(self):
+        original, final = [1, 2, 3], [1, 3, 4]
+        data = {}
+        for i, step in enumerate(("issuer-capacity", "issuer-enroll", "issuer-replace", "issuer-revoke")):
+            data[step] = {"operation_id": str(uuid.uuid4()), "command_sha256": f"{i:064x}",
+                          "admitted_revision": i * 3 + 1, "progress_revision": i * 3 + 2,
+                          "observer": 1, "leader": 1, "term": 2,
+                          "voters_before": final if i == 3 else original, "effective_voters": final if i >= 2 else original,
+                          "phase": {"kind": "draining" if i == 3 else "completed"},
+                          "requested_voters": final if i == 2 else None, "target": {1: 4, 3: 2}.get(i)}
+        data["issuer-peer-denial"] = {"removed": 2, "remaining_refusals": 3}
+        self.assertEqual(obs.issuer_maintenance(data)["replaced_voters"], final)
+        for key, change in (("issuer-replace", {"effective_voters": original}), ("issuer-revoke", {"phase": {"kind": "completed"}}),
+                            ("issuer-revoke", {"admitted_revision": 2}), ("issuer-enroll", {"leader": None}),
+                            ("issuer-peer-denial", {"remaining_refusals": 1})):
+            with self.subTest(key=key, change=change), self.assertRaises(ValueError):
+                obs.issuer_maintenance({**data, key: {**data[key], **change}})
+
+    def test_structured_events_preserve_failure_class_and_exclude_sensitive_fields(self):
+        events = [{"fields": {"event": "tls_reload_failed"}}, {"fields": {"event": "engine_warning"}},
+                  {"fields": {"event": "original_engine_open_failed", "failure_class": "io_storage_full"}}]
+        self.assertEqual(len(obs.verified("logs", native("structured-events", events))["events"]), 3)
+        events[0]["fields"]["token"] = "secret-span-token"
+        with self.assertRaisesRegex(ValueError, "disclosed"):
+            obs.verified("logs", native("structured-events", events))
+
     def test_archive_metrics_must_match_due_bytes_and_failed_worker(self):
         value = {"groups": [{"tenant": "tenant-a", "retention": {"archive_backlog_bytes": 40, "hot_bytes": 90,
                  "hot_budget_bytes": 100}, "audit_maintenance": {"failures": 1, "committed_segments": 0}}],

@@ -437,6 +437,10 @@ mod tests {
         assert_eq!(values[1]["fields"]["event"], "engine_warning");
         assert_eq!(values[2]["fields"]["event"], "original_engine_open_failed");
         assert_eq!(values[2]["fields"]["failure_class"], "io_storage_full");
+        crate::observability::test_evidence::native_observation(
+            "structured-events",
+            serde_json::json!(&values),
+        );
         for value in values {
             let encoded = value.to_string();
             assert!(!encoded.contains("private-") && !encoded.contains("secret-span-token"));

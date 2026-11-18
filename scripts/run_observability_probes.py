@@ -33,6 +33,8 @@ CASES = {
     "backlog": "protected_tls_reports_real_archive_outage_and_due_backlog",
     "recovery": "three_runtime_nodes_report_committed_recovery_prepare_over_protected_tls",
     "backup": "native_backup_proof_is_admin_only_configured_and_verified_through_secure_sdk",
+    "authority": "actual_tls_peer_readiness_enrolls_replaces_and_fences_revoked_member",
+    "logs": "json_diagnostics_exclude_dependency_payloads_and_span_fields",
 }
 PREFIX = {"http": "kasumi-protected-response ", "native": "kasumi-native-observation "}
 
@@ -90,14 +92,49 @@ def installed_coverage(reply, healthy):
     return current
 
 
+def issuer_maintenance(observed):
+    previous = 0
+    operations = set()
+    digests = set()
+    original = [1, 2, 3]
+    requested = observed["issuer-replace"]["requested_voters"]
+    require(type(requested) is list and len(set(requested)) == len(requested) == 3
+            and 4 in requested and set(requested) <= {1, 2, 3, 4}, "invalid replacement voter set")
+    removed, = set(original) - set(requested)
+    for step in ("issuer-capacity", "issuer-enroll", "issuer-replace", "issuer-revoke"):
+        entry = observed[step]
+        op = uuid.UUID(entry["operation_id"])
+        digest = acceptance.checksum(entry["command_sha256"])
+        require(op.int > 0 and op not in operations and digest not in digests
+                and previous < acceptance.uint(entry["admitted_revision"], "authority admission", 1)
+                <= acceptance.uint(entry["progress_revision"], "authority progress", 1)
+                and entry["leader"] == entry["observer"] and entry["observer"] in entry["effective_voters"]
+                and acceptance.uint(entry["term"], "authority leader term", 1)
+                and entry["phase"] == {"kind": "draining" if step == "issuer-revoke" else "completed"},
+                "authority majority or durable maintenance phase differs")
+        operations.add(op)
+        digests.add(digest)
+        previous = entry["progress_revision"]
+        require(entry["voters_before"] == (requested if step == "issuer-revoke" else original)
+                and entry["effective_voters"] == (requested if step in ("issuer-replace", "issuer-revoke") else original),
+                "authority configuration differs from actual effective voters")
+    require(observed["issuer-enroll"]["target"] == 4 and observed["issuer-revoke"]["target"] == removed
+            and observed["issuer-peer-denial"] == {"removed": removed, "remaining_refusals": 3},
+            "issuer peer revocation did not reach surviving members")
+    return {"original_voters": original, "replaced_voters": requested, "revoked": removed,
+            "progress_revision": previous}
+
+
 def verified(stage, log):
     seen = rows(log)
     replies, native = seen["http"], seen["native"]
     required_http = {"readiness": {"healthy-129", "metrics-129", "after-rejected-membership", "negative-group-129"},
                      "protection": {"initial-ready", "initial-metrics", "health"},
                      "backlog": {"archive-outage", "archive-outage-metrics"},
-                     "recovery": {"recovery-status"}, "backup": set()}
-    required_native = {"recovery": {"recovery-status"}, "backup": {"completed-session-status"}}
+                     "recovery": {"recovery-status"}, "backup": set(), "authority": set(), "logs": set()}
+    required_native = {"recovery": {"recovery-status"}, "backup": {"completed-session-status"},
+                       "logs": {"structured-events"}, "authority": {"issuer-capacity", "issuer-enroll", "issuer-replace",
+                                                                    "issuer-revoke", "issuer-peer-denial"}}
     require(set(replies) == required_http[stage] and set(native) == required_native.get(stage, set()),
             "protected case did not retain its own exact observations")
     if stage == "readiness":
@@ -145,6 +182,16 @@ def verified(stage, log):
                 and uuid.UUID(current["operation_id"]).int > 0 and current["updated_revision"] > 0,
                 "protected result differs from committed Prepare")
         return current
+    if stage == "authority":
+        return issuer_maintenance(native)
+    if stage == "logs":
+        events = native["structured-events"]
+        require(isinstance(events, list) and [row["fields"]["event"] for row in events] == [
+            "tls_reload_failed", "engine_warning", "original_engine_open_failed"]
+            and events[2]["fields"]["failure_class"] == "io_storage_full" and all(
+                marker not in json.dumps(events) for marker in ("private-", "secret-span-token")),
+                "structured diagnostics lost their failure class or disclosed fixture secrets")
+        return {"events": [row["fields"]["event"] for row in events]}
     value = native["completed-session-status"]
     require(uuid.UUID(value["session_id"]).int > 0 and value["session_id"] == value["backup_id"]
             and acceptance.uint(value["revision"], "completed revision") == value["checkpoint_revision"]
