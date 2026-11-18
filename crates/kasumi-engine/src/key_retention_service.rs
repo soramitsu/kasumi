@@ -1,5 +1,5 @@
 //! A page is an observation of the authenticated local catalogs and retained
-//! tenant archive head. Every source outside that observation is explicit in
+//! tenant archive chain. Every source outside that observation is explicit in
 //! coverage. A page grants no provider mutation or retirement authority.
 use super::*;
 
@@ -88,12 +88,6 @@ impl Database {
         // This installation does not have an authoritative scope-wide index
         // of authenticated remote backup sessions and completed checkpoints.
         missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
-        if state.audit_retention.archive_segments > 1 {
-            missing.insert(MissingKeyDependency::RecordUnreadable {
-                record_kind: KeyReferenceKind::AuditArchive,
-                id: "earlier-archive-segments".into(),
-            });
-        }
         if !state.history_archives.is_empty() {
             missing.insert(MissingKeyDependency::RecordUnreadable {
                 record_kind: KeyReferenceKind::HistoryArchive,
@@ -176,24 +170,43 @@ impl Database {
                         })
                     })?;
                 let state = &generation.state;
-                if let Some(head) = &state.audit_retention.archive_head {
-                    consider(KeyRetentionEntry {
-                        key: KeyVersionRef::from(&head.key),
-                        reference: KeyReference::AuditArchive {
-                            stream_id: head.stream_id,
-                            first_sequence: head.object.first_sequence,
-                        },
-                    })?;
+                let mut archive_digest = Sha256::new();
+                let unreadable = crate::tenant_audit_directory::visit_key_references(
+                    stores.application(),
+                    &state.audit_retention,
+                    |reference| {
+                        token.check()?;
+                        archive_digest.update(staged_digest(reference)?.0.as_bytes());
+                        consider(KeyRetentionEntry {
+                            key: KeyVersionRef::from(&reference.key),
+                            reference: KeyReference::AuditArchive {
+                                stream_id: reference.stream_id,
+                                first_sequence: reference.object.first_sequence,
+                            },
+                        })
+                    },
+                )?;
+                token.check()?;
+                if let Some(object_id) = unreadable {
+                    if missing.len() == MAX_MISSING_KEY_DEPENDENCIES {
+                        truncated = true;
+                        missing.pop_last();
+                    }
+                    missing.insert(MissingKeyDependency::RecordUnreadable {
+                        record_kind: KeyReferenceKind::AuditArchive,
+                        id: object_id.to_string(),
+                    });
                 }
                 let inventory_sha256 = staged_digest(&(
-                    "kasumi.key-retention.local.v1",
+                    "kasumi.key-retention.local.v2",
                     &scope_hash,
                     &state.incarnation,
                     epoch,
                     membership_epoch,
                     local,
                     digest,
-                    &state.audit_retention.archive_head,
+                    state.audit_retention.archive_segments,
+                    hex::encode(archive_digest.finalize()),
                     &missing,
                     truncated,
                 ))?

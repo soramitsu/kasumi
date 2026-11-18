@@ -5,7 +5,7 @@
 //! set bit. This bounds a seek without retaining the chain in native memory.
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{DiskMemoryLease, TenantStore, WriteOp};
-use kasumi_types::{AuditArchiveLink, AuditArchiveReference};
+use kasumi_types::{AuditArchiveLink, AuditArchiveReference, AuditRetentionState};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
@@ -139,6 +139,47 @@ pub(crate) fn containing(
         "tenant audit sequence outside its selected archive"
     );
     Ok(row.reference)
+}
+
+/// Stream wrapping-key references from the selected chain with one bounded
+/// point read per predecessor. The first link that cannot be authenticated
+/// identifies the missing prefix in a retention observation.
+pub(crate) fn visit_key_references(
+    store: &TenantStore,
+    retention: &AuditRetentionState,
+    mut visit: impl FnMut(&AuditArchiveReference) -> kasumi_types::Result<()>,
+) -> kasumi_types::Result<Option<Uuid>> {
+    retention.validate()?;
+    let Some(mut reference) = retention.archive_head.clone() else {
+        return Ok(None);
+    };
+    let mut index = retention.archive_segments - 1;
+    loop {
+        visit(&reference)?;
+        match (index, &reference.previous) {
+            (0, None) => return Ok(None),
+            (0, Some(_)) | (_, None) => {
+                return Err(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::Unavailable,
+                    "selected audit chain length differs from retention",
+                ));
+            }
+            (_, Some(link)) => {
+                index -= 1;
+                match Row::read(store, retention.stream_id, index, link) {
+                    Ok(row) => reference = row.reference,
+                    Err(error) => {
+                        tracing::warn!(
+                            object_id = %link.object_id,
+                            %error,
+                            "could not read selected audit key dependency"
+                        );
+                        return Ok(Some(link.object_id));
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Materialize the new link while the committed-prune owner has the verified

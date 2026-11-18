@@ -1083,6 +1083,53 @@ mod tests {
                     .unwrap()
             );
         }
+        let retention = &target.generation().unwrap().state.audit_retention;
+        let mut expected = references.iter().rev();
+        let missing = crate::tenant_audit_directory::visit_key_references(
+            &target_store,
+            retention,
+            |reference| {
+                assert_eq!(Some(reference), expected.next());
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(missing, None);
+        assert!(expected.next().is_none());
+        let cancellation =
+            crate::tenant_audit_directory::visit_key_references(&target_store, retention, |_| {
+                Err(kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::ResourceExhausted,
+                    "inventory caller cancelled",
+                ))
+            })
+            .unwrap_err();
+        assert_eq!(
+            cancellation.code,
+            kasumi_types::ErrorCode::ResourceExhausted
+        );
+        let mut other_chain = retention.clone();
+        let missing_id = uuid::Uuid::new_v4();
+        other_chain
+            .archive_head
+            .as_mut()
+            .unwrap()
+            .previous
+            .as_mut()
+            .unwrap()
+            .object_id = missing_id;
+        let mut seen = Vec::new();
+        let missing = crate::tenant_audit_directory::visit_key_references(
+            &target_store,
+            &other_chain,
+            |reference| {
+                seen.push(reference.object.object_id);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert_eq!(seen, [references.last().unwrap().object.object_id]);
+        assert_eq!(missing, Some(missing_id));
         let head = references.last().unwrap();
         for reference in &references {
             for sequence in reference.object.first_sequence..reference.object.next_sequence {
