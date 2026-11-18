@@ -1038,7 +1038,7 @@ impl Core {
             admission,
             group_id,
             cache,
-            crate::DirectoryPageFormat::Fixed,
+            crate::DirectoryPageFormat::default(),
         )
     }
 

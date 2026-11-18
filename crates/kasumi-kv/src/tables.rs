@@ -962,7 +962,7 @@ impl Database {
             admission,
             group_id,
             cache,
-            create_format: crate::DirectoryPageFormat::Fixed,
+            create_format: crate::DirectoryPageFormat::default(),
         }
     }
 

@@ -25,27 +25,32 @@ fn native_output_bytes(len: usize) -> u64 {
 
 #[test]
 fn retained_reader_keeps_one_snapshot_and_admitted_bytes_through_close() {
-    verify_retained_reader_and_reopen(crate::DirectoryPageFormat::Fixed);
+    verify_retained_reader_and_reopen(
+        crate::test_utils::node_storage_config()
+            .with_directory_page_format(crate::DirectoryPageFormat::Fixed),
+        crate::DirectoryPageFormat::Fixed,
+    );
 }
 
 #[test]
 fn compressed_registered_store_reopens_with_default_options() {
-    verify_retained_reader_and_reopen(crate::DirectoryPageFormat::Lz4);
+    verify_retained_reader_and_reopen(
+        crate::test_utils::node_storage_config().into(),
+        crate::DirectoryPageFormat::Lz4,
+    );
 }
 
-fn verify_retained_reader_and_reopen(format: crate::DirectoryPageFormat) {
+fn verify_retained_reader_and_reopen(
+    options: NodeStorageCreateOptions,
+    format: crate::DirectoryPageFormat,
+) {
     let directory = private_tempdir().unwrap();
     let path = directory.path().join("retained-reader.kasumi");
     let memory = TestDiskMemory::new(256 << 20, 4096);
     let disk = disk(&path, &memory);
-    let opening = RegisteredNodeOpening::prepare(
-        &path,
-        ID,
-        disk.clone(),
-        NodeOpeningMode::Create,
-        crate::test_utils::node_storage_config().with_directory_page_format(format),
-    )
-    .unwrap();
+    let opening =
+        RegisteredNodeOpening::prepare(&path, ID, disk.clone(), NodeOpeningMode::Create, options)
+            .unwrap();
     assert_eq!(opening.open(), NodeOpeningPhase::Open);
     let tables = opening.queue_node_tables().unwrap();
     assert_eq!(tables.run(), NodeWriterPhase::Finished);

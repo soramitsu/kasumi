@@ -77,8 +77,7 @@ pub struct NodeStorageConfig {
     pub cached_files: usize,
 }
 
-/// Options for creating native storage. Existing configurations select the
-/// fixed page format. Reopening uses the format recorded by the database.
+/// Options for creating native storage. New groups use packed directory pages by default. Reopening uses the format recorded by the database.
 #[derive(Clone, Copy, Debug)]
 pub struct NodeStorageCreateOptions {
     storage: NodeStorageConfig,
@@ -87,7 +86,7 @@ pub struct NodeStorageCreateOptions {
 
 impl From<NodeStorageConfig> for NodeStorageCreateOptions {
     fn from(storage: NodeStorageConfig) -> Self {
-        storage.with_directory_page_format(kasumi_kv::DirectoryPageFormat::Fixed)
+        storage.with_directory_page_format(kasumi_kv::DirectoryPageFormat::default())
     }
 }
 

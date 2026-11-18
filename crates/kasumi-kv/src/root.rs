@@ -69,9 +69,9 @@ pub(crate) const ROOT_MAGIC: [u8; 16] = *b"KASUMI-KVROOT005";
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum DirectoryPageFormat {
     /// The original fixed-width, uncompressed 16 KiB page format.
-    #[default]
     Fixed,
     /// Pack variable-length LZ4 or raw representations of the same authenticated pages.
+    #[default]
     Lz4,
 }
 

@@ -119,16 +119,16 @@ growth admission, and observed descriptor close. Kasumi Store supplies that
 boundary through `NodeSegmentGroup` and `NodeDisk`; record encryption belongs
 to the embedding store.
 
-The default creation format is `DirectoryPageFormat::Fixed`. The table builder
-can opt in to packed directories when creating an empty group.
+New groups use packed LZ4 directory pages by default. To create a group with
+fixed-width pages, select the format on the table builder.
 
 ```rust
 let db = Database::builder(admission, group_id, cache)
-    .with_directory_page_format(DirectoryPageFormat::Lz4)
+    .with_directory_page_format(DirectoryPageFormat::Fixed)
     .create_with_backend(backend)?;
 ```
 
-Core callers can pass `DirectoryPageFormat::Lz4` as the final argument to
+Core callers can pass either format as the final argument to
 `Core::create_with_backend_and_format`. The ordinary `open_with_backend`
 reads the format persisted at creation, even for an empty group. Moving an
 existing fixed group to packed pages requires creating a new packed group and
