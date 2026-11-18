@@ -15,7 +15,7 @@ use tantivy::query::{
     Query, TermQuery,
 };
 use tantivy::schema::{
-    FAST, Field, IndexRecordOption, STRING, Schema, TextFieldIndexing, TextOptions,
+    Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value as _,
 };
 use tantivy::tokenizer::{
     Language, LowerCaser, SimpleTokenizer, Stemmer, TextAnalyzer, TokenStream,
@@ -34,7 +34,6 @@ struct TextFields {
 struct TextCore {
     index: Index,
     indexes: BTreeMap<String, TextFields>,
-    row_field: Field,
     id_field: Field,
     // None means an interrupted/failed update poisoned this writer corridor.
     // Older immutable readers remain usable, but new applies must recover.
@@ -44,9 +43,6 @@ struct TextCore {
 pub(crate) struct TextSnapshot {
     core: Arc<TextCore>,
     searcher: Searcher,
-    ids: imbl::HashMap<u64, String>,
-    rows: imbl::HashMap<String, u64>,
-    next_row: u64,
     generation: u64,
 }
 
@@ -54,7 +50,7 @@ impl std::fmt::Debug for TextSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextSnapshot")
             .field("indexes", &self.core.indexes.keys())
-            .field("documents", &self.ids.len())
+            .field("documents", &self.searcher.num_docs())
             .finish()
     }
 }
@@ -159,8 +155,7 @@ impl TextSnapshot {
             return Ok(None);
         }
         let mut builder = Schema::builder();
-        let row_field = builder.add_u64_field("_kasumi_row", FAST);
-        let id_field = builder.add_text_field("_kasumi_id", STRING);
+        let id_field = builder.add_text_field("_kasumi_id", STRING | STORED);
         let mut indexes = BTreeMap::new();
         let mut sequence = 0;
         for definition in &source.definition().indexes {
@@ -201,7 +196,6 @@ impl TextSnapshot {
         let core = Arc::new(TextCore {
             index,
             indexes,
-            row_field,
             id_field,
             active: Mutex::new(Some(0)),
         });
@@ -211,9 +205,6 @@ impl TextSnapshot {
             .index
             .writer_with_num_threads::<TantivyDocument>(1, 15_000_000)
             .map_err(search_error)?;
-        let mut ids = imbl::HashMap::new();
-        let mut rows = imbl::HashMap::new();
-        let mut next_row = 0u64;
         // The checked source lends logical IDs in strict order. Archived rows
         // have no resident text body; only live rows receive a text row, as in
         // the original build. No collection-sized ID sort buffer is needed.
@@ -223,15 +214,9 @@ impl TextSnapshot {
             let Record::Live(document) = record else {
                 return Ok(());
             };
-            let row = next_row;
-            next_row = next_row
-                .checked_add(1)
-                .ok_or_else(|| search_error("text row identifier exhausted"))?;
             writer
-                .add_document(core.document(id, row, &document.body))
+                .add_document(core.document(id, &document.body))
                 .map_err(search_error)?;
-            ids.insert(row, id.to_owned());
-            rows.insert(id.to_owned(), row);
             Ok(())
         })?;
         writer.commit().map_err(search_error)?;
@@ -240,9 +225,6 @@ impl TextSnapshot {
         Ok(Some(Self {
             core,
             searcher,
-            ids,
-            rows,
-            next_row,
             generation: 0,
         }))
     }
@@ -288,34 +270,18 @@ impl TextSnapshot {
             .index
             .writer_with_num_threads::<TantivyDocument>(1, 15_000_000)
             .map_err(search_error)?;
-        let mut ids = self.ids.clone();
-        let mut rows = self.rows.clone();
-        let mut next_row = self.next_row;
         // Any replay/read error after this point leaves active=None. The old
         // reader remains immutable, but the shared writer corridor must recover;
         // a source failure is never flattened into a deterministic query error.
         changes.visit_changes(|delta| {
             let id = delta.id;
-            let old_row = rows.remove(id);
-            if let Some(row) = old_row {
-                ids.remove(&row);
+            if matches!(delta.old, Some(Record::Live(_))) {
                 writer.delete_term(Term::from_field_text(self.core.id_field, id));
             }
             if let Some(Record::Live(document)) = delta.new {
-                let row = if let Some(row) = old_row {
-                    row
-                } else {
-                    let row = next_row;
-                    next_row = next_row
-                        .checked_add(1)
-                        .ok_or_else(|| search_error("text row identifier exhausted"))?;
-                    row
-                };
                 writer
-                    .add_document(self.core.document(id, row, &document.body))
+                    .add_document(self.core.document(id, &document.body))
                     .map_err(search_error)?;
-                ids.insert(row, id.to_owned());
-                rows.insert(id.to_owned(), row);
             }
             Ok(())
         })?;
@@ -330,9 +296,6 @@ impl TextSnapshot {
         Ok(Self {
             core: self.core.clone(),
             searcher,
-            ids,
-            rows,
-            next_row,
             generation,
         })
     }
@@ -504,10 +467,9 @@ impl TextSnapshot {
         // Drive scorers ourselves: TopDocs(limit) limits output, not matching work.
         for segment in self.searcher.segment_readers() {
             cancellation.check()?;
-            let rows = segment
-                .fast_fields()
-                .u64("_kasumi_row")
-                .map_err(search_error)?;
+            // Reuse at most one decompressed ID block for this segment and
+            // query. Nothing in the captured generation retains the block.
+            let stored = segment.get_store_reader(1).map_err(search_error)?;
             let mut scorer = weight.scorer(segment, 1.0).map_err(search_error)?;
             while scorer.doc() != TERMINATED {
                 cancellation.check()?;
@@ -516,16 +478,18 @@ impl TextSnapshot {
                     scorer.advance();
                     continue;
                 }
-                let row = rows
-                    .first(doc)
-                    .ok_or_else(|| search_error("missing internal row identifier"))?;
-                let id = self
-                    .ids
-                    .get(&row)
-                    .ok_or_else(|| search_error("invalid internal row identifier"))?;
-                matches.insert(id.clone(), scorer.score());
-                if matches.len() > cap {
+                if matches.len() >= cap {
                     return Err(exhausted("text candidate budget exceeded"));
+                }
+                let record: TantivyDocument = stored.get(doc).map_err(search_error)?;
+                let mut ids = record.get_all(self.core.id_field);
+                let id = ids
+                    .next()
+                    .and_then(|id| id.as_str())
+                    .filter(|id| kasumi_types::validate_name(id).is_ok())
+                    .ok_or_else(|| search_error("missing or invalid stored document ID"))?;
+                if ids.next().is_some() || matches.insert(id.to_owned(), scorer.score()).is_some() {
+                    return Err(search_error("duplicate stored document ID"));
                 }
                 scorer.advance();
             }
@@ -708,9 +672,8 @@ impl Automaton for Prefix {
 }
 
 impl TextCore {
-    fn document(&self, id: &str, row: u64, body: &Value) -> TantivyDocument {
+    fn document(&self, id: &str, body: &Value) -> TantivyDocument {
         let mut indexed = TantivyDocument::default();
-        indexed.add_u64(self.row_field, row);
         indexed.add_text(self.id_field, id);
         for fields in self.indexes.values() {
             for (path, ranked, surface) in &fields.paths {
@@ -732,6 +695,7 @@ impl TextCore {
         let reader: IndexReader = self
             .index
             .reader_builder()
+            .doc_store_cache_num_blocks(0)
             .reload_policy(ReloadPolicy::Manual)
             .try_into()
             .map_err(search_error)?;
@@ -922,10 +886,9 @@ mod lending_tests {
         // separate build from the same authoritative input.
         records.fail_after = None;
         let snapshot = TextSnapshot::build(&records).unwrap().unwrap();
-        assert_eq!(snapshot.next_row, 2);
-        assert_eq!(snapshot.rows.get("a"), Some(&0));
-        assert_eq!(snapshot.rows.get("c"), Some(&1));
-        assert!(!snapshot.rows.contains_key("b"));
+        assert_eq!(snapshot.searcher.num_docs(), 2);
+        assert_eq!(hits(&snapshot, "alpha"), vec!["a"]);
+        assert_eq!(hits(&snapshot, "gamma"), vec!["c"]);
         assert_eq!(hits(&snapshot, "live"), vec!["a", "c"]);
     }
 
