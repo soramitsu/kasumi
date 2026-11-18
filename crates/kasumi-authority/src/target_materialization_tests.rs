@@ -1035,6 +1035,7 @@ impl MaterialFixture {
         let journal = kasumi_engine::TargetJournal::create_new(
             store.clone(),
             kasumi_engine::TargetJournalInstallation {
+                source_key_bindings_sha256: None,
                 root: self.control.root.clone(),
                 node: node_identity,
                 audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -1722,6 +1723,7 @@ async fn initialize_association_reopens_and_requires_exact_start_and_custody_own
         kasumi_engine::TargetJournal::open_existing(
             journal_store.clone(),
             kasumi_engine::TargetJournalInstallation {
+                source_key_bindings_sha256: None,
                 root: f.control.root.clone(),
                 node: nodes().into_iter().find(|n| n.node_id == 1).unwrap(),
                 audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -2079,6 +2081,7 @@ async fn exercise_target_activation(maintenance: bool) {
     // before the actual local effect. It uses neither source nor target key.
     let journal_path = f.physical[&selected.id].path("activation-journal.kv");
     let journal_installation = kasumi_engine::TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes()
             .into_iter()
@@ -2555,6 +2558,7 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
     use kasumi_engine::{TargetJournal, TargetJournalInstallation};
     let f = MaterialFixture::new().await;
     let installation = TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
         audit_placement_bindings: std::collections::BTreeMap::from([(
@@ -2956,6 +2960,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     use kasumi_engine::{MaterializationNode, TargetJournal, TargetJournalInstallation};
     let f = MaterialFixture::new().await;
     let installation = TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes().first().unwrap().clone(),
         audit_placement_bindings: std::collections::BTreeMap::from([(

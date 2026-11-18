@@ -63,7 +63,7 @@ Backups, audit and recovery:
   maintenance prune-service-audit <configuration.json> <export-page.json> <through-index> <output.json>
                                              export or prune a service audit that refuses
                                              records (daemon stopped)
-  control-recovery configuration-digest|start|status|resume|stop|phase <arguments>
+  control-recovery source-key-digest|configuration-digest|start|status|resume|stop|phase <arguments>
   local-recovery start|status|resume|stop <configuration.json> <request.json-or-operation-uuid>
 
   help, --help, -h                           print this help";

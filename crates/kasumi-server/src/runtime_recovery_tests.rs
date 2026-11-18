@@ -1014,6 +1014,8 @@ impl Fixture {
                             source_backups: BTreeMap::from([(
                                 self.source,
                                 TargetBackupSource {
+                                    read_key_binding: Some(crate::local_recovery::keys::RecoveryKeys::open_with(&base.tenants[0].keys, &[], Arc::new(crate::runtime::file_secret)).unwrap().digest().unwrap()),
+                                    historical_keys: vec![],
                                     destination_alias: "primary".into(),
                                     keys: base.tenants[0].keys.clone(),
                                 },

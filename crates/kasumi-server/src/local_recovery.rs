@@ -25,7 +25,7 @@ const MAX_RECORD: usize = 2 << 20;
 #[path = "local_recovery_archives.rs"]
 mod archives;
 #[path = "local_recovery_keys.rs"]
-mod keys;
+pub(crate) mod keys;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

@@ -37,6 +37,12 @@ impl TargetRunnerLimits {
 pub struct TargetBackupSource {
     pub destination_alias: String,
     pub keys: KeyProviderSettings,
+    /// Legacy installations name only the original source. New target
+    /// journals bind the complete read-only provider roster before enrollment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub read_key_binding: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical_keys: Vec<KeyProviderSettings>,
 }
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -174,17 +180,30 @@ impl TargetRecoveryConfig {
                     "target backup source is not installed"
                 );
                 ensure!(
-                    source.keys.validate()? != journal_key,
-                    "source backup cannot use target journal key"
+                    source.historical_keys.len() < kasumi_store::HistoricalKeyResolver::MAX_SOURCES,
+                    "target source historical key roster exceeds its bound"
+                );
+                if let Some(binding) = &source.read_key_binding {
+                    kasumi_types::validate_sha256(binding)?;
+                }
+                ensure!(
+                    source.historical_keys.is_empty() || source.read_key_binding.is_some(),
+                    "historical target keys require a bound roster"
                 );
             }
         }
         for template in self.tenants.values() {
             for source in template.source_backups.values() {
-                ensure!(
-                    !target_keys.contains(&source.keys.validate()?),
-                    "source backup key cannot be reused for a target application or custody domain"
-                );
+                let mut source_keys = BTreeSet::new();
+                for provider in std::iter::once(&source.keys).chain(&source.historical_keys) {
+                    let key = provider.validate()?;
+                    ensure!(
+                        key != journal_key
+                            && !target_keys.contains(&key)
+                            && source_keys.insert(key),
+                        "duplicate source key or target journal/application/custody key reuse"
+                    );
+                }
             }
         }
         ensure!(

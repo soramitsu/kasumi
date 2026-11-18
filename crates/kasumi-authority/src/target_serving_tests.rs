@@ -19,6 +19,7 @@ async fn journal(
     NodeStore,
 ) {
     let installation = kasumi_engine::TargetJournalInstallation {
+        source_key_bindings_sha256: None,
         root: f.control.root.clone(),
         node: nodes().into_iter().find(|node| node.node_id == id).unwrap(),
         audit_placement_bindings: std::collections::BTreeMap::from([(

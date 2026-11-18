@@ -10,7 +10,34 @@ use kasumi_store::{NodeStore, StorageAccess, TenantStore, node_store_ids};
 use std::{path::Path, sync::Arc};
 
 pub(crate) fn installation(installed: &TargetRecoveryConfig) -> Result<TargetJournalInstallation> {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"kasumi.target.backup-sources.v1\0");
+    let mut saw_bound = false;
+    let mut saw_legacy = false;
+    for (tenant, template) in &installed.tenants {
+        for (incarnation, source) in &template.source_backups {
+            if let Some(binding) = &source.read_key_binding {
+                kasumi_types::validate_sha256(binding)?;
+                hash.update(serde_json::to_vec(&(
+                    tenant,
+                    incarnation,
+                    &source.destination_alias,
+                    binding,
+                ))?);
+                hash.update([0]);
+                saw_bound = true;
+            } else {
+                saw_legacy = true;
+            }
+        }
+    }
+    ensure!(
+        !(saw_bound && saw_legacy),
+        "target backup sources mix bound and unbound key rosters"
+    );
     let installation = TargetJournalInstallation {
+        source_key_bindings_sha256: saw_bound.then(|| hex::encode(hash.finalize())),
         root: installed.control_root.clone(),
         node: installed.node.clone(),
         audit_placement_bindings: installed
@@ -78,6 +105,22 @@ async fn initialize_owned(
         .as_ref()
         .context("target recovery is not configured")?;
     let journal_installation = installation(installed)?;
+    for template in installed.tenants.values() {
+        for source in template.source_backups.values() {
+            let binding = source
+                .read_key_binding
+                .as_deref()
+                .context("new target backup source requires a read_key_binding")?;
+            // Enrollment verifies the exact keys/CA. Reopen can still serve
+            // stop/cleanup while the original backup keys are offline.
+            crate::local_recovery::keys::RecoveryKeys::open_with(
+                &source.keys,
+                &source.historical_keys,
+                Arc::new(file_secret),
+            )?
+            .bound_digest(binding)?;
+        }
+    }
     let admission = storage.facade(&config.admission)?;
     let mut pending = crate::startup_resources::Resources::default();
     pending.owned_admissions.push(admission.clone());

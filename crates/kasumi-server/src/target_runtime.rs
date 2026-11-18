@@ -1746,7 +1746,15 @@ impl TargetRecoveryRuntime {
                 .get(&source.destination_alias)
                 .ok_or_else(|| missing_target_owner("backup destination missing"))?
                 .clone(),
-            keys: source.keys.provider(self.credential.clone())?,
+            keys: match &source.read_key_binding {
+                Some(binding) => crate::local_recovery::keys::RecoveryKeys::open_with(
+                    &source.keys,
+                    &source.historical_keys,
+                    self.credential.clone(),
+                )?
+                .bound_digest(binding)?,
+                None => source.keys.provider(self.credential.clone())?,
+            },
             timeout_ms: self.installed.limits.operation_timeout_ms,
         };
         let configuration = kasumi_engine::TargetMaterializationConfig {

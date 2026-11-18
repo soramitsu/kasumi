@@ -4,20 +4,23 @@ use kasumi_store::{
     HistoricalKeyResolver, HistoricalKeySource, HistoricalSourceSecurityDescriptor,
 };
 
-fn open_source(settings: &KeyProviderSettings) -> Result<HistoricalKeySource> {
+fn open_source(
+    settings: &KeyProviderSettings,
+    credential: crate::serving_runtime::CredentialSource,
+) -> Result<HistoricalKeySource> {
     match settings {
         KeyProviderSettings::File { path } => {
             HistoricalKeySource::file(Arc::new(kasumi_store::FileKeyProvider::open(path)?))
         }
-        KeyProviderSettings::Transit(settings) => HistoricalKeySource::transit(
-            settings.provider_with_source(Arc::new(crate::runtime::file_secret))?,
-        ),
+        KeyProviderSettings::Transit(settings) => {
+            HistoricalKeySource::transit(settings.provider_with_source(credential)?)
+        }
     }
 }
 
 /// The journal comparison and the subsequent unwrap use the same constructed
 /// providers. A changed CA or key identity cannot slip between the two opens.
-pub(super) struct RecoveryKeys {
+pub(crate) struct RecoveryKeys {
     resolver: Arc<HistoricalKeyResolver>,
     binding: serde_json::Value,
 }
@@ -27,14 +30,22 @@ impl RecoveryKeys {
         settings: &KeyProviderSettings,
         historical: &[KeyProviderSettings],
     ) -> Result<Self> {
+        Self::open_with(settings, historical, Arc::new(crate::runtime::file_secret))
+    }
+
+    pub(crate) fn open_with(
+        settings: &KeyProviderSettings,
+        historical: &[KeyProviderSettings],
+        credential: crate::serving_runtime::CredentialSource,
+    ) -> Result<Self> {
         ensure!(
             historical.len() < HistoricalKeyResolver::MAX_SOURCES,
             "too many historical recovery providers"
         );
-        let primary = open_source(settings)?;
+        let primary = open_source(settings, credential.clone())?;
         let sources = historical
             .iter()
-            .map(open_source)
+            .map(|source| open_source(source, credential.clone()))
             .collect::<Result<Vec<_>>>()?;
         let resolver = Arc::new(HistoricalKeyResolver::with_primary(primary, sources)?);
         let binding = serde_json::json!({
@@ -43,6 +54,22 @@ impl RecoveryKeys {
             "historical": resolver.historical_descriptors(),
         });
         Ok(Self { resolver, binding })
+    }
+
+    pub(crate) fn digest(&self) -> Result<String> {
+        use sha2::{Digest, Sha256};
+        let mut hash = Sha256::new();
+        hash.update(b"kasumi.recovery.read-keys.v1\0");
+        hash.update(serde_json::to_vec(&self.binding)?);
+        Ok(hex::encode(hash.finalize()))
+    }
+
+    pub(crate) fn bound_digest(self, expected: &str) -> Result<Arc<HistoricalKeyResolver>> {
+        ensure!(
+            self.digest()? == expected,
+            "target backup source key roster differs from enrollment"
+        );
+        Ok(self.resolver)
     }
 
     pub(super) fn binding(self) -> serde_json::Value {
@@ -106,7 +133,7 @@ mod tests {
         let binding = RecoveryKeys::open(&primary, std::slice::from_ref(&old))?.binding();
         let read =
             RecoveryKeys::open(&primary, std::slice::from_ref(&old))?.bound(&primary, &binding)?;
-        for version in [archived, live] {
+        for version in [&archived, &live] {
             assert_eq!(
                 read.unwrap_key("tenant", &version.wrapped)
                     .await?
@@ -135,6 +162,22 @@ mod tests {
             RecoveryKeys::open(&primary, std::slice::from_ref(&old))?
                 .bound(&primary, &prior_journal)
                 .is_err()
+        );
+        let target = RecoveryKeys::open(&primary, std::slice::from_ref(&old))?;
+        let digest = target.digest()?;
+        assert_ne!(RecoveryKeys::open(&primary, &[])?.digest()?, digest);
+        assert!(
+            RecoveryKeys::open(&primary, &[])?
+                .bound_digest(&digest)
+                .is_err()
+        );
+        let target = target.bound_digest(&digest)?;
+        assert_eq!(
+            target
+                .unwrap_key("tenant", &archived.wrapped)
+                .await?
+                .as_bytes(),
+            archived.plaintext.as_bytes()
         );
         assert!(RecoveryKeys::open(&primary, std::slice::from_ref(&primary)).is_err());
         Ok(())

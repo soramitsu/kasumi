@@ -149,6 +149,7 @@ async fn target_worker_shutdown_fixture(activate: bool, check_closing_activation
         let journal = TargetJournal::create_new(
             store.clone(),
             kasumi_engine::TargetJournalInstallation {
+                source_key_bindings_sha256: None,
                 root: root.clone(),
                 node: identity.clone(),
                 audit_placement_bindings: std::collections::BTreeMap::from([(

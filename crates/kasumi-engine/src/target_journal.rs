@@ -70,11 +70,18 @@ pub struct TargetJournalInstallation {
     /// external archive is opened. These are configuration identities, not
     /// provider credential contents.
     pub audit_placement_bindings: std::collections::BTreeMap<String, String>,
+    /// Absent in deployed journals. New installations with backup sources
+    /// bind their complete tenant/incarnation/alias and provider roster here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_key_bindings_sha256: Option<String>,
 }
 impl TargetJournalInstallation {
     pub fn validate(&self) -> Result<()> {
         self.root.validate()?;
         self.node.validate()?;
+        if let Some(binding) = &self.source_key_bindings_sha256 {
+            kasumi_types::validate_sha256(binding)?;
+        }
         ensure!(
             (1..=10_000).contains(&self.audit_placement_bindings.len()),
             "target journal audit placement roster must be explicitly bounded"

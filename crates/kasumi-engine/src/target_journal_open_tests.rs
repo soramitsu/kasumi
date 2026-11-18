@@ -26,6 +26,7 @@ impl Fixture {
         let control_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[71; 32])
             .map_err(|_| anyhow::anyhow!("fixture Control signing key failed"))?;
         let installed = TargetJournalInstallation {
+            source_key_bindings_sha256: None,
             root: ControlSigningRoot {
                 control_incarnation: Uuid::new_v4(),
                 public_key: hex::encode(control_key.public_key().as_ref()),
@@ -438,7 +439,8 @@ async fn current_head_requires_exact_current_json_bytes() -> Result<()> {
 
 #[tokio::test]
 async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain() -> Result<()> {
-    let f = Fixture::new().await?;
+    let mut f = Fixture::new().await?;
+    f.installed.source_key_bindings_sha256 = Some("ab".repeat(32));
     let journal = f.create()?;
     let original = f.store.get(NS, b"metadata")?.unwrap();
     journal.shutdown().await.unwrap();
@@ -478,6 +480,25 @@ async fn installed_empty_journal_reopens_only_its_exact_node_after_owner_drain()
         StorageAccess::target_journal(&installed.root, &installed.node)?,
     )
     .await?;
+    for binding in [None, Some("cd".repeat(32))] {
+        let mut altered = installed.clone();
+        altered.source_key_bindings_sha256 = binding;
+        assert!(
+            TargetJournal::open_existing(
+                store.clone(),
+                altered,
+                TargetJournalLimits {
+                    max_metadata_bytes: 4 << 20
+                },
+                admission.clone()
+            )
+            .is_err()
+        );
+        assert_eq!(
+            store.get(NS, b"metadata")?.as_deref(),
+            Some(original.as_bytes())
+        );
+    }
     let journal = TargetJournal::open_existing(
         store.clone(),
         installed,

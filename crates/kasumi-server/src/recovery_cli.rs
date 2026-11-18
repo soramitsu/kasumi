@@ -84,6 +84,19 @@ fn client(profile: &ClientProfile) -> Result<kasumi_client::KasumiRecoveryPool> 
 }
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
+        [command, action, input]
+            if command == "control-recovery" && action == "source-key-digest" =>
+        {
+            let source: crate::target_runtime_config::TargetBackupSource = serde_json::from_slice(
+                &crate::runtime::read_private_file(Path::new(input), 1 << 20)?,
+            )?;
+            let keys = crate::local_recovery::keys::RecoveryKeys::open_with(
+                &source.keys,
+                &source.historical_keys,
+                Arc::new(crate::runtime::file_secret),
+            )?;
+            println!("{}", keys.digest()?);
+        }
         [command, action, configuration, name]
             if command == "control-recovery" && action == "configuration-digest" =>
         {
@@ -235,7 +248,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
         }
         [command, ..] if command == "control-recovery" => anyhow::bail!(
-            "usage: kasumid control-recovery configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS"
+            "usage: kasumid control-recovery source-key-digest SOURCE_JSON | configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS"
         ),
         _ => return Ok(false),
     }
