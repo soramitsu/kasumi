@@ -1,5 +1,7 @@
 //! Opt-in compatibility test against an actual, locally installed OpenBao binary.
 //! Starts only loopback listeners, writes no token helper, and kills its child.
+#[path = "support/provider_control.rs"]
+mod provider_control;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{
     EncryptedBackup, KeyProvider, NodeStore, TenantStore, TransitConfig, TransitKeyProvider,
@@ -45,26 +47,45 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
     Ok(())
 }
 
-fn start_server(binary: &Path, config: &Path) -> Result<tokio::process::Child> {
-    Ok(tokio::process::Command::new(binary)
-        .arg("server")
-        .arg("-config")
-        .arg(config)
-        .arg("-log-level=error")
-        .stdout(Stdio::null())
-        .stderr(Stdio::inherit())
-        .kill_on_drop(true)
-        .spawn()?)
+type Server = Option<tokio::process::Child>;
+
+fn start_server(binary: &Path, config: &Path, generation: u8) -> Result<Server> {
+    if provider_control::supervised() {
+        provider_control::request(&format!("start-{generation}"), json!({"config":config}))?;
+        return Ok(None);
+    }
+    Ok(Some(
+        tokio::process::Command::new(binary)
+            .arg("server")
+            .arg("-config")
+            .arg(config)
+            .arg("-log-level=error")
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .kill_on_drop(true)
+            .spawn()?,
+    ))
 }
 
-async fn ready_sealed(
-    client: &reqwest::Client,
-    endpoint: &str,
-    child: &mut tokio::process::Child,
-) -> Result<()> {
+async fn stop_server(child: &mut Server, generation: u8) -> Result<()> {
+    if let Some(process) = child {
+        process.kill().await?;
+        process.wait().await?;
+    } else {
+        provider_control::request(&format!("stop-{generation}"), Value::Null)?;
+    }
+    Ok(())
+}
+
+async fn ready_sealed(client: &reqwest::Client, endpoint: &str, child: &mut Server) -> Result<()> {
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
-            ensure!(child.try_wait()?.is_none(), "OpenBao exited during startup");
+            if let Some(process) = child {
+                ensure!(
+                    process.try_wait()?.is_none(),
+                    "OpenBao exited during startup"
+                );
+            }
             if let Ok(response) = client
                 .get(format!("{endpoint}/v1/sys/seal-status"))
                 .send()
@@ -144,7 +165,7 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             .no_proxy())
     };
     let public = builder()?.build()?;
-    let mut child = start_server(binary.as_ref(), &config)?;
+    let mut child = start_server(binary.as_ref(), &config, 1)?;
     ready_sealed(&public, &endpoint, &mut child).await?;
     let initialized = post(
         &public,
@@ -326,13 +347,12 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
             original.plaintext.as_bytes()
         );
         if derived {
-            child.kill().await?;
-            child.wait().await?;
+            stop_server(&mut child, 1).await?;
             ensure!(
                 provider.unwrap_key("tenant-a", &rewrapped).await.is_err(),
                 "stopped provider returned a key"
             );
-            child = start_server(binary.as_ref(), &config)?;
+            child = start_server(binary.as_ref(), &config, 2)?;
             ready_sealed(&public, &endpoint, &mut child).await?;
             let opened = post(
                 &public,
@@ -368,7 +388,9 @@ async fn actual_openbao_transit_roundtrip_rotation_backups_and_warm_revocation()
         assert!(store.refresh_lease().await.is_err());
         assert!(store.get("documents", b"private-id").is_err());
     }
-    child.kill().await?;
-    child.wait().await?;
+    stop_server(&mut child, 2).await?;
+    if provider_control::supervised() {
+        provider_control::request("complete", Value::Null)?;
+    }
     Ok(())
 }
