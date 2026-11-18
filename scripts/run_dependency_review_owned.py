@@ -33,6 +33,7 @@ if __name__ == "__main__":
         raise SystemExit("dependency runner requires source-only Python imports")
     sys.path.insert(0, str(_scripts))
 
+import advisory_upstream
 import assembly_inputs
 import check_dependency_patches
 import dependency_advisory
@@ -46,10 +47,10 @@ import repeatable_assembly as owned
 import release_gate
 from release_gate import TOOLCHAIN, inventory, sha256, write_json
 
-SCHEMA = "kasumi-owned-dependency-review-v4"
+SCHEMA = "kasumi-owned-dependency-review-v5"
 RUNNER = "scripts/run_dependency_review_owned.py"
 SCRIPTS = {
-    RUNNER, "scripts/assembly_inputs.py", "scripts/check_dependency_patches.py",
+    RUNNER, advisory_upstream.SCRIPT, "scripts/assembly_inputs.py", "scripts/check_dependency_patches.py",
     "scripts/package_release.py", "scripts/repeatable_assembly.py",
     "scripts/release_gate.py", "scripts/gate_process.py",
     "scripts/verify_release_acceptance.py", "scripts/test_check_dependency_patches.py",
@@ -99,7 +100,8 @@ def now():
 def source_scripts(evidence, source, files):
     require(Path(__file__).resolve(strict=True) == source / RUNNER,
             "dependency runner is not the frozen source executable")
-    loaded = {"scripts/assembly_inputs.py": assembly_inputs,
+    loaded = {advisory_upstream.SCRIPT: advisory_upstream,
+              "scripts/assembly_inputs.py": assembly_inputs,
               "scripts/check_dependency_patches.py": check_dependency_patches,
               "scripts/dependency_advisory.py": dependency_advisory,
               "scripts/dependency_git.py": dependency_git,
@@ -139,6 +141,8 @@ def commands(inputs, source, suites, archives):
                                  "--archives", str(archives)], "provenance"),
         ("python-regressions", [python, "-B", "-S", "-m", "unittest", "discover",
                                  "-s", "scripts", "-p", "test_check_dependency_patches.py", "-v"], "python"),
+        ("advisory-upstream", [python, "-I", "-B", "-S", str(source / advisory_upstream.SCRIPT)],
+         "advisory-upstream"),
     ]
     return [*({"id": name, "kind": kind, "command": command, "mode": None, "launches": None,
                "generated_output": None} for name, command, kind in fixed),
@@ -320,6 +324,28 @@ def totals_from_steps(steps):
             "failed_commands": [step["id"] for step in steps if step["exit_code"] != 0]}
 
 
+def scanner_report(output, scan):
+    # cargo-audit can produce a full JSON finding list while reporting that
+    # another check, such as the yanked-version lookup, could not run.
+    diagnostics = owned.check_ref(output, scan["process"]["stderr"]).read_text()
+    require(not any(line.lstrip().lower().startswith("error:") for line in diagnostics.splitlines()),
+            "advisory scanner reported an incomplete check on stderr")
+    return owned.read(owned.check_ref(output, scan["process"]["stdout"]))
+
+
+def verify_upstream(output, steps, expected_commit, started_at, checked_at):
+    selected = [step for step in steps if step["id"] == "advisory-upstream"]
+    require(len(selected) == 1, "missing authenticated advisory upstream observation")
+    step = selected[0]
+    require(step["kind"] == "advisory-upstream" and step["owned_clean"] and step["exit_code"] == 0,
+            "authenticated advisory upstream probe failed")
+    require(not owned.check_ref(output, step["process"]["stderr"]).read_bytes(),
+            "advisory upstream probe emitted errors")
+    observation = owned.read(owned.check_ref(output, step["process"]["stdout"]))
+    return advisory_upstream.verify(observation, expected_commit, started_at=started_at,
+                                    checked_at=checked_at, max_age_hours=dependency_advisory.MAX_AGE_HOURS)
+
+
 def check_probe(step, output, target):
     stdout = owned.check_ref(output, step["process"]["stdout"]).read_text()
     stderr = owned.check_ref(output, step["process"]["stderr"]).read_text()
@@ -482,6 +508,11 @@ def run(evidence, declaration, advisory_declaration, upstream_archives, output):
             require(inventory(source) == files and
                     sha256(source / "vendor/patch-manifest.json") == record["manifest_sha256"],
                     "test changed frozen source inputs")
+            if kind == "advisory-upstream":
+                require(step["tool_sha256"] == inputs["tools"]["python"]["sha256"],
+                        "advisory upstream observer used another interpreter")
+                verify_upstream(output, [step], record["advisory_git"]["result"]["commit"],
+                                record["started_at"], now())
             if kind in {"probe", "verifier", "provenance"}:
                 require(step["exit_code"] == 0 and step["counts"]["complete"],
                         "native probe, patch verifier or upstream provenance check failed")
@@ -492,6 +523,8 @@ def run(evidence, declaration, advisory_declaration, upstream_archives, output):
         record["memory_safety"] = named_memory_safety(source, files, record["steps"], output)
         write_json(attempt, record)
         scan_started = now()
+        verify_upstream(output, record["steps"], record["advisory_git"]["result"]["commit"],
+                        record["started_at"], scan_started)
         latest_files, latest_decisions, latest_packages = dependency_advisory.inspect_declaration(
             advisory_inputs, source, projection / "Cargo.lock", scan_started,
             {case["id"] for case in MEMORY_SAFETY},
@@ -518,7 +551,7 @@ def run(evidence, declaration, advisory_declaration, upstream_archives, output):
         require(scan["owned_clean"] and scan["exit_code"] in {0, 1} and
                 scan["tool_sha256"] == advisory_inputs["scanner"]["sha256"],
                 "advisory scanner was interrupted, changed or returned an unsupported code")
-        report = owned.read(owned.check_ref(output, scan["process"]["stdout"]))
+        report = scanner_report(output, scan)
         findings = dependency_advisory.parse_report(report, packages)
         resolved = dependency_advisory.reconcile(
             findings, decisions, {case["id"]: case["verdict"] for case in record["memory_safety"]})

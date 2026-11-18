@@ -28,6 +28,7 @@ if __name__ == "__main__":
     sys.path.insert(0, str(_scripts))
 
 import attempt_index
+import advisory_upstream
 import assembly_inputs
 import check_dependency_patches
 import dependency_advisory
@@ -75,7 +76,8 @@ def source_scripts(evidence, source):
         scripts[relative] = entry["sha256"]
     require(Path(__file__).resolve(strict=True) == Path(source) / LAUNCHER,
             "dependency launcher is not the frozen source executable")
-    loaded = {"scripts/assembly_inputs.py": assembly_inputs,
+    loaded = {advisory_upstream.SCRIPT: advisory_upstream,
+              "scripts/assembly_inputs.py": assembly_inputs,
               "scripts/attempt_index.py": attempt_index,
               "scripts/check_dependency_patches.py": check_dependency_patches,
               "scripts/dependency_advisory.py": dependency_advisory,
@@ -187,6 +189,9 @@ def child_processes(root, inner, selected, runner_group, provenance_output):
         stdout = owned.check_ref(nested, step["process"]["stdout"]).read_text(errors="replace")
         stderr = owned.check_ref(nested, step["process"]["stderr"]).read_text(errors="replace")
         packages = []
+        if kind == "advisory-upstream":
+            require(step["tool_sha256"] == inner["toolchain"]["tools"]["python"]["sha256"],
+                    "advisory upstream observer used another interpreter")
         if kind == "verifier":
             manifest = check_dependency_patches.read_json(Path(inner["source_root"]) / "vendor/patch-manifest.json")
             packages = [(p["name"], p["version"], p["path"])
@@ -393,6 +398,8 @@ def verify(root):
             and dt.datetime.fromisoformat(inner["started_at"]) <= scan_started < scan_finished
             <= dt.datetime.fromisoformat(inner["finished_at"]),
             "advisory scan interval differs from owned runner")
+    review.verify_upstream(root / "review", inner["steps"], advisory["database"]["commit"],
+                           inner["started_at"], inner["advisory_scan"]["started_at"])
     database_files, decisions, packages = dependency_advisory.inspect_declaration(
         copied, source, projection_lock, inner["advisory_scan"]["started_at"],
         {case["id"] for case in review.MEMORY_SAFETY},
@@ -401,7 +408,7 @@ def verify(root):
     require(owned.read(owned.check_ref(root / "review", inner["advisory_scan"]["database_files"])) == database_files,
             "retained advisory database inventory differs")
     scan = inner["advisory_scan"]["step"]
-    report = owned.read(owned.check_ref(root / "review", scan["process"]["stdout"]))
+    report = review.scanner_report(root / "review", scan)
     findings = dependency_advisory.parse_report(report, packages)
     resolved = dependency_advisory.reconcile(
         findings, decisions, {case["id"]: case["verdict"] for case in memory})

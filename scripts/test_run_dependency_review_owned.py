@@ -13,6 +13,7 @@ import sys
 import tempfile
 import unittest
 
+import advisory_upstream
 import check_dependency_patches
 import dependency_advisory as advisory
 import dependency_git
@@ -487,15 +488,17 @@ class DependencyRunnerTests(unittest.TestCase):
         selected = runner.commands(inputs, Path("/frozen/source"), suites, Path("/custody/crates"))
         names = [step["id"] for step in selected]
         self.assertEqual(len(names), len(set(names)))
-        self.assertEqual(names[:6], ["cargo-version", "rustc-version", "python-version",
+        self.assertEqual(names[:7], ["cargo-version", "rustc-version", "python-version",
                                      "official-verifier", "upstream-provenance",
-                                     "python-regressions"])
+                                     "python-regressions", "advisory-upstream"])
+        self.assertEqual(selected[6]["command"], ["/native/python", "-I", "-B", "-S",
+                                                   "/frozen/source/scripts/advisory_upstream.py"])
         self.assertEqual(selected[4]["command"],
                          ["/native/python", "-B", "-S",
                           "/frozen/source/scripts/dependency_provenance.py",
                           "--archives", "/custody/crates"])
         rust = [step for step in selected if step["kind"] == "rust"]
-        self.assertEqual(len(rust), len(selected) - 6)
+        self.assertEqual(len(rust), len(selected) - 7)
         unbuildable = {feature["name"] for suite in suites for package in suite["packages"]
                        for feature in package["excluded_features"]
                        if feature["class"] != "unselected"}
@@ -639,6 +642,43 @@ class DependencyRunnerTests(unittest.TestCase):
                                              "verified rmcp 3.2.0 (vendor/rmcp-3.2.0)\n",
                                              "", ordered)["complete"])
         self.assertFalse(runner.parse_counts("verifier", "", "", expected)["complete"])
+
+
+class AdvisoryUpstreamTests(unittest.TestCase):
+    def test_partial_yank_check_cannot_pass_using_the_json_findings(self):
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            stdout, stderr = root / "stdout", root / "stderr"
+            stdout.write_text('{"vulnerabilities":{"found":false}}')
+            stderr.write_text("error: couldn't check if the package is yanked: no such crate\n")
+            scan = {"process": {"stdout": owned.ref(root, stdout), "stderr": owned.ref(root, stderr)}}
+            with self.assertRaisesRegex(ValueError, "incomplete check"):
+                runner.scanner_report(root, scan)
+            stderr.write_text("")
+            scan["process"]["stderr"] = owned.ref(root, stderr)
+            self.assertEqual(runner.scanner_report(root, scan), json.loads(stdout.read_text()))
+
+    def test_authenticates_scanned_commit_and_checks_observation_age(self):
+        commit = "a" * 40
+        body = {"ref": "refs/heads/main", "object": {"type": "commit", "sha": commit}}
+        observation = {"url": "https://api.github.com" + advisory_upstream.PATH,
+                       "tls_peer_sha256": "b" * 64, "response": body,
+                       "http_date": "Wed, 18 Nov 2026 10:05:01 GMT",
+                       "observed_at": "2026-11-18T10:05:00+00:00"}
+        def check(item, expected=commit, checked="2026-11-18T10:10:00+00:00"):
+            return advisory_upstream.verify(item, expected, started_at="2026-11-18T10:00:00+00:00",
+                                            checked_at=checked, max_age_hours=72)
+        self.assertEqual(check(observation), commit)
+        with self.assertRaisesRegex(ValueError, "scanned Git commit"):
+            check(observation, expected="f" * 40)
+        with self.assertRaisesRegex(ValueError, "stale or outside"):
+            check(observation, checked="2026-11-21T10:05:01+00:00")
+        for changed in ({"http_date": "Tue, 17 Nov 2026 10:05:00 GMT"},
+                        {"response": {**body, "ref": "refs/heads/test"}},
+                        {"url": "https://example.test/ref"}, {"tls_peer_sha256": ""},
+                        {"observed_at": "2026-11-18T09:59:00+00:00"}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                check({**observation, **changed})
 
 
 if __name__ == "__main__":
