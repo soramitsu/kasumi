@@ -1,7 +1,7 @@
 # November 18 release integration
 
 **Release status remains open.** The contract is [G01–G14](first-release-goals.md).
-Both deployed formats remain supported. BOI's fresh installation decision
+Both deployed formats remain supported. The owner directed replacement of Chrono on November 18. BOI's fresh installation decision
 applies to its own release window. Its environment owner controls live installation.
 
 ## Source and custody
@@ -36,17 +36,17 @@ receipts. The native provider and test executables are development inputs.
 | --- | --- | --- |
 | G01 | The two deployed revisions are pinned, their persisted exceptions recorded and the external witness deferred. The security and operations guides now document trust in offline storage. | Reconcile all source and release claims on the eventual final revision. |
 | G02 | Fixed inode backing, managed directory operations, native segmented storage and cache paths exist. Newly created groups use LZ4. Snapshots now atomically select a bounded application descriptor tree. Reopen compares its streamed rows and permanent catalog bindings with the exact authenticated Raft snapshot. Store supports ordered pages, chunked overflow verification and pinned readers. | Complete the serving cutover for primary and secondary indexes, budget cache/compiler and native heap ownership, and measure sustained physical growth, retained readers and reclamation. |
-| G03 | New generations stage in bounded Store batches and publish with fixed-size selector writes. Prior source covers over-cap selection. The original laneC workload failed its greater-than-96-MiB precondition. The successor generates 100 MiB. | Pass the unchanged large restore and 4,200-command/8,400-audit cases, plus interruption, bounded workspace and real native restart on final source. |
+| G03 | New generations stage in bounded Store batches and publish with fixed-size selector writes. Prior source covers over-cap selection. The original laneC workload failed its greater-than-96-MiB precondition. The successor generates 100 MiB. A recovered native Store executable ran the larger-than-one-transaction tree case in 45.01 seconds and the interleaved 4,200/8,400 spool case in 1.35 seconds. | Pass the actual large application restore and permanent Raft custody workload, plus interruption, bounded workspace and real native restart on final source. |
 | G04 | Tenant status and capacity now use authenticated Rust, private gRPC and CLI reads. Capacity checks the local encrypted pending publication against the committed stream, with release-time authorization. | Complete export and archive verification including expiring cursors. Qualify private status, capacity, outages, replacement and lifetime crossings. |
-| G05 | Server startup and stopped recovery index opened destinations by physical namespace. Distinct aliases for the same namespace are rejected. | Publish the authoritative Control session claim before upload, enforce ownership on every effect and exercise recovery, abort and delayed cleanup against real destinations. |
+| G05 | Physical aliases are indexed. New backups commit the source identity, destination, randomized encrypted intent and original Raft position in Control before first upload. A retry resolves the same bytes and a pre-upload stop can recover the intent. | Qualify the new Control claim and source-suspended recovery, retain the terminal outcome in Control and exercise abort, restart and delayed cleanup against remote destinations. |
 | G06 | Stopped local recovery binds its primary and historical read providers. New replicated target enrollment binds source tenant, incarnation, destination alias, primary, historical keys and CA trust. The old journal representation retains its original comparison. | Qualify replicated recovery and cover archives, history and all backup paths. Implement paged cross-category retention and an atomic retirement decision. |
 | G07 | Existing native shutdown code owns and drains blocking tasks. The macOS tooling now checks Darwin process groups, including unreaped children. The combined process-census and release roster regressions passed 41 cases in 21.155 seconds. | Prove the actual authority, data, target and nested worker processes drain on every required cancellation, panic and deadline on the frozen binary. |
-| G08 | Stopped TLS rotation publishes a recoverable generation. | Exercise stopped rotation crash points on the final binary and qualify live trust/endpoint rotation and membership replacement under load. |
-| G09 | LaneB binds target storage at creation. Cleanup checks original ownership before destruction and uses durable deletion evidence. A regression exercises encrypted journal reopen after a signed stop. | Finish the distributed crash/cancellation matrix, missing-quorum recovery, old-target isolation and actual process shutdown/restart on the candidate. |
-| G10 | Dedicated Control voter enrollment separates Control TLS/peer identities and remote data routes. Coverage tracks topology version, installed routes and actual membership. A recovered protected-TLS test covering 129 installed groups passed in 167.99 seconds on macOS ARM64. | Qualify dedicated Control startup and implement data-only remote Control access. Complete durable backup/authority observations, replicated membership invalidation and protected observations on the final candidate. |
-| G11 | Seven domain adapters are registered. They cover correctness, providers on native Linux, repeatable assembly, dependency review, package smoke, OCI smoke and HA soak. The correctness roster selects 25 named native tests covering 13 required scenarios. | Collect authenticated passes for all 19 domains. Add installed, HA faults, recovery, audit retention, backup cleanup, key retention, observability, concurrency, systemd smoke, standalone capacity, HA capacity and benchmark matrix. |
+| G08 | Stopped TLS rotation publishes a recoverable generation. Both native laneB interruption and damaged-generation tests passed in 73.77 seconds on b236ad6b. | Exercise stopped rotation crash points on the final binary and qualify live trust/endpoint rotation and membership replacement under load. |
+| G09 | LaneB binds target storage at creation. Cleanup checks original ownership before destruction and uses durable deletion evidence. Ten native shutdown cases passed on b236ad6b in 7.70 seconds. A newer regression exercises encrypted journal reopen after a signed stop. | Finish the distributed crash/cancellation matrix, missing-quorum recovery, old-target isolation and actual process shutdown/restart on the candidate. |
+| G10 | Dedicated Control voter enrollment separates Control TLS/peer identities and remote data routes. Coverage tracks topology version, installed routes and actual membership. A recovered protected-TLS test covering 129 installed groups passed in 167.99 seconds on macOS ARM64. | Protected TLS maintenance and log checks replay original responses. A recovery probe failed once during Transit access. Three fresh Prepare operations passed with the TLS fixture running on its own reactor. Qualify dedicated Control startup and implement data-only remote Control access. Complete durable backup/authority observations, replicated membership invalidation and protected observations on the final candidate. |
+| G11 | Eight domain adapters are registered. They cover correctness, providers on native Linux, repeatable assembly, dependency review, package smoke, OCI smoke, backup cleanup and HA soak. The correctness roster selects 25 named native tests covering 13 required scenarios. | Collect authenticated passes for all 19 domains. Add installed, HA faults, recovery, audit retention, key retention, observability, concurrency, systemd smoke, standalone capacity, HA capacity and benchmark matrix. |
 | G12 | Native macOS ARM64 component attempts and a frozen functional run retain original failures and reruns. The earlier deployed KV component passed four tests with one ignored. The actual Store deployed-format integration target passed 4/4 on frozen f65c3d56 (5.23 seconds test time). Native OpenBao 2.6.2 restart/refresh/revocation runs retained process/output receipts. | Freeze a complete implementation and verify identical source across native macOS ARM64, Linux ARM64 and Linux x86-64, including actual OpenBao/MinIO and three separate three-member groups. |
-| G13 | Capacity criteria are unchanged. | Retain the greater-than-3-GiB incompressible standalone and HA runs, 15 million-document configurations, concurrency, operating limits, and the full 86,400-second HA soak. |
+| G13 | The native benchmark driver records ordered per-operation latencies for replay. Embedded production modes, operating limits and the nine-process concurrency run remain unqualified. | Retain the greater-than-3-GiB incompressible standalone and HA runs, 15 million-document configurations, concurrency, operating limits, and the full 86,400-second HA soak. |
 | G14 | Source export verification now checks committed files, bytes and modes. Native package smoke has an evidence adapter. | Assemble and verify deliverables, checksums, SBOMs, independent builds, both Linux OCI images, systemd and native packages against the qualified binary identities. |
 
 ## Failures retained
@@ -89,6 +89,27 @@ receipts. The native provider and test executables are development inputs.
   Only executions of the deployed-format integration target with positive
   test counts supply fixture evidence.
 
+- The owner's Chrono instruction was implemented in `96bdb3ab`. The release lock
+  selected 483 packages, including time 0.3.55. A fresh projected-lock scan
+  reported zero vulnerabilities. Its only finding is the reviewed LRU backport
+  RUSTSEC-2026-0253. Cargo-audit returned zero and emitted no stderr after
+  index hydration. The root graph including all workspace features contains
+  no Chrono. rmcp's separately locked, unused OAuth example dependency is
+  outside that graph. The native rmcp library passed 372 tests. The native
+  OpenRaft library passed 235, including its date and instant regressions.
+  The corrected Japanese/English tokenizer suite passed 100 unit tests and
+  four integration tests, with two ignored.
+- Frozen `4ef0c40d` passed format and all 418 Python tests (256.289 seconds
+  inside unittest). The earlier full strict workspace Clippy passed on
+  `f4c613a1`. Clippy on `62b85f55` caught a missing server macro import and
+  incompatible error conversion in the new Control claim fixture. Both were
+  corrected and the later frozen runs have their own receipts.
+- The Linux release command had selected an extra fixture-independent
+  benchmark comparison tool. The build now selects the two executable names
+  its verifier actually expects. Its release gate regression suite passed
+  28 cases. Benchmark raw probes and development provider results retain
+  separate binary identities.
+
 ## Required infrastructure and decisions
 
 The available machine is native macOS ARM64, macOS 27.2.1 build 26B131, 16
@@ -101,7 +122,5 @@ and an owned Docker endpoint. Preserve the independent build and physical
 failure-domain attestations with the native evidence.
 
 The format owner acts only if retirement beyond the two pinned revisions is
-proposed. BOI's owner handles its live installation. Resolve remaining
-dependency findings through upstream remediation, removal, or a documented
-owner disposition bound to the exact dependency and advisory. Release owners
+proposed. BOI's owner handles its live installation. The dependency update has been applied and the existing LRU disposition is recorded. Release owners
 can authorize publishing the qualified candidate after all gates pass.
