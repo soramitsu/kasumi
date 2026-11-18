@@ -221,8 +221,16 @@ async fn filesystem_backup_open_requires_original_encrypted_verifier_owner() {
         max_bytes: 1 << 20,
         namespace_binding: binding.clone(),
     };
-    let actual_owner = crate::backup_destination_installation::InstalledOwner::Replicated(&owner);
-    let opened = configured.open(disk.clone(), Some(&actual_owner)).unwrap();
+    let open = |destination: crate::administration::DestinationConfig, verifier| {
+        crate::backup_destination_installation::open_destinations(
+            &std::collections::BTreeMap::from([("backups".into(), destination)]),
+            disk.clone(),
+            None,
+            verifier,
+        )
+        .map(|mut destinations| destinations.remove("backups").unwrap())
+    };
+    let opened = open(configured.clone(), Some(&owner)).unwrap();
     assert_eq!(opened.namespace_binding().unwrap(), binding);
     drop(opened);
     let mut foreign = configured.clone();
@@ -238,10 +246,10 @@ async fn filesystem_backup_open_requires_original_encrypted_verifier_owner() {
     };
     *installation_id = Uuid::new_v4();
     let marker = std::fs::read(root.join("kasumi-backup.marker")).unwrap();
-    assert!(foreign.open(disk.clone(), Some(&actual_owner)).is_err());
-    assert!(configured.open(disk.clone(), None).is_err());
+    assert!(open(foreign, Some(&owner)).is_err());
+    assert!(open(configured.clone(), None).is_err());
     owner.shutdown().await.unwrap();
-    assert!(configured.open(disk, Some(&actual_owner)).is_err());
+    assert!(open(configured, Some(&owner)).is_err());
     assert_eq!(
         std::fs::read(root.join("kasumi-backup.marker")).unwrap(),
         marker
