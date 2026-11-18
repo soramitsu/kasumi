@@ -19,3 +19,10 @@ Treat the host operating system and explicitly trusted embedding application as
 trust boundaries. Deployment operators must protect key material, prevent
 plaintext memory dumps/swap where required, and use storage that honors durable
 flush requests. These requirements do not replace testing the implementation.
+
+Kasumi trusts the installation volume and the operator who restores it. An
+older, internally consistent copy of a whole installation can authenticate and
+reopen successfully. The first release has no external monotonic witness for
+detecting that rollback. Protect snapshots, backups and volume administration
+alongside key material. Keep the latest acknowledged recovery point and
+incarnation in an independently protected operational record.

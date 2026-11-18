@@ -136,7 +136,7 @@ wording.
    and the node's own services are healthy. Protected observability reports
    unhealthy groups, but they do not by themselves make the node unready.
    Bounded background probes replace the 128-group ceiling.
-6. **Offline rollback.** Installation storage is trusted by default, and
+6. **Offline rollback (September decision, witness deferred in November).** Installation storage is trusted by default, and
    `SECURITY.md` and the installation documents must say so. An optional
    anti-rollback witness writes state hashes (node ID, incarnation, durable
    generation and state digest) to SORA Nexus, starting with the Taira testnet
@@ -704,7 +704,7 @@ The user decided this question on 2026-09-26
 trusted by default, and an optional Taira anti-rollback witness fails reopen
 closed on a detected rollback. When this decision was recorded, neither the
 trust statement in `SECURITY.md` and the installation documents nor the
-witness and its tests existed. G01 remains open.
+witness and its tests existed. The November amendment defers the witness. The trust boundary is documented in SECURITY.md and the operations guide.
 
 The related Control-genesis fixture is corrected on `master`: it verifies the
 new atomic Raft identity and checks that a rejected reopen changes none of

@@ -420,6 +420,13 @@ the source.
 
 ## Recovery procedures
 
+Before reopening an offline volume, compare its incarnation and recovery point
+with the independently retained deployment record. Kasumi verifies stored
+authentication and consistency, but an older complete image can satisfy those
+checks. The first release trusts installation storage and defers the external
+anti-rollback witness. Preserve the original volume while resolving a mismatch
+and follow the authorized backup recovery procedure before returning to service.
+
 After one replica crashes, restart it with the same path, identity, deployment
 binding and permitted key dependencies. It replays durable state and rebuilds
 indexes before readiness. Leave the other two voters serving during recovery.
