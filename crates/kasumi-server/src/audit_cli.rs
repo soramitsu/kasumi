@@ -68,7 +68,6 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                 .read_key_retention(&profile.bearer()?, &request)
                 .await?;
             println!("{}", serde_json::to_string_pretty(&page)?);
-            Ok(true)
         }
         [command, action, profile]
             if command == "tenant-audit" && matches!(action.as_str(), "status" | "capacity") =>
