@@ -5368,27 +5368,40 @@ mod lifecycle_tests {
             mock_socket.local_addr().unwrap().port()
         );
         let (mock_stop, mock_shutdown) = watch::channel(false);
-        let mock = tokio::spawn(tls::serve_tls(
-            mock_socket,
-            kasumi_transport::server_config(
-                &mock_files.load().unwrap(),
-                ClientAuthentication::OAuth,
+        let mock_socket = mock_socket.into_std().unwrap();
+        let mock_tls = kasumi_transport::server_config(
+            &mock_files.load().unwrap(),
+            ClientAuthentication::OAuth,
+        )
+        .unwrap();
+        let mock_router = Router::new()
+            .route("/v1/transit/{*operation}", post(transit))
+            .route(
+                "/recovery-jwks",
+                axum::routing::get(move || {
+                    let jwks = recovery_jwks.clone();
+                    async move { Json(jwks) }
+                }),
             )
-            .unwrap(),
-            Router::new()
-                .route("/v1/transit/{*operation}", post(transit))
-                .route(
-                    "/recovery-jwks",
-                    axum::routing::get(move || {
-                        let jwks = recovery_jwks.clone();
-                        async move { Json(jwks) }
-                    }),
-                )
-                .with_state(Arc::new(TransitFixture::default())),
-            ListenerLimits::default(),
-            Arc::new(FixtureAudit),
-            mock_shutdown,
-        ));
+            .with_state(Arc::new(TransitFixture::default()));
+        // The external provider needs its own IO driver while the fixture's Raft and
+        // durable storage work is running. Keep the normal TLS and request deadlines.
+        let mock = tokio::task::spawn_blocking(move || {
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()?
+                .block_on(async move {
+                    tls::serve_tls(
+                        TcpListener::from_std(mock_socket)?,
+                        mock_tls,
+                        mock_router,
+                        ListenerLimits::default(),
+                        Arc::new(FixtureAudit),
+                        mock_shutdown,
+                    )
+                    .await
+                })
+        });
 
         let mut ca_params = rcgen::CertificateParams::new(Vec::<String>::new()).unwrap();
         ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
