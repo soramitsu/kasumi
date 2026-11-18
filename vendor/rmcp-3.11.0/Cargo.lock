@@ -1668,7 +1668,6 @@ dependencies = [
  "bytes",
  "cap-fs-ext",
  "cap-std",
- "chrono",
  "futures",
  "hmac",
  "http",
@@ -1695,6 +1694,7 @@ dependencies = [
  "sse-stream",
  "tempfile",
  "thiserror 2.0.21",
+ "time",
  "tokio",
  "tokio-stream",
  "tokio-util",
@@ -1902,7 +1902,6 @@ version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ab508826f74a77ca9d5aba6ff19b522583ee3eaf28a19384ff3d0e5835fadf6e"
 dependencies = [
- "chrono",
  "dyn-clone",
  "ref-cast",
  "schemars_derive",
@@ -2270,6 +2269,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cdb87b95ec50ddfa440816d227a17b2ccbdda963a316a727fda0fc4334f7d134"
 dependencies = [
  "deranged",
+ "js-sys",
  "num-conv",
  "powerfmt",
  "serde_core",

@@ -3,8 +3,8 @@
 //! The `Annotations` struct carries optional hints about audience, priority, and freshness.
 //! Individual content/resource types embed `annotations: Option<Annotations>` directly.
 
-use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use time::{UtcDateTime, format_description::well_known::Rfc3339};
 
 use super::Role;
 
@@ -33,16 +33,19 @@ impl Annotations {
     /// # Panics
     ///
     /// Panics if `priority` is not in the inclusive range `0.0..=1.0`.
-    pub fn for_resource(priority: f32, timestamp: DateTime<Utc>) -> Self {
+    pub fn for_resource(
+        priority: f32,
+        timestamp: UtcDateTime,
+    ) -> Result<Self, time::error::Format> {
         assert!(
             (0.0..=1.0).contains(&priority),
             "Priority {priority} must be between 0.0 and 1.0"
         );
-        Self {
+        Ok(Self {
             priority: Some(priority),
-            last_modified: Some(timestamp.to_rfc3339()),
+            last_modified: Some(timestamp.format(&Rfc3339)?),
             audience: None,
-        }
+        })
     }
 
     pub fn with_audience(mut self, audience: Vec<Role>) -> Self {
@@ -56,20 +59,19 @@ impl Annotations {
     }
 
     /// Sets `lastModified` from a typed timestamp, serialized as RFC 3339.
-    pub fn with_timestamp(mut self, timestamp: DateTime<Utc>) -> Self {
-        self.last_modified = Some(timestamp.to_rfc3339());
-        self
+    pub fn with_timestamp(mut self, timestamp: UtcDateTime) -> Result<Self, time::error::Format> {
+        self.last_modified = Some(timestamp.format(&Rfc3339)?);
+        Ok(self)
     }
 
     /// Sets `lastModified` to the current time, serialized as RFC 3339.
-    pub fn with_timestamp_now(self) -> Self {
-        self.with_timestamp(Utc::now())
+    pub fn with_timestamp_now(self) -> Result<Self, time::error::Format> {
+        self.with_timestamp(UtcDateTime::now())
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use chrono::TimeZone;
     use serde_json::json;
 
     use super::*;
@@ -111,11 +113,11 @@ mod tests {
 
     #[test]
     fn timestamp_round_trips_as_rfc3339_string() {
-        let timestamp = Utc.with_ymd_and_hms(2025, 1, 12, 15, 0, 58).unwrap();
-        let annotations = Annotations::default().with_timestamp(timestamp);
+        let timestamp = UtcDateTime::parse("2025-01-12T15:00:58Z", &Rfc3339).unwrap();
+        let annotations = Annotations::default().with_timestamp(timestamp).unwrap();
 
         let value = serde_json::to_value(&annotations).unwrap();
-        assert_eq!(value["lastModified"], json!(timestamp.to_rfc3339()));
+        assert_eq!(value["lastModified"], json!("2025-01-12T15:00:58Z"));
 
         let round_tripped: Annotations = serde_json::from_value(value).unwrap();
         assert_eq!(round_tripped, annotations);

@@ -532,19 +532,19 @@
           "sha256": "904f592c08be7ae4a4639e6e609be1836638a5629be0facf11bb354ddfc5e861"
         },
         "Cargo.lock": {
-          "bytes": 79884,
+          "bytes": 79882,
           "mode": "0o644",
-          "sha256": "f438924499d42a6777cc4d8d7764dd03b24883644c6b6ef07e2234bae14944a4"
+          "sha256": "ddb5a20a91a74a11aea95a75edc448071fadb5cb3d0a2a8f001c42410f2cb99e"
         },
         "Cargo.toml": {
-          "bytes": 21698,
+          "bytes": 21368,
           "mode": "0o644",
-          "sha256": "1b2e4a06bdb1894113a360c878c8aad2723046c5095193f2a14bc97d192e51ad"
+          "sha256": "7f09cf77378d2d759a385fc2d1ac41d50cf6a7af86f32e3057875e3850123370"
         },
         "Cargo.toml.orig": {
-          "bytes": 15842,
+          "bytes": 15505,
           "mode": "0o644",
-          "sha256": "cd564d14f4da7d05671171d2fa1b73e5eebedc77f432ef43fc7aa715b074fdf5"
+          "sha256": "c5f9f92a046a0ddcd2d8b4d2979eef6bb1e375ca239009294366a9c1e1decd2f"
         },
         "LICENSE": {
           "bytes": 12227,
@@ -662,9 +662,9 @@
           "sha256": "f4de606fa0a455a4de77067fae792271f9c079d5a59cbc835ea00931559e6111"
         },
         "src/model/annotated.rs": {
-          "bytes": 4074,
+          "bytes": 4234,
           "mode": "0o644",
-          "sha256": "b84a728bcfa14ce969d9407c3833050b4c6a5a5165bafdd69741a1ec51652e6a"
+          "sha256": "97da0ebd888b2d2a9359a3d9f321c976470f88be54d540989267ac2e029dc6f8"
         },
         "src/model/capabilities.rs": {
           "bytes": 29294,
@@ -702,9 +702,9 @@
           "sha256": "9b0c0767c0793f6218b6b1b5e469dbf4e465f33801c5a98f346bd163fa61ae5f"
         },
         "src/model/request_state.rs": {
-          "bytes": 55371,
+          "bytes": 55513,
           "mode": "0o644",
-          "sha256": "41e69cad94869be4b93120f3cd39a10fad4a3730585240b712c2ada1b311b416"
+          "sha256": "5afd84b1852e7b994ff4c4fd4d76f3cb8fbd09582b7b6848d01a9c82ba4934c8"
         },
         "src/model/resource.rs": {
           "bytes": 10600,
@@ -732,9 +732,9 @@
           "sha256": "5251faf9065961e2a8521ef5e91eb8466885c609e1c5d2ea716604b51392f47e"
         },
         "src/service.rs": {
-          "bytes": 79474,
+          "bytes": 79425,
           "mode": "0o644",
-          "sha256": "910854f4e7f290764c5fe6decf0529d4e11dc8983bfcd9a8b95b59c22ef11b05"
+          "sha256": "d8a7139f1f724dcc43c11b36836401ae0c3a020b2141dd6bf3898241b1dd412b"
         },
         "src/service/client.rs": {
           "bytes": 119943,
@@ -757,9 +757,9 @@
           "sha256": "4b1971d7ab78ea57ef32380120ed8c74865632e034e51ab7d46448adafef8d29"
         },
         "src/task_manager.rs": {
-          "bytes": 39052,
+          "bytes": 39187,
           "mode": "0o644",
-          "sha256": "72a4734e9feeae29426500cf58d19bad17c37f891d5b0ae818d2ea21da2947ce"
+          "sha256": "eecd26f5e84bd4b26a43a093bad5754e109437dc4c385752f51a4e4857752a84"
         },
         "src/transport.rs": {
           "bytes": 11125,
@@ -917,9 +917,9 @@
           "sha256": "aace1a629823077eccfd2fc22da9c02c03929e0724df55c9b2270f0fd00efd8d"
         },
         "tests/common/handlers.rs": {
-          "bytes": 6447,
+          "bytes": 6675,
           "mode": "0o644",
-          "sha256": "c719bf2b47f7bdc0cfd3da3d77720ad7095357e6ecb6bc62ea2d141574318cdc"
+          "sha256": "2d9efada31396d195776f72b689f61cd1c9b84a2cc16119fce931494cfcdabd3"
         },
         "tests/common/mod.rs": {
           "bytes": 38,
@@ -1067,9 +1067,9 @@
           "sha256": "454203858af20d8c88ee19c15d5fa5b17de8861c817d26c274b5a915d5ac5cc5"
         },
         "tests/test_logging.rs": {
-          "bytes": 10633,
+          "bytes": 10794,
           "mode": "0o644",
-          "sha256": "8f43e9dd84d82bf4e4afff19090cab52a9ca5afb44be0b492e2e0c00bab50752"
+          "sha256": "03567972eeaf24b0b7caed9f001c58898d6b768fdc72ca08a46e74a879b90026"
         },
         "tests/test_message_protocol.rs": {
           "bytes": 12994,
@@ -1631,14 +1631,14 @@
           "sha256": "8ce8ef3f3a8dec55e9ceedbc437e424db4f051bfdff75b7e2773ed02d2b6ca03"
         },
         "Cargo.lock": {
-          "bytes": 55697,
+          "bytes": 53321,
           "mode": "0o644",
-          "sha256": "578ccbe2c12a67526ee318cec43ba13b18ebd8b1166ddf4c17fefad90abcd232"
+          "sha256": "d6e49ef462253dd0c9f84d4491bda40f540a7f908dcd37059e940039a1f7b532"
         },
         "Cargo.toml": {
-          "bytes": 1892,
+          "bytes": 1919,
           "mode": "0o644",
-          "sha256": "05940cbb590a3eeb82a4b00a2bb08eca4c860f00da37384f6ab046cbce49cbc0"
+          "sha256": "602f41e6b653a0a32373d1fb4e61fa88a22b60ff25c6a39899c63afb33f05cec"
         },
         "KASUMI-MEMBERSHIP-OBSERVER.md": {
           "bytes": 3024,
@@ -2421,9 +2421,9 @@
           "sha256": "1226200fb33bd522a4a9be68d3179e6cc8639d65ce0207bb9904a9f9eff1468f"
         },
         "macros/Cargo.toml": {
-          "bytes": 751,
+          "bytes": 783,
           "mode": "0o644",
-          "sha256": "9c66dafa166d83459ed8a88f00fccc72992eeabfc6e878a25960a41dd2a1d87a"
+          "sha256": "c43b98ea973c216785ac41e8b182a40b62f1d18fed9e384e6260296de9b21a42"
         },
         "macros/README.md": {
           "bytes": 300,
@@ -2446,9 +2446,9 @@
           "sha256": "18791e58a87898ea28bb7629b313552f03d1df2d9b42dee8c3cd81a342bfe28e"
         },
         "macros/src/since.rs": {
-          "bytes": 6483,
+          "bytes": 7510,
           "mode": "0o644",
-          "sha256": "4730ea91f59f9c9c3e4512aee340bed3763ad2434c96649fb59a2b283cd4ae80"
+          "sha256": "d746ce4ad474442dd167d398db82d165e861f936ffcbe80a57b301ad8e5b6b2f"
         },
         "macros/src/utils.rs": {
           "bytes": 1213,
@@ -2621,9 +2621,9 @@
           "sha256": "158f5620a65be77b39103c282e6b8fb14033ca141f5324102218e60863828f02"
         },
         "openraft/Cargo.toml": {
-          "bytes": 4720,
+          "bytes": 4749,
           "mode": "0o644",
-          "sha256": "38ae61cd1c8f82c10c3e069064fe1ca57b4e83272c27fae35b46eb3fcc867588"
+          "sha256": "88bde05aaf7b91eab43aa57c4b862376f669a1bb057128189f3ea6110061a9b2"
         },
         "openraft/README.md": {
           "bytes": 10730,
@@ -2791,9 +2791,9 @@
           "sha256": "2a1308af00535bfb0684191a1f50e0b4c37676a6d5791ca30afefeb1d48d0360"
         },
         "openraft/src/display_ext/display_instant.rs": {
-          "bytes": 3110,
+          "bytes": 4375,
           "mode": "0o644",
-          "sha256": "7bba6c6b992e9b12ea8270b3414e39ed0216b5005683a0701fe43b5474ba02a9"
+          "sha256": "1ade862409c132a65827d9f5d84ea08f5bb4fad4e26a50d60413160964b150af"
         },
         "openraft/src/display_ext/display_option.rs": {
           "bytes": 802,
@@ -4578,10 +4578,10 @@
       "path": "vendor/openraft-0.9.25",
       "review": {
         "inventory_path": "vendor/reviews/openraft-0.9.25/source-inventory.json",
-        "inventory_sha256": "ef43b7346de986bb3779430d1d8f0d78ef0c900b54b6cf82cb61596d27bf2fe4",
+        "inventory_sha256": "b6374dd570a3c0fa240ac8b96a0f4f1478ad50e4ddab12561e0a75b302effde3",
         "kind": "openraft-checkpoint",
         "path": "vendor/reviews/openraft-0.9.25/custody-checkpoint.json",
-        "sha256": "f7b86468ba686288787f68062e8d4cb47f683a8ea14159642f9a164ec63be007"
+        "sha256": "41d9fcd52ef84c589a8b5cbc3c487c196349fca02322828ad6721db09338bc74"
       }
     }
   ],
@@ -4592,19 +4592,19 @@
       "sha256": "9faaf0d56323f390400f25658825da2a1f120622ae0722a1fdbe320626eb2f54"
     },
     "reviews/openraft-0.9.25/custody-checkpoint.json": {
-      "bytes": 9351,
+      "bytes": 9842,
       "mode": "0o644",
-      "sha256": "f7b86468ba686288787f68062e8d4cb47f683a8ea14159642f9a164ec63be007"
+      "sha256": "41d9fcd52ef84c589a8b5cbc3c487c196349fca02322828ad6721db09338bc74"
     },
     "reviews/openraft-0.9.25/source-inventory.json": {
       "bytes": 112132,
       "mode": "0o644",
-      "sha256": "ef43b7346de986bb3779430d1d8f0d78ef0c900b54b6cf82cb61596d27bf2fe4"
+      "sha256": "b6374dd570a3c0fa240ac8b96a0f4f1478ad50e4ddab12561e0a75b302effde3"
     },
     "rmcp-terminal-ownership.md": {
-      "bytes": 5403,
+      "bytes": 6112,
       "mode": "0o644",
-      "sha256": "d8422c833afe4d7d322cce55859bb61aa219a70dd8ebd0a9de4b124309c9cfdf"
+      "sha256": "985fdbdb8c84137b3b33ac2e1e1577d3bc84cf62f3ff3ec79fa087b2bdad2a92"
     },
     "serde-json-literal-keys.md": {
       "bytes": 10208,

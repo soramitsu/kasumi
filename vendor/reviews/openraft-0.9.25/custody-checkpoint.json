@@ -137,6 +137,18 @@
       "path": "openraft/src/storage_error.rs",
       "regression": "replication::log_read_error_test",
       "status": "focused review recorded in KASUMI-STEP-DOWN-REVIEW.md; development tests only; release qualification pending"
+    },
+    {
+      "change": "Replace unmaintained Chrono in local/UTC instant diagnostics and the since macro date parser",
+      "files": [
+        "Cargo.lock",
+        "Cargo.toml",
+        "macros/Cargo.toml",
+        "macros/src/since.rs",
+        "openraft/Cargo.toml",
+        "openraft/src/display_ext/display_instant.rs"
+      ],
+      "status": "2026-11-18 source reviewed against the prior checkpoint. Focused and final-source qualification tracked in the first-release ledger."
     }
   ],
   "qualification": "focused independent graceful-drain review and recorded development tests only; complete fork review and final qualification pending",
@@ -150,7 +162,7 @@
     "24-hour soak"
   ],
   "review_status": "focused graceful-drain delta reviewed and focused regressions passed; focused step-down replication-retirement delta reviewed (KASUMI-STEP-DOWN-REVIEW.md); complete current fork review and conformance pending",
-  "source_bytes": 2724014,
+  "source_bytes": 2724018,
   "source_change_hash_method": "SHA256 of canonical JSON inventory records for source_change_paths; sorted keys, compact separators",
   "source_change_paths": [
     "openraft/src/core/mod.rs",
@@ -177,5 +189,5 @@
   "source_change_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
   "source_files": 607,
   "source_inventory": "source-inventory.json",
-  "source_inventory_sha256": "ef43b7346de986bb3779430d1d8f0d78ef0c900b54b6cf82cb61596d27bf2fe4"
+  "source_inventory_sha256": "b6374dd570a3c0fa240ac8b96a0f4f1478ad50e4ddab12561e0a75b302effde3"
 }

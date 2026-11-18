@@ -782,7 +782,10 @@ impl RequestStateCodec {
     }
 
     fn now_ms() -> i64 {
-        chrono::Utc::now().timestamp_millis()
+        // All dates representable by time fit an i64 count of milliseconds.
+        time::UtcDateTime::now()
+            .unix_timestamp_nanos()
+            .div_euclid(1_000_000) as i64
     }
 }
 

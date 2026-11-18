@@ -87,3 +87,16 @@ python3 scripts/check_dependency_patches.py
 
 Installed TLS cancellation/panic/drain tests and exact-final-source release
 qualification remain necessary. This patch does not close the full G07 workstream.
+
+## Timestamp dependency
+
+The Kasumi build uses `time` 0.3.55 for UTC timestamps. The fork removes the
+direct Chrono dependency and the unused Schemars Chrono feature. MCP resource
+annotations and task timestamps still serialize as RFC 3339. The annotation
+constructors take a `UtcDateTime` and return a formatting result. Request-state
+expiry still uses whole Unix milliseconds, including floor rounding before
+the epoch. Timeout diagnostics use the standard duration formatter.
+
+The upstream SDK's optional OAuth client depends on `oauth2` 5.0.0. That
+separate crate still selects Chrono in the SDK's own all-features lockfile.
+Kasumi implements its own authentication and does not select that SDK feature.

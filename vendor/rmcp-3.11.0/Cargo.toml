@@ -923,7 +923,6 @@ optional = true
 
 [dependencies.schemars]
 version = "1.0"
-features = ["chrono04"]
 optional = true
 
 [dependencies.serde]
@@ -1027,7 +1026,6 @@ version = "0.28.0"
 
 [dev-dependencies.schemars]
 version = "1.1.0"
-features = ["chrono04"]
 
 [dev-dependencies.serde_json]
 version = "1.0"
@@ -1057,23 +1055,9 @@ features = [
 [dev-dependencies.url]
 version = "2.4"
 
-[target.'cfg(all(target_family = "wasm", target_os = "unknown"))'.dependencies.chrono]
-version = "0.4.38"
-features = [
-    "serde",
-    "clock",
-    "std",
-    "oldtime",
-]
-default-features = false
-
-[target.'cfg(not(all(target_family = "wasm", target_os = "unknown")))'.dependencies.chrono]
-version = "0.4.38"
-features = [
-    "serde",
-    "now",
-]
-default-features = false
+[dependencies.time]
+version = "0.3.55"
+features = ["formatting", "parsing", "wasm-bindgen"]
 
 [target."cfg(unix)".dependencies.libc]
 version = "0.2"

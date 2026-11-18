@@ -157,7 +157,8 @@ impl Since {
 
         let date_str = Self::parse_str(date_lit, "date", span)?;
 
-        chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d").map_err(|_e| {
+        let format = time::macros::format_description!("[year padding:none]-[month padding:none]-[day padding:none]");
+        time::Date::parse(&date_str, format).map_err(|_e| {
             syn::Error::new(
                 span,
                 format!(
@@ -194,5 +195,31 @@ impl Since {
             }
         };
         Ok(s)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn since_date_validates_calendar_and_preserves_source_spelling() {
+        for value in ["2000-02-29", "2024-2-9"] {
+            let mut since = Since {
+                version: Some("1.0.0".into()),
+                date: None,
+            };
+            since.set_date(syn::parse_quote!(#value), Span::call_site()).unwrap();
+            assert_eq!(since.to_doc_string(), format!("Since: 1.0.0, Date({value})"));
+        }
+        for value in ["1900-02-29", "2024-04-31", "2024-13-01", "2024-01--", "2024-01-01x"] {
+            let mut since = Since {
+                version: None,
+                date: None,
+            };
+            let error = since.set_date(syn::parse_quote!(#value), Span::call_site()).unwrap_err();
+            assert!(error.to_string().contains("Expected format: yyyy-mm-dd"));
+            assert!(since.date.is_none());
+        }
     }
 }

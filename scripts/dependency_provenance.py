@@ -43,8 +43,11 @@ UPSTREAM_DELTA = {
         "added": ("tests/literal_keys.rs",),
         "removed": ()},
     "vendor/rmcp-3.11.0": {
-        "changed": ("src/service.rs", "src/transport/streamable_http_server.rs",
-                    "src/transport/streamable_http_server/tower.rs"),
+        "changed": ("Cargo.lock", "Cargo.toml", "Cargo.toml.orig",
+                    "src/model/annotated.rs", "src/model/request_state.rs", "src/service.rs",
+                    "src/task_manager.rs", "src/transport/streamable_http_server.rs",
+                    "src/transport/streamable_http_server/tower.rs",
+                    "tests/common/handlers.rs", "tests/test_logging.rs"),
         "added": ("src/transport/streamable_http_server/terminal_stateless_tests.rs",),
         "removed": ()},
 }

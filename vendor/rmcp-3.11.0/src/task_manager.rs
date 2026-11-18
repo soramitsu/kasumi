@@ -43,7 +43,9 @@ pub const DEFAULT_POLL_INTERVAL_MS: u64 = 1_000;
 
 /// Helper to generate an ISO 8601 timestamp for task metadata.
 pub fn current_timestamp() -> String {
-    chrono::Utc::now().to_rfc3339()
+    time::UtcDateTime::now()
+        .format(&time::format_description::well_known::Rfc3339)
+        .expect("system date must be representable as an RFC 3339 timestamp")
 }
 
 /// Handle passed to a running task operation, allowing it to surface
