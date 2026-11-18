@@ -513,7 +513,7 @@ class AcceptanceTests(unittest.TestCase):
 
     def test_only_domains_with_a_real_runner_are_registered(self):
         self.assertEqual(set(acceptance.DOMAIN_ADAPTERS),
-                         {"benchmark-matrix", "concurrency", "observability", "correctness", "repeatable-assembly", "dependency-review", "ha-soak", "oci-smoke", "package-smoke", "providers", "backup-cleanup"})
+                         {"benchmark-matrix", "concurrency", "observability", "correctness", "repeatable-assembly", "dependency-review", "ha-soak", "oci-smoke", "package-smoke", "systemd-smoke", "providers", "backup-cleanup"})
         self.assertLessEqual(set(acceptance.DOMAIN_ADAPTERS), set(acceptance.SCENARIOS))
         self.assertEqual(set(acceptance.SCENARIOS), set(attempt_index.DOMAIN_KINDS))
         source = {"README.md": {"sha256": "a" * 64}}

@@ -281,6 +281,32 @@ restart, and requires a zero exit on the stop signal. The `oci-smoke` adapter in
 `scripts/verify_release_acceptance.py` checks that run. No image built from
 current source has passed it yet.
 
+## Native systemd qualification
+
+Run the systemd smoke on each dedicated Linux qualification machine with systemd
+as PID 1 and a cgroup v2 hierarchy. Install the package binaries at their
+documented paths and prepare both service accounts and private data and
+authority enrollments. The test needs root access to the system manager.
+Both published unit names must be free at dispatch. The smoke exclusively
+creates the delivered unit bytes under `/run/systemd/system`, checks them
+with `systemd-analyze verify`, starts and restarts each service, verifies
+its authenticated operator endpoint and stops it. The evidence includes
+kernel PID birth, cgroup, executable hash, UID, listener ownership and the
+journal's successful deactivation for each service invocation. The runner
+checks the installed inode before removing each temporary unit.
+
+Use a plan with schema `kasumi-systemd-smoke-v1`, `data_client` set to the
+absolute installed Control profile for the data service, and `authority_client`
+set to its installed authority maintenance client. Its enrolled authority peers
+must provide quorum throughout the smoke.
+
+```sh
+python3 -I -B -S scripts/run_systemd_smoke.py --evidence "$functional" \
+  --journal "$journal" --attempt-id "$attempt" --output "$output" \
+  --package "$package" --systemd-data "$data_unit" \
+  --systemd-authority "$authority_unit" --plan "$plan"
+```
+
 ## systemd installation
 
 The supplied units use separate static service users, owner-only state, an empty

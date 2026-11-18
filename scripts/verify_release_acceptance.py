@@ -1118,6 +1118,12 @@ def correctness_adapter(root, domain, files, configs, artifacts, candidates):
     return run_correctness.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def systemd_smoke_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_systemd_smoke
+
+    return run_systemd_smoke.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def package_smoke_adapter(root, domain, files, configs, artifacts, candidates):
     import run_package_smoke
 
@@ -1148,6 +1154,7 @@ DOMAIN_ADAPTERS = {
     "ha-soak": ha_soak_adapter,
     "oci-smoke": oci_smoke_adapter,
     "package-smoke": package_smoke_adapter,
+    "systemd-smoke": systemd_smoke_adapter,
 }
 
 
@@ -1181,9 +1188,9 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
     check_topology(record["topology"], record["processes"], binaries[target],
                    "required" if kind in TOPOLOGY_REQUIRED else
                    "permitted" if kind in TOPOLOGY_PERMITTED else "forbidden")
-    # An image's daemon runs inside its container; the OCI adapter binds the
-    # candidate bytes through the image's own layer instead.
-    if kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke"}:
+    # OCI identifies the daemon in its image layer. The systemd adapter
+    # verifies PID 1's actual child via /proc/PID/exe, cgroup and InvocationID.
+    if kind not in {"correctness", "dependency-review", "repeatable-assembly", "oci-smoke", "systemd-smoke"}:
         require(binaries[target]["kasumid"] in {process["executable"]["sha256"] for process in record["processes"]},
                 "domain process inventory does not contain the qualified daemon")
     scenarios = unique(record["scenarios"], "id", "domain scenarios")
