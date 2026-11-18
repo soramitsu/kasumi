@@ -686,6 +686,9 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         32 << 20,
         fixture.storage.persistent.clone(),
     )?;
+    let (control, operator) =
+        crate::service::backup_test_control(&database, &context, true).await?;
+    database.install_backup_control(&control, &operator)?;
     let backup = database
         .backup_checkpoint(context.clone(), &destination, uuid::Uuid::new_v4())
         .await?;
@@ -693,7 +696,22 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         .verify_backup_checkpoint(context.clone(), &destination, backup.backup_id())
         .await?;
     let expected_revision = database.engine().generation()?.state.revision;
+    let outcomes = control
+        .engine()
+        .generation()?
+        .control_backup_sessions()
+        .expect("durable Control backup ledger");
+    assert_eq!(
+        (
+            outcomes.claimed_without_terminal,
+            outcomes.completed,
+            outcomes.aborted
+        ),
+        (0, 1, 0)
+    );
     database.shutdown().await?;
+    control.shutdown().await?;
+    drop(control);
     drop(database);
     fixture.shutdown().await;
     let Installation {
@@ -753,10 +771,19 @@ async fn existing_local_reopens_the_same_committed_standalone_after_complete_shu
         serde_json::json!({"value": 7})
     );
     assert_eq!(reopened.mutate(context.clone(), mutation).await?, receipt);
+    let (control, operator) =
+        crate::service::backup_test_control(&reopened, &context, false).await?;
+    reopened.install_backup_control(&control, &operator)?;
+    assert_eq!(
+        control.engine().generation()?.control_backup_sessions(),
+        Some(outcomes)
+    );
     reopened
         .verify_backup_checkpoint(context, &destination, backup.backup_id())
         .await?;
     reopened.shutdown().await?;
+    control.shutdown().await?;
+    drop(control);
     drop(reopened);
     stores.shutdown().await.unwrap();
     audit.shutdown().await.unwrap();

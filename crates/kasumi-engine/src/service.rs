@@ -3766,6 +3766,9 @@ fn credential_acknowledgement(error: Error) -> Error {
 }
 
 #[cfg(test)]
+pub(crate) use tests::backup_test_control;
+
+#[cfg(test)]
 mod tests {
     include!("service_staging_tests.rs");
     include!("service_staged_stop_tests.rs");

@@ -1,6 +1,6 @@
 // One actual Control journal for the exercised source. Keeping the handle alive
 // and reopening its encrypted stores exercises the production claim path.
-async fn backup_test_control(
+pub(crate) async fn backup_test_control(
     source: &Arc<Database>,
     context: &RequestContext,
     create: bool,
