@@ -44,7 +44,7 @@ const SNAPSHOT_CHUNK_BYTES: usize = 4 * 1024 * 1024;
 pub(crate) const MAX_SNAPSHOT_COVERAGE_BYTES: usize = 2 << 20;
 // The largest purge chunk covers its first index and this many more: three
 // deletes an entry and the purge cursor fit one transaction's operation bound.
-// A direct purge (consensus, open, a closing group) uses it.
+// A direct purge during consensus or reopen uses it.
 const PURGE_CHUNK_SPAN: u64 = 21844;
 // A paced purge (a standalone group's own, after each periodic snapshot) sizes
 // its chunks by time instead. Each delete looks its key up in a directory whose
@@ -138,8 +138,8 @@ pub(crate) enum BackgroundCommits {
     /// commit, while foreground operations are active, the next waits
     /// `kasumi_store::FOREGROUND_SHARE` times as long as that commit took, up
     /// to `kasumi_store::MAX_PACED_DELAY`. Once the group is closing (the
-    /// flag) a pause in progress ends and the rest runs back to back, so a
-    /// shutdown waits no longer than it did.
+    /// flag), a pause ends. Snapshot publication finishes and optional journal
+    /// cleanup stops at the next committed chunk boundary.
     Paced(Arc<AtomicBool>),
 }
 
@@ -162,6 +162,10 @@ impl BackgroundCommits {
                 .shared_background_write(closing, || store.write_batch(writes)),
             None => store.write_batch(writes),
         }
+    }
+
+    fn closing(&self) -> bool {
+        matches!(self, Self::Paced(closing) if closing.load(Ordering::Acquire))
     }
 
     /// Before a journal purge chunk: the pause of the purge's own stream
@@ -197,7 +201,7 @@ impl BackgroundCommits {
     /// at the rate of its last chunk (`last`: its entries and database time),
     /// at most doubling and never under `PACED_PURGE_MIN_ENTRIES`.
     fn purge_span(&self, last: Option<(u64, std::time::Duration)>, limit: u64) -> u64 {
-        if self.paced().is_none() {
+        if matches!(self, Self::Direct) {
             return limit;
         }
         let entries = match last {
@@ -1036,17 +1040,19 @@ impl RaftLogStorage<TypeConfig> for LogStore {
     async fn purge(&mut self, log_id: LogId<u64>) -> Result<(), StorageError<u64>> {
         self.purge_original(log_id, BackgroundCommits::Direct, PURGE_CHUNK_SPAN)
             .await
+            .map(|_| ())
             .map_err(err)
     }
 }
 
 impl LogStore {
     /// Purge the standalone journal through a published snapshot. `false`
-    /// means a capacity refusal stopped it after zero or more whole chunks,
+    /// means closure or a capacity refusal stopped it after zero or more whole chunks,
     /// each committed with its purge cursor: every remaining entry stays
     /// retained for a later snapshot to purge. Its chunks are sized by time
     /// and, between two of them, it yields to foreground operations
-    /// (`BackgroundCommits::Paced`) until `closing` is set. It holds this
+    /// (`BackgroundCommits::Paced`). Closure leaves the published snapshot and
+    /// remaining journal in a recoverable state. It holds this
     /// group's journal and control gates for one chunk at a time and pauses
     /// without them, so an append or audited read of this group waits for at
     /// most one chunk, and every other tenant's commit for at most one chunk
@@ -1064,7 +1070,7 @@ impl LogStore {
             )
             .await
         {
-            Ok(()) => Ok(true),
+            Ok(completed) => Ok(completed),
             Err(error) => crate::capacity_refusal::take(error)
                 .map(|()| false)
                 .map_err(err),
@@ -1084,10 +1090,13 @@ impl LogStore {
         log_id: LogId<u64>,
         commits: BackgroundCommits,
         chunk_span: u64,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         let mut pace = kasumi_store::BackgroundPace::default();
         let mut last = None;
         loop {
+            if commits.closing() {
+                return Ok(false);
+            }
             let span = commits.purge_span(last, chunk_span);
             if last.is_some() && commits.paced().is_some() {
                 let (store, paced) = (self.store.clone(), commits.clone());
@@ -1102,6 +1111,11 @@ impl LogStore {
             let chunk_commits = commits.clone();
             let (chunk, returned) = self
                 .mutate_original(move |store| {
+                    // Recheck after acquiring the journal gates. A caller may
+                    // close while a foreground writer or paced delay owns them.
+                    if chunk_commits.closing() {
+                        return Ok((None, pace));
+                    }
                     let mut pace = pace;
                     let mut retained = retained
                         .lock()
@@ -1123,10 +1137,10 @@ impl LogStore {
                         // Nothing retained through the target: only the cursor moves.
                         store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
                         return Ok((
-                            PurgeChunk {
+                            Some(PurgeChunk {
                                 more: false,
                                 entries: 0,
-                            },
+                            }),
                             pace,
                         ));
                     };
@@ -1171,17 +1185,18 @@ impl LogStore {
                         store.write_batch(&[put(META, b"purged", serde_json::to_vec(&log_id)?)])?;
                     }
                     Ok((
-                        PurgeChunk {
+                        Some(PurgeChunk {
                             more,
                             entries: end - start + 1,
-                        },
+                        }),
                         pace,
                     ))
                 })
                 .await?;
+            let Some(chunk) = chunk else { return Ok(false) };
             pace = returned;
             if !chunk.more {
-                return Ok(());
+                return Ok(true);
             }
             // A direct chunk is no unit: its span stays the limit.
             last = Some((chunk.entries, pace.last_unit_time().unwrap_or_default()));

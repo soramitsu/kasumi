@@ -352,15 +352,15 @@ async fn a_paced_journal_purge_leaves_what_a_direct_one_does_while_another_tenan
     let single = node.background_write_status();
     assert_eq!(single.units, before.units + 1);
     assert_eq!(single.paced_delay, before.paced_delay);
-    // A closing group purges back to back: no chunk is a paced unit.
+    // Closure leaves every remaining row and the last durable purge cursor intact.
     closing.store(true, Ordering::Release);
-    log.purge_original(id(9), commits, 0).await?;
+    assert!(!log.purge_original(id(9), commits, 0).await?);
     assert_eq!(node.background_write_status().units, single.units);
     let neighbour_commits = neighbour.finish();
     disk.slow_syncs(Duration::ZERO);
     let (state, entries) = journal(&mut log).await?;
-    assert_eq!(state.last_purged_log_id, Some(id(9)));
-    assert!(entries.is_empty());
+    assert_eq!(state.last_purged_log_id, Some(id(7)));
+    assert_eq!(entries, vec![id(8), id(9)]);
     let (count, longest) = during(&neighbour_commits, started, ended);
     eprintln!(
         "paced journal purge beside another tenant: wall={:?} units={} database_time={:?} \
@@ -371,12 +371,21 @@ async fn a_paced_journal_purge_leaves_what_a_direct_one_does_while_another_tenan
         status.longest_database_time,
         status.paced_delay,
     );
-    // It survives a reopen exactly as a direct purge does.
+    // A fresh owner resumes the exact retained suffix from the encrypted files.
     drop((log, stores, direct, direct_stores));
     let (_stores, _, _, mut reopened) = fixture(disk.crash(), false, fixture_scratch).await?;
-    let state = reopened.get_log_state().await?;
+    let (state, entries) = journal(&mut reopened).await?;
+    assert_eq!(state.last_purged_log_id, Some(id(7)));
+    assert_eq!(entries, vec![id(8), id(9)]);
+    assert!(
+        reopened
+            .purge_local(id(9), &Arc::new(AtomicBool::new(false)))
+            .await?
+    );
+    let (state, entries) = journal(&mut reopened).await?;
     assert_eq!(state.last_purged_log_id, Some(id(9)));
     assert_eq!(state.last_log_id, Some(id(9)));
+    assert!(entries.is_empty());
     Ok(())
 }
 
@@ -411,14 +420,18 @@ fn a_paced_purge_sizes_its_chunks_by_time_within_the_limit() {
     assert_eq!(sized.purge_span(None, 2), 2);
     assert_eq!(sized.purge_span(Some((3, ms(1))), 2), 2);
     assert_eq!(sized.purge_span(Some((3, ms(1))), 0), 0);
-    // A direct purge, or a closing group's, uses the limit.
+    // A consensus purge uses the limit. A closing standalone group never
+    // switches to a maximum-size commit while admission is draining.
     assert_eq!(
         BackgroundCommits::Direct.purge_span(None, PURGE_CHUNK_SPAN),
         PURGE_CHUNK_SPAN
     );
     let (closing_commits, closing) = paced();
     closing.store(true, Ordering::Release);
-    assert_eq!(closing_commits.purge_span(Some((64, ms(50))), 9), 9);
+    assert_eq!(
+        closing_commits.purge_span(Some((64, ms(50))), PURGE_CHUNK_SPAN),
+        63
+    );
 }
 
 /// The purge holds its group's journal and control gates for one chunk at a
