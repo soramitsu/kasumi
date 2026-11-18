@@ -328,9 +328,11 @@ fn rotation_rebinds_the_exact_original_issuance_and_leaves_revoked_families_revo
         let profiles = installation_root(&config)?.join("profiles");
         let operator = ClientProfile::load(&profiles.join("operator.json"))?;
         let revoked = operator.bearer()?;
-        let mut owner = OperatorState::open(&config, storage.clone()).await?;
-        owner.credentials.revoke(operator.family_id, "test")?;
-        owner.finish(Ok(())).await?;
+        {
+            let mut owner = OperatorState::open(&config, storage.clone()).await?;
+            owner.credentials.revoke(operator.family_id, "test")?;
+            owner.finish(Ok(())).await?;
+        }
         let original = ClientProfile::load(&profiles.join("control.json"))?;
         let old_claims = claims(&original)?;
         let mcp = ClientProfile::load(&profiles.join("mcp.json"))?.bearer()?;
@@ -361,10 +363,7 @@ fn rotation_rebinds_the_exact_original_issuance_and_leaves_revoked_families_revo
                 .is_some()
         );
         assert!(*operator.bearer()? == *revoked);
-        assert_eq!(
-            *ClientProfile::load(&profiles.join("mcp.json"))?.bearer()?,
-            *mcp
-        );
+        assert!(*ClientProfile::load(&profiles.join("mcp.json"))?.bearer()? == *mcp);
         owner.finish(Ok(())).await
     })
 }
@@ -410,11 +409,23 @@ fn substituted_bearer_path_and_family_cannot_receive_rotated_credentials() -> Re
             );
             assert!(changed.is_err());
         }
-        assert!(*control.bearer()? == *original);
-        assert_eq!(
-            private_files::read(&copied, 32 << 10)?.as_slice(),
-            original.as_bytes()
+        let linked = profiles.join("linked.token");
+        std::fs::hard_link(&control.bearer_file, &linked)?;
+        let rejected = owner.credentials.rotate_installed_certificate(
+            &path,
+            &control,
+            || {
+                Ok(TlsFiles::from(control.identity.clone())
+                    .load()?
+                    .certificate_pin())
+            },
+            [99; 32],
+            || Ok(()),
         );
+        assert!(rejected.is_err());
+        std::fs::remove_file(&linked)?;
+        assert!(*control.bearer()? == *original);
+        assert!(private_files::read(&copied, 32 << 10)?.as_slice() == original.as_bytes());
         owner.finish(Ok(())).await
     })
 }
