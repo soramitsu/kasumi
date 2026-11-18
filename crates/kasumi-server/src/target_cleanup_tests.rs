@@ -192,10 +192,7 @@ async fn substituted_directory_with_the_same_path_and_store_identity_is_refused(
         format!("{error:#}").contains("not its originally enrolled directory"),
         "{error:#}"
     );
-    assert_ne!(
-        ledger.cleanup().unwrap().map(|cleanup| cleanup.stage),
-        Some(TargetCleanupStage::Deleted)
-    );
+    assert!(ledger.cleanup().unwrap().is_none());
     let kept = fixture.open(&key, id);
     assert_eq!(
         kept.physical_identity().unwrap().directory,
@@ -234,10 +231,27 @@ async fn bound_target_removed_outside_cleanup_is_not_an_absence_proof() {
     let ledger = MemoryLedger::default();
     ledger.bind(&binding).unwrap();
     assert!(delete_exact(&ledger, &fixture.storage(), &file(&key, &path, id)).is_err());
-    assert_ne!(
-        ledger.cleanup().unwrap().map(|cleanup| cleanup.stage),
-        Some(TargetCleanupStage::Deleted)
-    );
+    assert!(ledger.cleanup().unwrap().is_none());
+}
+
+/// A managed deletion leaves a healthy disk that proves current absence.
+#[tokio::test]
+async fn a_missing_bound_target_never_starts_cleanup_even_after_a_clean_census() {
+    let fixture = Fixture::new();
+    let key = ("city".to_owned(), Uuid::new_v4());
+    let id = Uuid::new_v4();
+    let ledger = MemoryLedger::default();
+    ledger.bind(&fixture.create(&key, id).await).unwrap();
+    let path = fixture.path(&key);
+    file(&key, &path, id)
+        .claim(&fixture.storage())
+        .unwrap()
+        .delete()
+        .unwrap();
+    target_absence_from_installed_disk(&fixture.config, &fixture.physical.persistent, &path)
+        .unwrap();
+    assert!(delete_exact(&ledger, &fixture.storage(), &file(&key, &path, id)).is_err());
+    assert!(ledger.cleanup().unwrap().is_none());
 }
 
 /// After a recorded deletion, a later directory at the same path is never

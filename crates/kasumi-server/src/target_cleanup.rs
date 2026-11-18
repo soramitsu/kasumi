@@ -68,51 +68,59 @@ pub(super) fn delete_exact(
     storage: &TargetStorage<'_>,
     file: &TargetFile<'_>,
 ) -> Result<()> {
-    let binding = match ledger.cleanup()? {
+    let (binding, claimed) = match ledger.cleanup()? {
         Some(recorded) if recorded.stage == TargetCleanupStage::Deleted => {
-            // The recorded deletion stands. A later directory at this path is
-            // not the original storage and is never deleted here.
             ensure!(
                 !target_file_exists(file.path)?,
                 "target path is occupied again after its recorded deletion"
             );
+            target_absence_from_installed_disk(storage.config, storage.disk, file.path)?;
             return Ok(());
         }
-        Some(recorded) => recorded
-            .binding
-            .context("target cleanup in progress has no binding")?,
+        Some(recorded) => {
+            let binding = recorded
+                .binding
+                .context("target cleanup in progress has no binding")?;
+            let claimed = target_file_exists(file.path)?
+                .then(|| file.claim(storage))
+                .transpose()?;
+            (binding, claimed)
+        }
         None => {
-            let binding = match ledger.binding()? {
-                Some(binding) => binding,
-                None if !target_file_exists(file.path)? => {
-                    // Nothing was ever bound here: only a managed absence
-                    // observation proves that nothing remains.
-                    target_absence_from_installed_disk(storage.config, storage.disk, file.path)?;
-                    storage.parent.sync_all()?;
-                    boundary(file.path, "synced")?;
-                    ledger.record(&file.cleanup(TargetCleanupStage::Deleted, None))?;
-                    return Ok(());
-                }
-                None => {
-                    // Created before its binding was recorded: the store
-                    // identity its root carries selects it, and its directory
-                    // is bound now, before anything is unlinked.
-                    let claimed = file.claim(storage)?;
-                    let binding = TargetFileBinding {
-                        tenant: file.tenant.to_owned(),
-                        target_incarnation: file.target,
-                        path: file.path.to_owned(),
-                        directory: claimed.directory_identity()?,
-                        node_store_id: file.node_store_id,
-                    };
-                    drop(claimed);
-                    ledger.bind(&binding)?;
-                    binding
-                }
+            let existing = ledger.binding()?;
+            if !target_file_exists(file.path)? {
+                ensure!(
+                    existing.is_none(),
+                    "bound target disappeared before cleanup"
+                );
+                target_absence_from_installed_disk(storage.config, storage.disk, file.path)?;
+                storage.parent.sync_all()?;
+                boundary(file.path, "synced")?;
+                ledger.record(&file.cleanup(TargetCleanupStage::Deleted, None))?;
+                return Ok(());
+            }
+            // Only a durable Deleting record explains missing root bytes. For a
+            // first attempt, require the original store envelope before recording
+            // any progress. Keep this claim through the directory unlink.
+            let claimed = file.claim(storage)?;
+            let binding = TargetFileBinding {
+                tenant: file.tenant.to_owned(),
+                target_incarnation: file.target,
+                path: file.path.to_owned(),
+                directory: claimed.identity()?.directory,
+                node_store_id: file.node_store_id,
             };
+            if let Some(existing) = existing {
+                ensure!(
+                    existing == binding,
+                    "target storage is not its originally enrolled directory"
+                );
+            } else {
+                ledger.bind(&binding)?;
+            }
             ledger.record(&file.cleanup(TargetCleanupStage::Deleting, Some(binding.clone())))?;
             boundary(file.path, "deleting")?;
-            binding
+            (binding, Some(claimed))
         }
     };
     ensure!(
@@ -122,8 +130,7 @@ pub(super) fn delete_exact(
             && binding.node_store_id == file.node_store_id,
         "target cleanup binding names other storage"
     );
-    if target_file_exists(file.path)? {
-        let claimed = file.claim(storage)?;
+    if let Some(claimed) = claimed {
         ensure!(
             claimed.directory_identity()? == binding.directory
                 && kasumi_store::private_files::directory_identity(file.path)? == binding.directory,
