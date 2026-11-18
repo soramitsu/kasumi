@@ -23,6 +23,7 @@ pub(crate) use mutation_capacity::admit_mutation_capacity;
 mod snapshot_api;
 #[path = "snapshot_bundle.rs"]
 mod snapshot_bundle;
+pub(crate) use snapshot_bundle::inspect_reopening;
 #[path = "snapshot_encoding_failure.rs"]
 pub(crate) mod snapshot_encoding_failure;
 #[path = "snapshot_validation.rs"]
@@ -309,6 +310,7 @@ pub struct TenantEngine {
     revision_base: u64,
     restoration_identity: String,
     bootstrap_sha256: std::sync::OnceLock<String>,
+    pub(crate) original_recovery: std::sync::OnceLock<String>,
     application_sources: std::sync::OnceLock<crate::application_sources::SourceRootsRef>,
     access: std::sync::OnceLock<kasumi_store::StorageAccess>,
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
@@ -641,6 +643,18 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             custody_snapshot::retired(&generation.state).map_err(Into::into)
         })
+    }
+    fn verify_reopen_image(
+        &self,
+        image: Option<&kasumi_store::SnapshotImage>,
+    ) -> anyhow::Result<()> {
+        if let Some(expected) = self.original_recovery.get() {
+            anyhow::ensure!(
+                image.is_some_and(|image| image.sha256() == expected),
+                "recovery snapshot differs from admitted image"
+            );
+        }
+        Ok(())
     }
     fn prepare_restore<'a>(
         &'a self,
@@ -1660,6 +1674,7 @@ impl TenantEngine {
             local_snapshot_form: LocalSnapshotForm::from_process_default(),
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),
+            original_recovery: std::sync::OnceLock::new(),
             application_sources: std::sync::OnceLock::new(),
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),

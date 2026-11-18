@@ -327,6 +327,27 @@ impl RecoverySeat {
                     && failure.retired_cleanup.is_none()
             })
     }
+
+    /// Only an ordinary pre-engine memory refusal can release these original
+    /// stores. A failed, cancelled or panicking shutdown keeps the whole seat.
+    fn release_drained_stores_after_admission_refusal(&mut self) {
+        let Some(failure) = &self.failure else {
+            return;
+        };
+        if failure.source_stage() == Some(&RecoverStage::AdmissionReserve)
+            && failure
+                .original()
+                .operation_error()
+                .is_some_and(|error| error.code == kasumi_types::ErrorCode::ResourceExhausted)
+            && failure.stores_cleanup.is_none()
+            && self.stores_observation.entry == CleanupEntry::Returned
+            && self.stores_observation.future_disposal == CleanupEntry::Returned
+            && !self.stores_observation.unsettled()
+        {
+            drop(self.stores.take());
+            self.stores_observation = CleanupObservation::default();
+        }
+    }
     fn stage(&self) -> &'static str {
         if self.node_start.is_some()
             || self.node_start_retirement.is_some()
@@ -1459,6 +1480,20 @@ impl Administration {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) async fn test_original_reopen_stage(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+    ) -> Option<&'static str> {
+        let _manager = self.gate.enter().await.unwrap();
+        let _tenant = self.gate.try_enter_tenant(tenant)?;
+        self.recover_original(tenant, incarnation)
+            .await
+            .err()
+            .map(|error| error.stage)
+    }
+
     pub(super) async fn recover_original(
         &self,
         tenant: &str,
@@ -1560,6 +1595,7 @@ impl Administration {
                     .await;
                 }
                 let stage = seat.stage();
+                seat.release_drained_stores_after_admission_refusal();
                 if seat.native_free_failure() {
                     // This retires only a statically native-free diagnostic.
                     drop(seat.failure.take());
@@ -1790,10 +1826,21 @@ impl Administration {
             self.config
                 .install_tenant_audit_archive(stores.application(), None)
                 .context(RecoverStage::StorageOpen)?;
-            let _reservation = self
-                .admission
-                .reserve(kasumi_engine::recovery_workspace_bytes(&stores)?, None)
-                .context(RecoverStage::AdmissionReserve)?;
+            let size_workspace =
+                || kasumi_engine::OriginalRecoveryWorkspace::reserve(&stores, &self.admission);
+            // Keep the exact native result in this recovery seat. The streamed
+            // scan may read the full encrypted image. A multi-thread runtime
+            // releases its worker while that scan runs.
+            let reservation = if tokio::runtime::Handle::current().runtime_flavor()
+                == tokio::runtime::RuntimeFlavor::MultiThread
+            {
+                tokio::task::block_in_place(size_workspace)
+            } else {
+                size_workspace()
+            }
+            .map_err(|original| {
+                OriginalRecoveryFailure::snapshot_at(original, RecoverStage::AdmissionReserve)
+            })?;
             let expected_incarnation = Uuid::parse_str(incarnation)?;
             let (database, bootstrap) =
                 if self.config.mode == crate::runtime::DeploymentMode::Replicated {
@@ -1805,7 +1852,7 @@ impl Administration {
                             .context("replication unavailable")?
                             .node_id,
                         stores.clone(),
-                        expected_incarnation,
+                        (expected_incarnation, &reservation),
                         network.clone(),
                         kasumi_raft::server_config(),
                         self.audit.clone(),
@@ -1851,7 +1898,7 @@ impl Administration {
                     let database = kasumi_engine::open_existing_local(
                         stores.clone(),
                         self.audit.clone(),
-                        expected_incarnation,
+                        (expected_incarnation, &reservation),
                     )
                     .await
                     .map_err(|original| {

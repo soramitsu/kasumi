@@ -92,6 +92,11 @@ impl Administration {
                         documents: generation.document_count(),
                         logical_bytes: generation.logical_bytes(),
                         logical_budget_bytes: generation.limits().max_logical_bytes,
+                        mutation_receipts: generation.mutation_receipt_count(),
+                        mutation_receipt_bytes: generation.mutation_receipt_bytes(),
+                        mutation_receipt_budget_bytes: generation
+                            .limits()
+                            .max_mutation_receipt_bytes,
                         snapshot_disk_budget_bytes: generation.limits().max_snapshot_bytes,
                         permanent_staged_bytes: generation.permanent_staged_bytes(),
                         reserved_staged_terminal_bytes: generation.reserved_staged_terminal_bytes(),

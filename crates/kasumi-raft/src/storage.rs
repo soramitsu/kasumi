@@ -1351,6 +1351,17 @@ pub fn recovery_snapshot_bytes(domains: &TenantStorageSet) -> Result<u64> {
     .map_or(0, |manifest| manifest.bytes))
 }
 
+/// Load the application bytes covered by the authenticated current snapshot.
+pub fn recovery_snapshot_backend(
+    domains: &TenantStorageSet,
+) -> Result<SnapshotImage, ScratchOperationFailure> {
+    let limit = RaftLimits::default().max_snapshot_bytes;
+    let snapshot =
+        load_snapshot(domains.application(), limit)?.context("recovery snapshot absent")?;
+    validate_snapshot_coverage(domains, &snapshot, limit)?;
+    Ok(snapshot.backend)
+}
+
 fn validate_snapshot_coverage(
     domains: &TenantStorageSet,
     snapshot: &SnapshotEnvelope,
@@ -1743,6 +1754,8 @@ impl StateMachine {
                         validate_snapshot_coverage(&captured_domains, snapshot, limit)?;
                         ensure!(snapshot.version == 2, "unsupported raft snapshot version");
                     }
+                    target
+                        .verify_reopen_image(snapshot.as_ref().map(|envelope| &envelope.backend))?;
                     if target.resumes_durable_selection() {
                         return Ok(durable_applied_state(&captured_domains, snapshot.as_ref())?);
                     }

@@ -88,13 +88,9 @@ impl OriginalServingFixture {
         );
         let storage = crate::runtime_storage_fixtures::configure(&mut config).unwrap();
         create_fixture_node(&config, &storage).await;
-        let runtime = NodeRuntime::open_using_storage(
-            config.clone(),
-            file_secret,
-            storage.clone(),
-        )
-        .await
-        .unwrap();
+        let runtime = NodeRuntime::open_using_storage(config.clone(), file_secret, storage.clone())
+            .await
+            .unwrap();
         Self {
             config,
             storage,
@@ -233,13 +229,9 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     stop.send_replace(true);
     task.await.unwrap().unwrap();
     drop((reload, retained, retained_store, fresh, registry, manager));
-    let mut reopened = NodeRuntime::open_using_storage(
-        config,
-        file_secret,
-        storage.clone(),
-    )
-    .await
-    .unwrap();
+    let mut reopened = NodeRuntime::open_using_storage(config, file_secret, storage.clone())
+        .await
+        .unwrap();
     assert!(reopened.publish_control().await.unwrap());
     reopened.shutdown().await.unwrap();
     mock_stop.send_replace(true);
@@ -261,7 +253,7 @@ enum OriginalClosure {
     SealInsideEntrySink,
 }
 
-async fn original_tenant_reopens_after(closure: OriginalClosure) {
+async fn original_tenant_reopens_after(closure: OriginalClosure, pressure_on_reopen: bool) {
     let _gate = LIFECYCLE_GATE.lock().await;
     let dir = kasumi_store::test_utils::private_tempdir().unwrap();
     let OriginalServingFixture {
@@ -383,9 +375,11 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
             // concurrent background drain may briefly hold it busy.
             let ordinary = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    match retained.raft_group().try_with_retained_apply_report(|report| {
-                        matches!(report, kasumi_raft::RetainedApplyReport::Ordinary(_))
-                    }) {
+                    match retained
+                        .raft_group()
+                        .try_with_retained_apply_report(|report| {
+                            matches!(report, kasumi_raft::RetainedApplyReport::Ordinary(_))
+                        }) {
                         Ok(observed) => break observed,
                         Err(_busy) => tokio::time::sleep(Duration::from_millis(10)).await,
                     }
@@ -465,7 +459,45 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
         registry.database(&other).err().unwrap().code,
         kasumi_types::ErrorCode::Forbidden
     );
+    // Keep other users' admitted bytes live across this tenant's re-open.
+    // Find the actual remaining ordinary budget (including RSS and protected
+    // leases) without allocating a dummy payload or overriding an RSS sample.
+    let held = if pressure_on_reopen {
+        let admission = manager.admission();
+        let mut low = 0;
+        let mut high = admission.snapshot().high_water_bytes;
+        while low < high {
+            let middle = low + (high - low).div_ceil(2);
+            if admission.reserve_waiting(middle, None).is_ok() {
+                low = middle;
+            } else {
+                high = middle - 1;
+            }
+        }
+        // Leave storage and metadata some room but less than the recovery
+        // reservation's 4 MiB fixed component.
+        Some(
+            admission
+                .reserve_waiting(low.checked_sub(2 << 20).unwrap(), None)
+                .unwrap(),
+        )
+    } else {
+        None
+    };
     kasumi_store::private_files::replace(&application_credential, b"test-runtime-token").unwrap();
+    if let Some(held) = held {
+        for _ in 0..2 {
+            assert_eq!(
+                manager
+                    .test_original_reopen_stage("acme", &incarnation)
+                    .await,
+                Some("admission_reserve")
+            );
+            assert!(registry.database(&bound).is_err());
+            assert!(retained.check_serving().is_err());
+        }
+        drop(held);
+    }
     let fresh = wait_fresh(&registry, &context, &retained).await;
     // An entry whose log record was durable before its apply was refused
     // returned UnknownOutcome; the fresh generation applies it exactly once.
@@ -504,13 +536,9 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
     stop.send_replace(true);
     task.await.unwrap().unwrap();
     drop((retained, retained_store, fresh, registry, manager));
-    let mut reopened = NodeRuntime::open_using_storage(
-        config,
-        file_secret,
-        storage.clone(),
-    )
-    .await
-    .unwrap();
+    let mut reopened = NodeRuntime::open_using_storage(config, file_secret, storage.clone())
+        .await
+        .unwrap();
     assert_eq!(
         reopened.tenants[0]
             .database
@@ -528,22 +556,22 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_store_seal_during_inflight_proposal() {
-    original_tenant_reopens_after(OriginalClosure::SealDuringProposal).await;
+    original_tenant_reopens_after(OriginalClosure::SealDuringProposal, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_access_loss_inside_entry_sink() {
-    original_tenant_reopens_after(OriginalClosure::SealInsideEntrySink).await;
+    original_tenant_reopens_after(OriginalClosure::SealInsideEntrySink, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_failed_proposal_child() {
-    original_tenant_reopens_after(OriginalClosure::FailedProposalChild).await;
+    original_tenant_reopens_after(OriginalClosure::FailedProposalChild, false).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn original_tenant_reopens_after_local_executor_fatal() {
-    original_tenant_reopens_after(OriginalClosure::LocalExecutorFatal).await;
+    original_tenant_reopens_after(OriginalClosure::LocalExecutorFatal, false).await;
 }
 
 #[test]
@@ -576,4 +604,9 @@ fn installed_credential_failure_is_typed_private_and_fresh() {
     assert_eq!(&*file_secret(name).unwrap(), "second-token");
     std::fs::remove_file(&path).unwrap();
     unavailable();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn original_tenant_reopens_after_failed_proposal_and_repeated_recovery_reserve_refusal() {
+    original_tenant_reopens_after(OriginalClosure::FailedProposalChild, true).await;
 }

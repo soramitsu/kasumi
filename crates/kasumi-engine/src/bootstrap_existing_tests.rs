@@ -15,16 +15,30 @@ struct Installation {
 }
 impl Installation {
     async fn new() -> crate::test_fixture_failure::FixtureResult<Self> {
+        Self::with_node_budget(None).await
+    }
+
+    async fn with_node_budget(
+        node_budget: Option<u64>,
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
         // The positive installation admits its actual fixed owners and all
         // mandatory floors separately from the declared workload allowance.
-        let config = super::existing_replicated_tests::replica_budget::planned_config(
+        let mut config = super::existing_replicated_tests::replica_budget::planned_config(
             &persistent_config,
             &scratch_config,
         )?;
-        let admission = crate::admission::NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?;
+        if let Some(budget) = node_budget {
+            config.high_water_bytes = Some(budget);
+            config.max_inflight_bytes = Some(budget);
+        }
+        let admission = crate::admission::NodeAdmission::with_fixed_memory(
+            config,
+            node_budget.unwrap_or(2 << 30),
+            0,
+        )?;
         let storage = crate::test_utils::FixtureStorage::with_admission(
             &persistent_config,
             &scratch_config,
@@ -2188,5 +2202,209 @@ async fn cross_version_rollback_harness_writes_a_converted_and_a_by_reference_st
             &serde_json::to_vec_pretty(&record)?,
         )?;
     }
+    Ok(())
+}
+
+/// Persist 128 MiB of document payloads, close the node and reopen it with
+/// competing reservations held. The old four-times-wire reservation is refused
+/// on this same memory ledger throughout the successful reopen.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit original tenant disk and memory capacity fixture"]
+async fn original_reopen_streams_persisted_documents_under_continuing_pressure()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    pressure_reopen(256, 512 << 10, 1, None).await
+}
+
+/// Retain the measured tenant's document count and approximate logical size
+/// under its 2 GiB logical / 3 GiB snapshot / 16 GiB node budgets.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[ignore = "explicit large on-disk original tenant recovery run"]
+async fn original_reopen_at_measured_tenant_size_and_a_hundred_concurrent_writes()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    pressure_reopen(133_649, 14_424, 128, Some(2_400_000_000)).await
+}
+
+async fn pressure_reopen(
+    rows: usize,
+    payload_bytes: usize,
+    batch_size: usize,
+    remaining_budget: Option<u64>,
+) -> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Installation::with_node_budget(Some(16 << 30)).await?;
+    let limits = Limits {
+        max_logical_bytes: 2 << 30,
+        max_snapshot_bytes: 3 << 30,
+        history: HistoryLimits {
+            max_feed_events: batch_size,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let database = open_local_with_incarnation(
+        fixture.stores.clone(),
+        policy(),
+        limits,
+        fixture.audit.clone(),
+        fixture.incarnation,
+    )
+    .await?;
+    let context = RequestContext {
+        authorization: RequestAuthorization::service_identity(),
+        tenant: "tenant".into(),
+        principal: "owner".into(),
+        scopes: BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
+        request_id: "retained-pressure-fixture".into(),
+    };
+    database
+        .administer(
+            context.clone(),
+            Operation::CreateCollection(CollectionDefinition {
+                name: "docs".into(),
+                write_mode: CollectionWriteMode::Mutable,
+                retention_class: CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type":"object"}),
+                indexes: vec![],
+                strict_read_audit: remaining_budget.is_some(),
+            }),
+        )
+        .await?;
+    let payload = "a".repeat(payload_bytes);
+    for start in (0..rows).step_by(batch_size) {
+        let mut batch = MutationBatch::new();
+        for row in start..(start + batch_size).min(rows) {
+            batch = batch.upsert(
+                "docs",
+                format!("owner-{row}"),
+                serde_json::json!({"owner":row,"proof":payload}),
+            );
+        }
+        database.mutate(context.clone(), batch).await?;
+        if start != 0 && start.is_multiple_of(16_384) {
+            eprintln!("persisted {start}/{rows} synthetic rows");
+        }
+    }
+    let logical_bytes = database.engine().generation()?.state.logical_bytes;
+    if remaining_budget.is_some() {
+        assert!(
+            (1_900_000_000..=2_147_483_648).contains(&logical_bytes),
+            "logical bytes {logical_bytes}"
+        );
+    }
+    database.raft_group().snapshot().await?;
+    database
+        .raft_group()
+        .fixture_local_snapshot_settled()
+        .await?;
+    let revision = database.engine().generation()?.state.revision;
+    database.shutdown().await?;
+    drop(database);
+    let fixture = fixture.reopen().await?;
+    let admission = fixture.audit.admission();
+    let legacy = recovery_workspace_bytes(&fixture.stores)?;
+    let snapshot_bytes = kasumi_raft::recovery_snapshot_bytes(&fixture.stores)?;
+    assert!(
+        snapshot_bytes > 120 << 20,
+        "fixture snapshot {snapshot_bytes}"
+    );
+    let mut low = 0;
+    let mut high = admission.snapshot().high_water_bytes;
+    while low < high {
+        let mid = low + (high - low).div_ceil(2);
+        if admission.reserve(mid, None).is_ok() {
+            low = mid;
+        } else {
+            high = mid - 1;
+        }
+    }
+    let leave = remaining_budget.unwrap_or(legacy - 1);
+    let held_bytes = low
+        .checked_sub(leave)
+        .expect("fixture can retain its competitor");
+    let held = admission.reserve_waiting(held_bytes, None)?;
+    assert_eq!(
+        admission.reserve(legacy, None).err().unwrap().code,
+        ErrorCode::ResourceExhausted
+    );
+    let workspace = OriginalRecoveryWorkspace::reserve(&fixture.stores, admission)?;
+    assert!(workspace.metered_image.is_some());
+    eprintln!(
+        "admitted original reopen rows={rows} logical_bytes={logical_bytes} snapshot_bytes={snapshot_bytes} legacy={legacy} headroom={leave} held={held_bytes}"
+    );
+    let reopened = open_existing_local(
+        fixture.stores.clone(),
+        fixture.audit.clone(),
+        (fixture.incarnation, &workspace),
+    )
+    .await?;
+    assert_eq!(reopened.engine().generation()?.state.revision, revision);
+    drop(workspace);
+    for row in [0, rows / 2, rows - 1] {
+        let document = reopened
+            .get(&context, "docs", &format!("owner-{row}"))
+            .await?
+            .expect("retained owner");
+        assert_eq!(
+            document.body,
+            serde_json::json!({"owner":row,"proof":payload})
+        );
+    }
+    eprintln!("restored original tenant revision={revision} retained_reads=3");
+    if remaining_budget.is_some() {
+        let barrier = std::sync::Arc::new(tokio::sync::Barrier::new(100));
+        // One tenant session admits four concurrent DATA operations. Each
+        // caller releases its permit before the separate, strictly audited read.
+        let stage_operations = Arc::new(tokio::sync::Semaphore::new(4));
+        let started = std::time::Instant::now();
+        let mut workers = tokio::task::JoinSet::new();
+        for owner in 0..100 {
+            let db = reopened.clone();
+            let context = context.clone();
+            let barrier = barrier.clone();
+            let operations = stage_operations.clone();
+            workers.spawn(async move {
+                let key = format!("new-owner-{owner}");
+                barrier.wait().await;
+                let permit = operations.acquire().await.unwrap();
+                db.mutate(
+                    context.clone(),
+                    MutationBatch::new().upsert("docs", &key, serde_json::json!({"owner":owner})),
+                )
+                .await?;
+                drop(permit);
+                let permit = operations.acquire().await.unwrap();
+                let doc = db.get(&context, "docs", &key).await?;
+                drop(permit);
+                assert_eq!(
+                    doc.expect("committed owner").body,
+                    serde_json::json!({"owner":owner})
+                );
+                Ok::<_, kasumi_types::Error>(())
+            });
+        }
+        let mut completed = 0;
+        let mut refused = 0;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+            while let Some(result) = workers.join_next().await {
+                match result {
+                    Ok(Ok(())) => completed += 1,
+                    failure => {
+                        refused += 1;
+                        eprintln!("owner write or read refused: {failure:?}");
+                    }
+                }
+            }
+        })
+        .await;
+        eprintln!(
+            "strict_read_audit=true stage_data_limit=4 native writes_and_reads={completed}/100 refusals={refused} elapsed={:?}",
+            started.elapsed()
+        );
+        assert!(result.is_ok());
+        assert_eq!(completed, 100);
+    }
+    drop(held);
+    reopened.shutdown().await?;
+    drop(reopened);
+    fixture.shutdown().await;
     Ok(())
 }

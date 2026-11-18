@@ -152,7 +152,7 @@ use std::{
 };
 #[cfg(any(test, feature = "test-utils"))]
 pub use storage::received_application_snapshot_for_test;
-pub use storage::{LogStore, StateMachine, recovery_snapshot_bytes};
+pub use storage::{LogStore, StateMachine, recovery_snapshot_backend, recovery_snapshot_bytes};
 pub use timing::server_config;
 pub use write_errors::{
     LocalAppendCapacityDenied, PostCommitAccessLost, is_application_write_capacity_denied,
@@ -368,6 +368,13 @@ pub trait StateMachineBackend: Send + Sync + 'static {
         &self,
         bytes: &mut dyn std::io::Read,
     ) -> std::result::Result<Option<RetiredSnapshotState>, ScratchOperationFailure>;
+    /// Bind a pre-metered original restore to the same immutable bytes.
+    fn verify_reopen_image(
+        &self,
+        _image: Option<&kasumi_store::SnapshotImage>,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
     fn prepare_restore<'a>(
         &'a self,
         context: &SnapshotRestoreContext,
@@ -505,6 +512,12 @@ impl StateMachineBackend for OwnedBackend {
         bytes: &mut dyn std::io::Read,
     ) -> std::result::Result<Option<RetiredSnapshotState>, ScratchOperationFailure> {
         self.inner.validate_snapshot(bytes)
+    }
+    fn verify_reopen_image(
+        &self,
+        image: Option<&kasumi_store::SnapshotImage>,
+    ) -> anyhow::Result<()> {
+        self.inner.verify_reopen_image(image)
     }
     fn prepare_restore<'a>(
         &'a self,

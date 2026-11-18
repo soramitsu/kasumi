@@ -99,6 +99,7 @@ impl UninitializedEngine {
                 ))?
                 .0,
                 bootstrap_sha256: std::sync::OnceLock::new(),
+                original_recovery: std::sync::OnceLock::new(),
                 application_sources: std::sync::OnceLock::new(),
                 apply_lock: Mutex::new(()),
                 #[cfg(any(test, feature = "test-utils"))]

@@ -163,6 +163,9 @@ pub(crate) struct CapacityObservation {
     pub documents: u64,
     pub logical_bytes: u64,
     pub logical_budget_bytes: u64,
+    pub mutation_receipts: u64,
+    pub mutation_receipt_bytes: u64,
+    pub mutation_receipt_budget_bytes: u64,
     pub snapshot_disk_budget_bytes: u64,
     pub permanent_staged_bytes: u64,
     pub reserved_staged_terminal_bytes: u64,
@@ -1467,7 +1470,7 @@ fn storage_families(
 /// Per-group families: (name, kind, value). Every configured group has a
 /// sample of each in every response; unknown values are `NaN`.
 type GroupFamily = (&'static str, &'static str, fn(&GroupObservation) -> Value);
-const GROUP_FAMILIES: [GroupFamily; 31] = [
+const GROUP_FAMILIES: [GroupFamily; 34] = [
     ("store_available", "gauge", |g| g.store_available.into()),
     ("routed", "gauge", |g| g.routed.into()),
     ("authority_required", "gauge", |g| {
@@ -1532,6 +1535,15 @@ const GROUP_FAMILIES: [GroupFamily; 31] = [
     }),
     ("logical_budget_bytes", "gauge", |g| {
         g.capacity.map(|c| c.logical_budget_bytes).into()
+    }),
+    ("mutation_receipts", "gauge", |g| {
+        g.capacity.map(|c| c.mutation_receipts).into()
+    }),
+    ("mutation_receipt_bytes", "gauge", |g| {
+        g.capacity.map(|c| c.mutation_receipt_bytes).into()
+    }),
+    ("mutation_receipt_budget_bytes", "gauge", |g| {
+        g.capacity.map(|c| c.mutation_receipt_budget_bytes).into()
     }),
     ("snapshot_disk_budget_bytes", "gauge", |g| {
         g.capacity.map(|c| c.snapshot_disk_budget_bytes).into()
@@ -2070,6 +2082,9 @@ mod tests {
                 documents: 3,
                 logical_bytes: 300,
                 logical_budget_bytes: 1 << 20,
+                mutation_receipts: 5,
+                mutation_receipt_bytes: 467,
+                mutation_receipt_budget_bytes: 128 << 20,
                 snapshot_disk_budget_bytes: 1 << 20,
                 permanent_staged_bytes: 0,
                 reserved_staged_terminal_bytes: 0,
@@ -2197,6 +2212,16 @@ mod tests {
         assert!(closed.contains("kasumi_local_group_documents{tenant=\"tenant-a\"} 3\n"));
         let unknown = observation(Idle, true, false, false, true).prometheus();
         assert!(unknown.contains("kasumi_local_group_documents{tenant=\"tenant-a\"} NaN\n"));
+        for (field, expected) in [
+            ("mutation_receipts", 5),
+            ("mutation_receipt_bytes", 467),
+            ("mutation_receipt_budget_bytes", 128 << 20),
+        ] {
+            let sample = format!("kasumi_local_group_{field}{{tenant=\"tenant-a\"}}");
+            assert!(baseline.contains(&format!("{sample} {expected}\n")));
+            assert!(closed.contains(&format!("{sample} {expected}\n")));
+            assert!(unknown.contains(&format!("{sample} NaN\n")));
+        }
         let evacuating = observation(Evacuating, false, true, true, true).prometheus();
         assert!(evacuating.contains("kasumi_storage_measured 0\n"));
         assert!(evacuating.contains("kasumi_storage_segment_files 4\n"));

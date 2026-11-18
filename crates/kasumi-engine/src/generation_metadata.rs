@@ -77,6 +77,12 @@ impl Generation {
     pub fn logical_bytes(&self) -> u64 {
         self.state.logical_bytes
     }
+    pub fn mutation_receipt_count(&self) -> u64 {
+        self.state.mutation_receipt_head.count
+    }
+    pub fn mutation_receipt_bytes(&self) -> u64 {
+        self.state.mutation_receipt_head.encoded_bytes
+    }
     pub fn policy(&self) -> &Policy {
         &self.state.policy
     }

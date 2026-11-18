@@ -416,6 +416,17 @@ impl Decoder<'_> {
 /// Verify both framing layers and their actual typed counts/digests with fixed
 /// buffers. No JSON DTO or aggregate permanent history is allocated here.
 pub(super) fn inspect(reader: &mut dyn Read) -> Result<crate::snapshot_codec::StreamSummary> {
+    inspect_form(reader, false)
+}
+pub(crate) fn inspect_reopening(
+    reader: &mut dyn Read,
+) -> Result<crate::snapshot_codec::StreamSummary> {
+    inspect_form(reader, true)
+}
+fn inspect_form(
+    reader: &mut dyn Read,
+    reopen: bool,
+) -> Result<crate::snapshot_codec::StreamSummary> {
     let mut decoder = Decoder {
         reader,
         digest: Sha256::new(),
@@ -423,7 +434,10 @@ pub(super) fn inspect(reader: &mut dyn Read) -> Result<crate::snapshot_codec::St
     };
     let mut magic = [0; 8];
     decoder.bytes(&mut magic)?;
-    ensure!(&magic == MAGIC, "unsupported tenant snapshot bundle format");
+    ensure!(
+        &magic == MAGIC || (reopen && &magic == LOCAL_MAGIC),
+        "unsupported tenant snapshot bundle format"
+    );
     let mut buffer = vec![0; CHUNK];
     let length = decoder.length(SOURCE_LIMIT)?;
     decoder.bytes(&mut buffer[..length])?;
@@ -442,7 +456,7 @@ pub(super) fn inspect(reader: &mut dyn Read) -> Result<crate::snapshot_codec::St
     );
     loop {
         match decoder.tag()? {
-            ARCHIVE => {
+            ARCHIVE if &magic == MAGIC => {
                 let length = decoder.length(MAX_AUDIT_SEGMENT_BYTES)?;
                 let mut remaining = length;
                 while remaining != 0 {

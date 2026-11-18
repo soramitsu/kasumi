@@ -382,10 +382,10 @@ impl OpenedReplica {
 /// runtime configuration. Both encrypted domains must retain identical typed
 /// replicated genesis, and its logical bootstrap and physical Raft identity
 /// must match before startup. Missing installation state is never provisioned.
-pub async fn open_existing_replicated(
+pub async fn open_existing_replicated<'a>(
     node_id: u64,
     stores: Arc<TenantStorageSet>,
-    expected_incarnation: uuid::Uuid,
+    expected_incarnation: impl Into<ExistingIncarnation<'a>>,
     transport: Arc<dyn RaftTransport>,
     config: Config,
     security_audit: Arc<SecurityAudit>,
@@ -396,7 +396,7 @@ pub async fn open_existing_replicated(
         transport,
         config,
         security_audit,
-        ReplicaRuntime::Existing(expected_incarnation),
+        ReplicaRuntime::Existing(expected_incarnation.into()),
     )
     .await?;
     Ok(OpenedReplica {
@@ -409,7 +409,7 @@ pub async fn open_existing_replicated(
 #[derive(Clone, Copy)]
 enum ReplicaRuntime<'a> {
     FirstEnrollment(&'a ReplicatedBootstrap),
-    Existing(uuid::Uuid),
+    Existing(ExistingIncarnation<'a>),
     #[cfg(any(test, feature = "test-utils"))]
     FixtureEnrollment(&'a ReplicatedBootstrap),
     #[cfg(any(test, feature = "test-utils"))]
@@ -517,7 +517,7 @@ async fn open_replicated_inner<'a>(
         ReplicaRuntime::Existing(expected) => {
             let (bootstrap, binding) = installed_replicated_bootstrap(
                 existing_view.as_ref().expect("existing read view"),
-                expected,
+                expected.incarnation,
             )?;
             (Cow::Owned(bootstrap), Some(binding))
         }
@@ -590,6 +590,13 @@ async fn open_replicated_inner<'a>(
     });
     drop(existing_view);
     let engine = Arc::new(TenantEngine::from_bootstrap(store.tenant(), &bytes)?);
+    if let ReplicaRuntime::Existing(ExistingIncarnation {
+        recovery: Some(workspace),
+        ..
+    }) = runtime
+    {
+        workspace.install(&engine, &store)?;
+    }
     let generation = engine.generation()?;
     crate::SnapshotFailure::ordinary(|| {
         anyhow::ensure!(
@@ -906,10 +913,10 @@ pub async fn open_local(
 /// Reopen an initialized local deployment using only its authenticated bootstrap.
 /// Missing deployment, bootstrap or custody commitment is corruption, never a
 /// request to generate a new incarnation or install default policy and limits.
-pub async fn open_existing_local(
+pub async fn open_existing_local<'a>(
     stores: Arc<TenantStorageSet>,
     security_audit: Arc<SecurityAudit>,
-    expected_incarnation: uuid::Uuid,
+    expected_incarnation: impl Into<ExistingIncarnation<'a>>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let database =
         open_existing_local_as_stored(stores, security_audit, expected_incarnation).await?;
@@ -919,14 +926,18 @@ pub async fn open_existing_local(
 }
 
 /// [`open_existing_local`] before any change of the stored snapshot's form.
-async fn open_existing_local_as_stored(
+async fn open_existing_local_as_stored<'a>(
     stores: Arc<TenantStorageSet>,
     security_audit: Arc<SecurityAudit>,
-    expected_incarnation: uuid::Uuid,
+    expected_incarnation: impl Into<ExistingIncarnation<'a>>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
+    let expected_incarnation = expected_incarnation.into();
     let construction = DatabaseConstruction::new(stores.clone(), security_audit)?;
     crate::SnapshotFailure::ordinary(|| {
-        anyhow::ensure!(!expected_incarnation.is_nil(), "nil local incarnation");
+        anyhow::ensure!(
+            !expected_incarnation.incarnation.is_nil(),
+            "nil local incarnation"
+        );
         Ok(())
     })?;
     crate::SnapshotFailure::ordinary(|| {
@@ -1119,14 +1130,14 @@ async fn open_local_inner(
             bytes
         }
     };
-    start(construction, &bytes, runtime, incarnation).await
+    start(construction, &bytes, runtime, incarnation.map(Into::into)).await
 }
 
 async fn start(
     construction: DatabaseConstruction,
     bytes: &SnapshotImage,
     runtime: LocalRuntime,
-    expected_incarnation: Option<uuid::Uuid>,
+    expected_incarnation: Option<ExistingIncarnation<'_>>,
 ) -> std::result::Result<Arc<Database>, crate::SnapshotFailure> {
     let stores = construction.stores();
     validate_bootstrap_control(stores, bytes)?;
@@ -1135,9 +1146,12 @@ async fn start(
         bytes,
     )?);
     if let Some(expected) = expected_incarnation {
+        if let Some(workspace) = expected.recovery {
+            workspace.install(&engine, stores.application())?;
+        }
         crate::SnapshotFailure::ordinary(|| {
             anyhow::ensure!(
-                engine.generation()?.state.incarnation == expected.to_string(),
+                engine.generation()?.state.incarnation == expected.incarnation.to_string(),
                 "local incarnation differs from installed identity"
             );
             Ok(())
@@ -1417,6 +1431,108 @@ fn reject_retired_serving_open(stores: &TenantStorageSet) -> anyhow::Result<()> 
         );
     }
     Ok(())
+}
+
+/// Original-serving reopen owns its admission through bootstrap, snapshot and
+/// log replay. When the full wire estimate does not fit, the immutable backend
+/// image is metered before any logical record is materialized.
+pub struct OriginalRecoveryWorkspace {
+    store: std::sync::Weak<TenantStore>,
+    _reservation: crate::admission::Reservation,
+    metered_image: Option<String>,
+}
+impl OriginalRecoveryWorkspace {
+    pub fn reserve(
+        stores: &TenantStorageSet,
+        admission: &Arc<crate::admission::NodeAdmission>,
+    ) -> std::result::Result<Self, crate::SnapshotFailure> {
+        admission
+            .memory()
+            .require_store_memory(stores.application())?;
+        let manifest = read_current_manifest(stores.application())?
+            .ok_or_else(|| anyhow::anyhow!("bootstrap manifest absent"))?;
+        let bootstrap_bytes = manifest
+            .bytes
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(4 << 20))
+            .ok_or_else(|| anyhow::anyhow!("bootstrap workspace overflow"))?;
+        let snapshot_bytes = kasumi_raft::recovery_snapshot_bytes(stores)?;
+        let full = snapshot_bytes
+            .checked_mul(4)
+            .and_then(|n| n.checked_add(bootstrap_bytes))
+            .ok_or_else(|| anyhow::anyhow!("snapshot workspace overflow"))?;
+        let scan = bootstrap_bytes
+            .checked_add(Self::SCAN_BYTES)
+            .ok_or_else(|| anyhow::anyhow!("snapshot scan workspace overflow"))?;
+        let (reservation, metered_image) = match admission.reserve(full, None) {
+            Ok(reservation) => (reservation, None),
+            Err(error) if error.code == ErrorCode::ResourceExhausted && scan < full => {
+                // Pay both passes before constructing the engine or Raft owners.
+                // A refusal here can be retried after the fresh store has drained.
+                let mut reservation = admission.reserve(scan, None)?;
+                let image = kasumi_raft::recovery_snapshot_backend(stores)?;
+                let layout = crate::state::inspect_reopening(&mut image.reader())?;
+                let restore = layout.materialization_workspace()?;
+                let additional = restore
+                    .checked_sub(Self::SCAN_BYTES)
+                    .ok_or_else(|| anyhow::anyhow!("invalid recovery workspace"))?;
+                reservation.reserve_additional(additional)?;
+                tracing::info!(
+                    event = "original_reopen_snapshot_admitted",
+                    snapshot_bytes,
+                    bootstrap_workspace_bytes = bootstrap_bytes,
+                    snapshot_workspace_bytes = restore
+                );
+                (reservation, Some(image.sha256().to_owned()))
+            }
+            Err(error) => return Err(error.into()),
+        };
+        Ok(Self {
+            store: Arc::downgrade(stores.application()),
+            _reservation: reservation,
+            metered_image,
+        })
+    }
+
+    const SCAN_BYTES: u64 = 64 << 20;
+
+    fn install(&self, engine: &TenantEngine, store: &Arc<TenantStore>) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.store.ptr_eq(&Arc::downgrade(store)),
+            "recovery admission belongs to another store"
+        );
+        if let Some(digest) = &self.metered_image {
+            engine
+                .original_recovery
+                .set(digest.clone())
+                .map_err(|_| anyhow::anyhow!("recovery admission already installed"))?;
+        }
+        Ok(())
+    }
+}
+
+/// The ordinary opener takes an incarnation; original recovery additionally
+/// supplies a reservation bound to the exact application store.
+#[derive(Clone, Copy)]
+pub struct ExistingIncarnation<'a> {
+    incarnation: uuid::Uuid,
+    recovery: Option<&'a OriginalRecoveryWorkspace>,
+}
+impl From<uuid::Uuid> for ExistingIncarnation<'_> {
+    fn from(incarnation: uuid::Uuid) -> Self {
+        Self {
+            incarnation,
+            recovery: None,
+        }
+    }
+}
+impl<'a> From<(uuid::Uuid, &'a OriginalRecoveryWorkspace)> for ExistingIncarnation<'a> {
+    fn from((incarnation, workspace): (uuid::Uuid, &'a OriginalRecoveryWorkspace)) -> Self {
+        Self {
+            incarnation,
+            recovery: Some(workspace),
+        }
+    }
 }
 
 /// Admission estimate from bounded authenticated bootstrap/snapshot manifests.
