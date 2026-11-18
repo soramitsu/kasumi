@@ -346,7 +346,7 @@ async fn run_case(
     // Enrollment can return while the initial serving route is still being published.
     // Only wait for startup here. Every measured operation retains its first outcome.
     let startup = Instant::now();
-    for i in 0..names.len() {
+    for (i, name) in names.iter().enumerate() {
         let context = cluster.context(i);
         for (n, registry) in cluster.registries.iter().enumerate() {
             loop {
@@ -354,7 +354,7 @@ async fn run_case(
                     Ok(_) => break,
                     Err(error) if startup.elapsed() >= Duration::from_secs(120) => {
                         return Err(error).with_context(|| {
-                            format!("waiting for installed tenant {} on node {n}", names[i])
+                            format!("waiting for installed tenant {name} on node {n}")
                         });
                     }
                     Err(_) => tokio::time::sleep(Duration::from_millis(50)).await,

@@ -838,7 +838,7 @@ mod tests {
             .unwrap();
         let succeeded = workload(
             &databases,
-            &options,
+            (&options).into(),
             "embedded_authorized_owned_point_get",
             0,
             0,
