@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import ctypes
+import errno
 import hashlib
 import fcntl
 import json
@@ -141,6 +142,64 @@ class _DarwinBsdInfo(ctypes.Structure):
     ]
 
 
+def _darwin_process_info(library, pid, *, include_zombies=False):
+    info = _DarwinBsdInfo()
+    ctypes.set_errno(0)
+    length = library.proc_pidinfo(pid, 3, int(include_zombies), ctypes.byref(info), ctypes.sizeof(info))
+    if not length:
+        error = ctypes.get_errno()
+        if error == errno.ESRCH:
+            return None
+        raise OSError(error, "could not inspect process identity")
+    if length != ctypes.sizeof(info) or info.pbi_pid != pid:
+        raise ValueError("incomplete process identity")
+    return info
+
+
+def _darwin_library():
+    library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+    library.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
+                                     ctypes.c_void_p, ctypes.c_int)
+    library.proc_pidinfo.restype = ctypes.c_int
+    library.proc_listpids.argtypes = (ctypes.c_uint32, ctypes.c_uint32, ctypes.c_void_p,
+                                      ctypes.c_int)
+    library.proc_listpids.restype = ctypes.c_int
+    return library
+
+
+def _darwin_group_members(group):
+    # PROC_PGRP_ONLY inventories live and zombie members in the kernel. A
+    # full buffer can be truncated. An inventory error cannot prove a drain.
+    library = _darwin_library()
+    capacity = 32
+    for _ in range(20):
+        slots = (ctypes.c_int * capacity)()
+        ctypes.set_errno(0)
+        length = library.proc_listpids(2, group, slots, ctypes.sizeof(slots))
+        error = ctypes.get_errno()
+        if length < 0 or (not length and error):
+            raise OSError(error, "could not enumerate process group")
+        if length > ctypes.sizeof(slots) or length % ctypes.sizeof(ctypes.c_int):
+            raise ValueError("malformed process group inventory")
+        if length == ctypes.sizeof(slots):
+            if capacity >= 1 << 20:
+                raise ValueError("process group inventory exceeds capacity")
+            capacity *= 2
+            continue
+        members = []
+        for pid in slots[:length // ctypes.sizeof(ctypes.c_int)]:
+            info = _darwin_process_info(library, pid, include_zombies=True)
+            if info is None or info.pbi_pgid != group:
+                # A member exited or moved during observation. Enumerate again
+                # to retain any descendant that joined before its departure.
+                break
+            state = {1: "I", 2: "R", 3: "S", 4: "T", 5: "Z"}[info.pbi_status]
+            members.append({"pid": pid, "ppid": info.pbi_ppid, "group": group, "state": state})
+        else:
+            return sorted(members, key=lambda member: member["pid"])
+    raise RuntimeError("process group changed throughout inspection")
+
+
 def leader_identity(pid):
     """Return a live process's group and birth witness, or None if unavailable.
 
@@ -155,16 +214,9 @@ def leader_identity(pid):
         fields = value.rsplit(")", 1)[1].split()
         return {"group": int(fields[2]), "birth": "linux:" + fields[19]}
     if sys.platform == "darwin":
-        library = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-        library.proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                                         ctypes.c_void_p, ctypes.c_int)
-        library.proc_pidinfo.restype = ctypes.c_int
-        info = _DarwinBsdInfo()
-        length = library.proc_pidinfo(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info))
-        if length == 0:
+        info = _darwin_process_info(_darwin_library(), pid)
+        if info is None:
             return None
-        if length != ctypes.sizeof(info) or info.pbi_pid != pid:
-            raise ValueError("incomplete process leader identity")
         return {"group": info.pbi_pgid,
                 "birth": "darwin:" + str(info.pbi_start_tvsec) + ":" + str(info.pbi_start_tvusec)}
     raise RuntimeError("unsupported gate process platform")
@@ -187,23 +239,7 @@ def group_members(group):
                 members.append({"pid": int(directory.name), "ppid": int(fields[1]),
                                 "group": group, "state": fields[0]})
     elif sys.platform == "darwin":
-        # A completed short-lived gate usually has no group left. Ask the
-        # kernel about that group before enumerating an entire busy host.
-        try:
-            os.killpg(group, 0)
-        except ProcessLookupError:
-            return []
-        except PermissionError:
-            pass  # The group may exist; enumerate its actual members.
-        listing = subprocess.check_output(
-            ["ps", "-axo", "pid=,ppid=,pgid=,stat="], text=True, timeout=10)
-        for line in listing.splitlines():
-            fields = line.split()
-            if len(fields) != 4:
-                raise ValueError("malformed process inventory")
-            if int(fields[2]) == group:
-                members.append({"pid": int(fields[0]), "ppid": int(fields[1]),
-                                "group": group, "state": fields[3]})
+        return _darwin_group_members(group)
     else:
         raise RuntimeError("unsupported gate process platform")
     return sorted(members, key=lambda member: member["pid"])
