@@ -187,6 +187,14 @@ def group_members(group):
                 members.append({"pid": int(directory.name), "ppid": int(fields[1]),
                                 "group": group, "state": fields[0]})
     elif sys.platform == "darwin":
+        # A completed short-lived gate usually has no group left. Ask the
+        # kernel about that group before enumerating an entire busy host.
+        try:
+            os.killpg(group, 0)
+        except ProcessLookupError:
+            return []
+        except PermissionError:
+            pass  # The group may exist; enumerate its actual members.
         listing = subprocess.check_output(
             ["ps", "-axo", "pid=,ppid=,pgid=,stat="], text=True, timeout=10)
         for line in listing.splitlines():
