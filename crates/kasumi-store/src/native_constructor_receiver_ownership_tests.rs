@@ -487,7 +487,8 @@ fn publication_metadata_contention_preserves_same_arc_grant_and_never_replays_co
             memory.payload(1)
         })
         .err()
-        .expect("actual publication lock is held");
+        // The hold outlasts PUBLICATION_CONTENTION_WAIT: it ends only below.
+        .expect("actual publication lock is held past its contention bound");
     let id = failure.id().unwrap();
     let unpublished = {
         let state = native_state(&memory.census.slots[id.index]).unwrap();
@@ -519,6 +520,46 @@ fn publication_metadata_contention_preserves_same_arc_grant_and_never_replays_co
     assert_eq!(memory.token_drops.load(Ordering::Acquire), 0);
     assert_eq!(failure.cleanup(), StorageCensusDisposition::Retired);
     assert_eq!(memory.body_drives.load(Ordering::Acquire), 2);
+    assert_eq!(memory.body_drops.load(Ordering::Acquire), 1);
+    assert_eq!(memory.token_drops.load(Ordering::Acquire), 1);
+    assert_eq!(memory.backing.snapshot().used_bytes, standing.used_bytes);
+}
+
+#[test]
+fn publication_waits_out_short_metadata_contention_without_replaying_construction() {
+    // A census sweep (owner_at, inspect_retained) holds a constructing slot's
+    // metadata only briefly. Publication waits that out within its bound and
+    // delivers the same constructed payload; provider and body run once.
+    let memory = Memory::new(Mode::Success);
+    let standing = memory.backing.snapshot();
+    let (entered, observe) = std::sync::mpsc::channel();
+    let mut worker = None;
+    let mut constructions = 0;
+    let owner = memory
+        .census
+        .register_native(memory.provider(), 0, |_| {
+            constructions += 1;
+            let id = memory.census.owner_at(0).unwrap();
+            let holding = memory.clone();
+            worker = Some(std::thread::spawn(move || {
+                holding.census.with_owner_metadata_held_for_test(id, || {
+                    entered.send(()).unwrap();
+                    // Well inside PUBLICATION_CONTENTION_WAIT.
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                });
+            }));
+            observe
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .unwrap();
+            memory.payload(0)
+        })
+        .expect("publication waits out a short metadata hold");
+    worker.unwrap().join().unwrap();
+    assert_eq!(memory.calls.load(Ordering::Acquire), 1);
+    assert_eq!(constructions, 1);
+    assert_eq!(memory.body_constructions.load(Ordering::Acquire), 1);
+    assert_eq!(owner.retire(), StorageCensusDisposition::Retired);
+    assert_eq!(memory.body_drives.load(Ordering::Acquire), 1);
     assert_eq!(memory.body_drops.load(Ordering::Acquire), 1);
     assert_eq!(memory.token_drops.load(Ordering::Acquire), 1);
     assert_eq!(memory.backing.snapshot().used_bytes, standing.used_bytes);

@@ -44,6 +44,39 @@ impl<E> MetadataAttempt<E> {
     }
 }
 
+/// Census sweeps (`owner_at`, `inspect_retained`, `drain`, snapshots) hold a
+/// slot's metadata only for one nonblocking observation, and they visit
+/// Constructing slots too. Publication of a fully constructed owner waits out
+/// that contention for at most this long; it never replays construction, and
+/// on expiry the same Arc and grant stay for the cleanup-time retry.
+#[cfg(not(test))]
+const PUBLICATION_CONTENTION_WAIT: std::time::Duration = std::time::Duration::from_secs(5);
+#[cfg(test)]
+const PUBLICATION_CONTENTION_WAIT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Park briefly after observed metadata contention. False once `deadline` has
+/// passed, including after an oversleep, so no further attempt starts late.
+fn wait_for_publication_metadata(deadline: std::time::Instant) -> bool {
+    let now = std::time::Instant::now();
+    if now >= deadline {
+        return false;
+    }
+    std::thread::park_timeout(
+        deadline
+            .saturating_duration_since(now)
+            .min(std::time::Duration::from_millis(1)),
+    );
+    std::time::Instant::now() < deadline
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Publication {
+    Published,
+    /// Only the slot's metadata guard was unavailable; nothing changed.
+    MetadataBusy,
+    Refused,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NativeConstructorCallError {
     ForeignProvider,
@@ -571,15 +604,28 @@ impl StorageCensus {
         }
         slot.native_constructor_panicked
             .store(state.panicked(), Ordering::Release);
-        let published = self.publish_native(slot, id, &mut state);
-        if published {
+        // A sweep's nonblocking observation may hold this slot's metadata at
+        // the publication instant. Wait out only that contention, within one
+        // bound, still holding this receiver: construction is never replayed.
+        let deadline = std::time::Instant::now() + PUBLICATION_CONTENTION_WAIT;
+        let mut publication = self.publish_native(slot, id, &mut state);
+        while publication == Publication::MetadataBusy && wait_for_publication_metadata(deadline) {
+            publication = self.publish_native(slot, id, &mut state);
+        }
+        if publication == Publication::Published {
             // Uses only a clone of the already installed actual owner.
-            if let Some(owner) = self.retained::<T>(provider.clone(), id) {
-                state.success_returned = true;
-                slot.native_constructor_delivery_pending
-                    .store(false, Ordering::Release);
-                drop(state);
-                return Ok(owner);
+            loop {
+                match self.try_retained::<T>(provider.clone(), id) {
+                    TypedOwnerLookup::Active(owner) => {
+                        state.success_returned = true;
+                        slot.native_constructor_delivery_pending
+                            .store(false, Ordering::Release);
+                        drop(state);
+                        return Ok(owner);
+                    }
+                    TypedOwnerLookup::Busy if wait_for_publication_metadata(deadline) => {}
+                    TypedOwnerLookup::Busy | TypedOwnerLookup::Missing => break,
+                }
             }
         }
         Err(NativeConstructorFailure::Retained(
@@ -595,9 +641,9 @@ impl StorageCensus {
         slot: &Slot,
         id: StorageOwnerId,
         state: &mut NativeConstructorState,
-    ) -> bool {
+    ) -> Publication {
         if state.published {
-            return true;
+            return Publication::Published;
         }
         if !state.preparation.succeeded()
             || !state.ready()
@@ -605,13 +651,15 @@ impl StorageCensus {
             || state.payload.is_none()
             || state.report_lease.is_some()
         {
-            return false;
+            return Publication::Refused;
         }
-        let Ok(mut metadata) = slot.metadata.try_lock() else {
-            return false;
+        let mut metadata = match slot.metadata.try_lock() {
+            Ok(metadata) => metadata,
+            Err(std::sync::TryLockError::WouldBlock) => return Publication::MetadataBusy,
+            Err(std::sync::TryLockError::Poisoned(_)) => return Publication::Refused,
         };
         if metadata.generation != id.generation || !matches!(metadata.cell, Cell::Constructing) {
-            return false;
+            return Publication::Refused;
         }
         metadata.lease = state.lease.take();
         metadata.cell = Cell::Active {
@@ -623,7 +671,7 @@ impl StorageCensus {
         // This is never the final provider reference: the current caller and
         // exact facade/locator retain it. No callback executes under metadata.
         drop(state.expected.take());
-        true
+        Publication::Published
     }
     pub(crate) fn retained_native_constructor<T: StoragePayload>(
         &self,
@@ -733,7 +781,7 @@ impl StorageCensus {
             }
             // Publication retry retains the same Arc and grant. Cleanup then
             // uses the ordinary real drive/destruction/lease census pipeline.
-            if !self.publish_native(slot, id, &mut state) {
+            if self.publish_native(slot, id, &mut state) != Publication::Published {
                 return StorageCensusDisposition::Retained;
             }
             slot.native_constructor_delivery_pending

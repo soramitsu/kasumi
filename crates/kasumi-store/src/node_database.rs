@@ -41,6 +41,10 @@ struct State {
     busy: DrainReport,
     terminal: DrainReport,
     interrupted: Option<DrainFailure>,
+    /// The last close stopped only on a census observation of the registered
+    /// opening that a retry may pass: its lookup was contended, or its admitted
+    /// children had not yet retired (a contended check or a retirement in flight).
+    observation_contended: bool,
 }
 
 struct ClosePanic(Mutex<Box<dyn Any + Send>>);
@@ -67,6 +71,8 @@ pub(crate) struct NodeDatabase {
     before_registered_admission: Mutex<Option<Box<dyn FnOnce() + Send>>>,
     #[cfg(test)]
     after_shutdown_seal: Mutex<Option<ShutdownSealHook>>,
+    #[cfg(test)]
+    after_native_disposal_observed: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 /// Test hook run by `NodeStore::shutdown` right after it seals the opening.
@@ -138,12 +144,15 @@ impl NodeDatabase {
             before_registered_admission: Mutex::new(None),
             #[cfg(test)]
             after_shutdown_seal: Mutex::new(None),
+            #[cfg(test)]
+            after_native_disposal_observed: Mutex::new(None),
             state: Mutex::new(State {
                 database: Some(database),
                 registered: None,
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
+                observation_contended: false,
             }),
         }
     }
@@ -160,12 +169,15 @@ impl NodeDatabase {
             before_registered_admission: Mutex::new(None),
             #[cfg(test)]
             after_shutdown_seal: Mutex::new(None),
+            #[cfg(test)]
+            after_native_disposal_observed: Mutex::new(None),
             state: Mutex::new(State {
                 database: None,
                 registered: Some(NodeDatabaseLocator { provider, id }),
                 busy: DrainReport::default(),
                 terminal: DrainReport::default(),
                 interrupted: None,
+                observation_contended: false,
             }),
         }
     }
@@ -511,6 +523,7 @@ impl NodeDatabase {
     pub(crate) fn close(&self) -> DrainResult {
         self.stop();
         let mut state = self.state.lock();
+        state.observation_contended = false;
         if let Some(failure) = &state.interrupted {
             // An explicit failed-close recovery may have completed after this
             // original terminal was retained. Only its exact accepted physical
@@ -530,6 +543,7 @@ impl NodeDatabase {
             let opening = match locator.opening() {
                 Ok(opening) => opening,
                 Err(_) => {
+                    state.observation_contended = true;
                     let issue = state.busy.record(
                         self.component,
                         0,
@@ -558,6 +572,7 @@ impl NodeDatabase {
                             // Native engine disposal alone does not retire a
                             // child's retained original outcome or paid lease.
                             // This remains retryable after exact child cleanup.
+                            state.observation_contended = true;
                             let issue = state.busy.record(
                                 self.component,
                                 0,
@@ -658,6 +673,18 @@ impl NodeDatabase {
         Err(failure)
     }
 
+    /// Whether the last close stopped only on a census observation of the
+    /// registered opening (lookup or child retirement). That close changed
+    /// nothing and may be retried; every other retained close keeps its outcome.
+    pub(crate) fn close_observation_contended(&self) -> bool {
+        self.state.lock().observation_contended
+    }
+
+    #[cfg(test)]
+    pub(crate) fn after_native_disposal_observed_for_test(&self, after: Box<dyn FnOnce() + Send>) {
+        *self.after_native_disposal_observed.lock() = Some(after);
+    }
+
     /// Inspect native disposal and sealed child retirement while keeping the
     /// composite node's body, locator and original census fee live. Missing or
     /// contended observations never establish completion.
@@ -673,7 +700,15 @@ impl NodeDatabase {
                 && report.engine().disposal().complete())
                 || report.failed_recovery_complete();
             drop(report);
-            return disposed && opening.children_retired();
+            let disposed = disposed && opening.children_retired();
+            #[cfg(test)]
+            if disposed {
+                let after = self.after_native_disposal_observed.lock().take();
+                if let Some(after) = after {
+                    after();
+                }
+            }
+            return disposed;
         }
         state.database.as_ref().is_some_and(|database| {
             let report = database.report();
