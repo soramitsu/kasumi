@@ -53,6 +53,8 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  // Reads the application or Control stream bound to the verified credential.
+  rpc TenantAuditStatus(TenantAuditJsonRequest) returns (TenantAuditJsonResponse);
   rpc ControlSignerMaintenance(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc SecurityAuditStatus(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
   rpc SecurityAuditExport(SecurityAuditJsonRequest) returns (SecurityAuditJsonResponse);
@@ -98,6 +100,8 @@ service KasumiAdmin {
 message GetRequest { string collection = 1; string id = 2; }
 // An absent document is an ordinary result; a missing collection is NOT_FOUND.
 message GetResponse { optional Document document = 1; }
+message TenantAuditJsonRequest { bytes request_json = 1; }
+message TenantAuditJsonResponse { bytes response_json = 1; }
 message SecurityAuditJsonRequest { bytes request_json = 1; }
 message SecurityAuditJsonResponse { bytes response_json = 1; }
 message CredentialJsonRequest { bytes request_json = 1; }

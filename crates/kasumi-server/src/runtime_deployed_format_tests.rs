@@ -999,6 +999,22 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     // Second open: this build's own snapshot of the deployed state.
     let serving = Serving::start(&copy).await?;
     let database = serving.database()?;
+    let audit = database.tenant_audit_status(&administrator()).await?;
+    audit.validate()?;
+    let generation = database.engine().generation()?;
+    ensure!(audit.tenant == TENANT && audit.incarnation == generation.incarnation());
+    ensure!(audit.position.stream_id == generation.audit_retention().stream_id);
+    drop((audit, generation));
+    let mut reader = administrator();
+    reader.scopes.remove(&Action::Audit);
+    ensure!(
+        database
+            .tenant_audit_status(&reader)
+            .await
+            .unwrap_err()
+            .code
+            == kasumi_types::ErrorCode::Forbidden
+    );
     let reopened_manifest = snapshot_manifest(database.stores().application())?;
     ensure!(
         reopened_manifest == selected,

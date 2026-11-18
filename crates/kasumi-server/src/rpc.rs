@@ -901,6 +901,34 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn tenant_audit_status(
+        &self,
+        request: Request<TenantAuditJsonRequest>,
+    ) -> Result<Response<TenantAuditJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        let _: kasumi_types::TenantAuditStatusRequest =
+            decode_json(&request.into_inner().request_json).map_err(status)?;
+        let database = self.database(&context).await?;
+        let fence = self
+            .auth
+            .audit_result(&context, database.admitted_response_fence(&context))
+            .await
+            .map_err(status)?;
+        let result = database
+            .tenant_audit_status(&context)
+            .await
+            .map_err(|error| self.registry.status(&context, error))?;
+        response_owner::PendingReply::new(result, fence)
+            .convert(|value, fence| {
+                Ok(TenantAuditJsonResponse {
+                    response_json: response_owner::encode_json(value, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &context)
+            .await
+    }
+
     async fn control_signer_maintenance(
         &self,
         request: Request<AuthorityJsonRequest>,

@@ -46,6 +46,22 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
 }
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
+        [command, action, profile] if command == "tenant-audit" && action == "status" => {
+            let profile = ClientProfile::load(Path::new(profile))?;
+            let mut client =
+                kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
+            let status = client.tenant_audit_status(&profile.bearer()?).await?;
+            let expected = match profile.resource {
+                CredentialResource::Database { incarnation }
+                | CredentialResource::Control { incarnation } => incarnation,
+                _ => anyhow::bail!("tenant audit status requires a database or Control credential"),
+            };
+            ensure!(
+                status.tenant == profile.tenant && status.incarnation == expected.to_string(),
+                "tenant audit status belongs to a different tenant incarnation"
+            );
+            println!("{}", serde_json::to_string_pretty(&status)?);
+        }
         [command, action, profile] if command == "audit" && action == "status" => {
             let profile = ClientProfile::load(Path::new(profile))?;
             binding(&profile)?;

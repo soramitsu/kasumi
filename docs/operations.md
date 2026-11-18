@@ -418,6 +418,14 @@ location again (omit `tenant_audit_cache` for the default), make sure its parent
 is still inside an installed root, and run the command with the new directory as
 the source.
 
+## Inspecting a tenant audit stream
+
+Run `kasumid tenant-audit status <profile>` using the administrative endpoint of
+a tenant or Control profile with a tenant-wide audit grant. The response binds
+the tenant and incarnation, revision, retention budget, archive head, hot tail
+and stream position. The existing `kasumid audit status <control-profile>`
+reports the node's service-security audit stream.
+
 ## Recovery procedures
 
 Before reopening an offline volume, compare its incarnation and recovery point
