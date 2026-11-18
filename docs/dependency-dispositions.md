@@ -7,6 +7,8 @@ until reviewed. No version-only ignore is sufficient for a source patch.
 
 | Advisory or source defect | Disposition |
 | --- | --- |
+| RUSTSEC-2024-0449, unsafe-libyaml | The Japanese analyzer uses Lindera's embedded IPADIC segmenter directly. Removing the configuration-file wrapper removes serde_yaml_ng and unsafe-libyaml from the workspace. Retain token text, UTF-8 offsets, positions and position lengths when testing deployed indexes. |
+| RUSTSEC-2026-0457, RUSTSEC-2026-0461 and RUSTSEC-2026-0462, rmcp | Upgraded the published SDK to 3.11.0 and ported the terminal HTTP ownership changes. The vendor inventory binds the exact crate and source differences. Native release checks include inherited protocol validation and Kasumi's request cancellation and peer-message custody regressions. |
 | RUSTSEC-2026-0292, imbl-sized-chunks | imbl 7.0.2 selects imbl-sized-chunks 0.2.0, the first patched version. This also removes bitmaps and both of its advisories (RUSTSEC-2025-0167 and RUSTSEC-2026-0247) from the workspace lockfile. Retain the earlier fork and regression history at commit 402238db. |
 | RUSTSEC-2026-0253, lru panic safety | Minimal upstream ordering backport to the compatible 0.16.4 API. Verify exact input hashes and panic/eviction regression. |
 | RUSTSEC-2023-0089, atomic-polyfill unmaintained | Disabled postcard's unused default heapless-cas feature. Kasumi uses its allocated encoding API; removing heapless also removes atomic-polyfill from the lockfile. Final platform graphs must confirm continued absence. |

@@ -1,3 +1,5 @@
+mod japanese;
+
 use crate::scalar::{exhausted, invalid};
 use crate::{CollectionRecords, DocumentChanges, QueryCancellation, ReadResult, Record};
 use kasumi_types::{
@@ -84,8 +86,7 @@ fn analyzer(kind: Analyzer, surface: bool) -> Result<TextAnalyzer> {
                         dictionary,
                         None,
                     );
-                    let tokenizer =
-                        lindera_tantivy::tokenizer::LinderaTokenizer::from_segmenter(segmenter);
+                    let tokenizer = japanese::JapaneseTokenizer::new(segmenter);
                     Ok(TextAnalyzer::builder(tokenizer).filter(LowerCaser).build())
                 })
                 .clone()

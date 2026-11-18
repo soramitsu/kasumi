@@ -131,7 +131,7 @@ def inspect_declaration(value, source, projected_lock, now, regressions,
                 "known advisory is absent from declared database")
         decisions[key] = entry
     require(set(KNOWN) <= set(decisions), "required source advisory dispositions are absent")
-    require({"atomic-polyfill", "rustls-pemfile", "bitmaps"}.isdisjoint({name for name, _ in packages}),
+    require({"atomic-polyfill", "rustls-pemfile", "bitmaps", "unsafe-libyaml"}.isdisjoint({name for name, _ in packages}),
             "removed legacy dependencies returned to frozen lock")
     return observed, decisions, packages
 
