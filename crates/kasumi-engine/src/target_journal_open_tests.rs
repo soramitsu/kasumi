@@ -2040,3 +2040,233 @@ async fn cleanup_and_binding_records_require_their_stop_and_original_creation() 
     f.reopen()?.shutdown().await?;
     Ok(())
 }
+
+/// The durable cut contains the original materialization, its exact physical
+/// binding, an issuer-signed permanent stop, and the last published cleanup
+/// stage. Reopen from the encrypted native files after dropping every handle.
+#[tokio::test]
+async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> Result<()> {
+    use kasumi_serving::{
+        AuthorityAction, AuthorityCommand, AuthorityManifest, AuthorityOutcome, AuthorityPartition,
+        AuthorityReceipt, RecoveryTarget, TargetStopObservation, TargetStopReference,
+    };
+    let f = Fixture::new().await?;
+    let journal = f.create()?;
+    let (mut lifecycle, _, _) = initial_dispatch(&f, true)?;
+    let signing_key =
+        ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+            .map_err(|_| anyhow::anyhow!("fixture signing key generation failed"))?;
+    let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(signing_key.as_ref())?;
+    let authority = AuthorityManifest {
+        lifecycle_controls: [(
+            f.installed.root.control_incarnation,
+            f.installed.root.public_key.clone(),
+        )]
+        .into(),
+        authority_id: Uuid::new_v4(),
+        max_lease_ms: 60_000,
+        clock_rate_error_ppm: 0,
+        partitions: [(
+            0,
+            AuthorityPartition {
+                group: "cleanup".into(),
+                public_key: root.public_key(),
+            },
+        )]
+        .into(),
+    };
+    let issuer = root
+        .install(authority.clone(), 0)?
+        .for_verifier(f.installed.node.verifier.clone())?;
+    let partition = authority.control_partition(0)?;
+    lifecycle.request.authority_partition = partition.key();
+    lifecycle.request.phase = LifecyclePhase::Materialize;
+    lifecycle.request_sha256 = kasumi_serving::digest(&lifecycle.request)?;
+    let intent = TargetJournalIntent {
+        intent: lifecycle.clone(),
+        authority_partition: partition,
+        partition_set_sha256: "cc".repeat(32),
+        node: f.installed.node.clone(),
+    };
+    let request = &lifecycle.request;
+    let tenant = request.tenant.clone();
+    let incarnation = request.target_incarnation;
+    let source_incarnation = request.source_incarnation;
+    let source_epoch = request.source_authority_epoch;
+    let target = RecoveryTarget {
+        incarnation,
+        checkpoint: request.checkpoint.clone(),
+        nodes: request
+            .target_nodes
+            .values()
+            .map(|node| NodeIdentity {
+                node_id: node.node_id,
+                verifier: node.verifier.clone(),
+                principal: node.principal.clone(),
+                certificate_sha256: node.certificate_sha256.clone(),
+            })
+            .collect(),
+    };
+    let command = AuthorityCommand {
+        tenant: tenant.clone(),
+        command_id: Uuid::new_v4(),
+        expected_policy_epoch: 1,
+        not_after_ms: 1000,
+        action: AuthorityAction::StopTarget {
+            source_incarnation,
+            source_epoch,
+            target: target.clone(),
+        },
+    };
+    let command_id = command.command_id;
+    let receipt = AuthorityReceipt {
+        authority_id: authority.authority_id,
+        manifest_digest: authority.digest()?,
+        partition: 0,
+        command_digest: command.digest()?,
+        command,
+        principal: "owner".into(),
+        term: 1,
+        revision: 5,
+        admitted_at_ms: 200,
+        outcome: AuthorityOutcome::TargetStopped {
+            source_incarnation,
+            source_epoch,
+            target,
+        },
+    };
+    let reference = TargetStopReference {
+        tenant: tenant.clone(),
+        command_id,
+        receipt_digest: receipt.digest()?,
+    };
+    let mut stop_intent = intent.clone();
+    stop_intent.intent.request.command_id = Uuid::new_v4();
+    stop_intent.intent.request.phase = LifecyclePhase::StopLocal;
+    stop_intent.intent.request.phase_input_sha256 =
+        kasumi_serving::digest(&("kasumi.stop-local-target-input.v1", &reference))?;
+    stop_intent.intent.request_sha256 = kasumi_serving::digest(&stop_intent.intent.request)?;
+    let stopped = issuer.signer.sign_target_stop(TargetStopObservation {
+        reference,
+        stop: receipt,
+        observed_term: 1,
+        observed_revision: 5,
+        drain_ms: authority.drain_ms()?,
+    })?;
+    let stop = TargetJournalStop {
+        intent: stop_intent,
+        stopped,
+        authority,
+    };
+    journal.validate_stop(&stop)?;
+    let original = TargetFileBinding {
+        tenant: tenant.clone(),
+        target_incarnation: incarnation,
+        path: f.directory.path().join("persistent/targets/target.kv"),
+        directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
+        node_store_id: kasumi_store::node_store_ids::target_generation(
+            f.installed.root.control_incarnation,
+            &tenant,
+            incarnation,
+            &f.installed.node.verifier,
+        )?,
+    };
+    let cleanup = TargetCleanup {
+        tenant: tenant.clone(),
+        target_incarnation: incarnation,
+        stage: TargetCleanupStage::Deleting,
+        binding: Some(original.clone()),
+    };
+    let mut head = journal.metadata()?;
+    let creation = serde_json::to_vec(&FileCreation {
+        materialization_command_id: request.command_id,
+    })?;
+    let accepted = serde_json::to_vec(&intent)?;
+    let generation = serde_json::to_vec(&GenerationBinding::from_intent(&intent))?;
+    let binding = serde_json::to_vec(&original)?;
+    head.intents = 1;
+    head.generations = 1;
+    head.charged_bytes +=
+        (accepted.len() + generation.len() + creation.len() + binding.len() + CLEANUP_RESERVE)
+            as u64
+            + COMPLETION_RESERVE
+            + GENERATION_RESERVE;
+    let key = cleanup_key(&tenant, incarnation);
+    f.store.write_batch(&[
+        WriteOp::put(NS, intent_key(request.command_id), accepted),
+        WriteOp::put(NS, generation_key(&tenant, incarnation), generation),
+        WriteOp::put(NS, file_key(&tenant, incarnation), creation),
+        WriteOp::put(NS, binding_key(&tenant, incarnation), binding),
+        WriteOp::put(
+            NS,
+            stop_key(&tenant, incarnation),
+            serde_json::to_vec(&stop)?,
+        ),
+        WriteOp::put(NS, key.clone(), serde_json::to_vec(&cleanup)?),
+        WriteOp::put(NS, b"metadata", serde_json::to_vec(&head)?),
+    ])?;
+    journal.shutdown().await?;
+    f.store.shutdown().await?;
+    f.node.shutdown().await?;
+    drop((journal, f.store, f.node));
+    let path = f.directory.path().join("persistent/journal.kv");
+    let node = f
+        .storage
+        .open_existing(&path, f.id)
+        .unwrap_or_else(|original| std::panic::panic_any(original));
+    let store = TenantStore::open_existing(
+        node.clone(),
+        format!("kasumi.target.{}.1", f.installed.root.control_incarnation),
+        Arc::new(LocalKeyProvider::new([39; 32])),
+        StorageAccess::target_journal(&f.installed.root, &f.installed.node)?,
+    )
+    .await?;
+    let reopen = || {
+        TargetJournal::open_existing(
+            store.clone(),
+            f.installed.clone(),
+            TargetJournalLimits {
+                max_metadata_bytes: 4 << 20,
+            },
+            f.admission.clone(),
+        )
+    };
+    let journal = reopen()?;
+    assert_eq!(
+        journal.target_cleanup(&tenant, incarnation)?,
+        Some(cleanup.clone())
+    );
+    drop(journal);
+    let mut terminal = cleanup;
+    terminal.stage = TargetCleanupStage::Deleted;
+    store.write_batch(&[WriteOp::put(
+        NS,
+        key.clone(),
+        serde_json::to_vec(&terminal)?,
+    )])?;
+    assert_eq!(
+        reopen()?.target_cleanup(&tenant, incarnation)?,
+        Some(terminal.clone())
+    );
+    for replacement in [
+        None,
+        Some(TargetFileBinding {
+            path: path.clone(),
+            ..original
+        }),
+    ] {
+        let mut wrong = terminal.clone();
+        wrong.binding = replacement;
+        store.write_batch(&[WriteOp::put(NS, key.clone(), serde_json::to_vec(&wrong)?)])?;
+        let error = reopen().err().context("substituted cleanup reopened")?;
+        assert!(
+            format!("{error:#}").contains("enrolled storage binding"),
+            "{error:#}"
+        );
+    }
+    store.write_batch(&[WriteOp::put(NS, key, serde_json::to_vec(&terminal)?)])?;
+    reopen()?.shutdown().await?;
+    store.shutdown().await?;
+    node.shutdown().await?;
+    Ok(())
+}

@@ -833,20 +833,16 @@ impl TargetJournal {
                 .is_some(),
             "target cleanup precedes its permanent stop"
         );
-        match &cleanup.binding {
-            Some(binding) => {
-                ensure!(
-                    binding.tenant == cleanup.tenant
-                        && binding.target_incarnation == cleanup.target_incarnation,
-                    "target cleanup binding names another target"
-                );
-                self.validate_binding(binding)?;
-            }
-            None => ensure!(
-                cleanup.stage == TargetCleanupStage::Deleted,
-                "target deletion in progress has no binding"
-            ),
-        }
+        ensure!(
+            cleanup.binding
+                == self
+                    .materialization_file_binding(&cleanup.tenant, cleanup.target_incarnation)?,
+            "target cleanup differs from the enrolled storage binding"
+        );
+        ensure!(
+            cleanup.binding.is_some() || cleanup.stage == TargetCleanupStage::Deleted,
+            "target deletion in progress has no binding"
+        );
         Ok(())
     }
 
@@ -879,6 +875,11 @@ impl TargetJournal {
             op.check()?;
             return Ok(());
         }
+        ensure!(
+            self.target_cleanup(&binding.tenant, binding.target_incarnation)?
+                .is_none(),
+            "target cleanup already has a durable outcome"
+        );
         let bytes = serde_json::to_vec(binding)?;
         let mut metadata = self.metadata()?;
         metadata.charged_bytes = metadata
@@ -981,6 +982,10 @@ impl TargetJournal {
                 );
             }
             None => {
+                ensure!(
+                    cleanup.binding.is_none() || cleanup.stage == TargetCleanupStage::Deleting,
+                    "bound storage must record deletion in progress before completion"
+                );
                 let mut metadata = self.metadata()?;
                 metadata.charged_bytes = metadata
                     .charged_bytes
