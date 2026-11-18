@@ -18,13 +18,16 @@ const BINDINGS: [&str; 4] = [
     crate::target_resolution::CATALOG,
 ];
 
-fn snapshot_identity(context: &SnapshotRestoreContext) -> Result<[u8; 32]> {
-    Ok(Sha256::digest(serde_json::to_vec(&(
-        "kasumi.application.snapshot.v1",
-        &context.meta,
-        &context.backend_sha256,
-    ))?)
-    .into())
+pub(crate) fn snapshot_identity(
+    meta: &kasumi_raft::SnapshotMeta<u64, kasumi_raft::BasicNode>,
+    backend_sha256: &str,
+) -> Result<[u8; 32]> {
+    let mut hash = Sha256::new();
+    serde_json::to_writer(
+        &mut hash,
+        &("kasumi.application.snapshot.v1", meta, backend_sha256),
+    )?;
+    Ok(hash.finalize().into())
 }
 
 pub(crate) fn stage(
@@ -75,7 +78,7 @@ pub(crate) fn stage(
         &state.incarnation,
         state.revision,
         state.revision_base,
-        snapshot_identity(context)?,
+        snapshot_identity(&context.meta, &context.backend_sha256)?,
         stage.namespace(),
         records,
         state.document_count,
@@ -111,7 +114,8 @@ pub(crate) fn verify(
             manifest.incarnation == state.incarnation
                 && manifest.revision_base == state.revision_base
                 && manifest.revision == state.revision
-                && manifest.snapshot_sha256 == snapshot_identity(context)?
+                && manifest.snapshot_sha256
+                    == snapshot_identity(&context.meta, &context.backend_sha256)?
                 && manifest.document_count == state.document_count
                 && manifest.logical_bytes == state.logical_bytes,
             "selected application records belong to another snapshot"

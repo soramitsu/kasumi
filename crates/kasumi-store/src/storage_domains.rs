@@ -359,6 +359,29 @@ pub struct TenantStorageReadView {
     transaction: Option<read_view::ViewTransaction>,
 }
 
+impl crate::ordered_pages::PageSource for TenantStorageReadView {
+    fn check_access(&self) -> Result<()> {
+        self.application.check_access()?;
+        self.custody.check_access()
+    }
+    fn read_row(
+        &self,
+        space: &str,
+        key: &[u8],
+        max: usize,
+    ) -> Result<Option<crate::ordered_pages::PageRow>> {
+        Ok(self
+            .application_get(space, key, max)?
+            .map(crate::ordered_pages::PageRow::Stored))
+    }
+    fn memory(&self) -> Arc<dyn NodeDiskMemoryAdmission> {
+        self.application.plaintext_memory_owner().clone()
+    }
+    fn domain(&self) -> &str {
+        self.application.tenant()
+    }
+}
+
 impl TenantStorageReadView {
     /// Require the exact installed domain objects selected by a prospective
     /// producer; equal tenant names, UUIDs or admission providers are insufficient.

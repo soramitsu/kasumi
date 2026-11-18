@@ -70,6 +70,108 @@ enum DurableRecord<'a> {
     RecoveryCompletionHistory(&'a RecoveryCompletionHistory),
 }
 
+pub(crate) fn document_key(collection: &str, id: &str) -> Vec<u8> {
+    KeyBuilder::new(3).text(collection).text(id).finish()
+}
+
+fn archive_key(collection: &str, id: &str) -> Vec<u8> {
+    KeyBuilder::new(4).text(collection).text(id).finish()
+}
+
+pub(crate) enum PrimaryPoint {
+    Live(Arc<DocumentSlot>),
+    Archived(Arc<ArchivedDocument>),
+    Missing,
+}
+
+impl PrimaryPoint {
+    pub(crate) fn resident(
+        collection: &CollectionState,
+        id: &str,
+        revision: u64,
+    ) -> kasumi_types::Result<Self> {
+        crate::index_source::header(collection, id, revision)?;
+        Ok(if let Some(slot) = collection.documents.get(id) {
+            Self::Live(slot.clone())
+        } else if let Some(reference) = collection.archived_documents.get(id) {
+            Self::Archived(reference.clone())
+        } else {
+            Self::Missing
+        })
+    }
+}
+
+/// Resolve both possible records from a single authenticated root. A miss is
+/// authoritative for that snapshot. The body or history chunk is read later.
+pub(crate) fn snapshot_point(
+    reader: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    id: &str,
+    revision: u64,
+    mut admit: impl FnMut(&[u8]) -> Result<()>,
+) -> Result<PrimaryPoint> {
+    #[derive(serde::Deserialize)]
+    #[serde(tag = "type", content = "value", deny_unknown_fields)]
+    enum Point {
+        Document(StoredDocument),
+        Archived(ArchivedDocument),
+    }
+    if validate_name(id).is_err() {
+        return Ok(PrimaryPoint::Missing);
+    }
+    let live = reader.with_value(
+        &document_key(collection, id),
+        8 << 10,
+        |value| -> Result<_> {
+            let Some(bytes) = value else {
+                return Ok(None);
+            };
+            admit(bytes)?;
+            let Point::Document(descriptor) = serde_json::from_slice(bytes)? else {
+                anyhow::bail!("wrong live document record kind")
+            };
+            descriptor.validate()?;
+            anyhow::ensure!(
+                descriptor.id == id && descriptor.version <= revision,
+                "snapshot point has another document identity or version"
+            );
+            anyhow::ensure!(
+                serde_json::to_vec(&DurableRecord::Document(&descriptor))? == bytes,
+                "noncanonical snapshot document"
+            );
+            Ok(Some(descriptor))
+        },
+    )?;
+    let archived = reader.with_value(
+        &archive_key(collection, id),
+        kasumi_store::ordered_pages::MAX_VALUE_BYTES,
+        |value| -> Result<_> {
+            let Some(bytes) = value else {
+                return Ok(None);
+            };
+            admit(bytes)?;
+            let Point::Archived(reference) = serde_json::from_slice(bytes)? else {
+                anyhow::bail!("wrong archived document record kind")
+            };
+            anyhow::ensure!(
+                reference.version <= revision
+                    && live.as_ref().is_none_or(|d| d.version == reference.version),
+                "snapshot archived version differs"
+            );
+            anyhow::ensure!(
+                serde_json::to_vec(&DurableRecord::Archived(&reference))? == bytes,
+                "noncanonical archived document"
+            );
+            Ok(Some(reference))
+        },
+    )?;
+    Ok(match (live, archived) {
+        (Some(descriptor), _) => PrimaryPoint::Live(Arc::new(DocumentSlot::Stored(descriptor))),
+        (None, Some(reference)) => PrimaryPoint::Archived(Arc::new(reference)),
+        (None, None) => PrimaryPoint::Missing,
+    })
+}
+
 fn stored(slot: &DocumentSlot) -> Result<&StoredDocument> {
     match slot {
         DocumentSlot::Stored(descriptor) => Ok(descriptor),
@@ -138,17 +240,14 @@ pub(crate) fn visit_all(
     for (name, collection) in &state.collections {
         for (id, slot) in &collection.documents {
             visit(
-                KeyBuilder::new(3).text(name).text(id).finish(),
+                document_key(name, id),
                 DurableRecord::Document(stored(slot)?),
             )?;
         }
     }
     for (name, collection) in &state.collections {
         for (id, archived) in &collection.archived_documents {
-            visit(
-                KeyBuilder::new(4).text(name).text(id).finish(),
-                DurableRecord::Archived(archived),
-            )?;
+            visit(archive_key(name, id), DurableRecord::Archived(archived))?;
         }
     }
     for (key, stage) in &state.staged_transactions {

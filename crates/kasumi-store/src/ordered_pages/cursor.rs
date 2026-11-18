@@ -39,6 +39,7 @@ impl<'s> TreeReader<'s> {
         root: TreeRoot,
         cache: Option<&'s PageCache>,
     ) -> Result<Self> {
+        source.check_access()?;
         let workspace = source
             .memory()
             .reserve_installed(path_workspace(root.height()))?;
@@ -84,8 +85,60 @@ impl<'s> TreeReader<'s> {
 
     /// Copy the value at `key` into `out`, overflow included.
     pub fn get(&self, key: &[u8], out: &mut Vec<u8>) -> Result<bool> {
+        self.find(key, |value| match value {
+            Some(value) => {
+                self.read_value(&value, out)?;
+                Ok(true)
+            }
+            None => Ok(false),
+        })
+    }
+
+    /// Lend a point's value only after enforcing the caller's decoded-input
+    /// bound. An overflow copy has its own installed lease until the visitor
+    /// returns; an inline value borrows the already admitted page.
+    pub fn with_value<T>(
+        &self,
+        key: &[u8],
+        max: usize,
+        visit: impl FnOnce(Option<&[u8]>) -> Result<T>,
+    ) -> Result<T> {
+        let result = self.find(key, |value| {
+            let Some(value) = value else {
+                return visit(None);
+            };
+            ensure!(
+                value.len() <= max as u64,
+                "ordered point exceeds caller's value bound"
+            );
+            match value {
+                ValueRef::Inline(bytes) => visit(Some(bytes)),
+                ValueRef::Overflow(overflow) => {
+                    let _lease = self
+                        .source
+                        .memory()
+                        .reserve_installed(crate::disk_memory::allocation::<u8>(value.len())?)?;
+                    let mut bytes = zeroize::Zeroizing::new(Vec::new());
+                    bytes.try_reserve_exact(usize::try_from(value.len())?)?;
+                    visit_overflow(self.source, self.space, &overflow, |chunk| {
+                        bytes.extend_from_slice(chunk)
+                    })?;
+                    visit(Some(&bytes))
+                }
+            }
+        })?;
+        self.source.check_access()?;
+        Ok(result)
+    }
+
+    fn find<T>(
+        &self,
+        key: &[u8],
+        found: impl FnOnce(Option<ValueRef<'_>>) -> Result<T>,
+    ) -> Result<T> {
+        self.source.check_access()?;
         let Some(mut page_ref) = self.root.root else {
-            return Ok(false);
+            return found(None);
         };
         let mut low: Option<Vec<u8>> = None;
         let mut high: Option<Vec<u8>> = None;
@@ -94,13 +147,12 @@ impl<'s> TreeReader<'s> {
             if page.is_leaf() {
                 let index = page.lower_bound(key);
                 if index == page.len() || page.key(index) != key {
-                    return Ok(false);
+                    return found(None);
                 }
-                self.read_value(&page.value(index), out)?;
-                return Ok(true);
+                return found(Some(page.value(index)));
             }
             if key < page.key(0) {
-                return Ok(false);
+                return found(None);
             }
             let index = page.child_index(key);
             page_ref = page.child(index);
@@ -156,6 +208,7 @@ impl<'s> TreeReader<'s> {
         direction: Direction,
         visit: &mut dyn FnMut(&[u8], ValueRef<'_>) -> Result<bool>,
     ) -> Result<()> {
+        self.source.check_access()?;
         let Some(root) = self.root.root else {
             return Ok(());
         };

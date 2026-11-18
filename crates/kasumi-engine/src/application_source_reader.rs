@@ -23,6 +23,77 @@ impl SourceRoots {
     }
 }
 impl SelectedApplication {
+    /// An ordinary selected entry can carry the previous snapshot while its
+    /// log advances. Only an exact, unfrozen logical position may lend the
+    /// snapshot's document directory to a serving read.
+    pub(crate) fn has_exact_snapshot(&self, base: u64, revision: u64) -> bool {
+        self.cell.frozen.get() == Some(&false)
+            && self.cell.position.get().is_some_and(|position| {
+                !position.is_covered_reconstruction()
+                    && position.snapshot().is_some_and(|snapshot| {
+                        base.checked_add(snapshot.meta.last_log_id.map_or(0, |log| log.index))
+                            == Some(revision)
+                    })
+            })
+    }
+
+    pub(crate) fn snapshot_point(
+        &self,
+        state: &kasumi_types::TenantState,
+        collection: &str,
+        id: &str,
+        admit: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<Option<crate::application_records::PrimaryPoint>> {
+        use kasumi_store::{application_manifest::ApplicationManifest, ordered_pages::TreeReader};
+        ensure!(
+            self.has_exact_snapshot(state.revision_base, state.revision),
+            "primary point requires the exact selected snapshot"
+        );
+        let roots = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected primary installation absent")?;
+        let snapshot = self
+            .cell
+            .position
+            .get()
+            .and_then(|p| p.snapshot())
+            .context("selected snapshot absent")?;
+        let reader = self.open_selected_reader(&roots)?;
+        let outcome: Result<_> = (|| {
+            reader.check_access()?;
+            let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
+            let view = permit.view.as_ref().expect("loaned primary view");
+            let Some(manifest) = ApplicationManifest::load_from_pair(view)? else {
+                return Ok(None);
+            };
+            ensure!(
+                manifest.snapshot_sha256
+                    == crate::application_checkpoint::snapshot_identity(
+                        snapshot.meta,
+                        snapshot.backend_sha256
+                    )?
+                    && manifest.incarnation == state.incarnation
+                    && manifest.revision_base == state.revision_base
+                    && manifest.revision == state.revision
+                    && manifest.document_count == state.document_count
+                    && manifest.logical_bytes == state.logical_bytes,
+                "selected primary snapshot identity differs"
+            );
+            let tree =
+                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
+            crate::application_records::snapshot_point(&tree, collection, id, state.revision, admit)
+                .map(Some)
+        })();
+        let close = reader.close();
+        match (outcome, close) {
+            (Err(error), Err(close)) => Err(error.context(close)),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Ok(point), Ok(())) => Ok(point),
+        }
+    }
+
     /// Validate the immutable owner pairing without opening a reader or
     /// reserving another source cell during generation publication.
     pub(crate) fn require_document_roots(&self, roots: &SourceRootsRef) -> Result<()> {

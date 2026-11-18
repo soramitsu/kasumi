@@ -595,7 +595,7 @@ async fn point_memory_native_worker_keeps_source_and_charge_after_cancellation()
         .unwrap();
     let waiter = tokio::spawn(async move {
         let _cancel_on_drop = CancelOnDrop(cancellation.clone());
-        read.read_native(slot, permit, &cancellation, point_read::PointRead::owned)
+        read.read_native(slot, tokio::time::Instant::now() + kasumi_store::NATIVE_READ_TIMEOUT, permit, &cancellation, point_read::PointRead::owned)
             .await
             .map(|_| ())
     });

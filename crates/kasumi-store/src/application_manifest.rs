@@ -108,8 +108,17 @@ impl ApplicationManifest {
     /// The manifest at a pinned root; every page read through `view` belongs
     /// to it even while a later generation replaces its space.
     pub fn load_at(view: &TenantReadView) -> Result<Option<Self>> {
-        let selected = SelectedGeneration::load_at(view, PAGE_FAMILY, &INITIAL_PAGE_SPACE)?;
-        let Some(bytes) = view.get(MANIFESTS, CURRENT, MAX_MANIFEST_BYTES)? else {
+        Self::load_from_pages(view)
+    }
+
+    pub fn load_from_pair(view: &TenantStorageReadView) -> Result<Option<Self>> {
+        Self::load_from_pages(view)
+    }
+
+    fn load_from_pages(view: &dyn crate::ordered_pages::PageSource) -> Result<Option<Self>> {
+        view.check_access()?;
+        let selected = SelectedGeneration::load_from_pages(view, PAGE_FAMILY, &INITIAL_PAGE_SPACE)?;
+        let Some(bytes) = view.read_row(MANIFESTS, CURRENT, MAX_MANIFEST_BYTES)? else {
             ensure!(
                 selected.namespace(0) == INITIAL_PAGE_SPACE[0],
                 "selected application page space has no manifest"
@@ -118,7 +127,7 @@ impl ApplicationManifest {
         };
         let manifest = Self::decode(bytes.as_bytes())?;
         ensure!(
-            manifest.tenant == view.tenant_store().tenant(),
+            manifest.tenant == view.domain(),
             "application manifest tenant differs"
         );
         manifest.check_selection(&selected)?;

@@ -1430,6 +1430,33 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .wait(Some(std::time::Duration::from_secs(10)))
         .current_leader(1, "replicated snapshot source leader")
         .await?;
+    let context = kasumi_types::RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
+        tenant: "selected-sources".into(),
+        principal: "owner".into(),
+        scopes: std::collections::BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
+        request_id: "snapshot-primary-point".into(),
+    };
+    let body = serde_json::json!({"value": "persisted"});
+    source_db
+        .administer(
+            context.clone(),
+            kasumi_types::Operation::CreateCollection(kasumi_types::CollectionDefinition {
+                name: "docs".into(),
+                write_mode: kasumi_types::CollectionWriteMode::Mutable,
+                retention_class: kasumi_types::CollectionRetentionClass::Operational,
+                schema: serde_json::json!({"type": "object"}),
+                indexes: vec![],
+                strict_read_audit: false,
+            }),
+        )
+        .await?;
+    source_db
+        .mutate(
+            context,
+            kasumi_types::MutationBatch::new().upsert("docs", "point", body.clone()),
+        )
+        .await?;
     let expected = source_db
         .raft_group()
         .linearizable_barrier()
@@ -1564,6 +1591,27 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let reopened = reopened_engine.generation()?;
     let reopened_cell = reopened.application_selection.get().unwrap().cell.clone();
     snapshot_identity(&reopened_cell, &meta, &backend, &envelope);
+    let selection = reopened.application_selection.get().unwrap();
+    let mut admitted = 0;
+    let Some(crate::application_records::PrimaryPoint::Live(slot)) =
+        selection.snapshot_point(&reopened.state, "docs", "point", |bytes| {
+            admitted += bytes.len();
+            Ok(())
+        })?
+    else {
+        panic!("reopened snapshot must supply the live primary descriptor")
+    };
+    assert!(admitted > 0);
+    assert_eq!(
+        slot.load_owned(reopened.document_resolver())?.as_ref().body,
+        body
+    );
+    assert!(matches!(
+        selection.snapshot_point(&reopened.state, "docs", "absent", |_| anyhow::bail!(
+            "absent point returned a record"
+        ))?,
+        Some(crate::application_records::PrimaryPoint::Missing)
+    ));
     assert!(!CellRef::ptr_eq(&installed_cell, &reopened_cell));
     let reconstructed = reopening_bootstrap
         .application_selection

@@ -96,6 +96,34 @@ impl Database {
         let Some(reference) = collection.archived_documents.get(id) else {
             return Ok(None);
         };
+        self.archived_document(
+            generation,
+            collection_name,
+            id,
+            reference,
+            cancellation,
+            cache,
+        )
+        .await
+        .map(Some)
+    }
+
+    pub(super) async fn archived_document(
+        &self,
+        generation: &crate::Generation,
+        collection_name: &str,
+        id: &str,
+        reference: &ArchivedDocument,
+        cancellation: &QueryCancellation,
+        cache: &mut HistoryReadCache,
+    ) -> Result<ReadDocument> {
+        cancellation.check()?;
+        self.access()?;
+        let collection = generation
+            .state
+            .collections
+            .get(collection_name)
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "history collection missing"))?;
         let archive = generation
             .state
             .history_archives
@@ -240,7 +268,7 @@ impl Database {
         }
         cancellation.check()?;
         self.access()?;
-        Ok(Some(ReadDocument::Pending(document.clone())))
+        Ok(ReadDocument::Pending(document.clone()))
     }
 
     pub(super) async fn verified_history_object(

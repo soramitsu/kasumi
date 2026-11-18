@@ -488,8 +488,19 @@ impl SelectedGeneration {
     /// The selection at a pinned root: every row read through this view
     /// belongs to the returned generation even while a newer one is reclaimed.
     pub fn load_at(view: &TenantReadView, family: &str, initial: &[&str]) -> Result<Self> {
-        let record = view.get(SELECTIONS, family.as_bytes(), SELECTION_BYTES)?;
-        Self::from_record(family, initial, record.as_deref())
+        Self::load_from_pages(view, family, initial)
+    }
+    pub(crate) fn load_from_pages(
+        view: &dyn crate::ordered_pages::PageSource,
+        family: &str,
+        initial: &[&str],
+    ) -> Result<Self> {
+        let record = view.read_row(SELECTIONS, family.as_bytes(), SELECTION_BYTES)?;
+        Self::from_record(
+            family,
+            initial,
+            record.as_ref().map(crate::ordered_pages::PageRow::as_bytes),
+        )
     }
     pub fn namespace(&self, role: usize) -> &str {
         &self.namespaces[role]
