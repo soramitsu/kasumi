@@ -87,13 +87,14 @@ impl DestinationConfig {
         }
         Ok(())
     }
-    pub(crate) fn open(
+    pub(crate) fn install(
         &self,
+        index: &mut kasumi_store::ExactBackupDestinationIndex,
         persistent_disk: Arc<kasumi_store::NodeDisk>,
         owner: Option<&crate::backup_destination_installation::InstalledOwner<'_>>,
-    ) -> Result<Arc<dyn BackupDestination>> {
+    ) -> Result<kasumi_types::BackupNamespaceBinding> {
         self.validate()?;
-        Ok(match self {
+        match self {
             Self::Filesystem {
                 directory,
                 max_bytes,
@@ -102,12 +103,12 @@ impl DestinationConfig {
                 owner
                     .context("filesystem backup requires a retained installed owner")?
                     .require_binding(&persistent_disk, namespace_binding)?;
-                Arc::new(FilesystemBackupDestination::open_enrolled(
+                index.install_filesystem(Arc::new(FilesystemBackupDestination::open_enrolled(
                     directory,
                     *max_bytes,
                     persistent_disk,
                     namespace_binding,
-                )?)
+                )?))
             }
             Self::S3 {
                 endpoint,
@@ -117,7 +118,7 @@ impl DestinationConfig {
                 credentials_file,
                 ca_certificate,
                 max_bytes,
-            } => Arc::new(S3BackupDestination::new(S3BackupConfig {
+            } => index.install_s3(Arc::new(S3BackupDestination::new(S3BackupConfig {
                 endpoint: endpoint.clone(),
                 region: region.clone(),
                 bucket: bucket.clone(),
@@ -130,8 +131,8 @@ impl DestinationConfig {
                     .map(|path| crate::runtime::read_bounded(path, 1 << 20))
                     .transpose()?,
                 max_bytes: *max_bytes,
-            })?),
-        })
+            })?)),
+        }
     }
 }
 pub(crate) fn validate_filesystem_location(directory: &std::path::Path) -> Result<()> {

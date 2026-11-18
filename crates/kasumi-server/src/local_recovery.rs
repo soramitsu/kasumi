@@ -1123,6 +1123,12 @@ impl Operator {
         let request = journal.status.request.clone();
         let outcome: GenerationRecord = decode(&self.store().get(GENERATIONS, request.target_incarnation.as_bytes())?.context("target generation reservation missing")?)?;
         ensure!(matches!(outcome, GenerationRecord::Reserved { operation_id } | GenerationRecord::Active { operation_id } if operation_id == request.operation_id), "target generation is permanently stopped or substituted");
+        let destinations = crate::backup_destination_installation::open_destinations(
+            &self.config.backup_destinations,
+            self.store().persistent_disk().clone(),
+            Some(&self.installed_owner),
+            None,
+        )?;
         let original_creation = if mode == TargetOpen::Materialize { self.prepare_database_group(journal).await? } else {
             ensure!(journal.target_preparation == TargetPreparation::MaterializationDispatched, "local target materialization was never dispatched");
             None
@@ -1201,10 +1207,8 @@ impl Operator {
                 .await?;
             let source = kasumi_engine::RestoreSource {
                 destination_alias: request.destination.clone(),
-                destination: self.config.backup_destinations[&request.destination].open(
-                    self.store().persistent_disk().clone(),
-                    Some(&crate::backup_destination_installation::InstalledOwner::Standalone(&self.installed_owner)),
-                )?,
+                destination: destinations.get(&request.destination)
+                    .context("local recovery destination is no longer installed")?.clone(),
                 keys: request.source_keys.provider(Arc::new(crate::runtime::file_secret))?,
                 timeout_ms: request.phase_timeout_ms,
             };
@@ -1232,14 +1236,11 @@ impl Operator {
                     && generation.restored_from().as_ref() == Some(&request.checkpoint),
                 "target materialization differs from exact local recovery checkpoint"
             );
-            for (alias, destination) in &self.config.backup_destinations {
-                if !initialized && alias == &request.destination {
+            for (alias, destination) in destinations {
+                if !initialized && alias == request.destination {
                     continue;
                 }
-                database.install_archive_destination(alias.clone(), destination.open(
-                    self.store().persistent_disk().clone(),
-                    Some(&crate::backup_destination_installation::InstalledOwner::Standalone(&self.installed_owner)),
-                )?)?;
+                database.install_archive_destination(alias, destination)?;
             }
             Ok::<_, anyhow::Error>(())
         })();
