@@ -57,6 +57,12 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
     fixture
         .db
         .install_archive_destination("second".into(), other.clone())?;
+    // Stopped writes give a recovery capture a stable source. Administration
+    // retains the right to take or abort that capture while the data is suspended.
+    fixture
+        .db
+        .administer(fixture.context.clone(), Operation::Suspend(true))
+        .await?;
     let state = fixture.db.engine.generation()?;
     let id = uuid::Uuid::new_v4();
     let intent = BackupSessionIntent {

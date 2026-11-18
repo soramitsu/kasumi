@@ -162,7 +162,6 @@ impl Database {
             || intent.revision != captured.state.revision
             || intent.principal != context.principal
             || intent.request_id != context.request_id
-            || captured.state.suspended
             || captured.state.retired
         {
             return Err(wrong_owner());
