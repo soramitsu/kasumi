@@ -6,13 +6,10 @@
 //! below the minimum fill merge with a sibling; a root with one child
 //! collapses.
 //!
-//! Everything an edit replaces is deleted by its publication: the tree's
-//! single live history owns those rows exclusively, and readers of older
-//! roots keep their pinned native view. A large edit stages its new rows in
-//! bounded batches before publication, each batch with a journal row naming
-//! what it wrote. The publication deletes the journal rows with the replaced
-//! rows, so a journal row that survives belongs to an edit that never
-//! published, and recovery deletes exactly the rows it names.
+//! Large edits journal created and displaced rows as they go. A single owner
+//! change publishes the edit with its root. Readers keep their pinned view
+//! while bounded cleanup consumes the selected or abandoned edit's journal.
+use super::edit_journal::{EditJournal, STAGE_ROWS};
 use super::*;
 use std::collections::BTreeSet;
 
@@ -29,20 +26,10 @@ impl Edit<'_> {
     }
 }
 
-/// Journal rows of staged, unpublished edits, across every page space of the
-/// encryption domain. Small: an edit's publication removes its rows.
-pub const EDIT_JOURNAL: &str = "kasumi.app.edit-journal";
-// One of a staged batch's sixteen native puts is its journal row.
-const STAGE_ROWS: usize = 15;
 const STAGE_BYTES: usize = 3 << 20;
-const MAX_JOURNAL_BYTES: usize = 64 << 10;
 
-/// The new root and the native writes that publish it. Unstaged, they are
-/// every new page and chunk plus deletions of what the edit replaced; staged,
-/// the new rows are already durable and the writes delete the replaced rows
-/// and the edit's journal. Either way they commit in one transaction with
-/// whatever names the new root, and their admitted workspace stays with this
-/// owner.
+/// The new root, writes that commit with its selector, and their admitted
+/// workspace. A staged edit publishes a single fixed-size owner decision.
 pub struct TreeEdit {
     pub root: TreeRoot,
     writes: Vec<WriteOp>,
@@ -116,12 +103,6 @@ struct Child {
     fresh: Option<(usize, usize)>,
 }
 
-struct Staging<'a> {
-    store: &'a TenantStore,
-    edit: [u8; 16],
-    journal: Vec<Vec<u8>>,
-}
-
 struct Editor<'a> {
     source: &'a dyn PageSource,
     space: &'a str,
@@ -131,7 +112,7 @@ struct Editor<'a> {
     pending_bytes: usize,
     // Selected rows, or rows this edit staged, that the new root no longer uses.
     obsolete: BTreeSet<Vec<u8>>,
-    staging: Option<Staging<'a>>,
+    staging: Option<EditJournal<'a>>,
     workspace: EditWorkspace,
 }
 
@@ -179,11 +160,7 @@ pub fn edit_tree_staged(
     base: &TreeRoot,
     edits: &[Edit<'_>],
 ) -> Result<TreeEdit> {
-    let staging = Staging {
-        store,
-        edit: *Uuid::new_v4().as_bytes(),
-        journal: Vec::new(),
-    };
+    let staging = EditJournal::new(store, space)?;
     run(store, space, base, edits, Some(staging))
 }
 
@@ -192,10 +169,10 @@ fn run<'a>(
     space: &'a str,
     base: &TreeRoot,
     edits: &[Edit<'_>],
-    staging: Option<Staging<'a>>,
+    staging: Option<EditJournal<'a>>,
 ) -> Result<TreeEdit> {
     check_edits(edits)?;
-    validate_record(space, &[], 0)?;
+    super::edit_journal::validate_space(space)?;
     let workspace = EditWorkspace::new(source.memory(), path_workspace(base.height() + 1))?;
     let mut editor = Editor {
         source,
@@ -211,18 +188,29 @@ fn run<'a>(
     let staged = editor
         .staging
         .as_ref()
-        .is_some_and(|staging| !staging.journal.is_empty());
+        .is_some_and(|journal| journal.batches > 0);
     if staged {
         editor.flush()?;
     }
     let mut put_bytes = 0u64;
-    let journal = editor
-        .staging
-        .take()
-        .map(|staging| staging.journal)
-        .unwrap_or_default();
     let mut writes = Vec::new();
-    writes.try_reserve_exact(editor.pending.len() + editor.obsolete.len() + journal.len())?;
+    let mut staged_batches = 0;
+    if let Some(journal) = &editor.staging
+        && journal.batches > 0
+    {
+        staged_batches = journal.batches;
+        let decision = journal.publish();
+        if let WriteOp::Put {
+            namespace,
+            key,
+            value,
+        } = &decision
+        {
+            put_bytes += (namespace.len() + key.len() + value.len()) as u64;
+        }
+        writes.push(decision);
+    }
+    writes.try_reserve_exact(editor.pending.len() + editor.obsolete.len())?;
     for (key, value) in std::mem::take(&mut editor.pending) {
         put_bytes += (space.len() + key.len() + value.len()) as u64;
         writes.push(WriteOp::Put {
@@ -237,13 +225,6 @@ fn run<'a>(
             key,
         });
     }
-    let staged_batches = journal.len() as u32;
-    for key in journal {
-        writes.push(WriteOp::Delete {
-            namespace: EDIT_JOURNAL.into(),
-            key,
-        });
-    }
     Ok(TreeEdit {
         root,
         writes,
@@ -251,59 +232,6 @@ fn run<'a>(
         staged_batches,
         _workspace: editor.workspace,
     })
-}
-
-fn journal_key(space: &str, edit: &[u8; 16], batch: u32) -> Vec<u8> {
-    let mut key = Vec::with_capacity(2 + space.len() + 20);
-    key.extend_from_slice(&(space.len() as u16).to_be_bytes());
-    key.extend_from_slice(space.as_bytes());
-    key.extend_from_slice(edit);
-    key.extend_from_slice(&batch.to_be_bytes());
-    key
-}
-
-/// Delete the rows of every staged edit that never published, one bounded
-/// transaction per journal row. Run under the publication gate before the
-/// first edit; returns the number of abandoned batches removed.
-pub fn recover_abandoned_edits(store: &Arc<TenantStore>) -> Result<u64> {
-    let view = store.read_view()?;
-    let mut journal = Vec::new();
-    view.visit(EDIT_JOURNAL, MAX_JOURNAL_BYTES, |key, value| {
-        journal.push((key.to_vec(), value.to_vec()));
-        Ok(())
-    })?;
-    view.close()?;
-    let mut removed = 0;
-    for (key, value) in journal {
-        let mut reader = Reader {
-            bytes: &key,
-            offset: 0,
-        };
-        let space_len = usize::from(reader.u16()?);
-        let space = std::str::from_utf8(reader.take(space_len)?)?;
-        let _edit = reader.array::<16>()?;
-        let _batch = reader.u32()?;
-        ensure!(reader.offset == key.len(), "invalid edit journal key");
-        let mut rows = Reader {
-            bytes: &value,
-            offset: 0,
-        };
-        let mut operations = Vec::new();
-        while rows.offset < value.len() {
-            let len = usize::from(rows.u16()?);
-            let row = rows.take(len)?;
-            ensure!(
-                matches!(row.first(), Some(&PAGE_ROW | &CHUNK_ROW))
-                    && operations.len() < STAGE_ROWS,
-                "invalid edit journal row"
-            );
-            operations.push(WriteOp::delete(space, row));
-        }
-        operations.push(WriteOp::delete(EDIT_JOURNAL, key));
-        store.write_batch(&operations)?;
-        removed += 1;
-    }
-    Ok(removed)
 }
 
 impl Editor<'_> {
@@ -335,7 +263,7 @@ impl Editor<'_> {
                         if page.len() > 1 {
                             break;
                         }
-                        self.obsolete_page(&root);
+                        self.obsolete_page(&root)?;
                         root = page.child(0);
                     }
                     return Ok(TreeRoot {
@@ -411,7 +339,7 @@ impl Editor<'_> {
             return Ok(None);
         }
         self.merge_underfull(&mut children)?;
-        self.obsolete_page(page_ref);
+        self.obsolete_page(page_ref)?;
         if children.is_empty() {
             return Ok(Some(Vec::new()));
         }
@@ -447,12 +375,12 @@ impl Editor<'_> {
                         entries.push(page.entry_bytes(index).to_vec());
                     }
                     Edit::Put(key, value) => {
-                        self.obsolete_value(&existing);
+                        self.obsolete_value(&existing)?;
                         entries.push(self.encode_value(key, value)?);
                         changed = true;
                     }
                     Edit::Delete(_) => {
-                        self.obsolete_value(&existing);
+                        self.obsolete_value(&existing)?;
                         changed = true;
                     }
                 }
@@ -470,7 +398,7 @@ impl Editor<'_> {
         if !changed {
             return Ok(None);
         }
-        self.obsolete_page(page_ref);
+        self.obsolete_page(page_ref)?;
         Ok(Some(self.write_level(0, &entries)?))
     }
 
@@ -501,8 +429,8 @@ impl Editor<'_> {
                 }
             }
             let (first, second) = (children[left].page, children[left + 1].page);
-            self.obsolete_page(&first);
-            self.obsolete_page(&second);
+            self.obsolete_page(&first)?;
+            self.obsolete_page(&second)?;
             let merged = self.write_level(level, &entries)?;
             children.splice(left..left + 2, merged);
             index = left;
@@ -571,43 +499,38 @@ impl Editor<'_> {
         self.workspace.charge(bytes as u64 + 64)?;
         self.pending_bytes += bytes;
         self.pending.insert(key, value);
+        self.flush_if_full()
+    }
+
+    fn flush_if_full(&mut self) -> Result<()> {
         if self.staging.is_some()
-            && (self.pending.len() >= STAGE_ROWS || self.pending_bytes >= STAGE_BYTES)
+            && (self.pending.len() + self.obsolete.len() >= STAGE_ROWS
+                || self.pending_bytes >= STAGE_BYTES)
         {
             self.flush()?;
         }
         Ok(())
     }
 
-    /// Stage every pending row with one journal row naming them.
     fn flush(&mut self) -> Result<()> {
-        let Some(staging) = self.staging.as_mut() else {
+        let Some(journal) = self.staging.as_mut() else {
             return Ok(());
         };
-        if self.pending.is_empty() {
+        if self.pending.is_empty() && self.obsolete.is_empty() {
             return Ok(());
         }
-        let key = journal_key(
+        let released = self.pending_bytes as u64
+            + 64 * self.pending.len() as u64
+            + self
+                .obsolete
+                .iter()
+                .map(|key| key.len() as u64 + 64)
+                .sum::<u64>();
+        journal.stage(
             self.space,
-            &staging.edit,
-            u32::try_from(staging.journal.len())?,
-        );
-        let mut names = Vec::new();
-        let mut operations = Vec::with_capacity(self.pending.len() + 1);
-        for (row, value) in std::mem::take(&mut self.pending) {
-            names.extend_from_slice(&(row.len() as u16).to_be_bytes());
-            names.extend_from_slice(&row);
-            operations.push(WriteOp::Put {
-                namespace: self.space.into(),
-                key: row,
-                value,
-            });
-        }
-        operations.push(WriteOp::put(EDIT_JOURNAL, key.clone(), names));
-        // The journal row commits with the rows it names.
-        staging.journal.push(key);
-        staging.store.write_batch(&operations)?;
-        let released = self.pending_bytes as u64 + 64 * (operations.len() as u64 - 1);
+            std::mem::take(&mut self.pending),
+            std::mem::take(&mut self.obsolete),
+        )?;
         self.workspace.release(released);
         self.pending_bytes = 0;
         Ok(())
@@ -640,27 +563,32 @@ impl Editor<'_> {
         Ok(Arc::new(decoded))
     }
 
-    fn obsolete_row(&mut self, key: Vec<u8>) {
+    fn obsolete_row(&mut self, key: Vec<u8>) -> Result<()> {
         // A row this edit wrote and never staged simply disappears.
         if let Some(value) = self.pending.remove(&key) {
             self.pending_bytes -= key.len() + value.len();
             self.workspace
                 .release((key.len() + value.len()) as u64 + 64);
         } else {
-            self.obsolete.insert(key);
-        }
-    }
-
-    fn obsolete_page(&mut self, page: &PageRef) {
-        self.obsolete_row(page.id.row_key().to_vec());
-    }
-
-    fn obsolete_value(&mut self, value: &ValueRef<'_>) {
-        if let ValueRef::Overflow(overflow) = value {
-            for chunk in 0..overflow.chunks() {
-                self.obsolete_row(overflow.chunk_key(chunk).to_vec());
+            let bytes = key.len() as u64 + 64;
+            if self.obsolete.insert(key) {
+                self.workspace.charge(bytes)?;
             }
         }
+        self.flush_if_full()
+    }
+
+    fn obsolete_page(&mut self, page: &PageRef) -> Result<()> {
+        self.obsolete_row(page.id.row_key().to_vec())
+    }
+
+    fn obsolete_value(&mut self, value: &ValueRef<'_>) -> Result<()> {
+        if let ValueRef::Overflow(overflow) = value {
+            for chunk in 0..overflow.chunks() {
+                self.obsolete_row(overflow.chunk_key(chunk).to_vec())?;
+            }
+        }
+        Ok(())
     }
 }
 

@@ -9,8 +9,8 @@
 //! between generations.
 //!
 //! A page space holds one live tree history at a time. An edit copies only the
-//! pages on changed paths and deletes the pages it replaced in the same native
-//! transaction; a read view pinned before that transaction keeps reading them.
+//! pages on changed paths. A large edit commits its reclamation decision with
+//! the new root. Earlier views keep reading their pinned native generation.
 //! A bulk-built generation is staged into a fresh page space through
 //! `NamespaceStage` and replaces a whole space by selection, after which the
 //! replaced space is retired and reclaimed in bounded batches.
@@ -19,6 +19,7 @@ use super::*;
 mod builder;
 mod cache;
 mod cursor;
+mod edit_journal;
 mod editor;
 #[cfg(test)]
 mod tests;
@@ -26,10 +27,8 @@ mod tests;
 pub use builder::{BulkBuilder, RowSink, stage_tree};
 pub use cache::{PageCache, PageCacheStats};
 pub use cursor::{Direction, TreeReader};
-pub use editor::{
-    EDIT_JOURNAL, Edit, EditWorkspace, TreeEdit, edit_tree, edit_tree_staged,
-    recover_abandoned_edits,
-};
+pub use edit_journal::{EDIT_JOURNAL, recover_abandoned_edits};
+pub use editor::{Edit, EditWorkspace, TreeEdit, edit_tree, edit_tree_staged};
 
 /// Plaintext bound of one page, header included.
 pub const MAX_PAGE_BYTES: usize = 32 << 10;

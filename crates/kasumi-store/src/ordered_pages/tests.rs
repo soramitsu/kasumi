@@ -1039,7 +1039,7 @@ fn large_batch(rng: &mut Rng, universe: u64) -> Vec<(Vec<u8>, Option<Vec<u8>>)> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_large_staged_edit_publishes_only_deletions() -> Result<()> {
+async fn a_large_staged_edit_publishes_one_decision_and_preserves_pinned_readers() -> Result<()> {
     let (_directory, scratch) = scratch();
     let stores = pair(FaultBackend::new(), scratch, true).await;
     let store = stores.application();
@@ -1053,19 +1053,30 @@ async fn a_large_staged_edit_publishes_only_deletions() -> Result<()> {
             .map(|(key, value)| Edit::Put(key, value.as_deref().unwrap()))
             .collect();
         let edit = edit_tree_staged(store, SPACE, &root, &edits)?;
-        assert!(edit.staged_batches() > 0);
-        assert_eq!(edit.put_bytes(), 0);
+        assert!(edit.staged_batches() > 1);
+        assert!(edit.put_bytes() < 128);
         assert!(
-            edit.writes()
-                .iter()
-                .all(|write| matches!(write, WriteOp::Delete { .. }))
+            matches!(edit.writes(), [WriteOp::Put { namespace, .. }] if namespace == edit_journal::OWNERS)
         );
+        let previous_view = store.read_view()?;
+        let previous_root = root;
         let mut writes = edit.writes().to_vec();
         writes.push(WriteOp::put(ROOTS, b"current", edit.root.encode()));
         stores.write_batch(
             &writes,
             &[WriteOp::put("position", b"applied", round.to_be_bytes())],
         )?;
+        assert_eq!(
+            recover_abandoned_edits(store)?,
+            u64::from(edit.staged_batches())
+        );
+        assert_eq!(space_rows(store, edit_journal::OWNERS)?, 0);
+        assert_eq!(space_rows(store, edit_journal::BATCHES)?, 0);
+        assert_eq!(
+            read_all(&previous_view, SPACE, previous_root)?,
+            expected_range(&model, Bound::Unbounded, Direction::Forward)
+        );
+        previous_view.close()?;
         for (key, value) in batch {
             model.insert(key, value.unwrap());
         }
@@ -1109,7 +1120,9 @@ async fn sampled_crash_cuts_of_a_staged_edit_recover_old_or_new_without_leaks() 
             .map(|(key, value)| Edit::Put(key, value.as_deref().unwrap()))
             .collect();
         let edit = edit_tree_staged(store, SPACE, &old_root, &edits)?;
-        publish(stores, &edit, 2)
+        publish(stores, &edit, 2)?;
+        recover_abandoned_edits(store)?;
+        Ok(())
     };
     let measurement = starting.crash();
     let measured = pair(measurement.clone(), scratch.clone(), false).await;
@@ -1130,6 +1143,8 @@ async fn sampled_crash_cuts_of_a_staged_edit_recover_old_or_new_without_leaks() 
         let reopened = pair(crashed, scratch.clone(), false).await;
         let store = reopened.application();
         recover_abandoned_edits(store)?;
+        assert_eq!(space_rows(store, edit_journal::OWNERS)?, 0);
+        assert_eq!(space_rows(store, edit_journal::BATCHES)?, 0);
         assert_eq!(space_rows(store, EDIT_JOURNAL)?, 0);
         let view = store.read_view()?;
         let root = current_root(&view)?.unwrap();
@@ -1147,5 +1162,33 @@ async fn sampled_crash_cuts_of_a_staged_edit_recover_old_or_new_without_leaks() 
         view.close()?;
     }
     assert!(old > 0 && new > 0);
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn aborted_legacy_edit_journal_reclaims_only_its_declared_rows() -> Result<()> {
+    let (_directory, scratch) = scratch();
+    let stores = pair(FaultBackend::new(), scratch, true).await;
+    let store = stores.application();
+    let selected = PageId::fresh().row_key();
+    let abandoned = PageId::fresh().row_key();
+    let mut key = Vec::from((SPACE.len() as u16).to_be_bytes());
+    key.extend_from_slice(SPACE.as_bytes());
+    key.extend_from_slice(Uuid::new_v4().as_bytes());
+    key.extend_from_slice(&0u32.to_be_bytes());
+    let mut rows = Vec::from((abandoned.len() as u16).to_be_bytes());
+    rows.extend_from_slice(&abandoned);
+    store.write_batch(&[
+        WriteOp::put(SPACE, selected, b"selected"),
+        WriteOp::put(SPACE, abandoned, b"unpublished"),
+        WriteOp::put(EDIT_JOURNAL, key, rows),
+    ])?;
+    assert_eq!(recover_abandoned_edits(store)?, 1);
+    assert_eq!(recover_abandoned_edits(store)?, 0);
+    assert!(store.get_bounded(SPACE, &abandoned, 64)?.is_none());
+    assert_eq!(
+        store.get_bounded(SPACE, &selected, 64)?.unwrap().as_bytes(),
+        b"selected"
+    );
     Ok(())
 }
