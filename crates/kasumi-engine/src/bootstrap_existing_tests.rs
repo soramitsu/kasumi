@@ -2210,6 +2210,10 @@ async fn cross_version_rollback_harness_writes_a_converted_and_a_by_reference_st
 /// on this same memory ledger throughout the successful reopen.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "explicit original tenant disk and memory capacity fixture"]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture preserves the original typed storage and recovery failure."
+)]
 async fn original_reopen_streams_persisted_documents_under_continuing_pressure()
 -> crate::test_fixture_failure::FixtureResult<()> {
     pressure_reopen(256, 512 << 10, 1, None).await
@@ -2219,6 +2223,10 @@ async fn original_reopen_streams_persisted_documents_under_continuing_pressure()
 /// under its 2 GiB logical / 3 GiB snapshot / 16 GiB node budgets.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "explicit large on-disk original tenant recovery run"]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture preserves the original typed storage and recovery failure."
+)]
 async fn original_reopen_at_measured_tenant_size_and_a_hundred_concurrent_writes()
 -> crate::test_fixture_failure::FixtureResult<()> {
     pressure_reopen(133_649, 14_424, 128, Some(2_400_000_000)).await
@@ -2316,7 +2324,9 @@ async fn pressure_reopen(
             high = mid - 1;
         }
     }
-    let leave = remaining_budget.unwrap_or(legacy - 1);
+    // Manifest reads can release short-lived storage work between the probe
+    // and actual reservation. Keep a real 32 MiB margin for this smaller image.
+    let leave = remaining_budget.unwrap_or_else(|| legacy.checked_sub(32 << 20).unwrap());
     let held_bytes = low
         .checked_sub(leave)
         .expect("fixture can retain its competitor");
@@ -2325,11 +2335,18 @@ async fn pressure_reopen(
         admission.reserve(legacy, None).err().unwrap().code,
         ErrorCode::ResourceExhausted
     );
+    let before = admission.snapshot();
     let workspace = OriginalRecoveryWorkspace::reserve(&fixture.stores, admission)?;
-    assert!(workspace.metered_image.is_some());
+    let after = admission.snapshot();
     eprintln!(
-        "admitted original reopen rows={rows} logical_bytes={logical_bytes} snapshot_bytes={snapshot_bytes} legacy={legacy} headroom={leave} held={held_bytes}"
+        "admitted original reopen rows={rows} logical_bytes={logical_bytes} snapshot_bytes={snapshot_bytes} legacy={legacy} headroom={leave} held={held_bytes} ordinary_before_hold={low} reserved_before={} reserved_after={} rss_before={} rss_after={} metered_sha256={:?}",
+        before.reserved_bytes,
+        after.reserved_bytes,
+        before.resident_bytes,
+        after.resident_bytes,
+        workspace.metered_image,
     );
+    assert!(workspace.metered_image.is_some());
     let reopened = open_existing_local(
         fixture.stores.clone(),
         fixture.audit.clone(),
