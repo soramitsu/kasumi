@@ -358,7 +358,8 @@ def functional_gates(jobs, python_executable):
         ("network-features", cargo + ["tree", "--locked", "-p", "kasumi-bench", "--no-default-features",
          "--features", "network", "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("network-driver", cargo + ["build", "--release", "-p", "kasumi-bench", "--no-default-features",
-         "--features", "network", "--bins"] + locked + encoded),
+         "--features", "network", "--bin", "kasumi-bench-network", "--bin", "kasumi-bench-capacity"]
+         + locked + encoded),
         ("production-features", cargo + ["tree", "--locked", "-p", "kasumi-server", "--no-default-features",
          "--edges", "normal,build", "--prefix", "none", "--format", "{p} {f}"]),
         ("production", cargo + ["build", "--release", "-p", "kasumi-server", "--bins", "--no-default-features"]

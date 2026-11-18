@@ -293,6 +293,10 @@ class ReleaseGateTests(unittest.TestCase):
             self.assertTrue(missing["errors"])
 
     def test_compiled_fixture_or_test_artifact_cannot_pass_production_driver(self):
+        command = dict(release_gate.functional_gates(2, sys.executable))["network-driver"]
+        self.assertNotIn("--bins", command)
+        self.assertEqual([command[i + 1] for i, value in enumerate(command) if value == "--bin"],
+                         ["kasumi-bench-network", "kasumi-bench-capacity"])
         for violation in ("test-utils", "embedded-fixture", "loopback-fixture", "test-artifact", "missing-inventory"):
             with self.subTest(violation=violation):
                 result = {"exit_code": 0,
