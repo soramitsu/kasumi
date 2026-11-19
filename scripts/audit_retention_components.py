@@ -231,6 +231,7 @@ def replay(evidence, selected, perform):
                     str(evidence / "target" / path),
                     "--exact",
                     test,
+                    *(["--include-ignored"] if case == "receipts" else []),
                     "--test-threads=1",
                     "--show-output",
                     "--format",
