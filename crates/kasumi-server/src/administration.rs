@@ -467,11 +467,13 @@ impl Administration {
 
     pub(crate) fn security_audit_workspace(
         &self,
+        separately_admitted_page: bool,
     ) -> kasumi_types::Result<kasumi_engine::admission::Reservation> {
         // Decoded records, their encoded page and transport response coexist.
         // This explicit charge also covers installations with tiny document limits.
+        let copies = if separately_admitted_page { 2 } else { 4 };
         self.admission.reserve(
-            (4 * kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES) as u64,
+            (copies * kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES) as u64,
             None,
         )
     }

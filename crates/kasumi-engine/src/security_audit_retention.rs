@@ -4,9 +4,10 @@ use super::*;
 use kasumi_store::{AuditSegmentBuilder, PreparedAuditSegment};
 use kasumi_types::{
     AuditArchiveReference, AuditCapacity, AuditRetentionState, ErrorCode, MAX_AUDIT_EVENT_BYTES,
-    MAX_AUDIT_SEGMENT_BYTES, SecurityAuditCursor, SecurityAuditPage, SecurityAuditPruneRequest,
-    SecurityAuditPruneResult, SecurityAuditRetirement, SecurityAuditStatus, audit_record_sha256,
-    exact_json::decode_exact,
+    MAX_AUDIT_SEGMENT_BYTES, SecurityAuditArchiveCursor, SecurityAuditArchivePage,
+    SecurityAuditArchivePageRequest, SecurityAuditCursor, SecurityAuditPage,
+    SecurityAuditPruneRequest, SecurityAuditPruneResult, SecurityAuditRetirement,
+    SecurityAuditStatus, audit_record_sha256, exact_json::decode_exact,
 };
 use sha2::Digest;
 use std::time::{Duration, Instant};
@@ -403,7 +404,10 @@ impl SecurityAudit {
     }
 
     /// The installed writer owns the blocking observation until its real join.
-    async fn read_metadata<T: Send + 'static>(&self, read: fn(&Self) -> Result<T>) -> Result<T> {
+    async fn read_metadata<T: Send + 'static>(
+        &self,
+        read: impl FnOnce(&Self) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
         self.run_owned(move |work, id| async move {
             let audit = work.writer.clone();
             let joined = tokio::task::spawn_blocking(move || {
@@ -732,12 +736,116 @@ impl SecurityAudit {
         Ok(())
     }
 
+    /// The cursor, decoded archive rows and their charge belong to the writer
+    /// until its blocking reader joins, including after caller cancellation.
+    pub async fn read_archive_page(
+        &self,
+        request: SecurityAuditArchivePageRequest,
+    ) -> Result<crate::AdmittedOutput<SecurityAuditArchivePage>> {
+        request.validate()?;
+        let mut charge = self.writer.admission.reserve(
+            (2 * kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES) as u64,
+            None,
+        )?;
+        charge.retain_workspace();
+        self.read_metadata(move |audit| {
+            let page = audit.archive_page_at_cursor(request)?;
+            Ok(crate::AdmittedOutput::new(page, Arc::new(charge)))
+        })
+        .await
+    }
+
+    fn archive_page_at_cursor(
+        &self,
+        request: SecurityAuditArchivePageRequest,
+    ) -> Result<SecurityAuditArchivePage> {
+        let state = self.status()?;
+        let cursor = request.cursor.unwrap_or(SecurityAuditArchiveCursor {
+            stream_id: state.position.stream_id,
+            next_index: 0,
+            through_index: state.archive_segments,
+            snapshot_head: state
+                .position
+                .archive_head
+                .as_ref()
+                .map(|archive| archive.object.clone()),
+            previous: None,
+        });
+        anyhow::ensure!(
+            cursor.stream_id == state.position.stream_id
+                && cursor.through_index <= state.archive_segments,
+            kasumi_types::Error::new(
+                ErrorCode::InvalidArgument,
+                "archive cursor belongs to another stream or future range"
+            )
+        );
+        let snapshot_head = if cursor.through_index == 0 {
+            None
+        } else {
+            Some(self.archive_reference(cursor.through_index - 1)?.object)
+        };
+        anyhow::ensure!(
+            cursor.snapshot_head == snapshot_head,
+            kasumi_types::Error::new(
+                ErrorCode::InvalidArgument,
+                "audit archive snapshot head changed"
+            )
+        );
+        let limit = u64::from(request.limit).min(cursor.through_index - cursor.next_index) as u16;
+        let archives = if limit == 0 {
+            Vec::new()
+        } else {
+            self.archive_page_admitted(cursor.next_index, limit)?
+        };
+        anyhow::ensure!(
+            archives
+                .first()
+                .is_none_or(|first| first.previous == cursor.previous),
+            kasumi_types::Error::new(
+                ErrorCode::InvalidArgument,
+                "audit archive cursor chain changed"
+            )
+        );
+        let next_index = cursor
+            .next_index
+            .checked_add(archives.len() as u64)
+            .ok_or_else(|| anyhow::anyhow!("archive index overflow"))?;
+        if next_index == cursor.through_index {
+            anyhow::ensure!(
+                archives
+                    .last()
+                    .map(|archive| &archive.object)
+                    .or(cursor.previous.as_ref())
+                    == cursor.snapshot_head.as_ref(),
+                kasumi_types::Error::new(
+                    ErrorCode::InvalidArgument,
+                    "audit archive page differs from its snapshot head"
+                )
+            );
+        }
+        Ok(SecurityAuditArchivePage {
+            stream_id: cursor.stream_id,
+            next_index,
+            through_index: cursor.through_index,
+            snapshot_head: cursor.snapshot_head,
+            archives,
+        })
+    }
+
     pub fn archive_page(&self, first_index: u64, limit: u16) -> Result<Vec<AuditArchiveReference>> {
+        let _work = self.begin()?;
+        self.archive_page_admitted(first_index, limit)
+    }
+
+    fn archive_page_admitted(
+        &self,
+        first_index: u64,
+        limit: u16,
+    ) -> Result<Vec<AuditArchiveReference>> {
         ensure!(
             (1..=256).contains(&limit),
             "archive page limit must be 1..256"
         );
-        let _work = self.begin()?;
         let state = self
             .writer
             .sequence
