@@ -219,6 +219,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                         )?;
                     }
                     kasumi_query::FieldPredicate::Equals { .. }
+                    | kasumi_query::FieldPredicate::In { .. }
                     | kasumi_query::FieldPredicate::Range { .. }
                         if layout >= kasumi_store::application_manifest::FIELD_VALUES_LAYOUT =>
                     {

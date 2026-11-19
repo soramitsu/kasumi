@@ -13,6 +13,10 @@ pub enum FieldPredicate<'a> {
         value: &'a Value,
         kind: ScalarType,
     },
+    In {
+        values: &'a [Value],
+        kind: ScalarType,
+    },
     Range {
         lower: Bound<&'a Value>,
         upper: Bound<&'a Value>,

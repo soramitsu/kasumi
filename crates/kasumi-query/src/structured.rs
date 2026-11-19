@@ -855,9 +855,15 @@ impl Structured {
                 upper: *upper,
                 kind: index.kind,
             },
-            Test::In(_) => return Ok(None),
+            Test::In(values) => crate::FieldPredicate::In {
+                values,
+                kind: index.kind,
+            },
         };
-        let ordered_by_value = matches!(predicate, crate::FieldPredicate::Range { .. });
+        let ordered_by_value = matches!(
+            predicate,
+            crate::FieldPredicate::Range { .. } | crate::FieldPredicate::In { .. }
+        );
         let mut ids = IdSet::new();
         let available = source.visit_field_posting(field, predicate, cancellation, |id| {
             cancellation.check()?;
@@ -868,7 +874,7 @@ impl Structured {
                 2048,
                 crate::allocation::string_clone_bytes(id)?,
             )?)?;
-            // A range visits one ID-ordered posting per scalar value. A
+            // Range and membership visit one ID-ordered posting per distinct scalar. A
             // non-array field can contribute an ID to only one such posting.
             let invalid_order = if ordered_by_value {
                 ids.contains(id)

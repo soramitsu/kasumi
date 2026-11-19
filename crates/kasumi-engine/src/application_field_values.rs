@@ -109,6 +109,34 @@ pub(crate) fn visit_value_ids(
             let (at, found) = find(value, kind)?;
             (at, at + u64::from(found))
         }
+        FieldPredicate::In { values, kind } => {
+            // Input count is limited by the wire contract. Equal decimal
+            // spellings match the same dictionary rank. Read that posting once.
+            let mut ranks = [0u64; kasumi_types::MAX_FILTER_IN_VALUES];
+            ensure!(
+                values.len() <= ranks.len(),
+                "too many indexed membership values"
+            );
+            let mut matched = 0;
+            for value in values {
+                let (rank, found) = find(value, kind)?;
+                if found {
+                    ranks[matched] = rank;
+                    matched += 1;
+                }
+            }
+            let ranks = &mut ranks[..matched];
+            ranks.sort_unstable();
+            let mut previous = None;
+            for &rank in ranks.iter() {
+                check()?;
+                if previous != Some(rank) && !visit_rank(reader, &field, rank, &mut visit)? {
+                    break;
+                }
+                previous = Some(rank);
+            }
+            return Ok(());
+        }
         FieldPredicate::Range { lower, upper, kind } => {
             // Missing and null sort ahead of every comparable scalar.
             let null = serde_json::Value::Null;
@@ -135,25 +163,34 @@ pub(crate) fn visit_value_ids(
     };
     for rank in start..end {
         check()?;
-        let prefix = ranked(&field, rank, 2);
-        let mut keep_going = true;
-        reader.scan(
-            Bound::Included(&prefix),
-            Direction::Forward,
-            &mut |key, value| {
-                let Some(id) = key.strip_prefix(prefix.as_slice()) else {
-                    return Ok(false);
-                };
-                ensure!(value.is_empty(), "field posting carries a payload");
-                let id = std::str::from_utf8(id)?;
-                kasumi_types::validate_name(id)?;
-                keep_going = visit(id)?;
-                Ok(keep_going)
-            },
-        )?;
-        if !keep_going {
+        if !visit_rank(reader, &field, rank, &mut visit)? {
             break;
         }
     }
     Ok(())
+}
+
+fn visit_rank(
+    reader: &TreeReader<'_>,
+    field: &[u8],
+    rank: u64,
+    visit: &mut impl FnMut(&str) -> Result<bool>,
+) -> Result<bool> {
+    let prefix = ranked(field, rank, 2);
+    let mut keep_going = true;
+    reader.scan(
+        Bound::Included(&prefix),
+        Direction::Forward,
+        &mut |key, value| {
+            let Some(id) = key.strip_prefix(prefix.as_slice()) else {
+                return Ok(false);
+            };
+            ensure!(value.is_empty(), "field posting carries a payload");
+            let id = std::str::from_utf8(id)?;
+            kasumi_types::validate_name(id)?;
+            keep_going = visit(id)?;
+            Ok(keep_going)
+        },
+    )?;
+    Ok(keep_going)
 }

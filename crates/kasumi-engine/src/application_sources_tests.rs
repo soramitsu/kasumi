@@ -1801,6 +1801,50 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 .map_err(crate::index_source::into_anyhow)?;
             assert_eq!(ids, expected_ids, "indexed range for field {ordinal}");
         }
+        for (values, expected) in [
+            (
+                vec![hi.clone(), lo.clone(), hi.clone()],
+                vec!["alpha", "point"],
+            ),
+            (vec![lo.clone(), lo.clone()], vec!["point"]),
+            (vec![serde_json::json!("absent")], vec![]),
+            (vec![], vec![]),
+        ] {
+            let mut query = kasumi_types::QueryRequest::new("docs");
+            query.filter = kasumi_types::Filter::new().is_in("/value", values.clone());
+            let mut rows = Vec::new();
+            assert!(
+                docs.visit_field_posting(
+                    3,
+                    kasumi_query::FieldPredicate::In {
+                        values: &values,
+                        kind: kasumi_types::ScalarType::String,
+                    },
+                    &cancellation,
+                    |id| {
+                        rows.push(id.to_owned());
+                        Ok(())
+                    }
+                )
+                .map_err(crate::index_source::into_anyhow)?
+            );
+            rows.sort();
+            assert_eq!(rows, expected);
+            let mut memory =
+                kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
+            let ids = reopened
+                .indexes
+                .indexed_candidate_ids(
+                    &docs,
+                    &query,
+                    &reopened.state.limits,
+                    &cancellation,
+                    &mut memory,
+                )
+                .map_err(crate::index_source::into_anyhow)?;
+            assert_eq!(ids, expected);
+        }
+
         for (needle, expected) in [("persisted", 1), ("other", 0)] {
             let value = serde_json::json!(needle);
             let mut rows = Vec::new();
