@@ -90,12 +90,16 @@ impl DocumentReads {
         self.shared.map_or(Ok(()), SharedRead::finish)
     }
 
+    pub(crate) fn deadline_error() -> Error {
+        Error::new(
+            ErrorCode::ResourceExhausted,
+            "document read deadline exceeded",
+        )
+    }
+
     fn check_deadline(&self) -> Result<()> {
         if Instant::now() >= self.deadline {
-            return Err(Error::new(
-                ErrorCode::ResourceExhausted,
-                "document read deadline exceeded",
-            ));
+            return Err(Self::deadline_error());
         }
         Ok(())
     }

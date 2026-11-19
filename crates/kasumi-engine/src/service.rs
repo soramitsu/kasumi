@@ -967,13 +967,12 @@ struct SnapshotWork {
     registration: Arc<WorkRegistration>,
 }
 struct SnapshotOutput {
-    response: Result<SnapshotReadResponse>,
+    response: SnapshotReadResponse,
     memory: QueryMemory<Reservation>,
     _registration: Arc<WorkRegistration>,
 }
 impl SnapshotOutput {
     fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotReadResponse>> {
-        self.response.as_ref().map_err(|error| error.clone())?;
         self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
         // Retain the evaluation's logical peak, which covers the response it
         // holds, not the pre-admitted maximum workspace: the result size is
@@ -986,24 +985,21 @@ impl SnapshotOutput {
         reservation.retain(peak);
         let charge = Arc::new(reservation);
         Ok(RegisteredOutput {
-            response: AdmittedOutput::new(
-                self.response.expect("checked snapshot response"),
-                charge,
-            ),
+            response: AdmittedOutput::new(self.response, charge),
             _registration: self._registration,
         })
     }
 }
 impl SnapshotWork {
-    fn run(mut self) -> SnapshotOutput {
+    fn run(mut self) -> Result<SnapshotOutput> {
         let generation = self.generation.clone();
         let response =
-            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads));
-        SnapshotOutput {
+            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads))?;
+        Ok(SnapshotOutput {
             response,
             memory: self.memory,
             _registration: self.registration,
-        }
+        })
     }
 
     fn evaluate(&mut self, reads: &DocumentReads) -> Result<SnapshotReadResponse> {
@@ -2850,14 +2846,17 @@ impl Database {
             )) => result.map_err(|_| query_admission::deadline_error())??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let worker = tokio::task::spawn_blocking(move || work.run());
+        let worker = self.admission().memory().read_child(
+            cancellation.clone(),
+            Some(DocumentReads::deadline_error),
+            move |_| work.run(),
+        );
         let mut output = tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| query_admission::deadline_error())?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot worker failed"))?,
+                .map_err(|_| query_admission::deadline_error())??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        let response = output.response.as_mut().map_err(|error| error.clone())?;
+        let response = &mut output.response;
         let max_result_bytes = state.limits.max_result_bytes;
         drop(generation);
         if let Some(bounds) = time_bounds {

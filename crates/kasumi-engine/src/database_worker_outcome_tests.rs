@@ -231,6 +231,50 @@ fn panic_issue(failure: &DrainFailure, component: &str) -> kasumi_types::drain::
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[allow(
     clippy::result_large_err,
+    reason = "The native reopen fixture retains the original drain failure."
+)]
+async fn aborted_snapshot_retention_waiter_leaves_its_actual_panic_with_the_core()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    let fixture = Fixture::new("snapshot-retention").await?;
+    let database = fixture.database.clone();
+    let (hook, entered, mut release) = held_hook(true);
+    let request = tokio::spawn(async move {
+        database
+            .snapshot_retention_work(QueryCancellation::default(), move |_| {
+                hook();
+                Ok(())
+            })
+            .await
+    });
+    entered.await?;
+    request.abort();
+    assert!(request.await.unwrap_err().is_cancelled());
+    let admission = fixture.database.admission();
+    assert_eq!(admission.memory().blocking_children().running(), 1);
+    let mut drain = Box::pin(admission.drain_blocking_children());
+    std::future::poll_fn(|cx| {
+        assert!(drain.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    drop(drain);
+    release.release();
+    let first = admission.drain_blocking_children().await.unwrap_err();
+    let panic = panic_issue(&first, "admitted blocking child");
+    let repeated = admission.drain_blocking_children().await.unwrap_err();
+    assert!(
+        repeated
+            .issues()
+            .iter()
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &panic))
+    );
+    fixture.database.shutdown().await?;
+    fixture.release().await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
     reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
 )]
 async fn idle_audit_timer_leaves_proposal_and_shared_preparation_capacity_free()

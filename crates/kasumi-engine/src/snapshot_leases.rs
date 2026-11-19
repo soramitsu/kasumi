@@ -29,7 +29,7 @@ impl Database {
     // Publication and selection share a mutex. Waiting for it, walking a changed
     // payload, and dropping retained roots run on owned blocking work, so they
     // cannot starve the async replication and credential-renewal tasks.
-    async fn snapshot_retention_work<T: Send + 'static>(
+    pub(super) async fn snapshot_retention_work<T: Send + 'static>(
         &self,
         cancellation: QueryCancellation,
         action: impl FnOnce(Arc<crate::TenantEngine>) -> Result<T> + Send + 'static,
@@ -37,17 +37,18 @@ impl Database {
         self.access()?;
         let registration = self.work.begin(cancellation.clone())?;
         let engine = self.engine.clone();
-        let worker = tokio::task::spawn_blocking(move || {
-            let result = action(engine);
-            (result, registration)
-        });
-        let (result, _registration) = tokio::select! {
+        let worker = self
+            .admission()
+            .memory()
+            .read_child(cancellation.clone(), None, move |_| {
+                action(engine).map(|output| (output, registration))
+            });
+        let (output, _registration) = tokio::select! {
             result = tokio::time::timeout(Duration::from_secs(5), worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot retention deadline exceeded"))?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot retention worker failed"))?,
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot retention deadline exceeded"))??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
-        result
+        Ok(output)
     }
 
     pub async fn open_snapshot_lease(
@@ -286,11 +287,14 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        let worker = tokio::task::spawn_blocking(move || work.run());
+        let worker = self.admission().memory().read_child(
+            cancellation.clone(),
+            Some(DocumentReads::deadline_error),
+            move |_| work.run(),
+        );
         let output = tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot page deadline exceeded"))?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot page worker failed"))?,
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot page deadline exceeded"))??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         let output = output.into_admitted()?;
@@ -436,11 +440,14 @@ impl Database {
             memory: input.memory,
             registration,
         };
-        let worker = tokio::task::spawn_blocking(move || work.run());
+        let worker = self.admission().memory().read_child(
+            cancellation.clone(),
+            Some(DocumentReads::deadline_error),
+            move |_| work.run(),
+        );
         let output = tokio::select! {
             result = tokio::time::timeout_at(deadline, worker) => result
-                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot scan deadline exceeded"))?
-                .map_err(|_| Error::new(ErrorCode::Unavailable, "snapshot scan worker failed"))?,
+                .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot scan deadline exceeded"))??,
             _ = cancelled(&cancellation) => return Err(cancelled_error()),
         };
         let output = output.into_admitted()?;
@@ -468,33 +475,32 @@ struct ScanWork {
     registration: Arc<WorkRegistration>,
 }
 struct ScanOutput {
-    response: Result<SnapshotScanPage>,
+    response: SnapshotScanPage,
     memory: kasumi_query::QueryMemory<Reservation>,
     _registration: Arc<WorkRegistration>,
 }
 impl ScanOutput {
     fn into_admitted(mut self) -> Result<RegisteredOutput<SnapshotScanPage>> {
-        self.response.as_ref().map_err(|error| error.clone())?;
         self.memory.reserve(OUTPUT_CHARGE_BYTES)?;
         let mut reservation = self.memory.into_workspace();
         reservation.retain_workspace();
         let charge = Arc::new(reservation);
         Ok(RegisteredOutput {
-            response: AdmittedOutput::new(self.response.expect("checked scan response"), charge),
+            response: AdmittedOutput::new(self.response, charge),
             _registration: self._registration,
         })
     }
 }
 impl ScanWork {
-    fn run(mut self) -> ScanOutput {
+    fn run(mut self) -> Result<ScanOutput> {
         let generation = self.generation.clone();
         let response =
-            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads));
-        ScanOutput {
+            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads))?;
+        Ok(ScanOutput {
             response,
             memory: self.memory,
             _registration: self.registration,
-        }
+        })
     }
     fn evaluate(&mut self, reads: &DocumentReads) -> Result<SnapshotScanPage> {
         let state = &self.generation.state;
