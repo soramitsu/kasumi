@@ -236,7 +236,7 @@ class DevStandaloneTests(unittest.TestCase):
         (self.root / "profile.json").write_text(json.dumps(profile(self.root)))
         # Popen can return before the shell has finished writing its PID file.
         # Let each simulated response wait for that child's completed startup.
-        for name in ("server.ready", "watcher.ready"):
+        for name in ("server.ready", "default.json.ready", "operator.json.ready"):
             os.mkfifo(self.root / name, 0o600)
         for name in ("kasumid", "kasumictl"):
             binary = self.root / name
@@ -245,11 +245,13 @@ class DevStandaloneTests(unittest.TestCase):
                               f"&& cp {self.root}/profile.json \"$4/profiles/operator.json\";;\n"
                               f"serve) echo $$ > {self.root}/server.pid; "
                               f"echo ready > {self.root}/server.ready; exec sleep 30;;\n"
-                              f"credential) echo $$ > {self.root}/watcher.pid; "
-                              f"echo ready > {self.root}/watcher.ready; exec sleep 30;;\n"
+                              'credential) name=${3##*/}; '
+                              f'echo $$ > "{self.root}/$name.pid"; '
+                              f'echo ready > "{self.root}/$name.ready"; exec sleep 30;;\n'
                               f"--profile) read ready < {self.root}/server.ready; "
                               "echo '{\"ok\":true,\"result\":{\"collections\":[]}}';;\n"
-                              f"*) read ready < {self.root}/watcher.ready; "
+                              f"*) read ready < {self.root}/default.json.ready; "
+                              f"read ready < {self.root}/operator.json.ready; "
                               "echo 'create refused' >&2; exit 1;;\nesac\n")
             binary.chmod(0o700)
         definition = self.root / "claims.collection.json"
@@ -257,7 +259,7 @@ class DevStandaloneTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "create refused"):
             dev.start(self.arguments(collection=[str(definition)]))
         self.assertFalse((self.root / "kasumi").exists())
-        for name in ("server.pid", "watcher.pid"):
+        for name in ("server.pid", "default.json.pid", "operator.json.pid"):
             with self.subTest(process=name), self.assertRaises(ProcessLookupError):
                 os.kill(int((self.root / name).read_text()), 0)
 
