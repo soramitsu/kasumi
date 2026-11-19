@@ -209,7 +209,10 @@ The structural workload validators enforce:
   snapshot, compaction, restart, filesystem/S3 backup/restore, retained-read,
   and HA follower-replacement operation needs exhaustive contiguous integrity
   batches of at most 256 documents, matching hashes, complete bytes, and
-  multiple actual RSS/disk/workspace samples within recorded limits.
+  multiple actual RSS/disk/workspace samples within recorded limits. Each operation
+  references its original installed `verify` events and integrity journal. The
+  verifier replays each prefix and binds the complete observed digest to the
+  measured corpus, driver, platform and integrity file.
 - A full-corpus `gzip-9` compression measurement whose output/input ratio is at
   least 0.75. Reference the capacity driver's original `measure` events journal.
   The verifier matches its seed, document count, canonical size and measured output

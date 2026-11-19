@@ -193,24 +193,37 @@ class AcceptanceTests(unittest.TestCase):
 
     def capacity(self):
         size = 4 << 30
-        integrity = self.lines("integrity.jsonl", [{"first": first, "documents": 256,
-            "canonical_bytes": 256 << 20, "expected_sha256": "a" * 64, "observed_sha256": "a" * 64}
-            for first in range(0, 4096, 256)])
+        plan = {"run_id": "00000000-0000-0000-0000-000000000001", "collection": "capacity",
+                "seed_sha256": "b" * 64, "documents": 4096, "document_bytes": 1 << 20,
+                "batch_documents": 3}
+        batches = [{"first": first, "documents": min(3, 4096 - first),
+                    "canonical_bytes": min(3, 4096 - first) << 20,
+                    "expected_sha256": "a" * 64, "observed_sha256": "a" * 64}
+                   for first in range(0, 4096, 3)]
+        integrity = self.lines("integrity.jsonl", batches)
+        verify_start = {"event": "started", "format": 1, "mode": "verify", "corpus": plan,
+                        "expected_canonical_bytes": size, "endpoint": "https://localhost:9444",
+                        "configuration_sha256": "1" * 64, "executable_sha256": "d" * 64,
+                        "os": "linux", "architecture": "aarch64", "credential_binding_claims": {},
+                        "credential_binding_scope": "fixture", "scope": "fixture", "generator": "fixture"}
+        prefixes = [r["first"] + r["documents"] for r in batches]
+        verification = self.lines("verification.jsonl", [verify_start,
+            *[{"event": "verified_prefix", "documents": n, "canonical_bytes": n << 20} for n in prefixes],
+            {"event": "passed", "documents": 4096, "canonical_bytes": size, "expected_sha256": "f" * 64,
+             "observed_sha256": "f" * 64, "integrity_sha256": integrity["sha256"]}])
         limits = {"rss_bytes": 1 << 30, "allocated_disk_bytes": 8 << 30, "maintenance_workspace_bytes": 64 << 20}
         resources = self.lines("resources.jsonl", [{"elapsed_seconds": i, **limits} for i in (0, 1)])
         compression_log = self.lines("compression.jsonl", [
             {"event": "started", "format": 1, "mode": "measure", "algorithm": "gzip-9",
              "configuration_sha256": "c" * 64, "executable_sha256": "d" * 64, "os": "linux",
-             "architecture": "aarch64", "expected_canonical_bytes": size, "corpus": {
-                 "run_id": "00000000-0000-0000-0000-000000000001", "collection": "capacity",
-                 "seed_sha256": "b" * 64, "documents": 4096, "document_bytes": 1 << 20, "batch_documents": 1}},
+             "architecture": "aarch64", "expected_canonical_bytes": size, "corpus": plan},
             {"event": "measured", "documents": 4096, "algorithm": "gzip-9", "input_bytes": size,
              "output_bytes": size * 4 // 5, "canonical_sha256": "a" * 64, "gzip_sha256": "e" * 64,
              "expected_sha256": "f" * 64, "seconds": 100.0}])
         return {"corpus": {"documents": 4096, "canonical_bytes": size, "seed_sha256": "b" * 64,
                     "compression": {"algorithm": "gzip-9", "input_bytes": size, "output_bytes": size * 4 // 5,
                                     "log": compression_log}},
-                "operations": [{"id": name, "integrity": integrity, "resources": resources,
+                "operations": [{"id": name, "integrity": integrity, "verification": verification, "resources": resources,
                     "limits": limits.copy(), "read_retention_budget_bytes": 64 << 20}
                     for name in sorted(acceptance.SCENARIOS["capacity-ha"])]}
 
@@ -341,6 +354,21 @@ class AcceptanceTests(unittest.TestCase):
                 corpus["compression"]["log"] = self.lines("changed-compression.jsonl", events)
                 with self.assertRaises(ValueError):
                     acceptance.replay_capacity_measurement(self.root, corpus)
+
+    def test_capacity_verification_binds_original_prefixes_driver_and_measured_framed_digest(self):
+        value = self.capacity()
+        measured = acceptance.replay_capacity_measurement(self.root, value["corpus"])
+        op = value["operations"][0]
+        original = list(acceptance.rows(self.root, op["verification"]))
+        for row, key, replacement in ((0, "executable_sha256", "3" * 64), (1, "documents", 2),
+                                      (-1, "observed_sha256", "a" * 64),
+                                      (-1, "integrity_sha256", "b" * 64)):
+            with self.subTest(key=key):
+                events = [dict(item) for item in original]
+                events[row][key] = replacement
+                op["verification"] = self.lines("changed-verification.jsonl", events)
+                with self.assertRaises(ValueError):
+                    acceptance.check_integrity(self.root, op, measured)
 
     def test_capacity_must_exceed_three_gib_and_cover_every_operation(self):
         value = self.capacity()

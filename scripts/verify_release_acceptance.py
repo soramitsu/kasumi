@@ -335,18 +335,51 @@ def check_benchmarks(root, details):
             check_samples(root, measurement, minimum=1000)
 
 
-def check_integrity(root, ref, documents, expected_bytes):
+def check_integrity(root, operation, measurement):
+    measured_start, measured_end = measurement
+    plan = measured_start["corpus"]
+    documents, expected_bytes = plan["documents"], measured_end["input_bytes"]
+    ref = operation["integrity"]
+    events = iter(rows(root, operation["verification"]))
+    start = next(events, None)
+    exact(start, {"event", "format", "mode", "configuration_sha256", "corpus",
+                  "expected_canonical_bytes", "endpoint", "credential_binding_claims",
+                  "credential_binding_scope", "executable_sha256", "os", "architecture",
+                  "generator", "scope"}, "installed verification start")
+    checksum(start["configuration_sha256"])
+    require(start["event"] == "started" and start["mode"] == "verify"
+            and type(start["format"]) is int and start["format"] == 1
+            and json.dumps(start["corpus"], sort_keys=True) == json.dumps(plan, sort_keys=True)
+            and uint(start["expected_canonical_bytes"], "installed planned bytes", 1) == expected_bytes
+            and all(start[k] == measured_start[k] for k in ("os", "architecture", "executable_sha256")),
+            "installed verification did not use the measured plan, host platform and driver")
     count = size = 0
     for row in rows(root, ref):
         exact(row, {"first", "documents", "canonical_bytes", "expected_sha256", "observed_sha256"}, "integrity batch")
         require(type(row["first"]) is int and row["first"] == count, "integrity gap or duplicate batch")
         batch = uint(row["documents"], "integrity documents", 1)
-        require(batch <= 256, "integrity verification is not bounded")
+        require(batch == min(plan["batch_documents"], documents - count)
+                and row["canonical_bytes"] == batch * plan["document_bytes"],
+                "integrity batch differs from the original corpus plan")
         count += batch
         size += uint(row["canonical_bytes"], "integrity bytes", 1)
         require(checksum(row["expected_sha256"]) == row["observed_sha256"], "integrity mismatch")
         require(count <= documents and size <= expected_bytes, "integrity exceeds corpus")
+        progress = next(events, None)
+        exact(progress, {"event", "documents", "canonical_bytes"}, "installed verification progress")
+        require(progress["event"] == "verified_prefix"
+                and uint(progress["documents"], "verified prefix", 1) == count
+                and uint(progress["canonical_bytes"], "verified bytes", 1) == size,
+                "installed verification progress differs from the original integrity rows")
     require(count == documents and size == expected_bytes, "integrity verification is not exhaustive")
+    passed = next(events, None)
+    exact(passed, {"event", "documents", "canonical_bytes", "expected_sha256", "observed_sha256",
+                   "integrity_sha256"}, "installed verification result")
+    require(passed["event"] == "passed" and uint(passed["documents"], "verified documents", 1) == count
+            and uint(passed["canonical_bytes"], "verified bytes", 1) == size
+            and passed["expected_sha256"] == passed["observed_sha256"] == measured_end["expected_sha256"]
+            and passed["integrity_sha256"] == ref["sha256"] and next(events, None) is None,
+            "installed verification differs from the full measured digest or original integrity file")
 
 
 def replay_capacity_measurement(root, corpus):
@@ -401,12 +434,12 @@ def check_capacity(root, details, kind):
             "compression must measure the full exact corpus with gzip-9")
     compressed = uint(compression["output_bytes"], "compressed bytes", 1)
     require(compressed * 4 >= size * 3, "corpus is too compressible (minimum ratio 0.75)")
-    replay_capacity_measurement(root, corpus)
+    measurement = replay_capacity_measurement(root, corpus)
     operations = unique(details["operations"], "id", "capacity operations")
     require(set(operations) == SCENARIOS[kind], "capacity operation coverage is incomplete")
     for operation in operations.values():
-        exact(operation, {"id", "integrity", "resources", "limits", "read_retention_budget_bytes"}, "capacity operation")
-        check_integrity(root, operation["integrity"], documents, size)
+        exact(operation, {"id", "integrity", "verification", "resources", "limits", "read_retention_budget_bytes"}, "capacity operation")
+        check_integrity(root, operation, measurement)
         limits = operation["limits"]
         exact(limits, {"rss_bytes", "allocated_disk_bytes", "maintenance_workspace_bytes"}, "resource limits")
         for key, value in limits.items():
