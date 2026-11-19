@@ -243,6 +243,35 @@ observer, and all 17 assembly tests passed in 4.158 seconds.
 | G13 | The native macOS ARM64 `c8cc6c7b` driver measured 98,400 documents and 3,224,371,200 canonical bytes in 1,012.543 seconds. One level-9 gzip stream produced 2,669,413,656 bytes, ratio 0.82788658. Peak RSS for the measuring process was 4,292,608 bytes. Canonical SHA-256 was `4dfacafe48e5b485d424be392eb29d436c5902de64012369817687ba4f0760cc`. The retained executable SHA-256 was `c491893a03d3f6b25aac6dc73de3781bbf330461d457b3839e4321a32820fbf3`. The verifier replayed the original journal. Five native driver tests passed. |
 | G13, G11 | Both the preliminary 96-document load and the 98,400-document installed attempt with batches of 96 timed out on their first write. Each installation stopped cleanly. Reopening each installation and resolving its original idempotency key confirmed the committed batch against the retained input digest. A separate 32-document run with batches of eight passed load, full read-back and stop in 35.039 seconds. The larger eight-document-batch run has its own journal. `4e252658` and `7554da48` bind each installed verification prefix, raw integrity file and final observed digest to the measured generator inputs. All 33 verifier tests passed in 5.131 seconds. Installed maintenance, physical resource ceilings and HA qualification remain open. |
 
+## Integrated lifecycle candidate and native restart
+
+The common source for the three native platforms is
+`dd43ef2840ad46b7176d5e87605e30a18ea466f1`. Its source archive is
+69,754,880 bytes with SHA-256
+`4b2cae3c364615e583ffded14540c89eb04ee83219fa08218441811cf7d5c667`.
+The verified 105,722-byte Git bundle applies on top of `7ac33a24` and has
+SHA-256 `b4969bc7ffe39c7943f2e6b64bd7c4341ddefa48c738393d0a02484f3d9b615b`.
+The macOS ARM64 formatting check passed in 49.62 seconds. This candidate is
+on hold for the implementation and qualification work below.
+
+| Goal | Observation |
+| --- | --- |
+| G02, G03 | `8423155b` reads query records from the selected primary directory. `986bfc69` joins a retained snapshot change-feed prefix and a newer ordinary-log tail in the same page. `755d8c01` measures full document framing using the authenticated body length. Coverage still needs ordinary mutation manifests, persistent indexes, collection and the physical capacity run. |
+| G04, G05 | The integrated lifecycle change writes permanent Control intents to authenticated bounded rows. On native macOS, the three-voter test physically reopened the encrypted stores and replayed the original decision in 15.03 seconds with peak RSS 40,517,632 bytes. A second test rejected a substituted intent and enforced the configured byte budget in 17.76 seconds with peak RSS 40,976,384 bytes. Both ran in executable SHA-256 `280d8dbbc558ac0b6ee1f5a2cf18a40a0873cd1c6d02c16aef91b9e34fa6219a`. Mixed backup and lifecycle restore budgeting and the lifetime workloads remain under test. |
+| G06 | `2fe9eaed` authenticates the checkpoint graph and inventory, including stored document, history and audit objects, under their original tenant, alias and session. It revalidates checkpoint identity before reporting keys. Unreadable objects prevent retirement. Its locked offline workspace all-targets/all-features check passed in 1,580.48 seconds. The focused native proof, remote membership inventory and retirement are separate requirements. |
+| G07, G11 | The six outstanding acceptance adapters are key retention, audit retention, HA faults, recovery, standalone capacity and HA capacity. Thirteen of the nineteen are registered. `c07d8c18` and `47e88250` bind transported audit observations to original native process receipts. `2fe135a9` adds a physical Authority reopen test for permanent incarnation and receipt rows. The installed audit qualification still requires nine enrolled voters and the permanent-history workload. Review of 27 revisions and 39 distinct blobs found a 64-KiB backup-session record bound and a 256-object cleanup page. The historical global session-count threshold requested by the contract remains unidentified. |
+| G12, G14 | Strict workspace Clippy passed in 1,051.82 seconds on `4e252658`. On `187aca4b` the full Python run timed out in a package smoke listener. A separate reproduction also observed connection refusal. With `c9decf89`, twelve consecutive package fixture attempts passed using listener ports outside the ephemeral client range. The original failing daemon stderr was unavailable. |
+| G13 | A second native measurement reproduced all three hashes and the level-9 gzip size for the 98,400-document corpus in 811.90 seconds. On the installed eight-document-batch run, 477 batches were acknowledged before a write deadline at ordinal 3,816. The authenticated original receipt reported all eight writes committed at revision 480. A second physical reopen recovered the same receipt for batch SHA-256 `c601bcc97426b774b25c4931e60587c938e2cf11aa570aa6b73597f30f987623` and stopped cleanly in 1,079.40 seconds including startup and verification. The original failed run took 1,751.22 seconds. |
+
+`4a7a11e7` permits continuation only after verifying every earlier durable
+receipt against the original generated input. On the completed 32-document
+installation it authenticated the original four batches, dispatched zero
+additional writes, verified every document and stopped cleanly in 35.33
+seconds. The larger continuation uses the same installation that recovered
+the original 3,824 documents. Neither the remaining 94,576 documents nor
+their maintenance, physical resource and HA workloads have a passing receipt
+at this checkpoint.
+
 ## Required infrastructure and decisions
 
 The available machine is native macOS ARM64, macOS 27.2.1 build 26B131, 16
