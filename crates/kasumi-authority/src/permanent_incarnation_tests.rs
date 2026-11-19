@@ -54,7 +54,7 @@ fn retain_digest(hasher: &mut Sha256, receipt: &AuthorityReceipt) {
 async fn refresh_grants_if_due(fixture: &Fixture, last: &mut Option<Duration>, renewals: &mut u64) {
     let application = fixture.stores.application();
     let custody = fixture.stores.custody().store();
-    let now = application.lease_clock().now();
+    let now = fixture.node.lease_clock().now();
     if last.is_some_and(|previous| now.saturating_sub(previous) < Duration::from_secs(15)) {
         return;
     }
