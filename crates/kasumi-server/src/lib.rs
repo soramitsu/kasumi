@@ -13,6 +13,7 @@ mod backup_destination_installation;
 pub mod client_pins;
 pub mod cluster;
 mod control_genesis;
+pub mod daemon_signals;
 pub mod data_cli;
 mod data_node_enrollment;
 mod installed_clients;

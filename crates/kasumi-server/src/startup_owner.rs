@@ -316,6 +316,75 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn process_stop_during_open_drains_the_unclaimed_runtime() -> Result<()> {
+        const NAME: &str =
+            "startup_owner::tests::process_stop_during_open_drains_the_unclaimed_runtime";
+        const VARIABLE: &str = "KASUMI_TEST_DAEMON_STARTUP_SIGNAL";
+        let Ok(signal) = std::env::var(VARIABLE) else {
+            for signal in ["-TERM", "-INT"] {
+                let status = std::process::Command::new(std::env::current_exe()?)
+                    .args(["--exact", NAME, "--nocapture"])
+                    .env(VARIABLE, signal)
+                    .status()?;
+                anyhow::ensure!(
+                    status.success(),
+                    "startup signal child exited with {status}"
+                );
+            }
+            return Ok(());
+        };
+        anyhow::ensure!(matches!(signal.as_str(), "-TERM" | "-INT"));
+        anyhow::ensure!(std::env::args().any(|arg| arg == "--exact"));
+        anyhow::ensure!(std::env::args().any(|arg| arg == NAME));
+        let mut signals = crate::daemon_signals::DaemonSignals::install()?;
+        let kind = if signal == "-TERM" {
+            Kind::Data
+        } else {
+            Kind::Authority
+        };
+        let observation = Arc::new(Observation::default());
+        let candidate = Candidate {
+            report: DrainReport::default(),
+            observation: observation.clone(),
+            fail_once: false,
+        };
+        let (started, admitted) = oneshot::channel();
+        let (resume, proceed) = oneshot::channel();
+        let opening = open(kind, async move {
+            started.send(()).expect("startup observer");
+            proceed.await?;
+            Ok(candidate)
+        });
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let send_signal = async {
+                admitted.await?;
+                let status = std::process::Command::new("/bin/kill")
+                    .arg(signal)
+                    .arg(std::process::id().to_string())
+                    .status()?;
+                anyhow::ensure!(
+                    status.success(),
+                    "could not deliver signal to isolated child"
+                );
+                Ok::<(), anyhow::Error>(())
+            };
+            let (result, sent) = tokio::join!(signals.open(opening), send_signal);
+            sent?;
+            anyhow::ensure!(result?.is_none());
+            anyhow::ensure!(!observation.dropped.load(Ordering::Acquire));
+            resume.send(()).expect("retained startup owner");
+            observation.entered.notified().await;
+            anyhow::ensure!(!observation.closed.load(Ordering::Acquire));
+            observation.release.notify_one();
+            drain(kind).await?;
+            anyhow::ensure!(observation.closed.load(Ordering::Acquire));
+            anyhow::ensure!(observation.dropped.load(Ordering::Acquire));
+            Ok(())
+        })
+        .await?
+    }
+
     #[test]
     fn startup_drains_share_a_runtime_across_threads_and_isolate_other_runtimes() -> Result<()> {
         use crate::runtime_storage_fixtures::LIVENESS;

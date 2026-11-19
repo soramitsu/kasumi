@@ -144,9 +144,7 @@ async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
     // An invoked command keeps the default hook's message on its terminal;
     // the daemon's stderr is the journal.
     kasumi_server::logging::install_panic_hook();
-    kasumi_server::logging::daemon_starting();
     *daemon = true;
-    startup_progress::begin();
     match serve(options).await {
         Ok(()) => {
             kasumi_server::logging::daemon_stopped();
@@ -167,6 +165,9 @@ async fn invoked(daemon: &mut bool) -> std::process::ExitCode {
 }
 
 async fn serve(options: ServeOptions) -> Result<()> {
+    let mut signals = kasumi_server::daemon_signals::DaemonSignals::install()?;
+    kasumi_server::logging::daemon_starting();
+    startup_progress::begin();
     // Engines read this when they are constructed: set it before any tenant opens.
     kasumi_engine::set_local_snapshot_archive(serve_options::process_snapshot_archive(Some(
         &options,
@@ -175,41 +176,21 @@ async fn serve(options: ServeOptions) -> Result<()> {
     let config = RuntimeConfig::load(&options.configuration)?;
     let opening = NodeRuntime::open_with_storage_maintenance(config, options.storage_maintenance);
     let runtime = tokio::select! {
-        result = opening => result.context("opening encrypted node runtime")?,
+        result = signals.open(opening) => result.context("opening encrypted node runtime")?,
         during = startup_progress::retained_for(Retained::Startup, RETAINED_GRACE) => {
             startup_progress::exit_with_retained_owners(during, RETAINED_GRACE)
         }
     };
+    let Some(runtime) = runtime else {
+        return Ok(());
+    };
     let reload = runtime.tls_reload_handle()?;
-    let (stop, shutdown) = tokio::sync::watch::channel(false);
-    let signal = tokio::spawn(async move {
-        #[cfg(unix)]
-        {
-            let mut terminate =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-            let mut hangup =
-                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())?;
-            loop {
-                tokio::select! {
-                    result=tokio::signal::ctrl_c()=>{ result?; break; },
-                    _=terminate.recv()=>break,
-                    _=hangup.recv()=>{ if reload.reload().await.is_err() { kasumi_server::logging::tls_reload_failed(); } }
-                }
-            }
-        }
-        #[cfg(not(unix))]
-        tokio::signal::ctrl_c().await?;
-        stop.send_replace(true);
-        Ok::<_, std::io::Error>(())
-    });
-    let result = tokio::select! {
-        result = runtime.serve(shutdown) => result,
+    tokio::select! {
+        result = signals.serve(reload, |shutdown| runtime.serve(shutdown)) => result,
         during = startup_progress::retained_for(Retained::Drain, RETAINED_GRACE) => {
             startup_progress::exit_with_retained_owners(during, RETAINED_GRACE)
         }
-    };
-    signal.abort();
-    result
+    }
 }
 
 async fn run(arguments: &[String]) -> Result<()> {
