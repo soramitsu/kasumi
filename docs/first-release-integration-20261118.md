@@ -305,6 +305,28 @@ every document. Its SHA-256 was
 This brings the installed count to 6,768 of 98,400. The attempt stopped cleanly
 after 2,472.77 seconds. Its write deadline remains recorded as a failure.
 
+## November 20 native results
+
+| Goal | New evidence and open checks |
+| --- | --- |
+| G01, G03 | Both deployed installations opened, served, wrote and reopened with the frozen `dd43ef28` server in a serial native run of all three deployed-format cases (135.975 seconds). The parallel run failed when two copies used the original installation UUID simultaneously. The original Store crash-cut case passed alone in 146.838 seconds. Full-suite qualification still includes the original concurrency failures. |
+| G02 | `bd190402` publishes the ordinary document directory with each applied cursor. `630400df` adds ordinary structured postings. The structured implementation passed four native tests covering publication, interruption, stale recovery and reopen. The same process failed a separate change-feed test because an ordinary applied position lacked its preceding snapshot. `898bf96b` authenticates that snapshot on the pinned application and Control read view. The original GC rehearsal retained 18 to 162 objects across nine churn rounds. A final native run still needs to prove that collection plateaus and supports retained readers. |
+| G04, G05, G06 | The lifecycle run crossed 10,000 intents with 10,001 and reopened in 1,961.697 seconds. The mixed backup/lifecycle fixture failed with a mismatch between the backup binding head and installed Control state. For backup sessions, 520 original outcomes included 261 failures, two intercepted writes and a further hard kill before reopening. Independent replay in 4.394 seconds reproduced the original witness digest `e15ee04e2b5317ece99309b4e372a7337514bb10bae10bbedceaecda3443ed68`. The full threshold is 100,001. Fixed filesystem slots would occupy 432,573,125,688 bytes. `2cac4d66` releases padding after durable terminal publication and retains the v1 reader. Six independent verifier tests passed. The full session cohort and key retirement remain open. |
+| G07, G08 | The frozen native process passed the initial signal test and the historical backup claim/reopen case. The integration exposed additional drain and lease errors. A fresh native run retained and replayed 100,001 mutation receipts in 2,730.065 seconds with 1,024 memory reservation slots. The Authority retained 100,001 incarnations, replayed the first and last after reopen, and wrote 356,781,360 bytes in 12,095.859 seconds. Earlier reservation and grant failures remain in the evidence index. |
+| G09, G10 | Remote-Control placement and protected observations still need an installed nine-process test. An earlier remote-Control test build failed because its test module was missing. |
+| G11 | The branch now registers 18 of the 19 domain adapters. `9dd05e34` verifies audit originals, `c8fd08ce` adds standalone and HA capacity, and `275d9ccc` adds HA faults and recovery. The missing adapter covers key retention. Three sets of component tests passed (29 capacity, seven HA, 34 registry). A separate full Python tooling run passed 463 cases in 392.013 seconds. The original audit runner would have stopped the 100,001-incarnation case at 7,200 seconds. `147e7760` binds execution and replay to the 86,400-second Authority timeout. |
+| G12, G14 | On native macOS ARM64, `dd43ef28` passed formatting, 457 Python cases, locked offline all-target/all-feature workspace checking (674.031 seconds) and strict workspace Clippy (501.841 seconds). Building all three production binaries took 7,765.595 seconds. The focused Engine library reported 762 passes and three failures, its separate binary target failed one case, and the Server library reported 531 passes and six failures. The Store run also identified an impossible randomized key-generation request. `081933ba` fixes its fixture. No complete passing workspace run exists for this candidate. |
+| G13 | The installed corpus retained 6,768 authenticated documents. The next startup on the earlier daemon failed after 1,639.309 seconds and its drain reported an unavailable security-audit key lease. The frozen `dd43ef28` daemon subsequently reopened the same installation, authenticated the original last eight receipts at revision 848, and stopped cleanly in 24.207 seconds including startup and readback. A separate attempt continues writing from that verified boundary. The reference Linux run, physical capacity operations and 24-hour soak remain open. |
+
+The native macOS production executable hashes for `dd43ef28` are
+`e19de27289bea7c22254572f38bc741089224324c521132bb77396ce8bfd154e`
+(kasumid, 126,799,168 bytes),
+`36af4d07c1320d965d41d06f251d40066ff9d46e875248d678d345e163c2867a`
+(kasumi-authority, 33,084,512 bytes), and
+`6b4e4238b432a24f9bdf594b5c6e68af2a109fed61f4755a72e031fefde2aad7`
+(kasumictl, 8,827,360 bytes). The release ledger indexes the build commands,
+resource limits, durations, original failures and retained hashes by source.
+
 ## Required infrastructure and decisions
 
 The available machine is native macOS ARM64, macOS 27.2.1 build 26B131, 16
