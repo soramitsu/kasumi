@@ -204,11 +204,43 @@ impl Fixture {
             epoch,
         };
         result.open(true).await;
-        kasumi_engine::control::ControlPlane::new(result.leader().await)
-            .unwrap()
-            .require_initialized(&result.context("owner"))
-            .await
-            .unwrap();
+        // A linearizable read barrier can succeed before the audit append for
+        // the next strict read is acknowledged. Setup is complete only after
+        // a real authorized read confirms its audit and the installed schema.
+        let owner = result.context("owner");
+        let mut failures = Vec::new();
+        let verified = tokio::time::timeout(Duration::from_secs(120), async {
+            for _ in 0..4 {
+                let leader = result.leader().await;
+                let before = leader.raft_group().raft().metrics().borrow().current_term;
+                let plane = kasumi_engine::control::ControlPlane::new(leader.clone()).unwrap();
+                match plane.require_initialized(&owner).await {
+                    Ok(()) => return true,
+                    Err(error) if error.code == ErrorCode::AuditUnavailable => {
+                        let metrics = leader.raft_group().raft().metrics().borrow().clone();
+                        let attempt = (
+                            before,
+                            metrics.current_term,
+                            metrics.current_leader,
+                            metrics.last_log_index,
+                            metrics.last_applied,
+                            error,
+                        );
+                        eprintln!(
+                            "Control initialization strict read was unconfirmed: {attempt:?}"
+                        );
+                        failures.push(attempt);
+                    }
+                    Err(error) => panic!("Control initialization read failed: {error:?}"),
+                }
+            }
+            false
+        })
+        .await;
+        assert!(
+            matches!(verified, Ok(true)),
+            "Control initialization lacks a durable audited read: {failures:?}"
+        );
         result
             .leader()
             .await
