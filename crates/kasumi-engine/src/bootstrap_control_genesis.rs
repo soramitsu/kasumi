@@ -214,6 +214,9 @@ impl ControlGenesis {
                 installation_policy: Policy::clone(&state.policy),
                 retired: false,
                 pending_change: None,
+                intent_head: None,
+                intent_source: Default::default(),
+                pending_intent: None,
                 intents: BTreeMap::new(),
                 changes: BTreeMap::new(),
             }));

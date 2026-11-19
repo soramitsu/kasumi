@@ -362,17 +362,16 @@ impl Database {
             .as_ref()
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "lifecycle control absent"))?;
         let intent = control
-            .intents
-            .get(&id)
-            .cloned()
+            .intent(id)?
             .ok_or_else(|| Error::new(ErrorCode::NotFound, "lifecycle intent absent"))?;
         let observation = CommittedControlIntent {
-            intent,
+            intent: (*intent).clone(),
             installation: control.installation.clone(),
             observed_policy_epoch: state.state.policy_epoch,
             observed_revision: state.state.revision,
             observed_term: term,
         };
+        drop(intent);
         drop(state);
         self.check_lifecycle_intent(&context, &observation).await?;
         self.control_observation_audit(
@@ -415,7 +414,9 @@ impl Database {
             || control.installation != observation.installation
             || state.state.policy_epoch != observation.observed_policy_epoch
             || state.state.policy_epoch != observation.intent.request.expected_policy_epoch
-            || control.intents.get(&observation.intent.request.command_id)
+            || control
+                .intent(observation.intent.request.command_id)?
+                .as_deref()
                 != Some(&observation.intent)
         {
             return Err(Error::new(
@@ -629,7 +630,7 @@ fn lifecycle_status_command(
         .lifecycle_control
         .as_ref()
         .ok_or_else(|| Error::new(ErrorCode::NotFound, "lifecycle control absent"))?;
-    if let Some(intent) = control.intents.get(&request.command_id) {
+    if let Some(intent) = control.intent(request.command_id)? {
         return Ok(Some(LifecycleCommandStatus::Intent(Box::new(
             intent.clone(),
         ))));

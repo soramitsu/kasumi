@@ -448,7 +448,7 @@ impl Fixture {
                 let control = generation.state.lifecycle_control.as_ref().unwrap();
                 assert!(control.pending_change.is_some());
                 assert!(
-                    !control.intents.contains_key(&request.command_id),
+                    control.intent(request.command_id).unwrap().is_none(),
                     "intent unexpectedly committed while issuance was closed"
                 );
                 match result {
@@ -821,10 +821,10 @@ async fn replicated_control_intent_is_exact_original_expiry_bound_current_quorum
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(request.command_id)
             .unwrap()
-            .intents[&request.command_id],
+            .unwrap()
+            .clone(),
         signed.observation.intent
     );
     assert_eq!(
@@ -877,10 +877,9 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
         .generation()
         .unwrap()
         .state
-        .lifecycle_control
-        .as_ref()
+        .lifecycle_intent(request.command_id)
         .unwrap()
-        .intents[&request.command_id]
+        .unwrap()
         .clone();
     assert_eq!(
         materialization.original_credential_expires_at_ms,
@@ -994,10 +993,10 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(request.command_id)
             .unwrap()
-            .intents[&request.command_id],
+            .unwrap()
+            .clone(),
         origin.materialization
     );
     drop(observed);
@@ -1029,10 +1028,10 @@ async fn fresh_control_materialization_requires_exact_retained_original_after_ex
             .generation()
             .unwrap()
             .state
-            .lifecycle_control
-            .as_ref()
+            .lifecycle_intent(resume.command_id)
             .unwrap()
-            .intents[&resume.command_id],
+            .unwrap()
+            .clone(),
         signed.observation.intent
     );
     assert_eq!(
@@ -1492,30 +1491,45 @@ async fn control_rejects_unfinishable_byte_budget_and_substituted_authenticated_
         )
         .unwrap();
     let mut state = kasumi_engine::test_utils::decode_snapshot_candidate(&original).unwrap();
-    let retained = state
-        .lifecycle_control
-        .as_mut()
-        .map(std::sync::Arc::make_mut)
-        .unwrap()
-        .intents
-        .get_mut(&intent.command_id)
+    state
+        .alter_single_lifecycle_intent(
+            db.raft_group()
+                .storage_domains()
+                .application()
+                .scratch_disk(),
+            intent.command_id,
+            |retained| retained.original_credential_expires_at_ms += 1000,
+        )
         .unwrap();
-    retained.original_credential_expires_at_ms += 1000;
-    assert!(
+    let altered = kasumi_engine::test_utils::encode_snapshot_candidate(
+        db.raft_group()
+            .storage_domains()
+            .application()
+            .scratch_disk(),
+        &state,
+        64 << 20,
+    )
+    .unwrap();
+    // The alternate snapshot is internally valid. Its original commitment has
+    // changed, so restoring it over the selected history is forbidden.
+    let verified = kasumi_engine::test_utils::decode_snapshot_candidate(&altered).unwrap();
+    assert_eq!(
+        verified
+            .lifecycle_intent(intent.command_id)
+            .unwrap()
+            .unwrap()
+            .original_credential_expires_at_ms,
         db.engine()
-            .fixture_restore(
-                &kasumi_engine::test_utils::encode_snapshot_candidate(
-                    db.raft_group()
-                        .storage_domains()
-                        .application()
-                        .scratch_disk(),
-                    &state,
-                    64 << 20
-                )
-                .unwrap()
-            )
-            .is_err()
+            .generation()
+            .unwrap()
+            .state
+            .lifecycle_intent(intent.command_id)
+            .unwrap()
+            .unwrap()
+            .original_credential_expires_at_ms
+            + 1000
     );
+    assert!(db.engine().fixture_restore(&altered).is_err());
     assert_eq!(
         original,
         db.engine()

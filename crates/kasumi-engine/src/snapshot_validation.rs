@@ -263,6 +263,7 @@ impl ValidatedApplicationSnapshot {
                 && index.count(20)? == 0
                 && index.count(23)? == 0
                 && index.count(24)? == 0
+                && index.count(25)? == 0
                 && h.backup_binding_head
                     == BackupBindingHead::empty(&h.backup_binding_head.origin_incarnation)?,
             "Control state cannot be an application backup"

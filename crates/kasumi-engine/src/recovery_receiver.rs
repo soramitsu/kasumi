@@ -102,9 +102,7 @@ pub(crate) fn terminal_status_input(
         return Err(conflict("original resolver input differs"));
     }
     let original_intent = state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|c| c.intents.get(&request.command_id))
+        .lifecycle_intent(request.command_id)?
         .ok_or_else(|| conflict("original resolver Control identity absent"))?;
     let value = TargetCompletionTerminalStatusInput {
         original_intent: original_intent.clone(),
@@ -287,10 +285,8 @@ pub(crate) fn validate_outcome(
     response: &TargetRuntimeResponse,
 ) -> Result<()> {
     let (node, request) = target_request(prepared)?;
-    let current = state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|c| c.intents.get(&request.command_id))
+    let current = &*state
+        .lifecycle_intent(request.command_id)?
         .ok_or_else(|| conflict("completion receiver Control identity absent"))?;
     validate_step(state, operation, current, node, request, false)?;
     if response.command_id != request.command_id || response.node_id != node {
@@ -373,9 +369,7 @@ pub(crate) fn validate_outcome(
             )?;
             let (_, first_request) = target_request(first)?;
             let original_intent = state
-                .lifecycle_control
-                .as_ref()
-                .and_then(|c| c.intents.get(&first_request.command_id))
+                .lifecycle_intent(first_request.command_id)?
                 .ok_or_else(|| conflict("original terminal Control intent absent"))?;
             if signed.observation.fact.resolution_intent != *original_intent
                 || signed.observation.fact.dispatch_not_after_ms != first_request.not_after_ms

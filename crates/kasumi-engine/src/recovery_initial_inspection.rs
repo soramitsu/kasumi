@@ -29,9 +29,7 @@ pub(crate) fn status_input(
         return Err(conflict("original Initialize dispatch differs"));
     }
     let original_intent = state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|control| control.intents.get(&request.command_id))
+        .lifecycle_intent(request.command_id)?
         .ok_or_else(|| conflict("original Initialize Control intent absent"))?
         .clone();
     let starts = operation
@@ -212,10 +210,8 @@ pub(crate) fn validate_frozen_phase(
     let RecoveryDispatch::Target { node_id, request } = &retained.input else {
         return Err(conflict("inspection frozen target absent"));
     };
-    let current = state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|control| control.intents.get(&request.command_id))
+    let current = &*state
+        .lifecycle_intent(request.command_id)?
         .ok_or_else(|| conflict("inspection frozen Control intent absent"))?;
     validate_step(state, operation, current, *node_id, request, false)
 }
@@ -320,10 +316,8 @@ pub(crate) fn validate_outcome(
     let RecoveryDispatch::Target { node_id, request } = &prepared.input else {
         return Err(conflict("inspection target phase absent"));
     };
-    let current = state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|control| control.intents.get(&request.command_id))
+    let current = &*state
+        .lifecycle_intent(request.command_id)?
         .ok_or_else(|| conflict("inspection Control identity absent"))?;
     validate_step(state, operation, current, *node_id, request, false)?;
     if prepared.phase != RecoveryPhase::Initialize

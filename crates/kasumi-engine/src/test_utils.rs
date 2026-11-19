@@ -603,6 +603,71 @@ impl SnapshotFixtureState for crate::Generation {
 }
 #[derive(Clone)]
 pub struct SnapshotCandidate(crate::snapshot_codec::Decoded);
+impl SnapshotCandidate {
+    /// Make a self-consistent alternate one-intent snapshot for substitution tests.
+    pub fn alter_single_lifecycle_intent(
+        &mut self,
+        disk: &Arc<kasumi_store::ScratchDisk>,
+        id: uuid::Uuid,
+        edit: impl FnOnce(&mut kasumi_types::LifecycleIntent),
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
+        use anyhow::Context;
+        let state = &mut self.0.state;
+        let control = Arc::make_mut(
+            state
+                .lifecycle_control
+                .as_mut()
+                .context("expected Control")?,
+        );
+        let head = control
+            .intent_head
+            .as_ref()
+            .context("expected selected lifecycle history")?;
+        if head.count != 1 {
+            return Err(
+                anyhow::anyhow!("substitution fixture needs a single selected intent").into(),
+            );
+        }
+        let source = control.intent_storage().map_err(anyhow::Error::from)?;
+        let original = source
+            .row(head, 1, control.installation.max_state_bytes)
+            .map_err(anyhow::Error::from)?;
+        let mut row = *original.row.clone();
+        if row.intent.request.command_id != id {
+            return Err(anyhow::anyhow!("substitution identity differs").into());
+        }
+        edit(&mut row.intent);
+        let genesis =
+            kasumi_types::LifecycleIntentHead::empty(control.installation.root.control_incarnation)
+                .map_err(anyhow::Error::from)?;
+        let changed = crate::backup_binding::intents::advance(&genesis, &row)?;
+        control.intent_head = Some(changed.clone());
+        let mut builder = crate::backup_binding::Builder::new(
+            disk,
+            crate::backup_binding::scratch_limit(
+                changed
+                    .encoded_bytes
+                    .checked_add(state.backup_binding_head.encoded_bytes)
+                    .context("fixture scratch overflow")?,
+            )?,
+            &state.backup_binding_head.origin_incarnation,
+        )?;
+        for binding in self.0.backup_bindings.records() {
+            builder.push(&binding?, state)?;
+        }
+        builder.push_intent(
+            &row,
+            state
+                .lifecycle_control
+                .as_deref()
+                .expect("installed Control"),
+            state.limits.max_lifecycle_intent_bytes,
+        )?;
+        self.0.backup_bindings = builder.finish(&state.backup_binding_head)?;
+        self.0.backup_bindings.bind_intents(state);
+        Ok(())
+    }
+}
 impl std::ops::Deref for SnapshotCandidate {
     type Target = TenantState;
     fn deref(&self) -> &TenantState {
@@ -647,7 +712,7 @@ pub fn snapshot_accounted_bytes(candidate: &SnapshotImage) -> Result<u64> {
                 .kinds
                 .iter()
                 .enumerate()
-                .filter(|(kind, _)| !matches!(*kind, 5 | 22 | 24))
+                .filter(|(kind, _)| !matches!(*kind, 5 | 22 | 24 | 25))
                 .try_fold(64_u64, |total, (_, kind)| {
                     total
                         .checked_add(kind.framed_bytes)
@@ -708,6 +773,7 @@ fn write_candidate(
             encoder.record(crate::snapshot_codec::Record::BackupBinding(Box::new(row?)))?;
         }
     }
+    crate::snapshot_codec::write_lifecycle_history(&mut encoder, state)?;
     encoder.finish()
 }
 

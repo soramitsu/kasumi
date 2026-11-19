@@ -145,10 +145,8 @@ pub(crate) fn validate_resolution(
             "resolved completion changed its original command or cap",
         ));
     }
-    let current = state
-        .lifecycle_control
-        .as_ref()
-        .and_then(|c| c.intents.get(&request.command_id))
+    let current = &state
+        .lifecycle_intent(request.command_id)?
         .ok_or_else(|| conflict("completion inspection Control intent absent"))?;
     validate_proof(state, operation, current, *node_id, signed)
 }

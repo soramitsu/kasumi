@@ -737,6 +737,9 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
             )?;
             generation.backup_bindings = binding_installation.view.clone();
+            generation
+                .backup_bindings
+                .bind_intents(&mut generation.state);
             let installation = generation.terminals.prepare_install(
                 store,
                 &generation.state,
@@ -1562,8 +1565,10 @@ impl TenantEngine {
         writes.extend_from_slice(installation.writes());
         writes.extend_from_slice(target_installation.writes());
         store.write_batch(&writes).map_err(terminal_error)?;
+        let mut state = previous.state.clone();
+        binding_installation.view.bind_intents(&mut state);
         self.publish_generation(Some(Arc::new(Generation {
-            state: previous.state.clone(),
+            state,
             receipts: receipt_installation.view,
             backup_bindings: binding_installation.view,
             terminals: installation.view,
@@ -2278,6 +2283,22 @@ impl TenantEngine {
         let terminal_owner = previous.terminals.clone();
         let mut next = previous.state.clone();
         next.revision = revision;
+        if matches!(command.operation, Operation::LifecycleControl(_)) {
+            previous.backup_bindings.bind_intents(&mut next);
+        }
+        if matches!(
+            &command.operation,
+            Operation::LifecycleControl(LifecycleControlCommand::CommitIntent(_))
+        ) && matches!(scope, ApplyScope::Committed)
+            && next
+                .lifecycle_control
+                .as_ref()
+                .is_some_and(|control| control.intent_source.0.is_none())
+        {
+            return Err(
+                anyhow::anyhow!("ordered lifecycle intent lacks its installed namespace").into(),
+            );
+        }
         let result = if command.context.tenant != next.tenant {
             Err(Error::new(ErrorCode::Forbidden, "tenant access denied").into())
         } else if let Err(error) = command
@@ -2430,6 +2451,28 @@ impl TenantEngine {
                 &terminals,
             );
         }
+        let intent_row =
+            crate::backup_binding::intents::take_candidate(&mut next, &applied.command_sha256)?;
+        if let Some((_, head)) = &intent_row {
+            if head.encoded_bytes > next.limits.max_lifecycle_intent_bytes {
+                return self.prepare_resource_rejection(
+                    previous,
+                    next,
+                    command,
+                    Some(Error::new(
+                        ErrorCode::QuotaExceeded,
+                        "permanent lifecycle history byte budget exhausted",
+                    )),
+                    &terminals,
+                );
+            }
+            Arc::make_mut(
+                next.lifecycle_control
+                    .as_mut()
+                    .expect("prepared lifecycle intent"),
+            )
+            .intent_head = Some(head.clone());
+        }
         let snapshot_accounting = previous
             .snapshot_accounting
             .updated(
@@ -2465,6 +2508,9 @@ impl TenantEngine {
             previous.indexes.clone()
         };
         let terminals = scope.stage_terminals(terminal_pending, &previous.state)?;
+        if let Some((row, _)) = &intent_row {
+            previous.backup_bindings.persist_intent(row)?;
+        }
         let candidate = Arc::new(Generation {
             receipts: previous.receipts.clone(),
             backup_bindings: previous.backup_bindings.clone(),
@@ -2882,13 +2928,34 @@ impl TenantEngine {
                 (&current.state.lifecycle_control, &state.lifecycle_control)
         {
             for (id, intent) in &old.intents {
-                if incoming.intents.get(id) != Some(intent) {
+                if incoming.intent(*id)?.as_deref() != Some(intent) {
                     return Err(Error::new(
                         ErrorCode::Corruption,
                         "snapshot substituted a permanent lifecycle intent",
                     )
                     .into());
                 }
+            }
+            if let Some(committed) = &old.intent_head {
+                let successor = incoming.intent_head.as_ref().ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "snapshot omitted the selected lifecycle intent prefix",
+                    )
+                })?;
+                anyhow::ensure!(
+                    successor.count >= committed.count,
+                    "snapshot rolled back permanent lifecycle intents"
+                );
+                let row = incoming.intent_storage()?.row(
+                    successor,
+                    committed.count,
+                    incoming.installation.max_state_bytes,
+                )?;
+                anyhow::ensure!(
+                    crate::backup_binding::intents::row_sha256(&row)? == committed.sha256,
+                    "snapshot substituted the original lifecycle intent prefix"
+                );
             }
             for (id, change) in &old.changes {
                 let Some(actual) = incoming.changes.get(id) else {
@@ -3425,6 +3492,11 @@ fn apply_operation(
             if state.document_count > limits.max_documents
                 || state.logical_bytes > limits.max_logical_bytes
                 || state.mutation_receipt_head.encoded_bytes > limits.max_mutation_receipt_bytes
+                || state
+                    .lifecycle_control
+                    .as_ref()
+                    .and_then(|c| c.intent_head.as_ref())
+                    .is_some_and(|h| h.encoded_bytes > limits.max_lifecycle_intent_bytes)
                 || state.backup_binding_head.encoded_bytes > limits.max_backup_binding_bytes
                 || state.history_archives.len() > limits.history.max_archive_segments
                 || state.audit_retention.hot_bytes > limits.audit_retention.hot_bytes
@@ -3969,6 +4041,7 @@ pub(super) fn validate_limits(limits: &Limits) -> Result<()> {
         || limits.max_result_bytes == 0
         || limits.max_result_bytes > (8 << 20)
         || limits.max_mutation_receipt_bytes == 0
+        || limits.max_lifecycle_intent_bytes == 0
         || limits.max_backup_binding_bytes == 0
         || limits.max_documents == 0
         || limits.max_logical_bytes == 0
@@ -4006,6 +4079,10 @@ pub(super) fn validate_limit_budgets(limits: &Limits, current: &Limits) -> Resul
         || raised(
             limits.max_mutation_receipt_bytes,
             current.max_mutation_receipt_bytes,
+        )
+        || raised(
+            limits.max_lifecycle_intent_bytes,
+            current.max_lifecycle_intent_bytes,
         )
         || raised(
             limits.max_backup_binding_bytes,

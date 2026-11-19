@@ -129,7 +129,7 @@ impl StagedSnapshot {
                         Record::RecoveryTarget(_, operation) => {
                             require(&index, &(18, operation.to_string(), String::new()))?;
                         }
-                        Record::BackupBinding(_) => {
+                        Record::BackupBinding(_) | Record::LifecycleIntentHistory(_) => {
                             let header =
                                 get_record(&image, &index, &(0, String::new(), String::new()))?;
                             ensure!(

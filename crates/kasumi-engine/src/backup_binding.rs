@@ -1,6 +1,8 @@
 //! Permanent Control backup bindings. A generation selects an authenticated
 //! prefix of encrypted point rows; rows persisted ahead of the applied cursor
 //! cannot prove that a claim committed.
+#[path = "lifecycle_intent_store.rs"]
+pub(crate) mod intents;
 use crate::namespace_installation::PreparedRows;
 use anyhow::{Context, Result, ensure};
 use kasumi_store::{EncryptedTable, ScratchDisk, TenantStore, WriteOp};
@@ -160,7 +162,10 @@ struct DurableRows {
 }
 enum Source {
     Durable(DurableRows),
-    Staged(Arc<EncryptedTable>),
+    Staged(
+        Arc<EncryptedTable>,
+        Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    ),
 }
 impl Source {
     fn get(&self, key: &[u8]) -> Result<Option<crate::materialization_row::MaterializationRow>> {
@@ -169,7 +174,7 @@ impl Source {
                 .store
                 .get_bounded(&rows.binding.namespace(), key, MAX_ROW_BYTES)?
                 .map(crate::materialization_row::MaterializationRow::Stored),
-            Self::Staged(table) => table
+            Self::Staged(table, _) => table
                 .get(key)?
                 .map(crate::materialization_row::MaterializationRow::Staged),
         };
@@ -453,6 +458,7 @@ impl View {
                 head: self.head.clone(),
             };
             view.validate_state(state)?;
+            view.verify_restored_intents(state)?;
             for old in self.records() {
                 let old = old?;
                 let actual = view
@@ -475,7 +481,7 @@ impl View {
             "backup binding checkpoint is already installed"
         );
         let rows = match self.source.as_deref() {
-            Some(Source::Staged(table)) => PreparedRows::Staged(table.clone()),
+            Some(Source::Staged(table, _)) => PreparedRows::Staged(table.clone()),
             None if self.head.count == 0 => PreparedRows::Empty,
             _ => anyhow::bail!("backup binding installation requires verified staged rows"),
         };
@@ -542,6 +548,8 @@ impl View {
 }
 
 pub(crate) struct Builder {
+    memory: Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    pub(crate) intent_head: Option<kasumi_types::LifecycleIntentHead>,
     sessions: ControlBackupSessions,
     table: Arc<EncryptedTable>,
     head: BackupBindingHead,
@@ -554,6 +562,8 @@ impl Builder {
     ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
         Ok(Self {
             sessions: ControlBackupSessions::default(),
+            intent_head: None,
+            memory: disk.memory().clone(),
             table: Arc::new(EncryptedTable::new(
                 disk,
                 limit,
@@ -601,7 +611,7 @@ impl Builder {
         );
         Ok(View {
             sessions: self.sessions,
-            source: Some(Arc::new(Source::Staged(self.table))),
+            source: Some(Arc::new(Source::Staged(self.table, self.memory))),
             head: self.head,
         })
     }
@@ -712,7 +722,7 @@ impl Pending {
                     _ => anyhow::bail!("partially published backup binding row/index"),
                 }
             }
-            Source::Staged(_) => {
+            Source::Staged(_, _) => {
                 anyhow::bail!("unpublished backup binding staging cannot serve writes")
             }
         }

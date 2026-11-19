@@ -11,7 +11,7 @@ use std::{
 
 const MAGIC: &[u8; 8] = b"KASUMIT8";
 const MAX_RECORD: usize = 32 << 20;
-pub(crate) const RECORD_KINDS: u8 = 25;
+pub(crate) const RECORD_KINDS: u8 = 26;
 pub(crate) const FRAME_HEADER_BYTES: usize = 9;
 #[path = "snapshot_record_work.rs"]
 mod record_work;
@@ -73,6 +73,7 @@ pub(crate) fn record_limit(kind: u8) -> anyhow::Result<u64> {
         21 => crate::staged_terminal::MAX_SNAPSHOT_RECORD_BYTES as u64,
         22 => crate::target_resolution::MAX_SNAPSHOT_RECORD_BYTES as u64,
         24 => crate::backup_binding::MAX_SNAPSHOT_RECORD_BYTES as u64,
+        25 => crate::backup_binding::intents::MAX_ROW as u64 + 256,
         _ => anyhow::bail!("unsupported snapshot record kind"),
     })
 }
@@ -105,6 +106,7 @@ pub(crate) enum Record {
     TargetResolution(Box<crate::target_resolution::Row>),
     RecoveryCompletionHistory(String, Box<RecoveryCompletionHistory>),
     BackupBinding(Box<crate::backup_binding::Row>),
+    LifecycleIntentHistory(Box<LifecycleIntentRow>),
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -156,6 +158,9 @@ impl Record {
             Self::Terminal(row) => (21, format!("{:020}", row.ordinal), String::new()),
             Self::TargetResolution(row) => (22, format!("{:020}", row.ordinal), String::new()),
             Self::RecoveryCompletionHistory(k, _) => (23, k.clone(), String::new()),
+            Self::LifecycleIntentHistory(row) => {
+                (25, format!("{:020}", row.ordinal), String::new())
+            }
             Self::BackupBinding(row) => (24, format!("{:020}", row.ordinal), String::new()),
         }
     }
@@ -272,7 +277,7 @@ pub(crate) fn records_with_resolver<'a>(
                         Record::Archived(name.clone(), id.clone(), reference.clone())
                     })
             })),
-            5 | 24 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
+            5 | 24 | 25 => Box::new(std::iter::empty()), // Permanent rows require their selected owner.
             6 => Box::new(
                 state
                     .staged_transactions
@@ -409,6 +414,9 @@ pub(crate) fn control_header(control: &LifecycleControlState) -> LifecycleContro
         installation_policy: control.installation_policy.clone(),
         retired: control.retired,
         pending_change: control.pending_change,
+        intent_head: control.intent_head.clone(),
+        intent_source: Default::default(),
+        pending_intent: None,
         intents: Default::default(),
         changes: Default::default(),
     }
@@ -635,7 +643,23 @@ pub(crate) fn write_with_resolver(
     for row in backup_bindings.records() {
         encoder.record(Record::BackupBinding(Box::new(row?)))?;
     }
+    write_lifecycle_history(&mut encoder, state)?;
     encoder.finish()
+}
+pub(crate) fn write_lifecycle_history(
+    encoder: &mut Encoder<'_>,
+    state: &TenantState,
+) -> anyhow::Result<()> {
+    if let Some(control) = &state.lifecycle_control
+        && let Some(head) = &control.intent_head
+    {
+        let reader = control.intent_storage()?;
+        for index in 1..=head.count {
+            let original = reader.row(head, index, control.installation.max_state_bytes)?;
+            encoder.record(Record::LifecycleIntentHistory(original.row))?;
+        }
+    }
+    Ok(())
 }
 
 /// Positions address payload bytes in the immutable, authenticated image.
@@ -673,7 +697,10 @@ impl StreamSummary {
         let framed = payload
             .checked_add(FRAME_HEADER_BYTES as u64)
             .ok_or_else(|| anyhow::anyhow!("snapshot framing overflow"))?;
-        let selected = &mut self.kinds[usize::from(kind)];
+        let selected = self
+            .kinds
+            .get_mut(usize::from(kind))
+            .ok_or_else(|| anyhow::anyhow!("snapshot kind is outside the layout roster"))?;
         selected.records = selected
             .records
             .checked_add(1)
@@ -708,7 +735,7 @@ impl StreamSummary {
         self.kinds
             .iter()
             .enumerate()
-            .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22 | 24))
+            .filter(|(kind, _)| !matches!(*kind, 5 | 21 | 22 | 24 | 25))
             .try_fold(64u64, |total, (number, kind)| {
                 // Names are bounded at validation; include duplicated map keys,
                 // Arc/descriptor control and conservative tree/vector capacity.
@@ -866,6 +893,7 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
     let mut lineage = 0u64;
     let mut audit = None;
     let mut audit_next = 0u64;
+    let mut intent_record_limit = 0u64;
     loop {
         let mut length = [0; 8];
         let size = (|| -> anyhow::Result<u64> {
@@ -887,6 +915,12 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                 size <= record_limit(kind[0])?,
                 "snapshot typed record exceeds byte limit"
             );
+            if kind[0] == 25 {
+                anyhow::ensure!(
+                    size <= intent_record_limit,
+                    "lifecycle snapshot row exceeds selected byte allowance"
+                );
+            }
             let position = RecordPosition {
                 offset: summary
                     .bytes
@@ -921,6 +955,18 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                         summary.records == 1 && empty_records(header),
                         "snapshot header contains embedded records"
                     );
+                    if let Some(control) = &header.lifecycle_control
+                        && let Some(head) = &control.intent_head
+                    {
+                        anyhow::ensure!(
+                            head.encoded_bytes <= header.limits.max_lifecycle_intent_bytes,
+                            "lifecycle snapshot prefix exceeds installed byte budget"
+                        );
+                        let installed = crate::backup_binding::intents::installed_row_limit(
+                            control.installation.max_state_bytes,
+                        ) as u64;
+                        intent_record_limit = installed.saturating_add(256).min(head.encoded_bytes);
+                    }
                     header.audit_retention.validate()?;
                     audit = Some(header.audit_retention.pruned_before);
                     audit_next = header.audit_retention.next_sequence;
@@ -950,6 +996,14 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                     row.ordinal > 0 && !row.stage.is_active() && row.stage.chunks.is_empty(),
                     "invalid terminal staged record"
                 ),
+                Record::LifecycleIntentHistory(row) => {
+                    row.intent.request.validate()?;
+                    anyhow::ensure!(
+                        row.intent.request_sha256 == staged_digest(&row.intent.request)?.0
+                            && row.ordinal > 0,
+                        "invalid retained lifecycle commitment"
+                    );
+                }
                 Record::BackupBinding(row) => {
                     row.framed_bytes()?;
                 }
@@ -1076,10 +1130,29 @@ pub(crate) fn read_reopening(
                 );
                 Ok(())
             })?;
-            if header.backup_binding_head.count > 0 {
+            let intent_bytes = header
+                .lifecycle_control
+                .as_ref()
+                .and_then(|control| control.intent_head.as_ref())
+                .map_or(0, |head| head.encoded_bytes);
+            if intent_bytes > header.limits.max_lifecycle_intent_bytes {
+                return Err(
+                    anyhow::anyhow!("snapshot intent prefix exceeds installed budget").into(),
+                );
+            }
+            if header.backup_binding_head.count > 0 || intent_bytes > 0 {
+                let backup_bytes = if header.backup_binding_head.count > 0 {
+                    header.limits.max_backup_binding_bytes
+                } else {
+                    0
+                };
                 backup_bindings = Some(crate::backup_binding::Builder::new(
                     disk,
-                    crate::backup_binding::scratch_limit(header.limits.max_backup_binding_bytes)?,
+                    crate::backup_binding::scratch_limit(
+                        backup_bytes.checked_add(intent_bytes).ok_or_else(|| {
+                            anyhow::anyhow!("Control permanent scratch bound overflow")
+                        })?,
+                    )?,
                     &header.backup_binding_head.origin_incarnation,
                 )?);
             }
@@ -1209,6 +1282,15 @@ pub(crate) fn read_reopening(
                         .ok_or_else(|| anyhow::anyhow!("archive collection missing"))?
                         .archived_documents
                         .insert(id, reference);
+                }
+                Record::LifecycleIntentHistory(row) => {
+                    let control = state.lifecycle_control.as_ref().ok_or_else(|| {
+                        anyhow::anyhow!("lifecycle intent row outside installed Control")
+                    })?;
+                    backup_bindings
+                        .as_mut()
+                        .ok_or_else(|| anyhow::anyhow!("unexpected lifecycle history row"))?
+                        .push_intent(&row, control, state.limits.max_lifecycle_intent_bytes)?;
                 }
                 Record::BackupBinding(row) => {
                     backup_bindings
@@ -1382,7 +1464,17 @@ pub(crate) fn read_reopening(
         })
     })?;
     kasumi_store::ScratchOperationFailure::ordinary(|| {
-        let state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+        let mut state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
+        anyhow::ensure!(
+            state
+                .lifecycle_control
+                .as_ref()
+                .and_then(|control| control.intent_head.as_ref())
+                == backup_bindings
+                    .as_ref()
+                    .and_then(|builder| builder.intent_head.as_ref()),
+            "snapshot lifecycle prefix count, bytes or digest differs"
+        );
         let backup_bindings = match backup_bindings {
             Some(builder) => builder.finish(&state.backup_binding_head)?,
             None => {
@@ -1396,6 +1488,8 @@ pub(crate) fn read_reopening(
                 empty
             }
         };
+        backup_bindings.bind_intents(&mut state);
+        crate::state::lifecycle::validate_restored_intents(&state)?;
         let receipts_verified = matches!(receipts, Some(ReceiptSink::Durable(_)));
         let receipts = match receipts {
             Some(ReceiptSink::Staged(builder)) => builder.finish(&state.mutation_receipt_head)?,

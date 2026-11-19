@@ -77,6 +77,8 @@ pub struct LifecycleInstallation {
     pub root: ControlSigningRoot,
     pub generation: u64,
     pub partitions: BTreeMap<String, ControlAuthorityPartition>,
+    /// Bounds the resident legacy intent map. Selected permanent rows use the
+    /// installed Control tenant's independent byte budget.
     pub max_intents: usize,
     pub max_changes: usize,
     pub max_state_bytes: usize,
@@ -393,7 +395,15 @@ pub struct LifecycleControlState {
     pub retired: bool,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub pending_change: Option<Uuid>,
+    /// Legacy resident entries in the deployed snapshot format.
     pub intents: BTreeMap<Uuid, LifecycleIntent>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent_head: Option<crate::LifecycleIntentHead>,
+    #[serde(skip)]
+    pub intent_source: crate::LifecycleIntentSource,
+    /// Provisional reducer output. Ordered application consumes it before publication.
+    #[serde(skip)]
+    pub pending_intent: Option<Box<LifecycleIntent>>,
     pub changes: BTreeMap<Uuid, ControlPolicyChange>,
 }
 

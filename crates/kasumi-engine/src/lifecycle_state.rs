@@ -31,6 +31,20 @@ fn exact_control(state: &TenantState, context: &RequestContext) -> Result<()> {
     authorize_state(state, context, None, Action::Admin)
 }
 
+fn ensure_legacy_test_owner() -> Result<()> {
+    #[cfg(any(test, feature = "test-utils"))]
+    {
+        Ok(())
+    }
+    #[cfg(not(any(test, feature = "test-utils")))]
+    {
+        Err(Error::new(
+            ErrorCode::Corruption,
+            "lifecycle intent has no installed Control storage",
+        ))
+    }
+}
+
 pub(crate) fn guard(state: &TenantState, operation: &Operation) -> Result<()> {
     let Some(control) = &state.lifecycle_control else {
         return Ok(());
@@ -129,6 +143,9 @@ fn apply_candidate(
                 installation_policy: Policy::clone(&state.policy),
                 retired: false,
                 pending_change: None,
+                intent_head: None,
+                intent_source: Default::default(),
+                pending_intent: None,
                 intents: BTreeMap::new(),
                 changes: BTreeMap::new(),
             }));
@@ -141,7 +158,7 @@ fn apply_candidate(
                 .as_mut()
                 .map(Arc::make_mut)
                 .ok_or_else(|| conflict("lifecycle control is not installed"))?;
-            if let Some(retained) = control.intents.get(&request.command_id) {
+            if let Some(retained) = control.intent(request.command_id)? {
                 if retained.request_sha256 != request_sha256 {
                     return Err(conflict("permanent lifecycle intent identity differs"));
                 }
@@ -152,8 +169,8 @@ fn apply_candidate(
             }
             if let Some(origin) = &request.resume_origin
                 && (control
-                    .intents
-                    .get(&origin.materialization.request.command_id)
+                    .intent(origin.materialization.request.command_id)?
+                    .as_deref()
                     != Some(&origin.materialization)
                     || origin.authority_manifest_sha256
                         != control
@@ -199,25 +216,36 @@ fn apply_candidate(
                     "original control credential expired",
                 ));
             }
-            if control.intents.len() >= control.installation.max_intents {
+            if control.intent_source.0.is_none()
+                && control.intents.len() >= control.installation.max_intents
+            {
                 return Err(Error::new(
                     ErrorCode::QuotaExceeded,
                     "permanent lifecycle intent quota reached",
                 ));
             }
-            control.intents.insert(
-                request.command_id,
-                LifecycleIntent {
-                    request: request.as_ref().clone(),
-                    request_sha256,
-                    control_incarnation: control.installation.root.control_incarnation,
-                    installation_generation: control.installation.generation,
-                    original_principal: command.context.principal.clone(),
-                    original_credential_expires_at_ms: expiry,
-                    accepted_at_ms: command.timestamp_ms,
-                    revision,
-                },
-            );
+            let intent = LifecycleIntent {
+                request: request.as_ref().clone(),
+                request_sha256,
+                control_incarnation: control.installation.root.control_incarnation,
+                installation_generation: control.installation.generation,
+                original_principal: command.context.principal.clone(),
+                original_credential_expires_at_ms: expiry,
+                accepted_at_ms: command.timestamp_ms,
+                revision,
+            };
+            if control.intent_source.0.is_some() {
+                if encoded_len(&intent)? > control.installation.max_state_bytes {
+                    return Err(Error::new(
+                        ErrorCode::QuotaExceeded,
+                        "lifecycle intent exceeds installed record budget",
+                    ));
+                }
+                control.pending_intent = Some(Box::new(intent));
+            } else {
+                ensure_legacy_test_owner()?;
+                control.intents.insert(request.command_id, intent);
+            }
         }
         LifecycleControlCommand::BeginPolicyChange(request) => {
             request.validate()?;
@@ -239,7 +267,7 @@ fn apply_candidate(
                     "control policy transition is already closed or pending",
                 ));
             }
-            if control.intents.contains_key(&request.command_id)
+            if control.intent(request.command_id)?.is_some()
                 || request.command_id == control.installation_command_id
             {
                 return Err(conflict("lifecycle command identity already used"));
@@ -509,63 +537,125 @@ pub(crate) fn validate(state: &TenantState) -> Result<()> {
             "current control policy is outside the closed transition history",
         ));
     }
-    for (id, intent) in &control.intents {
-        intent.request.validate()?;
-        if let Some(origin) = &intent.request.resume_origin
-            && (control
-                .intents
-                .get(&origin.materialization.request.command_id)
-                != Some(&origin.materialization)
-                || origin.materialization.revision >= intent.revision
-                || origin.authority_manifest_sha256
-                    != control
-                        .installation
-                        .partitions
-                        .get(&intent.request.authority_partition)
-                        .ok_or_else(|| conflict("retained resumption issuer missing"))?
-                        .manifest_sha256)
+    for (id, intent) in control.intents.iter().chain(
+        control
+            .pending_intent
+            .iter()
+            .map(|intent| (&intent.request.command_id, intent.as_ref())),
+    ) {
+        validate_intent(state, control, id, intent, epoch, &install_sha)?;
+    }
+    if let Some(head) = &control.intent_head
+        && (head.count == 0
+            || head.encoded_bytes == 0
+            || head.encoded_bytes > state.limits.max_lifecycle_intent_bytes
+            || head.revision <= control.installation_revision
+            || head.revision > state.revision
+            || !head
+                .sha256
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+            || head.sha256.len() != 64)
+    {
+        return Err(conflict("invalid lifecycle intent prefix"));
+    }
+    Ok(())
+}
+
+/// Check the complete immutable record against the installed policy history.
+/// Streaming restore calls this once per point after all predecessor rows exist.
+fn validate_intent(
+    state: &TenantState,
+    control: &LifecycleControlState,
+    id: &uuid::Uuid,
+    intent: &LifecycleIntent,
+    epoch: u64,
+    install_sha: &str,
+) -> Result<()> {
+    intent.request.validate()?;
+    if encoded_len(intent)? > control.installation.max_state_bytes {
+        return Err(conflict(
+            "retained lifecycle intent exceeds installed record budget",
+        ));
+    }
+    if let Some(origin) = &intent.request.resume_origin
+        && (control
+            .intent(origin.materialization.request.command_id)?
+            .as_deref()
+            != Some(&origin.materialization)
+            || origin.materialization.revision >= intent.revision
+            || origin.authority_manifest_sha256
+                != control
+                    .installation
+                    .partitions
+                    .get(&intent.request.authority_partition)
+                    .ok_or_else(|| conflict("retained resumption issuer missing"))?
+                    .manifest_sha256)
+    {
+        return Err(conflict(
+            "retained resumption lost its original Control commitment",
+        ));
+    }
+    validate_name(&intent.original_principal)?;
+    if *id == control.installation_command_id
+        || control.changes.contains_key(id)
+        || *id != intent.request.command_id
+        || intent.request_sha256 != hash(&intent.request)?
+        || intent.control_incarnation != control.installation.root.control_incarnation
+        || intent.installation_generation != control.installation.generation
+        || intent.request.installation_sha256 != install_sha
+        || !control
+            .installation
+            .partitions
+            .contains_key(&intent.request.authority_partition)
+        || intent.revision <= control.installation_revision
+        || intent.revision > state.revision
+        || intent.accepted_at_ms >= intent.original_credential_expires_at_ms
+        || intent.request.expected_policy_epoch < control.installation_policy_epoch
+        || intent.request.expected_policy_epoch > epoch
+    {
+        return Err(conflict("retained lifecycle intent identity differs"));
+    }
+    for change in control.changes.values() {
+        if intent.revision > change.accepted_revision
+            && (change
+                .completed_revision
+                .is_none_or(|r| intent.revision < r))
         {
             return Err(conflict(
-                "retained resumption lost its original Control commitment",
+                "lifecycle intent was accepted during frozen policy transition",
             ));
         }
-        validate_name(&intent.original_principal)?;
-        if !ids.insert(*id)
-            || *id != intent.request.command_id
-            || intent.request_sha256 != hash(&intent.request)?
-            || intent.control_incarnation != control.installation.root.control_incarnation
-            || intent.installation_generation != control.installation.generation
-            || intent.request.installation_sha256 != install_sha
-            || !control
-                .installation
-                .partitions
-                .contains_key(&intent.request.authority_partition)
-            || intent.revision <= control.installation_revision
-            || intent.revision > state.revision
-            || intent.accepted_at_ms >= intent.original_credential_expires_at_ms
-            || intent.request.expected_policy_epoch < control.installation_policy_epoch
-            || intent.request.expected_policy_epoch > epoch
+        if change
+            .completed_revision
+            .is_some_and(|r| intent.revision > r)
+            && intent.request.expected_policy_epoch <= change.request.expected_policy_epoch
         {
-            return Err(conflict("retained lifecycle intent identity differs"));
+            return Err(conflict("lifecycle intent uses retired control epoch"));
         }
-        for change in control.changes.values() {
-            if intent.revision > change.accepted_revision
-                && (change
-                    .completed_revision
-                    .is_none_or(|r| intent.revision < r))
-            {
-                return Err(conflict(
-                    "lifecycle intent was accepted during frozen policy transition",
-                ));
-            }
-            if change
-                .completed_revision
-                .is_some_and(|r| intent.revision > r)
-                && intent.request.expected_policy_epoch <= change.request.expected_policy_epoch
-            {
-                return Err(conflict("lifecycle intent uses retired control epoch"));
-            }
-        }
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_restored_intents(state: &TenantState) -> Result<()> {
+    let Some(control) = &state.lifecycle_control else {
+        return Ok(());
+    };
+    let Some(head) = &control.intent_head else {
+        return Ok(());
+    };
+    let source = control.intent_storage()?;
+    let install_sha = hash(&control.installation)?;
+    for ordinal in 1..=head.count {
+        let row = source.row(head, ordinal, control.installation.max_state_bytes)?;
+        validate_intent(
+            state,
+            control,
+            &row.intent.request.command_id,
+            &row.intent,
+            state.policy_epoch,
+            &install_sha,
+        )?;
     }
     Ok(())
 }

@@ -289,6 +289,17 @@ fn authorize(state: &TenantState, authorization: &RecoveryAuthorization) -> Resu
     }
     Ok(())
 }
+pub(crate) fn ordered_recovery_outcome<T>(
+    value: crate::index_source::SourceResult<T>,
+) -> anyhow::Result<Result<T>> {
+    match value {
+        Ok(record) => Ok(Ok(record)),
+        Err(ReadFailure::Query(error)) if error.has_physical_source() => Err(error.into()),
+        Err(ReadFailure::Query(error)) => Ok(Err(error)),
+        Err(ReadFailure::Source(error)) => Err(error.0),
+    }
+}
+
 impl TenantEngine {
     pub(crate) fn apply_recovery(
         &self,
@@ -315,30 +326,28 @@ impl TenantEngine {
         );
         let mut next = previous.state.clone();
         next.revision = revision;
-        let mut outcome = match authorize(&next, &command.authorization)
-            .map_err(ReadFailure::Query)
-            .and_then(|()| {
-                if let Some(record) = replayed_start(&next, &command)? {
-                    // The immutable graph was validated when published. This
-                    // read-only branch changes only the monotonic revision;
-                    // rechecking every historical signature would make an
-                    // exact retry grow with the entire recovery history.
-                    // Authorization above and fresh audit/publication below
-                    // still apply to this invocation.
-                    return Ok(record);
-                }
-                let record = apply(&mut next, &command, previous.document_resolver())?;
-                // Commit only a successor the Control snapshot validator
-                // accepts: an admitted phase must never wedge a later reload.
-                validate(&next)
-                    .and_then(|()| validate_successor(&previous.state, &next))
-                    .map(|()| record)
-                    .map_err(ReadFailure::Query)
-            }) {
-            Ok(record) => Ok(record),
-            Err(ReadFailure::Query(error)) => Err(error),
-            Err(ReadFailure::Source(error)) => return Err(error.0),
-        };
+        let mut outcome = ordered_recovery_outcome(
+            authorize(&next, &command.authorization)
+                .map_err(ReadFailure::Query)
+                .and_then(|()| {
+                    if let Some(record) = replayed_start(&next, &command)? {
+                        // The immutable graph was validated when published. This
+                        // read-only branch changes only the monotonic revision;
+                        // rechecking every historical signature would make an
+                        // exact retry grow with the entire recovery history.
+                        // Authorization above and fresh audit/publication below
+                        // still apply to this invocation.
+                        return Ok(record);
+                    }
+                    let record = apply(&mut next, &command, previous.document_resolver())?;
+                    // Commit only a successor the Control snapshot validator
+                    // accepts: an admitted phase must never wedge a later reload.
+                    validate(&next)
+                        .and_then(|()| validate_successor(&previous.state, &next))
+                        .map(|()| record)
+                        .map_err(ReadFailure::Query)
+                }),
+        )?;
         if outcome.is_err() {
             next = previous.state.clone();
             next.revision = revision;
@@ -1712,12 +1721,9 @@ fn validate_outcome(
             RecoveryDispatch::ControlIntent(request),
             RecoveryDispatchOutcome::ControlIntent(actual),
         ) => {
-            let retained = state
-                .lifecycle_control
-                .as_ref()
-                .and_then(|control| control.intents.get(&request.command_id));
+            let retained = state.lifecycle_intent(request.command_id)?;
             if actual.request != **request
-                || retained != Some(actual.as_ref())
+                || retained.as_deref() != Some(actual.as_ref())
                 || actual.original_credential_expires_at_ms > dispatch_limit(operation, prepared)?
                 || actual.accepted_at_ms < prepared.admitted_at_ms
                 || actual.revision < prepared.prepared_revision
@@ -1764,10 +1770,8 @@ fn validate_outcome(
             if response.command_id != request.command_id || response.node_id != *node_id {
                 return Err(conflict("target acknowledgement route differs"));
             }
-            let current = state
-                .lifecycle_control
-                .as_ref()
-                .and_then(|control| control.intents.get(&request.command_id))
+            let current = &*state
+                .lifecycle_intent(request.command_id)?
                 .ok_or_else(|| conflict("target acknowledgement Control phase absent"))?;
             if initial_inspection::is_step(&request.step) {
                 return initial_inspection::validate_outcome(state, operation, prepared, response);
@@ -2645,10 +2649,8 @@ fn validate_frozen_input(
             request
                 .validate()
                 .map_err(|_| conflict("retained native target request invalid"))?;
-            let current = state
-                .lifecycle_control
-                .as_ref()
-                .and_then(|control| control.intents.get(&request.command_id))
+            let current = &*state
+                .lifecycle_intent(request.command_id)?
                 .ok_or_else(|| conflict("retained target dispatch lacks its Control phase"))?;
             if request.tenant != operation.request.tenant
                 || !operation.voters.contains_key(node_id)

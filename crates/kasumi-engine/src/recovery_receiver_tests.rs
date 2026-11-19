@@ -189,6 +189,9 @@ fn fixture_state() -> (TenantState, RecoveryRecord, TargetCompletionAttempt) {
         installation_policy: state.policy.as_ref().clone(),
         retired: false,
         pending_change: None,
+        intent_head: None,
+        intent_source: Default::default(),
+        pending_intent: None,
         intents: Default::default(),
         changes: Default::default(),
     }));
