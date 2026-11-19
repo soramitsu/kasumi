@@ -1688,6 +1688,31 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         use kasumi_query::DocumentSource;
         let docs = reopened.document_source("docs")?;
         let cancellation = kasumi_query::QueryCancellation::default();
+        // Remove the resident descriptors from a private read view. The
+        // installed query still resolves the durable point and its body.
+        let mut collections = reopened.state.collections.clone();
+        collections
+            .get_mut("docs")
+            .unwrap()
+            .documents
+            .remove("point");
+        let detached = Arc::new(reopened.read_view(collections, vec![]));
+        let persisted = detached.document_source("docs")?;
+        persisted
+            .with_record("point", Some(slot.version()), &cancellation, |record| {
+                let Some(kasumi_query::Record::Live(document)) = record else {
+                    panic!("persisted query point missing");
+                };
+                assert_eq!(document.body, body);
+                Ok(())
+            })
+            .map_err(crate::index_source::into_anyhow)?;
+        persisted
+            .with_record("absent", None, &cancellation, |record| {
+                assert!(record.is_none());
+                Ok(())
+            })
+            .map_err(crate::index_source::into_anyhow)?;
         for (after, expected) in [
             (None, Some("alpha")),
             (Some("alpha"), Some("point")),

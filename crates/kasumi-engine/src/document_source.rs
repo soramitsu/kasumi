@@ -5,8 +5,9 @@
 //! Authorization and current key access remain the enclosing service's duty.
 
 use crate::Generation;
+use crate::application_records::PrimaryPoint;
 use crate::document_store::SharedRead;
-use crate::index_source::{DocumentSourceFailure, RecordLoan, SourceResult};
+use crate::index_source::DocumentSourceFailure;
 use kasumi_query::{
     CollectionRecords, DocumentSource, Header, QueryCancellation, QueryIndexes, ReadResult, Record,
     SourceIdentity,
@@ -127,14 +128,69 @@ impl GenerationDocumentSource<'_> {
         self.reads.map_or(Ok(()), DocumentReads::check_deadline)
     }
 
-    fn record(&self, id: &str) -> SourceResult<Option<RecordLoan<'_>>> {
+    /// The selected directory owns both point records. Only an archived row
+    /// may be replaced by the verified hydration overlay of this read.
+    fn with_primary_point<T>(
+        &self,
+        id: &str,
+        cancellation: &QueryCancellation,
+        lend: impl FnOnce(PrimaryPoint) -> ReadResult<T, DocumentSourceFailure>,
+    ) -> ReadResult<T, DocumentSourceFailure> {
         self.check_deadline()?;
-        crate::index_source::record(
+        let state = &self.generation.state;
+        if let Some(selection) = self
+            .generation
+            .application_selection
+            .get()
+            .filter(|selection| selection.has_exact_snapshot(state.revision_base, state.revision))
+        {
+            let selected = selection
+                .with_snapshot_records(state, |tree, memory, _| {
+                    let mut leases = Vec::new();
+                    let point = crate::application_records::snapshot_point(
+                        tree,
+                        &self.collection,
+                        id,
+                        state.revision,
+                        |bytes| {
+                            let work = crate::snapshot_codec::inspect_external_json_work(
+                                bytes,
+                                &mut || {
+                                    cancellation.check()?;
+                                    self.check_deadline()?;
+                                    Ok(())
+                                },
+                            )?;
+                            let required =
+                                work.checked_add(2 * bytes.len() as u64 + 512).ok_or_else(
+                                    || anyhow::anyhow!("primary record workspace overflow"),
+                                )?;
+                            leases.push(memory.clone().reserve_document_decode(required)?);
+                            Ok(())
+                        },
+                    )?;
+                    Ok((point, leases))
+                })
+                .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+            if let Some((mut point, _leases)) = selected {
+                if let PrimaryPoint::Archived(reference) = &point
+                    && let Some(hydrated) = self.collection().documents.get(id)
+                {
+                    if hydrated.id() != id || hydrated.version() != reference.version {
+                        return Err(
+                            corruption("hydrated record differs from selected archive").into()
+                        );
+                    }
+                    point = PrimaryPoint::Live(hydrated.clone());
+                }
+                return lend(point);
+            }
+        }
+        lend(PrimaryPoint::resident(
             self.collection(),
             id,
-            self.generation.state.revision,
-            self.resolver(),
-        )
+            state.revision,
+        )?)
     }
 }
 
@@ -253,20 +309,34 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         lend: impl for<'a> FnOnce(Option<Record<'a>>) -> Result<T>,
     ) -> ReadResult<T, Self::Failure> {
         cancellation.check()?;
-        let record = self.record(id);
-        cancellation.check()?;
-        let record = record?;
-        if expected_version.is_some_and(|version| {
-            record
-                .as_ref()
-                .is_none_or(|record| record.as_record().version() != version)
-        }) {
-            return Err(corruption("source document expected version differs").into());
-        }
-        cancellation.check()?;
-        let result = lend(record.as_ref().map(RecordLoan::as_record))?;
-        cancellation.check()?;
-        Ok(result)
+        self.with_primary_point(id, cancellation, |point| {
+            cancellation.check()?;
+            self.check_deadline()?;
+            let version = match &point {
+                PrimaryPoint::Live(slot) => Some(slot.version()),
+                PrimaryPoint::Archived(reference) => Some(reference.version),
+                PrimaryPoint::Missing => None,
+            };
+            if expected_version.is_some_and(|expected| version != Some(expected)) {
+                return Err(corruption("source document expected version differs").into());
+            }
+            let body;
+            let record = match &point {
+                PrimaryPoint::Live(slot) => {
+                    body = slot
+                        .load_owned(self.resolver())
+                        .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+                    Some(Record::Live(body.as_ref()))
+                }
+                PrimaryPoint::Archived(reference) => Some(Record::Archived(reference)),
+                PrimaryPoint::Missing => None,
+            };
+            cancellation.check()?;
+            self.check_deadline()?;
+            let result = lend(record)?;
+            cancellation.check()?;
+            Ok(result)
+        })
     }
 
     fn header_after<T>(
