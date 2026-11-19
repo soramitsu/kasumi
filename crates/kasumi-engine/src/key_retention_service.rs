@@ -3,6 +3,37 @@
 //! coverage. A page grants no provider mutation or retirement authority.
 use super::*;
 
+fn consider_entry(
+    request: &ReadKeyRetentionRequest,
+    entries: &mut BTreeSet<KeyRetentionEntry>,
+    entry: KeyRetentionEntry,
+) -> Result<()> {
+    entry.validate()?;
+    if request
+        .cursor
+        .as_ref()
+        .is_none_or(|cursor| entry > cursor.after)
+    {
+        entries.insert(entry);
+        if entries.len() > usize::from(request.limit) + 1 {
+            entries.pop_last();
+        }
+    }
+    Ok(())
+}
+
+fn add_missing(
+    missing: &mut BTreeSet<MissingKeyDependency>,
+    truncated: &mut bool,
+    entry: MissingKeyDependency,
+) {
+    missing.insert(entry);
+    if missing.len() > MAX_MISSING_KEY_DEPENDENCIES {
+        missing.pop_last();
+        *truncated = true;
+    }
+}
+
 impl Database {
     pub async fn read_key_retention(
         &self,
@@ -11,6 +42,187 @@ impl Database {
     ) -> Result<AdmittedOutput<KeyRetentionPage>> {
         let result = self.key_retention_page(context, &request).await;
         self.audit_result(context, result).await
+    }
+
+    async fn observe_history_object_keys(
+        &self,
+        archive: &RetainedHistoryArchive,
+        object: (&str, &str, Option<&ArchiveChunkDescriptor>),
+        destination: Option<&dyn BackupDestination>,
+        request: &ReadKeyRetentionRequest,
+        cancellation: &QueryCancellation,
+    ) -> Result<(BTreeSet<KeyRetentionEntry>, [u8; 32])> {
+        let (object_id, hash, chunk) = object;
+        let destination = destination
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "history destination unavailable"))?;
+        let limit = chunk.map_or(MAX_ARCHIVE_MANIFEST_BYTES, |c| c.plaintext_bytes);
+        if chunk.is_some() && limit > MAX_ARCHIVE_CHUNK_BYTES {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "retained history chunk exceeds its bound",
+            ));
+        }
+        let _workspace = self
+            .admission()
+            .reserve((limit * 6 + (4 << 20)) as u64, Some(cancellation.clone()))?;
+        let (id, bytes) = self
+            .history_ciphertext(destination, object_id, hash, limit, cancellation)
+            .await?;
+        self.store
+            .with_verified_object_keys(&bytes, id, limit, |contents, keys| {
+                contents.source_purpose.validate_application_identity(
+                    &archive.manifest.tenant,
+                    &archive.manifest.source_incarnation,
+                )?;
+                if let Some(chunk) = chunk {
+                    anyhow::ensure!(
+                        contents.snapshot.len() == chunk.plaintext_bytes
+                            && hex::encode(Sha256::digest(&contents.snapshot))
+                                == chunk.plaintext_sha256,
+                        "history chunk differs from committed descriptor"
+                    );
+                } else {
+                    let manifest: HistoryArchiveManifest =
+                        serde_json::from_slice(&contents.snapshot)?;
+                    anyhow::ensure!(
+                        manifest == archive.manifest,
+                        "history manifest differs from committed catalog"
+                    );
+                }
+                let mut entries = BTreeSet::new();
+                let mut digest = Sha256::new();
+                for (provider, key_ref, version) in keys {
+                    cancellation.check()?;
+                    anyhow::ensure!(
+                        provider.len() <= MAX_KEY_PROVIDER_BYTES
+                            && key_ref.len() <= MAX_KEY_REF_BYTES,
+                        "history key identity exceeds bound"
+                    );
+                    let entry = KeyRetentionEntry {
+                        key: KeyVersionRef {
+                            provider: provider.into(),
+                            key_ref: key_ref.into(),
+                            version,
+                        },
+                        reference: KeyReference::HistoryArchive {
+                            archive_id: archive.manifest.archive_id.clone(),
+                            object_id: object_id.to_owned(),
+                        },
+                    };
+                    digest.update(staged_digest(&entry)?.0.as_bytes());
+                    consider_entry(request, &mut entries, entry)?;
+                }
+                Ok((entries, digest.finalize().into()))
+            })
+            .await
+            .map_err(|error| {
+                error
+                    .downcast_ref::<Error>()
+                    .cloned()
+                    .unwrap_or_else(|| Error::new(ErrorCode::Unavailable, error.to_string()))
+            })
+    }
+
+    async fn history_key_inventory(
+        &self,
+        state: &TenantState,
+        context: &RequestContext,
+        request: &ReadKeyRetentionRequest,
+        cancellation: &QueryCancellation,
+        missing: &mut BTreeSet<MissingKeyDependency>,
+        truncated: &mut bool,
+    ) -> Result<(BTreeSet<KeyRetentionEntry>, [u8; 32])> {
+        let mut entries = BTreeSet::new();
+        let mut history_digest = Sha256::new();
+        for (archive_id, archive) in &state.history_archives {
+            if archive_id != &archive.manifest.archive_id {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "retained archive identity differs from its catalog",
+                ));
+            }
+            let destination = self.archive_destination(&archive.storage_destination);
+            let scoped = destination
+                .as_ref()
+                .ok()
+                .and_then(|d| {
+                    archive
+                        .storage_backup_session
+                        .map(|session| kasumi_store::BackupSessionObjects::new(d.as_ref(), session))
+                })
+                .transpose()
+                .map_err(|_| {
+                    Error::new(ErrorCode::Corruption, "invalid retained history session")
+                })?;
+            let resolved: Option<&dyn BackupDestination> = scoped
+                .as_ref()
+                .map(|d| d as _)
+                .or_else(|| destination.as_ref().ok().map(Arc::as_ref));
+            let manifest = std::iter::once((
+                &archive.manifest_object_id,
+                &archive.manifest_ciphertext_sha256,
+                None,
+            ));
+            let chunks = archive
+                .manifest
+                .chunks
+                .iter()
+                .map(|chunk| (&chunk.object_id, &chunk.ciphertext_sha256, Some(chunk)));
+            for (object_id, hash, chunk) in manifest.chain(chunks) {
+                cancellation.check()?;
+                self.engine
+                    .authorize_release(context, None, Action::Admin, state.policy_epoch)?;
+                history_digest.update(
+                    staged_digest(&(
+                        archive_id,
+                        &archive.storage_destination,
+                        archive.storage_backup_session,
+                        object_id,
+                        hash,
+                    ))?
+                    .0
+                    .as_bytes(),
+                );
+                let observe = self.observe_history_object_keys(
+                    archive,
+                    (object_id, hash, chunk),
+                    resolved,
+                    request,
+                    cancellation,
+                );
+                let observation = tokio::select! {
+                    result = observe => result,
+                    _ = cancelled(cancellation) => return Err(cancelled_error()),
+                };
+                cancellation.check()?;
+                self.access()?;
+                match observation {
+                    Ok((observed, object_digest)) => {
+                        history_digest.update([1]);
+                        history_digest.update(object_digest);
+                        for entry in observed {
+                            consider_entry(request, &mut entries, entry)?;
+                        }
+                    }
+                    Err(error) => {
+                        if error.code == ErrorCode::ResourceExhausted {
+                            return Err(error);
+                        }
+                        tracing::warn!(%archive_id, %object_id, %error, "could not authenticate retained history key dependencies");
+                        history_digest.update([0]);
+                        add_missing(
+                            missing,
+                            truncated,
+                            MissingKeyDependency::RecordUnreadable {
+                                record_kind: KeyReferenceKind::HistoryArchive,
+                                id: object_id.clone(),
+                            },
+                        );
+                    }
+                }
+            }
+        }
+        Ok((entries, history_digest.finalize().into()))
     }
 
     async fn key_retention_page(
@@ -88,12 +300,6 @@ impl Database {
         // This installation does not have an authoritative scope-wide index
         // of authenticated remote backup sessions and completed checkpoints.
         missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
-        if !state.history_archives.is_empty() {
-            missing.insert(MissingKeyDependency::RecordUnreadable {
-                record_kind: KeyReferenceKind::HistoryArchive,
-                id: "history-object-catalogs".into(),
-            });
-        }
         if !state.recovery_control.is_empty() {
             missing.insert(MissingKeyDependency::RecordUnreadable {
                 record_kind: KeyReferenceKind::RecoveryRecord,
@@ -103,13 +309,23 @@ impl Database {
         let mut truncated = false;
         for (&node_id, _) in membership.membership().nodes() {
             if node_id != local {
-                if missing.len() == MAX_MISSING_KEY_DEPENDENCIES {
-                    truncated = true;
-                    break;
-                }
-                missing.insert(MissingKeyDependency::MemberUnreported { node_id });
+                add_missing(
+                    &mut missing,
+                    &mut truncated,
+                    MissingKeyDependency::MemberUnreported { node_id },
+                );
             }
         }
+        let (mut entries, history_digest) = self
+            .history_key_inventory(
+                state,
+                context,
+                request,
+                &cancellation,
+                &mut missing,
+                &mut truncated,
+            )
+            .await?;
         let scope_hash = request.scope.sha256()?;
         let request = request.clone();
         let stores = self.stores.clone();
@@ -118,21 +334,9 @@ impl Database {
         let (page, mut reservation) = reservation
             .retained_read(cancellation, move |reservation, token| {
                 let _registration = registration;
-                let mut entries = BTreeSet::new();
-                let mut consider = |entry: KeyRetentionEntry| -> Result<()> {
+                let mut consider = |entry| {
                     token.check()?;
-                    entry.validate()?;
-                    if request
-                        .cursor
-                        .as_ref()
-                        .is_none_or(|cursor| entry > cursor.after)
-                    {
-                        entries.insert(entry);
-                        if entries.len() > usize::from(request.limit) + 1 {
-                            entries.pop_last();
-                        }
-                    }
-                    Ok(())
+                    consider_entry(&request, &mut entries, entry)
                 };
                 let digest = stores
                     .visit_key_retention_catalogs(
@@ -188,23 +392,24 @@ impl Database {
                 )?;
                 token.check()?;
                 if let Some(object_id) = unreadable {
-                    if missing.len() == MAX_MISSING_KEY_DEPENDENCIES {
-                        truncated = true;
-                        missing.pop_last();
-                    }
-                    missing.insert(MissingKeyDependency::RecordUnreadable {
-                        record_kind: KeyReferenceKind::AuditArchive,
-                        id: object_id.to_string(),
-                    });
+                    add_missing(
+                        &mut missing,
+                        &mut truncated,
+                        MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::AuditArchive,
+                            id: object_id.to_string(),
+                        },
+                    );
                 }
                 let inventory_sha256 = staged_digest(&(
-                    "kasumi.key-retention.local.v2",
+                    "kasumi.key-retention.local.v3",
                     &scope_hash,
                     &state.incarnation,
                     epoch,
                     membership_epoch,
                     local,
                     digest,
+                    hex::encode(history_digest),
                     state.audit_retention.archive_segments,
                     hex::encode(archive_digest.finalize()),
                     &missing,

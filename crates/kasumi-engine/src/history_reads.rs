@@ -279,6 +279,33 @@ impl Database {
         max_plaintext_bytes: usize,
         cancellation: &QueryCancellation,
     ) -> Result<kasumi_store::BackupContents> {
+        let (object_id, bytes) = self
+            .history_ciphertext(
+                destination,
+                object_id,
+                ciphertext_sha256,
+                max_plaintext_bytes,
+                cancellation,
+            )
+            .await?;
+        let contents = tokio::select! {
+            result = self.store.decrypt_backup_object(&bytes, object_id, max_plaintext_bytes) => result.map_err(|_| Error::new(ErrorCode::Unavailable, "history authentication or historical key authorization failed"))?,
+            _ = cancelled(cancellation) => return Err(cancelled_error()),
+        };
+        self.access()?;
+        Ok(contents)
+    }
+
+    pub(super) async fn history_ciphertext(
+        &self,
+        destination: &dyn BackupDestination,
+        object_id: &str,
+        ciphertext_sha256: &str,
+        max_plaintext_bytes: usize,
+        cancellation: &QueryCancellation,
+    ) -> Result<(uuid::Uuid, Vec<u8>)> {
+        cancellation.check()?;
+        self.access()?;
         let object_id = uuid::Uuid::parse_str(object_id)
             .map_err(|_| Error::new(ErrorCode::Corruption, "history object identity is corrupt"))?;
         let limit = max_plaintext_bytes.saturating_add((2 << 20) + 84);
@@ -292,12 +319,7 @@ impl Database {
                 "history ciphertext digest differs",
             ));
         }
-        let contents = tokio::select! {
-            result = self.store.decrypt_backup_object(&bytes, object_id, max_plaintext_bytes) => result.map_err(|_| Error::new(ErrorCode::Unavailable, "history authentication or historical key authorization failed"))?,
-            _ = cancelled(cancellation) => return Err(cancelled_error()),
-        };
-        self.access()?;
-        Ok(contents)
+        Ok((object_id, bytes))
     }
 
     pub(super) async fn hydrate_history(

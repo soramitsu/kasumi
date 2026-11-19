@@ -138,6 +138,29 @@ impl AdmittedBackupBundle {
 }
 
 impl TenantStore {
+    /// Lend wrapping identities only after the original object, its entire
+    /// historical catalog and its authenticated plaintext have been verified.
+    pub async fn with_verified_object_keys<T>(
+        &self,
+        bytes: &[u8],
+        expected_id: Uuid,
+        max_plaintext_bytes: usize,
+        visit: impl FnOnce(&BackupContents, &mut dyn Iterator<Item = (&str, &str, u64)>) -> Result<T>,
+    ) -> Result<T> {
+        let (encrypted, contents) = self
+            .authenticate_object(bytes, expected_id, max_plaintext_bytes)
+            .await?;
+        let mut versions = encrypted
+            .manifest
+            .catalog
+            .keys
+            .values()
+            .map(|key| (key.provider.as_str(), key.key_ref.as_str(), key.version));
+        let result = visit(&contents, &mut versions)?;
+        self.check_access()?;
+        Ok(result)
+    }
+
     pub fn bound_backup_terminal(
         &self,
         record: &kasumi_types::BackupBindingRecord,

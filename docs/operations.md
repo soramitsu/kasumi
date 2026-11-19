@@ -603,6 +603,8 @@ The private `kasumid key-retention read <profile> <request-json>` command accept
 application or Control administrator profile for the requested scope. The initial
 request includes an explicit null cursor and a limit from 1 to 256. To continue,
 copy the returned cursor into the same request. The local report identifies each
-installed application and custody catalog, exact wrapping versions, the current
-tenant audit archive head and missing sources. A rotation or membership change
+installed application and custody catalog, exact wrapping versions, retained
+tenant audit segments and authenticated history manifest and chunk objects.
+A history object that cannot be authenticated appears by ID in the missing
+dependencies. Each page checks the full selected history inventory. A rotation or membership change
 expires the cursor. An incomplete report cannot authorize retiring a key.
