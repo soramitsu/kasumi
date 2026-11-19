@@ -6,6 +6,10 @@ import audit_retention_components as audit
 
 
 class AuditEvidence(unittest.TestCase):
+    def test_authority_history_allows_its_measured_physical_write_and_reopen(self):
+        self.assertGreater(audit.timeout("incarnations-1"), 12095)
+        self.assertEqual(audit.timeout("list-kasumi-authority"), 7200)
+
     def test_replacement_cannot_admit_a_gap_missing_bytes_or_substituted_state(self):
         refs = []
         for i in range(3):

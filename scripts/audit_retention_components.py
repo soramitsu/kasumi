@@ -106,6 +106,11 @@ FORMER_CUSTODY_COMMAND_LIMIT = 4096
 FORMER_MUTATION_RECEIPT_LIMIT = 100_000
 
 
+def timeout(step):
+    # The 100,001-incarnation physical write/reopen run took over three hours.
+    return 86400 if step == "incarnations-1" else 7200
+
+
 def digest(value):
     require(
         isinstance(value, str) and re.fullmatch("[0-9a-f]{64}", value),
@@ -316,7 +321,7 @@ def replay_retained(custody, report, original, selected):
                 "missing or reordered native audit component process: " + name)
         require(row["executable"]["sha256"] == checksum,
                 "native audit executable differs from frozen workspace target")
-        owned.check_owned(custody, row, command, str(original / "source"), 7200)
+        owned.check_owned(custody, row, command, str(original / "source"), timeout(name))
         return owned.check_ref(custody, row["stdout"]).read_bytes()
 
     measured = replay(original, selected, perform)
@@ -403,14 +408,14 @@ def capture(evidence, directory):
         }
 
         def perform(name, command, checksum):
-            row = owned.run_owned(directory, name, command, str(source), env, 7200)
+            row = owned.run_owned(directory, name, command, str(source), env, timeout(name))
             report["processes"].append(row)
             domain_run.durable_json(directory / "report.json", report)
             require(
                 row["executable"]["sha256"] == checksum,
                 "audit test binary differs from native input",
             )
-            owned.check_owned(directory, row, command, str(source), 7200)
+            owned.check_owned(directory, row, command, str(source), timeout(name))
             return owned.check_ref(directory, row["stdout"]).read_bytes()
 
         report["observed"] = replay(evidence, selected, perform)

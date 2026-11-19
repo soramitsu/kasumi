@@ -42,7 +42,7 @@ def collect(run, plan, topology):
     selected = libtest.artifacts(run.evidence, functional, native.CASES_BY_CRATE)
 
     def command(step, args, checksum):
-        raw = run.command(step, args, TIMEOUT)
+        raw = run.command(step, args, native.timeout(step))
         require(run.report["processes"][-1]["executable"]["sha256"] == checksum,
                 "audit executable changed during dispatch: " + step)
         return raw.read_bytes()
@@ -82,7 +82,7 @@ def replay(custody, report, evidence, functional, binaries):
     def command(step, args, checksum):
         row = next(inventory, None)
         require(row and row["id"] == step, "missing original audit command: " + step)
-        code, raw = processes.original_command(custody, row, step, args, original / "source", checksum, TIMEOUT)
+        code, raw = processes.original_command(custody, row, step, args, original / "source", checksum, native.timeout(step))
         require(code == 0, "native audit command failed: " + step)
         return raw
 
