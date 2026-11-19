@@ -184,3 +184,23 @@ class LifecycleAuditComponentTests(unittest.TestCase):
                         {"fresh_store_reopen": False}, {"both_stores_drained": False}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 observe({**row, **changes})
+
+
+
+class PermanentIncarnationComponentTests(unittest.TestCase):
+    def test_requires_the_original_incarnation_and_receipt_from_each_durable_position(self):
+        row = {"case": "permanent-incarnations", "prior_limit": 100000, "selected": 100001,
+               "reopened": 100001, "verified_receipts": 100001, "replayed_first_revision": 1,
+               "replayed_last_revision": 100001, "selected_bytes": 320000001,
+               "ordered_receipts_sha256": "ab" * 32, "physical_reopen": True, "drained": True}
+
+        def observe(value):
+            return audit.observation("incarnations", (audit.PREFIX + json.dumps(value)).encode())
+
+        self.assertEqual(observe(row), row)
+        for changes in ({"selected": 100000}, {"prior_limit": 4096}, {"reopened": 0},
+                        {"verified_receipts": 1}, {"replayed_last_revision": 0},
+                        {"ordered_receipts_sha256": "substituted"}, {"drained": False},
+                        {"physical_reopen": False}, {"selected_bytes": 0}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                observe({**row, **changes})

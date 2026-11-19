@@ -26,7 +26,7 @@ RUNNER = "scripts/observe_audit_retention.py"
 SCHEMA = "kasumi-audit-retention-observations-v1"
 SCENARIOS = {"hot-budget-crossing", "verified-contiguous-archives", "archive-outage",
              "replica-dependency-before-prune", "replacement-dependencies"}
-OPEN_CATEGORIES = ["incarnations", "sessions"]
+OPEN_CATEGORIES = ["sessions"]
 
 
 def source(evidence):
@@ -58,6 +58,7 @@ def combined(evidence, directory):
             "commands": library["custody-1"]["commands"],
             "receipts": library["receipts-1"]["restored_count"],
             "lifecycle": library["lifecycle-1"]["selected_intents"],
+            "incarnations": library["incarnations-1"]["reopened"],
         },
         "outstanding_lifetime_categories": OPEN_CATEGORIES,
     }

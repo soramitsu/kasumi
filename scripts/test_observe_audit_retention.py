@@ -27,7 +27,7 @@ class AuditCollectionTests(unittest.TestCase):
         self.substitute(audit, "source", return_value={"source_commit": "f" * 40})
         self.custody.mkdir()
         self.components = {"custody-1": {"commands": 4097}, "receipts-1": {"restored_count": 100001},
-                           "lifecycle-1": {"selected_intents": 10001}}
+                           "lifecycle-1": {"selected_intents": 10001}, "incarnations-1": {"reopened": 100001}}
         self.replica = {"voters": 3, "clean_processes": 9}
         self.native_replay = self.substitute(audit.native, "verify_components", return_value=self.components)
         self.replica_replay = self.substitute(audit.replicas, "replay", return_value=self.replica)
@@ -38,8 +38,8 @@ class AuditCollectionTests(unittest.TestCase):
     def test_composition_replays_both_components_and_rejects_substitution(self):
         self.mock_originals()
         observed = audit.combined(self.evidence, self.custody)
-        self.assertEqual(observed["lifetime_counts"], {"commands":4097, "receipts":100001, "lifecycle":10001})
-        self.assertEqual(observed["outstanding_lifetime_categories"], ["incarnations", "sessions"])
+        self.assertEqual(observed["lifetime_counts"], {"commands":4097, "receipts":100001, "lifecycle":10001, "incarnations":100001})
+        self.assertEqual(observed["outstanding_lifetime_categories"], ["sessions"])
         self.assertEqual(len(observed["verified_scenarios"]), 5)
         self.assertNotIn("permanent-identity-lifetime-ceiling", observed["verified_scenarios"])
         report = self.custody / "report.json"

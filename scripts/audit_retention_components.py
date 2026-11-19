@@ -77,6 +77,12 @@ CASES = (
         1,
     ),
     (
+        "incarnations",
+        "kasumi-authority",
+        "authoritative_incarnations_cross_the_former_receipt_ceiling_and_reopen",
+        1,
+    ),
+    (
         "receipts",
         "kasumi-engine",
         "verified_point_history_crosses_former_count_limit_before_a_real_new_mutation",
@@ -85,6 +91,7 @@ CASES = (
 )
 ENGINE = ("kasumi-engine", "kasumi_engine")
 RAFT = ("kasumi-raft", "kasumi_raft")
+AUTHORITY = ("kasumi-authority", "kasumi_authority")
 CASES_BY_CRATE = {
     "audit": [(crate, crate.replace("-", "_"), test) for _, crate, test, _ in CASES]
 }
@@ -217,6 +224,17 @@ def observation(case, raw):
                 and count(value["bytes"]) > selected and count(value["replayed_first_revision"]) == 3
                 and value["fresh_store_reopen"] is True and value["both_stores_drained"] is True
                 and digest(value["sha256"]), "lifecycle witness did not retain a full permanent history")
+    elif case == "incarnations":
+        owned.exact(value, {"case", "prior_limit", "selected", "reopened", "verified_receipts",
+                            "replayed_first_revision", "replayed_last_revision", "ordered_receipts_sha256",
+                            "selected_bytes", "physical_reopen", "drained"}, "original authority history crossing")
+        selected = count(value["selected"])
+        require(value["case"] == "permanent-incarnations" and count(value["prior_limit"]) == 100_000
+                and selected > value["prior_limit"] and count(value["reopened"]) == selected
+                and count(value["verified_receipts"]) == selected and count(value["replayed_first_revision"]) == 1
+                and count(value["replayed_last_revision"]) == selected and count(value["selected_bytes"]) > selected
+                and value["physical_reopen"] is True and value["drained"] is True
+                and digest(value["ordered_receipts_sha256"]), "original authority history was not preserved")
     elif case == "receipts":
         require(
             value["case"] == "mutation-receipts"
@@ -231,7 +249,7 @@ def observation(case, raw):
 
 def replay(evidence, selected, perform):
     listing = {}
-    for crate, target in (ENGINE, RAFT):
+    for crate, target in (ENGINE, RAFT, AUTHORITY):
         relative, checksum = selected[crate, target]
         path = str(evidence / "target" / relative)
         listing[crate] = libtest.test_list(
@@ -249,7 +267,7 @@ def replay(evidence, selected, perform):
                     str(evidence / "target" / path),
                     "--exact",
                     test,
-                    *(["--include-ignored"] if case in {"receipts", "lifecycle"} else []),
+                    *(["--include-ignored"] if case in {"receipts", "lifecycle", "incarnations"} else []),
                     "--test-threads=1",
                     "--show-output",
                     "--format",

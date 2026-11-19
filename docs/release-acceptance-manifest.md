@@ -228,7 +228,7 @@ The structural workload validators enforce:
   no larger than 256, and complete current-epoch readiness above 128 groups.
 
 The audit-retention component collector runs the installed nine-process
-observation and the frozen engine and Raft tests on native Linux ARM64. Use
+observation and the frozen engine, Raft and Authority tests on native Linux ARM64. Use
 the admitted topology, fresh enrolled profiles for one tenant incarnation
 and a new custody directory outside the functional evidence. The audit plan
 uses schema `kasumi-audit-replica-v1` and absolute `data_profile` and
@@ -247,8 +247,12 @@ python3 -I -B -S scripts/observe_audit_retention.py replay \
 Replay checks both original reports against the supplied functional tree,
 recomputes their observations from original process output and checks the
 combined report. It records measured archival, outage, replica and replacement
-scenarios and the measured command, receipt and lifecycle history counts.
-The remaining permanent-history categories are incarnations and sessions.
+scenarios and the measured command, receipt, lifecycle and incarnation counts.
+The Authority witness enrolls distinct tenants, drains and reopens the encrypted
+database, verifies every incarnation against its original receipt, and replays the
+first and last enrollments. The historical Authority manifest before commit
+`04f8c199` capped receipts at 100,000 and required each accepted incarnation
+to have a receipt. The remaining permanent-history category is backup sessions.
 The combined report uses `qualification: component`; the full audit-retention
 gate requires all five historical ceilings and their genuine measured crossings.
 
