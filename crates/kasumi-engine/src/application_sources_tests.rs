@@ -1740,7 +1740,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             query.filter = filter;
             let mut memory =
                 kasumi_query::QueryMemory::empty(target.storage.admission.reserve(0, None)?);
-            let (ids, _) = reopened
+            let ids = reopened
                 .indexes
                 .indexed_candidate_ids(
                     &docs,
