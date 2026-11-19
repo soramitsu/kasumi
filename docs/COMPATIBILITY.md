@@ -28,6 +28,13 @@ root listed garbage, recovered and stopped cleanly, then served by
 | `TenantState`: the tenant's receipt head, schema activations and audit retention; Control's `backup_binding_head` over its kind 24 records, one per verified backup; serialized `Policy` and `Limits` (`deny_unknown_fields`) | the same tests, against the writing build's readback |
 | Encrypted records and wrapped keys of the node, Control, tenant, custody and security stores; documents, structured, unique, multikey, decimal and text indexes and 22 queries; permanent mutation receipts; bootstrap manifests; credential family records; installation marker, `kasumi.json` and client profiles | the same tests |
 
+The document object collector adds one application namespace,
+`engine.document.blob-links`, that no deployed build wrote or reads. It is
+derived state: a restore clears it and the collector rebuilds it from the
+published manifests, so a deployed store needs no migration and a build
+without the collector opens a store that has it. Body and blob rows keep
+their keys and bytes.
+
 Each `kasumi-server` test serves a copy with the current runtime, compares
 every answer with what the writing build recorded, then writes, snapshots,
 runs a compaction cycle, stops, checks the root, envelope and directory bytes

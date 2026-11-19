@@ -173,6 +173,13 @@ impl Drop for DeferredBatch {
     }
 }
 
+/// Whether a deferred batch waits on this thread for its publication. A
+/// maintenance write made now would commit it by itself, ahead of an entry
+/// that may never publish: optional work checks this and waits instead.
+pub fn deferred_batch_waiting() -> bool {
+    PENDING.with(|pending| pending.borrow().is_some())
+}
+
 /// Every tenant write entry point calls this first, before taking any store
 /// lock: a batch waiting on this thread for a set on `node` commits by itself
 /// before the write. Its failure fails the write, which then has no effect.

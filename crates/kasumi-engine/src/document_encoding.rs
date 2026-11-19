@@ -3,7 +3,8 @@
 //! Large string leaves are immutable content-addressed chunks. A sink must use a
 //! tenant/incarnation-scoped encrypted namespace, verify an existing chunk before
 //! reusing it, and durably install every chunk before publishing its manifest.
-//! No object is deleted here: generation/snapshot reachability owns reclamation.
+//! No object is deleted here: `document_gc` and a restore's reconciliation own
+//! reclamation, by what the current state and the selected snapshot name.
 //! Readers must retain the exact selected native view and reserve the bounded
 //! output, decoded Value and callback workspace before calling this module.
 #[cfg(test)]
@@ -445,7 +446,6 @@ impl BodyManifest {
         Ok(manifest)
     }
 
-    #[cfg(test)]
     pub(crate) fn blob_references(&self) -> impl Iterator<Item = &BlobReference> {
         self.fragments
             .iter()

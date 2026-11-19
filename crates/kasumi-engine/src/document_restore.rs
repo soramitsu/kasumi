@@ -844,8 +844,9 @@ impl StagedDocuments {
     /// Bring each published namespace to the snapshot's exact object set in
     /// bounded batches, never in one complete replacement, whose staging grows
     /// with every object the tenant ever wrote until it exceeds the native
-    /// transaction cap. Object rows are content-addressed and no apply deletes
-    /// them: a reopening replica holds every object its own snapshot names,
+    /// transaction cap. Object rows are content-addressed, no apply deletes
+    /// them and the online collector deletes none its selected snapshot
+    /// names: a reopening replica holds every object its own snapshot names,
     /// plus objects that only later or superseded documents name; an
     /// installing one holds the snapshot's objects `write_missing` wrote and
     /// every object of the state it replaced. Rows the snapshot lacks are
@@ -854,6 +855,7 @@ impl StagedDocuments {
     /// captures the store: replay and later applies check object presence
     /// against that selection.
     pub(crate) fn reconcile(&self, store: &Arc<TenantStore>) -> Result<()> {
+        self.clear_chunk_owners(store)?;
         if let Some(published) = &self.published {
             return self.reconcile_published(store, published);
         }
@@ -890,6 +892,16 @@ impl StagedDocuments {
             }
         }
         Ok(())
+    }
+
+    /// The collector's chunk owner counts describe the object rows this
+    /// restore replaces: none survives it. The collector counts the restored
+    /// manifests again before it collects any chunk.
+    fn clear_chunk_owners(&self, store: &Arc<TenantStore>) -> Result<()> {
+        let mut correction =
+            Correction::new(store, self.tables.disk.memory(), crate::document_gc::LINKS)?;
+        crate::document_gc::clear_links(store, |key| correction.delete(key))?;
+        correction.flush()
     }
 
     /// A reopened snapshot's reconciliation. Its store already holds every

@@ -466,7 +466,8 @@ impl AcceptedGeneration<'_> {
             selected,
             &self.candidate.state.tenant,
             &self.candidate.state.incarnation,
-        )?;
+        )?
+        .collecting(self.owner.engine.object_gc.clone());
         let candidate = Arc::get_mut(&mut self.candidate)
             .ok_or_else(|| anyhow::anyhow!("unpublished document candidate escaped"))?;
         // Each staged after-image, by the pending slot it replaced; that slot
@@ -588,6 +589,11 @@ impl AcceptedGeneration<'_> {
             receipt_publications: _,
             owner,
         } = self;
+        // Descriptors this publication displaced become collection candidates.
+        owner
+            .engine
+            .object_gc
+            .displaced(&owner.previous.state, &candidate.state, &delta.changed);
         owner.engine.publish_generation(Some(candidate));
         // Preserve the moved exact IDs until the actual visible swap completes.
         drop(delta.changed);

@@ -90,6 +90,7 @@ impl UninitializedEngine {
                 access: std::sync::OnceLock::new(),
                 snapshot_store: std::sync::OnceLock::new(),
                 audit_maintenance: Mutex::new(None),
+                object_gc: Arc::default(),
                 leases: lease_retention::LeaseManager::default(),
                 tenant: state.tenant.clone(),
                 incarnation: state.incarnation.clone(),

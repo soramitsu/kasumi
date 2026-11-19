@@ -1641,3 +1641,6 @@ async fn document_store_native_bootstrap_shared_read_uses_one_selected_reader()
     drop(bootstrap);
     fixture.close().await
 }
+
+#[path = "document_gc_native_tests.rs"]
+mod collection;

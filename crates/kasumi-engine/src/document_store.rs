@@ -196,6 +196,8 @@ pub(crate) struct PreparedDocuments {
     scope: Scope,
     retained: u64,
     reservation: DocumentWorkspace,
+    // Fences presence checks and learns each staged manifest and its chunks.
+    collector: Option<Arc<crate::document_gc::ObjectGc>>,
 }
 impl PreparedDocuments {
     pub(crate) fn new(
@@ -214,7 +216,15 @@ impl PreparedDocuments {
             scope,
             retained: FLOOR,
             reservation,
+            collector: None,
         })
+    }
+    /// The engine's object collector. An object it deleted after the selection
+    /// this owner reads is written again, and every after-image staged here
+    /// is reported to it as live.
+    pub(crate) fn collecting(mut self, collector: Arc<crate::document_gc::ObjectGc>) -> Self {
+        self.collector = Some(collector);
+        self
     }
     pub(crate) fn stage(&mut self, document: &Document) -> Result<StoredDocument> {
         let measured = DocumentMeasurement::new(document)?;
@@ -225,8 +235,15 @@ impl PreparedDocuments {
                 .checked_add(work)
                 .context("document preparation overflow")?,
         )?;
+        let collecting = self.collector.is_some();
+        // At most `limits.blobs` digests, within this document's workspace.
+        let mut blobs = Vec::new();
         let manifest =
             document_encoding::encode_body(&document.body, limits, |reference, bytes| {
+                if collecting {
+                    blobs.try_reserve(1)?;
+                    blobs.push(reference.sha256);
+                }
                 self.put(false, reference.sha256, bytes, work)
             })?;
         let wire = manifest.to_bytes(limits)?;
@@ -235,6 +252,11 @@ impl PreparedDocuments {
         drop(wire);
         drop(manifest);
         self.reservation.retain(self.retained);
+        if let Some(collector) = &self.collector {
+            blobs.sort_unstable();
+            blobs.dedup();
+            collector.staged(descriptor.body_object, blobs);
+        }
         Ok(descriptor)
     }
     fn put(&mut self, body: bool, digest: [u8; 32], bytes: &[u8], work: u64) -> Result<()> {
@@ -257,24 +279,31 @@ impl PreparedDocuments {
         let baseline = work
             .checked_add(self.retained)
             .context("document preparation overflow")?;
-        let exists = self.reader.with_record(
-            &mut self.reservation,
-            baseline,
-            namespace,
-            &key,
-            bytes.len(),
-            |previous| {
-                if let Some(previous) = previous {
-                    ensure!(
-                        previous == bytes,
-                        "existing document content-address differs"
-                    );
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            },
-        )?;
+        // The selection read here predates a deletion the collector committed
+        // after it: that row is absent from the root this write publishes to.
+        let fenced = self
+            .collector
+            .as_ref()
+            .is_some_and(|collector| collector.fenced(body, &digest));
+        let exists = !fenced
+            && self.reader.with_record(
+                &mut self.reservation,
+                baseline,
+                namespace,
+                &key,
+                bytes.len(),
+                |previous| {
+                    if let Some(previous) = previous {
+                        ensure!(
+                            previous == bytes,
+                            "existing document content-address differs"
+                        );
+                        Ok(true)
+                    } else {
+                        Ok(false)
+                    }
+                },
+            )?;
         if exists {
             return Ok(());
         }

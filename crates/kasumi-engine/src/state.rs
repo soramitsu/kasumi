@@ -319,6 +319,9 @@ pub struct TenantEngine {
     pub(crate) snapshot_store: std::sync::OnceLock<Arc<kasumi_store::TenantStore>>,
     pub(crate) audit_maintenance:
         Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
+    /// Online collection of document objects no state names. Its candidates
+    /// and fence change only under `apply_lock`.
+    pub(crate) object_gc: Arc<crate::document_gc::ObjectGc>,
     /// The form of this group's own standalone snapshots.
     local_snapshot_form: LocalSnapshotForm,
     /// Edit journal custody of the ordinary primary directory.
@@ -593,11 +596,8 @@ fn journal_record_bytes(proposal_bytes: usize) -> Option<u64> {
         .checked_add(256 << 10)
 }
 
-impl kasumi_raft::StateMachineBackend for TenantEngine {
-    fn close_application(&self) {
-        self.seal();
-    }
-    fn apply_with_publisher(
+impl TenantEngine {
+    fn apply_committed(
         &self,
         position: &kasumi_raft::AppliedEntryContext,
         input: kasumi_raft::AppliedInput<'_>,
@@ -642,10 +642,7 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
         }
         ordered_command::apply_ordinary(self, input, publisher)
     }
-    fn supports_group_apply(&self) -> bool {
-        self.application_sources.get().is_some()
-    }
-    fn apply_group_with_publisher(
+    fn apply_committed_group(
         &self,
         positions: &[kasumi_raft::AppliedEntryContext],
         inputs: &[&[u8]],
@@ -664,6 +661,41 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             .map(|(position, bytes)| ByteBoundCommand::check(position, bytes))
             .collect::<anyhow::Result<Vec<_>>>()?;
         ordered_command::apply_ordinary_group(self, commands, publisher)
+    }
+}
+
+impl kasumi_raft::StateMachineBackend for TenantEngine {
+    fn close_application(&self) {
+        self.seal();
+    }
+    fn apply_with_publisher(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+        input: kasumi_raft::AppliedInput<'_>,
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let outcome = self.apply_committed(position, input, publisher);
+        // After the entry's escrow has ended. A failed apply fences its
+        // machine: nothing optional follows it.
+        if outcome.is_ok() {
+            self.object_gc_step();
+        }
+        outcome
+    }
+    fn supports_group_apply(&self) -> bool {
+        self.application_sources.get().is_some()
+    }
+    fn apply_group_with_publisher(
+        &self,
+        positions: &[kasumi_raft::AppliedEntryContext],
+        inputs: &[&[u8]],
+        publisher: &mut dyn kasumi_raft::ApplyPublisher,
+    ) -> std::result::Result<(), kasumi_store::ScratchOperationFailure> {
+        let outcome = self.apply_committed_group(positions, inputs, publisher);
+        if outcome.is_ok() {
+            self.object_gc_step();
+        }
+        outcome
     }
     fn capture_snapshot(
         &self,
@@ -923,6 +955,9 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
         // of the previous generation keep the root they selected, and the
         // held apply owner admits no other capture. A failure leaves the
         // restart to redo it.
+        // The restore replaces what the collector verified against. A failure
+        // leaves collection off, as it leaves the restart to redo this.
+        engine.object_gc.suspend();
         if let Some(documents) = &generation.staged_documents {
             anyhow::ensure!(
                 selection.is_some() || !documents.reads_published(),
@@ -953,6 +988,8 @@ impl kasumi_raft::PreparedStateMachineRestore for PreparedTenantRestore<'_> {
                 .map_err(|_| anyhow::anyhow!("restored application selection already installed"))?;
         }
         engine.leases.replace(&engine.current, Arc::new(generation));
+        // Both object namespaces now hold exactly this snapshot's objects.
+        engine.object_gc.reset();
         Ok(())
     }
 }
@@ -1022,10 +1059,53 @@ impl TenantEngine {
             .application_selection
             .set(selection)
             .map_err(|_| anyhow::anyhow!("bootstrap selection already installed"))?;
+        self.object_gc
+            .install(sources.primary_installation().1.clone());
         self.application_sources
             .set(sources)
             .map_err(|_| anyhow::anyhow!("application source already installed"))?;
         Ok(())
+    }
+    /// One bounded unit of document object collection, after a committed
+    /// apply has ended. It runs outside that apply's native escrow, in
+    /// transactions of its own, so no failure or refusal here can reach the
+    /// committed entry: it only defers the collection.
+    pub(crate) fn object_gc_step(&self) {
+        // A standalone entry's journal record that still waits on this thread
+        // belongs to a publication that did not carry it. No write of the
+        // collector may commit that record in its place.
+        if !self.object_gc.wants_step() || kasumi_store::deferred_batch_waiting() {
+            return;
+        }
+        let Some(sources) = self.application_sources.get() else {
+            return;
+        };
+        let Ok(_apply) = self.apply_lock.lock() else {
+            return;
+        };
+        let Some(current) = self.current.load_full() else {
+            return;
+        };
+        let Some(selection) = current.application_selection.get() else {
+            return;
+        };
+        if current.state.retired {
+            return;
+        }
+        let Ok(scope) =
+            crate::document_store::Scope::new(&current.state.tenant, &current.state.incarnation)
+        else {
+            return;
+        };
+        self.object_gc.step(&crate::document_gc::Step {
+            state: &current.state,
+            snapshot_revision: &|| {
+                selection
+                    .with_base_snapshot_records(&current.state, |_, _, _, revision| Ok(revision))
+            },
+            store: sources.primary_installation().0.application(),
+            scope,
+        });
     }
     pub(crate) fn seal_application_source_consumers(&self) {
         if let Some(sources) = self.application_sources.get() {
@@ -1466,6 +1546,22 @@ impl TenantEngine {
     }
 
     fn publish_generation(&self, next: Option<Arc<Generation>>) {
+        // A newly captured selection was taken under the apply lock, after
+        // every object deletion committed so far: later applies read object
+        // presence through it. A generation that keeps its predecessor's
+        // selection ends no fence.
+        if let Some(selected) = next
+            .as_ref()
+            .and_then(|next| next.application_selection.get())
+            && self
+                .current
+                .load()
+                .as_ref()
+                .and_then(|current| current.application_selection.get())
+                .is_none_or(|current| current.id() != selected.id())
+        {
+            self.object_gc.selection_published();
+        }
         self.leases.publish(&self.current, next);
     }
 
@@ -1775,6 +1871,7 @@ impl TenantEngine {
             access: std::sync::OnceLock::new(),
             snapshot_store: std::sync::OnceLock::new(),
             audit_maintenance: Mutex::new(None),
+            object_gc: Arc::default(),
             leases: lease_retention::LeaseManager::default(),
             current: ArcSwapOption::from_pointee(Generation {
                 target_resolutions: crate::target_resolution::View::empty(

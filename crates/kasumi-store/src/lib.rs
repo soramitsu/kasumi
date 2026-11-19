@@ -50,7 +50,7 @@ mod cached_rows;
 pub use cached_rows::NamespaceEpoch;
 mod deferred_batch;
 use catalog_read_budget::AdmittedKeyCatalog;
-pub use deferred_batch::{CarriedBatch, DeferredBatch, DeferredState};
+pub use deferred_batch::{CarriedBatch, DeferredBatch, DeferredState, deferred_batch_waiting};
 pub use kasumi_kv::{
     MaintenanceBudget, MaintenanceDeferral, MaintenancePolicy, MaintenanceProgress,
     MaintenanceStep, StorageCompactionPhase, StorageError, StorageMaintenanceStatus,

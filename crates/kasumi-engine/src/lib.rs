@@ -27,6 +27,7 @@ mod application_structured;
 mod audit_source;
 mod current_json;
 mod document_encoding;
+mod document_gc;
 mod document_restore;
 mod document_source;
 mod document_store;
