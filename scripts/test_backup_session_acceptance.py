@@ -101,6 +101,27 @@ class SessionEvidenceTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "unowned"):
             sessions.index_destination(self.db, self.root)
 
+    def test_terminal_extent_and_ciphertext_across_compaction_and_interrupted_rename(self):
+        target = uuid.uuid4()
+        payload = b"original encrypted outcome"
+        fields = (bytes([2]) + bytes(7) + target.bytes + len(payload).to_bytes(8, "little")
+                  + hashlib.sha256(payload).digest() + payload)
+        padding = bytes(sessions.SLOT_CAPACITY - len(payload))
+        for version, tail, valid in ((1, padding, True), (1, b"", False), (2, padding, True),
+                                     (2, b"", True), (2, b"\x00", False),
+                                     (2, padding[:-1] + b"X", False)):
+            with self.subTest(version=version, extent=len(tail), valid=valid):
+                record = f"KSMSES0{version}".encode() + fields + tail
+                path = self.root / "outcome.kasumi"
+                path.write_bytes(record)
+                if valid:
+                    self.assertEqual(sessions.terminal_digests(path, str(target), "outcome"),
+                                     (hashlib.sha256(record).hexdigest(), len(payload),
+                                      hashlib.sha256(payload).hexdigest()))
+                else:
+                    with self.assertRaises(ValueError):
+                        sessions.terminal_digests(path, str(target), "outcome")
+
     def test_bounded_page_chain_resolves_claim_and_terminal_ordinals(self):
         self.db.execute("CREATE TABLE position(ord INTEGER PRIMARY KEY, claim INTEGER, id TEXT, digest TEXT)")
         ids = [sessions.session_id(self.nonce, i // 2) for i in range(4)]

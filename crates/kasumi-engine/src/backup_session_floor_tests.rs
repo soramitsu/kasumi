@@ -226,7 +226,7 @@ struct Installation {
 impl Installation {
     async fn open(root: &Path, plan: &Plan) -> anyhow::Result<Self> {
         let create = !root.join("ids.json").exists();
-        let (persistent, scratch) = if create {
+        let (mut persistent, scratch) = if create {
             crate::test_utils::fixture_disk_configs(root)?
         } else {
             (
@@ -240,6 +240,28 @@ impl Installation {
                 },
             )
         };
+        if plan.sessions == FLOOR {
+            // Two terminal files and two directories per session, retained
+            // checkpoint objects, and space for the original native stores.
+            persistent.max_persistent_files += 4 * FLOOR;
+            persistent.max_persistent_subdirectories += 2 * FLOOR;
+            persistent.max_bytes = 200 << 30;
+        }
+        let policy = serde_json::json!({
+            "max_bytes": persistent.max_bytes,
+            "max_persistent_files": persistent.max_persistent_files,
+            "max_persistent_subdirectories": persistent.max_persistent_subdirectories,
+            "min_free_bytes": persistent.min_free_bytes,
+        });
+        let policy_path = root.join("disk-policy.json");
+        if create {
+            write_json(&policy_path, &policy)?;
+        } else if policy_path.exists() {
+            anyhow::ensure!(
+                read_json::<serde_json::Value>(&policy_path)? == policy,
+                "reopened disk policy differs"
+            );
+        }
         let storage =
             crate::test_utils::FixtureStorage::open(&persistent, &scratch, Default::default())?;
         let node_path = root.join("persistent/node.kv");
@@ -2241,6 +2263,7 @@ async fn witness(test: &str, cohort: Cohort) -> anyhow::Result<()> {
                 "observation_page_limit_used": plan.page_limit,
                 "control_binding_intent_ciphertext_bytes": kasumi_types::MAX_BACKUP_BINDING_INTENT_BYTES,
                 "control_binding_budget_bytes": plan.control_binding_budget,
+                "persistent_disk": read_json::<serde_json::Value>(&root.join("disk-policy.json"))?,
                 "installed_default_binding_budget_bytes": INSTALLED_DEFAULT_BINDING_BYTES,
                 "selected_binding_bytes": head.encoded_bytes,
                 "binding_bytes_per_session": per_session,
@@ -2306,7 +2329,7 @@ fn test_name(leaf: &str) -> String {
 
 /// Small normal regression: every process, kill point, replay, boundary and
 /// cleanup check of the full witness on 24 sessions, paged eight at a time.
-/// Each filesystem session reserves two fixed terminal slots (about 4.3 MB).
+/// Each session reserves both terminal slots before it publishes its first object.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn backup_session_floor_regression() -> anyhow::Result<()> {
     witness(
@@ -2325,7 +2348,7 @@ async fn backup_session_floor_regression() -> anyhow::Result<()> {
 /// Explicit page cohort: 520 sessions with 260 planned failures, enumerated
 /// at the full 256-session page bound, at the installed default binding budget.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-#[ignore = "explicit 520-session page cohort; about 2.3 GB of filesystem destination slots"]
+#[ignore = "explicit 520-session page cohort across physical restart"]
 async fn backup_session_floor_page_cohort() -> anyhow::Result<()> {
     witness(
         &test_name("backup_session_floor_page_cohort"),

@@ -93,22 +93,25 @@ def index_originals(db, root, plan, summary, minimum_failed=257):
     return failed, resolutions
 
 
-# Filesystem terminal v1 reserves the whole envelope before the session starts.
+# Both terminal formats reserve the whole envelope before the session starts.
 SLOT_CAPACITY = (64 << 10) + (2 << 20) + 84
 SLOT_HEADER = 72
 
 
 def terminal_digests(path, identifier, kind):
-    """Authenticate both the original fixed extent and its logical ciphertext."""
-    require(path.stat().st_size == SLOT_HEADER + SLOT_CAPACITY, "invalid terminal extent")
+    """Authenticate the physical record and its exact logical ciphertext."""
     with path.open("rb") as stream:
+        extent = os.fstat(stream.fileno()).st_size
         header = stream.read(SLOT_HEADER)
         tag = {"intent": 1, "outcome": 2}[kind]
-        require(len(header) == SLOT_HEADER and header[:8] == b"KSMSES01" and header[8] == tag
+        require(len(header) == SLOT_HEADER and header[:8] in (b"KSMSES01", b"KSMSES02") and header[8] == tag
                 and header[9:16] == bytes(7) and header[16:32] == uuid.UUID(identity(identifier)).bytes,
                 "terminal belongs to a different session or slot")
         length = int.from_bytes(header[32:40], "little")
         require(0 < length <= SLOT_CAPACITY, "invalid terminal ciphertext length")
+        require(extent == SLOT_HEADER + SLOT_CAPACITY
+                or (header[:8] == b"KSMSES02" and extent == SLOT_HEADER + length),
+                "invalid terminal extent")
         physical = hashlib.sha256(header)
         payload = hashlib.sha256()
         remaining = length

@@ -34,6 +34,17 @@ runs a compaction cycle, stops, checks the root, envelope and directory bytes
 it left and reopens. Not covered: a restore of a deployed backup, staged
 transactions, lifecycle and retirement records, and replicated groups.
 
+### Filesystem backup-session terminals
+
+An outstanding intent or outcome has a preallocated reserve inode large enough
+for the maximum encrypted record. Publication writes and synchronizes the
+record, then renames that inode. The `KSMSES01` reader requires the entire
+original fixed extent. New `KSMSES02` publications release the zero padding
+after the rename and keep the original ciphertext and digest. A restart at
+the rename can see either the full record or its exact compact length.
+A later write in the same session authenticates any full v2 record before
+reclaiming its padding. A session with a v1 intent can publish a v2 outcome.
+
 ## Service compatibility evidence
 
 ### OpenBao Transit

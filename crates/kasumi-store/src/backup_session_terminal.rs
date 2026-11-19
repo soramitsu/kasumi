@@ -1,10 +1,11 @@
-//! Canonical fixed-extent filesystem terminal records. Reserve paths never
-//! decode as published records; publication moves the original reserved inode.
+//! Reserve the maximum terminal extent before publication. A v2 terminal keeps
+//! the same inode while releasing its zero padding after the durable rename.
 use sha2::{Digest, Sha256};
 use std::io;
 use uuid::Uuid;
 
-const MAGIC: &[u8; 8] = b"KSMSES01";
+const FIXED_MAGIC: &[u8; 8] = b"KSMSES01";
+const COMPACT_MAGIC: &[u8; 8] = b"KSMSES02";
 pub(super) const HEADER_BYTES: usize = 72;
 pub(super) const IO_CHUNK_BYTES: usize = 4096;
 pub(super) const PAYLOAD_BYTES: usize =
@@ -46,7 +47,7 @@ pub(super) fn header(
         return Err(io::ErrorKind::InvalidInput.into());
     }
     let mut result = [0; HEADER_BYTES];
-    result[..8].copy_from_slice(MAGIC);
+    result[..8].copy_from_slice(COMPACT_MAGIC);
     result[8] = slot.tag();
     result[16..32].copy_from_slice(session.as_bytes());
     result[32..40].copy_from_slice(&(payload.len() as u64).to_le_bytes());
@@ -54,10 +55,10 @@ pub(super) fn header(
     Ok(result)
 }
 
-fn parse_header(bytes: &[u8], session: Uuid, slot: Terminal) -> io::Result<usize> {
+fn parse_header(bytes: &[u8], session: Uuid, slot: Terminal, extent: u64) -> io::Result<usize> {
     if bytes.len() != HEADER_BYTES
         || session.is_nil()
-        || &bytes[..8] != MAGIC
+        || (&bytes[..8] != FIXED_MAGIC && &bytes[..8] != COMPACT_MAGIC)
         || bytes[8] != slot.tag()
         || bytes[9..16] != [0; 7]
         || bytes[16..32] != *session.as_bytes()
@@ -71,6 +72,13 @@ fn parse_header(bytes: &[u8], session: Uuid, slot: Terminal) -> io::Result<usize
     if length == 0 || length > PAYLOAD_BYTES {
         return Err(io::ErrorKind::InvalidData.into());
     }
+    // A crash after rename and before truncate leaves a complete padded v2.
+    // Only v2 may also have the exact compact length.
+    if extent != FILE_BYTES as u64
+        && !(&bytes[..8] == COMPACT_MAGIC && extent == (HEADER_BYTES + length) as u64)
+    {
+        return Err(io::ErrorKind::InvalidData.into());
+    }
     Ok(length)
 }
 
@@ -81,10 +89,10 @@ pub(super) fn decode(
     slot: Terminal,
     limit: usize,
 ) -> io::Result<&[u8]> {
-    if bytes.len() != FILE_BYTES {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    let length = parse_header(&bytes[..HEADER_BYTES], session, slot)?;
+    let header = bytes
+        .get(..HEADER_BYTES)
+        .ok_or(io::ErrorKind::InvalidData)?;
+    let length = parse_header(header, session, slot, bytes.len() as u64)?;
     if length > limit {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -102,29 +110,51 @@ fn read_header(
     file: &crate::NodeDiskFile,
     session: Uuid,
     slot: Terminal,
-) -> io::Result<([u8; HEADER_BYTES], usize)> {
+) -> io::Result<([u8; HEADER_BYTES], usize, usize)> {
     let result = (|| {
-        if file.observed_len()? != FILE_BYTES as u64 {
-            return Err(io::ErrorKind::InvalidData.into());
-        }
+        let extent = file.observed_len()?;
         let mut header = [0; HEADER_BYTES];
         file.read_exact_at(&mut header, 0)?;
-        let length = parse_header(&header, session, slot)?;
-        Ok((header, length))
+        let length = parse_header(&header, session, slot, extent)?;
+        Ok((header, length, extent as usize))
     })();
     result.inspect_err(|_| file.owner_failed())
 }
 
-/// Classification checks the exact full extent and the fixed header only.
-/// Publication synchronized the whole record before its name could appear,
-/// and every `read` still verifies the payload digest and zero tail; deciding
-/// that the record exists never re-reads its payload.
+/// Ordinary classification checks only the physical length and fixed header.
+/// A full v2 left by an interrupted publication must authenticate the payload
+/// and padding before that padding can be reclaimed by a subsequent writer.
 pub(super) fn classify(
-    file: &crate::NodeDiskFile,
+    file: &mut crate::NodeDiskFile,
     session: Uuid,
     slot: Terminal,
 ) -> io::Result<()> {
-    read_header(file, session, slot).map(|_| ())
+    let (header, length, extent) = read_header(file, session, slot)?;
+    let end = HEADER_BYTES + length;
+    if &header[..8] == FIXED_MAGIC || end == extent {
+        return Ok(());
+    }
+    let mut buffer = [0; IO_CHUNK_BYTES];
+    let mut digest = Sha256::new();
+    let mut offset = HEADER_BYTES;
+    let verify = (|| {
+        while offset < extent {
+            let count = buffer.len().min(extent - offset);
+            file.read_exact_at(&mut buffer[..count], offset as u64)?;
+            let payload = end.saturating_sub(offset).min(count);
+            digest.update(&buffer[..payload]);
+            if buffer[payload..count].iter().any(|&byte| byte != 0) {
+                return Err(io::ErrorKind::InvalidData.into());
+            }
+            offset += count;
+        }
+        if digest.finalize()[..] != header[40..72] {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        Ok(())
+    })();
+    verify.inspect_err(|_: &io::Error| file.owner_failed())?;
+    file.shrink(end as u64)
 }
 
 /// The returned allocation is the exact original ciphertext length, bounded by
@@ -136,7 +166,7 @@ pub(super) fn read(
     slot: Terminal,
     limit: usize,
 ) -> io::Result<Vec<u8>> {
-    let (header, length) = read_header(file, session, slot)?;
+    let (header, length, extent) = read_header(file, session, slot)?;
     if length > limit {
         return Err(io::ErrorKind::InvalidInput.into());
     }
@@ -148,8 +178,8 @@ pub(super) fn read(
         }
         let mut buffer = [0; IO_CHUNK_BYTES];
         let mut offset = HEADER_BYTES + length;
-        while offset < FILE_BYTES {
-            let count = buffer.len().min(FILE_BYTES - offset);
+        while offset < extent {
+            let count = buffer.len().min(extent - offset);
             file.read_exact_at(&mut buffer[..count], offset as u64)?;
             if buffer[..count].iter().any(|&byte| byte != 0) {
                 return Err(io::ErrorKind::InvalidData.into());
@@ -214,6 +244,16 @@ mod tests {
             let short = encoded(session, slot, b"ciphertext");
             assert_eq!(short.len(), FILE_BYTES);
             assert_eq!(decode(&short, session, slot, 10).unwrap(), b"ciphertext");
+            let compact_len = HEADER_BYTES + 10;
+            assert_eq!(
+                decode(&short[..compact_len], session, slot, 10).unwrap(),
+                b"ciphertext"
+            );
+            assert!(decode(&short[..compact_len + 1], session, slot, 10).is_err());
+            let mut legacy = short;
+            legacy[..8].copy_from_slice(FIXED_MAGIC);
+            assert_eq!(decode(&legacy, session, slot, 10).unwrap(), b"ciphertext");
+            assert!(decode(&legacy[..compact_len], session, slot, 10).is_err());
         }
     }
 
