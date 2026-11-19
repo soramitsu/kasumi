@@ -1488,9 +1488,30 @@ mod tests {
             .unwrap();
         assert_eq!(prepared.image(), &image);
         source
-            .verify_bootstrap_dependencies_owned(admission)
+            .verify_bootstrap_dependencies_owned(admission.clone())
             .await
             .unwrap();
+        // Final process drain seals the installed core. Public capture and
+        // restore must refuse before either can start another filesystem job.
+        admission.memory().blocking_children().seal();
+        let refused = source
+            .snapshot(admission.clone(), 60_000)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            refused.operation_error().unwrap().code,
+            kasumi_types::ErrorCode::Unavailable
+        );
+        let refused = target
+            .prepare_snapshot_restore(image, admission.clone(), 60_000)
+            .await
+            .err()
+            .unwrap();
+        assert_eq!(
+            refused.operation_error().unwrap().code,
+            kasumi_types::ErrorCode::Unavailable
+        );
+        admission.drain_blocking_children().await.unwrap();
         source_store.shutdown().await.unwrap();
         target_store.shutdown().await.unwrap();
     }

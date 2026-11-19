@@ -36,7 +36,9 @@ pub(crate) fn encoding_error(error: anyhow::Error) -> Error {
             "tenant key authorization expired; recovery required",
         );
     }
-    if causes(&error).any(|cause| cause.is::<tokio::task::JoinError>()) {
+    if causes(&error).any(|cause| {
+        cause.is::<tokio::task::JoinError>() || cause.is::<kasumi_serving::ChildLost>()
+    }) {
         return Error::new(ErrorCode::Unavailable, "snapshot worker stopped");
     }
     match causes(&error).find_map(|cause| cause.downcast_ref::<std::io::Error>()) {

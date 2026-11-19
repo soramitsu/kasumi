@@ -140,10 +140,15 @@ pub(crate) async fn verify_indexed_audit_dependency(
 /// report keeps a marker, as a database drain does for a failed custody detach.
 pub(crate) trait WorkerFailure: From<anyhow::Error> + Send + 'static {
     fn unclaimed(self) -> anyhow::Error;
+    fn matches_stop(&self, stop: &Error) -> bool;
 }
 impl WorkerFailure for anyhow::Error {
     fn unclaimed(self) -> anyhow::Error {
         self
+    }
+    fn matches_stop(&self, stop: &Error) -> bool {
+        crate::state::snapshot_encoding_failure::causes(self)
+            .any(|cause| cause.downcast_ref::<Error>() == Some(stop))
     }
 }
 impl WorkerFailure for kasumi_store::ScratchOperationFailure {
@@ -153,10 +158,20 @@ impl WorkerFailure for kasumi_store::ScratchOperationFailure {
             custody => anyhow::anyhow!("{custody}"),
         }
     }
+    fn matches_stop(&self, stop: &Error) -> bool {
+        matches!(self, Self::Operation(error) if error.matches_stop(stop))
+    }
 }
 impl WorkerFailure for crate::SnapshotFailure {
     fn unclaimed(self) -> anyhow::Error {
         self.into_scratch_failure().unclaimed()
+    }
+    fn matches_stop(&self, stop: &Error) -> bool {
+        match self {
+            Self::Operation(error) => error == stop,
+            Self::Source(error) => error.matches_stop(stop),
+            Self::AdmissionRefused(_) | Self::Creation(_) => false,
+        }
     }
 }
 struct Unclaimed<E>(E);
@@ -193,7 +208,7 @@ impl VerificationDeadline {
     }
     pub fn check(self) -> anyhow::Result<()> {
         if tokio::time::Instant::now() >= self.0 {
-            return Err(Self::expired());
+            return Err(Self::expired_error().into());
         }
         Ok(())
     }
@@ -201,14 +216,13 @@ impl VerificationDeadline {
         self.check()?;
         tokio::time::timeout_at(self.0, future)
             .await
-            .map_err(|_| Self::expired())
+            .map_err(|_| Self::expired_error().into())
     }
-    fn expired() -> anyhow::Error {
+    fn expired_error() -> Error {
         Error::new(
             ErrorCode::Unavailable,
             "backup verification deadline expired",
         )
-        .into()
     }
     /// Run `work` on a blocking child that the node's memory core retains.
     /// An expired deadline or a cancelled caller gives up only its claim: the
@@ -228,57 +242,71 @@ impl VerificationDeadline {
     {
         struct Resources {
             _reservation: Arc<Reservation>,
-            _registration: Option<Arc<VerificationWork>>,
+            registration: Option<Arc<VerificationWork>>,
         }
-        impl Resources {
-            /// The operation's own deadline or cancellation told it to stop.
-            fn stopped<E: From<anyhow::Error>>(&self, deadline: VerificationDeadline) -> Option<E> {
-                if let Err(expired) = deadline.check() {
-                    return Some(E::from(expired));
-                }
-                let work = self._registration.as_ref()?;
-                work.check()
-                    .err()
-                    .map(|original| E::from(anyhow::Error::new(original)))
-            }
-        }
-        struct Output<T> {
-            value: T,
-            // Output/state drops before resources; resources drop their byte
-            // charge before the work registration permits shutdown to drain.
-            _resources: Resources,
-        }
+        let owner = reservation.blocking_owner();
+        let resources = Resources {
+            _reservation: reservation,
+            registration,
+        };
+        let (value, _) = self
+            .blocking_with(
+                owner,
+                resources,
+                |resources| {
+                    resources
+                        .registration
+                        .as_ref()
+                        .map_or(Ok(()), |work| work.check())
+                },
+                |_| work(),
+            )
+            .await?;
+        Ok(value)
+    }
+
+    /// Retain the original join and its resources together, including a
+    /// uniquely owned reservation that a restore must grow after inspecting
+    /// the image. The output drops before the charge and work registration.
+    pub(crate) async fn blocking_with<R, T, E>(
+        self,
+        owner: Arc<crate::admission::MemoryCore>,
+        mut resources: R,
+        check: impl Fn(&R) -> Result<()> + Send + 'static,
+        work: impl FnOnce(&mut R) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<(T, R), E>
+    where
+        R: Send + 'static,
+        T: Send + 'static,
+        E: WorkerFailure,
+    {
         let phase = VerificationPhase::start("verification.blocking_wait", Some(self));
         self.check().map_err(E::from)?;
-        // The child takes the reservation whole. This waiter keeps only the
-        // core whose table owns the child, never a share of the charge.
-        let owner = reservation.blocking_owner();
         let started = owner.blocking_children().start(move || {
             let phase = VerificationPhase::start("verification.blocking_worker", Some(self));
-            let resources = Resources {
-                _reservation: reservation,
-                _registration: registration,
+            let check_stop = |resources: &R| {
+                if tokio::time::Instant::now() >= self.0 {
+                    Err(Self::expired_error())
+                } else {
+                    check(resources)
+                }
             };
-            if let Some(stop) = resources.stopped(self) {
-                return Err(kasumi_serving::ChildFailure::Stopped(Unclaimed(stop)));
-            }
-            let value = work().map_err(|error| {
-                // A stopped operation's worker reports that stop in its own
-                // words. Any other failure is the worker's, and is retained
-                // when no caller is left to receive it.
-                match resources.stopped::<E>(self) {
-                    Some(_) => kasumi_serving::ChildFailure::Stopped(Unclaimed(error)),
-                    None => kasumi_serving::ChildFailure::Failed(Unclaimed(error)),
+            let stopped = |error: Error| {
+                kasumi_serving::ChildFailure::Stopped(Unclaimed(E::from(error.into())))
+            };
+            check_stop(&resources).map_err(stopped)?;
+            let value = work(&mut resources).map_err(|error| {
+                // Cancellation may coincide with an independent storage failure.
+                // Only the original cancellation/deadline is an expected stop.
+                if check_stop(&resources).is_err_and(|stop| error.matches_stop(&stop)) {
+                    kasumi_serving::ChildFailure::Stopped(Unclaimed(error))
+                } else {
+                    kasumi_serving::ChildFailure::Failed(Unclaimed(error))
                 }
             })?;
-            if let Some(stop) = resources.stopped(self) {
-                return Err(kasumi_serving::ChildFailure::Stopped(Unclaimed(stop)));
-            }
+            check_stop(&resources).map_err(stopped)?;
             phase.complete();
-            Ok(Output {
-                value,
-                _resources: resources,
-            })
+            Ok((value, resources))
         });
         let waited = match started {
             Ok(call) => self.run(call.wait()).await,
@@ -289,7 +317,7 @@ impl VerificationDeadline {
             .map_err(|lost| E::from(anyhow::Error::new(lost)))?
             .map_err(|failure| failure.0)?;
         phase.complete();
-        Ok(output.value)
+        Ok(output)
     }
 }
 
@@ -1098,7 +1126,7 @@ mod tests {
     async fn expired_worker_is_joined_by_the_node_drain_and_its_stop_is_not_evidence() {
         let admission = NodeAdmission::new(Default::default()).unwrap();
         let (caller, entered, release) = held_child(&admission, None, 1_000, || {
-            anyhow::bail!("worker noticed its expired deadline")
+            Err(VerificationDeadline::expired_error().into())
         });
         entered.await.unwrap();
         assert!(caller.await.unwrap().is_err());
@@ -1118,6 +1146,30 @@ mod tests {
             .unwrap();
         assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
         assert_eq!(admission.snapshot().inflight_operations, 0);
+    }
+
+    #[tokio::test]
+    async fn expired_waiter_preserves_an_independent_failure_in_the_same_child() {
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let (caller, entered, release) =
+            held_child(&admission, None, 1_000, || Err(WorkerFault(17).into()));
+        entered.await.unwrap();
+        assert!(caller.await.unwrap().is_err());
+        release.send(()).unwrap();
+        let failure = tokio::time::timeout(WAIT, admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap_err();
+        assert_eq!(failure.issues().len(), 1);
+        assert_eq!(
+            failure.issues()[0]
+                .error()
+                .downcast_ref::<WorkerFault>()
+                .unwrap()
+                .0,
+            17
+        );
+        assert_eq!(crate::test_utils::reserved_payload_bytes(&admission), 0);
     }
 
     #[tokio::test]

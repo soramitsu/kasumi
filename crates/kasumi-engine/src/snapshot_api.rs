@@ -3,7 +3,7 @@
 use super::{TenantEngine, snapshot_bundle, validation_baseline::OwnedValidation};
 use crate::{
     admission::{CancelOnDrop, DocumentReadBudget, NodeAdmission, Reservation},
-    backup_verify::{VerificationDeadline, VerificationPhase},
+    backup_verify::{VerificationDeadline, VerificationPhase, WorkerFailure},
 };
 use kasumi_query::QueryCancellation;
 use kasumi_store::{SnapshotImage, TenantStore};
@@ -45,6 +45,20 @@ struct Work {
     reservation: Arc<Reservation>,
 }
 impl Work {
+    async fn run<T: Send + 'static, E: WorkerFailure>(
+        self,
+        operation: impl FnOnce(&mut Self) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<(T, Self), E> {
+        self.deadline
+            .blocking_with(
+                self.reservation.blocking_owner(),
+                self,
+                |work| work.token.check(),
+                operation,
+            )
+            .await
+    }
+
     fn check(&self) -> anyhow::Result<()> {
         self.deadline.check()?;
         self.token.check()?;
@@ -127,22 +141,17 @@ impl TenantEngine {
             deadline,
             reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
-        let output = deadline
-            .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let output = work
+            .run(move |work| -> anyhow::Result<_> {
                 work.check()?;
                 let image = SnapshotImage::capture(work.store.scratch_disk(), maximum, |writer| {
-                    let mut checked = CheckedIo {
-                        io: writer,
-                        work: &work,
-                    };
+                    let mut checked = CheckedIo { io: writer, work };
                     snapshot_bundle::write(&generation, &work.store, &mut checked)
                 })?;
                 work.check()?;
-                Ok((image, work))
-            }))
+                Ok(image)
+            })
             .await
-            .map_err(error)?
-            .map_err(|e| error(e.into()))?
             .map_err(error)?;
         output.1.check().map_err(error)?;
         Ok(output.0)
@@ -163,23 +172,23 @@ impl TenantEngine {
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
         let prior = OwnedValidation::capture(self.clone())?;
-        let mut work = Work {
+        let work = Work {
             store,
             token: token.clone(),
             deadline,
             reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
         let wait_phase = VerificationPhase::start("public_restore.wait", Some(deadline));
-        let output = deadline
-            .run(tokio::task::spawn_blocking(
-                move || -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
+        let output = work
+            .run(
+                move |work| -> std::result::Result<_, kasumi_store::ScratchOperationFailure> {
                     let layout = kasumi_store::ScratchOperationFailure::ordinary(|| {
                         work.check()?;
                         let phase =
                             VerificationPhase::start("public_restore.framing", Some(deadline));
                         let layout = snapshot_bundle::inspect(&mut CheckedIo {
                             io: image.reader(),
-                            work: &work,
+                            work,
                         })?;
                         phase.complete();
                         let additional = layout
@@ -215,7 +224,7 @@ impl TenantEngine {
                         &prior.baseline(),
                         &mut CheckedIo {
                             io: image.reader(),
-                            work: &work,
+                            work,
                         },
                         Some(layout),
                         // A public restore installs a transported bundle.
@@ -239,13 +248,11 @@ impl TenantEngine {
                         drop(prior);
                         drop(document_scope);
                         phase.complete();
-                        Ok((prepared, work))
+                        Ok(prepared)
                     })
                 },
-            ))
+            )
             .await
-            .map_err(error)?
-            .map_err(|e| error(e.into()))?
             .map_err(crate::SnapshotFailure::from)?;
         output.1.check().map_err(error)?;
         wait_phase.complete();
@@ -290,14 +297,14 @@ impl TenantEngine {
             deadline,
             reservation: Arc::new(admission.reserve(WORKSPACE, Some(token))?),
         };
-        let (_, work) = deadline
-            .run(tokio::task::spawn_blocking(move || -> anyhow::Result<_> {
+        let (_, work) = work
+            .run(move |work| -> anyhow::Result<()> {
                 work.check()?;
                 engine.verify_bootstrap_dependencies_checked(|| work.check())?;
                 work.check()?;
-                Ok(((), work))
-            }))
-            .await???;
+                Ok(())
+            })
+            .await?;
         work.check()
     }
 }
