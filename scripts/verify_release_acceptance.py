@@ -1193,6 +1193,18 @@ def capacity_ha_adapter(root, domain, files, configs, artifacts, candidates):
     return run_capacity_ha.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def ha_faults_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_ha_faults
+
+    return run_ha_faults.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def recovery_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_recovery
+
+    return run_recovery.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def audit_retention_adapter(root, domain, files, configs, artifacts, candidates):
     import run_audit_retention
 
@@ -1278,6 +1290,8 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # and is rejected: an opaque report and asserted scenario labels cannot certify
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
+    "ha-faults": ha_faults_adapter,
+    "recovery": recovery_adapter,
     "capacity-standalone": capacity_standalone_adapter,
     "capacity-ha": capacity_ha_adapter,
     "audit-retention": audit_retention_adapter,
