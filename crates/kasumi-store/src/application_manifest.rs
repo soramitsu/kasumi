@@ -21,6 +21,8 @@ const FORMAT: u32 = 1;
 pub const FIELD_POSTINGS_LAYOUT: u32 = 2;
 /// Adds ordered scalar dictionaries and equality postings.
 pub const FIELD_VALUES_LAYOUT: u32 = 3;
+/// Adds a single ordered directory of live and archived document headers.
+pub const DOCUMENT_HEADERS_LAYOUT: u32 = 4;
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -61,7 +63,7 @@ impl ApplicationManifest {
             revision,
             revision_base,
             snapshot_sha256,
-            layout_epoch: FIELD_VALUES_LAYOUT,
+            layout_epoch: DOCUMENT_HEADERS_LAYOUT,
             page_space: page_space.into(),
             records,
             document_count,
@@ -85,7 +87,7 @@ impl ApplicationManifest {
 
     fn validate(&self) -> Result<()> {
         ensure!(
-            self.format == FORMAT && (1..=FIELD_VALUES_LAYOUT).contains(&self.layout_epoch),
+            self.format == FORMAT && (1..=DOCUMENT_HEADERS_LAYOUT).contains(&self.layout_epoch),
             "unsupported application manifest format"
         );
         ensure!(

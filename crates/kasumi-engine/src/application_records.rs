@@ -1,7 +1,7 @@
 //! Canonical ordered application records. Each document and change after-image
 //! carries its stored descriptor. The encrypted body stays in its own namespace.
 //! The permanent row catalogs contribute their exact snapshot bindings.
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, ensure};
 use kasumi_types::*;
 use serde::Serialize;
 use std::collections::BTreeMap;
@@ -79,6 +79,54 @@ enum DurableRecord<'a> {
 
 pub(crate) fn document_key(collection: &str, id: &str) -> Vec<u8> {
     KeyBuilder::new(3).text(collection).text(id).finish()
+}
+
+fn header_prefix(collection: &str) -> Vec<u8> {
+    KeyBuilder::new(26).text(collection).finish()
+}
+
+pub(crate) fn visit_snapshot_headers(
+    tree: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    after: Option<&str>,
+    revision: u64,
+    mut visit: impl FnMut(&str, u64, kasumi_query::RecordKind) -> Result<bool>,
+) -> Result<()> {
+    use kasumi_store::ordered_pages::{Direction, ValueRef};
+    use std::ops::Bound;
+
+    let prefix = header_prefix(collection);
+    let mut start = prefix.clone();
+    let bound = if let Some(after) = after {
+        // A stored ID occupies at most 256 bytes. Its equality with even a
+        // truncated longer bound is excluded, so the seek stays bounded.
+        start.extend_from_slice(&after.as_bytes()[..after.len().min(256)]);
+        Bound::Excluded(start.as_slice())
+    } else {
+        Bound::Included(start.as_slice())
+    };
+    tree.scan(bound, Direction::Forward, &mut |key, value| {
+        if let Some(id) = key.strip_prefix(prefix.as_slice()) {
+            let id = std::str::from_utf8(id)?;
+            validate_name(id)?;
+            let ValueRef::Inline(bytes) = value else {
+                anyhow::bail!("overflow document header")
+            };
+            ensure!(bytes.len() == 9, "invalid document header length");
+            let kind = match bytes[0] {
+                0 => kasumi_query::RecordKind::Live,
+                1 => kasumi_query::RecordKind::Archived,
+                _ => anyhow::bail!("unknown document header kind"),
+            };
+            let version = u64::from_be_bytes(bytes[1..].try_into()?);
+            ensure!(
+                version <= revision,
+                "document header exceeds selected revision"
+            );
+            return visit(id, version, kind);
+        }
+        Ok(false)
+    })
 }
 
 /// Document identifiers cannot contain control characters, so their UTF-8
@@ -462,6 +510,22 @@ pub(crate) fn visit_all(
     }
     if layout >= kasumi_store::application_manifest::FIELD_VALUES_LAYOUT {
         field_values::publish(&generation.indexes, &mut emit)?;
+    }
+    if layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
+        for (name, collection) in &state.collections {
+            let mut key = header_prefix(name);
+            let prefix_bytes = key.len();
+            for id in crate::index_source::resident_ids_after(collection, None) {
+                let header = crate::index_source::header(collection, id, state.revision)?
+                    .context("document lost its selected header")?;
+                key.truncate(prefix_bytes);
+                key.extend_from_slice(id.as_bytes());
+                let mut value = [0; 9];
+                value[0] = u8::from(header.kind == kasumi_query::RecordKind::Archived);
+                value[1..].copy_from_slice(&header.version.to_be_bytes());
+                emit(&key, &value)?;
+            }
+        }
     }
     Ok(())
 }

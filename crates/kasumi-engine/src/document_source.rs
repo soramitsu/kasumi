@@ -276,6 +276,65 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         lend: impl for<'a> FnOnce(Option<Header<'a>>) -> Result<T>,
     ) -> ReadResult<T, Self::Failure> {
         cancellation.check()?;
+        self.check_deadline()?;
+        let state = &self.generation.state;
+        if let Some(selection) = self
+            .generation
+            .application_selection
+            .get()
+            .filter(|selection| selection.has_exact_snapshot(state.revision_base, state.revision))
+        {
+            let selected = selection
+                .with_snapshot_records(state, |tree, memory, layout| {
+                    if layout < kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
+                        return Ok(None);
+                    }
+                    let workspace = memory.clone().reserve_document_decode(2048)?;
+                    let mut row = None;
+                    crate::application_records::visit_snapshot_headers(
+                        tree,
+                        &self.collection,
+                        exclusive_id,
+                        state.revision,
+                        |id, version, kind| {
+                            row = Some((id.to_owned(), version, kind));
+                            Ok(false)
+                        },
+                    )?;
+                    Ok(Some((row, workspace)))
+                })
+                .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+            if let Some((row, _workspace)) = selected.flatten() {
+                let header = row
+                    .as_ref()
+                    .map(|(id, version, kind)| -> Result<_> {
+                        let mut kind = *kind;
+                        // A request can hydrate an archived body into its own read
+                        // view without changing the persisted ID order or version.
+                        if kind == kasumi_query::RecordKind::Archived
+                            && let Some(live) = self.collection().documents.get(id)
+                        {
+                            if live.id() != id || live.version() != *version {
+                                return Err(corruption(
+                                    "hydrated header differs from selected version",
+                                ));
+                            }
+                            kind = kasumi_query::RecordKind::Live;
+                        }
+                        Ok(Header {
+                            id: id.as_str(),
+                            version: *version,
+                            kind,
+                        })
+                    })
+                    .transpose()?;
+                self.check_deadline()?;
+                cancellation.check()?;
+                let result = lend(header)?;
+                cancellation.check()?;
+                return Ok(result);
+            }
+        }
         let collection = self.collection();
         let id = crate::index_source::resident_ids_after(collection, exclusive_id).next();
         let header = id

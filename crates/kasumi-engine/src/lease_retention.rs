@@ -659,18 +659,35 @@ impl LeaseManager {
                 let handle = root.handle.clone();
                 drop(entries);
                 drop(current);
-                let read = selection.with_snapshot_records(&metadata, |tree, _, _| {
+                let read = selection.with_snapshot_records(&metadata, |tree, _, layout| {
+                    let check = || -> anyhow::Result<()> {
+                        cancellation.check()?;
+                        context.authorization.check_live()?;
+                        anyhow::ensure!(handle.live(), "snapshot expired while scanning");
+                        Ok(())
+                    };
+                    let limit = request.limit + 1;
+                    if layout >= kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
+                        let mut ids = Vec::with_capacity(limit);
+                        crate::application_records::visit_snapshot_headers(
+                            tree,
+                            &request.collection,
+                            request.after_id.as_deref(),
+                            metadata.revision,
+                            |id, _, _| {
+                                check()?;
+                                ids.push(id.to_owned());
+                                Ok(ids.len() < limit)
+                            },
+                        )?;
+                        return Ok(ids);
+                    }
                     crate::application_records::snapshot_ids_after(
                         tree,
                         &request.collection,
                         request.after_id.as_deref(),
-                        request.limit + 1,
-                        || {
-                            cancellation.check()?;
-                            context.authorization.check_live()?;
-                            anyhow::ensure!(handle.live(), "snapshot expired while scanning");
-                            Ok(())
-                        },
+                        limit,
+                        check,
                     )
                 });
                 context.authorization.check_live()?;

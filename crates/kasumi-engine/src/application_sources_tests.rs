@@ -1688,6 +1688,29 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         use kasumi_query::DocumentSource;
         let docs = reopened.document_source("docs")?;
         let cancellation = kasumi_query::QueryCancellation::default();
+        for (after, expected) in [
+            (None, Some("alpha")),
+            (Some("alpha"), Some("point")),
+            (Some("point"), None),
+        ] {
+            let found = docs
+                .header_after(after, &cancellation, |row| {
+                    Ok(row.map(|h| (h.id.to_owned(), h.version, h.kind)))
+                })
+                .map_err(crate::index_source::into_anyhow)?;
+            let original = expected
+                .map(|id| {
+                    let header = crate::index_source::header(
+                        &reopened.state.collections["docs"],
+                        id,
+                        reopened.state.revision,
+                    )?
+                    .unwrap();
+                    Ok::<_, kasumi_types::Error>((id.to_owned(), header.version, header.kind))
+                })
+                .transpose()?;
+            assert_eq!(found, original);
+        }
         for (ordinal, path, present) in [
             (0, "/empty", true),
             (1, "/missing", false),
