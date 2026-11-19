@@ -40,6 +40,8 @@ use std::sync::{Arc, Mutex};
 pub(crate) mod backup_claim;
 #[path = "history_state.rs"]
 pub(crate) mod history;
+#[path = "key_retirement_state.rs"]
+pub(crate) mod key_retirement;
 #[path = "lease_retention.rs"]
 pub(crate) mod lease_retention;
 #[path = "lifecycle_state.rs"]
@@ -283,6 +285,7 @@ fn genesis_metadata(
                 .try_into()
                 .expect("digest width"),
         )),
+        key_retirements: KeyRetirementState::default(),
         audits: imbl::Vector::new(),
     };
     Ok(state)
@@ -1148,6 +1151,9 @@ impl TenantEngine {
                     | Operation::BeginStaged(_)
                     | Operation::AppendStaged(_)
                     | Operation::StopStaged(_)
+                    | Operation::BeginKeyRetirement(_)
+                    | Operation::CompleteKeyRetirement(_)
+                    | Operation::AbortKeyRetirement(_)
             ) {
                 return Ok(0);
             }
@@ -2398,6 +2404,9 @@ impl TenantEngine {
             Operation::Suspend(_) => "suspend",
             Operation::RetireSource(_) => "retire",
             Operation::AbortRetirement(_) => "retire_stop",
+            Operation::BeginKeyRetirement(_) => "key_retirement_fence",
+            Operation::CompleteKeyRetirement(_) => "key_retirement",
+            Operation::AbortKeyRetirement(_) => "key_retirement_stop",
             Operation::Audit(_) | Operation::AuditBatch(_) | Operation::MaintenanceAudit(_) => {
                 "audit"
             }
@@ -3583,6 +3592,15 @@ fn apply_operation(
         }
         Operation::AbortRetirement(request) => {
             retirement::abort(state, &command.context, request, revision).map_err(Into::into)
+        }
+        Operation::BeginKeyRetirement(request) => {
+            key_retirement::begin(state, command, request, revision).map_err(Into::into)
+        }
+        Operation::CompleteKeyRetirement(request) => {
+            key_retirement::complete(state, command, request, revision).map_err(Into::into)
+        }
+        Operation::AbortKeyRetirement(request) => {
+            key_retirement::abort(state, command, request, revision).map_err(Into::into)
         }
         Operation::Audit(event) => {
             validate_read_audit(state, command, event, revision)?;

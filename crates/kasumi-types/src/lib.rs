@@ -910,6 +910,12 @@ pub enum Operation {
     /// One durable release containing bounded, individually authorized records.
     AuditBatch(Vec<AuditEvent>),
     MaintenanceAudit(AuditEvent),
+    /// Commit the fence of one wrapping-key retirement of this scope.
+    BeginKeyRetirement(BeginKeyRetirement),
+    /// Decide a fenced retirement against its exact dependency position.
+    CompleteKeyRetirement(CompleteKeyRetirement),
+    /// Remove the fence of an undecided retirement.
+    AbortKeyRetirement(AbortKeyRetirement),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1089,6 +1095,10 @@ pub struct TenantState {
     pub retirements: imbl::OrdMap<String, StoredRetirement>,
     pub retirement_bytes: u64,
     pub audit_retention: AuditRetentionState,
+    /// Wrapping-key retirement fence and floors of this scope. State written
+    /// before any retirement began has none, and an empty value is not written.
+    #[serde(default, skip_serializing_if = "KeyRetirementState::is_empty")]
+    pub key_retirements: KeyRetirementState,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

@@ -481,6 +481,7 @@ pub(crate) fn metadata_with_shared(
         retirements: Default::default(),
         retirement_bytes: state.retirement_bytes,
         audit_retention: state.audit_retention.clone(),
+        key_retirements: state.key_retirements.clone(),
         audits: Default::default(),
     }
 }

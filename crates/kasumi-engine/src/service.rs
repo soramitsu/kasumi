@@ -2286,6 +2286,9 @@ impl Database {
                 | Operation::PublishHistoryArchive(_)
                 | Operation::RetireSource(_)
                 | Operation::AbortRetirement(_)
+                | Operation::BeginKeyRetirement(_)
+                | Operation::CompleteKeyRetirement(_)
+                | Operation::AbortKeyRetirement(_)
         ) {
             return Err(Error::new(
                 ErrorCode::InvalidArgument,

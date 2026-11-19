@@ -190,6 +190,10 @@ impl Database {
         let epoch = captured.state.policy_epoch;
         self.engine
             .authorize_release(context, None, Action::Admin, epoch)?;
+        // The intent carries this store's key catalog, and every later object
+        // of the session a catalog that is no older. Refuse a session whose
+        // catalog still names a version that a key retirement fenced.
+        self.require_unfenced_catalog(&captured.state.key_retirements)?;
         let encrypt = || {
             self.store
                 .encrypt_session_record(intent.revision, intent)

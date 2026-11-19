@@ -62,6 +62,10 @@ pub(crate) fn guard(state: &TenantState, operation: &Operation) -> Result<()> {
             | Operation::Audit(_)
             | Operation::AuditBatch(_)
             | Operation::MaintenanceAudit(_)
+            // Control's key retirement leaves its authority epoch unchanged.
+            | Operation::BeginKeyRetirement(_)
+            | Operation::CompleteKeyRetirement(_)
+            | Operation::AbortKeyRetirement(_)
     ) {
         return Err(Error::new(
             ErrorCode::Forbidden,

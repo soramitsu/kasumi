@@ -437,12 +437,19 @@ impl TenantEngine {
             .context("audit storage not installed")?;
         if let Some(bytes) = store.get_bounded(PREPARATION, b"pending", MAX_COMMAND)? {
             let (reference, ciphertext) = decode(&bytes)?;
-            if matches_prefix(&reference, retention) {
+            if matches_prefix(&reference, retention)
+                && !state
+                    .key_retirements
+                    .rejects(&KeyVersionRef::from(&reference.key))
+            {
                 Self::publish_prepared_audit(state, store, &reference, ciphertext)?;
                 return Ok(Some(bytes));
             }
             // Another committed transition won this prefix. Its local pending
             // object can never be adopted as the successor's archive identity.
+            // Neither can one sealed under a wrapping key version that a key
+            // retirement has fenced since: its hot records are still retained,
+            // so the prefix is sealed again under the current key.
         }
         let mut builder = AuditSegmentBuilder::new(
             retention.stream_id,
@@ -473,6 +480,12 @@ impl TenantEngine {
             return Ok(None);
         }
         let segment = store.encrypt_audit_segment(builder)?;
+        ensure!(
+            !state
+                .key_retirements
+                .rejects(&KeyVersionRef::from(&segment.reference.key)),
+            "tenant audit key catalog still wraps under a fenced key version"
+        );
         ensure!(
             retention
                 .archive_bytes
@@ -566,6 +579,15 @@ impl TenantEngine {
                 ErrorCode::Conflict,
                 "audit prefix changed or generation is closed",
             ))
+        } else if next
+            .key_retirements
+            .rejects(&KeyVersionRef::from(&reference.key))
+        {
+            // Sealed before the fence and committed after it. Every replica
+            // refuses the same reference; the proposer seals the prefix again.
+            Err(crate::state::key_retirement::fenced(&KeyVersionRef::from(
+                &reference.key,
+            )))
         } else if !retention
             .archive_bytes
             .checked_add(reference.ciphertext_bytes)

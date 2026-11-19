@@ -708,6 +708,11 @@ impl Database {
         cancellation.check()?;
         self.engine
             .authorize_release(context, None, Action::Admin, policy_epoch)?;
+        // The object carries this store's key catalog. A fence or a completed
+        // retirement that names one of its wrapping versions refuses it here,
+        // before anything is written.
+        let retirements = self.engine.generation()?.state.key_retirements.clone();
+        self.require_unfenced_catalog(&retirements)?;
         let expected_plaintext = hex::encode(Sha256::digest(&plaintext));
         let max_plaintext_bytes = plaintext.len();
         let encrypted = self
@@ -743,12 +748,34 @@ impl Database {
                     ErrorCode::Unavailable, "required history object is missing or unavailable"))?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
+            // The winner was encrypted by an earlier attempt, possibly before a
+            // key retirement fenced a version its catalog names. It is
+            // immutable, so adopting it would publish that reference.
+            let mut fenced = None;
             let contents = tokio::select! {
-                result = self.store.decrypt_backup_object(&bytes, id, bound) => result.map_err(|_| Error::new(
+                result = self.store.decrypt_backup_object_and_visit_keys(
+                    &bytes,
+                    id,
+                    bound,
+                    |provider, key_ref, version| {
+                        if retirements.rejects_version(provider, key_ref, version) {
+                            fenced.get_or_insert(version);
+                        }
+                        Ok(())
+                    },
+                ) => result.map_err(|_| Error::new(
                     ErrorCode::Unavailable, "history authentication or historical key authorization failed"))?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             self.access()?;
+            if let Some(version) = fenced {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    format!(
+                        "published history object is wrapped under fenced wrapping key version {version}"
+                    ),
+                ));
+            }
             contents
         } else {
             self.verified_history_object(

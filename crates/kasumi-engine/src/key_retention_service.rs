@@ -4,6 +4,21 @@
 use super::*;
 #[path = "backup_key_inventory.rs"]
 mod backup_keys;
+#[path = "key_retirement_service.rs"]
+mod retirement;
+
+/// One observation of a whole scope at one selected generation. The page
+/// holds the entries the request selected; the coverage, dependency position
+/// and retirement state describe the entire scope, whatever the page shows.
+pub(super) struct KeyRetentionObservation {
+    pub(super) page: KeyRetentionPage,
+    /// Replicated dependency position of the observed generation.
+    pub(super) dependency_sha256: String,
+    pub(super) retirements: KeyRetirementState,
+    revision: u64,
+    strict: bool,
+    epoch: u64,
+}
 
 fn consider_entry(
     request: &ReadKeyRetentionRequest,
@@ -44,6 +59,33 @@ impl Database {
     ) -> Result<AdmittedOutput<KeyRetentionPage>> {
         let result = self.key_retention_page(context, &request).await;
         self.audit_result(context, result).await
+    }
+
+    /// Whether the scope is this database's own: `true` for Control. Every
+    /// other scope has an independent installed owner.
+    fn key_retention_scope(
+        &self,
+        context: &RequestContext,
+        scope: &KeyRetentionScope,
+    ) -> Result<bool> {
+        match scope {
+            KeyRetentionScope::Tenant { tenant }
+                if tenant == &context.tenant && tenant != crate::control::CONTROL_TENANT =>
+            {
+                Ok(false)
+            }
+            KeyRetentionScope::Control {} if context.tenant == crate::control::CONTROL_TENANT => {
+                Ok(true)
+            }
+            KeyRetentionScope::Tenant { .. } | KeyRetentionScope::Control {} => Err(Error::new(
+                ErrorCode::Forbidden,
+                "key retention scope differs from authorization",
+            )),
+            _ => Err(Error::new(
+                ErrorCode::Unavailable,
+                "requested key retention scope requires its independent installed owner",
+            )),
+        }
     }
 
     async fn observe_history_object_keys(
@@ -233,30 +275,37 @@ impl Database {
         request: &ReadKeyRetentionRequest,
     ) -> Result<AdmittedOutput<KeyRetentionPage>> {
         request.validate()?;
+        let (observation, mut reservation) =
+            self.observe_key_retention(context, request, false).await?;
+        reservation.retain_workspace();
+        self.release_event(
+            context,
+            None,
+            observation.revision,
+            observation.strict,
+            observation.epoch,
+            "read_key_retention",
+        )
+        .await?;
+        self.engine
+            .authorize_release(context, None, Action::Admin, observation.epoch)?;
+        self.access()?;
+        Ok(AdmittedOutput::new(observation.page, Arc::new(reservation)))
+    }
+
+    /// Observe every source of the scope once. A `probe` is this owner's own
+    /// selection of entries: its cursor is a lower bound that no page issued,
+    /// so it is neither checked against the inventory nor continued.
+    pub(super) async fn observe_key_retention(
+        &self,
+        context: &RequestContext,
+        request: &ReadKeyRetentionRequest,
+        probe: bool,
+    ) -> Result<(KeyRetentionObservation, crate::admission::Reservation)> {
+        request.scope.validate()?;
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
-        let control = match &request.scope {
-            KeyRetentionScope::Tenant { tenant }
-                if tenant == &context.tenant && tenant != crate::control::CONTROL_TENANT =>
-            {
-                false
-            }
-            KeyRetentionScope::Control {} if context.tenant == crate::control::CONTROL_TENANT => {
-                true
-            }
-            KeyRetentionScope::Tenant { .. } | KeyRetentionScope::Control {} => {
-                return Err(Error::new(
-                    ErrorCode::Forbidden,
-                    "key retention scope differs from authorization",
-                ));
-            }
-            _ => {
-                return Err(Error::new(
-                    ErrorCode::Unavailable,
-                    "requested key retention scope requires its independent installed owner",
-                ));
-            }
-        };
+        let control = self.key_retention_scope(context, &request.scope)?;
         let cancellation = QueryCancellation::default();
         let _cancel = CancelOnDrop(cancellation.clone());
         let registration = self.work.begin(cancellation.clone())?;
@@ -299,9 +348,6 @@ impl Database {
             ));
         }
         let mut missing = BTreeSet::new();
-        // This installation does not have an authoritative scope-wide index
-        // of authenticated remote backup sessions and completed checkpoints.
-        missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
         let mut truncated = false;
         for (&node_id, _) in membership.membership().nodes() {
             if node_id != local {
@@ -323,6 +369,13 @@ impl Database {
             )
             .await?;
         let session_digest = if control {
+            // Control's bindings hold each tenant's session records, which that
+            // tenant's scope lists. An installed Control owner claims no backup
+            // session of its own state; only a local fixture writes sessions
+            // that no index retains.
+            if self.store.storage_access().purpose().is_local_fixture() {
+                missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
+            }
             None
         } else {
             let observe = self.binding_key_inventory(
@@ -333,17 +386,27 @@ impl Database {
                 &mut missing,
                 &mut truncated,
             );
-            tokio::select! {
+            let digest = tokio::select! {
                 result = observe => result?,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            };
+            // Without its installed Control owner this scope has no
+            // authoritative index of its backup sessions and checkpoints.
+            if digest.is_none() {
+                add_missing(
+                    &mut missing,
+                    &mut truncated,
+                    MissingKeyDependency::SessionIndexUnavailable {},
+                );
             }
+            digest
         };
         let scope_hash = request.scope.sha256()?;
         let request = request.clone();
         let stores = self.stores.clone();
         let revision = state.revision;
         let strict = state.policy.strict_read_audit;
-        let (page, mut reservation) = reservation
+        let (observation, reservation) = reservation
             .retained_read(cancellation, move |reservation, token| {
                 let _registration = registration;
                 let mut consider = |entry| {
@@ -446,7 +509,8 @@ impl Database {
                     );
                 }
                 let inventory_sha256 = staged_digest(&(
-                    "kasumi.key-retention.local.v5",
+                    // The fence and floors are part of what a page observed.
+                    ("kasumi.key-retention.local.v6", &state.key_retirements),
                     &scope_hash,
                     &state.incarnation,
                     epoch,
@@ -466,7 +530,9 @@ impl Database {
                 // Strict read auditing may advance the application revision between
                 // pages. Keep the original revision only if the observed inventory
                 // and membership still match, including catalog-only rotations.
-                let coverage_revision = if let Some(cursor) = &request.cursor {
+                let coverage_revision = if let Some(cursor) =
+                    request.cursor.as_ref().filter(|_| !probe)
+                {
                     if cursor.inventory_sha256 != inventory_sha256
                         || cursor.membership_epoch != membership_epoch
                         || cursor.coverage_revision > revision
@@ -480,6 +546,14 @@ impl Database {
                 } else {
                     revision
                 };
+                // Every current member reported and every referenced record
+                // authenticated: the digest commits to the whole scope listing,
+                // not to the entries this request selected.
+                let coverage_sha256 = staged_digest(&(
+                    "kasumi.key-retention.coverage.v1",
+                    &inventory_sha256,
+                ))?
+                .0;
                 let mut page_entries =
                     Vec::with_capacity(entries.len().min(usize::from(request.limit)));
                 let mut bytes = 0;
@@ -498,7 +572,7 @@ impl Database {
                     bytes += encoded + 1;
                     page_entries.push(entry);
                 }
-                let next_cursor = if more {
+                let next_cursor = if more && !probe {
                     Some(KeyRetentionCursor {
                         scope_sha256: scope_hash,
                         inventory_sha256,
@@ -517,15 +591,24 @@ impl Database {
                 } else {
                     None
                 };
-                let page = KeyRetentionPage {
-                    entries: page_entries,
-                    next_cursor,
-                    coverage: KeyRetentionCoverage::Incomplete {
+                let coverage = if missing.is_empty() {
+                    KeyRetentionCoverage::Complete {
+                        coverage_revision,
+                        membership_epoch,
+                        coverage_sha256,
+                    }
+                } else {
+                    KeyRetentionCoverage::Incomplete {
                         coverage_revision,
                         membership_epoch,
                         missing: missing.into_iter().collect(),
                         truncated,
-                    },
+                    }
+                };
+                let page = KeyRetentionPage {
+                    entries: page_entries,
+                    next_cursor,
+                    coverage,
                 };
                 if crate::accounting::encoded_len(&page)? > MAX_KEY_RETENTION_PAGE_BYTES {
                     return Err(Error::new(
@@ -533,16 +616,23 @@ impl Database {
                         "key retention page exceeds response bound",
                     ));
                 }
-                page.validate(&request)?;
-                Ok((page, reservation))
+                if !probe {
+                    page.validate(&request)?;
+                }
+                let observation = KeyRetentionObservation {
+                    page,
+                    dependency_sha256: state.key_dependency_sha256()?,
+                    retirements: state.key_retirements.clone(),
+                    revision,
+                    strict,
+                    epoch,
+                };
+                Ok((observation, reservation))
             })
-            .await?;
-        reservation.retain_workspace();
-        self.release_event(context, None, revision, strict, epoch, "read_key_retention")
             .await?;
         self.engine
             .authorize_release(context, None, Action::Admin, epoch)?;
         self.access()?;
-        Ok(AdmittedOutput::new(page, Arc::new(reservation)))
+        Ok((observation, reservation))
     }
 }
