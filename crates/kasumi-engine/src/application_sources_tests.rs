@@ -1927,12 +1927,16 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let feed = &reopened.state.change_feed;
     selection
         .with_snapshot_records(&reopened.state, |tree, memory, _| {
-            let snapshot_feed = crate::application_records::SnapshotFeed { tree, memory };
+            let snapshot_feed = crate::application_records::SnapshotFeed::open(
+                tree,
+                memory,
+                reopened.state.revision,
+                &reopened.state,
+            )?
+            .unwrap();
             snapshot_feed.visit(
                 feed.first_available_sequence(),
                 feed.first_available_sequence(),
-                feed.next_sequence,
-                reopened.state.revision,
                 |sequence, revision, ordinal, count, record| {
                     assert_eq!(record.collection, "docs");
                     let expected = match record.id.as_str() {
@@ -1984,6 +1988,82 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     reopened_audit.shutdown().await?;
     drop(reopened_audit);
     target.close().await?;
+    // Advance the actual source log beyond the published snapshot. The
+    // first two events still come from its immutable directory and the third
+    // arrives from the newly committed tail in the same native page.
+    let third_body = serde_json::json!({"value": "later"});
+    source_db
+        .mutate(
+            context.clone(),
+            kasumi_types::MutationBatch::new().upsert("docs", "tail", third_body.clone()),
+        )
+        .await?;
+    let latest = source_engine.generation()?;
+    let base = latest
+        .application_selection
+        .get()
+        .unwrap()
+        .with_base_snapshot_records(&latest.state, |tree, memory, _, revision| {
+            let prefix = crate::application_records::SnapshotFeed::open(
+                tree,
+                memory,
+                revision,
+                &latest.state,
+            )?
+            .context("older directory lost its feed prefix")?;
+            Ok((revision, prefix.end_sequence))
+        })?
+        .context("new log entry lost its selected base snapshot")?;
+    assert!(base.0 < latest.state.revision);
+    assert_eq!(base.1, 3);
+    drop(latest);
+    let request = |start, limit| kasumi_types::ReadChangeFeed {
+        collections: std::collections::BTreeSet::from(["docs".into()]),
+        start,
+        limit,
+    };
+    let initial = source_db
+        .read_change_feed(
+            &context,
+            request(kasumi_types::ChangeFeedStart::Beginning, 1),
+        )
+        .await?;
+    let kasumi_types::ChangeFeedPage::Events {
+        events,
+        next,
+        caught_up,
+        ..
+    } = initial.as_ref()
+    else {
+        panic!("expected first retained event");
+    };
+    assert!(!caught_up);
+    assert_eq!((events[0].sequence, events[0].id.as_str()), (1, "point"));
+    let after = next.clone();
+    drop(initial);
+    let continuation = source_db
+        .read_change_feed(
+            &context,
+            request(kasumi_types::ChangeFeedStart::After { cursor: after }, 3),
+        )
+        .await?;
+    let kasumi_types::ChangeFeedPage::Events {
+        events, caught_up, ..
+    } = continuation.as_ref()
+    else {
+        panic!("expected mixed snapshot and log events");
+    };
+    assert!(*caught_up);
+    assert_eq!(
+        events
+            .iter()
+            .map(|e| (e.sequence, e.id.as_str()))
+            .collect::<Vec<_>>(),
+        [(2, "alpha"), (3, "tail")]
+    );
+    assert_eq!(events[0].document.as_ref().unwrap().body, second_body);
+    assert_eq!(events[1].document.as_ref().unwrap().body, third_body);
+    drop(continuation);
     source_db.shutdown().await?;
     drop(source_db);
     drop(source_engine);

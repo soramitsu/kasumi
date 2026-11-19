@@ -60,22 +60,62 @@ impl SelectedApplication {
             u32,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
-        use kasumi_store::{application_manifest::ApplicationManifest, ordered_pages::TreeReader};
         ensure!(
             self.has_exact_snapshot(state.revision_base, state.revision),
             "record read requires the exact selected snapshot"
+        );
+        self.with_base_snapshot_records(state, |tree, memory, layout, _| read(tree, memory, layout))
+    }
+
+    /// A serving entry may retain its authenticated predecessor snapshot.
+    /// Callers using an older directory must explicitly reconcile the prefix
+    /// it owns with the selected log tail.
+    pub(crate) fn with_base_snapshot_records<T>(
+        &self,
+        state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+            u32,
+            u64,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        use kasumi_raft::SelectedAppliedRef;
+        use kasumi_store::{application_manifest::ApplicationManifest, ordered_pages::TreeReader};
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let Some(snapshot) = position.snapshot() else {
+            return Ok(None);
+        };
+        let index = match position.applied() {
+            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
+            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
+                meta.last_log_id.map_or(0, |id| id.index)
+            }
+            None => 0,
+        };
+        ensure!(
+            state.revision_base.checked_add(index) == Some(state.revision),
+            "applied directory position differs"
+        );
+        let snapshot_revision = state
+            .revision_base
+            .checked_add(snapshot.meta.last_log_id.map_or(0, |id| id.index))
+            .context("snapshot revision overflow")?;
+        ensure!(
+            snapshot_revision <= state.revision,
+            "snapshot follows applied position"
         );
         let roots = self
             .cell
             .roots
             .upgrade()
             .context("selected record installation absent")?;
-        let snapshot = self
-            .cell
-            .position
-            .get()
-            .and_then(|p| p.snapshot())
-            .context("selected snapshot absent")?;
         let reader = self.open_selected_reader(&roots)?;
         let outcome: Result<_> = (|| {
             reader.check_access()?;
@@ -92,15 +132,16 @@ impl SelectedApplication {
                     )?
                     && manifest.incarnation == state.incarnation
                     && manifest.revision_base == state.revision_base
-                    && manifest.revision == state.revision
-                    && manifest.document_count == state.document_count
-                    && manifest.logical_bytes == state.logical_bytes,
+                    && manifest.revision == snapshot_revision
+                    && (snapshot_revision < state.revision
+                        || (manifest.document_count == state.document_count
+                            && manifest.logical_bytes == state.logical_bytes)),
                 "selected record snapshot identity differs"
             );
             let tree =
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
-            read(&tree, &memory, manifest.layout_epoch).map(Some)
+            read(&tree, &memory, manifest.layout_epoch, snapshot_revision).map(Some)
         })();
         let close = reader.close();
         match (outcome, close) {

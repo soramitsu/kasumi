@@ -19,28 +19,85 @@ enum Row {
 pub(crate) struct SnapshotFeed<'a, 'view> {
     pub tree: &'a TreeReader<'view>,
     pub memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
+    pub end_sequence: u64,
+    pub revision: u64,
 }
 
-fn header_sequence(key: &[u8]) -> Result<u64> {
-    let Some((&9, mut encoded)) = key.split_first() else {
-        anyhow::bail!("expected a change header key")
-    };
+fn number(encoded: &mut &[u8]) -> Result<u64> {
     let mut value = [0; 8];
     for byte in &mut value {
         let (&next, rest) = encoded.split_first().context("short change sequence")?;
         *byte = next;
-        encoded = if next == 0 {
+        *encoded = if next == 0 {
             rest.strip_prefix(&[0xff])
                 .context("invalid change sequence escape")?
         } else {
             rest
         };
     }
-    ensure!(encoded == [0, 1], "invalid change header terminator");
+    *encoded = encoded
+        .strip_prefix(&[0, 1])
+        .context("invalid change sequence terminator")?;
     Ok(u64::from_be_bytes(value))
 }
 
-impl SnapshotFeed<'_, '_> {
+fn header_sequence(key: &[u8]) -> Result<u64> {
+    let mut encoded = key
+        .strip_prefix(&[9])
+        .context("expected a change header key")?;
+    let first = number(&mut encoded)?;
+    ensure!(encoded.is_empty(), "invalid change header suffix");
+    Ok(first)
+}
+
+impl<'a, 'view> SnapshotFeed<'a, 'view> {
+    /// The tail of the immutable change-item directory identifies the last
+    /// complete commit. A retained snapshot with no events owns no prefix.
+    pub(crate) fn open(
+        tree: &'a TreeReader<'view>,
+        memory: &'a Arc<dyn NodeDiskMemoryAdmission>,
+        snapshot_revision: u64,
+        state: &kasumi_types::TenantState,
+    ) -> Result<Option<Self>> {
+        let mut feed = Self {
+            tree,
+            memory,
+            revision: snapshot_revision,
+            end_sequence: state.change_feed.next_sequence,
+        };
+        if snapshot_revision < state.revision {
+            let Some(last) = feed.adjacent_header(Bound::Excluded(&[10]), Direction::Reverse)?
+            else {
+                return Ok(None);
+            };
+            let mut end = None;
+            tree.scan(Bound::Excluded(&[11]), Direction::Reverse, &mut |key, _| {
+                let mut encoded = key
+                    .strip_prefix(&[10])
+                    .context("snapshot change items missing")?;
+                let first = number(&mut encoded)?;
+                let ordinal = number(&mut encoded)?;
+                ensure!(
+                    first == last && encoded.is_empty(),
+                    "snapshot terminal change item differs"
+                );
+                end = Some(
+                    first
+                        .checked_add(ordinal)
+                        .and_then(|n| n.checked_add(1))
+                        .context("snapshot change sequence overflow")?,
+                );
+                Ok(false)
+            })?;
+            feed.end_sequence = end.context("snapshot change tail missing")?;
+            ensure!(
+                feed.end_sequence <= state.change_feed.next_sequence,
+                "snapshot feed exceeds selected head"
+            );
+        }
+        Ok(Some(feed))
+    }
+
     fn adjacent_header(&self, bound: Bound<&[u8]>, direction: Direction) -> Result<Option<u64>> {
         let mut found = None;
         self.tree.scan(bound, direction, &mut |key, _| {
@@ -81,13 +138,12 @@ impl SnapshotFeed<'_, '_> {
         &self,
         first_retained: u64,
         mut sequence: u64,
-        end: u64,
-        state_revision: u64,
         mut visit: impl FnMut(u64, u64, usize, usize, &ChangeRecord) -> kasumi_types::Result<bool>,
-    ) -> kasumi_types::Result<()> {
+    ) -> kasumi_types::Result<bool> {
         use crate::service::document_load_error;
+        let end = self.end_sequence;
         if sequence >= end {
-            return Ok(());
+            return Ok(true);
         }
         let start = KeyBuilder::new(9).number(sequence).finish();
         let mut first = self
@@ -114,7 +170,7 @@ impl SnapshotFeed<'_, '_> {
                             && header.first_sequence == first
                             && header.records.is_empty()
                             && header.revision > previous_revision
-                            && header.revision <= state_revision,
+                            && header.revision <= self.revision,
                         "change cursor and selected commit disagree"
                     );
                     Ok(header.revision)
@@ -147,13 +203,13 @@ impl SnapshotFeed<'_, '_> {
                     })
                     .map_err(document_load_error)??;
                 if !keep_going {
-                    return Ok(());
+                    return Ok(false);
                 }
                 sequence += 1;
             }
             previous_revision = revision;
             first = next;
         }
-        Ok(())
+        Ok(true)
     }
 }

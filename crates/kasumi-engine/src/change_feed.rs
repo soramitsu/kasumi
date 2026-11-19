@@ -157,14 +157,10 @@ impl Database {
             result = owner.read_child(cancellation.clone(), None, move |token| {
                 let generation = read.generation.clone();
                 let state = &generation.state;
-                let selection = generation.application_selection.get().filter(|s| {
-                    s.has_exact_snapshot(state.revision_base, state.revision)
-                });
-                // A deployed pre-directory snapshot and an ordinary entry still
-                // use their own pinned generation. A bad installed tree fails.
-                let result = if let Some(selection) = selection {
-                    selection.with_snapshot_records(state, |tree, memory, _| {
-                        Ok(read.build(&actor, token, Some(crate::application_records::SnapshotFeed { tree, memory })))
+                let result = if let Some(selection) = generation.application_selection.get() {
+                    selection.with_base_snapshot_records(state, |tree, memory, _, revision| {
+                        let disk = crate::application_records::SnapshotFeed::open(tree, memory, revision, state)?;
+                        Ok(read.build(&actor, token, disk))
                     }).map_err(document_load_error)?
                 } else { None };
                 read.page = Some(match result { Some(page) => page?, None => read.build(&actor, token, None)? });
@@ -399,24 +395,28 @@ pub(super) fn build_change_feed_page<W: kasumi_query::QueryWorkspace>(
                 events.push(event);
                 Ok(examined < 1000 && events.len() < request.limit)
             };
-        if let Some(disk) = disk {
-            disk.visit(
-                first_available_sequence,
-                after + 1,
-                feed.next_sequence,
-                state.revision,
-                append,
-            )?;
-        } else {
+        // Appends never change an earlier commit within an incarnation.
+        // The current retention floor applies to both halves. If a page ends
+        // inside the disk prefix, leave the log tail for its continuation.
+        let first_requested = after + 1;
+        let tail = match disk {
+            Some(disk) if first_requested < disk.end_sequence => {
+                let complete =
+                    disk.visit(first_available_sequence, first_requested, &mut append)?;
+                complete.then_some(disk.end_sequence)
+            }
+            _ => Some(first_requested),
+        };
+        if let Some(tail) = tail.filter(|&start| start < feed.next_sequence) {
             let start = feed
                 .commits
-                .range(..=after + 1)
+                .range(..=tail)
                 .next_back()
-                .map_or(after + 1, |(&sequence, _)| sequence);
+                .map_or(tail, |(&sequence, _)| sequence);
             'commits: for (_, commit) in feed.commits.range(start..) {
                 for (ordinal, record) in commit.records.iter().enumerate() {
                     let sequence = commit.first_sequence + ordinal as u64;
-                    if sequence > after
+                    if sequence >= tail
                         && !append(
                             sequence,
                             commit.revision,
