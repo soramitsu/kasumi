@@ -300,12 +300,6 @@ impl Database {
         // This installation does not have an authoritative scope-wide index
         // of authenticated remote backup sessions and completed checkpoints.
         missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
-        if !state.recovery_control.is_empty() {
-            missing.insert(MissingKeyDependency::RecordUnreadable {
-                record_kind: KeyReferenceKind::RecoveryRecord,
-                id: "recovery-key-dependencies".into(),
-            });
-        }
         let mut truncated = false;
         for (&node_id, _) in membership.membership().nodes() {
             if node_id != local {
@@ -401,8 +395,40 @@ impl Database {
                         },
                     );
                 }
+                // Each accepted recovery transition advances its operation revision.
+                // Retain the identity of every unknown checkpoint, even when the
+                // bounded missing list omits it. Audit-only revisions need not
+                // invalidate an unrelated cursor.
+                let mut recovery_digest = Sha256::new();
+                for (id, operation) in &state.recovery_control.operations {
+                    token.check()?;
+                    if *id != operation.request.operation_id.to_string() {
+                        return Err(Error::new(
+                            ErrorCode::Corruption,
+                            "recovery dependency identity differs",
+                        ));
+                    }
+                    recovery_digest.update(
+                        staged_digest(&(
+                            id,
+                            operation.updated_revision,
+                            &operation.request_sha256,
+                            &operation.request.checkpoint,
+                        ))?
+                        .0
+                        .as_bytes(),
+                    );
+                    add_missing(
+                        &mut missing,
+                        &mut truncated,
+                        MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::RecoveryRecord,
+                            id: id.clone(),
+                        },
+                    );
+                }
                 let inventory_sha256 = staged_digest(&(
-                    "kasumi.key-retention.local.v3",
+                    "kasumi.key-retention.local.v4",
                     &scope_hash,
                     &state.incarnation,
                     epoch,
@@ -410,6 +436,8 @@ impl Database {
                     local,
                     digest,
                     hex::encode(history_digest),
+                    &state.backup_binding_head,
+                    hex::encode(recovery_digest.finalize()),
                     state.audit_retention.archive_segments,
                     hex::encode(archive_digest.finalize()),
                     &missing,

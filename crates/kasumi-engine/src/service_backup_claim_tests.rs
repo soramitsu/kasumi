@@ -104,6 +104,10 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
         control.engine.generation()?.state.backup_binding_head.count,
         1
     );
+    let key_request = ReadKeyRetentionRequest { scope: KeyRetentionScope::Control {}, cursor: None, limit: 1 };
+    let before_keys = control.read_key_retention(&operator, key_request.clone()).await?;
+    let prior_cursor = before_keys.next_cursor.clone().expect("Control application and custody catalogs");
+    drop(before_keys);
     let before_terminal = control.engine.generation()?;
     let initial_counts = before_terminal.control_backup_sessions().unwrap();
     assert_eq!((initial_counts.claimed_without_terminal, initial_counts.completed, initial_counts.aborted), (1, 0, 0));
@@ -156,6 +160,10 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
     };
     let retry = fixture.db.select_backup_terminal(&fixture.context, first.as_ref(), &verified, &loser).await?;
     assert_eq!(selected.as_bytes(), retry.as_bytes());
+    let stale_keys = control.read_key_retention(&operator, ReadKeyRetentionRequest {
+        cursor: Some(prior_cursor), ..key_request
+    }).await.unwrap_err();
+    assert_eq!(stale_keys.code, ErrorCode::CursorExpired);
     let final_counts = control.engine.generation()?.control_backup_sessions().unwrap();
     assert_eq!((final_counts.claimed_without_terminal, final_counts.completed, final_counts.aborted), (0, 0, 1));
     assert!(final_counts.last_binding_revision > initial_counts.last_binding_revision);
