@@ -27,14 +27,18 @@ must remain identical on every request. Renewal may change expiry, issuance
 identity and signer. The client checks claim continuity; the native server
 authenticates each JWT. Switching a credential binding requires a separate run.
 
-The example describes 98,304 documents of exactly 32,768 canonical JSON bytes,
-totalling 3,221,225,472 bytes (3 GiB). Payload characters are drawn uniformly from
-92 printable ASCII characters using a seeded SHA256 counter and rejection
-sampling. This avoids repeated padding; its real compression ratio must still
-be measured for any incompressibility acceptance claim. The configuration alone
-is not evidence that a 3 GiB tenant was loaded.
+The example generates 98,400 documents of 32,768 canonical JSON bytes each,
+totalling 3,224,371,200 bytes. The payload generator uses rejection sampling
+over 92 printable ASCII characters and a seeded SHA-256 counter. Run `measure`
+to compress every canonical body in ordinal order into one gzip level-9 stream.
+The journal records both byte counts, the uncompressed and compressed SHA-256
+digests, and the length-framed digest used by installed verification. This
+offline command requires the corpus UUID and seed. It opens no credentials.
+Use the same corpus definition for load and verification.
 
 ```sh
+target/production-bench/release/kasumi-bench-capacity capacity.json measure \
+  /absolute/new-compression-evidence
 target/production-bench/release/kasumi-bench-capacity capacity.json load \
   /absolute/new-load-evidence --allow-writes
 target/production-bench/release/kasumi-bench-capacity capacity.json verify \

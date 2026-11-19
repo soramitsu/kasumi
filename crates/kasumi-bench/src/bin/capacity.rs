@@ -3,6 +3,7 @@
 //! stop the run without automatic mutation retry or a fabricated success.
 use anyhow::{Context, Result, ensure};
 use base64::Engine as _;
+use flate2::{Compression, GzBuilder};
 use kasumi_client::proto;
 use kasumi_transport::{
     TlsIdentity,
@@ -316,14 +317,7 @@ struct Journal {
     events: File,
 }
 impl Journal {
-    fn create(
-        directory: &Path,
-        config: &Configuration,
-        config_sha256: &str,
-        mode: &str,
-        total: u64,
-        binding: &CredentialBinding,
-    ) -> Result<Self> {
+    fn open(directory: &Path) -> Result<Self> {
         ensure!(
             directory.is_absolute(),
             "evidence directory must be absolute"
@@ -340,21 +334,29 @@ impl Journal {
             .create_new(true)
             .mode(0o600)
             .open(directory.join("events.jsonl"))?;
-        let mut journal = Self {
+        File::open(directory)?.sync_all()?;
+        Ok(Self {
             directory: directory.into(),
             events,
-        };
-        let mut executable = File::open(std::env::current_exe()?)?;
-        let mut hash = Sha256::new();
-        std::io::copy(&mut executable, &mut hash)?;
+        })
+    }
+
+    fn create(
+        directory: &Path,
+        config: &Configuration,
+        config_sha256: &str,
+        mode: &str,
+        total: u64,
+        binding: &CredentialBinding,
+    ) -> Result<Self> {
+        let mut journal = Self::open(directory)?;
         journal.event(json!({"event":"started","format":1,"mode":mode,"configuration_sha256":config_sha256,
             "corpus":config.corpus,"expected_canonical_bytes":total,"endpoint":config.endpoint,
             "credential_binding_claims":binding,
             "credential_binding_scope":"Client enforces continuity of these decoded claims; the native server authenticates the JWT on every invocation.",
-            "executable_sha256":hex::encode(hash.finalize()),"os":std::env::consts::OS,
+            "executable_sha256":executable_digest()?,"os":std::env::consts::OS,
             "architecture":std::env::consts::ARCH,"generator":"SHA256 counter; uniform 92-character printable ASCII payload; exact canonical JSON lengths",
             "scope":"Installed native service load and individual point-read integrity; not a coherent concurrent snapshot, node capacity certificate, latency benchmark or compressibility measurement. No automatic retries."}))?;
-        File::open(directory)?.sync_all()?;
         Ok(journal)
     }
     fn event(&mut self, value: Value) -> Result<()> {
@@ -536,9 +538,7 @@ async fn run(
         let actual = serde_json::to_vec(&actual)?;
         let wanted = serde_json::to_vec(&wanted)?;
         for (hasher, bytes) in [(&mut expected, &wanted), (&mut observed, &actual)] {
-            hasher.update(ordinal.to_be_bytes());
-            hasher.update((bytes.len() as u64).to_be_bytes());
-            hasher.update(bytes);
+            hash_document(hasher, ordinal, bytes);
         }
         total = total
             .checked_add(actual.len() as u64)
@@ -564,23 +564,94 @@ async fn run(
     Ok(())
 }
 
+fn executable_digest() -> Result<String> {
+    let mut executable = File::open(std::env::current_exe()?)?;
+    let mut hash = Sha256::new();
+    std::io::copy(&mut executable, &mut hash)?;
+    Ok(hex::encode(hash.finalize()))
+}
+
+#[derive(Default)]
+struct CountedDigest {
+    bytes: u64,
+    hash: Sha256,
+}
+
+impl Write for CountedDigest {
+    fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+        self.bytes = self
+            .bytes
+            .checked_add(data.len() as u64)
+            .ok_or_else(|| std::io::Error::other("compressed corpus length overflow"))?;
+        self.hash.update(data);
+        Ok(data.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+fn hash_document(hasher: &mut Sha256, ordinal: u64, bytes: &[u8]) {
+    hasher.update(ordinal.to_be_bytes());
+    hasher.update((bytes.len() as u64).to_be_bytes());
+    hasher.update(bytes);
+}
+
+fn measure_corpus(directory: &Path, corpus: &Corpus, config_sha256: &str) -> Result<()> {
+    let total = corpus.validate()?;
+    let mut journal = Journal::open(directory)?;
+    journal.event(json!({"event":"started","format":1,"mode":"measure",
+        "configuration_sha256":config_sha256,"executable_sha256":executable_digest()?,
+        "architecture":std::env::consts::ARCH,"os":std::env::consts::OS,
+        "corpus":corpus,"expected_canonical_bytes":total,"algorithm":"gzip-9"}))?;
+    let started = Instant::now();
+    let mut gzip = GzBuilder::new()
+        .mtime(0)
+        .write(CountedDigest::default(), Compression::best());
+    let mut framed = Sha256::new();
+    let mut canonical = Sha256::new();
+    let mut bytes = 0u64;
+    for ordinal in 0..corpus.documents {
+        let document = serde_json::to_vec(&corpus.document(ordinal)?)?;
+        gzip.write_all(&document)?;
+        bytes = bytes
+            .checked_add(document.len() as u64)
+            .context("measured corpus length overflow")?;
+        canonical.update(&document);
+        hash_document(&mut framed, ordinal, &document);
+    }
+    let compressed = gzip.finish()?;
+    ensure!(
+        bytes == total,
+        "measured canonical length differs from configuration"
+    );
+    journal.event(json!({"event":"measured","documents":corpus.documents,"algorithm":"gzip-9",
+        "input_bytes":bytes,"output_bytes":compressed.bytes,"gzip_sha256":hex::encode(compressed.hash.finalize()),
+        "canonical_sha256":hex::encode(canonical.finalize()),"expected_sha256":hex::encode(framed.finalize()),
+        "seconds":started.elapsed().as_secs_f64()}))
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [configuration, mode, output, flags @ ..] = args.as_slice() else {
         anyhow::bail!(
-            "usage: kasumi-bench-capacity <config.json> load|verify|resolve <new-absolute-evidence-directory> [--allow-writes | original-evidence-directory]"
+            "usage: kasumi-bench-capacity <config.json> load|verify|resolve|measure <new-absolute-evidence-directory> [--allow-writes | original-evidence-directory]"
         );
     };
     ensure!(
         (mode == "load" && flags == ["--allow-writes"])
-            || (mode == "verify" && flags.is_empty())
+            || (matches!(mode.as_str(), "verify" | "measure") && flags.is_empty())
             || (mode == "resolve" && flags.len() == 1),
-        "load requires --allow-writes; verify accepts no flags; resolve requires the original evidence directory"
+        "load requires --allow-writes; verify and measure accept no flags; resolve requires the original evidence directory"
     );
     let path = Path::new(configuration).canonicalize()?;
     let bytes = bounded(&path, 128 << 10)?;
     let config: Configuration = serde_json::from_slice(&bytes)?;
+    if mode == "measure" {
+        return measure_corpus(Path::new(output), &config.corpus, &digest(&bytes));
+    }
     let total = config.corpus.validate()?;
     ensure!(
         (1..=30_000).contains(&config.timeout_ms),
@@ -658,6 +729,34 @@ mod tests {
             "0f2ce61facf68acfb2587f4d7ce740598149abeea7491f1ee373f5e092ad2a7b"
         );
     }
+    #[test]
+    fn measurement_streams_one_complete_gzip_member_for_all_canonical_bodies() {
+        let mut corpus = corpus();
+        corpus.documents = 5;
+        let dir = tempfile::tempdir().unwrap();
+        let output = dir.path().join("measurement");
+        measure_corpus(&output, &corpus, "config-test").unwrap();
+        let events: Vec<Value> = BufReader::new(File::open(output.join("events.jsonl")).unwrap())
+            .lines()
+            .map(|s| serde_json::from_str(&s.unwrap()).unwrap())
+            .collect();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0]["mode"], "measure");
+        let raw: Vec<u8> = (0..corpus.documents)
+            .flat_map(|ordinal| serde_json::to_vec(&corpus.document(ordinal).unwrap()).unwrap())
+            .collect();
+        let mut gzip = GzBuilder::new()
+            .mtime(0)
+            .write(Vec::new(), Compression::best());
+        gzip.write_all(&raw).unwrap();
+        let compressed = gzip.finish().unwrap();
+        assert_eq!(events[1]["input_bytes"], raw.len());
+        assert_eq!(events[1]["canonical_sha256"], digest(&raw));
+        assert_eq!(events[1]["output_bytes"], compressed.len());
+        assert_eq!(events[1]["gzip_sha256"], digest(&compressed));
+        assert!(measure_corpus(&output, &corpus, "config-test").is_err());
+    }
+
     #[test]
     fn batch_identity_is_exact_and_limits_fail_before_allocating() {
         let mut corpus = corpus();
