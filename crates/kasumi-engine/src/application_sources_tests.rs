@@ -1615,6 +1615,55 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let reopened_cell = reopened.application_selection.get().unwrap().cell.clone();
     snapshot_identity(&reopened_cell, &meta, &backend, &envelope);
     let selection = reopened.application_selection.get().unwrap();
+    for (after, limit, expected) in [
+        (None, 1, vec!["alpha"]),
+        (Some("alpha"), 2, vec!["point"]),
+        (Some("point"), 1, vec![]),
+    ] {
+        let ids = selection.with_snapshot_records(&reopened.state, |tree, _, _| {
+            crate::application_records::snapshot_ids_after(tree, "docs", after, limit, || Ok(()))
+        })?;
+        assert_eq!(ids.context("reopened primary directory missing")?, expected);
+    }
+    {
+        use crate::state::lease_retention::{PageAccess, PageSelection};
+        let cancellation = kasumi_query::QueryCancellation::default();
+        let clock = Arc::new(kasumi_clock::SystemLeaseClock);
+        let term = reopened_db.raft_group().current_term();
+        let lease_id = uuid::Uuid::new_v4().to_string();
+        let handle = reopened_engine.leases.open(
+            &reopened_engine,
+            &context,
+            reopened.state.limits.cursor_ttl_ms,
+            clock,
+            term,
+            &target.storage.admission,
+            lease_id.clone(),
+            &cancellation,
+        )?;
+        for (after_id, expected, more) in [(None, "alpha", true), (Some("alpha"), "point", false)] {
+            let page = reopened_engine.leases.select(
+                &reopened_engine,
+                &lease_id,
+                PageSelection::Scan(kasumi_types::ScanSnapshotPage {
+                    lease_id: lease_id.clone(),
+                    collection: "docs".into(),
+                    after_id: after_id.map(str::to_owned),
+                    limit: 1,
+                }),
+                PageAccess {
+                    context: &context,
+                    term,
+                    node: &target.storage.admission,
+                    cancellation: &cancellation,
+                },
+            )?;
+            assert!(Arc::ptr_eq(&handle, &page.handle));
+            assert_eq!(page.scan_ids, [expected]);
+            assert_eq!(page.scan_has_more, more);
+        }
+        reopened_engine.leases.close(&context, &lease_id)?;
+    }
     let mut admitted = 0;
     let Some(crate::application_records::PrimaryPoint::Live(slot)) =
         selection.snapshot_point(&reopened.state, "docs", "point", |bytes| {

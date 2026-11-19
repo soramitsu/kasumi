@@ -118,6 +118,49 @@ fn archive_key(collection: &str, id: &str) -> Vec<u8> {
     KeyBuilder::new(4).text(collection).text(id).finish()
 }
 
+/// Read at most one page from each primary namespace. Only keys are visited,
+/// so an archived document's overflow payload stays on disk.
+pub(crate) fn snapshot_ids_after(
+    reader: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    after: Option<&str>,
+    limit: usize,
+    mut check: impl FnMut() -> Result<()>,
+) -> Result<Vec<String>> {
+    use kasumi_store::ordered_pages::Direction;
+    use std::ops::Bound;
+
+    let mut page = |kind| -> Result<Vec<String>> {
+        let prefix = KeyBuilder::new(kind).text(collection).finish();
+        let start = after.map(|id| KeyBuilder::new(kind).text(collection).text(id).finish());
+        let bound = start
+            .as_deref()
+            .map_or(Bound::Included(prefix.as_slice()), Bound::Excluded);
+        let mut ids = Vec::with_capacity(limit);
+        reader.scan(bound, Direction::Forward, &mut |key, _| {
+            check()?;
+            let Some(suffix) = key.strip_prefix(prefix.as_slice()) else {
+                return Ok(false);
+            };
+            let encoded = suffix
+                .strip_suffix(&[0, 1])
+                .context("invalid primary ID terminator")?;
+            let id = std::str::from_utf8(encoded)?;
+            validate_name(id)?;
+            ids.push(id.to_owned());
+            Ok(ids.len() < limit)
+        })?;
+        Ok(ids)
+    };
+    let live = page(3)?;
+    let archived = page(4)?;
+    Ok(
+        crate::index_source::ordered_union(live.into_iter(), archived.into_iter())
+            .take(limit)
+            .collect(),
+    )
+}
+
 pub(crate) enum PrimaryPoint {
     Live(Arc<DocumentSlot>),
     Archived(Arc<ArchivedDocument>),

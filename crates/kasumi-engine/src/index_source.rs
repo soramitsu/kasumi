@@ -162,31 +162,56 @@ pub(crate) fn record<'a>(
         .map(|reference| RecordLoan::Archived(reference.as_ref())))
 }
 
-/// Iterate the logical union directly, validating both sides of a hydrated
-/// duplicate before lending it once. Scratch is two ordered-map iterators.
+/// Merge two strictly ordered key streams, yielding a shared key once.
+pub(crate) fn ordered_union<T: Ord>(
+    left: impl Iterator<Item = T>,
+    right: impl Iterator<Item = T>,
+) -> impl Iterator<Item = T> {
+    let mut left = left.peekable();
+    let mut right = right.peekable();
+    std::iter::from_fn(move || match (left.peek(), right.peek()) {
+        (Some(a), Some(b)) => match a.cmp(b) {
+            std::cmp::Ordering::Less => left.next(),
+            std::cmp::Ordering::Greater => right.next(),
+            std::cmp::Ordering::Equal => {
+                right.next();
+                left.next()
+            }
+        },
+        (Some(_), None) => left.next(),
+        _ => right.next(),
+    })
+}
+
+pub(crate) fn resident_ids_after<'a>(
+    collection: &'a CollectionState,
+    after: Option<&str>,
+) -> impl Iterator<Item = &'a String> {
+    use std::ops::Bound;
+    let bounds = (
+        after.map_or(Bound::Unbounded, Bound::Excluded),
+        Bound::Unbounded,
+    );
+    ordered_union(
+        collection
+            .documents
+            .range::<_, str>(bounds)
+            .map(|(id, _)| id),
+        collection
+            .archived_documents
+            .range::<_, str>(bounds)
+            .map(|(id, _)| id),
+    )
+}
+
+/// Validate both sides of a hydrated duplicate before lending it once.
 pub(crate) fn visit(
     collection: &CollectionState,
     revision: u64,
     resolver: Option<&dyn DocumentResolver>,
     mut lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
 ) -> SourceResult<()> {
-    let mut live = collection.documents.keys().peekable();
-    let mut archived = collection.archived_documents.keys().peekable();
-    loop {
-        let id = match (live.peek(), archived.peek()) {
-            (Some(a), Some(b)) => match a.cmp(b) {
-                std::cmp::Ordering::Less => live.next(),
-                std::cmp::Ordering::Greater => archived.next(),
-                std::cmp::Ordering::Equal => {
-                    archived.next();
-                    live.next()
-                }
-            },
-            (Some(_), None) => live.next(),
-            (None, Some(_)) => archived.next(),
-            (None, None) => break,
-        }
-        .expect("selected nonempty source iterator");
+    for id in resident_ids_after(collection, None) {
         let value = record(collection, id, revision, resolver)?
             .ok_or_else(|| corruption("source iterator lost its record"))?;
         lend(id, value.as_record())?;

@@ -15,7 +15,7 @@ use kasumi_types::{
     CollectionDefinition, CollectionState, DocumentResolver, Error, ErrorCode, Result,
     validate_name,
 };
-use std::{ops::Bound, sync::Arc, time::Instant};
+use std::{sync::Arc, time::Instant};
 
 /// One selected collection of an immutable generation, including any verified
 /// hydration overlay. Cloning the source retains that exact owner and view.
@@ -275,22 +275,8 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         lend: impl for<'a> FnOnce(Option<Header<'a>>) -> Result<T>,
     ) -> ReadResult<T, Self::Failure> {
         cancellation.check()?;
-        let bound = exclusive_id.map_or(Bound::Unbounded, Bound::Excluded);
         let collection = self.collection();
-        let live = collection
-            .documents
-            .range::<_, str>((bound, Bound::Unbounded))
-            .next()
-            .map(|(id, _)| id.as_str());
-        let archived = collection
-            .archived_documents
-            .range::<_, str>((bound, Bound::Unbounded))
-            .next()
-            .map(|(id, _)| id.as_str());
-        let id = match (live, archived) {
-            (Some(live), Some(archived)) => Some(live.min(archived)),
-            (live, archived) => live.or(archived),
-        };
+        let id = crate::index_source::resident_ids_after(collection, exclusive_id).next();
         let header = id
             .map(|id| -> Result<_> {
                 crate::index_source::header(collection, id, self.generation.state.revision)?
