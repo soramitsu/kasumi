@@ -100,6 +100,22 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
         .await?
         .unwrap();
     assert_eq!(record.claim.intent_ciphertext, bound.as_bytes());
+    let tenant_keys = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::Tenant { tenant: fixture.context.tenant.clone() },
+        cursor: None, limit: 32,
+    };
+    let assert_session_keys = |page: &KeyRetentionPage| {
+        assert!(page.entries.iter().any(|entry|
+            entry.reference == KeyReference::BackupSession { session_id: id }));
+    };
+    let active = fixture.db.read_key_retention(&fixture.context, tenant_keys.clone()).await?;
+    assert_session_keys(&active);
+    drop(active);
+    let mut different = record.clone();
+    different.claim.request_id.push('x');
+    assert!(fixture.db.store.with_verified_binding_keys::<()>(&different, None, |_| {
+        panic!("a different request exposed wrapping identities")
+    }).await.is_err());
     assert_eq!(
         control.engine.generation()?.state.backup_binding_head.count,
         1
@@ -160,6 +176,9 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
     };
     let retry = fixture.db.select_backup_terminal(&fixture.context, first.as_ref(), &verified, &loser).await?;
     assert_eq!(selected.as_bytes(), retry.as_bytes());
+    let decided = fixture.db.read_key_retention(&fixture.context, tenant_keys).await?;
+    assert_session_keys(&decided);
+    drop(decided);
     let stale_keys = control.read_key_retention(&operator, ReadKeyRetentionRequest {
         cursor: Some(prior_cursor), ..key_request
     }).await.unwrap_err();

@@ -2,6 +2,8 @@
 //! tenant archive chain. Every source outside that observation is explicit in
 //! coverage. A page grants no provider mutation or retirement authority.
 use super::*;
+#[path = "backup_key_inventory.rs"]
+mod backup_keys;
 
 fn consider_entry(
     request: &ReadKeyRetentionRequest,
@@ -320,6 +322,22 @@ impl Database {
                 &mut truncated,
             )
             .await?;
+        let session_digest = if control {
+            None
+        } else {
+            let observe = self.binding_key_inventory(
+                context,
+                request,
+                &cancellation,
+                &mut entries,
+                &mut missing,
+                &mut truncated,
+            );
+            tokio::select! {
+                result = observe => result?,
+                _ = cancelled(&cancellation) => return Err(cancelled_error()),
+            }
+        };
         let scope_hash = request.scope.sha256()?;
         let request = request.clone();
         let stores = self.stores.clone();
@@ -428,7 +446,7 @@ impl Database {
                     );
                 }
                 let inventory_sha256 = staged_digest(&(
-                    "kasumi.key-retention.local.v4",
+                    "kasumi.key-retention.local.v5",
                     &scope_hash,
                     &state.incarnation,
                     epoch,
@@ -436,6 +454,7 @@ impl Database {
                     local,
                     digest,
                     hex::encode(history_digest),
+                    session_digest,
                     &state.backup_binding_head,
                     hex::encode(recovery_digest.finalize()),
                     state.audit_retention.archive_segments,

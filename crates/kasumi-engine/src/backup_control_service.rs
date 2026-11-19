@@ -52,7 +52,7 @@ impl Database {
         Ok(())
     }
 
-    fn backup_authority(&self) -> Result<Option<(Arc<Database>, RequestContext)>> {
+    pub(super) fn backup_authority(&self) -> Result<Option<(Arc<Database>, RequestContext)>> {
         match self.backup_control.get() {
             Some(binding) => Ok(Some((
                 binding.control.upgrade().ok_or_else(unavailable)?,

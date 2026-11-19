@@ -138,6 +138,74 @@ impl AdmittedBackupBundle {
 }
 
 impl TenantStore {
+    /// Inspect only the wrapping keys of the selected encrypted session records.
+    /// Both records must authenticate the exact Control claim and share a catalog.
+    pub async fn with_verified_binding_keys<T>(
+        &self,
+        record: &kasumi_types::BackupBindingRecord,
+        terminal: Option<&kasumi_types::BackupBindingTerminal>,
+        visit: impl FnOnce(&mut dyn Iterator<Item = (&str, &str, u64)>) -> Result<T>,
+    ) -> Result<T> {
+        let _access = AccessGuard(self);
+        self.check_access()?;
+        record.validate()?;
+        let claim = &record.claim;
+        ensure!(
+            self.tenant() == claim.tenant,
+            "backup binding belongs to another tenant"
+        );
+        let provider = self.archive_read_provider()?;
+        let encrypted = EncryptedBackup::from_bytes(
+            &claim.intent_ciphertext,
+            crate::MAX_SESSION_RECORD_BYTES,
+            self,
+        )?;
+        let contents = encrypted
+            .decrypt(self.tenant(), provider.clone(), self)
+            .await?;
+        let intent: kasumi_types::BackupSessionIntent = serde_json::from_slice(&contents.snapshot)?;
+        ensure!(
+            intent == claim.intent()
+                && contents.revision == claim.revision
+                && kasumi_types::staged_digest(&contents.source_purpose)?.0
+                    == claim.source_purpose_sha256,
+            "encrypted intent differs from Control claim"
+        );
+        contents
+            .source_purpose
+            .validate_application_identity(&claim.tenant, &claim.source_incarnation)?;
+        if let Some(terminal) = terminal {
+            terminal.validate(claim)?;
+            let outcome = EncryptedBackup::from_bytes(
+                &terminal.ciphertext,
+                crate::MAX_SESSION_RECORD_BYTES,
+                self,
+            )?
+            .decrypt(self.tenant(), provider, self)
+            .await?;
+            let value: kasumi_types::BackupSessionOutcome =
+                serde_json::from_slice(&outcome.snapshot)?;
+            value.validate(&intent, &claim.intent_ciphertext_sha256)?;
+            ensure!(
+                value == terminal.outcome
+                    && outcome.revision == contents.revision
+                    && outcome.source_purpose == contents.source_purpose
+                    && outcome.key_catalog_sha256 == contents.key_catalog_sha256,
+                "encrypted decision differs from Control binding"
+            );
+        }
+        let result = visit(
+            &mut encrypted
+                .manifest
+                .catalog
+                .keys
+                .values()
+                .map(|key| (key.provider.as_str(), key.key_ref.as_str(), key.version)),
+        )?;
+        self.check_access()?;
+        Ok(result)
+    }
+
     /// Lend wrapping identities only after the original object, its entire
     /// historical catalog and its authenticated plaintext have been verified.
     pub async fn with_verified_object_keys<T>(
