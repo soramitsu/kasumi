@@ -39,7 +39,7 @@ receipts. The native provider and test executables are development inputs.
 | G03 | New generations stage in bounded Store batches and publish with fixed-size selector writes. Prior source covers over-cap selection. The original laneC workload failed its greater-than-96-MiB precondition. The successor generates 100 MiB. A recovered native Store executable ran the larger-than-one-transaction tree case in 45.01 seconds and the interleaved 4,200/8,400 spool case in 1.35 seconds. | All 228 Raft tests passed on 8d331a48, including permanent 4,200-command and 8,400-audit custody, in 337.53 seconds. Pass the large application restore, interruption, bounded-workspace and native restart checks on the final source. |
 | G04 | Tenant status and capacity now use authenticated Rust, private gRPC and CLI reads. Chronological export pins the end and digest across pruning and later appends. A durable per-segment directory supports seeking. Verification checks both archive copies with caller-bound expiring cursors. Three type tests passed. | Qualify private status, capacity, export and verification under outages, replacement and lifetime crossings. |
 | G05 | Physical aliases are indexed. New backups commit the source identity, destination, randomized encrypted intent and original Raft position in Control before first upload. On 1ff31a91 Control selects one terminal outcome and exact encrypted bytes before destination publication. A later writer can repair a missing destination outcome. Status reads the selected decision and verifies any published copy. | The native claim and terminal decision test passed in 1.99 seconds. Qualify all interruption, source suspension and restart paths on the common candidate. Complete remote Control routing and exercise delayed remote cleanup. |
-| G06 | Stopped local recovery binds its primary and historical read providers. New replicated target enrollment binds source tenant, incarnation, destination alias, primary, historical keys and CA trust. Installed archive, backup-session and history reads resolve historical keys. A native encrypted-store test read the prior ciphertext and rejected omitted or substituted rosters after reopen (1.29 seconds). | The paged private read on 194d4a8d fingerprints both installed wrapping catalogs and reports exact provider/key/version tuples and the audit head. Ten native key-retention type tests passed. The inventory reports missing sources. Complete remote replica and backup coverage and the atomic retirement decision. |
+| G06 | Stopped local recovery binds its primary and historical read providers. New replicated target enrollment binds source tenant, incarnation, destination alias, primary, historical keys and CA trust. Installed archive, backup-session and history reads resolve historical keys. A native encrypted-store test read the prior ciphertext and rejected omitted or substituted rosters after reopen (1.29 seconds). | The paged private read on 194d4a8d fingerprints both installed wrapping catalogs and reports exact provider/key/version tuples and the audit head. Commit 2a40a45c follows the entire selected encrypted tenant audit chain, reports the first unreadable ancestor by UUID and binds cursors to the visited archive references. The scan uses one bounded row at a time. It revisits the chain for each result page. Ten native key-retention type tests passed. The inventory reports missing sources. Complete remote replica and backup coverage and the atomic retirement decision. |
 | G07 | Installed native workers retain the child join for tenant audit, backup claim, point, staged, receipt and change-feed reads. The macOS tooling now checks Darwin process groups, including unreaped children. The combined process-census and release roster regressions passed 41 cases in 21.155 seconds. | On 17720a50 front-door admission closes before the physical Raft writer drains, and its independent grant survives through that join. A protected native three-voter regression passed in 11.24 seconds. Qualify actual authority, data, target and nested worker drains on every required cancellation, panic and deadline on the frozen binary. |
 | G08 | Stopped TLS rotation publishes a recoverable generation. Both native laneB interruption and damaged-generation tests passed in 73.77 seconds on b236ad6b. | b63f3430 rebinds the exact authorized ledger-backed local credential on journaled leaf rotation. A native 16-scenario installed lifecycle passed. Exercise all crash points on the final binary and qualify live trust/endpoint rotation and membership replacement under load. |
 | G09 | LaneB binds target storage at creation. Cleanup checks original ownership before destruction and uses durable deletion evidence. Ten native shutdown cases passed on b236ad6b in 7.70 seconds. All ten shutdown cases passed again on frozen 2389e531, including encrypted journal reopen after a signed stop. | Finish the distributed crash/cancellation matrix, missing-quorum recovery, old-target isolation and actual process shutdown/restart on the candidate. |
@@ -166,12 +166,41 @@ receipts. The native provider and test executables are development inputs.
   Both original SIGKILL receipts are preserved. The 6,000-operation replay is
   required on the corrected source.
 
+- On `919178dc`, formatting, all 440 Python tests and strict workspace
+  Clippy passed. The partial-purge restart fixture passed in 0.81 seconds.
+  The Query suite failed while fetching the IPADIC build input. The successor
+  uses the original 12,907,073-byte archive, verified against upstream MD5
+  `a95c409f12f1023fce8ef91f991ef042` and SHA-256
+  `a7ba9f645ffe7094e56ae1c4a81d100df8fbb1e28bbe1792622e9728e162db3d`.
+- The first 6,000-operation replay on the purge fix stopped before reaching
+  shutdown. The Mac's power log records sleep at 08:35 and a wake at 08:52
+  local time. The daemon recorded a sealed key lease and an uncertain
+  post-commit acknowledgment on wake. This is a separate failure from the two
+  original shutdown hangs. The awake replay uses the identical executables,
+  with SHA-256 `ec81bedea4214b3ae31f7bb7c990c26832ba505af281190a24d2caaf9adb9f28`
+  and `937f79e11d14aea25c1277c0d7f14372db5a86ddf8e46b87141f1961d6feed81`.
+- Commit `6748524b` adds inclusive, exclusive and open structured range
+  queries on disk. Its first native check failed compiling the test because
+  the assertion destructured the ID vector as a pair. `9630c679` fixes the
+  assertion. `8d18f2b5` moves snapshot evaluation, lease selection and scans
+  to the installed blocking-child owner. `250fa69b` covers query and cursor
+  pages and routes denial records through the independently owned audit writer.
+- `837d73cf` collects native archive outage, replacement and permanent
+  identity evidence. `2fc4bf71` adds authenticated observations and verifies
+  ciphertexts on three physical data voters. Three negative evidence tests
+  passed for each collector. The unintegrated nine-process qualification
+  still needs its installed topology and a valid verification page limit.
+  A native production validator accepted 10,000 lifecycle intents and refused
+  10,001 with the existing hard quota. The original refusal is retained under
+  `audit-legacy-lifecycle-ceiling`.
+
 The three-platform qualification input at this checkpoint is
-`919178dce99eab13a42ab949db122f7bb7998dd1`. Its 69,488,640-byte archive
-has SHA-256 `ce9a24a9f0bf42f7d354506da2fdf30cd13cebce59ef1be5084b25ba79dac864`.
-The archive, file manifest, lock hash, host limits and commands are in the
-private evidence directory under `standalone-purge-drain`. Component receipts
-identify the source or executables they actually ran.
+`9630c679df8152661f2944c2ded9ff863168c0c2`. Its 69,519,360-byte archive
+has SHA-256 `22e9c6d8c75ade8f1413dc52c48263ee99c5fdf9a7006bea9b2097c893d46f50`.
+Its manifest, Cargo.lock hash, machine limits, exact commands and results are
+in the private evidence directory under `native-snapshot-custody`. Later
+commits require another qualification freeze. Component receipts identify
+the source and executables they actually ran.
 
 ## Required infrastructure and decisions
 
