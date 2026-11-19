@@ -211,8 +211,9 @@ The structural workload validators enforce:
   batches of at most 256 documents, matching hashes, complete bytes, and
   multiple actual RSS/disk/workspace samples within recorded limits.
 - A full-corpus `gzip-9` compression measurement whose output/input ratio is at
-  least 0.75, suitable for the existing printable-ASCII capacity corpus. This
-  explicit gate threshold is not an entropy proof. Maintenance workspace and
+  least 0.75. Reference the capacity driver's original `measure` events journal.
+  The verifier matches its seed, document count, canonical size and measured output
+  to the submitted totals. Maintenance workspace and
   retained-read budget must each be at most one quarter of the measured corpus.
 - A genuine **86,400-second** HA soak, bounded by wall time and a retained process
   of at least that duration. Heartbeats begin at zero, have no gap above 60

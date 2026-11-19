@@ -349,6 +349,45 @@ def check_integrity(root, ref, documents, expected_bytes):
     require(count == documents and size == expected_bytes, "integrity verification is not exhaustive")
 
 
+def replay_capacity_measurement(root, corpus):
+    compression = corpus["compression"]
+    events = iter(rows(root, compression["log"]))
+    start, end = next(events, None), next(events, None)
+    require(next(events, None) is None, "unexpected extra compression event")
+    exact(start, {"event", "format", "mode", "configuration_sha256", "executable_sha256",
+                  "architecture", "os", "corpus", "expected_canonical_bytes", "algorithm"}, "compression start")
+    exact(end, {"event", "documents", "algorithm", "input_bytes", "output_bytes", "canonical_sha256",
+                "gzip_sha256", "expected_sha256", "seconds"}, "compression result")
+    require(start["event"] == "started" and uint(start["format"], "compression journal format") == 1
+            and start["mode"] == "measure" and end["event"] == "measured"
+            and start["algorithm"] == end["algorithm"] == compression["algorithm"],
+            "compression journal did not complete the configured measurement")
+    for value in (start["configuration_sha256"], start["executable_sha256"],
+                  end["canonical_sha256"], end["gzip_sha256"], end["expected_sha256"]):
+        checksum(value)
+    number(end["seconds"], "compression duration")
+    plan = start["corpus"]
+    exact(plan, {"run_id", "collection", "seed_sha256", "documents", "document_bytes", "batch_documents"},
+          "compression corpus plan")
+    require(isinstance(plan["run_id"], str)
+            and re.fullmatch(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}", plan["run_id"])
+            and plan["run_id"] != "00000000-0000-0000-0000-000000000000"
+            and isinstance(plan["collection"], str) and plan["collection"], "missing measured corpus identity")
+    document_bytes = uint(plan["document_bytes"], "measured document bytes", 128)
+    batch = uint(plan["batch_documents"], "measured batch size", 1)
+    require(document_bytes <= 1 << 20 and batch <= 256 and (document_bytes + 2048) * batch <= 4 << 20,
+            "measured corpus exceeds driver batch bounds")
+    require(uint(plan["documents"], "planned documents", 1) == corpus["documents"]
+            and uint(end["documents"], "measured documents", 1) == corpus["documents"]
+            and plan["seed_sha256"] == corpus["seed_sha256"]
+            and document_bytes * corpus["documents"] == corpus["canonical_bytes"]
+            and uint(start["expected_canonical_bytes"], "planned bytes") == corpus["canonical_bytes"]
+            and uint(end["input_bytes"], "measured input") == compression["input_bytes"]
+            and uint(end["output_bytes"], "measured output") == compression["output_bytes"],
+            "compression report differs from the measured corpus")
+    return start, end
+
+
 def check_capacity(root, details, kind):
     exact(details, {"corpus", "operations"}, "capacity details")
     corpus = details["corpus"]
@@ -362,7 +401,7 @@ def check_capacity(root, details, kind):
             "compression must measure the full exact corpus with gzip-9")
     compressed = uint(compression["output_bytes"], "compressed bytes", 1)
     require(compressed * 4 >= size * 3, "corpus is too compressible (minimum ratio 0.75)")
-    reference(root, compression["log"])
+    replay_capacity_measurement(root, corpus)
     operations = unique(details["operations"], "id", "capacity operations")
     require(set(operations) == SCENARIOS[kind], "capacity operation coverage is incomplete")
     for operation in operations.values():

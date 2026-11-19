@@ -198,9 +198,18 @@ class AcceptanceTests(unittest.TestCase):
             for first in range(0, 4096, 256)])
         limits = {"rss_bytes": 1 << 30, "allocated_disk_bytes": 8 << 30, "maintenance_workspace_bytes": 64 << 20}
         resources = self.lines("resources.jsonl", [{"elapsed_seconds": i, **limits} for i in (0, 1)])
+        compression_log = self.lines("compression.jsonl", [
+            {"event": "started", "format": 1, "mode": "measure", "algorithm": "gzip-9",
+             "configuration_sha256": "c" * 64, "executable_sha256": "d" * 64, "os": "linux",
+             "architecture": "aarch64", "expected_canonical_bytes": size, "corpus": {
+                 "run_id": "00000000-0000-0000-0000-000000000001", "collection": "capacity",
+                 "seed_sha256": "b" * 64, "documents": 4096, "document_bytes": 1 << 20, "batch_documents": 1}},
+            {"event": "measured", "documents": 4096, "algorithm": "gzip-9", "input_bytes": size,
+             "output_bytes": size * 4 // 5, "canonical_sha256": "a" * 64, "gzip_sha256": "e" * 64,
+             "expected_sha256": "f" * 64, "seconds": 100.0}])
         return {"corpus": {"documents": 4096, "canonical_bytes": size, "seed_sha256": "b" * 64,
                     "compression": {"algorithm": "gzip-9", "input_bytes": size, "output_bytes": size * 4 // 5,
-                                    "log": self.file("compression.log")}},
+                                    "log": compression_log}},
                 "operations": [{"id": name, "integrity": integrity, "resources": resources,
                     "limits": limits.copy(), "read_retention_budget_bytes": 64 << 20}
                     for name in sorted(acceptance.SCENARIOS["capacity-ha"])]}
@@ -313,6 +322,25 @@ class AcceptanceTests(unittest.TestCase):
                     value[-1]["tenants"] = 100
                 with self.subTest(change=change), self.assertRaises(ValueError):
                     acceptance.check_benchmarks(self.root, {"cases": value})
+
+    def test_capacity_replays_original_measurement_before_accepting_reported_counts(self):
+        for change in ("extra-event", "short", "different-output", "different-seed", "missing-digest"):
+            with self.subTest(change=change):
+                corpus = self.capacity()["corpus"]
+                events = list(acceptance.rows(self.root, corpus["compression"]["log"]))
+                if change == "extra-event":
+                    events.append(events[-1])
+                elif change == "short":
+                    events.pop()
+                elif change == "different-output":
+                    events[-1]["output_bytes"] -= 1
+                elif change == "different-seed":
+                    events[0]["corpus"]["seed_sha256"] = "a" * 64
+                else:
+                    del events[-1]["gzip_sha256"]
+                corpus["compression"]["log"] = self.lines("changed-compression.jsonl", events)
+                with self.assertRaises(ValueError):
+                    acceptance.replay_capacity_measurement(self.root, corpus)
 
     def test_capacity_must_exceed_three_gib_and_cover_every_operation(self):
         value = self.capacity()
