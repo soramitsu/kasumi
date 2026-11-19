@@ -885,18 +885,13 @@ def main():
         parser.add_argument("--" + name, required=True, type=Path)
     parser.add_argument("--attempt-id", required=True)
     a = parser.parse_args()
-    with domain_run.Run(
-        "audit-retention",
-        RUNNER,
-        MODULES,
-        a.evidence,
-        a.output,
-        a.journal,
-        a.attempt_id,
-        {},
-        domain_run.REHEARSAL,
-    ) as run:
-        observe(run, a.plan, a.topology)
+    capture(a.evidence, a.output, a.journal, a.attempt_id, a.plan, a.topology)
+
+
+def capture(evidence, output, journal, attempt_id, plan, topology_path):
+    with domain_run.Run("audit-retention", RUNNER, MODULES, evidence, output, journal, attempt_id,
+                        {}, domain_run.REHEARSAL) as run:
+        observe(run, plan, topology_path)
 
 
 if __name__ == "__main__":

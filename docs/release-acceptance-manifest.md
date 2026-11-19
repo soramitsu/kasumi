@@ -227,6 +227,31 @@ The structural workload validators enforce:
   crossings of all permanent-history lifetime categories, key-retention pages
   no larger than 256, and complete current-epoch readiness above 128 groups.
 
+The audit-retention component collector runs the installed nine-process
+observation and the frozen engine and Raft tests on native Linux ARM64. Use
+the admitted topology, fresh enrolled profiles for one tenant incarnation
+and a new custody directory outside the functional evidence. The audit plan
+uses schema `kasumi-audit-replica-v1` and absolute `data_profile` and
+`operator_profile` paths. The installation stage runs first so it can use the
+enrolled credentials while they are fresh. An ordinary failure in either
+stage preserves its receipts and allows the independent stage to run.
+
+```sh
+python3 -I -B -S scripts/observe_audit_retention.py collect \
+  --evidence "$functional" --custody "$new_custody" --journal "$journal" \
+  --attempt-id "$attempt" --topology "$nine_member_plan" --plan "$audit_plan"
+python3 -I -B -S scripts/observe_audit_retention.py replay \
+  --evidence "$functional" --custody "$transported_custody"
+```
+
+Replay checks both original reports against the supplied functional tree,
+recomputes their observations from original process output and checks the
+combined report. It records measured archival, outage, replica and replacement
+scenarios and the measured command, receipt and lifecycle history counts.
+The remaining permanent-history categories are incarnations and sessions.
+The combined report uses `qualification: component`; the full audit-retention
+gate requires all five historical ceilings and their genuine measured crossings.
+
 The concurrency producer runs all nine separately enrolled processes on native
 Linux ARM64. Start it from the frozen source with the same isolated interpreter
 and attempt journal as the other domain runners.

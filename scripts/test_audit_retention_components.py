@@ -167,3 +167,20 @@ class TransportedNativeAuditTests(unittest.TestCase):
                 raw.write_bytes(b"changed after transport\n")
                 with self.assertRaises(ValueError):
                     audit.replay_retained(custody, report, original, {})
+
+
+class LifecycleAuditComponentTests(unittest.TestCase):
+    def test_requires_actual_ceiling_replay_reopen_and_drains(self):
+        row = {"selected_intents": 10001, "resident_legacy_intents": 1, "previous_max_intents": 10000,
+               "installed_max_intents": 1, "bytes": 29_000_000, "sha256": "ab" * 32,
+               "replayed_first_revision": 3, "fresh_store_reopen": True, "both_stores_drained": True}
+
+        def observe(value):
+            return audit.observation("lifecycle", ("KASUMI_LIFECYCLE_HISTORY " + json.dumps(value)).encode())
+
+        self.assertEqual(observe(row), row)
+        for changes in ({"selected_intents": 10000}, {"previous_max_intents": 9999},
+                        {"resident_legacy_intents": 10001}, {"bytes": 10001}, {"sha256": "missing"},
+                        {"fresh_store_reopen": False}, {"both_stores_drained": False}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                observe({**row, **changes})

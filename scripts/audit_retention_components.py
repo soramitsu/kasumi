@@ -71,6 +71,12 @@ CASES = (
         1,
     ),
     (
+        "lifecycle",
+        "kasumi-engine",
+        "lifecycle_history_crosses_ten_thousand_ordered_control_intents",
+        1,
+    ),
+    (
         "receipts",
         "kasumi-engine",
         "verified_point_history_crosses_former_count_limit_before_a_real_new_mutation",
@@ -101,10 +107,11 @@ def count(value):
 
 
 def observation(case, raw):
+    prefix = "KASUMI_LIFECYCLE_HISTORY " if case == "lifecycle" else PREFIX
     rows = [
-        json.loads(line[len(PREFIX) :])
+        json.loads(line[len(prefix) :])
         for line in raw.decode().splitlines()
-        if line.startswith(PREFIX)
+        if line.startswith(prefix)
     ]
     if case == "incomplete":
         require(not rows, "unexpected independent observation")
@@ -200,6 +207,16 @@ def observation(case, raw):
             == "command-00000000",
             "original command did not survive the previous lifetime ceiling and restart",
         )
+    elif case == "lifecycle":
+        owned.exact(value, {"selected_intents", "resident_legacy_intents", "previous_max_intents",
+                            "installed_max_intents", "bytes", "sha256", "replayed_first_revision",
+                            "fresh_store_reopen", "both_stores_drained"}, "original lifecycle history crossing")
+        selected = count(value["selected_intents"])
+        require(count(value["previous_max_intents"]) == 10_000 and selected == 10_001
+                and count(value["resident_legacy_intents"]) == count(value["installed_max_intents"]) == 1
+                and count(value["bytes"]) > selected and count(value["replayed_first_revision"]) == 3
+                and value["fresh_store_reopen"] is True and value["both_stores_drained"] is True
+                and digest(value["sha256"]), "lifecycle witness did not retain a full permanent history")
     elif case == "receipts":
         require(
             value["case"] == "mutation-receipts"
@@ -232,7 +249,7 @@ def replay(evidence, selected, perform):
                     str(evidence / "target" / path),
                     "--exact",
                     test,
-                    *(["--include-ignored"] if case == "receipts" else []),
+                    *(["--include-ignored"] if case in {"receipts", "lifecycle"} else []),
                     "--test-threads=1",
                     "--show-output",
                     "--format",
@@ -318,8 +335,12 @@ def main():
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-    evidence = args.evidence.resolve(strict=True)
-    directory = args.output.resolve()
+    capture(args.evidence, args.output)
+
+
+def capture(evidence, directory):
+    evidence = evidence.resolve(strict=True)
+    directory = directory.resolve()
     require(
         not directory.is_relative_to(evidence),
         "keep component evidence independent of the frozen tree",
