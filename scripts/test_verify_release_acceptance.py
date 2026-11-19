@@ -359,6 +359,8 @@ class AcceptanceTests(unittest.TestCase):
         value = self.capacity()
         measured = acceptance.replay_capacity_measurement(self.root, value["corpus"])
         op = value["operations"][0]
+        measured[0]["corpus"]["batch_documents"] = 1
+        acceptance.check_integrity(self.root, op, measured)
         original = list(acceptance.rows(self.root, op["verification"]))
         for row, key, replacement in ((0, "executable_sha256", "3" * 64), (1, "documents", 2),
                                       (-1, "observed_sha256", "a" * 64),

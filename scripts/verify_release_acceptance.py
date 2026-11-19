@@ -347,9 +347,17 @@ def check_integrity(root, operation, measurement):
                   "credential_binding_scope", "executable_sha256", "os", "architecture",
                   "generator", "scope"}, "installed verification start")
     checksum(start["configuration_sha256"])
+    installed = start["corpus"]
+    exact(installed, set(plan), "installed corpus plan")
+    batch_size = uint(installed["batch_documents"], "installed batch size", 1)
+    require(batch_size <= 256 and (plan["document_bytes"] + 2048) * batch_size <= 4 << 20,
+            "installed corpus exceeds driver batch bounds")
+    # Request grouping changes the integrity rows, while the measured framed
+    # body stream depends only on the generator inputs and document order.
     require(start["event"] == "started" and start["mode"] == "verify"
             and type(start["format"]) is int and start["format"] == 1
-            and json.dumps(start["corpus"], sort_keys=True) == json.dumps(plan, sort_keys=True)
+            and all(type(installed[k]) is type(value) and installed[k] == value
+                    for k, value in plan.items() if k != "batch_documents")
             and uint(start["expected_canonical_bytes"], "installed planned bytes", 1) == expected_bytes
             and all(start[k] == measured_start[k] for k in ("os", "architecture", "executable_sha256")),
             "installed verification did not use the measured plan, host platform and driver")
@@ -358,7 +366,7 @@ def check_integrity(root, operation, measurement):
         exact(row, {"first", "documents", "canonical_bytes", "expected_sha256", "observed_sha256"}, "integrity batch")
         require(type(row["first"]) is int and row["first"] == count, "integrity gap or duplicate batch")
         batch = uint(row["documents"], "integrity documents", 1)
-        require(batch == min(plan["batch_documents"], documents - count)
+        require(batch == min(batch_size, documents - count)
                 and row["canonical_bytes"] == batch * plan["document_bytes"],
                 "integrity batch differs from the original corpus plan")
         count += batch
