@@ -119,3 +119,51 @@ class AuditEvidence(unittest.TestCase):
         for case, row in cases.items():
             with self.subTest(case=case), self.assertRaises(ValueError):
                 audit.observation(case, (audit.PREFIX + json.dumps(row)).encode())
+
+
+class TransportedNativeAuditTests(unittest.TestCase):
+    def test_transport_replays_original_command_working_directory_output_and_hash(self):
+        import os
+        from pathlib import Path
+        from tempfile import TemporaryDirectory
+        import sys
+        from unittest.mock import patch
+        import repeatable_assembly as owned
+
+        with TemporaryDirectory() as tmp:
+            base = Path(tmp).resolve()
+            original = base / "old-machine" / "evidence"
+            source = original / "source"
+            source.mkdir(parents=True)
+            initial = base / "original-custody"
+            initial.mkdir()
+            interpreter = str(Path(sys.executable).resolve(strict=True))
+            command = [interpreter, "-I", "-B", "-S", "-c", "print('original')"]
+            checksum = owned.sha256(interpreter)
+            proc = owned.run_owned(initial, "witness", command, str(source),
+                                   {"PATH": os.defpath, "LC_ALL": "C"}, 7200)
+            report = {"processes": [proc], "observed": {"witness": "original"}}
+            custody = initial.rename(base / "transported")
+
+            def replay(evidence, selected, perform):
+                self.assertEqual(evidence, original)
+                raw = perform("witness", command, checksum)
+                return {"witness": raw.decode().strip()}
+
+            with patch.object(audit, "replay", replay):
+                self.assertEqual(audit.replay_retained(custody, report, original, {}), report["observed"])
+                for mutation in (
+                    lambda item: item["processes"].clear(),
+                    lambda item: item["processes"].append(copy.deepcopy(proc)),
+                    lambda item: item["processes"][0].update(id="replacement"),
+                    lambda item: item["processes"][0]["executable"].update(sha256="0" * 64),
+                    lambda item: item["observed"].update(witness="operator declaration"),
+                ):
+                    candidate = copy.deepcopy(report)
+                    mutation(candidate)
+                    with self.assertRaises(ValueError):
+                        audit.replay_retained(custody, candidate, original, {})
+                raw = owned.check_ref(custody, proc["stdout"])
+                raw.write_bytes(b"changed after transport\n")
+                with self.assertRaises(ValueError):
+                    audit.replay_retained(custody, report, original, {})

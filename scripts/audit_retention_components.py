@@ -7,6 +7,7 @@ all five measured permanent record categories.
 
 import argparse
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -253,7 +254,66 @@ def replay(evidence, selected, perform):
     return outcomes
 
 
+RUNNER = "scripts/audit_retention_components.py"
+MODULES = {"scripts/run_correctness.py"}
+COMPONENT_FIELDS = {
+    "schema", "qualification", "status", "evidence", "processes", "native",
+    "source_commit", "source_tree", "runner_sha256", "functional_sha256",
+    "observed", "seconds",
+}
+
+
+def replay_retained(custody, report, original, selected):
+    """Reparse and cross-check the exact original native processes in dispatch order."""
+    queue = iter(report["processes"])
+
+    def perform(name, command, checksum):
+        row = next(queue, None)
+        require(isinstance(row, dict) and row.get("id") == name,
+                "missing or reordered native audit component process: " + name)
+        require(row["executable"]["sha256"] == checksum,
+                "native audit executable differs from frozen workspace target")
+        owned.check_owned(custody, row, command, str(original / "source"), 7200)
+        return owned.check_ref(custody, row["stdout"]).read_bytes()
+
+    measured = replay(original, selected, perform)
+    require(next(queue, None) is None, "unexpected trailing native audit process")
+    require(measured == report["observed"], "audit observations differ from original process output")
+    return measured
+
+
+def verify_components(evidence, custody):
+    """Verify a transported component against an independently supplied functional candidate."""
+    evidence = Path(evidence).resolve(strict=True)
+    custody = Path(custody).resolve(strict=True)
+    functional, _, native, _ = package_release.verify_evidence(evidence)
+    report = owned.read(package_release.owned_file(custody, "report.json"))
+    owned.exact(report, COMPONENT_FIELDS, "native audit component report")
+    files = owned.read(evidence / "source-files.json")
+    scripts = domain_run.frozen_scripts(evidence / "source", files, {RUNNER, *MODULES})
+    original = Path(report["evidence"])
+    require(original.is_absolute() and ".." not in original.parts
+            and report["schema"] == "kasumi-audit-retention-components-v1"
+            and report["qualification"] == "component" and report["status"] == "passed"
+            and type(report["seconds"]) in {float, int} and math.isfinite(report["seconds"])
+            and report["seconds"] > 0 and report["native"] == native
+            and report["source_commit"] == functional["source_commit"]
+            and report["source_tree"] == functional["source_tree"]
+            and report["functional_sha256"] == owned.sha256(evidence / "evidence.json")
+            and report["runner_sha256"] == scripts[RUNNER],
+            "native audit component differs from its frozen functional candidate")
+    selected = libtest.artifacts(evidence, functional, CASES_BY_CRATE)
+    return replay_retained(custody, report, original, selected)
+
+
 def main():
+    if sys.argv[1:2] == ["replay"]:
+        cli = argparse.ArgumentParser(description="Verify transported native audit components")
+        cli.add_argument("--evidence", type=Path, required=True)
+        cli.add_argument("--custody", type=Path, required=True)
+        args = cli.parse_args(sys.argv[2:])
+        print(json.dumps(verify_components(args.evidence, args.custody), sort_keys=True))
+        return
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--evidence", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
@@ -279,13 +339,12 @@ def main():
         source = evidence / "source"
         selected = libtest.artifacts(evidence, functional, CASES_BY_CRATE)
         files = owned.read(evidence / "source-files.json")
-        me = "scripts/audit_retention_components.py"
-        domain_run.frozen_scripts(source, files, {me, "scripts/run_correctness.py"})
+        domain_run.frozen_scripts(source, files, {RUNNER, *MODULES})
         report.update(
             native=native,
             source_commit=functional["source_commit"],
             source_tree=functional["source_tree"],
-            runner_sha256=files[me]["sha256"],
+            runner_sha256=files[RUNNER]["sha256"],
             functional_sha256=owned.sha256(evidence / "evidence.json"),
         )
         env = {
