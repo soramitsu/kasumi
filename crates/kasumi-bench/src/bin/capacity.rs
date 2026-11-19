@@ -377,6 +377,37 @@ impl Journal {
     }
 }
 
+async fn original_receipt(
+    client: &mut proto::kasumi_data_client::KasumiDataClient<tonic::transport::Channel>,
+    credentials: &FileCredentialSource,
+    binding: &CredentialBinding,
+    timeout: Duration,
+    batch: &MutationBatch,
+) -> Result<Option<kasumi_types::MutationReceipt>> {
+    let response = client
+        .receipt(request(
+            proto::ReceiptRequest {
+                idempotency_key: batch.idempotency_key.clone(),
+            },
+            credentials,
+            binding,
+            timeout,
+        )?)
+        .await?
+        .into_inner();
+    let kasumi_types::CredentialResource::Database { incarnation } = binding.kasumi_resource else {
+        anyhow::bail!("original credential must select a database");
+    };
+    let scope = kasumi_types::MutationReceiptScope {
+        tenant: binding.tenant.clone(),
+        incarnation: incarnation.to_string(),
+        principal: binding.sub.clone(),
+    };
+    Ok(kasumi_client::verify_mutation_receipt(
+        &scope, batch, response,
+    )?)
+}
+
 async fn run(
     config: &Configuration,
     root: &Path,
@@ -401,6 +432,7 @@ async fn run(
         .max_encoding_message_size(MAX_BATCH_BYTES + (64 << 10))
         .max_decoding_message_size(MAX_DOCUMENT_BYTES + (64 << 10));
     let timeout = Duration::from_millis(config.timeout_ms);
+    let mut first_to_write = 0;
     if let Some(original) = original {
         let original = Path::new(original);
         ensure!(
@@ -436,28 +468,16 @@ async fn run(
             serde_json::to_vec(&expected)? == bytes,
             "original batch differs from the exact configured corpus"
         );
-        let response = client
-            .receipt(request(
-                proto::ReceiptRequest {
-                    idempotency_key: batch.idempotency_key.clone(),
-                },
-                &credentials,
-                binding,
-                timeout,
-            )?)
-            .await?
-            .into_inner();
-        let kasumi_types::CredentialResource::Database { incarnation } = binding.kasumi_resource
-        else {
-            anyhow::bail!("original credential must select a database");
-        };
-        let scope = kasumi_types::MutationReceiptScope {
-            tenant: binding.tenant.clone(),
-            incarnation: incarnation.to_string(),
-            principal: binding.sub.clone(),
-        };
-        let verified = kasumi_client::verify_mutation_receipt(&scope, &batch, response)?;
+        ensure!(
+            first.is_multiple_of(config.corpus.batch_documents as u64),
+            "original batch does not start on a configured boundary"
+        );
+        let verified =
+            original_receipt(&mut client, &credentials, binding, timeout, &batch).await?;
         let original_input_verified = verified.is_some();
+        let committed = verified
+            .as_ref()
+            .is_some_and(|receipt| receipt.outcome.is_ok());
         let outcome = match verified.map(|receipt| receipt.outcome) {
             Some(Ok(receipt)) => {
                 validate_receipt(&config.corpus, first, count, &receipt)?;
@@ -475,10 +495,39 @@ async fn run(
             "batch_sha256":digest(&bytes),"outcome":outcome,"original_input_matches_retained_server_digest":original_input_verified,
             "scope":"A retained outcome must match the exact original canonical input digest returned by the authenticated native server. Absence remains unknown. Resolution never dispatches a mutation."}),
         )?;
-        return Ok(());
+        if mode == "resolve" {
+            return Ok(());
+        }
+        ensure!(
+            committed,
+            "continuation requires a committed original receipt"
+        );
+        // Read every earlier receipt from this installation. The last request
+        // file alone cannot authorize skipping an absent or rejected batch.
+        while first_to_write < first {
+            let (prior, prior_count) = config.corpus.batch(first_to_write)?;
+            let receipt = original_receipt(&mut client, &credentials, binding, timeout, &prior)
+                .await?
+                .context("earlier original mutation has no retained receipt")?
+                .outcome
+                .map_err(|error| anyhow::anyhow!("earlier mutation rejected: {:?}", error.code))?;
+            validate_receipt(&config.corpus, first_to_write, prior_count, &receipt)?;
+            journal.event(
+                json!({"event":"confirmed_prefix_batch", "first":first_to_write,
+                "count":prior_count,"idempotency_key":prior.idempotency_key,
+                "batch_sha256":digest(&serde_json::to_vec(&prior)?),"revision":receipt.revision}),
+            )?;
+            first_to_write += prior_count;
+        }
+        first_to_write = first
+            .checked_add(count)
+            .context("continuation boundary overflow")?;
+        journal.event(
+            json!({"event":"continuing_after_committed_prefix","documents":first_to_write}),
+        )?;
     }
     if mode == "load" {
-        let mut first = 0u64;
+        let mut first = first_to_write;
         while first < config.corpus.documents {
             let (batch, count) = config.corpus.batch(first)?;
             let bytes = serde_json::to_vec(&batch)?;
@@ -665,11 +714,13 @@ async fn main() -> Result<()> {
     let args = std::env::args().skip(1).collect::<Vec<_>>();
     let [configuration, mode, output, flags @ ..] = args.as_slice() else {
         anyhow::bail!(
-            "usage: kasumi-bench-capacity <config.json> load|verify|resolve|measure <new-absolute-evidence-directory> [--allow-writes | original-evidence-directory]"
+            "usage: kasumi-bench-capacity <config.json> load|verify|resolve|measure <new-absolute-evidence-directory> [--allow-writes [--after-committed original-evidence-directory] | original-evidence-directory]"
         );
     };
     ensure!(
-        (mode == "load" && flags == ["--allow-writes"])
+        (mode == "load"
+            && (flags == ["--allow-writes"]
+                || (flags.len() == 3 && flags[..2] == ["--allow-writes", "--after-committed"])))
             || (matches!(mode.as_str(), "verify" | "measure") && flags.is_empty())
             || (mode == "resolve" && flags.len() == 1),
         "load requires --allow-writes; verify and measure accept no flags; resolve requires the original evidence directory"
@@ -698,7 +749,11 @@ async fn main() -> Result<()> {
         total,
         &binding,
     )?;
-    let original = (mode == "resolve").then(|| flags[0].as_str());
+    let original = match mode.as_str() {
+        "resolve" => Some(flags[0].as_str()),
+        "load" if flags.len() == 3 => Some(flags[2].as_str()),
+        _ => None,
+    };
     let result = run(
         &config,
         root,
