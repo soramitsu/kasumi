@@ -192,7 +192,8 @@ class PermanentIncarnationComponentTests(unittest.TestCase):
         row = {"case": "permanent-incarnations", "prior_limit": 100000, "selected": 100001,
                "reopened": 100001, "verified_receipts": 100001, "replayed_first_revision": 1,
                "replayed_last_revision": 100001, "selected_bytes": 320000001,
-               "ordered_receipts_sha256": "ab" * 32, "physical_reopen": True, "drained": True}
+               "ordered_receipts_sha256": "ab" * 32, "write_grant_renewals": 3, "read_grant_renewals": 2,
+               "physical_reopen": True, "drained": True}
 
         def observe(value):
             return audit.observation("incarnations", (audit.PREFIX + json.dumps(value)).encode())
@@ -201,6 +202,7 @@ class PermanentIncarnationComponentTests(unittest.TestCase):
         for changes in ({"selected": 100000}, {"prior_limit": 4096}, {"reopened": 0},
                         {"verified_receipts": 1}, {"replayed_last_revision": 0},
                         {"ordered_receipts_sha256": "substituted"}, {"drained": False},
-                        {"physical_reopen": False}, {"selected_bytes": 0}):
+                        {"physical_reopen": False}, {"selected_bytes": 0}, {"write_grant_renewals": 0},
+                        {"read_grant_renewals": 0}):
             with self.subTest(changes=changes), self.assertRaises(ValueError):
                 observe({**row, **changes})

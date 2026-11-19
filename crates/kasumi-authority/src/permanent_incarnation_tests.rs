@@ -49,6 +49,21 @@ fn retain_digest(hasher: &mut Sha256, receipt: &AuthorityReceipt) {
     hasher.update(bytes);
 }
 
+// This direct reducer fixture has no node runtime renewal worker. Refresh
+// the two independently authenticated grants through their original providers.
+async fn refresh_grants_if_due(fixture: &Fixture, last: &mut Option<Duration>, renewals: &mut u64) {
+    let application = fixture.stores.application();
+    let custody = fixture.stores.custody().store();
+    let now = application.lease_clock().now();
+    if last.is_some_and(|previous| now.saturating_sub(previous) < Duration::from_secs(15)) {
+        return;
+    }
+    tokio::try_join!(application.refresh_lease(), custody.refresh_lease())
+        .expect("original application and custody key grants must refresh");
+    *last = Some(now);
+    *renewals += 1;
+}
+
 async fn persists_distinct_incarnations(count: u64) {
     let fixture = Fixture::with_capacity(AuthorityCapacity {
         max_tenants: count,
@@ -58,7 +73,10 @@ async fn persists_distinct_incarnations(count: u64) {
     .await;
     let template = fixture.command();
     let mut initial = Sha256::new();
+    let mut last_renewal = None;
+    let mut write_renewals = 0;
     for index in 1..=count {
+        refresh_grants_if_due(&fixture, &mut last_renewal, &mut write_renewals).await;
         let (command, incarnation) = enrollment(&template, index);
         let receipt = select(&fixture.backend, &command, index, false);
         assert_eq!(receipt.command, command.command);
@@ -85,7 +103,10 @@ async fn persists_distinct_incarnations(count: u64) {
     );
     assert_eq!(after.state_bytes, before.state_bytes);
     let mut restored = Sha256::new();
+    let mut last_renewal = None;
+    let mut read_renewals = 0;
     for index in 1..=count {
+        refresh_grants_if_due(&fixture, &mut last_renewal, &mut read_renewals).await;
         let (command, incarnation) = enrollment(&template, index);
         let tenant = &command.command.tenant;
         let Some(Record::Incarnation(record)) = fixture
@@ -124,6 +145,7 @@ async fn persists_distinct_incarnations(count: u64) {
             "selected": before.incarnations, "reopened": after.incarnations,
             "verified_receipts": count, "replayed_first_revision": 1, "replayed_last_revision": count,
             "ordered_receipts_sha256": original_sha256, "selected_bytes": after.state_bytes,
+            "write_grant_renewals": write_renewals, "read_grant_renewals": read_renewals,
             "physical_reopen": true, "drained": true
         })
     );

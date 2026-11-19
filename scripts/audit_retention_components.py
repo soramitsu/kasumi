@@ -227,12 +227,14 @@ def observation(case, raw):
     elif case == "incarnations":
         owned.exact(value, {"case", "prior_limit", "selected", "reopened", "verified_receipts",
                             "replayed_first_revision", "replayed_last_revision", "ordered_receipts_sha256",
-                            "selected_bytes", "physical_reopen", "drained"}, "original authority history crossing")
+                            "selected_bytes", "write_grant_renewals", "read_grant_renewals", "physical_reopen", "drained"},
+                    "original authority history crossing")
         selected = count(value["selected"])
         require(value["case"] == "permanent-incarnations" and count(value["prior_limit"]) == 100_000
                 and selected > value["prior_limit"] and count(value["reopened"]) == selected
                 and count(value["verified_receipts"]) == selected and count(value["replayed_first_revision"]) == 1
                 and count(value["replayed_last_revision"]) == selected and count(value["selected_bytes"]) > selected
+                and count(value["write_grant_renewals"]) > 0 and count(value["read_grant_renewals"]) > 0
                 and value["physical_reopen"] is True and value["drained"] is True
                 and digest(value["ordered_receipts_sha256"]), "original authority history was not preserved")
     elif case == "receipts":
