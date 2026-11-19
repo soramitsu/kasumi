@@ -224,7 +224,7 @@ The structural workload validators enforce:
   Unexpected errors and integrity mismatches must remain zero. Credential
   renewal, archival, backup, and membership maintenance must occur during it.
 - Archive segments no larger than 8 MiB, maintenance at 75% toward 50%, measured
-  crossings of all permanent-history lifetime categories, key-retention pages
+  historical count crossings and the permanent backup-session floor, key-retention pages
   no larger than 256, and complete current-epoch readiness above 128 groups.
 
 The audit-retention component collector runs the installed nine-process
@@ -252,9 +252,13 @@ The Authority witness enrolls distinct tenants, drains and reopens the encrypted
 database, verifies every incarnation against its original receipt, and replays the
 first and last enrollments. The historical Authority manifest before commit
 `04f8c199` capped receipts at 100,000 and required each accepted incarnation
-to have a receipt. The remaining permanent-history category is backup sessions.
-The combined report uses `qualification: component`; the full audit-retention
-gate requires all five historical ceilings and their genuine measured crossings.
+to have a receipt. The other former limits are 4,096 commands, 100,000
+mutation receipts and 10,000 lifecycle intents. Each count must exceed its
+own limit. The backup-session entry carries `acceptance_floor: 100001`,
+the observed distinct count and its original log reference. Its count must
+meet or exceed that floor. The full gate requires the cold-kill, reopen,
+authenticated replay and pagination evidence specified in G11. The combined
+report retains `qualification: component` until all five witnesses qualify.
 
 The concurrency producer runs all nine separately enrolled processes on native
 Linux ARM64. Start it from the frozen source with the same isolated interpreter

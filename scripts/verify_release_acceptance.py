@@ -87,6 +87,10 @@ MIN_CORPUS = 3 << 30
 SOAK_SECONDS = 86400
 HEARTBEAT_SECONDS = 60
 MAX_JSON_BYTES = 16 << 20
+BACKUP_SESSION_FLOOR = 100_001
+PERMANENT_HISTORY_LIMITS = {
+    "commands": 4_096, "receipts": 100_000, "incarnations": 100_000, "lifecycle": 10_000,
+}
 MODES = ("raw", "local", "replicated", "text", "network")
 TENANTS = (1, 100, 1000)
 BASE_WORKLOADS = {
@@ -242,6 +246,25 @@ def rows(root, ref):
         while line := stream.readline((1 << 20) + 1):
             require(len(line) <= 1 << 20 and line.endswith(b"\n"), "oversized/truncated JSONL row")
             yield decode(line)
+
+
+def check_lifetime_counts(root, records):
+    counts = unique(records, "id", "permanent record lifetime counts")
+    require(set(counts) == PERMANENT_HISTORY_LIMITS.keys() | {"sessions"},
+            "permanent history lifetime coverage is incomplete")
+    for category, historical in PERMANENT_HISTORY_LIMITS.items():
+        entry = counts[category]
+        exact(entry, {"id", "former_limit", "observed", "log"}, "lifetime crossing")
+        require(uint(entry["former_limit"], "former ceiling") == historical and
+                uint(entry["observed"], "observed records") > historical,
+                category + " did not cross its historical ceiling")
+        reference(root, entry["log"])
+    sessions = counts["sessions"]
+    exact(sessions, {"id", "acceptance_floor", "observed", "log"}, "permanent backup sessions")
+    require(uint(sessions["acceptance_floor"], "backup session floor") == BACKUP_SESSION_FLOOR and
+            uint(sessions["observed"], "distinct backup sessions") >= BACKUP_SESSION_FLOOR,
+            "distinct backup sessions did not meet the adopted floor")
+    reference(root, sessions["log"])
 
 
 def required_gates():
@@ -1367,14 +1390,7 @@ def verify_gate(root, gate, identity, files, configs, binaries, artifacts, candi
         require(uint(details["maximum_segment_bytes"], "encrypted archive segment", 1) <= 8 << 20
                 and details["maintenance_start_percent"] == 75 and details["maintenance_target_percent"] == 50,
                 "audit segment/maintenance contract differs")
-        counts = unique(details["lifetime_counts"], "id", "permanent record lifetime counts")
-        require(set(counts) == {"commands", "receipts", "incarnations", "lifecycle", "sessions"},
-                "permanent history lifetime coverage is incomplete")
-        for count in counts.values():
-            exact(count, {"id", "former_limit", "observed", "log"}, "lifetime crossing")
-            require(uint(count["observed"], "observed records", 1) > uint(count["former_limit"], "former ceiling", 1),
-                    "former lifetime ceiling was not crossed")
-            reference(root, count["log"])
+        check_lifetime_counts(root, details["lifetime_counts"])
         reference(root, details["report"])
     elif kind == "key-retention":
         exact(details, {"maximum_page_entries", "coverage_complete", "report"}, "key retention details")

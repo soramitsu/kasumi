@@ -119,6 +119,22 @@ class AcceptanceTests(unittest.TestCase):
                               "executable": executable})
         return witness, processes, {"kasumictl": executable["sha256"]}, expected
 
+    def test_permanent_sessions_use_the_adopted_floor_and_four_authentic_former_counts(self):
+        log = self.file("component.log")
+        counts = [{"id": key, "former_limit": limit, "observed": limit + 1, "log": log}
+                  for key, limit in acceptance.PERMANENT_HISTORY_LIMITS.items()]
+        session = {"id": "sessions", "acceptance_floor": 100_001, "observed": 100_001, "log": log}
+        acceptance.check_lifetime_counts(self.root, [*counts, session])
+        for changed in ({"observed": 100_000}, {"acceptance_floor": 256},
+                        {"former_limit": 65_536}, {"observed": True}):
+            with self.subTest(changed=changed), self.assertRaises(ValueError):
+                acceptance.check_lifetime_counts(self.root, [*counts, {**session, **changed}])
+        for i, historical in enumerate(counts):
+            for change in ({"former_limit": 1}, {"observed": historical["former_limit"]}):
+                with self.subTest(category=historical["id"], change=change), self.assertRaises(ValueError):
+                    acceptance.check_lifetime_counts(self.root, [
+                        *counts[:i], {**historical, **change}, *counts[i + 1:], session])
+
     def test_native_admin_readback_requires_candidate_processes_and_exact_pinned_state(self):
         witness, processes, binaries, expected = self.admin_readback()
         acceptance.check_native_admin_readback(self.root, witness, processes, binaries, expected)

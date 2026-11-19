@@ -1781,6 +1781,24 @@ replicated readiness remain open.
 
 ### G11 — Acceptance manifest, infrastructure and dependencies
 
+**Permanent backup sessions (2026-11-19).** Exercise at least **100,001
+distinct sessions**, including at least 257 permanently failed or aborted
+sessions. This prospective workload follows the owner's consultation with
+Fable 5.2 at extra-high effort. Review of 27 historical revisions identified
+a 65,536-byte limit per authenticated session record and a 256-object limit
+per cleanup page within one aborted session. Neither bounds the number of
+session identities.
+
+Retain the original binding and terminal outcome for every ID. Compare
+independently generated ordered ledgers across a cold process kill and physical
+reopen. Replay the original outcomes without executing their operations again.
+Interrupt an in-flight write and resolve it against its original identity.
+Observe complete, duplicate-free enumeration in pages of at most 256 sessions.
+Exercise exactly 65,536 and 65,537 bytes at the record boundary, and exercise
+the separate 256-object cleanup boundary. The historical count crossings for
+commands, mutation receipts, Authority incarnations and lifecycle intents
+remain part of G11 and G13.
+
 **Dependency roster update (2026-11-18).** imbl 7.0.2 selects imbl-sized-chunks
 0.2.0 and removes bitmaps from the workspace. The four retained vendor roots
 supply lru, serde_json, rmcp, openraft and openraft-macros. The earlier roster
