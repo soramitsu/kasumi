@@ -165,7 +165,7 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
     let prefix_node = query_memory_node(1 << 20);
     let (prefix_work, _, _) =
         query_memory_snapshot_work(&prefix_node, query_memory_generation(), prefix);
-    let prefix_output = prefix_work.run();
+    let prefix_output = prefix_work.run().expect("open fixture document reads");
     assert_eq!(
         prefix_output.response.as_ref().unwrap_err().code,
         ErrorCode::InvalidArgument
@@ -177,7 +177,7 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
     let node = query_memory_node(1 << 20);
     let before = node.snapshot();
     let (work, fence, slots) = query_memory_snapshot_work(&node, generation, request.clone());
-    let output = work.run();
+    let output = work.run().expect("open fixture document reads");
     let response = output.response.as_ref().unwrap();
     assert_eq!(
         response.documents[0].document.as_ref(),
@@ -218,7 +218,7 @@ async fn snapshot_query_memory_keeps_points_and_prior_results_live_and_denies_se
     let before = node.snapshot();
     let (work, fence, slots) =
         query_memory_snapshot_work(&node, query_memory_generation(), request);
-    let output = work.run();
+    let output = work.run().expect("open fixture document reads");
     assert_eq!(
         output.response.as_ref().unwrap_err().code,
         ErrorCode::ResourceExhausted

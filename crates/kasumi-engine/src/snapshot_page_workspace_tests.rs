@@ -77,7 +77,8 @@ async fn completed_scan_keeps_output_charged_after_lease_expiry_until_abandoned(
     assert!(!work.lease.live());
     let output = tokio::task::spawn_blocking(move || work.run())
         .await
-        .unwrap();
+        .expect("join snapshot scan worker")
+        .expect("open fixture document reads");
     fence.seal();
     let response = output.response.as_ref().unwrap();
     assert_eq!(response.data_epoch, 1);
