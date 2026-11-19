@@ -509,6 +509,17 @@ async fn run(
     let mut expected = Sha256::new();
     let mut observed = Sha256::new();
     let mut total = 0u64;
+    let mut integrity = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(journal.directory.join("integrity.jsonl"))?;
+    File::open(&journal.directory)?.sync_all()?;
+    let mut integrity_digest = Sha256::new();
+    let mut batch_first = 0u64;
+    let mut batch_start_bytes = 0u64;
+    let mut batch_expected = Sha256::new();
+    let mut batch_observed = Sha256::new();
     for ordinal in 0..config.corpus.documents {
         let id = config.corpus.id(ordinal);
         let response = client
@@ -537,7 +548,12 @@ async fn run(
         );
         let actual = serde_json::to_vec(&actual)?;
         let wanted = serde_json::to_vec(&wanted)?;
-        for (hasher, bytes) in [(&mut expected, &wanted), (&mut observed, &actual)] {
+        for (hasher, bytes) in [
+            (&mut expected, &wanted),
+            (&mut observed, &actual),
+            (&mut batch_expected, &wanted),
+            (&mut batch_observed, &actual),
+        ] {
             hash_document(hasher, ordinal, bytes);
         }
         total = total
@@ -546,9 +562,20 @@ async fn run(
         if (ordinal + 1).is_multiple_of(config.corpus.batch_documents as u64)
             || ordinal + 1 == config.corpus.documents
         {
+            let batch = json!({"first":batch_first,"documents":ordinal + 1 - batch_first,
+                "canonical_bytes":total - batch_start_bytes,
+                "expected_sha256":hex::encode(batch_expected.finalize_reset()),
+                "observed_sha256":hex::encode(batch_observed.finalize_reset())});
+            let mut row = serde_json::to_vec(&batch)?;
+            row.push(b'\n');
+            integrity.write_all(&row)?;
+            integrity.sync_all()?;
+            integrity_digest.update(&row);
             journal.event(
                 json!({"event":"verified_prefix","documents":ordinal+1,"canonical_bytes":total}),
             )?;
+            batch_first = ordinal + 1;
+            batch_start_bytes = total;
         }
     }
     let expected = hex::encode(expected.finalize());
@@ -559,7 +586,8 @@ async fn run(
     );
     journal.event(
         json!({"event":"passed","documents":config.corpus.documents,"canonical_bytes":total,
-        "expected_sha256":expected,"observed_sha256":observed}),
+        "expected_sha256":expected,"observed_sha256":observed,
+        "integrity_sha256":hex::encode(integrity_digest.finalize())}),
     )?;
     Ok(())
 }

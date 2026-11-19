@@ -48,7 +48,10 @@ target/production-bench/release/kasumi-bench-capacity capacity.json verify \
 Every write requires absent document IDs. A load never replaces an existing
 document and stops at the first failure without automatically retrying. It then
 verifies every document with point reads and compares exact canonical bodies and
-an ordered, length-framed SHA256 digest. The separate `verify` command can check
+an ordered, length-framed SHA256 digest. For each verified batch it flushes
+`integrity.jsonl` with its first ordinal, document count, byte count and the
+expected and observed hashes. The journal's final success record authenticates
+that file by SHA-256. Interrupted runs retain their completed prefix. The separate `verify` command can check
 the same corpus after restart, snapshot replacement or restore; the connection
 may change for a new authorized destination, while the corpus definition stays
 identical. These individual point reads do not claim a coherent snapshot under
