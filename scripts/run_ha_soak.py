@@ -308,6 +308,7 @@ def execute(run, parameters, topology_path, plan_path, pause):
     topology.verify_unchanged(admitted, run.environment)
     measured_start = services.enter("measured")
     workload = Workload(run, plan, measured_start, duration)
+    stopped = []
     try:
         open_session(workload)
         pending = sorted((fraction * duration, kind) for kind, (fraction, _) in MAINTENANCE.items())
@@ -337,7 +338,7 @@ def execute(run, parameters, topology_path, plan_path, pause):
                                             "finished_elapsed_seconds": workload.elapsed(),
                                             "steps": []})["steps"].append(step)
                 workload.pause()
-                services.end_input("workload")
+                stopped.append(services.end_input("workload"))
                 open_session(workload)
                 rotation += parameters["session_seconds"]
             else:
@@ -346,10 +347,10 @@ def execute(run, parameters, topology_path, plan_path, pause):
     finally:
         workload.close()
     drain_start = services.enter("drain")
-    services.end_input("workload")
+    stopped.append(services.end_input("workload"))
     topology.verify_unchanged(admitted, run.environment)
     for node in reversed(admitted["nodes"]):
-        services.stop(node["id"])
+        stopped.append(services.stop(node["id"]))
     rows = [json.loads(line) for line in (run.output / "workload.jsonl").read_bytes().splitlines()]
     beats = heartbeat_rows(rows, duration, interval)
     with (run.output / "heartbeats.jsonl").open("xb") as stream:
@@ -362,6 +363,8 @@ def execute(run, parameters, topology_path, plan_path, pause):
                    heartbeats=owned.ref(run.output, run.output / "heartbeats.jsonl"),
                    workload=owned.ref(run.output, run.output / "workload.jsonl"))
     run.save()
+    for receipt in stopped:
+        domain_run.service_disposition(receipt)
     require(all(row["verdict"] == "ok" for row in rows)
             and all(later["successful_operations"] > earlier["successful_operations"]
                     for earlier, later in zip(beats, beats[1:])),

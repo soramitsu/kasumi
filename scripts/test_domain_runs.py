@@ -219,14 +219,14 @@ class DomainFixture(unittest.TestCase):
 
 class SoakTests(DomainFixture):
     # Short enough to test, long enough for owned children on a loaded host.
-    SHORT = {"duration_seconds": 12, "heartbeat_seconds": 4, "session_seconds": 4,
+    SHORT = {"duration_seconds": 30, "heartbeat_seconds": 10, "session_seconds": 10,
              "startup_seconds": 120, "drain_seconds": 120}
 
     def qualifying(self):
         """Shrink the qualifying contract itself, in the runner and the verifier alike."""
         for target, name, value in ((soak, "QUALIFYING", self.SHORT),
-                                    (acceptance, "SOAK_SECONDS", 12),
-                                    (acceptance, "HEARTBEAT_SECONDS", 4)):
+                                    (acceptance, "SOAK_SECONDS", self.SHORT["duration_seconds"]),
+                                    (acceptance, "HEARTBEAT_SECONDS", self.SHORT["heartbeat_seconds"])):
             patcher = patch.object(target, name, value)
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -243,8 +243,9 @@ class SoakTests(DomainFixture):
 
     def test_rehearsal_runs_every_phase_and_is_rejected_as_evidence(self):
         self.behave(ready_failures=2)
-        custody = self.soak("rehearsal-1", "--rehearsal-seconds", "12",
-                            "--rehearsal-heartbeat-seconds", "4")
+        duration, interval = self.SHORT["duration_seconds"], self.SHORT["heartbeat_seconds"]
+        custody = self.soak("rehearsal-1", "--rehearsal-seconds", str(duration),
+                            "--rehearsal-heartbeat-seconds", str(interval))
         report = json.loads((custody / "report.json").read_text())
         outcome = json.loads((custody / "outcome.json").read_text())
         self.assertEqual(report["status"], "passed")
@@ -254,9 +255,9 @@ class SoakTests(DomainFixture):
         # Startup (three readiness polls) and drain sit outside the measured interval.
         self.assertEqual(len(details["startup_polls"]), 2)
         self.assertGreater(details["phases"]["measured"], 0)
-        self.assertGreaterEqual(details["phases"]["drain"] - details["phases"]["measured"], 12)
+        self.assertGreaterEqual(details["phases"]["drain"] - details["phases"]["measured"], duration)
         beats = [json.loads(line) for line in (custody / "heartbeats.jsonl").read_text().splitlines()]
-        self.assertEqual([beat["elapsed_seconds"] for beat in beats], [0, 4, 8, 12])
+        self.assertEqual([beat["elapsed_seconds"] for beat in beats], list(range(0, duration + 1, interval)))
         self.assertEqual(beats[0]["successful_operations"], 0)
         self.assertTrue(all(later["successful_operations"] > earlier["successful_operations"]
                             for earlier, later in zip(beats, beats[1:])))
@@ -272,7 +273,7 @@ class SoakTests(DomainFixture):
                               record["cleanup"]["signals"]), ("SIGTERM", 0, []))
             self.assertLessEqual(record["started_elapsed_seconds"], details["phases"]["measured"])
             self.assertGreaterEqual(record["stop"]["elapsed_seconds"], details["phases"]["drain"])
-            self.assertGreaterEqual(record["duration_seconds"], 12)
+            self.assertGreaterEqual(record["duration_seconds"], duration)
         entries = attempt_index.replay(self.root)
         self.assertEqual(entries["rehearsal-1"]["begin"]["kind"], "ha-soak")
         # The same code, honestly labelled: the adapter refuses it.
@@ -364,7 +365,7 @@ class SoakTests(DomainFixture):
 
         def early_drain(report):
             phases = report["details"]["phases"]
-            phases["drain"] = phases["measured"] + 11.5
+            phases["drain"] = phases["measured"] + self.SHORT["duration_seconds"] - 0.5
 
         def unlisted_maintenance(report):
             report["details"]["maintenance"] = report["details"]["maintenance"][:-1]
@@ -417,11 +418,18 @@ class SoakTests(DomainFixture):
     def test_daemon_that_exits_nonzero_on_stop_fails_the_gate(self):
         self.qualifying()
         self.behave(stop_exit=3)
-        custody = self.run_short()
-        record, identity, configs = self.gate(
-            custody, soak.gate_details(self.root, custody / "report.json"))
         with self.assertRaisesRegex(ValueError, "did not exit cleanly on its requested stop"):
-            self.accept(record, identity, configs)
+            self.run_short()
+        custody = self.root / "runs/soak-1"
+        report = json.loads((custody / "report.json").read_text())
+        self.assertEqual(report["status"], "failed")
+        receipts = [owned.read(owned.check_ref(custody, row["receipt"]))
+                    for row in report["processes"]]
+        failed_stops = [r for r in receipts if (r.get("stop") or {}).get("signal") == "SIGTERM"]
+        self.assertEqual(len(failed_stops), 9)
+        self.assertTrue(all(r["cleanup"]["drained"] and r["process_exit_code"] == 3
+                            for r in failed_stops))
+        self.assertEqual(owned.read(custody / "outcome.json")["status"], "failed")
 
     def test_preflight_failure_is_journaled_without_child_custody(self):
         self.soak_plan.write_text(json.dumps({"schema": "other"}))
