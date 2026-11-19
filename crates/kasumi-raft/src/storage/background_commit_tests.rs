@@ -43,6 +43,35 @@ fn private_capture_recognizes_only_its_own_native_or_json_stop() {
     assert_eq!(spool.len(), 6);
 }
 
+#[test]
+#[allow(
+    clippy::result_large_err,
+    reason = "The fixture retains original native scratch failure ownership."
+)]
+fn a_private_transport_stops_between_chunks_and_keeps_its_captured_image() -> FixtureResult<()> {
+    let (_directory, disk) = scratch();
+    let snapshot = envelope(vec![42; 512 << 10], disk);
+    let original = snapshot.backend.sha256().to_owned();
+    let checks = std::cell::Cell::new(0);
+    let failure = snapshot
+        .encode_while(LIMIT, || {
+            checks.set(checks.get() + 1);
+            if checks.get() == 3 {
+                Err(PrivateCaptureStopped.into())
+            } else {
+                Ok(())
+            }
+        })
+        .err()
+        .context("private transport continued after shutdown")?;
+    assert!(failure.is::<PrivateCaptureStopped>());
+    assert_eq!(checks.get(), 3);
+    let retry = snapshot.encode(LIMIT)?;
+    let decoded = SnapshotEnvelope::decode_image(&retry, LIMIT)?;
+    assert_eq!(decoded.backend.sha256(), original);
+    Ok(())
+}
+
 /// Another tenant of the same node database, committing one small row after
 /// another: the foreground a background build must leave room for.
 struct Neighbour {

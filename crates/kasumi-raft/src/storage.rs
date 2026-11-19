@@ -168,6 +168,14 @@ impl BackgroundCommits {
         matches!(self, Self::Paced(closing) if closing.load(Ordering::Acquire))
     }
 
+    fn check_private_capture(&self) -> Result<()> {
+        if self.closing() {
+            Err(PrivateCaptureStopped.into())
+        } else {
+            Ok(())
+        }
+    }
+
     /// Before a journal purge chunk: the pause of the purge's own stream
     /// `pace`, which the caller takes holding none of its group's gates, so
     /// that the group's appends and audited reads run meanwhile. Nothing for
@@ -1915,6 +1923,7 @@ trait CoveringSnapshot: Sized + Send + 'static {
         snapshot: &SnapshotEnvelope,
         limit: u64,
         snapshot_buffers: &Arc<SnapshotBufferOwner>,
+        commits: &BackgroundCommits,
     ) -> Result<(Self, SnapshotImage)>;
     /// The outcome of a build refused for capacity, where it can be deferred.
     fn deferred() -> Option<Self>;
@@ -1931,6 +1940,7 @@ impl CoveringSnapshot for Snapshot<TypeConfig> {
         snapshot: &SnapshotEnvelope,
         limit: u64,
         snapshot_buffers: &Arc<SnapshotBufferOwner>,
+        _commits: &BackgroundCommits,
     ) -> Result<(Self, SnapshotImage)> {
         let transfer = as_snapshot(snapshot, limit, snapshot_buffers)?;
         let image = transfer.snapshot.image()?;
@@ -1953,11 +1963,12 @@ impl CoveringSnapshot for crate::local::LocalSnapshot {
         snapshot: &SnapshotEnvelope,
         limit: u64,
         snapshot_buffers: &Arc<SnapshotBufferOwner>,
+        commits: &BackgroundCommits,
     ) -> Result<(Self, SnapshotImage)> {
         snapshot_buffers.check()?;
         Ok((
             Self::Published(snapshot.meta.last_log_id),
-            snapshot.encode(limit)?,
+            snapshot.encode_while(limit, || commits.check_private_capture())?,
         ))
     }
     fn deferred() -> Option<Self> {
@@ -1982,16 +1993,11 @@ struct PrivateCaptureWriter<'a> {
 
 impl PrivateCaptureWriter<'_> {
     fn check(&self) -> io::Result<()> {
-        if self.commits.closing() {
-            // Both io::Error and serde_json's writer error expose their inner
-            // error's source. Keep a typed cause across either codec.
-            Err(io::Error::other(
-                anyhow::Error::new(PrivateCaptureStopped)
-                    .context("private snapshot output stopped"),
-            ))
-        } else {
-            Ok(())
-        }
+        // Both io::Error and serde_json's writer error expose their inner
+        // error's source. Keep a typed cause across either codec.
+        self.commits
+            .check_private_capture()
+            .map_err(|error| io::Error::other(error.context("private snapshot output stopped")))
     }
 }
 impl Write for PrivateCaptureWriter<'_> {
@@ -2010,6 +2016,9 @@ fn stopped_private_capture(error: &ScratchOperationFailure) -> bool {
     let ScratchOperationFailure::Operation(error) = error else {
         return false;
     };
+    if error.is::<PrivateCaptureStopped>() {
+        return true;
+    }
     let cause = if let Some(io) = error.downcast_ref::<io::Error>() {
         io.source()
     } else if let Some(json) = error.downcast_ref::<serde_json::Error>() {
@@ -2068,11 +2077,7 @@ impl SnapshotBuilder {
                     "state machine requires recovery"
                 );
                 domains.check_access()?;
-                if commits.closing()
-                    && let Some(deferred) = O::deferred()
-                {
-                    return Ok(deferred);
-                }
+                commits.check_private_capture()?;
                 // Only a stored snapshot at or past the capture is served in its
                 // place. Its position comes from its coverage record, so a build
                 // does not read back (decrypt, re-spool and digest) the whole
@@ -2109,29 +2114,16 @@ impl SnapshotBuilder {
                             spool: &mut spool,
                             commits: &commits,
                         };
-                        match logical.backend.write(&mut output) {
-                            Err(error) if stopped_private_capture(&error) => {
-                                return O::deferred().ok_or(error);
-                            }
-                            result => result?,
-                        }
-                        if commits.closing()
-                            && let Some(deferred) = O::deferred()
-                        {
-                            return Ok(deferred);
-                        }
+                        logical.backend.write(&mut output)?;
+                        commits.check_private_capture()?;
                         SnapshotImage::freeze(spool)?
                     },
                     retirement: logical.retirement.clone(),
                     first_membership: logical.first_membership.clone(),
                     initialization_association: logical.initialization_association.clone(),
                 };
-                let (covering, image) = O::captured(&captured, limit, &snapshot_buffers)?;
-                if commits.closing()
-                    && let Some(deferred) = O::deferred()
-                {
-                    return Ok(deferred);
-                }
+                let (covering, image) = O::captured(&captured, limit, &snapshot_buffers, &commits)?;
+                commits.check_private_capture()?;
                 // Staging transfers ownership to the durable publication
                 // protocol. Finish it even if the standalone group now closes.
                 let mut pending = stage_snapshot(&domains, &image, limit, &captured, &commits)?;
@@ -2171,6 +2163,7 @@ impl SnapshotBuilder {
             // crash-equivalent: the next build or open removes them.
             let result = match result {
                 Err(error) => match O::deferred() {
+                    Some(deferred) if stopped_private_capture(&error) => Ok(deferred),
                     Some(deferred) => {
                         crate::capacity_refusal::take_scratch(error).map(|()| deferred)
                     }
