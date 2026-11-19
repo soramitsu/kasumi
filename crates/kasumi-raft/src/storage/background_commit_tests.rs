@@ -23,6 +23,26 @@ fn paced() -> (BackgroundCommits, Arc<AtomicBool>) {
     (BackgroundCommits::Paced(closing.clone()), closing)
 }
 
+#[test]
+fn private_capture_recognizes_only_its_own_native_or_json_stop() {
+    let (_directory, disk) = scratch();
+    let mut spool = EncryptedSpool::new(&disk, LIMIT).unwrap();
+    let (commits, closing) = paced();
+    let mut writer = PrivateCaptureWriter {
+        spool: &mut spool,
+        commits: &commits,
+    };
+    writer.write_all(b"before").unwrap();
+    closing.store(true, Ordering::Release);
+    let direct = writer.flush().unwrap_err();
+    assert!(stopped_private_capture(&direct.into()));
+    let json = serde_json::to_writer(&mut writer, &123_u64).unwrap_err();
+    assert!(stopped_private_capture(&json.into()));
+    let independent = io::Error::other("private snapshot output stopped");
+    assert!(!stopped_private_capture(&independent.into()));
+    assert_eq!(spool.len(), 6);
+}
+
 /// Another tenant of the same node database, committing one small row after
 /// another: the foreground a background build must leave room for.
 struct Neighbour {

@@ -1965,6 +1965,61 @@ impl CoveringSnapshot for crate::local::LocalSnapshot {
     }
 }
 
+#[derive(Debug)]
+struct PrivateCaptureStopped;
+
+impl std::fmt::Display for PrivateCaptureStopped {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("standalone group closed during private snapshot capture")
+    }
+}
+impl std::error::Error for PrivateCaptureStopped {}
+
+struct PrivateCaptureWriter<'a> {
+    spool: &'a mut EncryptedSpool,
+    commits: &'a BackgroundCommits,
+}
+
+impl PrivateCaptureWriter<'_> {
+    fn check(&self) -> io::Result<()> {
+        if self.commits.closing() {
+            // Both io::Error and serde_json's writer error expose their inner
+            // error's source. Keep a typed cause across either codec.
+            Err(io::Error::other(
+                anyhow::Error::new(PrivateCaptureStopped)
+                    .context("private snapshot output stopped"),
+            ))
+        } else {
+            Ok(())
+        }
+    }
+}
+impl Write for PrivateCaptureWriter<'_> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.check()?;
+        self.spool.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.check()?;
+        self.spool.flush()
+    }
+}
+
+fn stopped_private_capture(error: &ScratchOperationFailure) -> bool {
+    use std::error::Error;
+    let ScratchOperationFailure::Operation(error) = error else {
+        return false;
+    };
+    let cause = if let Some(io) = error.downcast_ref::<io::Error>() {
+        io.source()
+    } else if let Some(json) = error.downcast_ref::<serde_json::Error>() {
+        json.source()
+    } else {
+        None
+    };
+    cause.is_some_and(|cause| cause.is::<PrivateCaptureStopped>())
+}
+
 impl SnapshotBuilder {
     // The pending marker, the chunk uploads and the cleanup run under the
     // snapshot gate only and follow `commits`. The publication, under the
@@ -2013,6 +2068,11 @@ impl SnapshotBuilder {
                     "state machine requires recovery"
                 );
                 domains.check_access()?;
+                if commits.closing()
+                    && let Some(deferred) = O::deferred()
+                {
+                    return Ok(deferred);
+                }
                 // Only a stored snapshot at or past the capture is served in its
                 // place. Its position comes from its coverage record, so a build
                 // does not read back (decrypt, re-spool and digest) the whole
@@ -2045,7 +2105,21 @@ impl SnapshotBuilder {
                     meta: logical.meta.clone(),
                     backend: {
                         let mut spool = EncryptedSpool::new(store.scratch_disk(), limit)?;
-                        logical.backend.write(&mut spool)?;
+                        let mut output = PrivateCaptureWriter {
+                            spool: &mut spool,
+                            commits: &commits,
+                        };
+                        match logical.backend.write(&mut output) {
+                            Err(error) if stopped_private_capture(&error) => {
+                                return O::deferred().ok_or(error);
+                            }
+                            result => result?,
+                        }
+                        if commits.closing()
+                            && let Some(deferred) = O::deferred()
+                        {
+                            return Ok(deferred);
+                        }
                         SnapshotImage::freeze(spool)?
                     },
                     retirement: logical.retirement.clone(),
@@ -2053,6 +2127,13 @@ impl SnapshotBuilder {
                     initialization_association: logical.initialization_association.clone(),
                 };
                 let (covering, image) = O::captured(&captured, limit, &snapshot_buffers)?;
+                if commits.closing()
+                    && let Some(deferred) = O::deferred()
+                {
+                    return Ok(deferred);
+                }
+                // Staging transfers ownership to the durable publication
+                // protocol. Finish it even if the standalone group now closes.
                 let mut pending = stage_snapshot(&domains, &image, limit, &captured, &commits)?;
                 pending
                     .application

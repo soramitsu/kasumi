@@ -2662,11 +2662,20 @@ impl TenantEngine {
         generation: &Generation,
         writer: &mut dyn std::io::Write,
     ) -> Result<()> {
+        Self::encode_generation(generation, writer)
+            .map_err(snapshot_encoding_failure::encoding_error)
+    }
+
+    // Internal bundle writers retain their destination's original I/O failure.
+    // Public snapshot APIs classify it at the end of the owned operation.
+    pub(crate) fn encode_generation(
+        generation: &Generation,
+        writer: &mut dyn std::io::Write,
+    ) -> anyhow::Result<()> {
         if !generation.snapshot_accounting.fits(&generation.state)? {
-            return Err(Error::new(
-                ErrorCode::Corruption,
-                "snapshot byte accounting mismatch",
-            ));
+            return Err(
+                Error::new(ErrorCode::Corruption, "snapshot byte accounting mismatch").into(),
+            );
         }
         crate::snapshot_codec::write_with_resolver(
             &generation.state,
@@ -2677,7 +2686,6 @@ impl TenantEngine {
             generation.document_resolver(),
             writer,
         )
-        .map_err(snapshot_encoding_failure::encoding_error)
     }
 
     pub(crate) fn logical_snapshot(

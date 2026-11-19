@@ -170,6 +170,14 @@ async fn shutdown_drains_snapshot_worker_before_releasing_group_or_file_ownershi
         .send(())
         .context("snapshot worker unexpectedly exited")?;
     tokio::time::timeout(WAIT, shutting_down).await??;
+    assert!(
+        group.metrics().snapshot.is_none(),
+        "shutdown published a private capture"
+    );
+    assert!(
+        group.metrics().purged.is_none(),
+        "shutdown purged uncovered entries"
+    );
     drop(group);
     kasumi_store::test_utils::shutdown_owned_stores_fixture(&stores).await?;
     drop(stores);

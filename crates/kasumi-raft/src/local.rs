@@ -104,7 +104,7 @@ struct SnapshotWork {
 pub(crate) enum LocalSnapshot {
     /// Durably published, covering every entry through this position.
     Published(Option<LogId<u64>>),
-    /// Refused for capacity before publishing. The published snapshot, the
+    /// Stopped during private capture or refused for capacity. The published snapshot, the
     /// applied state and the journal are unchanged; staged chunks are
     /// crash-equivalent and removed by the next build or open.
     Deferred,
@@ -820,7 +820,7 @@ where
                 LocalSnapshot::Deferred => {
                     // The published snapshot and journal are unchanged; the next
                     // snapshot retries.
-                    eprintln!("Kasumi local snapshot deferred: capacity refused group={group}");
+                    eprintln!("Kasumi local snapshot deferred group={group}");
                 }
             }
             fence.complete = true;

@@ -209,7 +209,7 @@ fn write_bundle(
         encoder: &mut encoder,
         buffer: Vec::with_capacity(CHUNK),
     };
-    TenantEngine::write_generation(generation, &mut logical)?;
+    TenantEngine::encode_generation(generation, &mut logical)?;
     logical.finish()?;
     let retention = &generation.state.audit_retention;
     if form == ArchiveForm::LocalReference {
