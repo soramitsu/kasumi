@@ -56,6 +56,10 @@ pub use target_invocation::{
 pub use target_signer::TargetSigner;
 mod backup_binding;
 pub use backup_binding::ControlBackupSessions;
+pub use service::backup_session_pages::{
+    ControlBackupSessionBinding, ControlBackupSessionCursor, ControlBackupSessionDecision,
+    ControlBackupSessionEntry, ControlBackupSessionPage, MAX_CONTROL_BACKUP_SESSION_PAGE,
+};
 mod bootstrap;
 pub mod control;
 mod materialization_row;

@@ -8,6 +8,9 @@ use crate::{SecurityAudit, SecurityEvent, SecurityEventKind, SecurityOutcome, Te
 mod audit_maintenance_service;
 #[path = "backup_producer_jobs.rs"]
 mod backup_producer_jobs;
+#[cfg(test)]
+#[path = "backup_session_floor_tests.rs"]
+mod backup_session_floor_tests;
 #[path = "database_construction.rs"]
 pub(crate) mod construction;
 #[path = "control_administration.rs"]
@@ -43,6 +46,8 @@ use sha2::{Digest, Sha256};
 mod backup_checkpoints;
 #[path = "backup_control_service.rs"]
 mod backup_control_service;
+#[path = "backup_session_pages.rs"]
+pub(crate) mod backup_session_pages;
 #[path = "backup_sessions.rs"]
 mod backup_sessions;
 #[path = "change_feed.rs"]

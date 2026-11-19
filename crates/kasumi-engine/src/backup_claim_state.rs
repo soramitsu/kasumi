@@ -9,6 +9,16 @@ use serde::{Deserialize, Serialize};
 pub(crate) const PREFIX: &[u8] = b"KASUMI_BACKUP_CLAIM_V1\0";
 const MAX_COMMAND: usize = 2 << 20;
 
+/// Test-only observer of one claim (`false`) or terminal (`true`) row for a
+/// session. It runs after the row is durable and before the selecting
+/// generation and the proposer's response publish, so the write is still
+/// outstanding. A crash fixture may block here until its process is killed.
+#[cfg(test)]
+pub(crate) type OutstandingWriteHook = Box<dyn Fn(uuid::Uuid, bool) + Send + Sync>;
+#[cfg(test)]
+pub(crate) static OUTSTANDING_WRITE_HOOK: std::sync::Mutex<Option<OutstandingWriteHook>> =
+    std::sync::Mutex::new(None);
+
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClaimCommand {
@@ -53,6 +63,8 @@ impl TenantEngine {
             terminal.validate(&command.claim)?;
         }
         let is_terminal = command.terminal.is_some();
+        #[cfg(test)]
+        let observed = (command.claim.session_id, is_terminal);
         ensure!(
             hex::encode(Sha256::digest(bytes)) == position.command_sha256,
             "Control claim differs from applied command identity"
@@ -210,7 +222,18 @@ impl TenantEngine {
             ));
         }
         let bindings = match pending {
-            Some(row) => row.persist()?,
+            Some(row) => {
+                let persisted = row.persist()?;
+                #[cfg(test)]
+                if let Some(hook) = OUTSTANDING_WRITE_HOOK
+                    .lock()
+                    .unwrap_or_else(|poison| poison.into_inner())
+                    .as_ref()
+                {
+                    hook(observed.0, observed.1);
+                }
+                persisted
+            }
             None => previous.backup_bindings.clone(),
         };
         let generation = Arc::new(Generation {
