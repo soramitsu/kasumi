@@ -272,14 +272,52 @@ the original 3,824 documents. Neither the remaining 94,576 documents nor
 their maintenance, physical resource and HA workloads have a passing receipt
 at this checkpoint.
 
+## November 19 shutdown recovery and permanent history
+
+| Goal | Evidence through 15:51 ICT |
+| --- | --- |
+| G04, G05 | `94e33123` checks actual selected backup and lifecycle prefixes independently. Its donor passed strict Engine library and test Clippy in 523.69 seconds. `3f16cb5c` requires a confirmed audited Control read during lifecycle fixture startup and retains each failed attempt. The earlier native suite passed 15 of 16. The ambiguous-commit case failed during startup when Control could not confirm its audit. A fresh exact-case run passed in 121.83 seconds. |
+| G07, G13 | The standalone concurrency attempt completed 500 snapshot reads and 5,155 writes before write 5,156 timed out. The workload took 3,341.89 seconds. The process still held snapshot serialization work after SIGTERM and required SIGKILL. Its original installation reopened and returned the exact original digest for write 5,156 at revision 5,159. Both documents had that revision. This read-only recovery and clean stop took 515.10 seconds. `e7720cab` stops unpublished application snapshot serialization and `177ba79f` also checks shutdown between transport chunks and custody records. Snapshots that have begun durable staging finish publication. |
+| G11 | Fable 5.2 at xhigh effort advised a prospective floor of 100,001 permanent sessions after the historical audit. The original assistant response is in `fable-session-threshold/desktop-answer.md`, SHA-256 `2ea02391e2a5f511b53e4def0e3ea8cd64cd8c1bb17f8939bce5c6d286eb0856`. `1f70060a` records the new contract and pins the four historical count ceilings. All 34 acceptance-verifier tests passed in 6.32 seconds. Native cold-kill and replay evidence remains due. |
+| G11, G12 | The 100,000-receipt fixture constructed the entire source cohort. Restore exhausted its original 64 reservation slots at row 17,657. `af18b860` keeps the 64-MiB budget, uses 1,024 bounded slots and measures both owners. Three Authority enrollments replayed after physical reopen. At production cohort size, the original run lost its application key lease before acknowledgement. `5f416f76` renews independent application and custody grants throughout writing and verification. |
+| G01, G12 | The strict replicated bootstrap decoder rejected the first native nondefault lifecycle budget on reopen. `591c802b` admits the writer's canonical field while preserving old default bytes. The corrected native decoder accepted both encodings and rejected duplicate, explicit-default, quoted and zero budgets. Both deployed-format fixtures remain in the release contract. |
+| G12, G14 | On the common provisional input `dd43ef2840ad46b7176d5e87605e30a18ea466f1`, formatting passed in 49.62 seconds and the 457-test Python suite passed in 483.20 seconds including startup. The macOS locked all-targets Engine check also passed on `cd07540b`. Later implementation commits need their own qualification. |
+
+The subsequent audited-startup suite passed all 16 native cases in 928.88
+seconds, including the earlier ambiguous-commit failure. The permanent Control
+history test reopened 10,001 lifecycle intents against the former ceiling of
+10,000 in 2,005.28 seconds. It authenticated 29,399,633 bytes with a peak
+RSS of 14,893,056 bytes. The selected ledger SHA-256 was
+`e247f0259affa43f240c325441ee6a4095b75a72966380409a56c16d0a96eac7`.
+
+For G06, `e0457b0f` attributes the key inventory from a completed checkpoint
+to the selected tenant recovery record. The source and Control fences cover
+the original identity, destination and checkpoint graph. For G11, `3e9cbbdf`
+schedules fixture renewals using the Authority node's lease clock. The corrected
+small enrollment, physical reopen and replay passed. The full-scale restart
+still requires a matching receipt.
+
+The next G13 run authenticated the preceding 478 durable batches before adding
+more writes. The client timed out at document 6,760. A separate authenticated
+receipt for the original eight-document request recovered revision 848 for
+every document. Its SHA-256 was
+`072e4bcb2b1617bc7e5fde55bae0ecc0ef63ac32017d5096b703b28a2fab38f0`.
+This brings the installed count to 6,768 of 98,400. The attempt stopped cleanly
+after 2,472.77 seconds. Its write deadline remains recorded as a failure.
+
 ## Required infrastructure and decisions
 
 The available machine is native macOS ARM64, macOS 27.2.1 build 26B131, 16
 cores, 128 GiB physical memory, Rust 1.97.1. Resource observations belong to a
 shared system. The contracted Linux ARM64 reference needs its existing 2 CPUs,
 16 GiB and 200 GiB and an explicit reservation. The only Lima instance visible
-during inspection belonged to another project. The user supplies the native
-Linux x86-64 host alias. Linux-hosted MinIO requires the approved pinned image
+during inspection belonged to another project. At 08:51 UTC on November 19, the repository's
+GitHub Actions runner API returned zero registered runners. Claude Fable 5.2
+at xhigh effort could find neither a host reservation nor an admitted plan
+for the three Data, three Control and three Authority voters. The September
+ARM64 reference is a past measurement. At this check the Mac had 77 GiB free.
+The infrastructure owner supplies the Linux x86-64 alias, the ARM64 reservation
+and the nine voter placements. Linux-hosted MinIO requires the approved pinned image
 and an owned Docker endpoint. Preserve the independent build and physical
 failure-domain attestations with the native evidence.
 
