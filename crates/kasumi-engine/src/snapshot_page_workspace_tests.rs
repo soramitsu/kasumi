@@ -80,7 +80,7 @@ async fn completed_scan_keeps_output_charged_after_lease_expiry_until_abandoned(
         .expect("join snapshot scan worker")
         .expect("open fixture document reads");
     fence.seal();
-    let response = output.response.as_ref().unwrap();
+    let response = &output.response;
     assert_eq!(response.data_epoch, 1);
     assert_eq!(response.documents.len(), 1);
     assert_eq!(response.documents[0].version, 1);

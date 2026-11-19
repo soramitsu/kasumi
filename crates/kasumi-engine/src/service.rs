@@ -977,10 +977,13 @@ impl SnapshotOutput {
     }
 }
 impl SnapshotWork {
-    fn run(mut self) -> Result<SnapshotOutput> {
+    fn read(&mut self) -> Result<SnapshotReadResponse> {
         let generation = self.generation.clone();
-        let response =
-            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads))?;
+        with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads))
+    }
+
+    fn run(mut self) -> Result<SnapshotOutput> {
+        let response = self.read()?;
         Ok(SnapshotOutput {
             response,
             memory: self.memory,
