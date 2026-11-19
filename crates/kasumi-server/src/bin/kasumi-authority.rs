@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use anyhow::Context;
 use kasumi_server::authority_runtime::EnrollmentFailure;
 use kasumi_server::authority_runtime::{AuthorityRuntime, AuthorityRuntimeConfig};
