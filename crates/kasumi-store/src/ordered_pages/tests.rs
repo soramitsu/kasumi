@@ -227,6 +227,7 @@ fn random_batch(
     universe: u64,
     size: usize,
 ) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
+    assert!(size as u64 <= universe, "the batch needs one distinct key per edit");
     let mut batch = BTreeMap::new();
     let deletes = rng.below(100);
     while batch.len() < size {
@@ -394,7 +395,8 @@ fn bulk_build_matches_the_model_and_accepts_later_edits() {
         check_structure(&source, &root, &model);
         check_reads(&source, &root, &model, &mut rng, entries.max(1) * 2);
         for _ in 0..10 {
-            let batch = random_batch(&mut rng, &model, entries.max(1) * 2, 200);
+            let universe = entries.max(1) * 2;
+            let batch = random_batch(&mut rng, &model, universe, universe.min(200) as usize);
             root = apply_batch(&source, &root, &mut model, &batch);
             check_structure(&source, &root, &model);
         }
