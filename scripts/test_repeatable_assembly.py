@@ -6,6 +6,7 @@ import shutil
 from pathlib import Path
 import sys
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -103,9 +104,21 @@ class AssemblyCustodyTests(unittest.TestCase):
 
     def test_timeout_retains_actual_terminal_child_and_rejects_success(self):
         command = self.selected[:-1] + ["import time; print('started', flush=True); time.sleep(30)"]
-        item = assembly.run_owned(self.custody, "timeout", command, str(self.source), self.environment, .2)
+        # The deadline includes spawn. Observe the actual child before exercising
+        # timeout cleanup, even if the scheduler delays its first instruction.
+        def observe_start(record):
+            if record["status"] == "running" and record["process_group"] is not None:
+                output = self.custody / "timeout/stdout.log"
+                deadline = time.monotonic() + 10
+                while b"started" not in output.read_bytes():
+                    self.assertLess(time.monotonic(), deadline, "child did not reach its startup marker")
+                    time.sleep(.01)
+
+        item = assembly.run_owned(self.custody, "timeout", command, str(self.source), self.environment,
+                                  .2, observe_process=observe_start)
         process = assembly.read(assembly.check_ref(self.custody, item["receipt"]))
         self.assertTrue(process["timed_out"])
+        self.assertIsNone(process["error"])
         self.assertEqual(process["exit_code"], 124)
         # The record says whether a census failed or a member survived.
         self.assertTrue(process["cleanup"]["drained"], process["cleanup"])
