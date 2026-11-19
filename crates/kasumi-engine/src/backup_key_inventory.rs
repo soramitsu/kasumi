@@ -2,6 +2,71 @@
 use super::*;
 
 impl Database {
+    async fn checkpoint_key_inventory(
+        &self,
+        context: &RequestContext,
+        request: &ReadKeyRetentionRequest,
+        cancellation: &QueryCancellation,
+        alias: Option<&str>,
+        checkpoint: &FullBackupCheckpoint,
+    ) -> Result<Option<BTreeSet<KeyRetentionEntry>>> {
+        let Some(destination) = alias.and_then(|alias| self.archive_destination(alias).ok()) else {
+            return Ok(None);
+        };
+        let reference = KeyReference::CompletedBackup {
+            backup_id: checkpoint.backup_id,
+            checkpoint_sha256: staged_digest(checkpoint)?.0,
+        };
+        let page = std::sync::Mutex::new(BTreeSet::new());
+        let observe = |provider: &str, key_ref: &str, version| -> anyhow::Result<()> {
+            cancellation.check()?;
+            anyhow::ensure!(
+                provider.len() <= MAX_KEY_PROVIDER_BYTES && key_ref.len() <= MAX_KEY_REF_BYTES,
+                "backup key identity exceeds bound"
+            );
+            let mut entries = page.lock().unwrap_or_else(|poison| poison.into_inner());
+            consider_entry(
+                request,
+                &mut entries,
+                KeyRetentionEntry {
+                    key: KeyVersionRef {
+                        provider: provider.into(),
+                        key_ref: key_ref.into(),
+                        version,
+                    },
+                    reference: reference.clone(),
+                },
+            )?;
+            Ok(())
+        };
+        let verified = self
+            .verified_checkpoint_keys(context, destination.as_ref(), checkpoint.clone(), &observe)
+            .await;
+        cancellation.check()?;
+        self.access()?;
+        match verified {
+            Ok(()) => Ok(Some(
+                page.into_inner()
+                    .unwrap_or_else(|poison| poison.into_inner()),
+            )),
+            Err(error) => {
+                if let Some(cause) = error.operation_error()
+                    && cause.code == ErrorCode::ResourceExhausted
+                {
+                    return Err(cause.clone());
+                }
+                if error.admission_refusal().is_some() {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "backup dependency inventory admission exhausted",
+                    ));
+                }
+                tracing::warn!(backup_id = %checkpoint.backup_id, %error, "could not authenticate completed backup key graph");
+                Ok(None)
+            }
+        }
+    }
+
     pub(super) async fn binding_key_inventory(
         &self,
         context: &RequestContext,
@@ -101,13 +166,14 @@ impl Database {
                 .await;
             cancellation.check()?;
             self.access()?;
-            match observed {
+            let authenticated = match observed {
                 Ok((observed, keys)) => {
                     digest.update([1]);
                     digest.update(keys);
                     for entry in observed {
                         consider_entry(request, entries, entry)?;
                     }
+                    true
                 }
                 Err(error) => {
                     if let Some(error) = error.downcast_ref::<Error>()
@@ -125,20 +191,39 @@ impl Database {
                             id: id.to_string(),
                         },
                     );
+                    false
                 }
-            }
-            if terminal.is_some_and(|t| matches!(t.outcome, BackupSessionOutcome::Complete { .. }))
+            };
+            if let Some(BackupSessionOutcome::Complete { checkpoint, .. }) =
+                terminal.as_ref().map(|t| &t.outcome)
             {
-                // The session's wrapping catalog proves nothing about the separately stored
-                // checkpoint objects. Retain the exact dependency until those are read.
-                add_missing(
-                    missing,
-                    truncated,
-                    MissingKeyDependency::RecordUnreadable {
-                        record_kind: KeyReferenceKind::CompletedBackup,
-                        id: id.to_string(),
-                    },
-                );
+                let observed = if authenticated {
+                    self.checkpoint_key_inventory(
+                        context,
+                        request,
+                        cancellation,
+                        record.claim.destination_alias.as_deref(),
+                        checkpoint,
+                    )
+                    .await?
+                } else {
+                    None
+                };
+                digest.update([u8::from(observed.is_some())]);
+                if let Some(observed) = observed {
+                    for entry in observed {
+                        consider_entry(request, entries, entry)?;
+                    }
+                } else {
+                    add_missing(
+                        missing,
+                        truncated,
+                        MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::CompletedBackup,
+                            id: id.to_string(),
+                        },
+                    );
+                }
             }
         }
         control_fence.check()?;

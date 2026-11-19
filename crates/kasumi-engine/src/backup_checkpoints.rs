@@ -8,6 +8,7 @@ use crate::{
 };
 
 const BACKUP_OPERATION_TIMEOUT_MS: u64 = 300_000;
+type KeyObserver<'a> = dyn Fn(&str, &str, u64) -> anyhow::Result<()> + Sync + 'a;
 
 struct LiveBackupReader<'a> {
     database: &'a Database,
@@ -18,6 +19,7 @@ struct LiveBackupReader<'a> {
     registration: Arc<VerificationWork>,
     source_purpose: &'a kasumi_store::StoragePurpose,
     session_key_catalog: &'a str,
+    observe_keys: Option<&'a KeyObserver<'a>>,
 }
 impl BackupReader for LiveBackupReader<'_> {
     fn scratch_disk(&self) -> &Arc<kasumi_store::ScratchDisk> {
@@ -69,6 +71,13 @@ impl BackupReader for LiveBackupReader<'_> {
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         self.check_access().await?;
+        if let Some(observe) = self.observe_keys {
+            observe(
+                &reference.key.provider,
+                &reference.key.key_ref,
+                reference.key.version,
+            )?;
+        }
         self.database
             .store
             .copy_audit_segment(reference, &ciphertext)
@@ -93,8 +102,28 @@ impl BackupReader for LiveBackupReader<'_> {
         {
             return Err(Error::new(ErrorCode::Corruption, "backup ciphertext differs").into());
         }
+        let decrypt = async {
+            if let Some(observe) = self.observe_keys {
+                return self
+                    .database
+                    .store
+                    .decrypt_backup_object_and_visit_keys(&encrypted, id, max_plaintext, observe)
+                    .await;
+            }
+            self.database
+                .store
+                .decrypt_backup_object(&encrypted, id, max_plaintext)
+                .await
+                .map_err(|_| {
+                    Error::new(
+                        ErrorCode::Corruption,
+                        "backup authenticated object verification failed",
+                    )
+                    .into()
+                })
+        };
         let contents = tokio::select! {
-            result = self.database.store.decrypt_backup_object(&encrypted, id, max_plaintext) => result.map_err(|_| Error::new(ErrorCode::Corruption, "backup authenticated object verification failed"))?,
+            result = decrypt => result?,
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         if !history && &contents.source_purpose != self.source_purpose {
@@ -329,8 +358,8 @@ impl Database {
             context,
             destination,
             session.intent().session_id,
-            Some(session),
-            capture,
+            Some((session, capture)),
+            None,
             |verified, _, _| {
                 Ok(VerifiedBackupCheckpoint::verified(
                     verified.checkpoint.clone(),
@@ -377,13 +406,40 @@ impl Database {
         .await
     }
 
+    pub(super) async fn verified_checkpoint_keys(
+        &self,
+        context: &RequestContext,
+        destination: &dyn BackupDestination,
+        expected: FullBackupCheckpoint,
+        observer: &KeyObserver<'_>,
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
+        self.with_verified_backup(
+            context,
+            destination,
+            expected.backup_id,
+            None,
+            Some(observer),
+            move |verified, _, _| {
+                anyhow::ensure!(
+                    verified.checkpoint == expected,
+                    "backup key graph differs from selected Control checkpoint"
+                );
+                Ok(())
+            },
+        )
+        .await
+    }
+
     async fn with_verified_backup<T, F>(
         &self,
         context: &RequestContext,
         destination: &dyn BackupDestination,
         backup_id: uuid::Uuid,
-        pending: Option<&kasumi_store::VerifiedBackupSession>,
-        capture: Option<crate::backup_verify::ResidentCapture>,
+        pending: Option<(
+            &kasumi_store::VerifiedBackupSession,
+            Option<crate::backup_verify::ResidentCapture>,
+        )>,
+        observe_keys: Option<&KeyObserver<'_>>,
         finish: F,
     ) -> std::result::Result<T, crate::SnapshotFailure>
     where
@@ -396,6 +452,8 @@ impl Database {
             + Send
             + 'static,
     {
+        let (pending, capture) =
+            pending.map_or((None, None), |(session, capture)| (Some(session), capture));
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
         if backup_id.is_nil() {
@@ -456,6 +514,7 @@ impl Database {
             destination: &objects,
             source_purpose: session.source_purpose(),
             session_key_catalog: session.key_catalog_sha256(),
+            observe_keys,
             context,
             policy_epoch: epoch,
             cancellation: cancellation.clone(),
@@ -489,9 +548,11 @@ impl Database {
             )
             .await
             .map_err(|error| verification_error(error, deadline))?;
-        tokio::select! {
-            result = deadline.run(self.maintenance_audit_inner(context.clone(), "backup_verification", "completed", current_revision)) => { result.map_err(|error| verification_error(error, deadline))??; },
-            _ = cancelled(&cancellation) => return Err(cancelled_error().into()),
+        if observe_keys.is_none() {
+            tokio::select! {
+                result = deadline.run(self.maintenance_audit_inner(context.clone(), "backup_verification", "completed", current_revision)) => { result.map_err(|error| verification_error(error, deadline))??; },
+                _ = cancelled(&cancellation) => return Err(cancelled_error().into()),
+            }
         }
         self.engine
             .authorize_release(context, None, Action::Admin, epoch)?;

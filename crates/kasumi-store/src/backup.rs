@@ -138,6 +138,25 @@ impl AdmittedBackupBundle {
 }
 
 impl TenantStore {
+    /// Lend the authenticated catalog identities while returning the same
+    /// decrypted object to its enclosing graph verifier.
+    pub async fn decrypt_backup_object_and_visit_keys(
+        &self,
+        bytes: &[u8],
+        expected_id: Uuid,
+        max_plaintext_bytes: usize,
+        mut visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<BackupContents> {
+        let (encrypted, contents) = self
+            .authenticate_object(bytes, expected_id, max_plaintext_bytes)
+            .await?;
+        for key in encrypted.manifest.catalog.keys.values() {
+            visit(&key.provider, &key.key_ref, key.version)?;
+        }
+        self.check_access()?;
+        Ok(contents)
+    }
+
     /// Inspect only the wrapping keys of the selected encrypted session records.
     /// Both records must authenticate the exact Control claim and share a catalog.
     pub async fn with_verified_binding_keys<T>(

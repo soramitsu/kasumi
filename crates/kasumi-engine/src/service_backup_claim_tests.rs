@@ -235,3 +235,82 @@ async fn committed_control_claim_precedes_upload_and_recovers_an_unpublished_int
     fixture.close().await;
     Ok(())
 }
+
+#[tokio::test]
+async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_is_missing()
+-> std::result::Result<(), crate::SnapshotFailure> {
+    let fixture = CredentialFixture::new().await;
+    let (control, operator) = backup_test_control(&fixture.db, &fixture.context, true).await?;
+    fixture.db.install_backup_control(&control, &operator)?;
+    let directory = fixture
+        ._directory
+        .path()
+        .join("persistent")
+        .join("key-graph");
+    let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new(
+        &directory,
+        64 << 20,
+        fixture.storage.persistent.clone(),
+    )?);
+    fixture
+        .db
+        .install_archive_destination("key-backup".into(), destination)?;
+    let id = uuid::Uuid::new_v4();
+    let proof = fixture
+        .db
+        .backup_checkpoint_named(fixture.context.clone(), "key-backup", id)
+        .await?;
+    let reference = KeyReference::CompletedBackup {
+        backup_id: id,
+        checkpoint_sha256: staged_digest(proof.checkpoint())?.0,
+    };
+    let request = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::Tenant {
+            tenant: fixture.context.tenant.clone(),
+        },
+        cursor: None,
+        limit: 32,
+    };
+    let read = || {
+        fixture
+            .db
+            .read_key_retention(&fixture.context, request.clone())
+    };
+    let page = read().await?;
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.reference == reference)
+    );
+    drop(page);
+    let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
+    let offline = manifest.with_extension("offline");
+    std::fs::rename(&manifest, &offline)?;
+    let partial = read().await?;
+    assert!(
+        partial
+            .entries
+            .iter()
+            .all(|entry| entry.reference != reference)
+    );
+    let KeyRetentionCoverage::Incomplete { missing, .. } = &partial.coverage else {
+        panic!("unreadable backup graph gave complete coverage");
+    };
+    assert!(missing.contains(&MissingKeyDependency::RecordUnreadable {
+        record_kind: KeyReferenceKind::CompletedBackup,
+        id: id.to_string(),
+    }));
+    drop(partial);
+    std::fs::rename(offline, manifest)?;
+    let repaired = read().await?;
+    assert!(
+        repaired
+            .entries
+            .iter()
+            .any(|entry| entry.reference == reference)
+    );
+    drop(repaired);
+    fixture.db.shutdown().await?;
+    control.shutdown().await?;
+    Ok(())
+}
