@@ -90,27 +90,18 @@ impl SelectedApplication {
         else {
             return Ok(None);
         };
-        let Some(snapshot) = position.snapshot() else {
-            return Ok(None);
-        };
-        let index = match position.applied() {
-            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
-            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
-                meta.last_log_id.map_or(0, |id| id.index)
-            }
-            None => 0,
+        let applied = position.applied();
+        let log_id = match applied {
+            Some(SelectedAppliedRef::Entry { log_id, .. }) => Some(log_id),
+            Some(SelectedAppliedRef::Snapshot { meta, .. }) => meta.last_log_id,
+            None => None,
         };
         ensure!(
-            state.revision_base.checked_add(index) == Some(state.revision),
+            state
+                .revision_base
+                .checked_add(log_id.map_or(0, |log| log.index))
+                == Some(state.revision),
             "applied directory position differs"
-        );
-        let snapshot_revision = state
-            .revision_base
-            .checked_add(snapshot.meta.last_log_id.map_or(0, |id| id.index))
-            .context("snapshot revision overflow")?;
-        ensure!(
-            snapshot_revision <= state.revision,
-            "snapshot follows applied position"
         );
         let roots = self
             .cell
@@ -125,24 +116,59 @@ impl SelectedApplication {
             let Some(manifest) = ApplicationManifest::load_from_pair(view)? else {
                 return Ok(None);
             };
-            ensure!(
-                manifest.snapshot_sha256
-                    == crate::application_checkpoint::snapshot_identity(
-                        snapshot.meta,
-                        snapshot.backend_sha256
-                    )?
-                    && manifest.incarnation == state.incarnation
-                    && manifest.revision_base == state.revision_base
-                    && manifest.revision == snapshot_revision
-                    && (snapshot_revision < state.revision
-                        || (manifest.document_count == state.document_count
-                            && manifest.logical_bytes == state.logical_bytes)),
-                "selected record snapshot identity differs"
-            );
-            let tree =
-                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
-            let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
-            read(&tree, &memory, manifest.layout_epoch, snapshot_revision).map(Some)
+            let read_snapshot = |snapshot: kasumi_raft::SelectedSnapshotRef<'_>| {
+                let snapshot_id = snapshot.meta.last_log_id;
+                ensure!(
+                    snapshot_id <= log_id
+                        && snapshot_id
+                            .map(|id| id.index)
+                            .cmp(&log_id.map(|id| id.index))
+                            == snapshot_id.cmp(&log_id),
+                    "snapshot follows or contradicts applied position"
+                );
+                if let Some(SelectedAppliedRef::Entry { membership, .. }) = applied
+                    && snapshot_id == log_id
+                {
+                    ensure!(
+                        snapshot.meta.last_membership == *membership,
+                        "snapshot membership differs at applied position"
+                    );
+                }
+                let snapshot_revision = state
+                    .revision_base
+                    .checked_add(snapshot_id.map_or(0, |id| id.index))
+                    .context("snapshot revision overflow")?;
+                ensure!(
+                    manifest.snapshot_sha256
+                        == crate::application_checkpoint::snapshot_identity(
+                            snapshot.meta,
+                            snapshot.backend_sha256
+                        )?
+                        && manifest.incarnation == state.incarnation
+                        && manifest.revision_base == state.revision_base
+                        && manifest.revision == snapshot_revision
+                        && (snapshot_revision < state.revision
+                            || (manifest.document_count == state.document_count
+                                && manifest.logical_bytes == state.logical_bytes)),
+                    "selected record snapshot identity differs"
+                );
+                let tree =
+                    TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
+                let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
+                read(&tree, &memory, manifest.layout_epoch, snapshot_revision)
+            };
+            if let Some(snapshot) = position.snapshot() {
+                return read_snapshot(snapshot).map(Some);
+            }
+            let workspace = Workspace {
+                core: roots.admission.memory().clone(),
+                baseline: 0,
+                planned_peak: None,
+                reservation: roots.admission.reserve_application_source(0)?,
+            };
+            kasumi_raft::with_published_snapshot_at(view, &roots.limits, workspace, read_snapshot)?
+                .context("application directory lacks its selected Raft snapshot")
+                .map(Some)
         })();
         let close = reader.close();
         match (outcome, close) {
