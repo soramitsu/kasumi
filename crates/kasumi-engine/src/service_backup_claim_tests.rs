@@ -254,7 +254,7 @@ async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_
     )?);
     fixture
         .db
-        .install_archive_destination("key-backup".into(), destination)?;
+        .install_archive_destination("key-backup".into(), destination.clone())?;
     let id = uuid::Uuid::new_v4();
     let proof = fixture
         .db
@@ -264,6 +264,32 @@ async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_
         backup_id: id,
         checkpoint_sha256: staged_digest(proof.checkpoint())?.0,
     };
+    let purpose = control
+        .engine
+        .generation()?
+        .backup_bindings
+        .get(id)?
+        .expect("selected original backup binding")
+        .record
+        .claim
+        .source_purpose_sha256;
+    let verify_origin = |digest| {
+        fixture.db.verified_checkpoint_keys(
+            &fixture.context,
+            destination.as_ref(),
+            proof.checkpoint().clone(),
+            Some(digest),
+            &|_, _, _| Ok(()),
+        )
+    };
+    verify_origin(purpose.clone()).await?;
+    let substituted = staged_digest(&("different recovery origin", purpose))?.0;
+    let wrong = verify_origin(substituted).await.unwrap_err();
+    let cause = wrong
+        .operation_error()
+        .expect("classified source binding mismatch");
+    assert_eq!(cause.code, ErrorCode::Corruption);
+    assert_eq!(cause.message, "backup source purpose differs from selected recovery");
     let request = ReadKeyRetentionRequest {
         scope: KeyRetentionScope::Tenant {
             tenant: fixture.context.tenant.clone(),

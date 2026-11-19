@@ -411,6 +411,7 @@ impl Database {
         context: &RequestContext,
         destination: &dyn BackupDestination,
         expected: FullBackupCheckpoint,
+        expected_source_purpose_sha256: Option<String>,
         observer: &KeyObserver<'_>,
     ) -> std::result::Result<(), crate::SnapshotFailure> {
         self.with_verified_backup(
@@ -424,6 +425,15 @@ impl Database {
                     verified.checkpoint == expected,
                     "backup key graph differs from selected Control checkpoint"
                 );
+                if let Some(expected) = expected_source_purpose_sha256
+                    && staged_digest(&verified.source_purpose)?.0 != expected
+                {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "backup source purpose differs from selected recovery",
+                    )
+                    .into());
+                }
                 Ok(())
             },
         )

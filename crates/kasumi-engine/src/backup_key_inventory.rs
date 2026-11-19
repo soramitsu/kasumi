@@ -9,13 +9,17 @@ impl Database {
         cancellation: &QueryCancellation,
         alias: Option<&str>,
         checkpoint: &FullBackupCheckpoint,
+        recovery: Option<(uuid::Uuid, &str)>,
     ) -> Result<Option<BTreeSet<KeyRetentionEntry>>> {
         let Some(destination) = alias.and_then(|alias| self.archive_destination(alias).ok()) else {
             return Ok(None);
         };
-        let reference = KeyReference::CompletedBackup {
-            backup_id: checkpoint.backup_id,
-            checkpoint_sha256: staged_digest(checkpoint)?.0,
+        let reference = match recovery {
+            Some((operation_id, _)) => KeyReference::RecoveryRecord { operation_id },
+            None => KeyReference::CompletedBackup {
+                backup_id: checkpoint.backup_id,
+                checkpoint_sha256: staged_digest(checkpoint)?.0,
+            },
         };
         let page = std::sync::Mutex::new(BTreeSet::new());
         let observe = |provider: &str, key_ref: &str, version| -> anyhow::Result<()> {
@@ -40,7 +44,13 @@ impl Database {
             Ok(())
         };
         let verified = self
-            .verified_checkpoint_keys(context, destination.as_ref(), checkpoint.clone(), &observe)
+            .verified_checkpoint_keys(
+                context,
+                destination.as_ref(),
+                checkpoint.clone(),
+                recovery.map(|(_, purpose)| purpose.to_owned()),
+                &observe,
+            )
             .await;
         cancellation.check()?;
         self.access()?;
@@ -204,6 +214,7 @@ impl Database {
                         cancellation,
                         record.claim.destination_alias.as_deref(),
                         checkpoint,
+                        None,
                     )
                     .await?
                 } else {
@@ -224,6 +235,54 @@ impl Database {
                         },
                     );
                 }
+            }
+        }
+        // Control selects the recovery. Only the tenant's own authorized reader
+        // can authenticate its original source and the complete checkpoint graph.
+        for (id, operation) in &generation.state.recovery_control.operations {
+            cancellation.check()?;
+            if operation.request.tenant != context.tenant {
+                continue;
+            }
+            tenant_fence.check()?;
+            control_fence.check()?;
+            let start = &operation.request;
+            if *id != start.operation_id.to_string() || start.digest()? != operation.request_sha256
+            {
+                return Err(Error::new(
+                    ErrorCode::Corruption,
+                    "selected recovery identity differs",
+                ));
+            }
+            digest.update(
+                staged_digest(&(id, &operation.request_sha256, operation.updated_revision))?
+                    .0
+                    .as_bytes(),
+            );
+            let observed = self
+                .checkpoint_key_inventory(
+                    context,
+                    request,
+                    cancellation,
+                    Some(&start.materialization.destination_alias),
+                    &start.checkpoint,
+                    Some((start.operation_id, &start.source_purpose_sha256)),
+                )
+                .await?;
+            digest.update([u8::from(observed.is_some())]);
+            if let Some(observed) = observed {
+                for entry in observed {
+                    consider_entry(request, entries, entry)?;
+                }
+            } else {
+                add_missing(
+                    missing,
+                    truncated,
+                    MissingKeyDependency::RecordUnreadable {
+                        record_kind: KeyReferenceKind::RecoveryRecord,
+                        id: id.clone(),
+                    },
+                );
             }
         }
         control_fence.check()?;
