@@ -241,10 +241,12 @@ fn load_or_skip(store: &Arc<TenantStore>) -> Result<Option<Option<PrimaryManifes
     match PrimaryManifest::load(store) {
         Ok(manifest) => Ok(Some(manifest)),
         Err(error) => {
-            store.check_access()?;
+            if let Err(access) = store.check_access() {
+                return Err(error.context(access));
+            }
             tracing::error!(
-                tenant = %store.tenant(),
-                error = %format!("{error:#}"),
+
+                io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "unreadable primary directory is ignored until the next restore"
             );
             Ok(None)
@@ -481,9 +483,9 @@ fn stale(
     reason: anyhow::Error,
 ) -> Result<Option<PrimaryPublication>> {
     tracing::warn!(
-        tenant = %candidate.tenant,
+
         revision = candidate.revision,
-        error = %format!("{reason:#}"),
+        io_kind = ?reason.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
         "primary directory stops following ordinary apply until the next restore"
     );
     // A replayed boundary that differs goes stale at its own revision.

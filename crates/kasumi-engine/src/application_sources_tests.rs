@@ -1485,6 +1485,79 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .linearizable_barrier()
         .await?
         .expect("initialized source log");
+    // Ordinary writes alone keep the structured directory current. Before any
+    // snapshot exists, the leader's generation reads its postings from the
+    // directory its own publication committed with the applied cursor.
+    if std::env::var_os("KASUMI_TRIAGE_WITHOUT_STRUCTURED").is_none() {
+        use kasumi_query::DocumentSource as _;
+        use std::ops::Bound::Included;
+        let ordinary = source_engine.generation()?;
+        let selection = ordinary.application_selection.get().unwrap();
+        assert!(
+            !selection.has_exact_snapshot(ordinary.state.revision_base, ordinary.state.revision)
+        );
+        // Four presence rows and seven postings, four of them absences.
+        assert_eq!(
+            selection.with_structured_records(
+                &ordinary.state,
+                || ordinary.indexes.structured_layout_sha256(),
+                |tree| Ok(tree.root().count()),
+            )?,
+            Some(11)
+        );
+        let docs = ordinary.document_source("docs")?;
+        let cancellation = kasumi_query::QueryCancellation::default();
+        let (zulu, persisted) = (serde_json::json!("zulu"), serde_json::json!("persisted"));
+        for (ordinal, predicate, expected) in [
+            (0, kasumi_query::FieldPredicate::Exists(true), vec!["point"]),
+            (
+                1,
+                kasumi_query::FieldPredicate::Exists(false),
+                vec!["alpha", "point"],
+            ),
+            (
+                3,
+                kasumi_query::FieldPredicate::Equals {
+                    value: &zulu,
+                    kind: kasumi_types::ScalarType::String,
+                },
+                vec!["alpha"],
+            ),
+            (
+                3,
+                kasumi_query::FieldPredicate::Range {
+                    lower: Included(&persisted),
+                    upper: Included(&zulu),
+                    kind: kasumi_types::ScalarType::String,
+                },
+                vec!["point", "alpha"],
+            ),
+        ] {
+            let mut ids = Vec::new();
+            assert!(
+                docs.visit_field_posting(ordinal, predicate, &cancellation, |id| {
+                    ids.push(id.to_owned());
+                    Ok(())
+                })
+                .map_err(crate::index_source::into_anyhow)?,
+                "ordinary structured directory absent"
+            );
+            assert_eq!(ids, expected);
+        }
+        let mut query = kasumi_types::QueryRequest::new("docs");
+        query.filter = kasumi_types::Filter::new().eq("/value", serde_json::json!("zulu"));
+        let mut memory =
+            kasumi_query::QueryMemory::empty(source.storage.admission.reserve(0, None)?);
+        let result = crate::test_utils::fixture_query(&ordinary, &query, &mut memory)?;
+        assert_eq!(
+            result
+                .rows
+                .iter()
+                .map(|row| row.id.as_str())
+                .collect::<Vec<_>>(),
+            ["alpha"]
+        );
+    }
     source_db.raft_group().snapshot().await?;
     // The trigger only enqueues work. Wait for actual snapshot publication at
     // this stable local applied position before obtaining the transfer image.
@@ -1615,6 +1688,19 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let reopened_cell = reopened.application_selection.get().unwrap().cell.clone();
     snapshot_identity(&reopened_cell, &meta, &backend, &envelope);
     let selection = reopened.application_selection.get().unwrap();
+    // The installed snapshot selected a rebuilt structured directory; the
+    // encrypted reopen verified and kept it, so the postings read below come
+    // from the ordinary directory at this exact revision.
+    if std::env::var_os("KASUMI_TRIAGE_WITHOUT_STRUCTURED").is_none() {
+        assert_eq!(
+            selection.with_structured_records(
+                &reopened.state,
+                || reopened.indexes.structured_layout_sha256(),
+                |tree| Ok(tree.root().count()),
+            )?,
+            Some(11)
+        );
+    }
     for (after, limit, expected) in [
         (None, 1, vec!["alpha"]),
         (Some("alpha"), 2, vec!["point"]),

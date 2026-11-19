@@ -132,6 +132,7 @@ pub use scratch_table::{
     ScratchOperationFailure, ScratchTableValue,
 };
 mod storage_domains;
+pub mod structured_manifest;
 mod sync_trace;
 pub use serving_access::{StorageAccess, StoragePurpose};
 mod file_keys;
@@ -3145,6 +3146,7 @@ fn write_domain(
     operations: &[WriteOp],
 ) -> Result<()> {
     generation_stage::validate_transitions(tx, store, state, operations)?;
+    generation_stage::validate_structured_manifest(tx, store, state, operations)?;
     let index = state.keys.get(INDEX_KEY).context("index key missing")?;
     let data = state
         .keys

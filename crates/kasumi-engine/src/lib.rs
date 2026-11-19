@@ -23,6 +23,7 @@ mod application_checkpoint;
 mod application_primary;
 mod application_records;
 mod application_sources;
+mod application_structured;
 mod audit_source;
 mod current_json;
 mod document_encoding;

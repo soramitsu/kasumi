@@ -363,6 +363,77 @@ impl SelectedApplication {
         reader
     }
 }
+impl SelectedApplication {
+    /// Lend the ordinary structured directory this selection pinned, only
+    /// when it is current at exactly this generation's revision and was
+    /// written under this generation's index layout. Older generations keep
+    /// their own native root, so each reads the postings of its own revision
+    /// even after later edits deleted the pages it uses. `None` when the
+    /// pinned root holds no current directory at this revision: deployed
+    /// stores before their first restore, a stale directory, covered replay
+    /// below the directory, a frozen selection or a covered reconstruction.
+    pub(crate) fn with_structured_records<T>(
+        &self,
+        state: &kasumi_types::TenantState,
+        layout_sha256: impl FnOnce() -> [u8; 32],
+        read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
+    ) -> Result<Option<T>> {
+        use kasumi_raft::SelectedAppliedRef;
+        use kasumi_store::{ordered_pages::TreeReader, structured_manifest::StructuredManifest};
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let index = match position.applied() {
+            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
+            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
+                meta.last_log_id.map_or(0, |id| id.index)
+            }
+            None => 0,
+        };
+        if state.revision_base.checked_add(index) != Some(state.revision) {
+            // The selection belongs to another applied position than this
+            // state: its directory says nothing about these indexes.
+            return Ok(None);
+        }
+        let roots = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected record installation absent")?;
+        let reader = self.open_selected_reader(&roots)?;
+        let outcome: Result<_> = (|| {
+            reader.check_access()?;
+            let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
+            let view = permit.view.as_ref().expect("loaned structured view");
+            let Some(manifest) = StructuredManifest::load_from_pair(view)? else {
+                return Ok(None);
+            };
+            if !manifest.is_current() || manifest.revision != state.revision {
+                return Ok(None);
+            }
+            ensure!(
+                manifest.incarnation == state.incarnation
+                    && manifest.revision_base == state.revision_base
+                    && manifest.layout_sha256 == layout_sha256(),
+                "selected structured directory differs from its generation"
+            );
+            let tree =
+                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
+            read(&tree).map(Some)
+        })();
+        let close = reader.close();
+        match (outcome, close) {
+            (Err(error), Err(close)) => Err(error.context(close)),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Ok(read), Ok(())) => Ok(read),
+        }
+    }
+}
+
 impl SourceReader {
     fn acquire(
         preparation: RootPreparation,

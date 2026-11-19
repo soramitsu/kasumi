@@ -33,7 +33,9 @@ mod search;
 mod seek;
 mod select;
 mod structured;
+mod structured_rows;
 pub use seek::SeekPage;
+pub use structured_rows::{StructuredField, StructuredPostings, StructuredRow};
 mod validation;
 
 pub use validation::{check_unique, unique_index_key, validate_collection, validate_document};

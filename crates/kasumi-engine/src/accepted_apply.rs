@@ -531,6 +531,34 @@ impl AcceptedGeneration<'_> {
         &self.candidate
     }
 
+    /// Join the ordinary structured directory's edit and manifest for this
+    /// candidate to `prepared`, so that they publish at `position` in the
+    /// same transaction as its other rows. The returned owner funds the
+    /// joined page rows until that publication returns.
+    pub(super) fn join_structured_writes(
+        &self,
+        roots: &crate::application_sources::SourceRootsRef,
+        position: &kasumi_raft::AppliedEntryContext,
+        prepared: &mut PreparedApplicationWrites,
+    ) -> anyhow::Result<Option<crate::application_structured::StructuredPublication>> {
+        let (stores, _) = roots.primary_installation();
+        let mut publication = crate::application_structured::prepare_publication(
+            &roots.structured,
+            stores.application(),
+            &self.owner.previous.state,
+            &self.owner.previous.indexes,
+            &self.candidate.state,
+            &self.candidate.indexes,
+            Some(crate::application_structured::entry_applied(position)?),
+        )?;
+        if let Some(publication) = publication.as_mut() {
+            let rows = publication.take_writes();
+            prepared.writes.try_reserve_exact(rows.len())?;
+            prepared.writes.extend(rows);
+        }
+        Ok(publication)
+    }
+
     pub(super) fn require_publication(
         &self,
         engine: &TenantEngine,

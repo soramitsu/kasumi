@@ -173,7 +173,9 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                         .context("ordinary application sources absent")?;
                     // Immutable body writes share the exact completion/custody
                     // publication, and their grant lives through selection.
-                    let writes = accepted.prepare_publication_writes(sources, position)?;
+                    let mut writes = accepted.prepare_publication_writes(sources, position)?;
+                    let _structured =
+                        accepted.join_structured_writes(sources, position, &mut writes)?;
                     let candidate = accepted.candidate();
                     let Some(selection) = completion.publish_source(
                         position,
@@ -450,12 +452,13 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                     .application_sources
                     .get()
                     .context("ordinary application sources absent")?;
-                let writes = accepted.prepare_group_publication_writes(
+                let mut writes = accepted.prepare_group_publication_writes(
                     sources,
                     last,
                     positions.len(),
                     first_revision,
                 )?;
+                let _structured = accepted.join_structured_writes(sources, last, &mut writes)?;
                 let candidate = accepted.candidate();
                 let Some(selection) = completion.publish_source(
                     last,

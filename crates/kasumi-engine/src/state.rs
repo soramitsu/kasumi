@@ -760,6 +760,23 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
             writes.extend_from_slice(binding_installation.writes());
             writes.extend_from_slice(installation.writes());
             writes.extend_from_slice(target_installation.writes());
+            // The ordinary structured directory follows the installed
+            // sources: reopen keeps a current one at or ahead of this
+            // snapshot, and anything else selects a generation rebuilt from
+            // the restored indexes.
+            if selection.is_some()
+                && let Some(sources) = self.application_sources.get()
+            {
+                crate::application_structured::prepare_restore(
+                    &sources.structured,
+                    sources.primary_installation().0.application(),
+                    &generation.state,
+                    &generation.indexes,
+                    &context.meta,
+                    context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+                    &mut writes,
+                )?;
+            }
             if context.mode == kasumi_raft::SnapshotRestoreMode::Reopen {
                 crate::application_checkpoint::verify(store, &generation, context)?;
             } else if selection.is_some() {
@@ -1294,7 +1311,7 @@ impl TenantEngine {
             sources.is_none() || position.is_some(),
             "runtime publication lacks actual applied position"
         );
-        let prepared_writes = sources
+        let mut prepared_writes = sources
             .map(|sources| {
                 accepted.prepare_publication_writes(
                     sources,
@@ -1302,6 +1319,14 @@ impl TenantEngine {
                 )
             })
             .transpose()?;
+        let _structured = match (sources, prepared_writes.as_mut()) {
+            (Some(sources), Some(prepared)) => accepted.join_structured_writes(
+                sources,
+                position.expect("checked applied position"),
+                prepared,
+            )?,
+            _ => None,
+        };
         let writes = prepared_writes
             .as_ref()
             .map_or(&[][..], |prepared| prepared.writes());

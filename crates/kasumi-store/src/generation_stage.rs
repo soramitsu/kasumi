@@ -13,6 +13,9 @@
 //! batches afterwards.
 use super::*;
 
+mod structured;
+pub(super) use structured::validate_structured_manifest;
+
 pub(crate) const OWNERS: &str = "kasumi.app.staging";
 pub(crate) const SELECTIONS: &str = "kasumi.app.selection";
 const SELECTION_BYTES: usize = 8192;

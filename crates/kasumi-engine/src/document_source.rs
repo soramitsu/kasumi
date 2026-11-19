@@ -238,15 +238,47 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         self.check_deadline()?;
         cancellation.check()?;
         let state = &self.generation.state;
-        let Some(selection) = self
-            .generation
-            .application_selection
-            .get()
-            .filter(|selection| selection.has_exact_snapshot(state.revision_base, state.revision))
-        else {
+        let Some(selection) = self.generation.application_selection.get() else {
             return Ok(false);
         };
         let mut failure = None;
+        // The ordinary structured directory follows every write, so it
+        // serves any generation it is current for. Only a generation without
+        // one falls back to the ranked dictionaries of its exact snapshot.
+        let ordinary = selection
+            .with_structured_records(
+                state,
+                || self.generation.indexes.structured_layout_sha256(),
+                |tree| {
+                    let check = || {
+                        cancellation.check()?;
+                        self.check_deadline()
+                    };
+                    crate::application_structured::visit_posting(
+                        tree,
+                        &self.collection,
+                        field,
+                        predicate,
+                        || Ok(check()?),
+                        |id| {
+                            failure = check().and_then(|()| lend(id)).err();
+                            Ok(failure.is_none())
+                        },
+                    )
+                },
+            )
+            .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+        if let Some(error) = failure {
+            return Err(error.into());
+        }
+        if ordinary.is_some() {
+            self.check_deadline()?;
+            cancellation.check()?;
+            return Ok(true);
+        }
+        if !selection.has_exact_snapshot(state.revision_base, state.revision) {
+            return Ok(false);
+        }
         let selected = selection
             .with_snapshot_records(state, |tree, _, layout| {
                 let check = || {

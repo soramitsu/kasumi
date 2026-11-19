@@ -71,7 +71,7 @@ impl<'a> FieldValue<'a> {
             bytes: Cow::Owned(bytes),
         }
     }
-    fn from_scalar(value: &'a Scalar) -> Self {
+    pub(crate) fn from_scalar(value: &'a Scalar) -> Self {
         match value {
             Scalar::Missing => Self::empty(0),
             Scalar::Null => Self::empty(1),

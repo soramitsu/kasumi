@@ -147,6 +147,8 @@ pub(crate) struct SourceRoots {
     // grant by an unscoped proposer and spent by the applying thread.
     escrow: Mutex<Option<Arc<crate::admission::ApplyEscrow>>>,
     completion: OnceLock<completion::CompletionRef>,
+    /// Edit journal custody of the ordinary structured directory.
+    pub(crate) structured: crate::application_structured::StructuredOwner,
     _reservation: SourceCredit,
 }
 struct CellState {
@@ -598,6 +600,7 @@ impl SourceRoots {
                 publication: Mutex::new(None),
                 escrow: Mutex::new(None),
                 completion: OnceLock::new(),
+                structured: Default::default(),
                 _reservation: credit.clone(),
             },
             credit,
