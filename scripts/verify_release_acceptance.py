@@ -1181,6 +1181,12 @@ def dependency_review_adapter(root, domain, files, configs, artifacts, candidate
     return outcome.relative_to(root).as_posix()
 
 
+def audit_retention_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_audit_retention
+
+    return run_audit_retention.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def ha_soak_adapter(root, domain, files, configs, artifacts, candidates):
     import run_ha_soak
 
@@ -1260,6 +1266,7 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # and is rejected: an opaque report and asserted scenario labels cannot certify
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
+    "audit-retention": audit_retention_adapter,
     "benchmark-matrix": benchmark_matrix_adapter,
     "concurrency": concurrency_adapter,
     "observability": observability_adapter,

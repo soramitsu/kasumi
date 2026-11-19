@@ -59,6 +59,12 @@ CASES = (
         1,
     ),
     (
+        "staged",
+        "kasumi-engine",
+        "failed_prune_publication_keeps_selected_prefix_and_replays_staged_archive",
+        1,
+    ),
+    (
         "incomplete",
         "kasumi-engine",
         "incomplete_or_corrupt_bundle_never_publishes_pruned_state",
@@ -120,7 +126,7 @@ def observation(case, raw):
         for line in raw.decode().splitlines()
         if line.startswith(prefix)
     ]
-    if case == "incomplete":
+    if case in {"incomplete", "staged"}:
         require(not rows, "unexpected independent observation")
         return None
     require(len(rows) == 1, "expected one original audit component observation")

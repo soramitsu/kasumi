@@ -414,7 +414,7 @@ def measure(
     )
 
 
-def observe(run, plan_path, topology_path):
+def measure_installed(run, plan_path, topology_path):
     require(
         run.bind() == acceptance.REFERENCE,
         "the nine-process installed audit observation requires native Linux ARM64",
@@ -533,7 +533,11 @@ def observe(run, plan_path, topology_path):
             domain_run.service_disposition(services.stop(n["id"])) == "clean-stop",
             "audit voter did not drain",
         )
-    run.passed(details)
+    return details
+
+
+def observe(run, plan_path, topology_path):
+    run.passed(measure_installed(run, plan_path, topology_path))
 
 
 def replay_members(custody, report, admission, topology_plan, configs, paths, phases):
@@ -772,6 +776,27 @@ def replay(evidence, custody):
         },
         "audit component differs from its frozen functional candidate and source",
     )
+    paths = {
+        name: str(Path(report["evidence_root"]) / path.relative_to(evidence))
+        for name, (path, _) in binaries.items()
+    }
+    result = replay_installed(custody, report, functional, paths)
+    return {
+        "qualification": domain_run.REHEARSAL,
+        "target": target,
+        "tenant": result["tenant"],
+        "incarnation": result["incarnation"],
+        "reads": result["reads"],
+        "new_archives": len(result["objects"]),
+        "voters": 3,
+        "clean_processes": 9,
+    }
+
+
+def replay_installed(custody, report, functional, paths):
+    details = report["details"]
+    owned.exact(details, {"functional_sha256", "admission", "certificates", "phases", "polls", "result"},
+                "installed audit measurements")
     retained = {
         r["id"]: owned.check_ref(custody, r["file"]) for r in report["configurations"]
     }
@@ -806,10 +831,6 @@ def replay(evidence, custody):
     profiles = {
         role: owned.read(retained[role + "-profile"]) for role in ("operator", "data")
     }
-    paths = {
-        name: str(Path(report["evidence_root"]) / path.relative_to(evidence))
-        for name, (path, _) in binaries.items()
-    }
     topo = owned.read(retained["ha-topology"])
     require(
         topo["binaries"]
@@ -843,19 +864,9 @@ def replay(evidence, custody):
         custody,
     )
     python = functional["python_executable"]
-    result = replay_operations(
+    return replay_operations(
         custody, report, plan, nodes, inputs, paths, python["path"], python["sha256"]
     )
-    return {
-        "qualification": domain_run.REHEARSAL,
-        "target": target,
-        "tenant": result["tenant"],
-        "incarnation": result["incarnation"],
-        "reads": result["reads"],
-        "new_archives": len(result["objects"]),
-        "voters": 3,
-        "clean_processes": 9,
-    }
 
 
 def main():
