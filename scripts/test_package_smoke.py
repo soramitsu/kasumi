@@ -1,6 +1,7 @@
 """Exercise package provenance, service drains and semantic replay with stand-in binaries."""
 import json
 from pathlib import Path
+import secrets
 import shutil
 import socket
 import subprocess
@@ -94,13 +95,13 @@ class PackageSmokeTests(ImageFixture):
 
     def run_package(self, attempt):
         for _ in range(32):
-            with socket.socket() as first, socket.socket() as second:
-                first.bind(("127.0.0.1", 0))
-                port = first.getsockname()[1]
-                if port > 65533:
-                    continue
+            # The package binds after unpack and init. Keep its listeners out
+            # of the OS ephemeral client-port pool during that interval.
+            port = 18000 + secrets.randbelow(12000)
+            with socket.socket() as first, socket.socket() as second, socket.socket() as third:
                 try:
-                    second.bind(("127.0.0.1", port + 1))
+                    for offset, listener in enumerate((first, second, third)):
+                        listener.bind(("127.0.0.1", port + offset))
                 except OSError:
                     continue
                 break
