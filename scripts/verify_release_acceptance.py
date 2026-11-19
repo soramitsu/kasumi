@@ -1181,6 +1181,18 @@ def dependency_review_adapter(root, domain, files, configs, artifacts, candidate
     return outcome.relative_to(root).as_posix()
 
 
+def capacity_standalone_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_capacity_standalone
+
+    return run_capacity_standalone.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
+def capacity_ha_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_capacity_ha
+
+    return run_capacity_ha.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def audit_retention_adapter(root, domain, files, configs, artifacts, candidates):
     import run_audit_retention
 
@@ -1266,6 +1278,8 @@ def oci_smoke_adapter(root, domain, files, configs, artifacts, candidates):
 # and is rejected: an opaque report and asserted scenario labels cannot certify
 # a release. There is no CLI or manifest switch to override this registry.
 DOMAIN_ADAPTERS = {
+    "capacity-standalone": capacity_standalone_adapter,
+    "capacity-ha": capacity_ha_adapter,
     "audit-retention": audit_retention_adapter,
     "benchmark-matrix": benchmark_matrix_adapter,
     "concurrency": concurrency_adapter,
