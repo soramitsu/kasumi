@@ -2397,5 +2397,319 @@ async fn selected_sources_initial_install_fits_actual_rows_below_format_ceiling(
     fixture.close().await
 }
 
+/// The ordinary primary directory follows every applied entry in the paired
+/// publication, older generations keep reading their own pinned rows, reopen
+/// keeps a directory ahead of its snapshot through covered replay, and a
+/// store without one (as deployed revisions leave it) rebuilds from the
+/// restored snapshot before replaying its tail.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use kasumi_store::primary_manifest::{self, PrimaryManifest};
+
+    async fn audit(
+        node: &kasumi_store::NodeStore,
+        admission: &Arc<NodeAdmission>,
+        existing: bool,
+    ) -> crate::test_fixture_failure::FixtureResult<Arc<crate::SecurityAudit>> {
+        let key = Arc::new(LocalKeyProvider::new([121; 32]));
+        Ok(if existing {
+            let store = kasumi_store::TenantStore::open_existing_fixture(
+                node.clone(),
+                crate::SECURITY_TENANT.into(),
+                key,
+            )
+            .await?;
+            crate::SecurityAudit::open(store, Default::default(), admission.clone())?
+        } else {
+            let store = kasumi_store::TenantStore::initialize_catalog_fixture(
+                node.clone(),
+                crate::SECURITY_TENANT.into(),
+                key,
+            )
+            .await?;
+            crate::SecurityAudit::initialize(store, Default::default(), admission.clone())?
+        })
+    }
+    async fn start(
+        fixture: &Fixture,
+        audit: &Arc<crate::SecurityAudit>,
+        group: &str,
+        initialize: bool,
+    ) -> crate::test_fixture_failure::FixtureResult<(Arc<TenantEngine>, Arc<crate::Database>)> {
+        crate::test_utils::install_fixture_audit_placement(fixture.stores.application())?;
+        let engine = Arc::new(TenantEngine::from_bootstrap(
+            "selected-sources",
+            &fixture.image,
+        )?);
+        engine.install_storage_access(fixture.stores.application())?;
+        let db = crate::service::construction::DatabaseConstruction::new(
+            fixture.stores.clone(),
+            audit.clone(),
+        )?
+        .start_replicated(
+            engine.clone(),
+            &fixture.image,
+            1,
+            group.into(),
+            Arc::new(kasumi_raft::InProcessRouter::default()),
+            Default::default(),
+        )
+        .await?;
+        if initialize {
+            db.raft_group()
+                .initialize(std::collections::BTreeMap::from([(
+                    1,
+                    kasumi_raft::BasicNode::new("primary-directory"),
+                )]))
+                .await?;
+        }
+        db.raft_group()
+            .raft()
+            .wait(Some(std::time::Duration::from_secs(20)))
+            .current_leader(1, "primary directory leader")
+            .await?;
+        // The leader's first entry of its term is applied before reads.
+        db.raft_group().linearizable_barrier().await?;
+        Ok((engine, db))
+    }
+    /// The selected directory is current at the engine's exact revision and
+    /// reproduces every resident primary row.
+    fn current(
+        engine: &TenantEngine,
+        store: &Arc<kasumi_store::TenantStore>,
+    ) -> Result<PrimaryManifest> {
+        let generation = engine.generation()?;
+        let manifest =
+            PrimaryManifest::load(store)?.context("ordinary primary directory absent")?;
+        ensure!(
+            manifest.is_current(),
+            "ordinary primary directory went stale"
+        );
+        ensure!(
+            manifest.revision == generation.state.revision,
+            "primary directory {} lags generation {}",
+            manifest.revision,
+            generation.state.revision
+        );
+        crate::application_primary::verify_rows(
+            &**store,
+            &manifest,
+            &generation.state,
+            store.plaintext_memory_owner(),
+        )?;
+        Ok(manifest)
+    }
+    async fn stop(
+        db: Arc<crate::Database>,
+        engine: Arc<TenantEngine>,
+        audit: Arc<crate::SecurityAudit>,
+        fixture: &mut Fixture,
+    ) -> crate::test_fixture_failure::FixtureResult<()> {
+        db.shutdown().await?;
+        drop(db);
+        drop(engine);
+        audit.shutdown().await?;
+        drop(audit);
+        fixture.node.shutdown().await?;
+        fixture.node = fixture.storage.open_existing(
+            fixture._directory.path().join("persistent/node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )?;
+        fixture.stores = TenantStorageSet::open_existing_fixture(
+            fixture.node.clone(),
+            "selected-sources".into(),
+            Arc::new(LocalKeyProvider::new([119; 32])),
+            Arc::new(LocalKeyProvider::new([120; 32])),
+        )
+        .await?;
+        Ok(())
+    }
+
+    let mut fixture = Fixture::new().await?;
+    let group = format!(
+        "selected-sources/{}",
+        TenantEngine::from_bootstrap("selected-sources", &fixture.image)?
+            .generation()?
+            .state
+            .incarnation
+    );
+    let first_audit = audit(&fixture.node, &fixture.storage.admission, false).await?;
+    let (engine, db) = start(&fixture, &first_audit, &group, true).await?;
+    let store = fixture.stores.application().clone();
+    let context = kasumi_types::RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
+        tenant: "selected-sources".into(),
+        principal: "owner".into(),
+        scopes: std::collections::BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
+        request_id: "ordinary-primary-directory".into(),
+    };
+    // A pristine store records its directory from the first applied entry.
+    let initial = current(&engine, &store)?;
+    assert_eq!(initial.page_space, primary_manifest::INITIAL_SPACE[0]);
+    db.administer(
+        context.clone(),
+        kasumi_types::Operation::CreateCollection(kasumi_types::CollectionDefinition {
+            name: "docs".into(),
+            write_mode: kasumi_types::CollectionWriteMode::Mutable,
+            retention_class: kasumi_types::CollectionRetentionClass::Operational,
+            schema: serde_json::json!({"type": "object"}),
+            indexes: vec![],
+            strict_read_audit: false,
+        }),
+    )
+    .await?;
+    let mutate = |batch: kasumi_types::MutationBatch| {
+        let db = db.clone();
+        let context = context.clone();
+        async move { db.mutate(context, batch).await }
+    };
+    mutate(
+        kasumi_types::MutationBatch::new()
+            .upsert("docs", "a", serde_json::json!({"value": 1}))
+            .upsert("docs", "b", serde_json::json!({"value": 2})),
+    )
+    .await?;
+    let pinned = engine.generation()?;
+    let pinned_manifest = current(&engine, &store)?;
+    assert_eq!(pinned_manifest.records.tree, initial.records.tree);
+    assert_eq!(pinned_manifest.document_count, 2);
+    mutate(
+        kasumi_types::MutationBatch::new()
+            .upsert("docs", "a", serde_json::json!({"value": 3}))
+            .delete("docs", "b")
+            .upsert("docs", "c", serde_json::json!({"value": 4})),
+    )
+    .await?;
+    let edited = current(&engine, &store)?;
+    assert!(edited.revision > pinned_manifest.revision);
+    assert_eq!(edited.records.tree, initial.records.tree);
+    // The earlier generation reads its own rows from its pinned root, after
+    // the later edit deleted the pages it uses; the current one reads its own.
+    let latest = engine.generation()?;
+    let point = |generation: &crate::Generation, id: &str| -> Result<Option<u64>> {
+        let selection = generation
+            .application_selection
+            .get()
+            .context("generation selection")?;
+        Ok(
+            match selection
+                .primary_point(&generation.state, "docs", id, |_| Ok(()))?
+                .context("selected generation has no current primary directory")?
+            {
+                crate::application_records::PrimaryPoint::Live(slot) => Some(slot.version()),
+                crate::application_records::PrimaryPoint::Archived(_) => {
+                    anyhow::bail!("unexpected archived primary row")
+                }
+                crate::application_records::PrimaryPoint::Missing => None,
+            },
+        )
+    };
+    let versions = |generation: &crate::Generation| -> Result<Vec<Option<u64>>> {
+        ["a", "b", "c"]
+            .into_iter()
+            .map(|id| point(generation, id))
+            .collect()
+    };
+    let resident = |generation: &crate::Generation| -> Vec<Option<u64>> {
+        ["a", "b", "c"]
+            .into_iter()
+            .map(|id| {
+                generation.state.collections["docs"]
+                    .documents
+                    .get(id)
+                    .map(|slot| slot.version())
+            })
+            .collect()
+    };
+    assert_eq!(versions(&pinned)?, resident(&pinned));
+    assert_eq!(versions(&latest)?, resident(&latest));
+    assert!(resident(&pinned)[1].is_some());
+    assert_eq!(resident(&latest)[1], None);
+    drop((pinned, latest));
+
+    // Snapshot, then advance the log beyond it.
+    let expected = db
+        .raft_group()
+        .linearizable_barrier()
+        .await?
+        .expect("initialized log");
+    db.raft_group().snapshot().await?;
+    db.raft_group()
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(20)))
+        .snapshot(expected, "primary directory snapshot")
+        .await?;
+    mutate(
+        kasumi_types::MutationBatch::new()
+            .upsert("docs", "d", serde_json::json!({"value": 5}))
+            .delete("docs", "a"),
+    )
+    .await?;
+    mutate(kasumi_types::MutationBatch::new().upsert("docs", "e", serde_json::json!({"value": 6})))
+        .await?;
+    let before = current(&engine, &store)?;
+    assert!(before.revision > before.revision_base + expected.index);
+    stop(db, engine, first_audit, &mut fixture).await?;
+
+    // Reopen restores the older snapshot. Covered replay below the directory
+    // publishes nothing, the entry at its revision reproduces it, and later
+    // entries edit the same tree.
+    let store = fixture.stores.application().clone();
+    let kept = PrimaryManifest::load(&store)?.context("reopened directory absent")?;
+    assert!(kept.is_current() && kept.revision >= before.revision);
+    assert_eq!(kept.records.tree, before.records.tree);
+    let second_audit = audit(&fixture.node, &fixture.storage.admission, true).await?;
+    let (engine, db) = start(&fixture, &second_audit, &group, false).await?;
+    let reopened = current(&engine, &store)?;
+    assert_eq!(reopened.records.tree, before.records.tree);
+    assert_eq!(reopened.page_space, before.page_space);
+    assert!(reopened.revision >= before.revision);
+    let mutate = |batch: kasumi_types::MutationBatch| {
+        let db = db.clone();
+        let context = context.clone();
+        async move { db.mutate(context, batch).await }
+    };
+    mutate(kasumi_types::MutationBatch::new().upsert("docs", "f", serde_json::json!({"value": 7})))
+        .await?;
+    let continued = current(&engine, &store)?;
+    assert_eq!(continued.records.tree, before.records.tree);
+    stop(db, engine, second_audit, &mut fixture).await?;
+
+    // A store without a directory, as deployed revisions leave it, rebuilds
+    // one from the restored snapshot and replays its tail onto it.
+    let store = fixture.stores.application().clone();
+    store.write_batch(&[kasumi_store::WriteOp::delete(
+        primary_manifest::MANIFESTS,
+        primary_manifest::CURRENT,
+    )])?;
+    assert_eq!(PrimaryManifest::load(&store)?, None);
+    let third_audit = audit(&fixture.node, &fixture.storage.admission, true).await?;
+    let (engine, db) = start(&fixture, &third_audit, &group, false).await?;
+    let rebuilt = current(&engine, &store)?;
+    assert_ne!(rebuilt.records.tree, before.records.tree);
+    assert_ne!(rebuilt.page_space, before.page_space);
+    let generation = engine.generation()?;
+    assert_eq!(
+        generation.state.collections["docs"]
+            .documents
+            .keys()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["c", "d", "e", "f"]
+    );
+    drop(generation);
+    db.shutdown().await?;
+    drop(db);
+    drop(engine);
+    third_audit.shutdown().await?;
+    drop(third_audit);
+    fixture.close().await
+}
+
 #[path = "document_store_native_tests.rs"]
 mod document_store_native_tests;

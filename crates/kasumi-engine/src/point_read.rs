@@ -147,13 +147,7 @@ impl PointRead {
                 .ok_or_else(|| Error::new(ErrorCode::NotFound, "collection not found"))?;
             PrimaryPoint::resident(selected, id, state.revision)
         };
-        if !generation
-            .application_selection
-            .get()
-            .is_some_and(|selection| {
-                selection.has_exact_snapshot(state.revision_base, state.revision)
-            })
-        {
+        if generation.application_selection.get().is_none() {
             let point = resident(state, collection, id)?;
             return Ok((self, permit, point));
         }
@@ -176,9 +170,9 @@ impl PointRead {
             let selection = generation
                 .application_selection
                 .get()
-                .expect("exact snapshot selected");
+                .expect("application selection checked above");
             let point = selection
-                .snapshot_point(state, &collection, &id, |bytes| {
+                .primary_point(state, &collection, &id, |bytes| {
                     let work =
                         crate::snapshot_codec::inspect_external_json_work(bytes, &mut || {
                             token.check()?;

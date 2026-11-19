@@ -37,6 +37,7 @@ impl SelectedApplication {
             })
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot_point(
         &self,
         state: &kasumi_types::TenantState,
@@ -149,6 +150,112 @@ impl SelectedApplication {
             (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
             (Ok(point), Ok(())) => Ok(point),
         }
+    }
+
+    /// Read primary descriptors and headers from the tree owned by this revision.
+    pub(crate) fn with_serving_primary<T>(
+        &self,
+        state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+            u32,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        if self.has_exact_snapshot(state.revision_base, state.revision) {
+            return self.with_snapshot_records(state, read);
+        }
+        self.with_primary_records(state, |tree, memory| {
+            read(
+                tree,
+                memory,
+                kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT,
+            )
+        })
+    }
+
+    /// Lend the ordinary primary directory this selection pinned, only when it
+    /// is current at exactly this generation's revision. Older generations keep
+    /// their own native root, so each reads the rows of its own revision even
+    /// after later edits deleted the pages it uses. `None` when the pinned root
+    /// holds no current directory at this revision (deployed stores before
+    /// their first restore, a stale directory, covered reconstruction).
+    pub(crate) fn with_primary_records<T>(
+        &self,
+        state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        use kasumi_raft::SelectedAppliedRef;
+        use kasumi_store::{ordered_pages::TreeReader, primary_manifest::PrimaryManifest};
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let index = match position.applied() {
+            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
+            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
+                meta.last_log_id.map_or(0, |id| id.index)
+            }
+            None => 0,
+        };
+        ensure!(
+            state.revision_base.checked_add(index) == Some(state.revision),
+            "applied directory position differs"
+        );
+        let roots = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected record installation absent")?;
+        let reader = self.open_selected_reader(&roots)?;
+        let outcome: Result<_> = (|| {
+            reader.check_access()?;
+            let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
+            let view = permit.view.as_ref().expect("loaned primary view");
+            let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
+                return Ok(None);
+            };
+            if !manifest.is_current() || manifest.revision != state.revision {
+                return Ok(None);
+            }
+            ensure!(
+                manifest.incarnation == state.incarnation
+                    && manifest.revision_base == state.revision_base
+                    && manifest.document_count == state.document_count
+                    && manifest.logical_bytes == state.logical_bytes,
+                "selected primary directory differs from its generation"
+            );
+            let tree =
+                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
+            let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
+            read(&tree, &memory).map(Some)
+        })();
+        let close = reader.close();
+        match (outcome, close) {
+            (Err(error), Err(close)) => Err(error.context(close)),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Ok(point), Ok(())) => Ok(point),
+        }
+    }
+
+    /// One document's live or archived record from the pinned primary
+    /// directory at this exact revision. A miss there is authoritative.
+    pub(crate) fn primary_point(
+        &self,
+        state: &kasumi_types::TenantState,
+        collection: &str,
+        id: &str,
+        admit: impl FnMut(&[u8]) -> Result<()>,
+    ) -> Result<Option<crate::application_records::PrimaryPoint>> {
+        self.with_serving_primary(state, |tree, _, _| {
+            crate::application_records::snapshot_point(tree, collection, id, state.revision, admit)
+        })
     }
 
     /// Validate the immutable owner pairing without opening a reader or

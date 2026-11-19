@@ -227,7 +227,10 @@ fn random_batch(
     universe: u64,
     size: usize,
 ) -> Vec<(Vec<u8>, Option<Vec<u8>>)> {
-    assert!(size as u64 <= universe, "the batch needs one distinct key per edit");
+    assert!(
+        size as u64 <= universe,
+        "the batch needs one distinct key per edit"
+    );
     let mut batch = BTreeMap::new();
     let deletes = rng.below(100);
     while batch.len() < size {

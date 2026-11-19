@@ -645,12 +645,7 @@ impl LeaseManager {
                 Some(&request.collection),
                 Action::Read,
             )?;
-            if let Some(selection) = root.generation.application_selection.get().filter(|s| {
-                s.has_exact_snapshot(
-                    root.generation.state.revision_base,
-                    root.generation.state.revision,
-                )
-            }) {
+            if let Some(selection) = root.generation.application_selection.get() {
                 // The two namespace scans materialize at most two pages of 256-byte
                 // names. The merged page moves those strings without cloning them.
                 reservation.reserve_additional(((request.limit + 1) * 768) as u64)?;
@@ -659,7 +654,7 @@ impl LeaseManager {
                 let handle = root.handle.clone();
                 drop(entries);
                 drop(current);
-                let read = selection.with_snapshot_records(&metadata, |tree, _, layout| {
+                let read = selection.with_serving_primary(&metadata, |tree, _, layout| {
                     let check = || -> anyhow::Result<()> {
                         cancellation.check()?;
                         context.authorization.check_live()?;

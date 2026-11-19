@@ -530,6 +530,117 @@ pub(crate) fn visit_all(
     Ok(())
 }
 
+/// One primary row value with the lease that funds its encoding.
+struct PrimaryValue {
+    bytes: Vec<u8>,
+    _lease: kasumi_store::DiskMemoryLease,
+}
+
+fn encode_primary(
+    record: &DurableRecord<'_>,
+    memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+) -> Result<PrimaryValue> {
+    let (length, _) = crate::snapshot_codec::measure_typed_json(record, |_| {})?;
+    let length = usize::try_from(length)?;
+    ensure!(
+        length <= kasumi_store::ordered_pages::MAX_VALUE_BYTES,
+        "primary record exceeds storage bound"
+    );
+    let lease = memory.clone().reserve_installed(length as u64)?;
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length)?;
+    serde_json::to_writer(&mut bytes, record)?;
+    ensure!(bytes.len() == length, "primary record length changed");
+    Ok(PrimaryValue {
+        bytes,
+        _lease: lease,
+    })
+}
+
+fn header_value(header: &kasumi_query::Header<'_>) -> [u8; 9] {
+    let mut value = [0; 9];
+    value[0] = u8::from(header.kind == kasumi_query::RecordKind::Archived);
+    value[1..].copy_from_slice(&header.version.to_be_bytes());
+    value
+}
+
+/// Every primary row of `state` in key order: live descriptors, archived
+/// references, then the header directory. These are exactly the rows of the
+/// same keys in a snapshot tree, so the same readers serve both.
+pub(crate) fn visit_primary(
+    state: &TenantState,
+    memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    mut emit: impl FnMut(&[u8], &[u8]) -> Result<()>,
+) -> Result<()> {
+    let _framing = memory.clone().reserve_installed(64 << 10)?;
+    for (name, collection) in &state.collections {
+        for (id, slot) in &collection.documents {
+            let value = encode_primary(&DurableRecord::Document(stored(slot)?), memory)?;
+            emit(&document_key(name, id), &value.bytes)?;
+        }
+    }
+    for (name, collection) in &state.collections {
+        for (id, archived) in &collection.archived_documents {
+            let value = encode_primary(&DurableRecord::Archived(archived), memory)?;
+            emit(&archive_key(name, id), &value.bytes)?;
+        }
+    }
+    for (name, collection) in &state.collections {
+        let mut key = header_prefix(name);
+        let prefix_bytes = key.len();
+        for id in crate::index_source::resident_ids_after(collection, None) {
+            let header = crate::index_source::header(collection, id, state.revision)?
+                .context("document lost its selected header")?;
+            key.truncate(prefix_bytes);
+            key.extend_from_slice(id.as_bytes());
+            emit(&key, &header_value(&header))?;
+        }
+    }
+    Ok(())
+}
+
+/// The three primary rows of one document at `revision`: each key with its
+/// value, or `None` where the row must be absent. Returns the bytes added.
+pub(crate) fn primary_rows(
+    name: &str,
+    collection: Option<&CollectionState>,
+    id: &str,
+    revision: u64,
+    memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
+    rows: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+) -> Result<usize> {
+    let mut added = 0usize;
+    let mut insert = |key: Vec<u8>, value: Option<Vec<u8>>| {
+        added = added
+            .saturating_add(key.len())
+            .saturating_add(value.as_ref().map_or(0, Vec::len));
+        rows.insert(key, value);
+    };
+    let live = collection
+        .and_then(|collection| collection.documents.get(id))
+        .map(|slot| -> Result<Vec<u8>> {
+            Ok(encode_primary(&DurableRecord::Document(stored(slot)?), memory)?.bytes)
+        })
+        .transpose()?;
+    insert(document_key(name, id), live);
+    let archived = collection
+        .and_then(|collection| collection.archived_documents.get(id))
+        .map(|archived| -> Result<Vec<u8>> {
+            Ok(encode_primary(&DurableRecord::Archived(archived), memory)?.bytes)
+        })
+        .transpose()?;
+    insert(archive_key(name, id), archived);
+    let header = collection
+        .map(|collection| crate::index_source::header(collection, id, revision))
+        .transpose()?
+        .flatten()
+        .map(|header| header_value(&header).to_vec());
+    let mut key = header_prefix(name);
+    key.extend_from_slice(id.as_bytes());
+    insert(key, header);
+    Ok(added)
+}
+
 fn visit_map<'a, V: Clone>(
     kind: u8,
     map: &'a imbl::OrdMap<String, V>,

@@ -176,6 +176,41 @@ pub fn recover_abandoned_edits(store: &Arc<TenantStore>) -> Result<u64> {
             .context("edit recovery count exhausted")?;
         Ok(())
     })?;
+    removed = removed
+        .checked_add(recover_legacy(store, &view)?)
+        .context("edit recovery count exhausted")?;
+    view.close()?;
+    Ok(removed)
+}
+
+/// `recover_abandoned_edits` restricted to the page spaces of one family:
+/// the family's initial space and its `family@<uuid>` generations. Callers
+/// hold that family's publication gate; other families' editors and the
+/// legacy journal are left to their own gates.
+pub fn recover_abandoned_edits_in(store: &Arc<TenantStore>, family: &str) -> Result<u64> {
+    validate_space(family)?;
+    let view = store.read_view()?;
+    let mut removed = 0u64;
+    view.visit(OWNERS, 5, |owner, value| {
+        let space = owner_space(owner)?;
+        let owned = space == family
+            || space
+                .strip_prefix(family)
+                .and_then(|rest| rest.strip_prefix('@'))
+                .is_some_and(|id| Uuid::parse_str(id).is_ok());
+        if owned {
+            removed = removed
+                .checked_add(reclaim(store, owner, value)?)
+                .context("edit recovery count exhausted")?;
+        }
+        Ok(())
+    })?;
+    view.close()?;
+    Ok(removed)
+}
+
+fn recover_legacy(store: &Arc<TenantStore>, view: &TenantReadView) -> Result<u64> {
+    let mut removed = 0u64;
     // The earlier journal disappeared in the publication itself. Every
     // surviving V1 record therefore names newly staged, unselected rows.
     view.visit(EDIT_JOURNAL, MAX_JOURNAL_BYTES, |key, value| {
@@ -207,6 +242,5 @@ pub fn recover_abandoned_edits(store: &Arc<TenantStore>) -> Result<u64> {
             .context("edit recovery count exhausted")?;
         Ok(())
     })?;
-    view.close()?;
     Ok(removed)
 }

@@ -27,7 +27,7 @@ mod tests;
 pub use builder::{BulkBuilder, RowSink, stage_tree};
 pub use cache::{PageCache, PageCacheStats};
 pub use cursor::{Direction, TreeReader};
-pub use edit_journal::{EDIT_JOURNAL, recover_abandoned_edits};
+pub use edit_journal::{EDIT_JOURNAL, recover_abandoned_edits, recover_abandoned_edits_in};
 pub use editor::{Edit, EditWorkspace, TreeEdit, edit_tree, edit_tree_staged};
 
 /// Plaintext bound of one page, header included.

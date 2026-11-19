@@ -318,6 +318,8 @@ pub struct TenantEngine {
         Mutex<Option<Arc<crate::audit_maintenance::NodeAuditMaintenance>>>,
     /// The form of this group's own standalone snapshots.
     local_snapshot_form: LocalSnapshotForm,
+    /// Edit journal custody of the ordinary primary directory.
+    pub(crate) primary: crate::application_primary::PrimaryOwner,
 }
 
 /// How a standalone (`local-v1`) group stores the snapshots it keeps for its own
@@ -762,6 +764,19 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                 crate::application_checkpoint::verify(store, &generation, context)?;
             } else if selection.is_some() {
                 crate::application_checkpoint::stage(store, &generation, context, &mut writes)?;
+            }
+            // The ordinary primary directory follows the installed sources:
+            // reopen keeps a current one at or ahead of this snapshot, and
+            // anything else selects a generation rebuilt from it.
+            if selection.is_some() {
+                crate::application_primary::prepare_restore(
+                    &self.primary,
+                    store,
+                    &generation.state,
+                    &context.meta,
+                    context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+                    &mut writes,
+                )?;
             }
             let retirement = custody_snapshot::retired(&generation.state)?;
             #[cfg(test)]
@@ -1683,6 +1698,7 @@ impl TenantEngine {
         let restoration_identity =
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
+            primary: Default::default(),
             local_snapshot_form: LocalSnapshotForm::from_process_default(),
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),

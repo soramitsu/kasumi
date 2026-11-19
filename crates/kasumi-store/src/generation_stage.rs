@@ -890,6 +890,72 @@ pub(super) fn validate_transitions(
             "generation selection lacks its owner transition"
         );
     }
+    validate_primary_manifest(tx, store, state, operations)
+}
+
+/// The ordinary primary directory row changes only forward. A put names the
+/// page space selected after this batch. Without a selection switch in the
+/// same batch it must succeed a current predecessor on the same tree with a
+/// larger revision; with one it starts a replacement generation. Deletion is
+/// left to whole-namespace removal.
+fn validate_primary_manifest(
+    tx: &kasumi_kv::WriteTransaction,
+    store: &TenantStore,
+    state: &KeyState,
+    operations: &[WriteOp],
+) -> Result<()> {
+    use crate::primary_manifest::{
+        CURRENT, FAMILY, INITIAL_SPACE, MANIFESTS, MAX_MANIFEST_BYTES, PrimaryManifest,
+    };
+    let mut seen = false;
+    for operation in operations {
+        let (namespace, key) = operation_target(operation);
+        if namespace != MANIFESTS {
+            continue;
+        }
+        ensure!(key.as_slice() == CURRENT, "unknown primary manifest row");
+        ensure!(!seen, "duplicate primary manifest write");
+        seen = true;
+        let WriteOp::Put { value, .. } = operation else {
+            continue;
+        };
+        let next = PrimaryManifest::decode(value)?;
+        ensure!(
+            next.tenant == store.tenant,
+            "primary manifest tenant differs"
+        );
+        let switched = operations.iter().find_map(|operation| match operation {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } if namespace == SELECTIONS && key.as_slice() == FAMILY.as_bytes() => Some(value),
+            _ => None,
+        });
+        let selected = match switched {
+            Some(bytes) => Selection::decode(bytes)?.namespaces,
+            None => read_selection(tx, store, state, FAMILY.as_bytes())?.map_or_else(
+                || INITIAL_SPACE.iter().map(|space| (*space).into()).collect(),
+                |selection| selection.namespaces,
+            ),
+        };
+        ensure!(
+            selected.len() == INITIAL_SPACE.len() && selected[0] == next.page_space,
+            "primary manifest names an unselected page space"
+        );
+        if switched.is_some() {
+            ensure!(
+                next.is_current(),
+                "a replacement primary generation must be current"
+            );
+            continue;
+        }
+        if let Some(previous) =
+            read_record(tx, store, state, MANIFESTS, CURRENT, MAX_MANIFEST_BYTES)?
+        {
+            next.check_successor(&PrimaryManifest::decode(&previous.value)?)?;
+        }
+    }
     Ok(())
 }
 

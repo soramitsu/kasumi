@@ -138,14 +138,9 @@ impl GenerationDocumentSource<'_> {
     ) -> ReadResult<T, DocumentSourceFailure> {
         self.check_deadline()?;
         let state = &self.generation.state;
-        if let Some(selection) = self
-            .generation
-            .application_selection
-            .get()
-            .filter(|selection| selection.has_exact_snapshot(state.revision_base, state.revision))
-        {
+        if let Some(selection) = self.generation.application_selection.get() {
             let selected = selection
-                .with_snapshot_records(state, |tree, memory, _| {
+                .with_serving_primary(state, |tree, memory, _| {
                     let mut leases = Vec::new();
                     let point = crate::application_records::snapshot_point(
                         tree,
@@ -348,14 +343,9 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         cancellation.check()?;
         self.check_deadline()?;
         let state = &self.generation.state;
-        if let Some(selection) = self
-            .generation
-            .application_selection
-            .get()
-            .filter(|selection| selection.has_exact_snapshot(state.revision_base, state.revision))
-        {
+        if let Some(selection) = self.generation.application_selection.get() {
             let selected = selection
-                .with_snapshot_records(state, |tree, memory, layout| {
+                .with_serving_primary(state, |tree, memory, layout| {
                     if layout < kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
                         return Ok(None);
                     }

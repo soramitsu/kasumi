@@ -326,7 +326,7 @@ impl AcceptedGeneration<'_> {
         position: &kasumi_raft::AppliedEntryContext,
     ) -> anyhow::Result<PreparedApplicationWrites> {
         let revision = self.candidate.state.revision;
-        self.prepare_writes(roots, revision, |documents| {
+        self.prepare_writes(roots, position, revision, |documents| {
             crate::mutation_receipt::PreparedPublication::can_join(position, documents)
         })
     }
@@ -341,7 +341,7 @@ impl AcceptedGeneration<'_> {
         members: usize,
         first_revision: u64,
     ) -> anyhow::Result<PreparedApplicationWrites> {
-        self.prepare_writes(roots, first_revision, |documents| {
+        self.prepare_writes(roots, position, first_revision, |documents| {
             crate::mutation_receipt::PreparedPublication::can_join_group(
                 position, documents, members,
             )
@@ -351,6 +351,7 @@ impl AcceptedGeneration<'_> {
     fn prepare_writes(
         &mut self,
         roots: &crate::application_sources::SourceRootsRef,
+        position: &kasumi_raft::AppliedEntryContext,
         first_revision: u64,
         can_join: impl FnOnce(&[kasumi_store::WriteOp]) -> bool,
     ) -> anyhow::Result<PreparedApplicationWrites> {
@@ -375,11 +376,39 @@ impl AcceptedGeneration<'_> {
         for receipt in &mut receipts {
             receipt.append_to(&mut writes)?;
         }
+        // After the after-images are stored: primary rows name descriptors.
+        let mut primary = self.prepare_primary(position)?;
+        if let Some(primary) = primary.as_mut() {
+            let rows = primary.take_writes();
+            writes.try_reserve_exact(rows.len())?;
+            writes.extend(rows);
+        }
         Ok(PreparedApplicationWrites {
             writes,
             _documents: documents,
             _receipts: receipts,
+            _primary: primary,
         })
+    }
+
+    /// The ordinary primary directory's edit and manifest for this candidate,
+    /// published at `position` with the rest of its writes.
+    fn prepare_primary(
+        &self,
+        position: &kasumi_raft::AppliedEntryContext,
+    ) -> anyhow::Result<Option<crate::application_primary::PrimaryPublication>> {
+        let engine = self.owner.engine;
+        let Some(store) = engine.snapshot_store.get() else {
+            return Ok(None);
+        };
+        crate::application_primary::prepare_publication(
+            &engine.primary,
+            store,
+            &self.owner.previous.state,
+            &self.candidate.state,
+            &self.delta.changed,
+            Some(crate::application_primary::entry_applied(position)?),
+        )
     }
 
     /// Stage each changed after-image once, retaining the same compact handle
@@ -542,6 +571,8 @@ pub(super) struct PreparedApplicationWrites {
     writes: Vec<kasumi_store::WriteOp>,
     _documents: Option<crate::document_store::PreparedDocuments>,
     _receipts: Vec<crate::mutation_receipt::PreparedPublication>,
+    // Funds the primary page rows copied into `writes`.
+    _primary: Option<crate::application_primary::PrimaryPublication>,
 }
 impl PreparedApplicationWrites {
     pub(super) fn writes(&self) -> &[kasumi_store::WriteOp] {

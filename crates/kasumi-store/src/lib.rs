@@ -100,6 +100,7 @@ pub mod node_store_ids;
 pub mod ordered_pages;
 mod plaintext_scan;
 mod point_read_backing;
+pub mod primary_manifest;
 mod read_view;
 pub use generation_stage::{NamespaceStage, SelectedGeneration};
 pub use plaintext_scan::{PlaintextRecord, PlaintextScan};
