@@ -404,14 +404,15 @@ pub(super) async fn exercise(f: Fixture<'_>) {
         kasumi_store::FileAllocationPolicy::fixture(),
     )
     .unwrap();
-    runtime.control.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
-        command_id: Uuid::new_v4(),
-        installation: f.installation.clone(),
-        signing_key: dir.join("control-signer.pk8"),
-        recovery: Some(RecoveryRuntimeConfig {
-            routes: BTreeMap::from([("city".into(), route)]),
-        }),
-    });
+    runtime.hosted_control_mut().unwrap().lifecycle =
+        Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
+            command_id: Uuid::new_v4(),
+            installation: f.installation.clone(),
+            signing_key: dir.join("control-signer.pk8"),
+            recovery: Some(RecoveryRuntimeConfig {
+                routes: BTreeMap::from([("city".into(), route)]),
+            }),
+        });
     runtime.serving_authorities = BTreeMap::from([("issuer".into(), configured)]);
     let coordinator = ControlRecoveryCoordinator::new(
         &runtime,

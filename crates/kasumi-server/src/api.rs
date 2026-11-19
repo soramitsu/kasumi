@@ -2146,7 +2146,7 @@ name: "docs".into(),
             kasumi_store::FileAllocationPolicy::fixture(),
         )
         .unwrap();
-        config.control.initial_policy = policy;
+        config.hosted_control_mut().unwrap().initial_policy = policy;
         let original_recoveries =
             crate::administration::original_serving_runtime::OriginalRecoveries::new(
                 fixture.audit.admission(),
@@ -2158,7 +2158,7 @@ name: "docs".into(),
             BTreeMap::new(),
             node.clone(),
             fixture.registry.clone(),
-            control.clone(),
+            crate::administration::ControlAccess::Local(control.clone()),
             fixture.audit.clone(),
             None,
             vec![ManagedTenant {

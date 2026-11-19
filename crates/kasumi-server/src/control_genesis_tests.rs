@@ -51,7 +51,7 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
     config.scratch_disk.min_free_bytes = 0;
     config.serving_authorities.clear();
     config.signer_verifier = None;
-    config.control.lifecycle = None;
+    config.hosted_control_mut().unwrap().lifecycle = None;
     config.backup_destinations.clear();
     config.tenant_audit_placements = std::collections::BTreeMap::from([
         (
@@ -65,8 +65,9 @@ fn config(root: &Path) -> Result<(RuntimeConfig, crate::runtime_memory::RuntimeS
     ]);
     config.security_audit.archive = None;
     config.tenants[0].serving = crate::serving_runtime::TenantServingConfig::LocalFixture;
+    let hosted = config.control.as_mut().unwrap();
     for (index, keys) in std::iter::once(&mut config.security_audit.keys)
-        .chain([&mut config.control.keys, &mut config.control.custody_keys])
+        .chain([&mut hosted.keys, &mut hosted.custody_keys])
         .chain(
             config
                 .tenants
@@ -252,11 +253,13 @@ async fn cancelled_ha_genesis_retains_actual_node_and_error_until_acknowledged_d
         node.clone(),
         crate::runtime::CONTROL_TENANT.into(),
         config
-            .control
+            .hosted_control()
+            .unwrap()
             .keys
             .provider(Arc::new(crate::runtime::file_secret))?,
         config
-            .control
+            .hosted_control()
+            .unwrap()
             .custody_keys
             .provider(Arc::new(crate::runtime::file_secret))?,
         StorageAccess::node_control(),
@@ -286,7 +289,11 @@ async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_e
 {
     let directory = kasumi_store::test_utils::private_tempdir()?;
     let (mut config, storage) = config(directory.path())?;
-    config.control.initial_limits.max_document_bytes = 1;
+    config
+        .hosted_control_mut()
+        .unwrap()
+        .initial_limits
+        .max_document_bytes = 1;
     config.validate()?;
     let error = tokio::time::timeout(
         crate::runtime_storage_fixtures::LIVENESS,
@@ -314,11 +321,13 @@ async fn failed_control_genesis_drains_actual_pair_before_returning_enrollment_e
         node.clone(),
         crate::runtime::CONTROL_TENANT.into(),
         config
-            .control
+            .hosted_control()
+            .unwrap()
             .keys
             .provider(Arc::new(crate::runtime::file_secret))?,
         config
-            .control
+            .hosted_control()
+            .unwrap()
             .custody_keys
             .provider(Arc::new(crate::runtime::file_secret))?,
         StorageAccess::node_control(),
@@ -408,11 +417,13 @@ async fn panicked_ha_enrollment_drains_nested_node_audit_pair_and_database_owner
                     node.clone(),
                     crate::runtime::CONTROL_TENANT.into(),
                     config
-                        .control
+                        .hosted_control()
+                        .unwrap()
                         .keys
                         .provider(Arc::new(crate::runtime::file_secret))?,
                     config
-                        .control
+                        .hosted_control()
+                        .unwrap()
                         .custody_keys
                         .provider(Arc::new(crate::runtime::file_secret))?,
                     StorageAccess::node_control(),
@@ -463,7 +474,7 @@ async fn dedicated_control_enrolls_its_voters_and_remote_routes_without_local_da
             },
         )]),
     };
-    config.control.remote_data = Some(remote.clone());
+    config.hosted_control_mut().unwrap().remote_data = Some(remote.clone());
     config.validate()?;
     let genesis = bootstrap(&config)?;
     assert_eq!(

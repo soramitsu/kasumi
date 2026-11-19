@@ -57,9 +57,10 @@ impl OriginalServingFixture {
             McpConfig::new(format!("https://localhost:{}/mcp", mcp.port())).unwrap();
         let credentials = dir.join("credentials");
         kasumi_store::private_files::create_directory(&credentials).unwrap();
+        let hosted = config.control.as_mut().unwrap();
         for (index, settings) in [
-            &mut config.control.keys,
-            &mut config.control.custody_keys,
+            &mut hosted.keys,
+            &mut hosted.custody_keys,
             &mut config.security_audit.keys,
         ]
         .into_iter()
@@ -88,13 +89,9 @@ impl OriginalServingFixture {
         );
         let storage = crate::runtime_storage_fixtures::configure(&mut config).unwrap();
         create_fixture_node(&config, &storage).await;
-        let runtime = NodeRuntime::open_using_storage(
-            config.clone(),
-            file_secret,
-            storage.clone(),
-        )
-        .await
-        .unwrap();
+        let runtime = NodeRuntime::open_using_storage(config.clone(), file_secret, storage.clone())
+            .await
+            .unwrap();
         Self {
             config,
             storage,
@@ -233,13 +230,9 @@ async fn original_tenant_reopens_after_key_outage_without_reviving_retained_hand
     stop.send_replace(true);
     task.await.unwrap().unwrap();
     drop((reload, retained, retained_store, fresh, registry, manager));
-    let mut reopened = NodeRuntime::open_using_storage(
-        config,
-        file_secret,
-        storage.clone(),
-    )
-    .await
-    .unwrap();
+    let mut reopened = NodeRuntime::open_using_storage(config, file_secret, storage.clone())
+        .await
+        .unwrap();
     assert!(reopened.publish_control().await.unwrap());
     reopened.shutdown().await.unwrap();
     mock_stop.send_replace(true);
@@ -383,9 +376,11 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
             // concurrent background drain may briefly hold it busy.
             let ordinary = tokio::time::timeout(Duration::from_secs(10), async {
                 loop {
-                    match retained.raft_group().try_with_retained_apply_report(|report| {
-                        matches!(report, kasumi_raft::RetainedApplyReport::Ordinary(_))
-                    }) {
+                    match retained
+                        .raft_group()
+                        .try_with_retained_apply_report(|report| {
+                            matches!(report, kasumi_raft::RetainedApplyReport::Ordinary(_))
+                        }) {
                         Ok(observed) => break observed,
                         Err(_busy) => tokio::time::sleep(Duration::from_millis(10)).await,
                     }
@@ -504,13 +499,9 @@ async fn original_tenant_reopens_after(closure: OriginalClosure) {
     stop.send_replace(true);
     task.await.unwrap().unwrap();
     drop((retained, retained_store, fresh, registry, manager));
-    let mut reopened = NodeRuntime::open_using_storage(
-        config,
-        file_secret,
-        storage.clone(),
-    )
-    .await
-    .unwrap();
+    let mut reopened = NodeRuntime::open_using_storage(config, file_secret, storage.clone())
+        .await
+        .unwrap();
     assert_eq!(
         reopened.tenants[0]
             .database

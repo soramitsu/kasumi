@@ -30,7 +30,7 @@ async fn initialization_provisions_control_topology_and_application_before_compl
         "different configured physical database identity was accepted"
     );
     substituted = config.clone();
-    substituted.control.incarnation = Some(Uuid::new_v4().to_string());
+    substituted.hosted_control_mut().unwrap().incarnation = Some(Uuid::new_v4().to_string());
     ensure!(
         OperatorState::open(&substituted, storage.clone())
             .await
@@ -42,7 +42,7 @@ async fn initialization_provisions_control_topology_and_application_before_compl
     let audit = owner.audit.clone();
     let control = owner.control().await?;
     let plane = ControlPlane::new(control.clone())?;
-    let context = crate::runtime::configured_control_context(&config.control)?;
+    let context = crate::runtime::configured_control_context(config.hosted_control().unwrap())?;
     plane.require_initialized(&context).await?;
     let topology = plane
         .topology(&context)
@@ -95,7 +95,12 @@ async fn initialization_provisions_control_topology_and_application_before_compl
             && marker.origin_node_id == STANDALONE_ORIGIN_NODE_ID
             && marker.database_id == config.database_id
             && marker.control_incarnation.to_string()
-                == config.control.incarnation.clone().unwrap(),
+                == config
+                    .hosted_control()
+                    .unwrap()
+                    .incarnation
+                    .clone()
+                    .unwrap(),
         "completed installation identity differs"
     );
     application.shutdown().await?;
@@ -217,8 +222,16 @@ async fn stopped_operator_keeps_control_bootstrap_write_once_impl() -> Result<()
     let stores = TenantStorageSet::open_existing(
         node.clone(),
         crate::runtime::CONTROL_TENANT.into(),
-        config.control.keys.provider(source.clone())?,
-        config.control.custody_keys.provider(source)?,
+        config
+            .hosted_control()
+            .unwrap()
+            .keys
+            .provider(source.clone())?,
+        config
+            .hosted_control()
+            .unwrap()
+            .custody_keys
+            .provider(source)?,
         StorageAccess::node_control(),
     )
     .await?;

@@ -461,7 +461,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     let management = runtime.administration.as_ref().unwrap().clone();
     let registry = runtime.registry.clone();
     assert_eq!(telemetry.lifecycle(), Lifecycle::Starting);
-    let database = runtime.control.database.clone();
+    let database = runtime.control.as_ref().unwrap().database.clone();
     let tenant_database = runtime.tenants[0].database.clone();
     let application = runtime.tenants[0].store.clone();
     let (stop, shutdown) = watch::channel(false);
@@ -1218,7 +1218,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     // A committed roster larger than the diagnostic page cannot get a complete
     // coverage certificate from groups that have never been installed here.
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
-    let context = configured_control_context(&config.control).unwrap();
+    let context = configured_control_context(config.hosted_control().unwrap()).unwrap();
     let mut topology = plane.topology(&context).await.unwrap().unwrap();
     for index in 0..129 {
         topology.topology.tenants.insert(
@@ -1298,7 +1298,7 @@ async fn protected_observability_tls_reports_actual_state_and_fences_release_imp
     entered(&hold).await;
     database
         .administer(
-            configured_control_context(&config.control).unwrap(),
+            configured_control_context(config.hosted_control().unwrap()).unwrap(),
             Operation::SetPolicy(Policy {
                 grants: vec![Grant {
                     principal: "replacement-administrator".into(),
@@ -2044,7 +2044,7 @@ async fn standalone_control_closure_stops_daemon() {
     .await
     .unwrap();
     let management = runtime.administration.as_ref().unwrap().clone();
-    let control_store = runtime.control.store.clone();
+    let control_store = runtime.control.as_ref().unwrap().store.clone();
     let (_stop, shutdown) = watch::channel(false);
     let mut serving = tokio::spawn(runtime.serve(shutdown));
     let client = http(&control, true);

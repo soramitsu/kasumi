@@ -28,10 +28,12 @@ impl Administration {
         for (tenant, incarnation) in roster {
             let control = tenant == crate::runtime::CONTROL_TENANT;
             let routed = if control {
-                self.control
-                    .engine()
-                    .generation()
-                    .is_ok_and(|generation| generation.incarnation() == incarnation)
+                self.control.local().is_ok_and(|database| {
+                    database
+                        .engine()
+                        .generation()
+                        .is_ok_and(|generation| generation.incarnation() == incarnation)
+                })
             } else {
                 self.registry
                     .installed_generation(&tenant, &incarnation)
@@ -42,7 +44,9 @@ impl Administration {
             // A failed lookup describes this group as unavailable; it never
             // withholds the other groups' figures.
             let managed = if control {
-                routed.then(|| SelectedTenant::new(self.control.clone()))
+                routed
+                    .then(|| self.control.local().ok().cloned().map(SelectedTenant::new))
+                    .flatten()
             } else {
                 self.readiness_generation(&tenant, &incarnation)
                     .ok()

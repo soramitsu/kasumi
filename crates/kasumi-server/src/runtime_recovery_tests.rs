@@ -791,15 +791,17 @@ impl Fixture {
     }
     pub async fn configure(&self, config: &mut RuntimeConfig, index: usize) {
         config.auth = self.auth.clone();
-        config.control.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
-            command_id: self.install_command,
-            installation: self.installation.clone(),
-            signing_key: self.directory.join("control.pk8"),
-            recovery: None,
-        });
+        config.hosted_control_mut().unwrap().lifecycle =
+            Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
+                command_id: self.install_command,
+                installation: self.installation.clone(),
+                signing_key: self.directory.join("control.pk8"),
+                recovery: None,
+            });
         assert!(
             config
-                .control
+                .hosted_control()
+                .unwrap()
                 .initial_policy
                 .grants
                 .iter()
@@ -818,9 +820,10 @@ impl Fixture {
             token.as_bytes(),
         )
         .unwrap();
+        let hosted = config.control.as_mut().unwrap();
         for keys in [
-            &mut config.control.keys,
-            &mut config.control.custody_keys,
+            &mut hosted.keys,
+            &mut hosted.custody_keys,
             &mut config.security_audit.keys,
         ]
         .into_iter()
@@ -832,7 +835,7 @@ impl Fixture {
         ) {
             keys.transit_mut().unwrap().token_file = self.path("transit.token");
         }
-        let mut keys = config.control.keys.clone();
+        let mut keys = config.hosted_control().unwrap().keys.clone();
         keys.transit_mut().unwrap().key_name = format!("verifier-{}", index + 1);
         let verifier = crate::signer_runtime::SignerVerifierConfig {
             max_background_workers: 64,
@@ -1183,7 +1186,13 @@ impl Fixture {
             });
             for (index, socket) in control_sockets.into_iter().enumerate() {
                 let mut config = configurations[index].clone();
-                config.control.lifecycle.as_mut().unwrap().recovery = Some(RecoveryRuntimeConfig {
+                config
+                    .hosted_control_mut()
+                    .unwrap()
+                    .lifecycle
+                    .as_mut()
+                    .unwrap()
+                    .recovery = Some(RecoveryRuntimeConfig {
                     routes: BTreeMap::from([("planned".into(), route.clone())]),
                 });
                 self.start_control(
@@ -1206,7 +1215,14 @@ impl Fixture {
         handles: &Handles,
         certificate: usize,
     ) {
-        let signer = config.control.lifecycle.as_ref().unwrap().signer().unwrap();
+        let signer = config
+            .hosted_control()
+            .unwrap()
+            .lifecycle
+            .as_ref()
+            .unwrap()
+            .signer()
+            .unwrap();
         let auth = self.authenticator(handles.audit.clone()).await;
         let lifecycle =
             crate::rpc::NativeLifecycleControl::new(control.clone(), signer.clone(), auth.clone())
@@ -1840,13 +1856,17 @@ impl Fixture {
             .unwrap();
         assert_eq!(response.status().as_u16(), 200);
         assert_eq!(response.headers()["cache-control"], "no-store");
-        crate::observability::test_evidence::native_observation("recovery-status", serde_json::json!({
-            "operation_id":operation_id, "phase":expected.phase, "updated_revision":expected.updated_revision,
-            "phase_pending":expected.pending_phase.is_some(), "terminal":expected.phase.terminal()
-        }));
+        crate::observability::test_evidence::native_observation(
+            "recovery-status",
+            serde_json::json!({
+                "operation_id":operation_id, "phase":expected.phase, "updated_revision":expected.updated_revision,
+                "phase_pending":expected.pending_phase.is_some(), "terminal":expected.phase.terminal()
+            }),
+        );
         let value: serde_json::Value = serde_json::from_slice(
-            &crate::observability::test_evidence::observed_reply("recovery-status", response).await
-        ).unwrap();
+            &crate::observability::test_evidence::observed_reply("recovery-status", response).await,
+        )
+        .unwrap();
         assert_eq!(value.as_object().unwrap().len(), 5);
         assert_eq!(value["operation_id"], operation_id.to_string());
         assert_eq!(

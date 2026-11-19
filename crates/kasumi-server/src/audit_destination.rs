@@ -234,7 +234,7 @@ impl crate::runtime::RuntimeConfig {
             .get(store.tenant())
             .map(|history| -> Result<_> {
                 let primary = if store.tenant() == crate::runtime::CONTROL_TENANT {
-                    &self.control.keys
+                    &self.hosted_control()?.keys
                 } else {
                     &self
                         .tenants
@@ -300,12 +300,16 @@ impl crate::runtime::RuntimeConfig {
     }
 
     pub(crate) fn validate_tenant_audit_placements(&self) -> Result<()> {
-        let expected: std::collections::BTreeSet<_> =
-            std::iter::once(crate::runtime::CONTROL_TENANT)
-                .chain(self.tenants.iter().map(|tenant| tenant.tenant.as_str()))
-                .collect();
+        // A data-only node hosts no Control group and installs no Control archive.
+        let control = usize::from(self.control.is_some());
+        let expected: std::collections::BTreeSet<_> = self
+            .control
+            .iter()
+            .map(|_| crate::runtime::CONTROL_TENANT)
+            .chain(self.tenants.iter().map(|tenant| tenant.tenant.as_str()))
+            .collect();
         ensure!(
-            expected.len() == self.tenants.len() + 1
+            expected.len() == self.tenants.len() + control
                 && self.tenant_audit_placements.len() == expected.len()
                 && expected
                     .iter()

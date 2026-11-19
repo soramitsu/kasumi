@@ -73,14 +73,18 @@ async fn dormant_resident() -> (
     .await
     .unwrap();
     let manager = runtime.administration_for_enrollment_test();
-    let context = crate::runtime::configured_control_context(&manager.config.control).unwrap();
-    let plane = ControlPlane::new(manager.control.clone()).unwrap();
+    let context =
+        crate::runtime::configured_control_context(manager.config.hosted_control().unwrap())
+            .unwrap();
+    let plane = ControlPlane::new(manager.control.local().unwrap().clone()).unwrap();
     // A configured resident that already has a durable route cannot be approved
     // again. Exercise the actual local-topology consumer before the existing
     // fixture removes that route and proves absent-route approval succeeds.
     let approval_version = || {
         manager
             .control
+            .local()
+            .unwrap()
             .engine()
             .generation()
             .unwrap()
@@ -278,7 +282,8 @@ async fn abandoned_fresh_standalone_preparation_drains_without_publication_and_r
     let manager = runtime.administration_for_enrollment_test();
     let original = manager.configured("tenant-a")?;
     let original_bytes = original.store.get("engine.bootstrap", b"manifest")?;
-    let context = crate::runtime::configured_control_context(&manager.config.control)?;
+    let context =
+        crate::runtime::configured_control_context(manager.config.hosted_control().unwrap())?;
     approve_fixture(&manager, &context, &request.tenant).await?;
     let pause = Arc::new(Pause::default());
     pauses()

@@ -324,8 +324,8 @@ async fn rebind(root: &Path, original: &str) -> Result<BTreeMap<String, Vec<u8>>
 
     let mut groups = vec![(
         CONTROL_TENANT.to_owned(),
-        &config.control.keys,
-        &config.control.custody_keys,
+        &config.hosted_control().unwrap().keys,
+        &config.hosted_control().unwrap().custody_keys,
         StorageAccess::node_control(),
     )];
     for tenant in &config.tenants {
@@ -410,7 +410,7 @@ impl Serving {
             .clone()
             .context("a standalone runtime has its administration")?;
         let security = runtime.security_audit().store().clone();
-        let control = runtime.control_database().clone();
+        let control = runtime.control_database().unwrap().clone();
         let (stop, shutdown) = watch::channel(false);
         let task = tokio::spawn(runtime.serve(shutdown));
         let serving = Self {
@@ -967,7 +967,7 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     };
     let selected = snapshot_manifest(&store)?;
     let cycles = store.storage_maintenance_status()?.cycles_completed;
-    let control = configured_control_context(&copy.config.control)?;
+    let control = configured_control_context(copy.config.hosted_control().unwrap())?;
     let requested = serving
         .administration
         .request_storage_compaction(&control)

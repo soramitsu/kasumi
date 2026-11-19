@@ -76,7 +76,7 @@ async fn selected_network_is_in_config_profiles_and_original_control_topology_im
     let plane = kasumi_engine::control::ControlPlane::new(control.clone())?;
     let current = plane
         .topology(&crate::runtime::configured_control_context(
-            &config.control,
+            config.hosted_control().unwrap(),
         )?)
         .await?
         .expect("initialized Control topology");
@@ -167,8 +167,15 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
     )
     .await
     .unwrap();
-    assert!(runtime.control_database().raft_group().is_local());
-    assert!(runtime.control_database().raft_group().try_raft().is_none());
+    assert!(runtime.control_database().unwrap().raft_group().is_local());
+    assert!(
+        runtime
+            .control_database()
+            .unwrap()
+            .raft_group()
+            .try_raft()
+            .is_none()
+    );
     assert!(
         NodeRuntime::open_using_storage(
             config.clone(),
@@ -627,10 +634,11 @@ async fn initialized_standalone_serves_native_mcp_and_durable_credential_lifecyc
         NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage.clone())
             .await
             .unwrap();
-    assert!(reopened.control_database().raft_group().is_local());
+    assert!(reopened.control_database().unwrap().raft_group().is_local());
     assert!(
         reopened
             .control_database()
+            .unwrap()
             .raft_group()
             .try_raft()
             .is_none()
@@ -712,7 +720,7 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     .await
     .unwrap();
     let registry = runtime.registry().clone();
-    let control = runtime.control_database().clone();
+    let control = runtime.control_database().unwrap().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));
     tokio::time::timeout(std::time::Duration::from_secs(10), async {
@@ -926,7 +934,11 @@ async fn offline_maintenance_and_administrator_recovery_require_exclusive_owners
     }
     let recovered_config = RuntimeConfig::load(&installation.configuration).unwrap();
     assert_eq!(
-        recovered_config.control.startup_principal.as_deref(),
+        recovered_config
+            .hosted_control()
+            .unwrap()
+            .startup_principal
+            .as_deref(),
         Some("next-operator")
     );
     let runtime = NodeRuntime::open_using_storage(

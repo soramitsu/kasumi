@@ -59,7 +59,8 @@ fn installed_marker_pair_cannot_recreate_a_missing_installation_lock() -> Result
         database_id: config.database_id,
         database_path: config.database_path.clone(),
     };
-    config.control.incarnation = Some(installation.control_incarnation.to_string());
+    config.hosted_control_mut().unwrap().incarnation =
+        Some(installation.control_incarnation.to_string());
     for tenant in &mut config.tenants {
         tenant.serving = TenantServingConfig::Standalone {
             installation_id: installation.installation_id,

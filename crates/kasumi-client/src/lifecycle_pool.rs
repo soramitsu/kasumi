@@ -103,6 +103,26 @@ impl KasumiLifecyclePool {
             })
             .await
     }
+    /// A routing read may move to another installed member. Every attempt is a
+    /// new read bound to its own request, the snapshotted bearer and this
+    /// client's certificate; the shared deadline covers all attempts.
+    pub async fn observe_topology(
+        &mut self,
+        principal: &str,
+        maximum_lifetime_ms: u64,
+        timeout: Duration,
+    ) -> std::result::Result<crate::CurrentControlTopology, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let principal = principal.to_owned();
+                Box::pin(async move {
+                    client
+                        .observe_topology(bearer, &principal, maximum_lifetime_ms)
+                        .await
+                })
+            })
+            .await
+    }
     pub async fn read_status(
         &mut self,
         request: &ReadLifecycleStatus,

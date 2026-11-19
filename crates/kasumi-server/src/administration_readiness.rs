@@ -137,17 +137,28 @@ impl Administration {
     }
 
     pub(crate) fn readiness_epoch(&self) -> Result<Epoch> {
-        self.control
-            .check_serving()
-            .context(SweepFailure::ControlUnavailable)?;
-        let generation = self
-            .control
-            .engine()
-            .generation()
-            .context(SweepFailure::ControlUnavailable)?;
-        let topology_version = generation
-            .local_control_topology_version()
-            .context(SweepFailure::ControlUnavailable)?;
+        let topology_version = match &self.control {
+            super::ControlAccess::Local(control) => {
+                control
+                    .check_serving()
+                    .context(SweepFailure::ControlUnavailable)?;
+                control
+                    .engine()
+                    .generation()
+                    .context(SweepFailure::ControlUnavailable)?
+                    .local_control_topology_version()
+                    .context(SweepFailure::ControlUnavailable)?
+            }
+            // The newest verified remote topology. A Control outage keeps it,
+            // so local coverage stays observable; a new version starts a new
+            // sweep exactly as a hosted topology change does.
+            super::ControlAccess::Remote(remote) => {
+                remote
+                    .topology()
+                    .context(SweepFailure::ControlUnavailable)?
+                    .version
+            }
+        };
         Ok(Epoch {
             topology_version,
             installed_routes: self
@@ -232,11 +243,18 @@ impl Administration {
     }
 
     async fn readiness_sweep(&self, stop: &mut watch::Receiver<bool>) -> Result<()> {
+        let control = match &self.control {
+            super::ControlAccess::Local(control) => control,
+            super::ControlAccess::Remote(remote) => {
+                let remote = remote.clone();
+                return self.remote_readiness_sweep(&remote, stop).await;
+            }
+        };
         // Retain one immutable topology document, never the complete generation
         // or all database handles. Charge its heap before retaining its Arc.
         let (epoch, document, _reservation) =
             {
-                let selection = ControlPlane::select_local(&self.control)
+                let selection = ControlPlane::select_local(control)
                     .context(SweepFailure::ControlUnavailable)?;
                 selection
                     .check_admission(&self.admission)
@@ -290,8 +308,7 @@ impl Administration {
                 .iter()
                 .any(|v| v.as_u64() == Some(local_id)))
         };
-        let control_incarnation = self
-            .control
+        let control_incarnation = control
             .engine()
             .generation()
             .context(SweepFailure::ControlUnavailable)?
@@ -328,7 +345,7 @@ impl Administration {
         self.probe_one(
             crate::runtime::CONTROL_TENANT.to_owned(),
             control_incarnation,
-            Some(SelectedTenant::new(self.control.clone())),
+            Some(SelectedTenant::new(control.clone())),
             None,
             epoch,
             stop,
@@ -366,6 +383,82 @@ impl Administration {
         ensure!(!*stop.borrow(), SweepFailure::Stopped);
         ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
         self.readiness.finish(epoch);
+        Ok(())
+    }
+
+    /// A data-only node hosts no Control group. Coverage counts every route
+    /// of the newest verified remote topology whose voters include this node;
+    /// the retained topology already carries its resident admission charge.
+    async fn remote_readiness_sweep(
+        &self,
+        remote: &crate::remote_control::RemoteControl,
+        stop: &mut watch::Receiver<bool>,
+    ) -> Result<()> {
+        let topology = remote
+            .topology()
+            .context(SweepFailure::ControlUnavailable)?;
+        // Preserve the hosted sweep's route/probe scratch allowance.
+        let bytes = 128 << 10;
+        let mut reservation = self
+            .admission
+            .reserve(bytes, None)
+            .context(SweepFailure::AdmissionReserve)?;
+        reservation.retain(bytes);
+        let epoch = Epoch {
+            topology_version: topology.version,
+            installed_routes: self
+                .registry
+                .route_epoch()
+                .context(SweepFailure::EpochUnavailable)?,
+            actual_membership: self
+                .registry
+                .membership_epoch()
+                .context(SweepFailure::EpochUnavailable)?,
+        };
+        let local_id = self
+            .config
+            .replication
+            .as_ref()
+            .context(SweepFailure::RouteInvalid)?
+            .node_id;
+        let expected = topology.local_routes(local_id).count();
+        let roster = topology
+            .local_routes(local_id)
+            .take(crate::readiness::DETAIL_LIMIT)
+            .map(|(tenant, route)| (tenant.clone(), route.incarnation.clone()))
+            .collect::<Vec<_>>();
+        ensure!(!*stop.borrow(), SweepFailure::Stopped);
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
+        self.readiness.begin(epoch, expected, Instant::now());
+        self.readiness.enroll(roster);
+        for (index, (tenant, route)) in topology.local_routes(local_id).enumerate() {
+            ensure!(!*stop.borrow(), SweepFailure::Stopped);
+            ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
+            if index % 16 == 0 {
+                tokio::task::yield_now().await;
+                let memory = self.admission.snapshot();
+                ensure!(
+                    memory.sample_usable && !memory.pressured,
+                    SweepFailure::MemoryPressure
+                );
+            }
+            let managed = self
+                .readiness_generation(tenant, &route.incarnation)
+                .context(SweepFailure::GenerationUnavailable)?;
+            self.probe_one(
+                tenant.clone(),
+                route.incarnation.clone(),
+                managed,
+                Some(route.voters.clone()),
+                epoch,
+                stop,
+            )
+            .await?;
+        }
+        ensure!(!*stop.borrow(), SweepFailure::Stopped);
+        ensure!(self.readiness_epoch()? == epoch, SweepFailure::EpochChanged);
+        self.readiness.finish(epoch);
+        drop(reservation);
         Ok(())
     }
 

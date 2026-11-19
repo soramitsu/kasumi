@@ -173,7 +173,7 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
         .unwrap()
     };
     let audit = runtime.audit.clone();
-    let database = runtime.control.database.clone();
+    let database = runtime.control.as_ref().unwrap().database.clone();
     let release = runtime.audit_release_gate.clone();
     let telemetry = runtime.telemetry.clone();
     let (stop, shutdown) = watch::channel(false);
@@ -900,7 +900,7 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
     entered(&policy_gate).await;
     database
         .administer(
-            configured_control_context(&config.control).unwrap(),
+            configured_control_context(config.hosted_control().unwrap()).unwrap(),
             Operation::SetPolicy(Policy {
                 grants: vec![Grant {
                     principal: "replacement-administrator".into(),

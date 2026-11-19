@@ -204,8 +204,8 @@ impl OperatorState {
         let stores = kasumi_store::TenantStorageSet::open_existing(
             self.node.clone(),
             crate::runtime::CONTROL_TENANT.into(),
-            config.control.keys.provider(source.clone())?,
-            config.control.custody_keys.provider(source)?,
+            config.hosted_control()?.keys.provider(source.clone())?,
+            config.hosted_control()?.custody_keys.provider(source)?,
             StorageAccess::node_control(),
         )
         .await?;
@@ -215,7 +215,7 @@ impl OperatorState {
         config.install_tenant_audit_archive(stores.application(), None)?;
         let incarnation = Uuid::parse_str(
             config
-                .control
+                .hosted_control()?
                 .incarnation
                 .as_deref()
                 .context("control incarnation missing")?,

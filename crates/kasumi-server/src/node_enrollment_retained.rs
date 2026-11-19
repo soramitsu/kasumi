@@ -15,8 +15,25 @@ pub(super) enum RetainedInput {
 pub(super) struct DataIdentity {
     database_id: Uuid,
     mode: crate::runtime::DeploymentMode,
-    control: ControlIdentity,
+    /// Every input written before data-only enrollment names its hosted Control.
+    #[serde(default)]
+    control: Option<ControlIdentity>,
+    #[serde(default)]
+    remote_control: Option<RemoteControlIdentity>,
     tenants: Vec<TenantIdentity>,
+}
+#[derive(Deserialize)]
+struct RemoteControlIdentity {
+    root: RemoteRootIdentity,
+}
+#[derive(Deserialize)]
+struct RemoteRootIdentity {
+    control_incarnation: Uuid,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ControlPlacement {
+    Hosted,
+    Remote(Uuid),
 }
 #[derive(Deserialize)]
 pub(super) struct AuthorityIdentity {
@@ -44,12 +61,21 @@ impl RetainedInput {
             serde_json::from_slice(bytes).context("invalid retained node enrollment identity")?;
         ensure!(!input.identity().1.is_nil(), "nil node enrollment identity");
         if let Self::Data { configuration } = &input {
-            ensure!(
-                !configuration.control.incarnation.is_nil(),
-                "nil Control incarnation"
-            );
+            match (&configuration.control, &configuration.remote_control) {
+                (Some(control), None) => {
+                    ensure!(!control.incarnation.is_nil(), "nil Control incarnation")
+                }
+                (None, Some(remote)) => ensure!(
+                    configuration.mode == crate::runtime::DeploymentMode::Replicated
+                        && !remote.root.control_incarnation.is_nil(),
+                    "invalid remote Control enrollment"
+                ),
+                _ => anyhow::bail!("node enrollment Control placement is ambiguous"),
+            }
             let mut names = BTreeSet::new();
-            if configuration.mode == crate::runtime::DeploymentMode::Replicated {
+            if configuration.mode == crate::runtime::DeploymentMode::Replicated
+                && configuration.control.is_some()
+            {
                 names.insert(crate::runtime::CONTROL_TENANT);
             }
             for tenant in &configuration.tenants {
@@ -72,13 +98,26 @@ impl RetainedInput {
             Self::Authority { configuration } => (Kind::Authority, configuration.database_id),
         }
     }
+    pub(super) fn control_placement(&self) -> Result<ControlPlacement> {
+        match self {
+            Self::Data { configuration } => Ok(match &configuration.remote_control {
+                Some(remote) => ControlPlacement::Remote(remote.root.control_incarnation),
+                None => ControlPlacement::Hosted,
+            }),
+            Self::Authority { .. } => {
+                anyhow::bail!("authority enrollment has no Control placement")
+            }
+        }
+    }
     pub(super) fn require_genesis(&self, store: &TenantStore, digest: &str) -> Result<()> {
         if let Self::Data { configuration } = self {
-            if configuration.mode == crate::runtime::DeploymentMode::Replicated {
+            if configuration.mode == crate::runtime::DeploymentMode::Replicated
+                && let Some(control) = &configuration.control
+            {
                 require_genesis_record(
                     store,
                     crate::runtime::CONTROL_TENANT,
-                    Some(configuration.control.incarnation),
+                    Some(control.incarnation),
                     digest,
                 )?;
             }

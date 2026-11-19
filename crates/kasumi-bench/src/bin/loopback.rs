@@ -275,7 +275,7 @@ async fn benchmark(
     // reject this configuration instead of bypassing the serving authority.
     config.mode = kasumi_server::runtime::DeploymentMode::Standalone;
     config.replication = None;
-    config.control.incarnation = None;
+    config.hosted_control_mut().unwrap().incarnation = None;
     config.serving_authorities.clear();
     config.signer_verifier = None;
     let persistent = path.join("persistent");
@@ -322,14 +322,15 @@ async fn benchmark(
     let mut secrets = Vec::new();
     let control = bao.provision_key("control", false).await?;
     secrets.push(("KASUMI_BENCH_CONTROL".to_owned(), Zeroizing::new(control)));
-    config.control.keys = transit("control", "KASUMI_BENCH_CONTROL");
+    config.hosted_control_mut().unwrap().keys = transit("control", "KASUMI_BENCH_CONTROL");
     let custody_control = bao.provision_key("control-custody", false).await?;
     secrets.push((
         "KASUMI_BENCH_CONTROL_CUSTODY".to_owned(),
         Zeroizing::new(custody_control),
     ));
-    config.control.custody_keys = transit("control-custody", "KASUMI_BENCH_CONTROL_CUSTODY");
-    config.control.initial_policy = policy();
+    config.hosted_control_mut().unwrap().custody_keys =
+        transit("control-custody", "KASUMI_BENCH_CONTROL_CUSTODY");
+    config.hosted_control_mut().unwrap().initial_policy = policy();
     let security = bao.provision_key("security", false).await?;
     secrets.push(("KASUMI_BENCH_SECURITY".to_owned(), Zeroizing::new(security)));
     config.security_audit.keys = transit("security", "KASUMI_BENCH_SECURITY");

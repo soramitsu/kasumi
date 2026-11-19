@@ -82,7 +82,7 @@ pub(crate) fn bootstrap(config: &RuntimeConfig) -> Result<ReplicatedBootstrap> {
             ))
         })
         .collect::<Result<BTreeMap<_, _>>>()?;
-    let lifecycle = match &config.control.lifecycle {
+    let lifecycle = match &config.hosted_control()?.lifecycle {
         Some(installed) => ControlLifecycleGenesis::Installed {
             command_id: installed.command_id,
             installation: installed.installation.clone(),
@@ -91,13 +91,13 @@ pub(crate) fn bootstrap(config: &RuntimeConfig) -> Result<ReplicatedBootstrap> {
     };
     let mut bootstrap = config
         .bootstrap(
-            &config.control.initial_policy,
-            &config.control.initial_limits,
-            config.control.incarnation.as_deref(),
+            &config.hosted_control()?.initial_policy,
+            &config.hosted_control()?.initial_limits,
+            config.hosted_control()?.incarnation.as_deref(),
         )?
         .context("Control genesis is missing")?;
     bootstrap.genesis = ReplicatedGenesis::Control(ControlGenesis {
-        topology: match &config.control.remote_data {
+        topology: match &config.hosted_control()?.remote_data {
             Some(remote) => dedicated_topology(config, remote)?,
             None => ControlTopology { nodes, tenants },
         },

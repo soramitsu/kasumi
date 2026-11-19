@@ -52,12 +52,12 @@ pub(crate) fn create(config: &RuntimeConfig, output: &Path) -> Result<()> {
         (
             "control".to_owned(),
             "control-keys.json".to_owned(),
-            &config.control.keys,
+            &config.hosted_control()?.keys,
         ),
         (
             "control-custody".to_owned(),
             "control-custody-keys.json".to_owned(),
-            &config.control.custody_keys,
+            &config.hosted_control()?.custody_keys,
         ),
     ];
     for tenant in &config.tenants {

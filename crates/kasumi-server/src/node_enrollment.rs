@@ -174,13 +174,38 @@ pub(crate) fn require_complete(
     Ok(())
 }
 
+/// A completed data enrollment fixes whether this node hosts Control or
+/// reaches one remote Control incarnation. Configuration cannot later move a
+/// data-only node to another Control, or turn either placement into the other.
+pub(crate) fn require_control_placement(
+    store: &Arc<TenantStore>,
+    config: &crate::runtime::RuntimeConfig,
+) -> Result<()> {
+    let view = store.read_view()?;
+    let bytes = view
+        .get(NS, b"input", MAX_INPUT)?
+        .context("node enrollment input absent")?;
+    let input = retained::RetainedInput::decode(&bytes)?;
+    let configured = match (&config.control, &config.remote_control) {
+        (Some(_), None) => retained::ControlPlacement::Hosted,
+        (None, Some(remote)) => retained::ControlPlacement::Remote(remote.root.control_incarnation),
+        _ => anyhow::bail!("configure exactly one Control placement"),
+    };
+    ensure!(
+        input.control_placement()? == configured,
+        "configured Control placement differs from node enrollment"
+    );
+    Ok(())
+}
+
 fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> Result<()> {
     if let Input::Data { configuration } = input {
-        let control =
-            (configuration.mode == crate::runtime::DeploymentMode::Replicated).then_some((
-                crate::runtime::CONTROL_TENANT,
-                configuration.control.incarnation.as_ref(),
-            ));
+        // A data-only node enrolled no Control replica.
+        let control = configuration
+            .control
+            .as_ref()
+            .filter(|_| configuration.mode == crate::runtime::DeploymentMode::Replicated)
+            .map(|control| (crate::runtime::CONTROL_TENANT, control.incarnation.as_ref()));
         for (tenant, incarnation) in control.into_iter().chain(
             configuration
                 .tenants

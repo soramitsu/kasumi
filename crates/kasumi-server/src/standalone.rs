@@ -243,7 +243,7 @@ pub(crate) fn claim(
             && installed.database_path == config.database_path
             && !installed.installation_id.is_nil()
             && !installed.control_incarnation.is_nil()
-            && config.control.incarnation.as_deref()
+            && config.hosted_control()?.incarnation.as_deref()
                 == Some(installed.control_incarnation.to_string().as_str()),
         "standalone installation binding differs"
     );
@@ -564,20 +564,20 @@ async fn recover_administrator_owned(
         ) in std::iter::once((
             "control",
             crate::runtime::CONTROL_TENANT,
-            &config.control.initial_policy,
-            &config.control.initial_limits,
+            &config.hosted_control()?.initial_policy,
+            &config.hosted_control()?.initial_limits,
             config
-                .control
+                .hosted_control()?
                 .incarnation
                 .as_deref()
                 .context("control incarnation missing")?,
-            &config.control.keys,
-            &config.control.custody_keys,
+            &config.hosted_control()?.keys,
+            &config.hosted_control()?.custody_keys,
             StorageAccess::node_control(),
             CredentialResource::Control {
                 incarnation: Uuid::parse_str(
                     config
-                        .control
+                        .hosted_control()?
                         .incarnation
                         .as_deref()
                         .context("control incarnation missing")?,
@@ -693,7 +693,7 @@ async fn recover_administrator_owned(
             drop(generation);
             database.shutdown().await?;
         }
-        config.control.startup_principal = recovered_control_principal;
+        config.hosted_control_mut()?.startup_principal = recovered_control_principal;
         private_files::replace(configuration, &serde_json::to_vec_pretty(&config)?)?;
         audit
             .record(operator_event(
@@ -743,8 +743,8 @@ async fn rotate_wrapping_keys_owned(
             .await?;
         for settings in [
             &config.security_audit.keys,
-            &config.control.keys,
-            &config.control.custody_keys,
+            &config.hosted_control()?.keys,
+            &config.hosted_control()?.custody_keys,
         ]
         .into_iter()
         .chain(
@@ -760,8 +760,8 @@ async fn rotate_wrapping_keys_owned(
         audit.store().rewrap_keys().await?;
         for (tenant, application, custody, access) in std::iter::once((
             crate::runtime::CONTROL_TENANT,
-            &config.control.keys,
-            &config.control.custody_keys,
+            &config.hosted_control()?.keys,
+            &config.hosted_control()?.custody_keys,
             StorageAccess::node_control(),
         ))
         .chain(effective_tenants.iter().map(|tenant| {
@@ -1428,10 +1428,10 @@ async fn initialize_owned(
         config.admin.tls = identities["admin"].clone();
         config.admin.client_ca = tls.join("ca.pem");
         config.admin.client_certificate_pins = Some(client_pins);
-        config.control.keys = provider("control");
-        config.control.custody_keys = provider("control-custody");
-        config.control.initial_policy = control_policy;
-        config.control.incarnation = Some(control_incarnation.to_string());
+        config.hosted_control_mut()?.keys = provider("control");
+        config.hosted_control_mut()?.custody_keys = provider("control-custody");
+        config.hosted_control_mut()?.initial_policy = control_policy;
+        config.hosted_control_mut()?.incarnation = Some(control_incarnation.to_string());
         config.security_audit.keys = provider("security");
         config.tenants[0].tenant = tenant.into();
         config.tenants[0].serving = TenantServingConfig::Standalone { installation_id };
@@ -1662,7 +1662,8 @@ pub(crate) async fn configure_test_topology(
     let mut owner = OperatorState::open(config, storage).await.unwrap();
     let database = owner.control().await.unwrap();
     let plane = kasumi_engine::control::ControlPlane::new(database.clone()).unwrap();
-    let context = crate::runtime::configured_control_context(&config.control).unwrap();
+    let context =
+        crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
     let current = plane.topology(&context).await.unwrap().unwrap();
     let mut topology = current.topology;
     topology.nodes = initial_topology(config).unwrap().nodes;
@@ -1733,15 +1734,15 @@ async fn provision_databases(
     )?;
     for (tenant, policy, limits, incarnation, application, custody, access) in std::iter::once((
         crate::runtime::CONTROL_TENANT,
-        &config.control.initial_policy,
-        &config.control.initial_limits,
+        &config.hosted_control()?.initial_policy,
+        &config.hosted_control()?.initial_limits,
         config
-            .control
+            .hosted_control()?
             .incarnation
             .as_deref()
             .context("Control incarnation missing")?,
-        &config.control.keys,
-        &config.control.custody_keys,
+        &config.hosted_control()?.keys,
+        &config.hosted_control()?.custody_keys,
         StorageAccess::node_control(),
     ))
     .chain(config.tenants.iter().map(|tenant| {
@@ -1804,7 +1805,7 @@ async fn provision_databases(
             pending.databases.push(database.clone());
             if tenant == crate::runtime::CONTROL_TENANT {
                 let plane = kasumi_engine::control::ControlPlane::new(database)?;
-                let context = crate::runtime::configured_control_context(&config.control)?;
+                let context = crate::runtime::configured_control_context(config.hosted_control()?)?;
                 plane.initialize(context.clone()).await?;
                 plane
                     .replace_topology(
