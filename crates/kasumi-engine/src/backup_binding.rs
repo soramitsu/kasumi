@@ -591,7 +591,15 @@ impl Builder {
                 "backup terminal claim differs"
             );
         }
-        advance(&mut self.head, row)?;
+        let mut next = self.head.clone();
+        advance(&mut next, row)?;
+        ensure!(
+            next.count <= state.backup_binding_head.count
+                && next.encoded_bytes <= state.backup_binding_head.encoded_bytes
+                && next.encoded_bytes <= state.limits.max_backup_binding_bytes,
+            "backup binding rows exceed their selected count or byte budget"
+        );
+        self.head = next;
         self.sessions = self.sessions.advanced(row)?;
         self.table
             .insert(&id_key(&row.key), &serde_json::to_vec(row)?)?;

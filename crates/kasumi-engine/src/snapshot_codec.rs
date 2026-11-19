@@ -1140,12 +1140,14 @@ pub(crate) fn read_reopening(
                     anyhow::anyhow!("snapshot intent prefix exceeds installed budget").into(),
                 );
             }
+            let backup_bytes = header.backup_binding_head.encoded_bytes;
+            if backup_bytes > header.limits.max_backup_binding_bytes {
+                return Err(anyhow::anyhow!(
+                    "snapshot backup binding prefix exceeds installed budget"
+                )
+                .into());
+            }
             if header.backup_binding_head.count > 0 || intent_bytes > 0 {
-                let backup_bytes = if header.backup_binding_head.count > 0 {
-                    header.limits.max_backup_binding_bytes
-                } else {
-                    0
-                };
                 backup_bindings = Some(crate::backup_binding::Builder::new(
                     disk,
                     crate::backup_binding::scratch_limit(

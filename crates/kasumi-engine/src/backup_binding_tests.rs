@@ -926,7 +926,7 @@ fn application_snapshot_validator_rejects_nonempty_control_binding_head_and_row(
     );
 }
 
-async fn exercise_lifecycle_intent_history(count: u64) -> Result<()> {
+async fn exercise_lifecycle_intent_history(count: u64, with_backup: bool) -> Result<()> {
     use kasumi_types::{
         Command, CommitLifecycleIntent, CredentialResource, LifecycleControlCommand, Operation,
         RequestAuthorization, RequestContext,
@@ -936,9 +936,21 @@ async fn exercise_lifecycle_intent_history(count: u64) -> Result<()> {
     state.revision = 1;
     state.policy_epoch = 1;
     if count == 3 {
-        // An empty backup cohort cannot spend, or overflow, its unrelated cap.
+        // A policy ceiling must not be mistaken for the selected backup bytes.
         state.limits.max_backup_binding_bytes = u64::MAX;
     }
+    let session_id = uuid::Uuid::from_u128(991);
+    let selected_backup = b"selected backup beside permanent lifecycle history";
+    let installed = if with_backup {
+        let pending =
+            Pending::prepare(&installed, &state, row(&state, selected_backup, session_id))?;
+        state.backup_binding_head = pending.head().clone();
+        let selected = pending.persist()?;
+        store.write_batch(&selected.checkpoint_writes(&state, &"41".repeat(32))?)?;
+        selected
+    } else {
+        installed
+    };
     let control = Arc::make_mut(state.lifecycle_control.as_mut().unwrap());
     control.installation_revision = 1;
     control.installation_policy_epoch = 1;
@@ -1059,6 +1071,34 @@ async fn exercise_lifecycle_intent_history(count: u64) -> Result<()> {
         decoded.state.lifecycle_intent(first_id)?.as_deref() == Some(&first)
             && decoded.state.lifecycle_intent(input.command_id)?.as_deref() == Some(&last)
     );
+    if with_backup {
+        ensure!(
+            decoded
+                .backup_bindings
+                .get(session_id)?
+                .context("missing decoded backup binding")?
+                .record
+                .claim
+                .intent_ciphertext
+                == selected_backup
+        );
+        let mut insufficient = state.clone();
+        insufficient.limits.max_backup_binding_bytes = state.backup_binding_head.encoded_bytes - 1;
+        let mut image = tempfile::tempfile_in(directory.path())?;
+        crate::snapshot_codec::write(
+            &insufficient,
+            &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
+            &installed,
+            &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
+            &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
+            &mut image,
+        )?;
+        image.seek(SeekFrom::Start(0))?;
+        let refusal = crate::snapshot_codec::read(&disk, &mut image)
+            .err()
+            .context("over-budget backup head was accepted")?;
+        ensure!(format!("{refusal:#}").contains("backup binding prefix exceeds installed budget"));
+    }
     // Keep an actual missing chunk fatal to both ordered reducers. The public
     // wire error remains bounded while the private owner retains its native cause.
     if count == 3 {
@@ -1205,6 +1245,28 @@ async fn exercise_lifecycle_intent_history(count: u64) -> Result<()> {
         decoded
             .backup_bindings
             .prepare_install(&store, &decoded.state, &checkpoint, true)?;
+    if with_backup {
+        ensure!(
+            reopen
+                .view
+                .get(session_id)?
+                .context("missing reopened backup binding")?
+                .record
+                .claim
+                .intent_ciphertext
+                == selected_backup
+        );
+        println!(
+            "KASUMI_MIXED_CONTROL_ROWS {}",
+            serde_json::json!({
+                "backup_rows": decoded.state.backup_binding_head.count,
+                "backup_selected_bytes": decoded.state.backup_binding_head.encoded_bytes,
+                "backup_limit": decoded.state.limits.max_backup_binding_bytes,
+                "intent_rows": head.count, "intent_selected_bytes": head.encoded_bytes,
+                "lower_backup_limit_rejected": true, "both_rows_reopened": true
+            })
+        );
+    }
     let mut restored = decoded.state;
     reopen.view.bind_intents(&mut restored);
     ensure!(
@@ -1227,13 +1289,19 @@ async fn exercise_lifecycle_intent_history(count: u64) -> Result<()> {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn lifecycle_intent_prefix_survives_snapshot_and_store_reopen() -> Result<()> {
-    exercise_lifecycle_intent_history(3).await
+    exercise_lifecycle_intent_history(3, false).await
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn selected_backup_and_lifecycle_rows_use_their_independent_snapshot_byte_budgets()
+-> Result<()> {
+    exercise_lifecycle_intent_history(3, true).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore = "explicit permanent lifecycle capacity cohort; applies 10,001 original Control commands"]
 async fn lifecycle_history_crosses_ten_thousand_ordered_control_intents() -> Result<()> {
-    exercise_lifecycle_intent_history(10_001).await
+    exercise_lifecycle_intent_history(10_001, false).await
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
