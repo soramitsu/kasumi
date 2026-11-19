@@ -733,20 +733,6 @@ impl Default for DatabaseClocks {
     }
 }
 
-struct DenialWork {
-    audit: Arc<SecurityAudit>,
-    event: SecurityEvent,
-    // A canceled caller cannot release shutdown until the durable writer drops.
-    _registration: WorkRegistration,
-}
-impl DenialWork {
-    fn run(self) -> anyhow::Result<()> {
-        let result = self.audit.record_sync(self.event.clone());
-        drop(self);
-        result
-    }
-}
-
 struct QueryWork {
     generation: Arc<crate::Generation>,
     request: QueryRequest,
@@ -2179,18 +2165,17 @@ impl Database {
             if let Some(kind) = kind
                 && let Ok(registration) = self.audit_work.begin(QueryCancellation::default())
             {
-                let work = DenialWork {
-                    audit: self.security_audit.clone(),
-                    event: SecurityEvent {
-                        kind,
-                        principal: Some(context.principal.clone()),
-                        tenant: Some(context.tenant.clone()),
-                        request_id: context.request_id.clone(),
-                        outcome: SecurityOutcome::Denied,
-                    },
-                    _registration: registration,
+                let event = SecurityEvent {
+                    kind,
+                    principal: Some(context.principal.clone()),
+                    tenant: Some(context.tenant.clone()),
+                    request_id: context.request_id.clone(),
+                    outcome: SecurityOutcome::Denied,
                 };
-                let _ = tokio::task::spawn_blocking(move || work.run()).await;
+                let _ = self
+                    .security_audit
+                    .record_database_denial(event, registration)
+                    .await;
                 error.mark_denial_audit_attempted();
             }
         }
@@ -3465,29 +3450,24 @@ impl Database {
                 (full, offset, revision, created)
             };
             let max_result_bytes = state.limits.max_result_bytes;
-            let worker_cancellation = cancellation.clone();
-            // Stored cursor rows require synchronous native reads and decode.
-            // The actual worker keeps the selected generation, page charge,
-            // registration and permit if the caller times out or disconnects.
+            // Stored cursor rows use native reads. The installed child owns
+            // the selected generation and permit through its final read.
             let worker_deadline = deadline.into_std();
-            let worker = tokio::task::spawn_blocking(move || {
-                let _permit = permit;
-                let page = full.copy_page(
-                    offset,
-                    revision,
-                    max_result_bytes,
-                    &worker_cancellation,
-                    worker_deadline,
-                );
-                (page, full)
-            });
+            let worker = self.admission().memory().read_child(
+                cancellation.clone(),
+                Some(DocumentReads::deadline_error),
+                move |token| {
+                    let _permit = permit;
+                    let page =
+                        full.copy_page(offset, revision, max_result_bytes, token, worker_deadline)?;
+                    Ok((page, full))
+                },
+            );
             let (page, full) = tokio::select! {
                 result = tokio::time::timeout_at(deadline, worker) => result
-                    .map_err(|_| query_admission::deadline_error())?
-                    .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
+                    .map_err(|_| query_admission::deadline_error())??,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
-            let page = page?;
             let next = offset + page.rows.len();
             (full, page, next, created)
         } else {
@@ -3513,20 +3493,24 @@ impl Database {
                     _ = cancelled(&cancellation) => return Err(cancelled_error()),
                 };
             }
-            let worker = tokio::task::spawn_blocking(move || work.run());
-            let output = tokio::select! {
+            let worker = self.admission().memory().read_child(
+                cancellation.clone(),
+                Some(DocumentReads::deadline_error),
+                move |_| {
+                    let QueryOutput {
+                        response,
+                        request,
+                        memory,
+                        _registration,
+                    } = work.run();
+                    Ok((response?, request, memory, _registration))
+                },
+            );
+            let ((mut page, rows), request, memory, _registration) = tokio::select! {
                 result = tokio::time::timeout_at(deadline, worker) => result
-                    .map_err(|_| query_admission::deadline_error())?
-                    .map_err(|_| Error::new(ErrorCode::Unavailable, "query worker failed"))?,
+                    .map_err(|_| query_admission::deadline_error())??,
                 _ = cancelled(&cancellation) => return Err(cancelled_error()),
             };
-            let QueryOutput {
-                response,
-                request,
-                memory,
-                _registration,
-            } = output;
-            let (mut page, rows) = response?;
             if !seek {
                 page.revision = state.revision;
             }

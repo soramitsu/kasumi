@@ -403,9 +403,30 @@ impl SecurityAudit {
         event: SecurityEvent,
         transport: Option<TransportAuditMetadata>,
     ) -> Result<()> {
+        self.record_owned(event, transport, None).await
+    }
+
+    pub(crate) async fn record_database_denial(
+        &self,
+        event: SecurityEvent,
+        registration: WorkRegistration,
+    ) -> Result<()> {
+        self.record_owned(event, None, Some(registration)).await
+    }
+
+    async fn record_owned(
+        &self,
+        event: SecurityEvent,
+        transport: Option<TransportAuditMetadata>,
+        database_registration: Option<WorkRegistration>,
+    ) -> Result<()> {
         self.run_owned(move |work, id| async move {
             let owner = work.writer.clone();
-            let outcome = tokio::task::spawn_blocking(move || work.record(event, transport)).await;
+            let outcome = tokio::task::spawn_blocking(move || {
+                let _database_registration = database_registration;
+                work.record(event, transport)
+            })
+            .await;
             owner.observe_join("audit record", id, outcome)
         })
         .await
