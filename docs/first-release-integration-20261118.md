@@ -19,7 +19,9 @@ The nine local-parent commits had already incorporated staged generations,
 shutdown drains, applied-cursor reopen, whole-namespace deletion and deployed
 fixtures. The upstream merge contains the 28,798,481-byte fixture archive. Its
 SHA-256 is `ccb60432bbf0f18a9d2198cdd62d7d4c2addf79c85a7295614068aa8fc375d2b`.
-The takeover added local commits. No new fixture transfer is awaiting approval.
+At 12:42 local time on November 19, both the remote branch and tracking ref
+identified `7ac33a24c7577134488fc57a90e0abfddc27ca6f`. The tracking reflog
+records an update by push at 12:37. The fixture already exists upstream.
 
 The private originals from Claude session `72b21a40-40b8-492b-8a1e-dd276a8e9556`
 are retained outside the checkout at
@@ -194,13 +196,40 @@ receipts. The native provider and test executables are development inputs.
   10,001 with the existing hard quota. The original refusal is retained under
   `audit-legacy-lifecycle-ceiling`.
 
-The three-platform qualification input at this checkpoint is
-`9630c679df8152661f2944c2ded9ff863168c0c2`. Its 69,519,360-byte archive
-has SHA-256 `22e9c6d8c75ade8f1413dc52c48263ee99c5fdf9a7006bea9b2097c893d46f50`.
-Its manifest, Cargo.lock hash, machine limits, exact commands and results are
-in the private evidence directory under `native-snapshot-custody`. Later
-commits require another qualification freeze. Component receipts identify
-the source and executables they actually ran.
+## November 19 native and implementation evidence
+
+| Goal | Observation |
+| --- | --- |
+| G02 | `f1c4c2ad` reads leased scan IDs from the selected encrypted primary and archive directories. It merges overlapping IDs and rechecks the exact lease before releasing the result. `77a97d70` resolves indexed membership predicates through the selected snapshot dictionary and reads each matching scalar rank once. Ordinary mutation manifests, persistent structured and text indexes, and logical object garbage collection remain open. |
+| G04, G07, G10 | `2e33b5a7` exposes authenticated service audit capacity through the client, native service and CLI. `7ac33a24` retains archive cursor reads under the audit writer through their join. Native tests for the protected routes are running. The legacy reducer accepted 10,000 Control lifecycle intents and refused 10,001. The successor is under review. |
+| G06 | `e13d2c17` obtains the wrapping-key versions of each retained history manifest and chunk after authenticating the object. The page identifies unreadable objects and binds its cursor to the selected inventory. The current implementation reads the history objects again on each page. Coverage of backup sessions, remote members, recovery and retirement remains open. |
+| G07, G08 | The frozen 2389e531 run passed 10 target-shutdown cases and its independent protected drain case. Three of four TLS tests passed. A stopped operator still held the installation lock in the failed test. `01b809b5` releases it before reopen. The original 6,000-operation process failure and its replay are detailed below. |
+| G11 | `0d73393a` binds transported audit observations to nine voters and uses eight-entry verification pages. The native page of eight succeeded. A request for 32 produced the original InvalidArgument response. `7b229a95` fixed the invocation of the ignored 100,000-receipt capacity test. The first attempt selected zero tests. The corrected attempt passed its preceding seven cases, then received SIGTERM after 612.539 seconds in the capacity case, with child exit −15 and runner exit 143. It has no capacity verdict. |
+| G12, G14 | Two prior full workspace attempts ended with runner exit 130 after 566.411 and 4,181.283 seconds. Frozen `9630c679` failed the Engine libtest build after 3,024.971 seconds, peak RSS 5,247,565,824 bytes. The errors identified four fixture calls affected by the snapshot worker return type. The successor surfaced four further diagnostics accessing a nested response. `c5308969` measures the error-path workspace on the live worker and checks its release. |
+| G13 | `c8cc6c7b` measures every canonical document as one level-9 gzip stream. The example now specifies 98,400 documents of 32,768 bytes each, totalling 3,224,371,200 bytes. `6ae8d7cc` records per-batch expected and observed body digests from installed reads. `2984f1af` replays the original compression journal and 32 acceptance-verifier tests passed. The installed standalone and HA operations and physical resource samples remain required. |
+
+The awake macOS replay under `concurrency-native-purge-drain2` completed
+5,500 writes and 500 snapshots in 2,472.599 seconds. The original daemon exited
+zero 11.317 seconds after SIGTERM. On the same installation, the readiness probe
+timed out after 30.173 seconds while the new daemon was opening its tenant. A
+stop during that startup produced process exit −15. The complete attempt took
+2,531.02 seconds with peak RSS of 672,530,432 bytes. `d21b2b3a` registers
+SIGTERM and SIGINT before opening storage in both daemons, routes a canceled
+open into the startup registry drain and joins any admitted TLS reload. The
+separate-process regression sends both Unix signals during an admitted open.
+
+The dependency change removed Chrono. The reviewed lock scan covered 483
+packages with zero vulnerabilities and the existing LRU backport disposition.
+Both deployed format fixtures continue to receive read/write coverage.
+
+The source archive and Cargo.lock hashes, target triples, resource limits and
+commands for each frozen revision are in its private candidate directory. The
+three-platform input following the startup-signal change is `d21b2b3a`, under
+`startup-signal-candidate`. Its local qualification is in progress. On
+`8dbc3e02`, formatting and all 448 Python tests passed. On the preceding
+`e13d2c17` run a synthetic timeout child failed to print its startup marker
+before its 200-ms deadline. `dc3cbbfc` waits for that child in the test
+observer, and all 17 assembly tests passed in 4.158 seconds.
 
 ## Required infrastructure and decisions
 
