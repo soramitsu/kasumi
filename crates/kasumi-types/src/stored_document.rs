@@ -240,10 +240,8 @@ impl StoredDocument {
             body_bytes == self.body_bytes && body_sha256 == self.body_sha256,
             "stored document canonical body differs"
         );
-        // The body digest above authenticates the content; the framing check
-        // compares a length only, so it does not hash the document again.
         ensure!(
-            canonical_len(document.as_ref())? == self.document_bytes,
+            framed_document_bytes(&document, body_bytes)? == self.document_bytes,
             "stored document canonical framing differs"
         );
         Ok(document)
@@ -274,7 +272,7 @@ impl StoredDocument {
             id: document.id.clone(),
             version: document.version,
             body_bytes,
-            document_bytes: canonical_len(document)?,
+            document_bytes: framed_document_bytes(document, body_bytes)?,
             body_sha256,
             body_object,
             body_object_bytes,
@@ -315,6 +313,21 @@ fn fingerprint(value: &impl Serialize) -> Result<(u64, [u8; 32])> {
 /// The serialized length that [`fingerprint`] reports, without its digest.
 /// Framing and charge checks compare lengths only; hashing the same bytes to
 /// discard the result would add a SHA-256 pass to every load and every put.
+/// The ordinary Document serializer contributes the exact escaped ID, version,
+/// keys and delimiters. Substitute the measured body for its four-byte null
+/// placeholder without traversing the authenticated payload a second time.
+fn framed_document_bytes(document: &Document, measured_body_bytes: u64) -> Result<u64> {
+    let framing = Document {
+        id: document.id.clone(),
+        version: document.version,
+        body: serde_json::Value::Null,
+    };
+    canonical_len(&framing)?
+        .checked_sub(4)
+        .and_then(|n| n.checked_add(measured_body_bytes))
+        .ok_or_else(|| anyhow::anyhow!("canonical document length overflow"))
+}
+
 fn canonical_len(value: &impl Serialize) -> Result<u64> {
     struct Length(u64);
     impl Write for Length {
@@ -384,6 +397,29 @@ mod tests {
             },
         )
     }
+    #[test]
+    fn framing_uses_exact_id_version_and_measured_canonical_payload() {
+        for id in ["quotes\"and\\slashes", "長い識別子"] {
+            for body in [
+                serde_json::Value::Null,
+                serde_json::json!("\n\u{001f}"),
+                serde_json::json!({"b": true, "a": [7, "x".repeat(32768)]}),
+            ] {
+                let doc = Document {
+                    id: id.into(),
+                    version: u64::MAX,
+                    body,
+                };
+                let bytes = canonical_len(&CanonicalJsonValue(&doc.body)).unwrap();
+                assert_eq!(
+                    framed_document_bytes(&doc, bytes).unwrap(),
+                    canonical_len(&doc).unwrap()
+                );
+                assert!(framed_document_bytes(&doc, u64::MAX).is_err());
+            }
+        }
+    }
+
     #[test]
     fn descriptor_has_no_body_and_each_loan_releases_its_owner() {
         let (descriptor, resolver) = fixture();
