@@ -266,6 +266,23 @@ impl KasumiAdminClient {
         ))?;
         Ok(status)
     }
+    pub async fn security_audit_capacity(
+        &mut self,
+        bearer: &str,
+    ) -> Result<AuditCapacity, ClientError> {
+        let response = self
+            .inner
+            .security_audit_capacity(request(
+                bearer,
+                &kasumi_types::SecurityAuditCapacityRequest {},
+            )?)
+            .await?
+            .into_inner();
+        let capacity = decode(response)?;
+        validate_capacity(&capacity)?;
+        Ok(capacity)
+    }
+
     pub async fn security_audit_archives(
         &mut self,
         bearer: &str,

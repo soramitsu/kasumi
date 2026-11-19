@@ -3,10 +3,6 @@ use kasumi_types::*;
 #[derive(Clone, Copy)]
 pub(super) enum AuditOperation {
     Status,
-    #[expect(
-        dead_code,
-        reason = "routed once kasumi.proto gains the SecurityAuditCapacity RPC"
-    )]
     Capacity,
     Export,
     Archives,
@@ -97,12 +93,12 @@ impl NativeAdmin {
             let encoded = match operation {
                 AuditOperation::Status => {
                     let _: SecurityAuditStatusRequest = decode_json(&payload)?;
-                    let value = tokio::task::spawn_blocking(move || audit.status()).await??;
+                    let value = audit.read_status().await?;
                     encode_json(&value)?
                 }
                 AuditOperation::Capacity => {
                     let _: SecurityAuditCapacityRequest = decode_json(&payload)?;
-                    let value = tokio::task::spawn_blocking(move || audit.capacity()).await??;
+                    let value = audit.read_capacity().await?;
                     encode_json(&value)?
                 }
                 AuditOperation::Export => {

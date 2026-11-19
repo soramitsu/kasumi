@@ -399,6 +399,32 @@ impl SecurityAudit {
     /// Reads only local encrypted metadata, never the archive destination.
     pub fn capacity(&self) -> Result<AuditCapacity> {
         let _work = self.begin()?;
+        self.capacity_admitted()
+    }
+
+    /// The installed writer owns the blocking observation until its real join.
+    async fn read_metadata<T: Send + 'static>(&self, read: fn(&Self) -> Result<T>) -> Result<T> {
+        self.run_owned(move |work, id| async move {
+            let audit = work.writer.clone();
+            let joined = tokio::task::spawn_blocking(move || {
+                let accepted = work;
+                read(&accepted.writer)
+            })
+            .await;
+            audit.observe_join("service audit metadata read", id, joined)
+        })
+        .await
+    }
+
+    pub async fn read_status(&self) -> Result<SecurityAuditStatus> {
+        self.read_metadata(Self::status).await
+    }
+
+    pub async fn read_capacity(&self) -> Result<AuditCapacity> {
+        self.read_metadata(Self::capacity_admitted).await
+    }
+
+    fn capacity_admitted(&self) -> Result<AuditCapacity> {
         self.writer.store.check_access()?;
         let state = self
             .writer

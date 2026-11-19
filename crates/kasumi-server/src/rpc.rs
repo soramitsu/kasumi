@@ -1030,6 +1030,13 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         self.security_audit_rpc(request, security_audit::AuditOperation::Status)
             .await
     }
+    async fn security_audit_capacity(
+        &self,
+        request: Request<SecurityAuditJsonRequest>,
+    ) -> Result<Response<SecurityAuditJsonResponse>, Status> {
+        self.security_audit_rpc(request, security_audit::AuditOperation::Capacity)
+            .await
+    }
     async fn security_audit_export(
         &self,
         request: Request<SecurityAuditJsonRequest>,

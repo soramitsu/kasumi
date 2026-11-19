@@ -145,17 +145,21 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                 "usage: kasumid tenant-audit status|capacity PROFILE | tenant-audit verify|export PROFILE REQUEST_JSON"
             )
         }
-        [command, action, profile] if command == "audit" && action == "status" => {
+        [command, action, profile]
+            if command == "audit" && matches!(action.as_str(), "status" | "capacity") =>
+        {
             let profile = ClientProfile::load(Path::new(profile))?;
             binding(&profile)?;
             let mut client =
                 kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-            println!(
-                "{}",
-                serde_json::to_string_pretty(
-                    &client.security_audit_status(&profile.bearer()?).await?
-                )?
-            );
+            let bearer = profile.bearer()?;
+            let json = match action.as_str() {
+                "status" => {
+                    serde_json::to_string_pretty(&client.security_audit_status(&bearer).await?)?
+                }
+                _ => serde_json::to_string_pretty(&client.security_audit_capacity(&bearer).await?)?,
+            };
+            println!("{json}");
         }
         [command, action, profile, stream, index] if command == "audit" && action == "verify" => {
             let profile = ClientProfile::load(Path::new(profile))?;
@@ -198,7 +202,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             println!("{}", serde_json::json!({"prune":output}));
         }
         [command, ..] if command == "audit" => anyhow::bail!(
-            "usage: kasumid audit status PROFILE | audit export|archives PROFILE REQUEST_JSON OUTPUT_JSON | audit verify PROFILE STREAM_UUID INDEX | audit prune PROFILE EXPORT_PAGE_JSON THROUGH_INDEX OUTPUT_JSON"
+            "usage: kasumid audit status|capacity PROFILE | audit export|archives PROFILE REQUEST_JSON OUTPUT_JSON | audit verify PROFILE STREAM_UUID INDEX | audit prune PROFILE EXPORT_PAGE_JSON THROUGH_INDEX OUTPUT_JSON"
         ),
         _ => return Ok(false),
     }

@@ -57,7 +57,7 @@ Backups, audit and recovery:
   key-retention read <tenant-or-control-profile> <request-json>
   tenant-audit status|capacity <tenant-or-control-profile>
   tenant-audit verify|export <tenant-or-control-profile> <request-json>
-  audit status <control-profile>
+  audit status|capacity <control-profile>
   audit export|archives <control-profile> <request.json> <output.json>
   audit verify <control-profile> <stream-uuid> <index>
   audit prune <control-profile> <export-page.json> <through-index> <output.json>

@@ -294,6 +294,13 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
                 .collect::<Vec<_>>();
             async move { crate::standalone_cli::command(&arguments).await }
         };
+        let capacity = admin.security_audit_capacity(&operator).await.unwrap();
+        assert_eq!(capacity.budget(), status.budget);
+        assert_eq!(
+            capacity.maintenance_reserved_bytes,
+            AuditRetentionBudget::MAINTENANCE_BYTES
+        );
+        assert!(cli(&["audit", "capacity", &profile]).await.unwrap());
         // Export the whole range page by page, as an operator would.
         let mut cursor: Option<SecurityAuditCursor> = None;
         let mut records = Vec::new();
@@ -772,6 +779,12 @@ async fn native_audit_fixture(scope: NativeAuditScope) {
     denied(
         admin
             .security_audit_status(&tenant.bearer().unwrap())
+            .await
+            .unwrap_err(),
+    );
+    denied(
+        admin
+            .security_audit_capacity(&tenant.bearer().unwrap())
             .await
             .unwrap_err(),
     );

@@ -434,6 +434,8 @@ the tenant and incarnation, revision, retention budget, archive head, hot tail
 and stream position. The existing `kasumid audit status <control-profile>`
 reports the node's service-security audit stream.
 
+Use `kasumid audit capacity CONTROL_PROFILE` to inspect the service audit store’s hot and archive budgets, maintenance reserve and pending publication.
+
 Use `kasumid tenant-audit capacity PROFILE` to inspect hot and archive budgets
 and a pending publication. For a chronological export, make an owner-only
 request file with `{"cursor":null,"limit":64}` and run
