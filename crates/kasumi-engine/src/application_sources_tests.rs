@@ -1476,7 +1476,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let second_body = serde_json::json!({"value": "zulu"});
     source_db
         .mutate(
-            context,
+            context.clone(),
             kasumi_types::MutationBatch::new().upsert("docs", "alpha", second_body.clone()),
         )
         .await?;
