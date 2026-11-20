@@ -74,6 +74,10 @@ def index_originals(db, root, plan, summary, minimum_failed=257):
         kind = row["kind"]
         require(kind in ("complete", "aborted") and row["stage"] in ("populate", "resolve"),
                 "original result is not terminal")
+        if (profile := plan.get("profile")) and (interval := profile["complete_interval"]) is not None:
+            reserve = total - plan["kill_reserve"]
+            complete = ordinal % interval == 0 if ordinal < reserve else ordinal < reserve + plan["kill_reserve"] // 2
+            require(kind == ("complete" if complete else "aborted"), "original differs from the prospective workload")
         result = row["checkpoint"] if kind == "complete" else row["outcome"]
         require(isinstance(result, dict) and
                 (row["outcome"] is None if kind == "complete" else row["checkpoint"] is None),
@@ -444,6 +448,19 @@ def replay_installation(installation, witness, cohort):
     require(plan == witness["plan"] and plan["schema"] == SCHEMA and plan["cohort"] == cohort,
             "session plan differs")
     total = uint(plan["sessions"], "planned sessions", BACKUP_SESSION_FLOOR if cohort == "full" else 2)
+    if profile := plan.get("profile"):
+        probe = document(root, "filesystem-probe.json")
+        disk = document(root, "disk-policy.json")
+        require(cohort == "full" and probe["status"] == "passed" and
+                sha256(owned_file(root, "filesystem-probe.json")) == checksum(profile["probe_sha256"]) and
+                probe["device"] == profile["device"] and uint(probe["namespace_entries"], "probed sessions") >= total and
+                disk["profile"] == profile and disk["max_bytes"] == 200 << 30 and
+                disk["max_persistent_files"] == profile["max_persistent_files"] and
+                disk["max_persistent_subdirectories"] == profile["max_persistent_subdirectories"] and
+                profile["directory_policy"] == probe["fixture_directory_policy"] and
+                profile["file_allocation_policy"] == probe["fixture_file_policy"] and
+                (profile["complete_interval"] is None or 2 <= uint(profile["complete_interval"], "completion interval") <= 256),
+                "session workload or disk policy differs from its original measured filesystem")
     require(total == uint(witness["observed_distinct_sessions"], "reported sessions") and
             witness["minimum_failed_terminal_outcomes"] == 257, "session counts differ from plan")
     for key in ("boundary", "resolve", "verify", "populate", "kills", "cleanup"):
@@ -451,6 +468,9 @@ def replay_installation(installation, witness, cohort):
     identities = document(root, "ids.json")
     independent, verified = witness["independent"], witness["verify"]
     physical = verified["data_identities"]
+    if profile:
+        require(physical["persistent/destination"]["device"] == profile["device"],
+                "session destination used a different filesystem from the measured profile")
     require(physical == witness["resolve"]["data_identities"] and
             set(physical) == {".", "persistent", "persistent/node.kv", "persistent/destination", "scratch"} and
             all(uint(row["device"], "selected device", 1) and uint(row["inode"], "selected inode", 1)

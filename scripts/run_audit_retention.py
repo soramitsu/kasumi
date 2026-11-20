@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
 
 if __name__ == "__main__":
@@ -32,7 +33,8 @@ import verify_release_acceptance as acceptance
 
 KIND = "audit-retention"
 RUNNER = "scripts/run_audit_retention.py"
-MODULES = {"scripts/audit_domain_evidence.py", "scripts/backup_session_acceptance.py", *audit.MODULES}
+MODULES = {"scripts/audit_domain_evidence.py", "scripts/backup_session_acceptance.py",
+           "scripts/probe_session_floor_filesystem.py", *audit.MODULES}
 SESSIONS = "session-full"
 SESSION_TEST = "backup_session_floor_full_cohort"
 SESSION_PREFIX = "KASUMI_BACKUP_SESSION_FLOOR "
@@ -107,7 +109,17 @@ def verify_session(original, custody, raw, command, checksum, total, receipt, co
     return {"witness": owned.ref(custody, base / "witness.json"), "observed": count}
 
 
-def execute(run, plan, topology):
+def execute(run, plan, topology, session_profile=None):
+    if session_profile is not None:
+        path = run.configuration("session-profile", session_profile)
+        probe = run.configuration("session-filesystem-probe", session_profile.with_name("filesystem-probe.json"))
+        require(owned.sha256(path) == run.report["invocation"]["parameters"]["session_profile_sha256"]
+                and owned.sha256(probe) == owned.read(path)["probe_sha256"], "session profile or filesystem probe changed")
+        inputs = run.output / "session-inputs"
+        inputs.mkdir()
+        shutil.copyfile(path, inputs / "session-profile.json")
+        shutil.copyfile(probe, inputs / "filesystem-probe.json")
+        run.environment["KASUMI_BACKUP_FLOOR_PROFILE"] = str(inputs / "session-profile.json")
     details = audit.collect(run, plan, topology)
     functional = owned.read(run.evidence / "evidence.json")
     args, checksum, total = session_command(run.evidence, run.evidence, functional, run.output, run.report["processes"])
@@ -134,7 +146,8 @@ def verify_domain(root, domain, files, configs, _artifacts, candidates):
     report, custody = facts["report"], facts["custody"]
     details = report["details"]
     owned.exact(details, {"installation", "native", "session"}, "audit-retention run")
-    require(report["target"] == acceptance.REFERENCE and report["invocation"]["parameters"] == {}
+    parameters = report["invocation"]["parameters"]
+    require(report["target"] == acceptance.REFERENCE and set(parameters) in (set(), {"session_profile_sha256"})
             and domain["artifacts"] == {} and report["topology"] == domain["topology"],
             "audit qualification requires the original native installation and nine processes")
     primary = candidates[acceptance.REFERENCE]["primary"]["functional"]
@@ -143,7 +156,11 @@ def verify_domain(root, domain, files, configs, _artifacts, candidates):
     require(target == acceptance.REFERENCE and primary["sha256"] == details["installation"]["functional_sha256"]
             and report["binaries"] == {name: checksum for name, (_, checksum) in binaries.items()},
             "audit qualification selected another functional candidate")
-    installed, measured, remaining = audit.replay(custody, report, evidence, functional, binaries)
+    installation_report = report
+    if parameters:
+        installation_report = {**report, "configurations": [row for row in report["configurations"]
+                               if row["id"] not in {"session-profile", "session-filesystem-probe"}]}
+    installed, measured, remaining = audit.replay(custody, installation_report, evidence, functional, binaries)
     require([row["id"] for row in remaining] == [SESSIONS], "original full backup-session process missing or reordered")
     row = remaining[0]
     original = Path(report["evidence_root"])
@@ -153,6 +170,16 @@ def verify_domain(root, domain, files, configs, _artifacts, candidates):
     result = verify_session(Path(report["custody_root"]), custody, raw, args, checksum, total,
                             facts["receipts"][SESSIONS]["record"], report["source"]["commit"])
     require(result == details["session"], "session summary differs from the original permanent history")
+    witness = owned.read(owned.check_ref(custody, result["witness"]))
+    if parameters:
+        inputs = {row["id"]: owned.check_ref(custody, row["file"]) for row in report["configurations"]}
+        profile = inputs["session-profile"]
+        require(owned.sha256(profile) == parameters["session_profile_sha256"]
+                and owned.read(profile) == witness["plan"]["profile"]
+                and owned.sha256(inputs["session-filesystem-probe"]) == witness["plan"]["profile"]["probe_sha256"],
+                "applied backup-session profile differs from original inputs")
+    else:
+        require(witness["plan"].get("profile") is None, "undeclared session workload profile")
     audit.compare_scenarios(facts["scenarios"], SESSIONS)
     expected = gate_details(root, custody, installed, measured, report["processes"], result["observed"])
     expected_counts = {r["id"]: r for r in expected.pop("lifetime_counts")}
@@ -167,12 +194,14 @@ def main():
     for option in ("evidence", "output", "journal", "plan", "topology"):
         parser.add_argument("--" + option, type=Path, required=True)
     parser.add_argument("--attempt-id", required=True)
+    parser.add_argument("--session-profile", type=Path, help="prospective workload and measured physical filesystem limits")
     args = parser.parse_args()
     previous = os.umask(0o077)
     try:
         with domain_run.Run(KIND, RUNNER, MODULES, args.evidence, args.output, args.journal,
-                            args.attempt_id, {}, domain_run.QUALIFYING) as run:
-            execute(run, args.plan, args.topology)
+                            args.attempt_id, {"session_profile_sha256": owned.sha256(args.session_profile)}
+                            if args.session_profile else {}, domain_run.QUALIFYING) as run:
+            execute(run, args.plan, args.topology, args.session_profile)
     finally:
         os.umask(previous)
 

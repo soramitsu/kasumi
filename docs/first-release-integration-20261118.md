@@ -471,3 +471,49 @@ All 19 domains have executable adapters. Their qualifying receipts must bind ori
 | capacity-standalone | All 98,400 documents matched after cold reopen. The five-minute backup verification failed twice. Restore, remaining shapes and final limits remain open. |
 | capacity-ha | Requires the capacity operations on the reserved HA topology and verified follower replacement. |
 | benchmark-matrix | Requires five modes at each of one, 100 and 1,000 tenants, with all prescribed workloads and resource samples. |
+
+### Native component results on November 20
+
+The Linux ARM64 development guest completed all 16 installed lifecycle scenarios
+on `820ebd90` in 67.99 seconds across 64 measured process invocations. All
+three production binaries loaded on the pinned Bookworm filesystem. The
+Authority CLI printed usage and exited 1 for explicit help. Commit `ed252e1b`
+implements the successful help path. The installed report SHA-256 is
+`be7c0340c440fa8da61f217581428fff0eb5046fc234832757e2af4c67a67042`.
+
+On macOS ARM64 the original protected pressure scrape passed on `b519310b` in
+17.00 seconds. The audit writer cancellation and panic cases both retained
+their original outcomes through drain and reopen. The three-member Authority
+catalog test on `9e9dd130` passed in 13.92 seconds, including a refused
+isolated follower, key rotation, cursor expiration and physical reopen.
+
+The third cold verification of the original 98,400-document checkpoint on
+`b2ba4ac9` again exceeded the native client deadline, at 300.344 seconds.
+The resident stream took 54.857 seconds. The structural index committed 9,289
+temporary batches in 170.796 seconds before verification was cancelled.
+Commit `bb0146f9` permits 512 compact index rows per transaction under the
+existing 4 MiB limit and native per-row admission. The original backup ID is
+`3c11afd2-dc88-4f0f-8af3-002580be2809`.
+
+The original full session workload on `820ebd90` stopped after 1,440
+acknowledged originals in 4,555.531 seconds. The next original hit the
+persistent filesystem floor. The physical destination then contained 23,687
+files and 2,893 directories across the installation. The first completed
+checkpoint had 3 objects totalling 7,603 bytes. Ordinal 1,439 had 28 objects
+totalling 974,570 bytes. The generic fixture reserves 1 MiB per directory and
+an additional 1 MiB per regular file. The standing allowances for just one
+directory and two terminal files per session already exceed the 200 GiB
+installation at the full count.
+
+The session adapter also accepts a prospective workload and filesystem policy.
+Run `python3 -B scripts/probe_session_floor_filesystem.py --output <new-directory> --complete-interval 193`
+on the witness filesystem. Pass its `session-profile.json` to
+`run_audit_retention.py --session-profile` or set `KASUMI_BACKUP_FLOOR_PROFILE`
+for the native component. Interval 193 selects a full backup every 193rd
+ordinary request and a durably claimed, published and aborted session for the
+other requests. Both original in-flight kills, the full 100,001 identities,
+the fixed 200 GiB disk ceiling and the three independent ledger reads still
+apply. Omitting the interval selects the earlier completion-heavy workload.
+The retained plan, original records, observed device, filesystem measurements,
+and both shutdown outcomes belong to the evidence for each run. Workload
+measurements alone do not qualify a production filesystem policy.

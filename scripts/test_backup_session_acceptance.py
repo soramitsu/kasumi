@@ -30,6 +30,15 @@ class SessionEvidenceTests(unittest.TestCase):
     def journal(self, name, rows):
         return self.file(name, b"".join(sessions.canonical(row) + b"\n" for row in rows))
 
+    def test_profile_cannot_substitute_an_abort_for_a_planned_complete_checkpoint(self):
+        plan = {"sessions": 4, "nonce": self.nonce, "kill_reserve": 2, "profile": {"complete_interval": 2}}
+        row = {"ordinal": 0, "session_id": sessions.session_id(self.nonce, 0), "request_id": "floor-000000",
+               "kind": "aborted", "stage": "populate", "seconds": 0.25, "checkpoint": None,
+               "outcome": {"reason": "other outcome"}, "resolution": None}
+        digest = self.journal("original.jsonl", [row])
+        with self.assertRaisesRegex(ValueError, "prospective workload"):
+            sessions.index_originals(self.db, self.root, plan, {"original_journal_sha256": digest})
+
     def test_originals_require_distinct_planned_requests_and_permanent_failure_cohort(self):
         rows = []
         for ordinal in range(258):

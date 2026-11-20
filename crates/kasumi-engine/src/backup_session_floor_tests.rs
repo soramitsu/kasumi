@@ -78,6 +78,8 @@ struct Plan {
     cohort: String,
     sessions: u64,
     failure_stride: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    profile: Option<SessionFloorProfile>,
     kill_reserve: u64,
     nonce: uuid::Uuid,
     control_binding_budget: u64,
@@ -88,6 +90,60 @@ struct Plan {
     /// before this field existed used the full bound.
     #[serde(default = "full_page")]
     page_limit: usize,
+}
+
+/// A prospective workload and disk policy for a fresh installation. Every
+/// cold child reloads it from the original plan on the same filesystem.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionFloorProfile {
+    device: u64,
+    probe_sha256: String,
+    directory_policy: kasumi_store::DirectoryPolicy,
+    file_allocation_policy: kasumi_store::FileAllocationPolicy,
+    max_persistent_files: u64,
+    max_persistent_subdirectories: u64,
+    /// With this interval, every nth session runs an entire checkpoint.
+    /// The other original IDs are durably claimed, published and aborted.
+    complete_interval: Option<u64>,
+}
+
+impl SessionFloorProfile {
+    fn check(&self, root: &Path, sessions: u64) -> anyhow::Result<()> {
+        use std::os::unix::fs::MetadataExt;
+        anyhow::ensure!(
+            sessions == FLOOR,
+            "measured profile requires the full session floor"
+        );
+        kasumi_types::validate_sha256(&self.probe_sha256)?;
+        self.directory_policy.validate()?;
+        self.file_allocation_policy.validate()?;
+        // Every retained terminal session owns one directory and at least two
+        // regular inodes. Even empty files would retain both standing promises.
+        let minimum = u128::from(sessions)
+            * (u128::from(self.directory_policy.extent_bytes)
+                + 2 * u128::from(self.file_allocation_policy.maximum_extra_extent_bytes));
+        anyhow::ensure!(
+            minimum <= 200_u128 << 30,
+            "permanent session inode allowances alone require {minimum} bytes of the 200 GiB installation"
+        );
+        anyhow::ensure!(
+            self.device == root.metadata()?.dev(),
+            "session profile belongs to a different filesystem"
+        );
+        anyhow::ensure!(
+            self.complete_interval
+                .is_none_or(|stride| (2..=256).contains(&stride)),
+            "full workload must exercise both outcomes across at least one full page"
+        );
+        anyhow::ensure!(
+            self.directory_policy.max_entries >= sessions + 4
+                && self.max_persistent_files >= 2 * sessions
+                && self.max_persistent_subdirectories >= sessions,
+            "disk namespace cannot retain the requested original sessions"
+        );
+        Ok(())
+    }
 }
 
 fn full_page() -> usize {
@@ -113,6 +169,12 @@ impl Plan {
             } else {
                 Kind::Aborted
             }
+        } else if let Some(interval) = self.profile.as_ref().and_then(|p| p.complete_interval) {
+            if ordinal.is_multiple_of(interval) {
+                Kind::Complete
+            } else {
+                Kind::Aborted
+            }
         } else if ordinal % self.failure_stride == self.failure_stride - 1 {
             Kind::Aborted
         } else {
@@ -131,7 +193,15 @@ impl Plan {
         uuid::Builder::from_random_bytes(bytes).into_uuid()
     }
     fn cleanup_ordinal(&self) -> u64 {
-        self.failure_stride - 1
+        if self
+            .profile
+            .as_ref()
+            .is_some_and(|p| p.complete_interval.is_some())
+        {
+            1
+        } else {
+            self.failure_stride - 1
+        }
     }
 }
 
@@ -247,12 +317,22 @@ impl Installation {
             persistent.max_persistent_subdirectories += 2 * FLOOR;
             persistent.max_bytes = 200 << 30;
         }
-        let disk_policy = serde_json::json!({
+        if let Some(profile) = &plan.profile {
+            profile.check(root, plan.sessions)?;
+            persistent.directory_policy = profile.directory_policy;
+            persistent.file_allocation_policy = profile.file_allocation_policy;
+            persistent.max_persistent_files = profile.max_persistent_files;
+            persistent.max_persistent_subdirectories = profile.max_persistent_subdirectories;
+        }
+        let mut disk_policy = serde_json::json!({
             "max_bytes": persistent.max_bytes,
             "max_persistent_files": persistent.max_persistent_files,
             "max_persistent_subdirectories": persistent.max_persistent_subdirectories,
             "min_free_bytes": persistent.min_free_bytes,
         });
+        if let Some(profile) = &plan.profile {
+            disk_policy["profile"] = serde_json::to_value(profile)?;
+        }
         let policy_path = root.join("disk-policy.json");
         if create {
             write_json(&policy_path, &disk_policy)?;
@@ -1224,6 +1304,9 @@ fn census(root: &Path) -> anyhow::Result<serde_json::Value> {
 fn plan_of(root: &Path) -> anyhow::Result<Plan> {
     let plan: Plan = read_json(&root.join("plan.json"))?;
     anyhow::ensure!(plan.schema == SCHEMA, "plan schema differs");
+    if let Some(profile) = &plan.profile {
+        profile.check(root, plan.sessions)?;
+    }
     Ok(plan)
 }
 
@@ -2260,11 +2343,28 @@ async fn witness(test: &str, cohort: Cohort) -> anyhow::Result<()> {
         }
     };
     std::fs::create_dir_all(root.join("logs"))?;
+    let profile = if cohort.sessions == FLOOR
+        && let Some(path) = std::env::var_os("KASUMI_BACKUP_FLOOR_PROFILE")
+    {
+        let path = PathBuf::from(path);
+        let profile: SessionFloorProfile = read_json(&path)?;
+        profile.check(&root, cohort.sessions)?;
+        let probe = std::fs::read(path.with_file_name("filesystem-probe.json"))?;
+        anyhow::ensure!(
+            hex::encode(Sha256::digest(&probe)) == profile.probe_sha256,
+            "original filesystem probe differs"
+        );
+        durable_write(&root.join("filesystem-probe.json"), &probe)?;
+        Some(profile)
+    } else {
+        None
+    };
     let plan = Plan {
         schema: SCHEMA.into(),
         cohort: cohort.name.into(),
         sessions: cohort.sessions,
         failure_stride: cohort.failure_stride,
+        profile,
         kill_reserve: 2,
         nonce: uuid::Uuid::new_v4(),
         control_binding_budget: cohort.control_binding_budget,
