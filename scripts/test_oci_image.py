@@ -58,7 +58,7 @@ if args[0] == "load":
 elif args[:2] == ["image", "inspect"]:
     print(behavior.get("image_id", memory["id"]))
 elif args[0] == "run" and "--detach" in args:
-    memory["export"] = [value for value in args if value.endswith(":/export")][0][:-8]
+    assert args.count("--volume") == 1
     print("container")
 elif args[0] == "exec" and args[-1] == "ready":
     memory["polls"] = memory.get("polls", 0) + 1
@@ -66,10 +66,13 @@ elif args[0] == "exec" and args[-1] == "ready":
     sys.exit(0 if memory["polls"] > behavior.get("ready_failures", 0) else 1)
 elif args[0] == "exec" and args[-1] == "collections":
     print(json.dumps({"ok": behavior.get("native_ok", True), "result": {"collections": []}}))
-elif args[0] == "exec" and "--user" in args:
-    target = Path(memory["export"]) / "installation"
-    shutil.rmtree(target, ignore_errors=True)
-    shutil.copytree(behavior["installation"], target)
+elif args[0] == "cp":
+    source = Path(args[1].split(":", 1)[1]).relative_to("/var/lib/kasumi/installation")
+    target = Path(args[2])
+    assert target.parent.stat().st_mode & 0o777 == 0o700
+    assert not target.exists()
+    shutil.copy2(Path(behavior["installation"]) / source, target)
+    memory.setdefault("copied", []).append(source.as_posix())
 elif args[0] == "inspect":
     print(behavior.get("exit", "0 false"))
 state.write_text(json.dumps(memory))
@@ -303,10 +306,16 @@ class SmokeTests(ImageFixture):
         (installation / "kasumi.json").write_text(json.dumps(
             {"mcp": {"tls": {"certificate": inside + "/tls/mcp.pem"}}}))
         (installation / "profiles/mcp.token").write_text("unit-token")
+        shutil.copy2(certificate, installation / "tls/ca.pem")
+        shutil.copy2(certificate, installation / "profiles/client.pem")
+        shutil.copy2(key, installation / "profiles/client-key.pem")
+        (installation / "operator").mkdir()
+        (installation / "operator/ca-key.pem").write_text("unit-operator-key")
         (installation / "profiles/mcp.json").write_text(json.dumps({
             "mcp_endpoint": f"https://localhost:{self.port}/mcp",
-            "server_ca": inside + "/tls/mcp.pem", "bearer_file": inside + "/profiles/mcp.token",
-            "identity": {"certificate": inside + "/tls/mcp.pem", "private_key": inside + "/tls/key.pem"}}))
+            "server_ca": inside + "/tls/ca.pem", "bearer_file": inside + "/profiles/mcp.token",
+            "identity": {"certificate": inside + "/profiles/client.pem",
+                         "private_key": inside + "/profiles/client-key.pem"}}))
         self.behave_runtime()
 
     def behave_runtime(self, **knobs):
@@ -318,7 +327,7 @@ class SmokeTests(ImageFixture):
         output = self.root / "runs" / attempt
         output.parent.mkdir(exist_ok=True)
         export = self.root / ("export-" + attempt)
-        export.mkdir()
+        export.mkdir(mode=0o700)
         parameters = {"attempt_id": attempt, "runtime": str(self.runtime), "base_port": self.port,
                       "image": str(self.image), "export": str(export)}
         with domain_run.Run(smoke.KIND, smoke.RUNNER, smoke.MODULES, self.evidence, output,
@@ -347,7 +356,12 @@ class SmokeTests(ImageFixture):
         self.assertEqual(len(report["details"]["ready_polls"]), 2)
         self.assertEqual([request[2] for request in self.requests], ["tools/list", "tools/list"])
         self.assertTrue(all(request[:2] == ("/mcp", "Bearer unit-token") for request in self.requests))
-        # The private exported installation never enters custody.
+        copied = json.loads((self.runtime.parent / "runtime-state.json").read_text())["copied"]
+        self.assertEqual(copied, list(smoke.MCP_FILES) * 2)
+        for stage in ("start", "restart"):
+            directory = self.root / "export-oci-1" / stage
+            self.assertEqual({p.relative_to(directory).as_posix()
+                              for p in directory.rglob("*") if p.is_file()}, set(smoke.MCP_FILES))
         self.assertFalse(any("mcp.token" in path.name or path.name == "key.pem"
                              for path in custody.rglob("*")))
         self.assertNotIn(b"unit-token", b"".join(

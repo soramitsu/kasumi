@@ -31,7 +31,11 @@ def probe(installation, mapped, profile_name="mcp.json"):
     """``installation`` is the path the profile names; ``mapped`` is where it is readable."""
     def local(path):
         relative = Path(path).relative_to(installation)
-        return str(Path(mapped) / relative)
+        require(".." not in relative.parts, "MCP input escapes the installed directory")
+        root = Path(mapped).resolve(strict=True)
+        file = (root / relative).resolve(strict=True)
+        require(file.is_relative_to(root) and file.is_file(), "MCP input is outside its installation")
+        return str(file)
 
     require(Path(profile_name).name == profile_name and profile_name.endswith(".json"),
             "MCP profile must name one installed profile")
