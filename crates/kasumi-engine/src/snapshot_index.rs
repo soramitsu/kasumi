@@ -86,14 +86,22 @@ impl StagedSnapshot {
                         pending.flush(&mut check)?;
                     }
                     match &record {
-                        Record::Document(collection, _) | Record::Archived(collection, _, _) => {
+                        // Records in a canonical (kind, primary) group share this
+                        // parent in an earlier, already committed immutable kind.
+                        Record::Document(collection, _) | Record::Archived(collection, _, _)
+                            if group.is_none() =>
+                        {
                             require(&index, &(2, collection.clone(), String::new()))?;
                         }
-                        Record::StageChunk(stage, _, _) | Record::ActiveStage(stage) => {
+                        Record::StageChunk(stage, _, _) | Record::ActiveStage(stage)
+                            if group.is_none() =>
+                        {
                             require(&index, &(6, stage.clone(), String::new()))?;
                         }
                         Record::ChangeItem(sequence, item, _) => {
-                            require(&index, &(9, format!("{sequence:020}"), String::new()))?;
+                            if group.is_none() {
+                                require(&index, &(9, format!("{sequence:020}"), String::new()))?;
+                            }
                             let expected = match previous_change_item {
                                 Some((old, next)) if old == *sequence => next,
                                 _ => 0,
@@ -338,14 +346,14 @@ impl Iterator for RecordCursor {
 /// At most one existing bounded native staging transaction is retained. Its
 /// destructor aborts the pending rows on framing, reference or caller failure;
 /// already committed batches are still confined to this unpublished index.
-struct PendingIndex<'a> {
+pub(crate) struct PendingIndex<'a> {
     index: &'a EncryptedTable,
     batch: Option<EncryptedTableBatch>,
     bytes: usize,
     entries: usize,
 }
 impl<'a> PendingIndex<'a> {
-    fn new(index: &'a EncryptedTable) -> Self {
+    pub(crate) fn new(index: &'a EncryptedTable) -> Self {
         Self {
             index,
             batch: None,
@@ -353,7 +361,7 @@ impl<'a> PendingIndex<'a> {
             entries: 0,
         }
     }
-    fn insert(
+    pub(crate) fn insert(
         &mut self,
         key: &[u8],
         value: &[u8],
@@ -387,7 +395,7 @@ impl<'a> PendingIndex<'a> {
         self.bytes += bytes;
         Ok(())
     }
-    fn flush(&mut self, check: &mut impl FnMut() -> Result<()>) -> Result<()> {
+    pub(crate) fn flush(&mut self, check: &mut impl FnMut() -> Result<()>) -> Result<()> {
         if self.batch.is_some() {
             check()?;
             let phase =

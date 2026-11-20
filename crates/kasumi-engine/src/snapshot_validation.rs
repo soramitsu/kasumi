@@ -2,7 +2,9 @@
 //! No document, receipt, staged payload, or retained-history map is materialized.
 use super::*;
 use crate::{
-    backup_verify::VerificationPhase, snapshot_codec::Record, snapshot_index::StagedSnapshot,
+    backup_verify::VerificationPhase,
+    snapshot_codec::Record,
+    snapshot_index::{PendingIndex, StagedSnapshot},
 };
 use anyhow::{Context, ensure};
 use kasumi_store::{EncryptedTable, SnapshotImage};
@@ -217,12 +219,6 @@ impl ValidatedApplicationSnapshot {
             _ => anyhow::bail!("snapshot staged identity absent"),
         }
     }
-    fn change(&self, sequence: u64) -> anyhow::Result<Arc<ChangeCommit>> {
-        match self.index.get(9, &format!("{sequence:020}"), "")? {
-            Some(Record::Change(_, commit)) => Ok(commit),
-            _ => anyhow::bail!("snapshot change commit absent"),
-        }
-    }
     pub(crate) fn lineage_target(
         &self,
         incarnation: &str,
@@ -416,6 +412,7 @@ impl ValidatedApplicationSnapshot {
                 || self.lineage_source(&head.origin_incarnation)?.is_some(),
             "receipt origin is outside verified lineage"
         );
+        let mut identities = PendingIndex::new(&self.lineage);
         self.index.visit(5, |record| {
             check()?;
             let Record::Receipt(row) = record else {
@@ -426,18 +423,15 @@ impl ValidatedApplicationSnapshot {
                 Some(&row.applied.incarnation),
             )?;
             row.validate(&proof)?;
-            ensure!(
-                get::<u64>(&self.lineage, &("mutation-receipt-key", &row.key))?.is_none(),
-                "duplicate immutable mutation identity"
-            );
-            insert(
-                &self.lineage,
-                &("mutation-receipt-key", &row.key),
-                &row.ordinal,
+            identities.insert(
+                &serde_json::to_vec(&("mutation-receipt-key", &row.key))?,
+                &row.ordinal.to_be_bytes(),
+                check,
             )?;
             crate::mutation_receipt::advance(&mut head, &row)?;
             Ok(())
         })?;
+        identities.flush(check)?;
         ensure!(
             head == h.mutation_receipt_head
                 && head.count == self.index.count(5)?
@@ -683,41 +677,53 @@ impl ValidatedApplicationSnapshot {
                 && feed.encoded_commit_bytes <= h.limits.history.max_feed_bytes,
             "change feed outside limits"
         );
-        self.index.visit(10, |record| {
-            check()?;
-            let Record::ChangeItem(sequence, _, record) = record else {
-                unreachable!()
-            };
-            let commit = self.change(sequence)?;
-            validate_name(&record.collection)?;
-            validate_name(&record.id)?;
-            ensure!(
-                self.index.get(2, &record.collection, "")?.is_some()
-                    && record
-                        .document
-                        .as_ref()
-                        .is_none_or(|doc| doc.id == record.id && doc.version == commit.revision),
-                "invalid retained change record"
-            );
-            insert(
-                &self.lineage,
-                &("change-identity", sequence, &record.collection, &record.id),
-                &(),
-            )?;
-            let key = ("change", sequence);
-            let mut count = get::<Counts>(&self.lineage, &key)?.unwrap_or_default();
-            count.add(encoded_len(&record)? as u64)?;
-            set(&self.lineage, &key, &count)
-        })?;
         let mut expected = None;
         let mut revision = 0;
         let mut total = Counts::default();
+        let mut identities = PendingIndex::new(&self.lineage);
+        let mut last_collection = None;
         self.index.visit(9, |record| {
             check()?;
             let Record::Change(sequence, commit) = record else {
                 unreachable!()
             };
-            let count = get::<Counts>(&self.lineage, &("change", sequence))?.unwrap_or_default();
+            // The structural index proves the span for this parent. Keep only
+            // its counters while checking the original records, including
+            // uniqueness across encrypted scratch transaction boundaries.
+            let mut count = Counts::default();
+            for item in self.index.cursor(10, Some(&format!("{sequence:020}")))? {
+                check()?;
+                let Record::ChangeItem(_, _, record) = item? else {
+                    unreachable!()
+                };
+                validate_name(&record.collection)?;
+                validate_name(&record.id)?;
+                if last_collection.as_ref() != Some(&record.collection) {
+                    ensure!(
+                        self.index.get(2, &record.collection, "")?.is_some(),
+                        "change record collection is missing"
+                    );
+                    last_collection = Some(record.collection.clone());
+                }
+                ensure!(
+                    record
+                        .document
+                        .as_ref()
+                        .is_none_or(|doc| doc.id == record.id && doc.version == commit.revision),
+                    "invalid retained change record"
+                );
+                identities.insert(
+                    &serde_json::to_vec(&(
+                        "change-identity",
+                        sequence,
+                        &record.collection,
+                        &record.id,
+                    ))?,
+                    &[],
+                    check,
+                )?;
+                count.add(encoded_len(&record)? as u64)?;
+            }
             ensure!(
                 expected.is_none_or(|v| v == sequence)
                     && commit.first_sequence == sequence
@@ -749,8 +755,10 @@ impl ValidatedApplicationSnapshot {
                 .context("change feed bytes overflow")?;
             Ok(())
         })?;
+        identities.flush(check)?;
         ensure!(
             expected.unwrap_or(feed.next_sequence) == feed.next_sequence
+                && total.count == self.index.count(10)?
                 && total.count == feed.event_count as u64
                 && total.bytes == feed.encoded_commit_bytes as u64,
             "change feed accounting mismatch"
@@ -1153,7 +1161,7 @@ fn target_budget_state(
     Ok(state)
 }
 
-#[derive(Default, Serialize, Deserialize)]
+#[derive(Default)]
 struct Counts {
     count: u64,
     bytes: u64,
@@ -1375,6 +1383,56 @@ mod tests {
     ) -> std::result::Result<ValidatedApplicationSnapshot, kasumi_store::ScratchOperationFailure>
     {
         ValidatedApplicationSnapshot::validate(image(disk, state), 128 << 20, || Ok(()))
+    }
+
+    #[test]
+    fn indexed_change_identity_crosses_a_batch_and_is_scoped_to_its_commit() {
+        let scratch = crate::codec_fixture::ScratchScope::new(
+            kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 64),
+        )
+        .unwrap();
+        for duplicate in [false, true] {
+            let mut state = state();
+            let mut feed = ChangeFeedState::empty();
+            for (revision, count) in [
+                (2, kasumi_store::EncryptedTableBatch::MAX_ENTRIES + 1),
+                (3, 1),
+            ] {
+                let sequence = feed.next_sequence;
+                let records: Vec<_> = (0..count)
+                    .map(|i| ChangeRecord {
+                        collection: "rows".into(),
+                        id: format!(
+                            "removed-{:03}",
+                            if duplicate && i == count - 1 { 0 } else { i }
+                        ),
+                        document: None,
+                    })
+                    .collect();
+                let commit = Arc::new(ChangeCommit {
+                    revision,
+                    first_sequence: sequence,
+                    record_bytes: records.iter().map(|r| encoded_len(r).unwrap()).sum(),
+                    records,
+                });
+                feed.encoded_commit_bytes +=
+                    crate::change_feed_state::entry_bytes(sequence, &commit).unwrap();
+                feed.event_count += count;
+                feed.next_sequence += count as u64;
+                feed.commits.insert(sequence, commit);
+            }
+            state.change_feed = feed;
+            let result = indexed(&scratch.disk, &state);
+            if duplicate {
+                let error = result.err().expect("duplicate in the first commit");
+                assert!(
+                    format!("{error:#}").contains("duplicate staged key"),
+                    "{error:#}"
+                );
+            } else {
+                result.unwrap();
+            }
+        }
     }
     #[test]
     fn indexed_terminal_provenance_retains_the_intermediate_incarnation_genesis() {
