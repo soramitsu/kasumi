@@ -12,6 +12,7 @@ default = []
 test-utils = ["kasumi-store/test-utils", "kasumi-raft/test-utils"]
 
 [dependencies]
+async-trait.workspace = true
 parking_lot = "0.12"
 kasumi-clock.workspace = true
 kasumi-serving.workspace = true
@@ -43,7 +44,6 @@ kasumi-raft = { workspace = true, features = ["test-utils"] }
 kasumi-engine = { path = ".", features = ["test-utils"] }
 kasumi-serving = { workspace = true, features = ["test-utils"] }
 openraft = { version = "=0.9.25", features = ["serde", "storage-v2"] }
-async-trait.workspace = true
 tempfile.workspace = true
 kasumi-store = { workspace = true, features = ["test-utils"] }
 # `start_paused` tests, whose clock-driven deadlines host load must not decide.
