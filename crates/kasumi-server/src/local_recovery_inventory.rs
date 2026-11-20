@@ -3,7 +3,7 @@
 use super::*;
 use kasumi_engine::{Database, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, SecurityAudit};
 use kasumi_query::QueryCancellation;
-use kasumi_store::TenantReadView;
+use kasumi_store::{EncryptedTable, TenantReadView};
 use kasumi_types::{
     KeyCatalogDomain, KeyReference, KeyReferenceKind, KeyRetentionEntry, KeyVersionRef,
     MAX_KEY_PROVIDER_BYTES, MAX_KEY_REF_BYTES, MissingKeyDependency,
@@ -137,6 +137,7 @@ impl Coordinator {
         view: &TenantReadView,
         key: &[u8],
         value: &[u8],
+        publications: &mut Option<EncryptedTable>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<Uuid> {
         let journal: Journal = decode(value)?;
@@ -179,6 +180,37 @@ impl Coordinator {
             .is_some(),
             "permanent local recovery generation missing"
         );
+        if let Some(publication) = &journal.publication {
+            ensure!(
+                !publication.id.is_nil()
+                    && publication
+                        .topology
+                        .tenants
+                        .get(&request.tenant)
+                        .is_some_and(
+                            |route| route.incarnation == request.target_incarnation.to_string()
+                        )
+                    && view
+                        .get(PHASES, publication.id.as_bytes(), MAX_RECORD)?
+                        .as_deref()
+                        == Some(encoded(publication)?.as_slice()),
+                "missing or substituted local recovery publication"
+            );
+            // The deployed publication ID is independent of its operation ID.
+            // Index each authenticated forward link once for the physical reverse pass.
+            let table = match publications {
+                Some(table) => table,
+                None => {
+                    let disk = view.scratch_disk();
+                    publications.insert(EncryptedTable::new(
+                        disk,
+                        disk.snapshot().max_bytes,
+                        disk.native_cache_config(),
+                    )?)
+                }
+            };
+            table.insert(publication.id.as_bytes(), operation.as_bytes())?;
+        }
         // The authenticated checkpoint binds its external graph by digest. Its
         // wrapping versions require an independent read by the backup owner.
         visit(LocalRecoveryKeyFinding::Missing(
@@ -206,30 +238,109 @@ impl Coordinator {
         Ok(operation)
     }
 
+    fn phase_owner(
+        &self,
+        view: &TenantReadView,
+        token: &QueryCancellation,
+        key: &[u8],
+        value: &[u8],
+        publications: Option<&EncryptedTable>,
+    ) -> Result<Uuid> {
+        if key.len() == 16 && value.first() == Some(&b'{') {
+            let publication: Publication = decode(value)?;
+            ensure!(
+                uuid(key)? == publication.id,
+                "substituted local publication ID"
+            );
+            let owner = publications
+                .context("orphan local recovery publication")?
+                .get(key)?
+                .context("orphan local recovery publication")?;
+            return uuid(&owner);
+        }
+        if key.len() == 16 {
+            let id = uuid(key)?;
+            let (phase, request, ..): PhaseBinding = decode(value)?;
+            let (journal, _charge) = self.journal_at(view, request.operation_id, token)?;
+            ensure!(
+                !matches!(
+                    phase,
+                    LocalRecoveryPhase::Finished | LocalRecoveryPhase::Stopped
+                ) && binding_for_phase(&journal, phase)? == value,
+                "substituted historical local recovery phase"
+            );
+            if phase == LocalRecoveryPhase::Materialize {
+                for (suffix, expected) in Self::materialization_records(id, &journal)? {
+                    token.check()?;
+                    let key = format!("{id}/{suffix}");
+                    ensure!(
+                        view.get(PHASES, key.as_bytes(), MAX_RECORD)?.as_deref()
+                            == Some(expected.as_slice()),
+                        "missing or substituted local materialization record"
+                    );
+                }
+            }
+            return Ok(request.operation_id);
+        }
+        let (phase_id, suffix) = std::str::from_utf8(key)?
+            .split_once('/')
+            .context("invalid local materialization key")?;
+        let id = Uuid::parse_str(phase_id)?;
+        ensure!(
+            !id.is_nil() && id.to_string() == phase_id,
+            "invalid materialization phase identity"
+        );
+        let row = view
+            .get(PHASES, id.as_bytes(), MAX_RECORD)?
+            .context("orphan local materialization record")?;
+        let _phase_charge = self.decoding_workspace(row.len(), token)?;
+        let (phase, request, ..): PhaseBinding = decode(&row)?;
+        ensure!(
+            phase == LocalRecoveryPhase::Materialize,
+            "unrelated materialization phase"
+        );
+        let (journal, _charge) = self.journal_at(view, request.operation_id, token)?;
+        ensure!(
+            Self::materialization_records(id, &journal)?
+                .into_iter()
+                .any(|(name, expected)| suffix == name && expected == value),
+            "substituted local materialization record"
+        );
+        Ok(request.operation_id)
+    }
+
+    fn materialization_records(
+        id: Uuid,
+        journal: &Journal,
+    ) -> Result<Vec<(&'static str, Vec<u8>)>> {
+        let mut expected = Vec::with_capacity(5);
+        if journal.archive_directory.is_some() {
+            expected.push(("archive-directory", encoded(&journal.archive_directory)?));
+        }
+        if journal.database_group.is_some() {
+            expected.push(("physical", encoded(&journal.database_group)?));
+        }
+        for (stage, suffix) in TargetPreparation::RECORDED {
+            if stage <= journal.target_preparation {
+                expected.push((suffix, stage.phase_record(id, journal)?));
+            }
+        }
+        Ok(expected)
+    }
+
     fn row_owner(
         &self,
         view: &TenantReadView,
         token: &QueryCancellation,
         namespace: &str,
-        key: &[u8],
-        value: &[u8],
+        row: (&[u8], &[u8]),
+        publications: &mut Option<EncryptedTable>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<Uuid> {
+        let (key, value) = row;
         match namespace {
-            OPERATIONS => self.operation(view, key, value, visit),
-            PHASES => {
-                uuid(key)?;
-                let (phase, request, ..): PhaseBinding = decode(value)?;
-                let (journal, _charge) = self.journal_at(view, request.operation_id, token)?;
-                ensure!(
-                    !matches!(
-                        phase,
-                        LocalRecoveryPhase::Finished | LocalRecoveryPhase::Stopped
-                    ) && binding_for_phase(&journal, phase)? == value,
-                    "substituted historical local recovery phase"
-                );
-                Ok(request.operation_id)
-            }
+            OPERATIONS => self.operation(view, key, value, publications, visit),
+            PHASES => self.phase_owner(view, token, key, value, publications.as_ref()),
             GENERATIONS => {
                 let incarnation = uuid(key)?;
                 let outcome: GenerationRecord = decode(value)?;
@@ -299,6 +410,7 @@ impl LocalRecoveryKeyInventory for Coordinator {
             "standalone coordinator member differs"
         );
         let view = store.read_view()?;
+        let mut publications = None;
         let result = (|| {
             let physical = view.wrapping_inventory()?;
             let mut digest = Sha256::new();
@@ -326,8 +438,14 @@ impl LocalRecoveryKeyInventory for Coordinator {
                     |key, value, provider, key_ref, version| {
                         token.check()?;
                         let _decoded = self.decoding_workspace(value.len(), token)?;
-                        let operation_id =
-                            self.row_owner(&view, token, namespace, key, value, visit)?;
+                        let operation_id = self.row_owner(
+                            &view,
+                            token,
+                            namespace,
+                            (key, value),
+                            &mut publications,
+                            visit,
+                        )?;
                         visit(entry(
                             KeyReference::LocalRecovery { operation_id },
                             provider,
@@ -351,11 +469,18 @@ impl LocalRecoveryKeyInventory for Coordinator {
             );
             Ok(digest.finalize().into())
         })();
-        let close = view.close();
-        match (result, close) {
-            (Ok(value), Ok(())) => Ok(value),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Err(error), Err(close)) => Err(error.context(close)),
-        }
+        let result = match publications {
+            Some(table) => finish(result, table.close().map_err(Into::into)),
+            None => result,
+        };
+        finish(result, view.close())
+    }
+}
+
+fn finish<T>(result: Result<T>, close: Result<()>) -> Result<T> {
+    match (result, close) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+        (Err(error), Err(close)) => Err(error.context(close)),
     }
 }

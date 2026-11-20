@@ -326,6 +326,29 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     )
     .await
     .unwrap();
+    let control =
+        crate::runtime::configured_control_context(config.hosted_control().unwrap()).unwrap();
+    let inventory = runtime
+        .control_database()
+        .unwrap()
+        .read_key_retention(
+            &control,
+            ReadKeyRetentionRequest {
+                scope: KeyRetentionScope::LocalRecovery {},
+                cursor: None,
+                limit: 32,
+            },
+        )
+        .await
+        .unwrap();
+    assert!(inventory.entries.iter().any(|row| matches!(
+        row.reference, KeyReference::LocalRecovery { operation_id } if operation_id == request.operation_id
+    )));
+    assert!(
+        matches!(&inventory.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
+        if missing.contains(&MissingKeyDependency::ArchiveUnavailable { id: request.checkpoint.backup_id.to_string() }))
+    );
+    drop(inventory);
     let registry = runtime.registry().clone();
     let (stop, shutdown) = tokio::sync::watch::channel(false);
     let serving = tokio::spawn(runtime.serve(shutdown));

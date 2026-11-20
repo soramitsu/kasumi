@@ -110,7 +110,7 @@ pub struct LocalRecoveryStatus {
     pub cleanup_evidence: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum TargetPreparation {
     Uncreated,
@@ -118,6 +118,17 @@ enum TargetPreparation {
     CatalogsReady,
     MaterializationDispatched,
 }
+impl TargetPreparation {
+    const RECORDED: [(Self, &'static str); 3] = [
+        (Self::CreationDispatched, "target-preparation/1"),
+        (Self::CatalogsReady, "target-preparation/2"),
+        (Self::MaterializationDispatched, "target-preparation/3"),
+    ];
+    fn phase_record(self, phase: Uuid, journal: &Journal) -> Result<Vec<u8>> {
+        encoded(&(phase, &journal.status.request, &binding(journal), self))
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum TargetOpen {
     Materialize,
@@ -1003,13 +1014,11 @@ impl Operator {
             journal.status.phase == LocalRecoveryPhase::Materialize,
             "local preparation requires the materialization phase"
         );
-        let code = match next {
-            TargetPreparation::Uncreated => 0,
-            TargetPreparation::CreationDispatched => 1,
-            TargetPreparation::CatalogsReady => 2,
-            TargetPreparation::MaterializationDispatched => 3,
-        };
-        let key = format!("{}/target-preparation/{code}", journal.status.phase_id);
+        let (_, suffix) = TargetPreparation::RECORDED
+            .iter()
+            .find(|(stage, _)| *stage == next)
+            .context("unrecorded local preparation stage")?;
+        let key = format!("{}/{suffix}", journal.status.phase_id);
         ensure!(
             self.store().get(PHASES, key.as_bytes())?.is_none(),
             "local preparation dispatch already exists"
@@ -1024,12 +1033,7 @@ impl Operator {
             WriteOp::put(
                 PHASES,
                 key.into_bytes(),
-                encoded(&(
-                    journal.status.phase_id,
-                    &journal.status.request,
-                    &binding(journal),
-                    next,
-                ))?,
+                next.phase_record(journal.status.phase_id, journal)?,
             ),
         ])
     }
