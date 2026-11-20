@@ -1,74 +1,6 @@
 // The issuer reducer and pinned native issuer have separate actual-quorum tests.
 // This fixture signs real opaque capabilities to isolate the encrypted engine's
 // queue, materialization and release boundaries under a deterministic clock.
-fn report_serving_opening_failure(error: &kasumi_store::NodeStoreStartFailure) {
-    use kasumi_kv::TerminalObservation;
-    use std::io::Write as _;
-    let kasumi_store::NodeStoreStartFailure::Opening(failure) = error else {
-        return;
-    };
-    let custody = failure.custody();
-    let report = custody.opening().report();
-    let engine = report.engine();
-    let mut stderr = std::io::stderr().lock();
-    let _ = writeln!(
-        stderr,
-        "serving fixture opening failure: id={:?} startup={:?} child={:?} child_disposition={:?} close_error={:?} engine_phase={:?} engine_opening_phase={:?} engine_settlement={:?} native={:?}",
-        failure.opening_id(),
-        custody.phase(),
-        custody.child_id(),
-        custody.child_disposition(),
-        failure.close_error(),
-        engine.phase(),
-        engine.opening_phase(),
-        engine.settlement(),
-        engine.native_disposition()
-    );
-    fn observation<E: std::fmt::Debug>(
-        stderr: &mut impl std::io::Write,
-        name: &str,
-        observed: TerminalObservation<'_, E>,
-    ) {
-        match observed {
-            TerminalObservation::NotEntered => {
-                let _ = writeln!(stderr, "{name}: NotEntered");
-            }
-            TerminalObservation::Entered => {
-                let _ = writeln!(stderr, "{name}: Entered");
-            }
-            TerminalObservation::Returned(Ok(())) => {
-                let _ = writeln!(stderr, "{name}: Returned(Ok)");
-            }
-            TerminalObservation::Returned(Err(original)) => {
-                let _ = writeln!(stderr, "{name}: Returned(Err({original:#?}))");
-            }
-            TerminalObservation::Panicked(_) => {
-                let _ = writeln!(stderr, "{name}: Panicked (original retained)");
-            }
-        }
-    }
-    observation(&mut stderr, "physical acquisition", report.acquisition());
-    observation(&mut stderr, "native opening", engine.opening());
-    engine.with_partial_close_observation(|observed| {
-        observation(&mut stderr, "partial native close", observed);
-    });
-    observation(&mut stderr, "failed disposal", engine.failed_disposal());
-    if let Some(close) = engine.database_close() {
-        let _ = writeln!(
-            stderr,
-            "database close: settlement={:?} native={:?}",
-            close.settlement(),
-            close.native_disposition()
-        );
-        observation(&mut stderr, "database shutdown", close.shutdown());
-        observation(&mut stderr, "database backend close", close.backend());
-        observation(
-            &mut stderr,
-            "database failed disposal",
-            close.failed_disposal(),
-        );
-    }
-}
 
 struct ServingFixture {
     storage: Vec<crate::test_utils::FixtureStorage>,
@@ -237,7 +169,7 @@ impl ServingFixture {
             } else {
                 storage.open_existing(&path, kasumi_store::test_utils::NODE_STORE_ID)
             })
-            .inspect_err(report_serving_opening_failure)
+            .inspect_err(crate::test_utils::report_node_opening_failure)
             .unwrap();
             self.nodes.push(node.clone());
             let audit_store = (if create {

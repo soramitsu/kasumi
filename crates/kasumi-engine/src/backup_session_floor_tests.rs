@@ -350,6 +350,12 @@ impl Installation {
         } else {
             storage.open_existing(&node_path, kasumi_store::test_utils::NODE_STORE_ID)
         }
+        .inspect_err(|failure| {
+            crate::test_utils::report_node_opening_failure(failure);
+            if let Some(operation) = storage.persistent.pending_directory_operation() {
+                eprintln!("physical directory operation: {operation:#?}");
+            }
+        })
         .native("node store")?;
         let ids = if create {
             Ids {
