@@ -6,13 +6,21 @@ run workloads, manufacture receipts, remove failed attempts, or grant waivers.
 The approved scope remains [the release plan](first-release-plan.md) and
 [G01–G14](first-release-goals.md).
 
-**No final release can currently pass this verifier.** The domain-adapter
-registry is deliberately empty. None of the existing domain runners produces
-all the evidence needed for its final-release gate. An opaque report saying
-“passed,” a list of successful scenario names, or an arbitrary frozen source
-file used as a purported runner is rejected. The structural validators and
-their counterexample tests are implementation progress, not closure of G11,
-qualification evidence, or permission to close the release goal.
+**Release acceptance remains open.** The verifier registers all 19 domain
+adapters. Each checks a native run against its scenarios and the selected
+candidate, configuration and artifact identities. The current qualification
+results and outstanding placements are recorded in the
+[release integration ledger](first-release-integration-20261118.md).
+
+| Area | Registered domain IDs |
+| --- | --- |
+| Installed software and artifacts | `installed`, `package-smoke`, `oci-smoke`, `systemd-smoke`, `repeatable-assembly` |
+| Data, operations and security | `correctness`, `concurrency`, `observability`, `backup-cleanup`, `audit-retention`, `key-retention`, `providers`, `dependency-review` |
+| Capacity, fault recovery and endurance | `capacity-standalone`, `capacity-ha`, `benchmark-matrix`, `ha-faults`, `recovery`, `ha-soak` |
+
+The verifier takes the domain IDs from its scenario registry. The attempt
+index restricts OCI and systemd smoke to Linux. A passing unit test or
+source build supplies only the evidence it actually observed.
 
 ## Invocation and custody
 
@@ -384,11 +392,10 @@ The owned repeatable-assembly runner retains the executable selected at dispatch
 and rejects a process receipt whose command or executable differs from its
 retained preflight bytes. Its verifier also rejects a substituted retained
 executable or `command[0]` that differs from the selected absolute path. Every
-other domain or independent rebuild runner still needs this original process
-identity and a domain-specific command check; historical receipts cannot gain
-it through projection. Process groups do not prove custody of daemonized or
+other domain and independent rebuild also requires its original process
+identity and command check. Historical receipts retain their original scope. Process groups do not prove custody of daemonized or
 remote services. Domain adapters must preserve those services' actual terminal
-outcomes too. Before registering an adapter, its native Python launcher must
+outcomes too. Each native Python launcher must
 also rule out execution of stale or unchecked bytecode. The final verifier
 enforces its own isolated cache-free invocation; `-B` alone cannot establish
 which imported code ran.
@@ -414,19 +421,19 @@ rewrites, or upgrades a failed attempt. Evidence custody must also preserve
 attempts outside the bundle; a local verifier cannot discover withheld history.
 Independent custody and a separately published journal head remain required to
 detect removal of the entire index or a rewritten complete history before
-bundle collection. The owned assembly launcher is the first indexed native
-entry point; other native acceptance dispatchers must join this journal before
-their semantic adapters can be registered.
+bundle collection. The owned assembly launcher and domain admission code record
+attempts before dispatch. Every selected native run must have its own admission
+and terminal receipt in the same journal.
 
 Its successful attempt also retains `domain-observation.json` as an additional
 hash-bound journal reference. This exact native observation binds the original
 launcher, inner report, target, and both package/source assembly outputs. Its
-status is `unqualified`: it supplies no authenticated host or reservation, no
-final domain receipt, and no registration in `DOMAIN_ADAPTERS`. The journal
-rejects a substituted or stale observation while retaining the launcher
-outcome as the attempt's primary evidence.
+status is `unqualified`. The registered repeatable-assembly adapter separately
+checks the selected primary input and both assemblies. Host identity,
+reservation and the final domain receipt are required for acceptance. The
+journal retains the launcher's original outcome and observation hashes.
 
-## Deliverables and remaining adapters
+## Deliverables and native evidence
 
 The fixed artifact roster includes source/checksums/license/notice,
 contribution/security/installation/maintenance/recovery/operating-limits
@@ -439,38 +446,24 @@ Checksums cover every other delivered file exactly once. Smoke receipts must
 bind the actual package/image/unit digests; repeat assembly must produce
 distinct files with identical package and source hashes.
 
-The unregistered `check_native_admin_readback` component now checks retained
+The installed runner calls `check_native_admin_readback` to check retained
 `kasumictl` policy, schema, and policy readbacks against independently pinned
 admin-client bytes, tenant/incarnation, exact policy/grants and limits, and
 collection definitions. It requires three distinct candidate-executable
 processes whose `--config` and request-file arguments are the verified local
 files, and rejects changed policy/schema epochs or nonmonotonic revisions.
-Transported native evidence needs an independently verified original-path to
-retained-byte binding before it can use this local-file check. Revisions may advance for
-strict read audit events, so equality is not assumed. This is only a semantic check
-of supplied evidence. The installed-domain runner must still prove original
-dispatch order and input-byte custody, own the native TLS endpoint and process
-lifetimes, bind the pinned intent to reviewed release configuration, and retain
-the native receipts before an adapter can register. No live tenant, grant, or
-schema readback is claimed by the synthetic tests. Admission requires
+For transported native evidence the runner verifies the original path against
+the retained input bytes. Revision numbers may advance during strict read
+auditing. The installed-domain verifier also checks original dispatch order,
+the native TLS endpoint, process lifetimes and the pinned release intent.
+Admission requires
 `ReadSchema {"selection":"all"}` and the exact complete collection set; named
 reads and the retired untagged request cannot establish inventory admission.
 
-Before enabling any domain adapter, implement and review its actual runner,
-fixed executable/argument/configuration/artifact contract, and semantic parser.
-Required work includes the installed full lifecycle, real providers, complete
-HA faults/recovery/deletion, retention races, exhaustive resource/integrity
-measurements, complete production benchmark samples/concurrency, full soak,
-advisory dispositions, and actual package/OCI/systemd smoke. OCI adapters must
-verify the image's platform, manifest/layer identities, contained candidate
-binaries, and matching OS/image SBOM; hashing an arbitrary archive is
-insufficient. Dependency review must parse the actual advisory scan and every
-disposition rather than accept an opaque “reviewed” report. Independent-build
-collection must retain the actual compiler transcript and source-bound isolated
-environment; the verifier's local replay does not produce or authenticate that
-native run.
-
-Tests intentionally use synthetic temporary fixtures to challenge validators.
-They do not produce or commit a populated acceptance manifest. The empty
-adapter registry ensures incomplete domain integration cannot accidentally
-turn those structural checks into a production release claim.
+A release needs recorded results for the installed lifecycle, real providers,
+HA faults and recovery, retention races, resource and integrity measurements,
+the benchmark matrix and concurrency, and the full soak. OCI evidence binds
+the image platform, manifest and layers, contained binaries and OS/image SBOM.
+Dependency review binds the advisory scan and each disposition. Independent
+builders supply their compiler transcript and source-bound environment.
+The final manifest selects completed native attempts for the frozen source.
