@@ -255,22 +255,25 @@ impl Database {
             .await;
         let result = self.audit_snapshot_result(&context, result).await;
         if publication_admitted {
-            result.map_err(|_original| {
-                let crate::SnapshotFailure::Operation(_original) = _original else {
-                    return _original;
+            result.map_err(|original| {
+                let crate::SnapshotFailure::Operation(original) = original else {
+                    return original;
                 };
-                // Preserve the public uncertainty response. Fixture diagnostics
-                // retain the rejected phase before that response erases it.
                 #[cfg(any(test, feature = "test-utils"))]
                 eprintln!(
-                    "backup publication original failure before proof release: {_original:?}; raft metrics: {:?}; retained apply: {:?}",
-                    self.group.metrics(),
+                    "backup publication original failure before proof release: {original:?}; physical cause: {:?}; raft metrics: {:?}; retained apply: {:?}",
+                    std::error::Error::source(&original), self.group.metrics(),
                     crate::test_utils::retained_apply_diagnostic(&self.group),
                 );
-                crate::SnapshotFailure::from(Error::new(
+                let uncertainty = Error::new(
                     ErrorCode::UnknownOutcome,
                     "backup publication was admitted but complete proof release failed; immutable artifacts may exist and no verified proof was released",
-                ))
+                );
+                if original.has_physical_source() {
+                    uncertainty.with_physical_source(original.into()).into()
+                } else {
+                    uncertainty.into()
+                }
             })
         } else {
             result

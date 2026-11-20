@@ -125,12 +125,17 @@ impl Error {
     // Keep worst-case JSON/base64 details plus percent-encoded gRPC messages
     // below common 8 KiB header budgets, including protocol framing.
     pub fn from_physical_source(original: anyhow::Error) -> Self {
-        let mut error = Self::new(
+        Self::new(
             ErrorCode::Corruption,
             "selected permanent history could not be read",
-        );
-        error.physical_cause = Some(std::sync::Arc::new(PhysicalCause(original)));
-        error
+        )
+        .with_physical_source(original)
+    }
+
+    /// Retain the local operation's original cause behind its public response.
+    pub fn with_physical_source(mut self, original: anyhow::Error) -> Self {
+        self.physical_cause = Some(std::sync::Arc::new(PhysicalCause(original)));
+        self
     }
 
     pub fn has_physical_source(&self) -> bool {

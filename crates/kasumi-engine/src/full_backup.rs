@@ -262,11 +262,12 @@ impl Database {
                 intent_bytes.into(),
             )
             .await
-            .map_err(|_| {
+            .map_err(|original| {
                 Error::new(
                     ErrorCode::UnknownOutcome,
                     "backup intent publication uncertain; resolve the same session identity",
                 )
+                .with_physical_source(original)
             })?;
         let session = self
             .backup_session(&context, destination, session_id)
