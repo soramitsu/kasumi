@@ -29,6 +29,7 @@ pub use snapshot_decode::{
 mod credentials;
 mod profile;
 pub use profile::{ClientProfile, ProfileAuthorityEndpoint, ProfileTlsFiles};
+mod remote_backup;
 mod security_audit;
 pub use security_audit::VerifiedSecurityAuditArchive;
 mod installed_pool;

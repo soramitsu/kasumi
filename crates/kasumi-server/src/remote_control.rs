@@ -52,6 +52,9 @@ const FIRST_RETRY: Duration = Duration::from_millis(250);
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RemoteControlConfig {
+    /// Optional separately enrolled Control writer and reverse-check identities.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup: Option<crate::remote_backup::BackupAccess>,
     /// The dedicated Control's installed lifecycle signing root. Its
     /// incarnation identifies the only Control this node accepts.
     pub root: ControlSigningRoot,
@@ -76,6 +79,9 @@ pub struct RemoteControlConfig {
 impl RemoteControlConfig {
     pub(crate) fn validate(&self) -> Result<()> {
         self.root.validate()?;
+        if let Some(backup) = &self.backup {
+            backup.validate(self)?;
+        }
         crate::installed_clients::validate(&self.endpoints)?;
         self.tls.validate()?;
         ensure!(
@@ -125,6 +131,20 @@ pub(crate) fn validate_data_only(
         .replication
         .as_ref()
         .context("data-only node requires its data replication roster")?;
+    if let Some(backup) = &remote.backup {
+        let peer = replication
+            .peers
+            .iter()
+            .find(|peer| peer.node_id == replication.node_id)
+            .context("local replication node absent")?;
+        ensure!(
+            backup
+                .source_certificate_pins
+                .iter()
+                .all(|pin| peer.certificate_pins.contains(pin)),
+            "backup writer identity differs from installed data peer"
+        );
+    }
     let mut origins = BTreeSet::new();
     let mut pins = BTreeSet::new();
     for peer in &replication.peers {
@@ -134,6 +154,12 @@ pub(crate) fn validate_data_only(
                 .ascii_serialization(),
         );
         pins.extend(peer.certificate_pins.iter().cloned());
+    }
+    if let Some(backup) = &remote.backup {
+        ensure!(
+            backup.callback_certificate_pins.is_disjoint(&pins),
+            "backup callback certificate belongs to a data peer"
+        );
     }
     for (id, member) in &remote.endpoints {
         ensure!(

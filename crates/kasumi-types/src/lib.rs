@@ -52,6 +52,8 @@ pub use credential_resource::CredentialResource;
 pub use restore_lineage::*;
 mod backup;
 pub use backup::*;
+mod remote_backup;
+pub use remote_backup::*;
 mod atomic;
 pub use atomic::*;
 mod mutation_capacity;

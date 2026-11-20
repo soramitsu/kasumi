@@ -92,9 +92,10 @@ pub use security_audit::{
     SecurityOutcome, TransportAuditMetadata,
 };
 pub use service::{
-    AuthoritySignerKeyInventory, AuthoritySignerKeys, CustodyResponseFence, Database,
-    LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, ResponseFence, RetiredCustody,
-    RetirementResponseFence,
+    AuthoritySignerKeyInventory, AuthoritySignerKeys, BackupSourceCapability, CustodyResponseFence,
+    Database, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, RemoteBackupFuture,
+    RemoteBackupSourceVerifier, RemoteBackupTransport, ResponseFence, RetiredCustody,
+    RetirementResponseFence, VerifiedBackupSource,
 };
 pub use state::{
     Generation, LocalSnapshotArchive, PreparedSnapshotRestore, TenantEngine,

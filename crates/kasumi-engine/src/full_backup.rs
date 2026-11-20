@@ -268,18 +268,41 @@ impl Database {
         let mut intent_reservation = self
             .admission()
             .reserve(16 << 20, Some(cancellation.clone()))?;
-        let intent = BackupSessionIntent {
-            session_id,
-            tenant: state.tenant.clone(),
-            source_incarnation: state.incarnation.clone(),
-            revision: state.revision,
-            principal: context.principal.clone(),
-            request_id: context.request_id.clone(),
-        };
-        intent.validate()?;
-        let intent_bytes = self
-            .claim_backup_intent(&context, destination, &intent, &generation, alias)
-            .await?;
+        // A fresh native call has its own authenticated request ID. If Control
+        // already committed the original intent before its response was lost,
+        // resume only its immutable capture and ciphertext. A newer generation
+        // cannot be substituted for that original snapshot.
+        let (intent, intent_bytes) =
+            if let Some(record) = self.backup_owner(&context, destination, session_id).await? {
+                let claim = &record.claim;
+                if claim.principal != context.principal
+                    || claim.source_incarnation != state.incarnation
+                    || claim.revision != state.revision
+                {
+                    return Err(Error::new(
+                        ErrorCode::Conflict,
+                        "original backup capture unavailable or differs",
+                    ));
+                }
+                let bytes = self
+                    .original_backup_intent_for_effect(&context, &record)
+                    .await?;
+                (claim.intent(), bytes)
+            } else {
+                let intent = BackupSessionIntent {
+                    session_id,
+                    tenant: state.tenant.clone(),
+                    source_incarnation: state.incarnation.clone(),
+                    revision: state.revision,
+                    principal: context.principal.clone(),
+                    request_id: context.request_id.clone(),
+                };
+                intent.validate()?;
+                let bytes = self
+                    .claim_backup_intent(&context, destination, &intent, &generation, alias)
+                    .await?;
+                (intent, bytes)
+            };
         self.engine
             .authorize_release(&context, None, Action::Admin, state.policy_epoch)?;
         destination

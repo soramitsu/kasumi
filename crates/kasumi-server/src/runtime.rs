@@ -152,6 +152,9 @@ pub struct TenantConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ControlConfig {
+    /// Protected callbacks for enrolled, dedicated data groups.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backup_sources: Option<crate::remote_backup::BackupSources>,
     /// For a dedicated Control voter, the approved placement of remote data
     /// groups. Its replication listener and peers remain the Control group.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -476,6 +479,20 @@ impl RuntimeConfig {
                 && self.tenants.len() <= 10_000,
             "configure at most 10000 tenants and an explicit role for a node with no tenants"
         );
+        if let Some(config) = &self.control
+            && let Some(backup) = &config.backup_sources
+        {
+            ensure!(
+                config.lifecycle.is_some(),
+                "dedicated backup callbacks require the installed Control lifecycle"
+            );
+            backup.validate(
+                config
+                    .remote_data
+                    .as_ref()
+                    .context("backup callbacks require dedicated Control placement")?,
+            )?;
+        }
         if let Some(remote) = self.control.as_ref().and_then(|c| c.remote_data.as_ref()) {
             crate::control_genesis::dedicated_topology(self, remote)?;
         }
@@ -3168,6 +3185,7 @@ pub fn example_config(
         native: mutual(9444),
         admin: mutual(9445),
         control: Some(ControlConfig {
+            backup_sources: None,
             remote_data: None,
             lifecycle: None,
             startup_principal: None,

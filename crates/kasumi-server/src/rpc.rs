@@ -51,6 +51,9 @@ mod lifecycle_tests;
 #[cfg(test)]
 #[path = "rpc_recovery_tests.rs"]
 mod recovery_tests;
+#[cfg(test)]
+#[path = "rpc_remote_backup_tests.rs"]
+mod remote_backup_tests;
 
 #[cfg(test)]
 #[path = "rpc_control_signer_tests.rs"]
@@ -69,6 +72,7 @@ pub struct NativeAdmin {
     management: Option<Arc<crate::administration::Administration>>,
     telemetry: Arc<crate::observability::Telemetry>,
     control_signer: Option<Arc<crate::control_signer_runtime::ControlSignerRuntime>>,
+    backup: Option<crate::remote_backup::Endpoint>,
     #[cfg(test)]
     audit_release_gate: Arc<tokio::sync::Mutex<Option<AuditReleaseGate>>>,
 }
@@ -106,6 +110,23 @@ async fn routed(
         .map_err(status)
 }
 
+fn backup_peer(request: &Request<PrivateReadJsonRequest>) -> Result<String, Status> {
+    request
+        .extensions()
+        .get::<crate::tls::AuthenticatedTlsPeer>()
+        .and_then(|p| p.certificate_pin())
+        .map(hex::encode)
+        .ok_or_else(|| Status::unauthenticated("administrative mTLS identity required"))
+}
+fn backup_body<T: serde::de::DeserializeOwned>(
+    request: Request<PrivateReadJsonRequest>,
+) -> Result<T, Status> {
+    let body = request.into_inner().request_json;
+    if body.len() > kasumi_types::MAX_REMOTE_BACKUP_BYTES {
+        return Err(Status::resource_exhausted("backup request exceeds bound"));
+    }
+    decode_json(&body).map_err(status)
+}
 fn receipt(value: kasumi_types::WriteReceipt) -> WriteReceipt {
     WriteReceipt {
         revision: value.revision,
@@ -761,6 +782,7 @@ impl NativeAdmin {
             management: None,
             telemetry: crate::observability::Telemetry::new(),
             control_signer: None,
+            backup: None,
             #[cfg(test)]
             audit_release_gate: Arc::new(tokio::sync::Mutex::new(None)),
         }
@@ -769,6 +791,19 @@ impl NativeAdmin {
         mut self,
         management: Arc<crate::administration::Administration>,
     ) -> Self {
+        self.backup = match (&management.control, &management.backup_source) {
+            (crate::administration::ControlAccess::Local(control), _)
+                if management
+                    .config
+                    .control
+                    .as_ref()
+                    .is_some_and(|hosted| hosted.backup_sources.is_some()) =>
+            {
+                Some(crate::remote_backup::Endpoint::Control(control.clone()))
+            }
+            (_, Some(source)) => Some(crate::remote_backup::Endpoint::Source(source.clone())),
+            _ => None,
+        };
         self.management = Some(management);
         self
     }
@@ -942,6 +977,58 @@ impl NativeAdmin {
 
 #[tonic::async_trait]
 impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
+    async fn exchange_backup_binding(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = backup_peer(&request)?;
+        let body = backup_body::<kasumi_types::RemoteBackupCommand>(request)?;
+        let Some(crate::remote_backup::Endpoint::Control(control)) = &self.backup else {
+            return Err(Status::unavailable("backup Control unavailable"));
+        };
+        let fence = self
+            .auth
+            .audit_result(&actor, control.admitted_response_fence(&actor))
+            .await
+            .map_err(status)?;
+        let result = control
+            .execute_remote_backup(actor.clone(), peer, body)
+            .await;
+        self.private_read_reply(&actor, result, fence).await
+    }
+    async fn confirm_backup_source(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = backup_peer(&request)?;
+        let body = backup_body::<kasumi_types::RemoteBackupChallenge>(request)?;
+        let Some(crate::remote_backup::Endpoint::Source(source)) = &self.backup else {
+            return Err(Status::unavailable("backup source unavailable"));
+        };
+        let result = source.confirm(&actor, &peer, &body).await;
+        let observed = self
+            .auth
+            .audit_result(&actor, result)
+            .await
+            .map_err(status)?;
+        let response = encode_json(observed.observation()).map_err(status)?;
+        self.auth
+            .audit_result(
+                &actor,
+                actor
+                    .authorization
+                    .check_live()
+                    .and_then(|()| observed.release()),
+            )
+            .await
+            .map_err(status)?;
+        Ok(Response::new(PrivateReadJsonResponse {
+            response_json: response,
+        }))
+    }
+
     async fn read_key_retention(
         &self,
         request: Request<PrivateReadJsonRequest>,

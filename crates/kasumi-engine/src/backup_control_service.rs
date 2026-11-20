@@ -1,7 +1,13 @@
 //! Only the installed source can prepare a claim. The Control command is private
 //! and its point row is read back under a quorum barrier before external writes.
 use super::*;
+#[path = "remote_backup_control.rs"]
+mod remote;
 use kasumi_store::{AdmittedBackupBundle, VerifiedBackupSession};
+pub use remote::{
+    BackupSourceCapability, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
+    VerifiedBackupSource,
+};
 
 pub(super) struct BackupControl {
     control: std::sync::Weak<Database>,
@@ -85,10 +91,7 @@ impl SourceQuorum {
     }
 }
 
-pub(super) struct SelectedBackup {
-    pub record: BackupBindingRecord,
-    pub terminal: Option<BackupBindingTerminal>,
-}
+pub(super) type SelectedBackup = RemoteBackupRecord;
 
 impl Database {
     /// Install the opened Control owner and its live operator. A restarted
@@ -99,7 +102,8 @@ impl Database {
         operator: &RequestContext,
     ) -> Result<()> {
         let generation = control.engine.generation()?;
-        if !Arc::ptr_eq(&self.security_audit, &control.security_audit)
+        if self.remote_backup.get().is_some()
+            || !Arc::ptr_eq(&self.security_audit, &control.security_audit)
             || generation.tenant() != crate::control::CONTROL_TENANT
             || operator.tenant != crate::control::CONTROL_TENANT
         {
@@ -149,7 +153,20 @@ impl Database {
         operator: &RequestContext,
         id: uuid::Uuid,
     ) -> Result<Option<SelectedBackup>> {
-        self.engine.authorize(operator, None, Action::Admin)?;
+        self.control_binding_point_for(operator, id, false).await
+    }
+    async fn control_binding_point_for(
+        &self,
+        operator: &RequestContext,
+        id: uuid::Uuid,
+        delegated: bool,
+    ) -> Result<Option<SelectedBackup>> {
+        if delegated {
+            self.authorize_remote_backup(operator, None)?;
+        } else {
+            self.engine.authorize(operator, None, Action::Admin)?;
+        }
+
         let fence = self.response_fence(operator)?;
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
@@ -187,10 +204,20 @@ impl Database {
     ) -> Result<Option<SelectedBackup>> {
         self.engine.authorize(context, None, Action::Admin)?;
         let fence = self.response_fence(context)?;
-        let Some((control, operator)) = self.backup_authority()? else {
-            return Ok(None);
+        let selected = if let Some(transport) = self.remote_backup.get() {
+            self.remote_backup_action(
+                transport,
+                context,
+                RemoteBackupAction::Read { session_id: id },
+            )
+            .await?
+        } else {
+            let Some((control, operator)) = self.backup_authority()? else {
+                return Ok(None);
+            };
+            control.control_binding_point(&operator, id).await?
         };
-        let Some(selected) = control.control_binding_point(&operator, id).await? else {
+        let Some(selected) = selected else {
             return Ok(None);
         };
         let record = &selected.record;
@@ -313,9 +340,14 @@ impl Database {
                         .with_physical_source(original)
                 })
         };
-        let Some((control, operator)) = self.backup_authority()? else {
-            return encrypt();
+        let authority = if self.remote_backup.get().is_some() {
+            None
+        } else {
+            self.backup_authority()?
         };
+        if authority.is_none() && self.remote_backup.get().is_none() {
+            return encrypt();
+        }
         let prior = self
             .backup_owner(context, destination, intent.session_id)
             .await?;
@@ -343,8 +375,14 @@ impl Database {
                 intent_ciphertext: bytes.as_bytes().to_vec(),
             };
             claim.validate()?;
-            self.propose_backup_binding(context, epoch, control, operator, claim, None)
-                .await?;
+            if let Some(transport) = self.remote_backup.get() {
+                self.remote_backup_action(transport, context, RemoteBackupAction::Claim { claim })
+                    .await?;
+            } else {
+                let (control, operator) = authority.ok_or_else(unavailable)?;
+                self.propose_backup_binding(context, epoch, control, operator, claim, None)
+                    .await?;
+            }
             self.backup_owner(context, destination, intent.session_id)
                 .await?
                 .ok_or_else(unavailable)?
@@ -411,6 +449,7 @@ impl Database {
                 timestamp_ms: now_ms()?,
                 epoch: control_epoch,
                 context: operator,
+                remote_source: None,
                 claim,
                 terminal,
             };
@@ -444,7 +483,12 @@ impl Database {
         self.require_backup_effect(context, destination, session)
             .await?;
         let encrypt = || self.store.encrypt_backup_session_outcome(session, proposed);
-        let Some((control, operator)) = self.backup_authority()? else {
+        let authority = if self.remote_backup.get().is_some() {
+            None
+        } else {
+            self.backup_authority()?
+        };
+        if authority.is_none() && self.remote_backup.get().is_none() {
             return encrypt()
                 .await
                 .map_err(super::backup_sessions::storage_error);
@@ -464,15 +508,28 @@ impl Database {
                 ciphertext: bytes.as_bytes().to_vec(),
             };
             terminal.validate(&selected.record.claim)?;
-            self.propose_backup_binding(
-                context,
-                epoch,
-                control,
-                operator,
-                selected.record.claim,
-                Some(terminal),
-            )
-            .await?;
+            if let Some(transport) = self.remote_backup.get() {
+                self.remote_backup_action(
+                    transport,
+                    context,
+                    RemoteBackupAction::Decide {
+                        claim: selected.record.claim,
+                        terminal: Box::new(terminal),
+                    },
+                )
+                .await?;
+            } else {
+                let (control, operator) = authority.ok_or_else(unavailable)?;
+                self.propose_backup_binding(
+                    context,
+                    epoch,
+                    control,
+                    operator,
+                    selected.record.claim,
+                    Some(terminal),
+                )
+                .await?;
+            }
             selected = self
                 .selected_backup(context, destination, id)
                 .await?

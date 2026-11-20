@@ -195,7 +195,7 @@ pub(crate) fn require_control_placement(
         input.control_placement()? == configured,
         "configured Control placement differs from node enrollment"
     );
-    Ok(())
+    input.require_backup_placement(config)
 }
 
 fn require_genesis_tenants(store: &TenantStore, input: &Input, digest: &str) -> Result<()> {

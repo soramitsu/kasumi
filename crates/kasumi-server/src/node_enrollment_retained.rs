@@ -8,7 +8,7 @@ use std::{collections::BTreeSet, fmt};
 #[derive(Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub(super) enum RetainedInput {
-    Data { configuration: DataIdentity },
+    Data { configuration: Box<DataIdentity> },
     Authority { configuration: AuthorityIdentity },
 }
 #[derive(Deserialize)]
@@ -25,10 +25,18 @@ pub(super) struct DataIdentity {
 #[derive(Deserialize)]
 struct RemoteControlIdentity {
     root: RemoteRootIdentity,
+    #[serde(default)]
+    backup: Option<crate::remote_backup::BackupAccess>,
+    #[serde(default, deserialize_with = "kasumi_types::deserialize_u64_map")]
+    endpoints: std::collections::BTreeMap<u64, crate::serving_runtime::AuthorityEndpoint>,
+    #[serde(default)]
+    server_ca: Option<std::path::PathBuf>,
 }
 #[derive(Deserialize)]
 struct RemoteRootIdentity {
     control_incarnation: Uuid,
+    #[serde(default)]
+    public_key: Option<String>,
 }
 #[derive(Debug, PartialEq, Eq)]
 pub(super) enum ControlPlacement {
@@ -42,6 +50,8 @@ pub(super) struct AuthorityIdentity {
 #[derive(Deserialize)]
 struct ControlIdentity {
     incarnation: Uuid,
+    #[serde(default)]
+    backup_sources: Option<crate::remote_backup::BackupSources>,
 }
 #[derive(Deserialize)]
 struct TenantIdentity {
@@ -108,6 +118,33 @@ impl RetainedInput {
                 anyhow::bail!("authority enrollment has no Control placement")
             }
         }
+    }
+    pub(super) fn require_backup_placement(
+        &self,
+        config: &crate::runtime::RuntimeConfig,
+    ) -> Result<()> {
+        let Self::Data { configuration } = self else {
+            anyhow::bail!("data enrollment required")
+        };
+        if let (Some(original), Some(current)) = (&configuration.control, &config.control) {
+            ensure!(
+                original.backup_sources == current.backup_sources,
+                "configured backup callback enrollment changed"
+            );
+        }
+        if let (Some(original), Some(current)) =
+            (&configuration.remote_control, &config.remote_control)
+        {
+            ensure!(
+                original.backup == current.backup
+                    && (original.backup.is_none()
+                        || (original.root.public_key.as_ref() == Some(&current.root.public_key)
+                            && original.endpoints == current.endpoints
+                            && original.server_ca.as_ref() == Some(&current.server_ca))),
+                "configured backup Control enrollment changed"
+            );
+        }
+        Ok(())
     }
     pub(super) fn require_genesis(&self, store: &TenantStore, digest: &str) -> Result<()> {
         if let Self::Data { configuration } = self {

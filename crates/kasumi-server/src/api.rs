@@ -18,6 +18,7 @@ pub mod response_owner;
 
 #[derive(Clone, Default)]
 pub struct DatabaseRegistry {
+    remote_backup: Arc<std::sync::OnceLock<Arc<dyn kasumi_engine::RemoteBackupTransport>>>,
     backup_control: Arc<std::sync::OnceLock<(Arc<Database>, RequestContext)>>,
     route_epoch: Arc<AtomicU64>,
     membership_epoch: Arc<crate::readiness::MembershipEpoch>,
@@ -30,6 +31,31 @@ pub struct DatabaseRegistry {
 }
 
 impl DatabaseRegistry {
+    pub(crate) fn install_remote_backup(
+        &self,
+        transport: Arc<dyn kasumi_engine::RemoteBackupTransport>,
+    ) -> Result<()> {
+        let sources = self.retirement_sources.write().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "backup source registry unavailable")
+        })?;
+        if self.backup_control.get().is_some()
+            || !Arc::ptr_eq(
+                self.remote_backup.get_or_init(|| transport.clone()),
+                &transport,
+            )
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "another backup Control is installed",
+            ));
+        }
+        for source in sources.values() {
+            if let kasumi_engine::InstalledRetirementSource::Serving(database) = source {
+                database.install_remote_backup_transport(transport.clone())?;
+            }
+        }
+        Ok(())
+    }
     pub(crate) fn install_backup_control(
         &self,
         control: &Arc<Database>,
@@ -39,6 +65,12 @@ impl DatabaseRegistry {
             .retirement_sources
             .write()
             .map_err(|_| Error::new(ErrorCode::Unavailable, "source registry unavailable"))?;
+        if self.remote_backup.get().is_some() {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "remote backup Control is installed",
+            ));
+        }
         let (existing, context) = self
             .backup_control
             .get_or_init(|| (control.clone(), operator.clone()));
@@ -137,6 +169,11 @@ impl DatabaseRegistry {
             && let kasumi_engine::InstalledRetirementSource::Serving(database) = &source
         {
             database.install_backup_control(control, operator)?;
+        }
+        if let Some(remote) = self.remote_backup.get()
+            && let kasumi_engine::InstalledRetirementSource::Serving(database) = &source
+        {
+            database.install_remote_backup_transport(remote.clone())?;
         }
         sources.insert(identity, source);
         Ok(())

@@ -592,6 +592,39 @@ and creates only the local Control and service-security stores. It needs no
 tenant key providers. Data-only operation through a remote Control quorum still
 requires qualification before deployment.
 
+#### Backup bindings on dedicated data and Control members
+
+Before provisioning a new data-only member that will publish backups, configure
+`remote_control.backup`. Give its `principal` a Control-resource credential
+with the single `write` scope. In Control policy, grant that exact principal
+`write` on `backup_bindings`. Set `bearer_file` to its private renewable
+credential file. Its `tls` certificate and private key must present the
+current leaf used by the data member's serving Authority client. Enroll its
+current and planned replacement leaf hashes in `source_certificate_pins` on
+both sides and in that data peer's installed roster. Each running client uses
+the actual leaf that was loaded when the node opened. Use the existing
+`remote_control.endpoints` and `server_ca` for the Control voters. Keep the
+topology reader and backup writer credentials in separate files.
+
+On each dedicated Control voter, configure `control.backup_sources` with
+`tls`, `server_ca`, a private renewable `bearer_file`, `callback_principal`,
+and a `members` map keyed by data node ID. For each data node, configure its
+`admin.endpoint`, `admin.certificate_pins`, `writer_principal` and
+`source_certificate_pins`. Each writer must identify one enrolled data member
+in the committed topology. The callback credential names the Control resource
+and has the single `read` scope. Enroll its principal and the SHA-256 leaf
+pins of the Control callbacks as `callback_principal` and
+`callback_certificate_pins` on each data member. The administrative listeners
+must trust the corresponding client CAs and admit those client certificate pins.
+
+Run `kasumid check-config` and provision with these routes on each new member.
+Startup compares the configured delegation to the original encrypted enrollment.
+Install rotating bearer values by atomic replacement of their original private
+files. A session retry uses the original destination and session UUID, including
+when Control selected the claim before the data member received the response.
+Existing enrollments without a backup delegation retain their original coverage.
+Remote bindings alone provide no proof of a tenant's complete key-retirement inventory.
+
 ### Historical wrapping keys for retained objects
 
 The optional runtime field `tenant_historical_keys` maps a locally configured tenant or Control to its additional file or Transit key providers. The security audit uses its own `security_audit.historical_keys` list. Each list supplements that domain's installed primary. Historical providers need unwrap permission. New records and live catalogs continue to use the writable primary.

@@ -382,6 +382,7 @@ pub struct Administration {
     node: NodeStore,
     registry: DatabaseRegistry,
     pub(crate) control: ControlAccess,
+    pub(crate) backup_source: Option<Arc<crate::remote_backup::DataTransport>>,
     // The hosted Control operator; a data-only node has none.
     control_context: Option<RequestContext>,
     audit: Arc<SecurityAudit>,
@@ -767,15 +768,30 @@ impl Administration {
             let incarnation = state.incarnation().to_owned();
             generations.insert((name, incarnation), tenant);
         }
+        let backup_source = config
+            .remote_control
+            .as_ref()
+            .and_then(|remote| remote.backup.as_ref().map(|access| (remote, access)))
+            .map(|(remote, access)| {
+                crate::remote_backup::DataTransport::open(remote, access, admission.clone())
+            })
+            .transpose()?;
+        if let Some(source) = &backup_source {
+            registry.install_remote_backup(source.clone())?;
+        }
         let control_context = match (&control, &config.control) {
             (ControlAccess::Local(database), Some(hosted)) => {
                 let context = crate::runtime::configured_control_context(hosted)?;
+                if let Some(sources) = &hosted.backup_sources {
+                    database.install_remote_backup_verifier(
+                        crate::remote_backup::ControlVerifier::open(sources, &admission)?,
+                    )?;
+                }
                 registry.install_backup_control(database, &context)?;
                 registry.observe_membership(database)?;
                 Some(context)
             }
-            // Backup sessions claim through Control before their first upload;
-            // a data-only node installs no claim owner, so they fail closed.
+            // A dedicated Control writer, when enrolled, is attached to the data sources above.
             (ControlAccess::Remote(_), None) => None,
             _ => anyhow::bail!("configured Control placement differs from its access"),
         };
@@ -793,6 +809,7 @@ impl Administration {
             registry,
             control,
             control_context,
+            backup_source,
             audit,
             cluster,
             destinations,

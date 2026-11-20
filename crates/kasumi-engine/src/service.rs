@@ -46,6 +46,10 @@ use sha2::{Digest, Sha256};
 mod backup_checkpoints;
 #[path = "backup_control_service.rs"]
 mod backup_control_service;
+pub use backup_control_service::{
+    BackupSourceCapability, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
+    VerifiedBackupSource,
+};
 #[path = "backup_session_pages.rs"]
 pub(crate) mod backup_session_pages;
 #[path = "backup_sessions.rs"]
@@ -1186,6 +1190,8 @@ pub struct Database {
     cursors: Mutex<HashMap<String, Cursor>>,
     audit_cursor_key: std::sync::OnceLock<ring::hmac::Key>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
+    remote_backup: std::sync::OnceLock<Arc<dyn RemoteBackupTransport>>,
+    remote_backup_verifier: std::sync::OnceLock<Arc<dyn RemoteBackupSourceVerifier>>,
     backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
     local_recovery_keys: std::sync::OnceLock<Arc<dyn LocalRecoveryKeyInventory>>,
     authority_signer_keys: std::sync::OnceLock<std::sync::Weak<dyn AuthoritySignerKeyInventory>>,
@@ -1599,6 +1605,8 @@ impl Database {
             selection_rebase_warned: AtomicU64::new(0),
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             proposals: proposal_jobs::Jobs::default(),
+            remote_backup: Default::default(),
+            remote_backup_verifier: Default::default(),
             backup_control: Default::default(),
             local_recovery_keys: Default::default(),
             authority_signer_keys: Default::default(),

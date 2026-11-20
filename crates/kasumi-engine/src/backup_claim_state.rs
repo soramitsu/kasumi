@@ -19,15 +19,115 @@ pub(crate) type OutstandingWriteHook = Box<dyn Fn(uuid::Uuid, bool) + Send + Syn
 pub(crate) static OUTSTANDING_WRITE_HOOK: std::sync::Mutex<Option<OutstandingWriteHook>> =
     std::sync::Mutex::new(None);
 
+#[derive(serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Delegation {
+    pub confirmation: kasumi_types::RemoteBackupConfirmation,
+    pub topology_version: u64,
+}
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ClaimCommand {
     pub context: RequestContext,
     pub epoch: u64,
     pub timestamp_ms: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remote_source: Option<Box<Delegation>>,
     pub claim: BackupBindingClaim,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub terminal: Option<BackupBindingTerminal>,
+}
+
+/// Only the dedicated backup command uses this reserved grant. Ordinary
+/// document writes to Control metadata keep their administrative requirement.
+pub(crate) fn authorize_delegation(state: &TenantState, actor: &RequestContext) -> Result<()> {
+    let denied = || Error::new(ErrorCode::Forbidden, "dedicated backup grant required");
+    actor
+        .authorization
+        .resource()
+        .ok_or_else(denied)?
+        .require_control(&state.incarnation)?;
+    if state.tenant != crate::control::CONTROL_TENANT
+        || actor.tenant != state.tenant
+        || state.retired
+        || state.suspended
+        || actor.scopes.len() != 1
+        || !actor.scopes.contains(&Action::Write)
+        || !state.policy.grants.iter().any(|g| {
+            g.principal == actor.principal
+                && g.collection.as_deref() == Some(BACKUP_DELEGATION_COLLECTION)
+                && g.actions.contains(&Action::Write)
+        })
+    {
+        return Err(denied());
+    }
+    Ok(())
+}
+
+/// Inspect only the named route and issuing node in this authenticated
+/// generation. The stored document loan owns the bounded physical read. A
+/// storage failure must stop apply, never create a divergent logical refusal.
+pub(crate) fn route_version(
+    generation: &Generation,
+    observed: &RemoteBackupConfirmation,
+) -> anyhow::Result<Option<u64>> {
+    let state = &generation.state;
+    let source = &observed.original.reference;
+    ensure!(
+        state.tenant == crate::control::CONTROL_TENANT,
+        "backup route requires Control"
+    );
+    let collection = state
+        .collections
+        .get("topology")
+        .context("Control topology collection absent")?;
+    ensure!(
+        *collection.definition == crate::control::ControlPlane::topology_definition(),
+        "Control topology schema differs"
+    );
+    let slot = collection
+        .documents
+        .get("current")
+        .context("current Control topology absent")?;
+    let document = generation.load_document(slot)?;
+    let route = document
+        .body
+        .get("tenants")
+        .and_then(|t| t.get(&source.tenant));
+    let node = document
+        .body
+        .get("nodes")
+        .and_then(|n| n.get(source.source_node.to_string()));
+    let Some(voters) = route
+        .and_then(|r| r.get("voters"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let Some(pins) = node
+        .and_then(|n| n.get("certificate_pins"))
+        .and_then(serde_json::Value::as_array)
+    else {
+        return Ok(None);
+    };
+    let matched = route
+        .and_then(|r| r.get("incarnation"))
+        .and_then(serde_json::Value::as_str)
+        == Some(source.source_incarnation.as_str())
+        && route
+            .and_then(|r| r.get("mode"))
+            .and_then(serde_json::Value::as_str)
+            == Some("replicated")
+        && voters.len() == observed.voters.len()
+        && observed
+            .voters
+            .iter()
+            .all(|id| voters.iter().any(|v| v.as_u64() == Some(*id)))
+        && (1..=2).contains(&pins.len())
+        && pins
+            .iter()
+            .any(|p| p.as_str() == Some(observed.source_certificate_sha256.as_str()));
+    Ok(matched.then_some(document.version))
 }
 
 impl ClaimCommand {
@@ -35,6 +135,9 @@ impl ClaimCommand {
         self.claim.validate()?;
         if let Some(terminal) = &self.terminal {
             terminal.validate(&self.claim)?;
+        }
+        if let Some(source) = &self.remote_source {
+            source.confirmation.validate()?;
         }
         let mut bytes = PREFIX.to_vec();
         serde_json::to_writer(&mut bytes, self)?;
@@ -90,7 +193,48 @@ impl TenantEngine {
             .context
             .authorization
             .require_control(&state.incarnation)
-            .and_then(|()| authorize_state(&state, &command.context, None, Action::Admin));
+            .and_then(|()| {
+                if command.remote_source.is_some() {
+                    command
+                        .context
+                        .authorization
+                        .check_admitted_at(command.timestamp_ms)
+                        .and_then(|()| authorize_delegation(&state, &command.context))
+                } else {
+                    authorize_state(&state, &command.context, None, Action::Admin)
+                }
+            });
+        if let Some(source) = &command.remote_source {
+            source.confirmation.validate()?;
+            let observed = &source.confirmation;
+            let original = &observed.original.reference;
+            let action = match &command.terminal {
+                Some(terminal) => kasumi_types::RemoteBackupAction::Decide {
+                    claim: command.claim.clone(),
+                    terminal: Box::new(terminal.clone()),
+                },
+                None => kasumi_types::RemoteBackupAction::Claim {
+                    claim: command.claim.clone(),
+                },
+            };
+            let version = route_version(previous, observed)?;
+            if original.action_sha256 != kasumi_types::staged_digest(&action)?.0
+                || original.session != command.claim.session_id
+                || original.tenant != command.claim.tenant
+                || original.source_incarnation != command.claim.source_incarnation
+                || original.control_incarnation.to_string() != state.incarnation
+                || version != Some(source.topology_version)
+                || state
+                    .lifecycle_control
+                    .as_ref()
+                    .is_none_or(|state| state.retired || state.pending_change.is_some())
+            {
+                outcome = Err(Error::new(
+                    ErrorCode::Conflict,
+                    "dedicated backup source route changed",
+                ));
+            }
+        }
         if state.policy_epoch != command.epoch
             || state.suspended
             || state.retired
