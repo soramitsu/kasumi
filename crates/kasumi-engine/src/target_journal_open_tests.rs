@@ -139,6 +139,13 @@ impl Fixture {
             observed_revision: lifecycle.revision,
             observed_term: 1,
         };
+        self.sign_control_observation(observation)
+    }
+
+    fn sign_control_observation(
+        &self,
+        observation: kasumi_types::ControlIntentCommitment,
+    ) -> Result<kasumi_serving::VerifiedControlIntent> {
         let signed = kasumi_types::SignedControlIntent {
             signature: hex::encode(
                 self.control_key
@@ -2073,7 +2080,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     };
     let f = Fixture::new().await?;
     let journal = f.create()?;
-    let (mut lifecycle, _, _) = initial_dispatch(&f, true)?;
+    let (mut lifecycle, mut marked, mut packet) = initial_dispatch(&f, true)?;
     let signing_key =
         ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
             .map_err(|_| anyhow::anyhow!("fixture signing key generation failed"))?;
@@ -2180,6 +2187,38 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         authority,
     };
     journal.validate_stop(&stop)?;
+    let committed = &stop.intent.intent;
+    let observation = kasumi_types::ControlIntentCommitment {
+        intent: committed.clone(),
+        root: f.installed.root.clone(),
+        authority_partition: stop.intent.authority_partition.clone(),
+        partition_set_sha256: stop.intent.partition_set_sha256.clone(),
+        observed_policy_epoch: committed.request.expected_policy_epoch,
+        observed_revision: committed.revision,
+        observed_term: 1,
+    };
+    let verified = f.sign_control_observation(observation)?;
+    packet.command_id = committed.request.command_id;
+    packet.tenant = committed.request.tenant.clone();
+    packet.step = kasumi_types::TargetRuntimeStep::Stop(stop.stopped.observation.reference.clone());
+    marked.phase = kasumi_types::RecoveryPhase::Cleanup;
+    marked.input = kasumi_types::RecoveryDispatch::Target {
+        node_id: f.installed.node.node_id,
+        request: Box::new(packet),
+    };
+    marked.input_sha256 = kasumi_types::staged_digest(&marked.input)?.0;
+    marked
+        .effect_attempts
+        .get_mut(&kasumi_types::RecoveryEffect::TargetCommand)
+        .unwrap()
+        .input_sha256 = marked.input_sha256.clone();
+    let query = kasumi_types::TargetDeletionQuery {
+        node_id: f.installed.node.node_id,
+        operation_id: marked.operation_id,
+        phase_id: marked.phase_id,
+        target_incarnation: incarnation,
+    };
+
     let original = TargetFileBinding {
         tenant: tenant.clone(),
         target_incarnation: incarnation,
@@ -2257,8 +2296,48 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         journal.target_cleanup(&tenant, incarnation)?,
         Some(cleanup.clone())
     );
+    let observed = journal.deletion_status(&query, &verified, &marked)?;
+    assert_eq!(
+        observed.progress,
+        kasumi_types::TargetDeletionProgress::Deleting
+    );
+    assert_eq!(
+        observed.binding_sha256,
+        Some(kasumi_serving::digest(&original)?)
+    );
+    let mut other = query.clone();
+    other.phase_id = Uuid::new_v4();
+    assert!(journal.deletion_status(&other, &verified, &marked).is_err());
+    let mut no_attempt = marked.clone();
+    no_attempt.effect_attempts.clear();
+    assert!(
+        journal
+            .deletion_status(&query, &verified, &no_attempt)
+            .is_err()
+    );
     drop(journal);
     let mut terminal = cleanup;
+    for (stage, expected) in [
+        (
+            TargetCleanupStage::Unlinked,
+            kasumi_types::TargetDeletionProgress::Unlinked,
+        ),
+        (
+            TargetCleanupStage::ParentSynced,
+            kasumi_types::TargetDeletionProgress::ParentSynced,
+        ),
+    ] {
+        terminal.stage = stage;
+        store.write_batch(&[WriteOp::put(
+            NS,
+            key.clone(),
+            serde_json::to_vec(&terminal)?,
+        )])?;
+        let next = reopen()?.deletion_status(&query, &verified, &marked)?;
+        assert_eq!(next.progress, expected);
+        assert_eq!(next.binding_sha256, observed.binding_sha256);
+        assert_eq!(next.attempt_id, observed.attempt_id);
+    }
     terminal.stage = TargetCleanupStage::Deleted;
     store.write_batch(&[WriteOp::put(
         NS,

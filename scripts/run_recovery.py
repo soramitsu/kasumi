@@ -13,12 +13,10 @@ point only when the product's own durable record afterwards shows that point
 begun and not completed. Activation is raced by two clients, and a stop
 after committed activation must not turn the recovery back.
 
-The eight target-local deletion sub-phases are not reported by any Kasumi
-interface today: Control status names only stop_activation, stop_target,
-cleanup and stopped. ``deletion_stage`` therefore returns None, those sixteen
-cells stay open and the run fails after retaining everything it could do.
-The adapter replays the same script, so it accepts exactly what this runner
-could honestly establish.
+A per-target observer profile reads the original Control attempt and physical
+journal over pinned mTLS. Exact unlink, parent sync and evidence publication
+are counted only around a positively observed, unfinished target stage.
+Each omitted or missed witness remains an open qualification cell.
 """
 from __future__ import annotations
 
@@ -83,14 +81,7 @@ SCENARIOS = ({f"{label}-{fault}" for label in (*RECOVERY_LABELS.values(), *DELET
 
 
 def deletion_stage(record):
-    """The target-local deletion sub-phase a Control status reports, if any.
-
-    No Kasumi interface reports one: the Control record names the pending stop
-    phase only, and the signed target cleanup fact carries no sub-phase. An
-    injection cannot be placed inside issuer drain, gate closure, worker or
-    storage drain, exact deletion, parent sync or durable evidence, so none
-    is claimed. Supply a product witness here before those cells can pass.
-    """
+    """A Control head alone cannot establish a physical target subphase."""
     return None
 
 
@@ -125,7 +116,11 @@ def check_plan(plan):
     require(isinstance(plan["targets"], list) and len(plan["targets"]) == 3,
             "recovery needs three separately installed target processes")
     for target in plan["targets"]:
-        owned.exact(target, {"id", "config"}, "recovery target")
+        fields = {"id", "config"}
+        if "observer_profile" in target:
+            fields.add("observer_profile")
+            absolute(target["observer_profile"], "target observer profile")
+        owned.exact(target, fields, "recovery target")
         require(isinstance(target["id"], str) and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", target["id"]),
                 "recovery target name is invalid")
         absolute(target["config"], "recovery target configuration")
@@ -189,6 +184,18 @@ def retained_inputs(read, leaf, plan_path, admitted):
         targets.append(target_member(target, config, nodes, requests["finished"],
                                      leaf("target-certificate-" + target["id"],
                                           config["replication"]["listener"]["tls"]["certificate"])))
+    for declared, target in zip(plan["targets"], targets, strict=True):
+        if "observer_profile" in declared:
+            path = declared["observer_profile"]
+            profile = read("target-observer-" + target["id"], path)
+            resource = profile.get("resource") or {}
+            member = (profile.get("administrative_members") or {}).get(str(target["node_id"])) or {}
+            require(resource.get("kind") == "control"
+                    and set(profile["administrative_members"]) == {str(target["node_id"])}
+                    and member.get("certificate_pins") == [target["leaf_sha256"]],
+                    "target observer must select its original pinned member")
+            target["observer_profile"] = path
+            target["observer_resource"] = resource
     profiles = {"control": read("control-profile", plan["control_profile"]),
                 "data": read("data-profile", plan["data_profile"]),
                 "control_members": {key: read("control-" + key, path)
@@ -241,6 +248,10 @@ class Context:
                     and profile.get("tenant") == tenant
                     and profile.get("resource") == {"kind": "database", "incarnation": source},
                     "source member profile does not select its own source voter")
+        for target in self.targets:
+            if "observer_profile" in target:
+                require(target["observer_resource"] == control["resource"],
+                        "target observer belongs to another Control resource")
         self.live = set()
         self.status_request = None
 
@@ -368,6 +379,128 @@ def crash(d, ctx, operation, cell, counted, start):
     return {"landed": False, "reason": "no fault interrupted a begun step"}
 
 
+# A selected durable stage denotes only its own unfinished next action.
+# After an exact unlink, the parent sync is pending; after that sync, durable
+# finalization is pending. The observational terminal row has no fault window.
+PENDING_DELETION = {"deleting": "exact-deletion", "unlinked": "parent-sync",
+                    "parent_synced": "durable-evidence"}
+
+
+def deletion_view(d, ctx, query, target, label):
+    argv = ctx.kasumid("control-recovery", "target-deletion", target["observer_profile"],
+                       query["operation_id"], query["phase_id"], query["target_incarnation"],
+                       str(query["node_id"]), str(ctx.timeout))
+    code, raw = d.attempt(label, argv)
+    if code:
+        return None, raw
+    status = driver.decode(raw)
+    owned.exact(status, {"query", "intent_id", "attempt_id", "stop_receipt_sha256",
+                         "binding_sha256", "progress"}, "target deletion status")
+    require(status["query"] == query and all(isinstance(status[k], str)
+            and UUID.fullmatch(status[k]) and status[k] != "00000000-0000-0000-0000-000000000000"
+            for k in ("intent_id", "attempt_id"))
+            and isinstance(status["stop_receipt_sha256"], str)
+            and re.fullmatch(r"[a-f0-9]{64}", status["stop_receipt_sha256"])
+            and status["progress"] in {"stop_recorded", "deleted", *PENDING_DELETION},
+            "target returned a foreign or malformed deletion observation")
+    binding = status["binding_sha256"]
+    require((isinstance(binding, str) and re.fullmatch(r"[a-f0-9]{64}", binding))
+            or (binding is None and status["progress"] in {"stop_recorded", "deleted"}),
+            "target deletion lacks its bound generation")
+    return status, raw
+
+
+def target_deletion_fault(d, ctx, operation, phase_id, step, facts):
+    """Interrupt a registered resume while its exact local durable stage persists."""
+    prefix = f"target-deletion-{step:04d}"
+    phase_bytes = d.call(prefix + "-phase", ctx.recovery("phase", operation, phase_id, str(ctx.timeout)))
+    phase = driver.decode(phase_bytes)
+    require(phase is not None, "Control deletion phase read did not return a record")
+    if (phase.get("operation_id") != operation or phase.get("phase_id") != phase_id
+            or phase.get("phase") != "cleanup" or phase.get("outcome") is not None):
+        return
+    dispatch = phase.get("input") or {}
+    if dispatch.get("kind") != "target":
+        return
+    packet = dispatch["input"]
+    target = next((t for t in ctx.targets if t["node_id"] == packet["node_id"]), None)
+    require(target is not None, "pending cleanup names an uninstalled target")
+    if "observer_profile" not in target:
+        return
+    request = packet["request"]
+    if set(request["step"]) != {"Stop"}:
+        return
+    query = {"operation_id": operation, "phase_id": phase_id, "node_id": target["node_id"],
+             "target_incarnation": ctx.stopped["target_incarnation"]}
+    # A new durable Control phase has one writer in this experiment. An
+    # earlier TargetCommand could have left an unrelated producer in flight.
+    if phase.get("effect_attempts") != {}:
+        return
+    if target["node_id"] == min(t["node_id"] for t in ctx.targets):
+        # Abort this exact caller while its previously unmarked command is
+        # running at the target. Terminal, skipped and raced stages do not count.
+        client = prefix + "-resume"
+        d.spawn_client(client, ctx.resume(operation, ctx.timeout))
+        ended = False
+        try:
+            for poll in range(min(ctx.polls, 16)):
+                observed, raw = deletion_view(d, ctx, query, target, prefix + f"-before-{poll}")
+                if observed is None:
+                    d.pause(ctx.pause)
+                    continue
+                if observed["progress"] == "deleted":
+                    return
+                label = PENDING_DELETION.get(observed["progress"])
+                if label is None:
+                    continue
+                receipt = d.crash(client, raw)
+                ended = True
+                after, _ = deletion_view(d, ctx, query, target, prefix + "-after-disconnect")
+                if after != observed:
+                    return
+                fault = "cancellation"
+                break
+            else:
+                return
+        finally:
+            if not ended:
+                d.end_client(client)
+    else:
+        # The exact target is unavailable until the original (failed) caller
+        # finishes. No resume is issued after restart before the cold read.
+        result = d.faulted(prefix + "-crash", ctx.resume(operation, ctx.timeout),
+                           target["id"], phase_bytes,
+                           ctx.parameters["fault_delays"][(step % len(ctx.parameters["fault_delays"]))])
+        ctx.live.discard(target["node_id"])
+        spawn(d, ctx, target["node_id"])
+        if not driver.interrupted(result):
+            return
+        after = None
+        for poll in range(min(ctx.polls, 16)):
+            after, _ = deletion_view(d, ctx, query, target, prefix + f"-cold-{poll}")
+            if after is not None:
+                break
+            d.pause(ctx.pause)
+        if after is None:
+            return
+        label = PENDING_DELETION.get(after["progress"])
+        if label is None:
+            return
+        fault = "crash"
+        receipt = {"id": result["process"]}
+    require(after["intent_id"] == request["command_id"], "local StopLocal intent differs")
+    # A stop replay can refer to another accepted administrative command. Its
+    # reference digest alone does not prove the local first stop was identical.
+    # The authenticated target checked the full original reference in Control.
+    cell = label + "-" + fault
+    facts["cells"][cell] = {"landed": True, "victim": target["node_id"],
+        "operation": operation, "phase_id": phase_id, "attempt_id": after["attempt_id"],
+        "progress": after["progress"], "binding_sha256": after["binding_sha256"],
+        "stop_receipt_sha256": after["stop_receipt_sha256"]}
+    d.mark(cell, receipt["id"], -9)
+    d.count_observation(cell)
+
+
 def drive(d, ctx, operation, label, terminal, facts, hooks=()):
     """Advance one product step at a time; fault each observable point once."""
     seen, phases = set(), []
@@ -377,6 +510,13 @@ def drive(d, ctx, operation, label, terminal, facts, hooks=()):
             phases.append(value["phase"])
         if value["phase"] == terminal:
             return value, phases
+        if (value["phase"] == "cleanup" and value.get("pending_phase")
+                and any("observer_profile" in target for target in ctx.targets)):
+            phase_id = value["pending_phase"]
+            if phase_id not in seen:
+                seen.add(phase_id)
+                target_deletion_fault(d, ctx, operation, phase_id, step, facts)
+                continue
         here = point(value)
         cell, counted = cell_label(value)
         if cell is not None and here not in seen:

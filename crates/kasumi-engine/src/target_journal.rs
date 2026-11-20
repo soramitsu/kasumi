@@ -959,6 +959,94 @@ impl TargetJournal {
         Ok(Some(cleanup))
     }
 
+    /// Observe under the original journal lock. No generation opens and no
+    /// cleanup command is admitted by this read. The two installed signers and
+    /// the original physical binding are checked again before returning.
+    pub fn deletion_status(
+        &self,
+        query: &kasumi_types::TargetDeletionQuery,
+        original: &kasumi_serving::VerifiedControlIntent,
+        marked: &kasumi_types::RecoveryPhaseRecord,
+    ) -> Result<kasumi_types::TargetDeletionStatus> {
+        use kasumi_types::{
+            RecoveryDispatch, RecoveryEffect, RecoveryPhase, TargetDeletionProgress,
+            TargetRuntimeStep,
+        };
+        query.validate()?;
+        marked.validate()?;
+        let observed = original.observation();
+        let intent = &observed.intent;
+        let RecoveryDispatch::Target { node_id, request } = &marked.input else {
+            anyhow::bail!("deletion phase is not a target effect");
+        };
+        let TargetRuntimeStep::Stop(reference) = &request.step else {
+            anyhow::bail!("deletion phase is not StopLocal");
+        };
+        let attempt = marked
+            .effect_attempts
+            .get(&RecoveryEffect::TargetCommand)
+            .context("deletion effect has not begun")?;
+        ensure!(
+            marked.operation_id == query.operation_id
+                && marked.phase_id == query.phase_id
+                && marked.phase == RecoveryPhase::Cleanup
+                && *node_id == query.node_id
+                && query.node_id == self.installed.node.node_id
+                && observed.root == self.installed.root
+                && intent.control_incarnation == observed.root.control_incarnation
+                && request.command_id == intent.request.command_id
+                && request.tenant == intent.request.tenant
+                && intent.request.target_incarnation == query.target_incarnation
+                && intent.request.phase == LifecyclePhase::StopLocal
+                && attempt.input_sha256 == marked.input_sha256,
+            "original Control deletion dispatch differs"
+        );
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let bytes = self
+            .store
+            .get_bounded(
+                NS,
+                &stop_key(&request.tenant, query.target_incarnation),
+                MAX_RECORD,
+            )?
+            .context("local permanent stop has not been recorded")?;
+        let stop: TargetJournalStop = decode_current(&bytes)?;
+        self.validate_stop(&stop)?;
+        ensure!(
+            &stop.intent.intent == intent
+                && stop.intent.partition_set_sha256 == observed.partition_set_sha256
+                && stop.intent.authority_partition == observed.authority_partition
+                && stop.stopped.observation.reference == *reference,
+            "local signed stop differs from original Control effect"
+        );
+        let binding =
+            self.materialization_file_binding(&request.tenant, query.target_incarnation)?;
+        let progress = match self
+            .target_cleanup(&request.tenant, query.target_incarnation)?
+            .map(|record| record.stage)
+        {
+            None => TargetDeletionProgress::StopRecorded,
+            Some(TargetCleanupStage::Deleting) => TargetDeletionProgress::Deleting,
+            Some(TargetCleanupStage::Unlinked) => TargetDeletionProgress::Unlinked,
+            Some(TargetCleanupStage::ParentSynced) => TargetDeletionProgress::ParentSynced,
+            Some(TargetCleanupStage::Deleted) => TargetDeletionProgress::Deleted,
+        };
+        let result = kasumi_types::TargetDeletionStatus {
+            query: query.clone(),
+            intent_id: request.command_id,
+            attempt_id: attempt.attempt_id,
+            stop_receipt_sha256: stop.stopped.observation.stop.digest()?,
+            binding_sha256: binding.as_ref().map(kasumi_serving::digest).transpose()?,
+            progress,
+        };
+        result.validate_for(query)?;
+        Ok(result)
+    }
+
     /// Advance the local cleanup of a permanently stopped target. Only a first
     /// record, an exact replay, or the immediate next stage of the same
     /// binding is accepted. The terminal outcome never changes.

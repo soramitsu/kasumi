@@ -218,11 +218,14 @@ service KasumiTargetRecovery {
   rpc Execute(TargetExecuteRequest) returns (TargetRuntimeResponse);
   rpc ReadInitialMembershipHistory(TargetHistoryQuery) returns (TargetHistoryStatus);
   rpc ReadInitialStart(TargetStartQuery) returns (TargetStartStatus);
+  rpc ReadDeletionStatus(TargetDeletionQuery) returns (TargetDeletionStatus);
 }
 message TargetExecuteRequest { bytes envelope_json = 1; }
 message TargetRuntimeResponse { bytes response_json = 1; }
 message TargetHistoryQuery { bytes query_json = 1; }
 message TargetHistoryStatus { bytes status_json = 1; }
+message TargetDeletionQuery { bytes query_json = 1; }
+message TargetDeletionStatus { bytes status_json = 1; }
 message TargetStartQuery { bytes query_json = 1; }
 message TargetStartStatus { bytes status_json = 1; }
 

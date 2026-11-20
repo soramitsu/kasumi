@@ -871,6 +871,14 @@ impl ControlRecoveryCoordinator {
                     } else {
                         None
                     };
+                    // StopLocal can resume its exact journaled deletion after an
+                    // interrupted RPC. Commit its single Control effect identity
+                    // before the first send; later calls keep that original row.
+                    if matches!(request.step, TargetRuntimeStep::Stop(_)) && prior_attempt.is_none()
+                    {
+                        let ticket = prepared.begin_effect(RecoveryEffect::TargetCommand).await?;
+                        ticket.consume(&prepared.record().input).await?;
+                    }
                     let envelope = TargetExecuteRequest {
                         request: request.as_ref().clone(),
                         initial_dispatch,

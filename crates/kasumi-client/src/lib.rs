@@ -848,7 +848,7 @@ fn authorized<T>(bearer: &str, value: T) -> Result<Request<T>, ClientError> {
 mod staged_status;
 
 mod target;
-pub use target::{KasumiTargetClient, TargetAcknowledgement};
+pub use target::{KasumiTargetClient, TargetAcknowledgement, read_target_deletion_status};
 
 #[cfg(test)]
 mod authorization_tests {

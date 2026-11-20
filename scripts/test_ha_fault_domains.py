@@ -16,7 +16,8 @@ from pathlib import Path
 import shutil
 import sys
 import unittest
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import attempt_index
 import domain_run
@@ -903,6 +904,68 @@ class RecoveryTests(RecoveryFixture):
             self.run_recovery("recovery-same")
         outcome = owned.read(self.root / "runs/recovery-same/outcome.json")
         self.assertEqual((outcome["status"], outcome["dispatch_started"]), ("failed", False))
+
+
+class DeletionObservationTests(unittest.TestCase):
+    operation = "aa000000-0000-0000-0000-000000000001"
+    phase = "bb000000-0000-0000-0000-000000000002"
+    incarnation = "cc000000-0000-0000-0000-000000000003"
+    intent = "dd000000-0000-0000-0000-000000000004"
+    attempt = "ee000000-0000-0000-0000-000000000005"
+
+    def observed(self, node, progress="deleting"):
+        return {"query": {"operation_id": self.operation, "phase_id": self.phase,
+                          "target_incarnation": self.incarnation, "node_id": node},
+                "intent_id": self.intent, "attempt_id": self.attempt,
+                "stop_receipt_sha256": "a" * 64, "binding_sha256": "b" * 64,
+                "progress": progress}
+
+    def run_fault(self, node, stages, interrupted=True, begun=False):
+        targets = [{"id": f"target-{i}", "node_id": i, "observer_profile": "observer"}
+                   for i in [11, 12, 13]]
+        router = lambda *fields: list(fields)
+        ctx = SimpleNamespace(targets=targets, live={11, 12, 13}, stopped={"target_incarnation": self.incarnation},
+                              polls=2, pause=0, timeout=9000, recovery=router, kasumid=router,
+                              resume=router, parameters={"fault_delays": [0.2]},
+                              by_node={t["node_id"]: {**t, "executable": {}, "config": "installed"} for t in targets})
+        phase = {"operation_id": self.operation, "phase_id": self.phase, "phase": "cleanup",
+                 "outcome": None, "effect_attempts": {"target_command": {}} if begun else {},
+                 "input": {"kind": "target", "input": {"node_id": node,
+                          "request": {"command_id": self.intent, "step": {"Stop": {}}}}}}
+        d = Mock()
+        d.call.return_value = json.dumps(phase).encode()
+        d.attempt.side_effect = [(0, json.dumps(v).encode()) for v in stages]
+        d.crash.return_value = {"id": "caller"}
+        d.faulted.return_value = {"process": "target", "exit_code": 1 if interrupted else 0,
+                                  "started": 1, "fault_elapsed": 2, "finished": 3}
+        facts = {"cells": {}}
+        recovery.target_deletion_fault(d, ctx, self.operation, self.phase, 0, facts)
+        return d, facts
+
+    def test_caller_disconnection_requires_unchanged_original_pending_journal(self):
+        original = self.observed(11)
+        driver, facts = self.run_fault(11, [original, original])
+        self.assertTrue(facts["cells"]["exact-deletion-cancellation"]["landed"])
+        driver.mark.assert_called_once_with("exact-deletion-cancellation", "caller", -9)
+        for after in (self.observed(11, "unlinked"), {**original, "attempt_id": self.intent}):
+            driver, facts = self.run_fault(11, [original, after])
+            self.assertFalse(facts["cells"])
+            driver.mark.assert_not_called()
+
+    def test_only_cold_unfinished_target_after_original_inflight_crash_counts(self):
+        driver, facts = self.run_fault(12, [self.observed(12, "unlinked")])
+        self.assertEqual(facts["cells"]["parent-sync-crash"]["victim"], 12)
+        driver.mark.assert_called_once_with("parent-sync-crash", "target", -9)
+        for stages, interrupted, begun in (([], False, False), ([], True, True),
+                                            ([self.observed(12, "deleted")], True, False)):
+            driver, facts = self.run_fault(12, stages, interrupted, begun)
+            self.assertFalse(facts["cells"])
+            driver.mark.assert_not_called()
+
+    def test_substituted_target_and_missing_physical_binding_are_refused(self):
+        for observation in (self.observed(11), {**self.observed(12), "binding_sha256": None}):
+            with self.assertRaises(ValueError):
+                self.run_fault(12, [observation])
 
 
 if __name__ == "__main__":

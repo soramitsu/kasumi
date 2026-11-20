@@ -87,6 +87,8 @@ fn missing_target_owner(message: impl Into<String>) -> Error {
 }
 #[path = "target_cleanup.rs"]
 mod cleanup;
+#[path = "target_deletion_status.rs"]
+mod deletion_status;
 #[path = "target_membership_status.rs"]
 mod initial_membership_status;
 #[path = "target_start_status.rs"]
