@@ -582,6 +582,17 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     control_auth
         .install_audit(audits[control_index].clone())
         .unwrap();
+    let control_bearer = make_token(
+        "operator",
+        crate::runtime::CONTROL_TENANT,
+        "control",
+        control_inc,
+        "kasumi:admin",
+    );
+    let control_operator = control_auth
+        .authenticate(&format!("Bearer {control_bearer}"))
+        .await
+        .unwrap();
     let failed = |i: usize, participant: &str| {
         crate::administration::OriginalRecoveries::new(
             &physicals[i].admission,
@@ -880,6 +891,115 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         .await
         .unwrap();
     assert_eq!(cleanup.session_id, aborted_id);
+    let ReplicatedGenesis::Control(genesis) = &control_config.genesis else {
+        unreachable!()
+    };
+    let kasumi_engine::ControlLifecycleGenesis::Installed { installation, .. } = &genesis.lifecycle
+    else {
+        unreachable!()
+    };
+    // Commit both recoveries through the live Control leader. A selected
+    // record alone cannot establish which historical keys protect the graph.
+    let historical_recovery = Uuid::new_v4();
+    let wrong_purpose_recovery = Uuid::new_v4();
+    let original_purpose = &observation.source_purpose_sha256;
+    assert_eq!(
+        original_purpose,
+        &committed.record.claim.source_purpose_sha256
+    );
+    let wrong_purpose =
+        kasumi_serving::digest(&("distinct backup purpose", original_purpose)).unwrap();
+    assert_ne!(*original_purpose, wrong_purpose);
+    let physical_target_keys: BTreeMap<_, _> = data_config
+        .voters
+        .keys()
+        .map(|id| {
+            let key = rcgen::KeyPair::generate_for(&rcgen::PKCS_ED25519).unwrap();
+            (*id, hex::encode(key.public_key_raw()))
+        })
+        .collect();
+    for (operation_id, purpose) in [
+        (historical_recovery, original_purpose),
+        (wrong_purpose_recovery, &wrong_purpose),
+    ] {
+        let target_incarnation = Uuid::new_v4();
+        let start = RecoveryStart {
+            operation_id,
+            tenant: tenant.into(),
+            source_incarnation: data_inc,
+            source_authority_epoch: 1,
+            target_incarnation,
+            checkpoint: complete.checkpoint().clone(),
+            source_purpose_sha256: purpose.clone(),
+            source_mode: RecoverySourceMode::SourceUnavailable,
+            installation_sha256: kasumi_serving::digest(installation).unwrap(),
+            expected_policy_epoch: 1,
+            authority_policy_epoch: 1,
+            authority_partition: manifest.control_partition(0).unwrap().key(),
+            dispatch_configuration_sha256: kasumi_serving::digest(&data_config.voters).unwrap(),
+            target_nodes: data_config
+                .voters
+                .keys()
+                .map(|id| {
+                    (
+                        *id,
+                        LifecycleNode {
+                            node_id: *id,
+                            verifier: kasumi_serving::test_utils::fixture_verifier(*id),
+                            principal: format!("target-{id}"),
+                            certificate_sha256: ids.pin(*id as usize),
+                            attestation_public_key: physical_target_keys[id].clone(),
+                        },
+                    )
+                })
+                .collect(),
+            materialization: TargetMaterializationInput {
+                source_purpose_sha256: purpose.clone(),
+                destination_alias: request.destination.clone(),
+                backup_id: session,
+                target_incarnation,
+                voters: data_config
+                    .voters
+                    .iter()
+                    .map(|(id, voter)| {
+                        (
+                            *id,
+                            TargetPeer {
+                                endpoint: voter.address.clone(),
+                                failure_domain: voter.failure_domain.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+            phase_timeout_ms: 60_000,
+        };
+        if operation_id == historical_recovery {
+            let unbounded = RequestContext::trusted(
+                crate::runtime::CONTROL_TENANT,
+                "operator",
+                [Action::Admin],
+            );
+            let refused = control
+                .recovery_control(
+                    unbounded,
+                    RecoveryControlCommand::Start(Box::new(start.clone())),
+                )
+                .await
+                .err()
+                .expect("original recovery credentials must expire");
+            assert_eq!(refused.code, ErrorCode::Unauthorized);
+        }
+        let recovered = control
+            .recovery_control(
+                control_operator.clone(),
+                RecoveryControlCommand::Start(Box::new(start.clone())),
+            )
+            .await
+            .unwrap();
+        assert_eq!(recovered.record().request, start);
+        recovered.release().await.unwrap();
+    }
     let retention = ReadKeyRetentionRequest {
         scope: KeyRetentionScope::Tenant {
             tenant: tenant.into(),
@@ -899,9 +1019,11 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     write_token(&callback_path, &callback);
     let mut scan = retention.clone();
     let mut references = BTreeSet::new();
+    let mut unreadable = BTreeSet::new();
     loop {
         let page = admin.read_key_retention(&operator, &scan).await.unwrap();
         if let KeyRetentionCoverage::Incomplete { missing, .. } = &page.coverage {
+            unreadable.extend(missing.iter().cloned());
             assert!(
                 !missing.iter().any(|e| matches!(
                     e,
@@ -931,6 +1053,24 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
             |r| matches!(r,KeyReference::CompletedBackup{backup_id,..} if *backup_id==session)
         )
     );
+    assert!(references.contains(&KeyReference::RecoveryRecord {
+        operation_id: historical_recovery
+    }));
+    assert!(!references.contains(&KeyReference::RecoveryRecord {
+        operation_id: wrong_purpose_recovery
+    }));
+    assert!(
+        !unreadable.contains(&MissingKeyDependency::RecordUnreadable {
+            record_kind: KeyReferenceKind::RecoveryRecord,
+            id: historical_recovery.to_string(),
+        })
+    );
+    assert!(
+        unreadable.contains(&MissingKeyDependency::RecordUnreadable {
+            record_kind: KeyReferenceKind::RecoveryRecord,
+            id: wrong_purpose_recovery.to_string(),
+        })
+    );
     let manifest = PathBuf::from(format!(
         "external/sessions/{session}/objects/{session}.kasumi"
     ));
@@ -949,6 +1089,10 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     assert!(missing.contains(&MissingKeyDependency::RecordUnreadable {
         record_kind: KeyReferenceKind::CompletedBackup,
         id: session.to_string()
+    }));
+    assert!(missing.contains(&MissingKeyDependency::RecordUnreadable {
+        record_kind: KeyReferenceKind::RecoveryRecord,
+        id: historical_recovery.to_string(),
     }));
     assert!(!missing.contains(&MissingKeyDependency::SessionIndexUnavailable {}));
     // A live transport token and unchanged member pin cannot restore a
@@ -1012,15 +1156,6 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     revoked
         .grants
         .retain(|g| g.collection.as_deref() != Some(BACKUP_DELEGATION_COLLECTION));
-    let ReplicatedGenesis::Control(genesis) = &control_config.genesis else {
-        unreachable!()
-    };
-    let kasumi_engine::ControlLifecycleGenesis::Installed { installation, .. } = &genesis.lifecycle
-    else {
-        unreachable!()
-    };
-    let control_operator =
-        RequestContext::trusted(crate::runtime::CONTROL_TENANT, "operator", [Action::Admin]);
     control
         .lifecycle_control(
             control_operator,
