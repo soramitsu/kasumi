@@ -1546,10 +1546,10 @@ async fn resolve(root: &Path) -> anyhow::Result<()> {
         resolutions.push(resolution);
     }
     for ordinal in plan.reserve_start()..plan.sessions {
-        if !done.contains_key(&ordinal) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = done.entry(ordinal) {
             let original = run_session(&inst, &plan, ordinal, "resolve").await?;
             journal.append(&original)?;
-            done.insert(ordinal, original);
+            entry.insert(original);
         }
     }
     journal.sync()?;
