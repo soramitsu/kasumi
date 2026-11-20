@@ -2799,3 +2799,350 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
 
 #[path = "document_store_native_tests.rs"]
 mod document_store_native_tests;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[allow(
+    clippy::result_large_err,
+    reason = "This fixture returns whole native failure custody; boxing or erasing it would change the ownership behavior under test."
+)]
+async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
+-> crate::test_fixture_failure::FixtureResult<()> {
+    use kasumi_store::text_manifest::TextManifest;
+    async fn audit(
+        node: &kasumi_store::NodeStore,
+        admission: &Arc<NodeAdmission>,
+        existing: bool,
+    ) -> crate::test_fixture_failure::FixtureResult<Arc<crate::SecurityAudit>> {
+        let key = Arc::new(LocalKeyProvider::new([121; 32]));
+        Ok(if existing {
+            let store = kasumi_store::TenantStore::open_existing_fixture(
+                node.clone(),
+                crate::SECURITY_TENANT.into(),
+                key,
+            )
+            .await?;
+            crate::SecurityAudit::open(store, Default::default(), admission.clone())?
+        } else {
+            let store = kasumi_store::TenantStore::initialize_catalog_fixture(
+                node.clone(),
+                crate::SECURITY_TENANT.into(),
+                key,
+            )
+            .await?;
+            crate::SecurityAudit::initialize(store, Default::default(), admission.clone())?
+        })
+    }
+    async fn search(
+        db: &crate::Database,
+        context: &kasumi_types::RequestContext,
+        query: &str,
+    ) -> crate::test_fixture_failure::FixtureResult<Vec<String>> {
+        let response = db
+            .query(
+                context,
+                kasumi_types::QueryRequest::new("docs")
+                    .search(kasumi_types::TextSearch::new("text", query)),
+            )
+            .await?;
+        let mut ids: Vec<String> = response
+            .as_ref()
+            .rows
+            .iter()
+            .map(|row| row.id.clone())
+            .collect();
+        ids.sort();
+        Ok(ids)
+    }
+    fn search_generation(
+        generation: &Arc<crate::Generation>,
+        admission: &Arc<NodeAdmission>,
+        query: &str,
+    ) -> crate::test_fixture_failure::FixtureResult<Vec<String>> {
+        let mut memory = kasumi_query::QueryMemory::empty(admission.reserve(0, None)?);
+        let request = kasumi_types::QueryRequest::new("docs")
+            .search(kasumi_types::TextSearch::new("text", query));
+        let response = crate::test_utils::fixture_query(generation, &request, &mut memory)?;
+        let mut ids: Vec<String> = response.rows.into_iter().map(|row| row.id).collect();
+        ids.sort();
+        Ok(ids)
+    }
+
+    let mut source = Fixture::new().await?;
+    let source_audit = audit(&source.node, &source.storage.admission, false).await?;
+    crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
+    let engine = Arc::new(TenantEngine::from_bootstrap(
+        "selected-sources",
+        &source.image,
+    )?);
+    engine.install_storage_access(source.stores.application())?;
+    let group = format!(
+        "selected-sources/{}",
+        engine.generation()?.state.incarnation
+    );
+    let db = crate::service::construction::DatabaseConstruction::new(
+        source.stores.clone(),
+        source_audit.clone(),
+    )?
+    .start_replicated(
+        engine.clone(),
+        &source.image,
+        1,
+        group.clone(),
+        Arc::new(kasumi_raft::InProcessRouter::default()),
+        Default::default(),
+    )
+    .await?;
+    db.raft_group()
+        .initialize(std::collections::BTreeMap::from([(
+            1,
+            kasumi_raft::BasicNode::new("text-source"),
+        )]))
+        .await?;
+    db.raft_group()
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(10)))
+        .current_leader(1, "text directory leader")
+        .await?;
+    let context = kasumi_types::RequestContext {
+        authorization: kasumi_types::RequestAuthorization::service_identity(),
+        tenant: "selected-sources".into(),
+        principal: "owner".into(),
+        scopes: std::collections::BTreeSet::from([Action::Admin, Action::Read, Action::Write]),
+        request_id: "text-directory".into(),
+    };
+    db.administer(
+        context.clone(),
+        kasumi_types::Operation::CreateCollection(kasumi_types::CollectionDefinition {
+            name: "docs".into(),
+            write_mode: kasumi_types::CollectionWriteMode::Mutable,
+            retention_class: kasumi_types::CollectionRetentionClass::Operational,
+            schema: serde_json::json!({"type": "object"}),
+            indexes: vec![kasumi_types::IndexDefinition {
+                name: "text".into(),
+                fields: vec![kasumi_types::IndexField {
+                    path: "/title".into(),
+                    kind: kasumi_types::ScalarType::String,
+                }],
+                unique: false,
+                text: Some(kasumi_types::TextIndex {
+                    analyzer: kasumi_types::Analyzer::UnicodeV1,
+                }),
+            }],
+            strict_read_audit: false,
+        }),
+    )
+    .await?;
+    for (id, title) in [("a", "alpha shared"), ("b", "beta shared")] {
+        db.mutate(
+            context.clone(),
+            kasumi_types::MutationBatch::new().upsert(
+                "docs",
+                id,
+                serde_json::json!({ "title": title }),
+            ),
+        )
+        .await?;
+    }
+    assert_eq!(search(&db, &context, "shared").await?, ["a", "b"]);
+    let generation = engine.generation()?;
+    // Ordinary writes keep the directory current at every published revision
+    // and build no resident text index.
+    assert_eq!(
+        generation.indexes.text_residency(),
+        kasumi_query::TextResidency::Directory
+    );
+    let manifest = TextManifest::load(source.stores.application())?.unwrap();
+    assert!(manifest.is_current());
+    assert_eq!(manifest.revision, generation.state.revision);
+    drop(generation);
+
+    let expected = db
+        .raft_group()
+        .linearizable_barrier()
+        .await?
+        .expect("initialized text log");
+    db.raft_group().snapshot().await?;
+    db.raft_group()
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(10)))
+        .snapshot(expected, "text directory snapshot")
+        .await?;
+    // Entries after the snapshot replay as covered publications on reopen.
+    db.mutate(
+        context.clone(),
+        kasumi_types::MutationBatch::new()
+            .upsert("docs", "a", serde_json::json!({"title": "gamma shared"}))
+            .delete("docs", "b"),
+    )
+    .await?;
+    assert_eq!(search(&db, &context, "shared").await?, ["a"]);
+    assert!(search(&db, &context, "alpha").await?.is_empty());
+    assert!(search(&db, &context, "beta").await?.is_empty());
+
+    // A retained generation keeps searching its own revision after later
+    // writes edit the directory.
+    let retained = engine.generation()?;
+    db.mutate(
+        context.clone(),
+        kasumi_types::MutationBatch::new().upsert(
+            "docs",
+            "c",
+            serde_json::json!({"title": "delta shared"}),
+        ),
+    )
+    .await?;
+    assert_eq!(search(&db, &context, "shared").await?, ["a", "c"]);
+    assert_eq!(
+        search_generation(&retained, &source.storage.admission, "shared")?,
+        ["a"]
+    );
+    assert!(search_generation(&retained, &source.storage.admission, "delta")?.is_empty());
+    drop(retained);
+    let before = TextManifest::load(source.stores.application())?.unwrap();
+
+    // Installing the snapshot on another node rebuilds its directory from the
+    // snapshot's staged bodies at exactly the snapshot revision.
+    let snapshot = db
+        .raft_group()
+        .raft()
+        .get_snapshot()
+        .await?
+        .expect("durable text snapshot");
+    let vote = kasumi_raft::ControlLog::open(source.stores.custody().clone(), 1, group.clone())?
+        .read_vote()?
+        .expect("text source vote");
+    let target = Fixture::with_bootstrap(2, Some(&source.image)).await?;
+    let target_audit = audit(&target.node, &target.storage.admission, false).await?;
+    crate::test_utils::install_fixture_audit_placement(target.stores.application())?;
+    let target_engine = Arc::new(TenantEngine::from_bootstrap(
+        "selected-sources",
+        &target.image,
+    )?);
+    target_engine.install_storage_access(target.stores.application())?;
+    let target_db = crate::service::construction::DatabaseConstruction::new(
+        target.stores.clone(),
+        target_audit.clone(),
+    )?
+    .start_replicated(
+        target_engine.clone(),
+        &target.image,
+        2,
+        group.clone(),
+        Arc::new(kasumi_raft::InProcessRouter::default()),
+        Default::default(),
+    )
+    .await?;
+    target_db
+        .raft_group()
+        .raft()
+        .install_full_snapshot(vote, snapshot)
+        .await?;
+    let installed = target_engine.generation()?;
+    assert_eq!(
+        installed.indexes.text_residency(),
+        kasumi_query::TextResidency::Directory
+    );
+    let rebuilt = TextManifest::load(target.stores.application())?.unwrap();
+    assert!(rebuilt.is_current());
+    assert_eq!(rebuilt.revision, installed.state.revision);
+    assert_eq!(rebuilt.shards, 1);
+    assert_eq!(
+        search_generation(&installed, &target.storage.admission, "shared")?,
+        ["a", "b"]
+    );
+    assert_eq!(
+        search_generation(&installed, &target.storage.admission, "beta")?,
+        ["b"]
+    );
+    drop(installed);
+    target_db.shutdown().await?;
+    drop(target_db);
+    drop(target_engine);
+    target_audit.shutdown().await?;
+    drop(target_audit);
+    target.close().await?;
+
+    db.shutdown().await?;
+    drop(db);
+    drop(engine);
+    source_audit.shutdown().await?;
+    drop(source_audit);
+    source.stores.shutdown().await?;
+    source.node.shutdown().await?;
+
+    // Reopen the encrypted store: the directory is current ahead of the
+    // snapshot, so it is kept and serves without rebuilding.
+    source.node = source.storage.open_existing(
+        source._directory.path().join("persistent/node.kv"),
+        kasumi_store::test_utils::NODE_STORE_ID,
+    )?;
+    source.stores = TenantStorageSet::open_existing_fixture(
+        source.node.clone(),
+        "selected-sources".into(),
+        Arc::new(LocalKeyProvider::new([119; 32])),
+        Arc::new(LocalKeyProvider::new([120; 32])),
+    )
+    .await?;
+    let reopened_audit = audit(&source.node, &source.storage.admission, true).await?;
+    crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
+    let engine = Arc::new(TenantEngine::from_bootstrap(
+        "selected-sources",
+        &source.image,
+    )?);
+    engine.install_storage_access(source.stores.application())?;
+    let db = crate::service::construction::DatabaseConstruction::new(
+        source.stores.clone(),
+        reopened_audit.clone(),
+    )?
+    .start_replicated(
+        engine.clone(),
+        &source.image,
+        1,
+        group,
+        Arc::new(kasumi_raft::InProcessRouter::default()),
+        Default::default(),
+    )
+    .await?;
+    db.raft_group()
+        .raft()
+        .wait(Some(std::time::Duration::from_secs(10)))
+        .current_leader(1, "reopened text directory leader")
+        .await?;
+    let reopened = engine.generation()?;
+    assert_eq!(
+        reopened.indexes.text_residency(),
+        kasumi_query::TextResidency::Directory
+    );
+    let kept = TextManifest::load(source.stores.application())?.unwrap();
+    assert_eq!(kept.page_space, before.page_space);
+    assert_eq!(kept.records.tree, before.records.tree);
+    assert!(kept.is_current() && kept.revision >= before.revision);
+    drop(reopened);
+    assert_eq!(search(&db, &context, "shared").await?, ["a", "c"]);
+    assert_eq!(search(&db, &context, "gamma").await?, ["a"]);
+    assert!(search(&db, &context, "beta").await?.is_empty());
+
+    db.mutate(
+        context.clone(),
+        kasumi_types::MutationBatch::new().upsert(
+            "docs",
+            "d",
+            serde_json::json!({"title": "epsilon shared"}),
+        ),
+    )
+    .await?;
+    assert_eq!(search(&db, &context, "shared").await?, ["a", "c", "d"]);
+    let latest = engine.generation()?;
+    let manifest = TextManifest::load(source.stores.application())?.unwrap();
+    assert!(manifest.is_current());
+    assert_eq!(manifest.revision, latest.state.revision);
+    assert_eq!(manifest.page_space, before.page_space);
+    drop(latest);
+
+    db.shutdown().await?;
+    drop(db);
+    drop(engine);
+    reopened_audit.shutdown().await?;
+    drop(reopened_audit);
+    source.close().await
+}

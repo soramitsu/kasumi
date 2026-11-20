@@ -44,7 +44,7 @@ impl Fixture {
         .unwrap();
         Self {
             _directory: directory,
-            storage: storage,
+            storage,
             node,
             store,
             owner: TextOwner::default(),
@@ -137,7 +137,14 @@ fn genesis() -> TenantState {
     crate::TenantEngine::new(
         "tenant".into(),
         uuid::Uuid::from_u128(7).to_string(),
-        Policy::default(),
+        Policy {
+            grants: vec![kasumi_types::Grant {
+                principal: "owner".into(),
+                collection: None,
+                actions: BTreeSet::from([kasumi_types::Action::Admin]),
+            }],
+            strict_read_audit: false,
+        },
         Limits::default(),
     )
     .unwrap()
