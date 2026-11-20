@@ -29,6 +29,53 @@ pub enum TextStatus {
     Stale,
 }
 
+/// Authenticated application history indexed by this directory. A snapshot
+/// names the log without supplying the command digest of its last entry.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub enum TextBoundary {
+    Bootstrap,
+    Applied {
+        index: u64,
+        log_sha256: [u8; 32],
+        command_sha256: Option<[u8; 32]>,
+    },
+}
+
+impl TextBoundary {
+    fn index(&self) -> u64 {
+        match self {
+            Self::Bootstrap => 0,
+            Self::Applied { index, .. } => *index,
+        }
+    }
+
+    pub fn same_position(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Bootstrap, Self::Bootstrap) => true,
+            (
+                Self::Applied {
+                    index,
+                    log_sha256,
+                    command_sha256,
+                },
+                Self::Applied {
+                    index: other_index,
+                    log_sha256: other_log,
+                    command_sha256: other_command,
+                },
+            ) => {
+                index == other_index
+                    && log_sha256 == other_log
+                    && command_sha256
+                        .zip(*other_command)
+                        .is_none_or(|(left, right)| left == right)
+            }
+            _ => false,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct TextManifest {
@@ -45,6 +92,9 @@ pub struct TextManifest {
     pub collections: u64,
     pub shards: u64,
     pub shard_bytes: u64,
+    /// Older manifests omit this field. They remain readable for recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub boundary: Option<TextBoundary>,
 }
 
 impl TextManifest {
@@ -73,7 +123,19 @@ impl TextManifest {
             collections,
             shards,
             shard_bytes,
+            boundary: None,
         }
+    }
+
+    pub fn bound_to(mut self, boundary: TextBoundary) -> Self {
+        self.boundary = Some(boundary);
+        self
+    }
+
+    pub fn matches(&self, boundary: &TextBoundary) -> bool {
+        self.boundary
+            .as_ref()
+            .is_some_and(|stored| stored.same_position(boundary))
     }
 
     pub fn is_current(&self) -> bool {
@@ -84,6 +146,7 @@ impl TextManifest {
     pub fn stale_at(&self, revision: u64) -> Self {
         Self {
             revision,
+            boundary: self.boundary.clone().filter(|_| revision == self.revision),
             status: TextStatus::Stale,
             ..self.clone()
         }
@@ -112,6 +175,13 @@ impl TextManifest {
         ensure!(
             self.page_space != INITIAL_SPACE[0] || self.records.root.is_none(),
             "the initial text space holds no directory"
+        );
+        ensure!(
+            self.boundary
+                .as_ref()
+                .is_none_or(|boundary| self.revision_base.checked_add(boundary.index())
+                    == Some(self.revision)),
+            "text boundary and directory revision differ"
         );
         kasumi_types::validate_name(&self.tenant)?;
         kasumi_types::validate_name(&self.incarnation)?;
@@ -179,6 +249,10 @@ impl TextManifest {
         ensure!(
             self.page_space == previous.page_space && self.records.tree == previous.records.tree,
             "text manifest tree changed without a new generation"
+        );
+        ensure!(
+            previous.boundary.is_none() || self.boundary.is_some(),
+            "bound text directory lost its history"
         );
         ensure!(
             previous.is_current(),

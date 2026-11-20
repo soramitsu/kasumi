@@ -330,25 +330,10 @@ impl SelectedApplication {
             &Arc<crate::admission::NodeAdmission>,
         ) -> Result<T>,
     ) -> Result<Option<T>> {
-        use kasumi_raft::SelectedAppliedRef;
         use kasumi_store::{ordered_pages::TreeReader, text_manifest::TextManifest};
-        let Some(position) =
-            self.cell.position.get().filter(|p| {
-                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
-            })
-        else {
+        let Some(boundary) = self.text_boundary()? else {
             return Ok(None);
         };
-        let index = match position.applied() {
-            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
-            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
-                meta.last_log_id.map_or(0, |id| id.index)
-            }
-            None => 0,
-        };
-        if state.revision_base.checked_add(index) != Some(state.revision) {
-            return Ok(None);
-        }
         let roots = self
             .cell
             .roots
@@ -362,6 +347,7 @@ impl SelectedApplication {
                 return Ok(None);
             };
             if !manifest.is_current()
+                || !manifest.matches(&boundary)
                 || manifest.revision != state.revision
                 || manifest.incarnation != state.incarnation
                 || manifest.revision_base != state.revision_base
