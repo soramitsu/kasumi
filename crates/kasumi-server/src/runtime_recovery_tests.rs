@@ -1563,12 +1563,14 @@ impl Fixture {
         assert!(matches!(result, Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
         let path = self.directory.join("issuer-catalog.jwt");
         let original = Zeroizing::new(std::fs::read(&path).unwrap());
-        private_files::publish(&path, self.control_token.as_bytes()).unwrap();
-        let refused = control.read_key_retention(&operator, request).await.unwrap();
+        private_files::replace(&path, self.control_token.as_bytes()).unwrap();
+        let refused = control.read_key_retention(&operator, request).await;
+        let refused_audit = control.read_key_retention(&operator, audit_request).await;
+        private_files::replace(&path, &original).unwrap();
+        let refused = refused.unwrap();
         assert!(matches!(&refused.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
-        let refused_audit = control.read_key_retention(&operator, audit_request).await.unwrap();
+        let refused_audit = refused_audit.unwrap();
         assert!(matches!(&refused_audit.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
-        private_files::publish(&path, &original).unwrap();
     }
     /// Drive installed Control/issuer/target services through Start and the
     /// distinct Initialize, discard each actual reply, and resolve their
