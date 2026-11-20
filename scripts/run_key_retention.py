@@ -39,8 +39,12 @@ CASES = {
                                    "restart_keeps_exact_historical_reads_and_rejects_substituted_sources")],
     "incomplete-dependency-rejection": [("kasumi-engine", "kasumi_engine",
                                          "completed_backup_inventory_discards_partial_key_evidence_when_the_root_is_missing")],
-    "race-safe-retirement": [("kasumi-engine", "kasumi_engine",
-                              "retirement_decision_rechecks_the_ordered_membership_and_dependency_position")],
+    "race-safe-retirement": [
+        ("kasumi-engine", "kasumi_engine",
+         "retirement_decision_rechecks_the_ordered_membership_and_dependency_position"),
+        ("kasumi-store", "kasumi_store",
+         "stale_provider_cannot_reintroduce_an_old_version_into_a_reopened_catalog"),
+    ],
 }
 
 

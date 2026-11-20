@@ -31,10 +31,15 @@
   ],
   "generation-publication": [
     ["kasumi-engine", "staged_transactions", "large_transaction_stays_invisible_then_publishes_one_generation_and_permanent_receipt"],
-    ["kasumi-engine", "schema_activation", "atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations"]
+    ["kasumi-engine", "schema_activation", "atomic_bundle_publishes_all_indexes_once_and_preserves_read_generations"],
+    ["kasumi-engine", "kasumi_engine", "text_directory_serves_writes_snapshot_reopen_and_retained_readers"]
   ],
   "pinned-reader-reclamation": [
-    ["kasumi-kv", "kasumi_kv", "pins_at_intermediate_roots_stay_readable_with_all_256_slots_and_are_reclaimed_next_cycle"]
+    ["kasumi-kv", "kasumi_kv", "pins_at_intermediate_roots_stay_readable_with_all_256_slots_and_are_reclaimed_next_cycle"],
+    ["kasumi-engine", "kasumi_engine", "document_gc_native_keeps_shared_chunks_until_their_last_manifest_is_collected"],
+    ["kasumi-engine", "kasumi_engine", "document_gc_native_churn_reaches_a_plateau_across_snapshots"],
+    ["kasumi-engine", "kasumi_engine", "document_gc_native_interrupted_collection_resumes_after_a_reopen"],
+    ["kasumi-engine", "kasumi_engine", "collect_feed_resumes_inside_a_commit_after_budget_stop_and_failed_visit"]
   ],
   "cancellation": [
     ["kasumi-authority", "kasumi_authority", "cancelled_public_command_waiter_keeps_actual_child_until_its_receipt_commits"],
