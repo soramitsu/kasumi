@@ -385,6 +385,14 @@ impl RemoteControl {
             &config.tls,
             &config.server_ca,
         )?;
+        if let Some(reader) = &config.catalog_reader {
+            ensure!(
+                connections.values().all(|route| !reader
+                    .client_certificate_pins
+                    .contains(&hex::encode(route.identity.certificate_pin()))),
+                "catalog reader certificate is also used by the topology client"
+            );
+        }
         let trust = kasumi_serving::ControlTrust::install(config.root.clone())?;
         let credential: Arc<dyn kasumi_transport::credentials::CredentialSource> = Arc::new(
             kasumi_transport::credentials::FileCredentialSource::new(&config.bearer_file)?,

@@ -64,7 +64,9 @@ pub struct DataCatalogMembership {
     pub term: u64,
     pub membership_index: u64,
     pub membership_sha256: String,
+    #[serde(deserialize_with = "member_ids")]
     pub voters: BTreeSet<u64>,
+    #[serde(deserialize_with = "member_ids")]
     pub members: BTreeSet<u64>,
 }
 
@@ -93,6 +95,7 @@ pub enum DataCatalogContents {
     SecurityAudit {
         stream: Uuid,
         archives_sha256: [u8; 32],
+        #[serde(deserialize_with = "unreadable_ids")]
         unreadable_objects: BTreeSet<Uuid>,
         truncated: bool,
     },
@@ -108,6 +111,7 @@ pub struct DataMemberCatalogPage {
     pub catalog: Uuid,
     pub catalog_sha256: [u8; 32],
     pub contents: DataCatalogContents,
+    #[serde(deserialize_with = "catalog_entries")]
     pub entries: Vec<KeyRetentionEntry>,
 }
 
@@ -183,4 +187,56 @@ fn invalid(message: &'static str) -> Error {
 pub struct DataCatalogGroup {
     pub incarnation: Uuid,
     pub members: BTreeSet<u64>,
+}
+
+fn member_ids<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<BTreeSet<u64>, D::Error> {
+    crate::key_retention::ascending(input, DATA_CATALOG_MAX_MEMBERS, "Data membership")
+        .map(|v| v.into_iter().collect())
+}
+fn unreadable_ids<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<BTreeSet<Uuid>, D::Error> {
+    crate::key_retention::ascending(
+        input,
+        MAX_MISSING_KEY_DEPENDENCIES,
+        "unreadable Data audit objects",
+    )
+    .map(|v| v.into_iter().collect())
+}
+fn catalog_entries<'de, D: serde::Deserializer<'de>>(
+    input: D,
+) -> std::result::Result<Vec<KeyRetentionEntry>, D::Error> {
+    crate::key_retention::ascending(
+        input,
+        usize::from(DATA_MEMBER_CATALOG_LIMIT) + 1,
+        "Data catalog entries",
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn data_membership_rejects_duplicate_and_oversized_wire_lists() {
+        let observed = DataCatalogMembership {
+            leader: 1,
+            term: 2,
+            membership_index: 5,
+            membership_sha256: "aa".repeat(32),
+            voters: BTreeSet::from([1, 2, 3]),
+            members: BTreeSet::from([1, 2, 3, 4]),
+        };
+        let original = serde_json::to_value(&observed).unwrap();
+        for input in [vec![1, 1], vec![3, 2, 1], (1..=65).collect()] {
+            let mut record = original.clone();
+            record["members"] = serde_json::json!(input);
+            assert!(serde_json::from_value::<DataCatalogMembership>(record).is_err());
+        }
+        assert_eq!(
+            serde_json::from_value::<DataCatalogMembership>(original).unwrap(),
+            observed
+        );
+    }
 }

@@ -1284,7 +1284,7 @@ impl<'de, T: Deserialize<'de> + Ord> Visitor<'de> for Ascending<T> {
     }
 }
 
-fn ascending<'de, D: Deserializer<'de>, T: Deserialize<'de> + Ord>(
+pub(crate) fn ascending<'de, D: Deserializer<'de>, T: Deserialize<'de> + Ord>(
     deserializer: D,
     max: usize,
     name: &'static str,
