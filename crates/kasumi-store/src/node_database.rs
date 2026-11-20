@@ -301,6 +301,15 @@ impl NodeDatabase {
         }
     }
 
+    pub(crate) fn target_directory_stamp(&self) -> anyhow::Result<Option<uuid::Uuid>> {
+        match self.accepted()? {
+            Accepted::Registered(opening) => opening.target_directory_stamp(),
+            Accepted::Direct(_) => {
+                Err(std::io::Error::from(std::io::ErrorKind::Unsupported).into())
+            }
+        }
+    }
+
     #[cfg(any(test, feature = "test-utils"))]
     pub(crate) fn configure_cache(
         &self,
