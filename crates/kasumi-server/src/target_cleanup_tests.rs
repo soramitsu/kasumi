@@ -4,7 +4,7 @@ use kasumi_store::NodeStore;
 use std::{path::PathBuf, sync::Mutex};
 
 /// The journal's cleanup rules over memory: one binding, and only a first
-/// record, an exact replay or Deleting -> Deleted of the same binding.
+/// record, an exact replay or the next stage of the same binding.
 #[derive(Default)]
 struct MemoryLedger {
     binding: Mutex<Option<TargetFileBinding>>,
@@ -33,8 +33,7 @@ impl CleanupLedger for MemoryLedger {
             None => {}
             Some(old) if old == cleanup => return Ok(()),
             Some(old)
-                if old.stage == TargetCleanupStage::Deleting
-                    && cleanup.stage == TargetCleanupStage::Deleted
+                if old.stage.permits_successor(cleanup.stage)
                     && old.binding == cleanup.binding => {}
             Some(_) => anyhow::bail!("target cleanup outcome differs"),
         }
@@ -127,7 +126,11 @@ fn file<'a>(key: &'a GenerationKey, path: &'a Path, id: Uuid) -> TargetFile<'a> 
 /// directory untouched; a further replay changes nothing.
 #[tokio::test]
 async fn exact_cleanup_resumes_after_every_boundary_and_keeps_unrelated_generations() {
-    for boundary in ["deleting", "unlinked", "synced"] {
+    for (boundary, expected_stage) in [
+        ("deleting", TargetCleanupStage::Deleting),
+        ("unlinked", TargetCleanupStage::Unlinked),
+        ("synced", TargetCleanupStage::ParentSynced),
+    ] {
         let fixture = Fixture::new();
         let key = ("city".to_owned(), Uuid::new_v4());
         let id = Uuid::new_v4();
@@ -142,7 +145,7 @@ async fn exact_cleanup_resumes_after_every_boundary_and_keeps_unrelated_generati
         let error = delete_exact(&ledger, &fixture.storage(), &file(&key, &path, id)).unwrap_err();
         assert!(format!("{error:#}").contains(boundary), "{error:#}");
         let recorded = ledger.cleanup().unwrap().unwrap();
-        assert_eq!(recorded.stage, TargetCleanupStage::Deleting, "{boundary}");
+        assert_eq!(recorded.stage, expected_stage, "{boundary}");
         assert_eq!(recorded.binding.as_ref(), Some(&binding));
         assert_eq!(path.exists(), boundary == "deleting", "{boundary}");
 
@@ -152,7 +155,7 @@ async fn exact_cleanup_resumes_after_every_boundary_and_keeps_unrelated_generati
         assert_eq!(terminal.binding, Some(binding.clone()));
         assert!(!path.exists());
         let records = *ledger.records.lock().unwrap();
-        assert_eq!(records, 2, "Deleting, then one terminal outcome");
+        assert_eq!(records, 4, "each durable stage and one terminal outcome");
         delete_exact(&ledger, &fixture.storage(), &file(&key, &path, id)).unwrap();
         assert_eq!(*ledger.records.lock().unwrap(), records);
 

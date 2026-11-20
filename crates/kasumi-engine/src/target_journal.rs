@@ -166,9 +166,23 @@ pub struct TargetFileBinding {
 pub enum TargetCleanupStage {
     /// Exact deletion of the bound storage has begun.
     Deleting,
+    /// The enrolled generation is absent after its original exact unlink.
+    Unlinked,
+    /// The enrolled parent was synchronized after the generation disappeared.
+    ParentSynced,
     /// Deletion, or the absence of any storage, is confirmed after the
     /// parent directory sync. Terminal.
     Deleted,
+}
+impl TargetCleanupStage {
+    pub fn permits_successor(self, next: Self) -> bool {
+        matches!(
+            (self, next),
+            (Self::Deleting, Self::Unlinked)
+                | (Self::Unlinked, Self::ParentSynced)
+                | (Self::ParentSynced, Self::Deleted)
+        )
+    }
 }
 /// Durable local cleanup progress of one permanently stopped target.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -180,7 +194,7 @@ pub struct TargetCleanup {
     /// Absent only for a target that never had storage bound.
     pub binding: Option<TargetFileBinding>,
 }
-// One fixed charge covers a cleanup record and its single terminal rewrite.
+// One fixed charge covers a cleanup record, including all same-key progress rewrites.
 const CLEANUP_RESERVE: usize = 4 << 10;
 
 /// One journal-selected file operation. Only the first durably accepted
@@ -946,8 +960,8 @@ impl TargetJournal {
     }
 
     /// Advance the local cleanup of a permanently stopped target. Only a first
-    /// record, an exact replay, or Deleting to Deleted of the same binding is
-    /// accepted: the terminal outcome never changes.
+    /// record, an exact replay, or the immediate next stage of the same
+    /// binding is accepted. The terminal outcome never changes.
     pub fn record_target_cleanup(
         &self,
         op: &TargetOperation,
@@ -982,8 +996,7 @@ impl TargetJournal {
                     return Ok(());
                 }
                 ensure!(
-                    old.stage == TargetCleanupStage::Deleting
-                        && cleanup.stage == TargetCleanupStage::Deleted
+                    old.stage.permits_successor(cleanup.stage)
                         && old.binding == cleanup.binding,
                     "target cleanup outcome differs"
                 );

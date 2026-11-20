@@ -68,7 +68,7 @@ pub(super) fn delete_exact(
     storage: &TargetStorage<'_>,
     file: &TargetFile<'_>,
 ) -> Result<()> {
-    let (binding, claimed) = match ledger.cleanup()? {
+    let (binding, claimed, stage) = match ledger.cleanup()? {
         Some(recorded) if recorded.stage == TargetCleanupStage::Deleted => {
             ensure!(
                 !target_file_exists(file.path)?,
@@ -81,10 +81,13 @@ pub(super) fn delete_exact(
             let binding = recorded
                 .binding
                 .context("target cleanup in progress has no binding")?;
-            let claimed = target_file_exists(file.path)?
-                .then(|| file.claim(storage))
-                .transpose()?;
-            (binding, claimed)
+            let exists = target_file_exists(file.path)?;
+            ensure!(
+                !exists || recorded.stage == TargetCleanupStage::Deleting,
+                "target path is occupied again after its recorded unlink"
+            );
+            let claimed = exists.then(|| file.claim(storage)).transpose()?;
+            (binding, claimed, recorded.stage)
         }
         None => {
             let existing = ledger.binding()?;
@@ -120,7 +123,7 @@ pub(super) fn delete_exact(
             }
             ledger.record(&file.cleanup(TargetCleanupStage::Deleting, Some(binding.clone())))?;
             boundary(file.path, "deleting")?;
-            (binding, Some(claimed))
+            (binding, Some(claimed), TargetCleanupStage::Deleting)
         }
     };
     ensure!(
@@ -139,14 +142,21 @@ pub(super) fn delete_exact(
         );
         ledger.check()?;
         claimed.delete()?;
-        boundary(file.path, "unlinked")?;
     } else {
         // An interrupted earlier attempt may have finished the unlinks.
         target_absence_from_installed_disk(storage.config, storage.disk, file.path)?;
     }
-    // Keep the same enrolled parent under ownership through the terminal record.
-    storage.parent.sync_all()?;
-    boundary(file.path, "synced")?;
+    // Only the original deletion may explain absence. Record it before the
+    // explicit parent sync, then retain the successful sync before finalization.
+    if stage == TargetCleanupStage::Deleting {
+        ledger.record(&file.cleanup(TargetCleanupStage::Unlinked, Some(binding.clone())))?;
+        boundary(file.path, "unlinked")?;
+    }
+    if stage != TargetCleanupStage::ParentSynced {
+        storage.parent.sync_all()?;
+        ledger.record(&file.cleanup(TargetCleanupStage::ParentSynced, Some(binding.clone())))?;
+        boundary(file.path, "synced")?;
+    }
     ledger.record(&file.cleanup(TargetCleanupStage::Deleted, Some(binding)))
 }
 
