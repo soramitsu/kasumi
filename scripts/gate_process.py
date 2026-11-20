@@ -200,7 +200,7 @@ def _darwin_group_members(group):
     raise RuntimeError("process group changed throughout inspection")
 
 
-def leader_identity(pid):
+def leader_identity(pid, *, require_live=False):
     """Return a live process's group and birth witness, or None if unavailable.
 
     An unavailable witness must never authorize signalling a numeric PGID: it
@@ -212,10 +212,14 @@ def leader_identity(pid):
         except (FileNotFoundError, ProcessLookupError):
             return None
         fields = value.rsplit(")", 1)[1].split()
+        if require_live and fields[0] in ("Z", "X", "x"):
+            return None
         return {"group": int(fields[2]), "birth": "linux:" + fields[19]}
     if sys.platform == "darwin":
         info = _darwin_process_info(_darwin_library(), pid)
         if info is None:
+            return None
+        if require_live and info.pbi_status == 5:
             return None
         return {"group": info.pbi_pgid,
                 "birth": "darwin:" + str(info.pbi_start_tvsec) + ":" + str(info.pbi_start_tvusec)}

@@ -199,7 +199,7 @@ class OwnedProcesses:
             require(attempt["process"] is not None and attempt["process"].poll() is None,
                     "owned service exited before the workload completed")
 
-    def crash(self, name, observation_path):
+    def crash(self, name, observation_path, *, client=None):
         """Kill the owned leader after retaining an independently obtained reply.
 
         The supplied bytes are an observation, not a trusted phase assertion.
@@ -229,6 +229,15 @@ class OwnedProcesses:
         # PID copied from a topology manifest or a prior process receipt.
         process.send_signal(signal.SIGKILL)
         record["fault"]["sent"] = True
+        if client is not None:
+            # Check after the signal. The original command may already have
+            # exited during the timer delay or while its evidence was synced.
+            group = client["group"]
+            live = gate_process.leader_identity(group, require_live=True)
+            record["fault"]["client_at_signal"] = {
+                "step": client["step"], "group": group, "birth": client["birth"],
+                "live": live == {"group": group, "birth": client["birth"]},
+            }
         process.wait(timeout=min(10, max(.1, self.timeout - self.elapsed())))
         return self.finish(name)
 

@@ -292,12 +292,13 @@ class Live(Driver):
         self.run.dispatch()
         started = self.clock()
         fired, outcome = threading.Event(), {}
+        client = None
 
         def fault():
             path = self.run.output / "home" / f"observation-{step}"
             try:
                 path.write_bytes(observation)
-                outcome["record"] = self.run.services.crash(name, path)
+                outcome["record"] = self.run.services.crash(name, path, client=client)
             except BaseException as error:  # retained; the main thread raises it
                 outcome["error"] = error
             finally:
@@ -309,8 +310,11 @@ class Live(Driver):
         armed = []
 
         def observe(record):
+            nonlocal client
             if record.get("process_group") and not armed:
                 armed.append(True)
+                if record.get("leader_birth"):
+                    client = {"step": step, "group": record["process_group"], "birth": record["leader_birth"]}
                 timer.start()
 
         try:
@@ -336,6 +340,7 @@ class Live(Driver):
                   exit_code=receipt["exit_code"], scenarios=list(scenarios),
                   observation_sha256=hashlib.sha256(observation).hexdigest())
         return {"exit_code": receipt["exit_code"], "started": started, "finished": finished,
+                "client_live": fault_client_live(record["fault"], step, receipt),
                 "process": record["id"], "fault_elapsed": record["fault"]["elapsed_seconds"],
                 "output": owned.check_ref(self.run.output, item["stdout"]).read_bytes()}
 
@@ -665,6 +670,7 @@ class Replay(Driver):
         for scenario in scenarios:
             self.expected.setdefault(scenario, []).append((row["process"], -9))
         return {"exit_code": record["exit_code"], "started": started, "finished": finished,
+                "client_live": fault_client_live(fault, step, record),
                 "process": row["process"], "fault_elapsed": fault["elapsed_seconds"],
                 "output": raw}
 
@@ -722,6 +728,18 @@ class Replay(Driver):
         return self._next("inspect", path=str(path))["result"]
 
 
+def fault_client_live(fault, step, receipt):
+    witness = fault.get("client_at_signal")
+    if witness is None:
+        return False
+    require(isinstance(witness, dict) and set(witness) == {"step", "group", "birth", "live"}
+            and witness["step"] == step and type(witness["group"]) is int
+            and witness["group"] > 0 and witness["group"] == receipt["process_group"]
+            and bool(witness["birth"]) and witness["birth"] == receipt["leader_birth"]
+            and type(witness["live"]) is bool, "fault client differs from its original process: " + step)
+    return witness["live"]
+
+
 def interrupted(result):
     """The fault was sent while its command ran, and the command did not succeed.
 
@@ -729,7 +747,7 @@ def interrupted(result):
     also requires the product's own durable state to show that phase begun
     and not completed after the faulted daemon returns.
     """
-    return (result["exit_code"] != 0
+    return (result["exit_code"] != 0 and result["client_live"]
             and result["started"] <= result["fault_elapsed"] <= result["finished"])
 
 

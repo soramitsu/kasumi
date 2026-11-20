@@ -15,6 +15,7 @@ import os
 from pathlib import Path
 import shutil
 import sys
+import time
 import unittest
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -370,13 +371,20 @@ if args[:1] == ["control-recovery"]:
             started_revision = state["updated_revision"]
             state["pending_phase"] = "pending"
             save("recovery-" + operation + ".json", state)
+        # In the controlled process fixture, hold the scheduled crash case
+        # after its durable start. The driver still kills the original daemon.
+        armed = load("armed-recovery-fault.json", {})
+        hold_for_fault = armed.get("operation") == operation
+        if hold_for_fault:
+            save("begun-recovery-fault.json", {"step": armed["step"], "worker_pid": int(worker_pid),
+                                              "client_pid": os.getpid(), "revision": started_revision})
         until = time.time() + .7
         while True:
             if time.time() > deadline:
                 fail("deadline exceeded after the step began")
             if not alive(worker) or heartbeat.read_bytes() != worker_pid:
                 fail("working daemon was lost in flight")
-            if time.time() >= until:
+            if not hold_for_fault and time.time() >= until:
                 break
             time.sleep(.02)
         with Lock():
@@ -778,6 +786,36 @@ class RecoveryFixture(FaultFixture):
 
 
 class RecoveryTests(RecoveryFixture):
+    def fault_after_pending_write(self, original, driver_instance, label, argv, name, observation, delay, scenarios=()):
+        record = json.loads(observation)
+        if argv[1:3] != ["control-recovery", "resume"] or "updated_revision" not in record:
+            return original(driver_instance, label, argv, name, observation, delay, scenarios)
+        state = self.binaries["kasumid"][0].parent / "state"
+        armed, begun = state / "armed-recovery-fault.json", state / "begun-recovery-fault.json"
+        services = driver_instance.run.services
+        send = services.crash
+        revision = record["updated_revision"]
+        armed.write_text(json.dumps({"step": label, "operation": argv[4]}))
+
+        def crash(service, path, *, client=None):
+            end = time.monotonic() + 30
+            while time.monotonic() < end:
+                if begun.exists():
+                    pending = json.loads(begun.read_text())
+                    if (client and pending["step"] == label and pending["revision"] > revision
+                            and pending["client_pid"] == client["group"]
+                            and pending["worker_pid"] == services.active[service]["process"].pid):
+                        return send(service, path, client=client)
+                time.sleep(.01)
+            raise AssertionError("scheduled original never published its pending step: " + label)
+
+        try:
+            with patch.object(services, "crash", crash):
+                return original(driver_instance, label, argv, name, observation, delay, scenarios)
+        finally:
+            armed.unlink(missing_ok=True)
+            begun.unlink(missing_ok=True)
+
 
     def run_recovery(self, attempt="recovery-1"):
         output = self.root / "runs" / attempt
@@ -785,8 +823,12 @@ class RecoveryTests(RecoveryFixture):
         with domain_run.Run(recovery.KIND, recovery.RUNNER, recovery.MODULES, self.evidence,
                             output, self.root, attempt, dict(recovery.PARAMETERS),
                             domain_run.QUALIFYING) as run:
-            recovery.execute(run, dict(recovery.PARAMETERS), self.topology,
-                             self.recovery_plan_path)
+            original = driver.Live.faulted
+            def scheduled(instance, *args, **kwargs):
+                return self.fault_after_pending_write(original, instance, *args, **kwargs)
+            with patch.object(driver.Live, "faulted", scheduled):
+                recovery.execute(run, dict(recovery.PARAMETERS), self.topology,
+                                 self.recovery_plan_path)
         return output
 
     def witnessed(self):
@@ -926,6 +968,20 @@ class RecoveryTests(RecoveryFixture):
 
 
 class DeletionObservationTests(unittest.TestCase):
+    def test_crash_interruption_requires_a_live_original_client_at_the_signal(self):
+        receipt = {"process_group": 17, "leader_birth": "linux:123"}
+        witness = {"step": "original", "group": 17, "birth": "linux:123", "live": True}
+        def interrupted(proof):
+            live = driver.fault_client_live(proof, "original", receipt)
+            return driver.interrupted({"client_live": live, "exit_code": 1, "started": 1,
+                                       "fault_elapsed": 2, "finished": 3})
+        self.assertTrue(interrupted({"client_at_signal": witness}))
+        self.assertFalse(interrupted({}))
+        self.assertFalse(interrupted({"client_at_signal": {**witness, "live": False}}))
+        for field, value in (("birth", "linux:321"), ("group", 4), ("step", "unrelated")):
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError, "original process"):
+                interrupted({"client_at_signal": {**witness, field: value}})
+
     operation = "aa000000-0000-0000-0000-000000000001"
     phase = "bb000000-0000-0000-0000-000000000002"
     incarnation = "cc000000-0000-0000-0000-000000000003"
@@ -956,7 +1012,7 @@ class DeletionObservationTests(unittest.TestCase):
         d.attempt.side_effect = [(0, json.dumps(v).encode()) for v in stages]
         d.crash.return_value = {"id": "caller"}
         d.faulted.return_value = {"process": "target", "exit_code": 1 if interrupted else 0,
-                                  "started": 1, "fault_elapsed": 2, "finished": 3}
+                                  "started": 1, "fault_elapsed": 2, "finished": 3, "client_live": True}
         facts = {"cells": {}}
         recovery.target_deletion_fault(d, ctx, self.operation, self.phase, 0, facts)
         return d, facts
@@ -1031,7 +1087,7 @@ class IssuerObservationTests(unittest.TestCase):
         d.attempt.side_effect = [(0, json.dumps(v).encode()) for v in views]
         d.crash.return_value = {"id": "caller"}
         d.faulted.return_value = {"process": "original-issuer", "exit_code": 1,
-                                  "started": 1, "fault_elapsed": 2, "finished": 3}
+                                  "started": 1, "fault_elapsed": 2, "finished": 3, "client_live": True}
         facts = {"cells": {}}
         recovery.issuer_stop_fault(d, ctx, self.op, self.phase_id, 0, facts)
         return d, facts["cells"]
