@@ -41,7 +41,6 @@ async fn abandoned_read_and_shutdown_keep_actual_collector_panic() -> Result<()>
     let mut router = RaftRouter::new(config());
     router.new_cluster(btreeset! {0, 1}, btreeset! {}).await?;
     let leader = router.get_raft_handle(&0)?;
-    leader.ensure_linearizable().await?;
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (release, waiting) = tokio::sync::oneshot::channel();
     let channels = Arc::new(Mutex::new(Some((entered, waiting))));
@@ -157,9 +156,8 @@ async fn actual_vote_round_panic_fences_live_core_and_remains_original() -> Resu
 )]
 async fn full_read_capacity_keeps_existing_replication_and_application_running() -> Result<()> {
     let mut router = RaftRouter::new(config());
-    router.new_cluster(btreeset! {0, 1}, btreeset! {}).await?;
+    let initial_log = router.new_cluster(btreeset! {0, 1}, btreeset! {}).await?;
     let leader = router.get_raft_handle(&0)?;
-    leader.ensure_linearizable().await?;
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (release, waiting) = tokio::sync::oneshot::channel();
     let channels = Arc::new(Mutex::new(Some((entered, waiting))));
@@ -192,7 +190,27 @@ async fn full_read_capacity_keeps_existing_replication_and_application_running()
     .await??;
     release.send(()).unwrap();
     caller.await??;
-    leader.ensure_linearizable().await?;
+    // The read reply precedes the collector's return. Wait for admission of
+    // the next real read while its predecessor still occupies the read slot.
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            match leader.ensure_linearizable().await {
+                Err(RaftError::APIError(CheckIsLeaderError::TaskCapacity(_))) => {
+                    tokio::task::yield_now().await;
+                }
+                result => break result,
+            }
+        }
+    })
+    .await??;
+    router
+        .wait_for_log(
+            &btreeset! {0, 1},
+            Some(initial_log + 1),
+            Some(Duration::from_secs(2)),
+            "the write made during read saturation applied on both voters",
+        )
+        .await?;
     leader.shutdown().await?;
     router.get_raft_handle(&1)?.shutdown().await?;
     Ok(())
@@ -215,7 +233,6 @@ async fn quorum_completion_drops_remaining_inline_peer_future_in_same_actual_tas
         .new_cluster(btreeset! {0, 1, 2}, btreeset! {})
         .await?;
     let leader = router.get_raft_handle(&0)?;
-    leader.ensure_linearizable().await?;
     let (entered, entry) = tokio::sync::oneshot::channel();
     let (dropped, drop_observation) = tokio::sync::oneshot::channel();
     let first = Arc::new(Mutex::new(Some((entered, dropped))));

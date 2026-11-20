@@ -4216,9 +4216,9 @@
           "sha256": "e2d65a39e7cc4a137a0edb51395fdf368cf0c9807248255dda6d34f2730ab07e"
         },
         "tests/tests/life_cycle/t14_auxiliary_custody.rs": {
-          "bytes": 9558,
+          "bytes": 10177,
           "mode": "0o644",
-          "sha256": "3cd46de8bc065f5e7ef7d36062f34b8faccfc3e9ac1372b2bba5a5fd6c31f2af"
+          "sha256": "6d1907cd40ba862466915c09c1a237caf295ab85f5f2996c0494f9fe55683b65"
         },
         "tests/tests/life_cycle/t50_follower_restart_does_not_interrupt.rs": {
           "bytes": 2330,
@@ -4578,10 +4578,10 @@
       "path": "vendor/openraft-0.9.25",
       "review": {
         "inventory_path": "vendor/reviews/openraft-0.9.25/source-inventory.json",
-        "inventory_sha256": "b6374dd570a3c0fa240ac8b96a0f4f1478ad50e4ddab12561e0a75b302effde3",
+        "inventory_sha256": "183eee786799ef83b3c701328d0358e452deb3cedcbc7e5a7b92832dd7530cf3",
         "kind": "openraft-checkpoint",
         "path": "vendor/reviews/openraft-0.9.25/custody-checkpoint.json",
-        "sha256": "41d9fcd52ef84c589a8b5cbc3c487c196349fca02322828ad6721db09338bc74"
+        "sha256": "293ed1c3d64b5bceb3a28e8ba04bc811e6596e9fdb3f24854b5bef458436f6c8"
       }
     }
   ],
@@ -4592,14 +4592,14 @@
       "sha256": "9faaf0d56323f390400f25658825da2a1f120622ae0722a1fdbe320626eb2f54"
     },
     "reviews/openraft-0.9.25/custody-checkpoint.json": {
-      "bytes": 9842,
+      "bytes": 10314,
       "mode": "0o644",
-      "sha256": "41d9fcd52ef84c589a8b5cbc3c487c196349fca02322828ad6721db09338bc74"
+      "sha256": "293ed1c3d64b5bceb3a28e8ba04bc811e6596e9fdb3f24854b5bef458436f6c8"
     },
     "reviews/openraft-0.9.25/source-inventory.json": {
-      "bytes": 112132,
+      "bytes": 112133,
       "mode": "0o644",
-      "sha256": "b6374dd570a3c0fa240ac8b96a0f4f1478ad50e4ddab12561e0a75b302effde3"
+      "sha256": "183eee786799ef83b3c701328d0358e452deb3cedcbc7e5a7b92832dd7530cf3"
     },
     "rmcp-terminal-ownership.md": {
       "bytes": 6112,

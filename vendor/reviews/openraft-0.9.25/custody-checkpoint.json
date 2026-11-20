@@ -149,6 +149,13 @@
         "openraft/src/display_ext/display_instant.rs"
       ],
       "status": "2026-11-18 source reviewed against the prior checkpoint. Focused and final-source qualification tracked in the first-release ledger."
+    },
+    {
+      "change": "Start the read custody cases after membership application without a preceding read. Wait for the admitted application write on both voters before teardown.",
+      "files": [
+        "tests/tests/life_cycle/t14_auxiliary_custody.rs"
+      ],
+      "status": "The corrected fixture passed 64 repetitions per case and the 23-case lifecycle binary on native macOS ARM64 and development Linux ARM64. Full platform qualification remains pending."
     }
   ],
   "qualification": "focused independent graceful-drain review and recorded development tests only; complete fork review and final qualification pending",
@@ -162,7 +169,7 @@
     "24-hour soak"
   ],
   "review_status": "focused graceful-drain delta reviewed and focused regressions passed; focused step-down replication-retirement delta reviewed (KASUMI-STEP-DOWN-REVIEW.md); complete current fork review and conformance pending",
-  "source_bytes": 2724018,
+  "source_bytes": 2724637,
   "source_change_hash_method": "SHA256 of canonical JSON inventory records for source_change_paths; sorted keys, compact separators",
   "source_change_paths": [
     "openraft/src/core/mod.rs",
@@ -189,5 +196,5 @@
   "source_change_sha256": "3a2ac668d0e91bdb142519714d58b835ff807be7783a723299e4df603d119cb5",
   "source_files": 607,
   "source_inventory": "source-inventory.json",
-  "source_inventory_sha256": "b6374dd570a3c0fa240ac8b96a0f4f1478ad50e4ddab12561e0a75b302effde3"
+  "source_inventory_sha256": "183eee786799ef83b3c701328d0358e452deb3cedcbc7e5a7b92832dd7530cf3"
 }

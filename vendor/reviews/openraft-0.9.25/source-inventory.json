@@ -3228,10 +3228,10 @@
     "sha256": "e2d65a39e7cc4a137a0edb51395fdf368cf0c9807248255dda6d34f2730ab07e"
   },
   {
-    "bytes": 9558,
+    "bytes": 10177,
     "mode": "0o644",
     "path": "tests/tests/life_cycle/t14_auxiliary_custody.rs",
-    "sha256": "3cd46de8bc065f5e7ef7d36062f34b8faccfc3e9ac1372b2bba5a5fd6c31f2af"
+    "sha256": "6d1907cd40ba862466915c09c1a237caf295ab85f5f2996c0494f9fe55683b65"
   },
   {
     "bytes": 2330,
