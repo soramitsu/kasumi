@@ -151,7 +151,6 @@ pub(crate) struct StagedDocuments {
 pub(crate) struct Builder {
     bodies: ObjectBatch,
     blobs: ObjectBatch,
-    documents_since_flush: usize,
     has_bodies: bool,
     tables: Arc<Tables>,
     comparing: Option<Comparing>,
@@ -350,33 +349,38 @@ impl ObjectBatch {
             );
             return Ok(());
         }
-        if let Some(previous) = table.get(&key)? {
+        let row_bytes = key
+            .len()
+            .checked_add(bytes.len())
+            .context("document staging batch overflow")?;
+        if let Some(batch) = &self.batch {
+            if batch.contains_exact(&key, bytes)? {
+                return Ok(());
+            }
+            if !batch.has_capacity_for(row_bytes) {
+                self.flush()?;
+            }
+        } else if let Some(previous) = table.get(&key)? {
             ensure!(
                 previous.as_bytes() == bytes,
                 "document restore content-address collision"
             );
             return Ok(());
         }
-        let row_bytes = key
-            .len()
-            .checked_add(bytes.len())
-            .context("document staging batch overflow")?;
+        // Keep the single-row corridor for large manifests.
+        if row_bytes > EncryptedTableBatch::MAX_BYTES {
+            return table.insert(&key, bytes);
+        }
         if self.known.len() == EncryptedTableBatch::MAX_ENTRIES
             || self
                 .bytes
                 .checked_add(row_bytes)
-                .is_none_or(|total| total > EncryptedTableBatch::MAX_BYTES)
+                .is_none_or(|n| n > EncryptedTableBatch::MAX_BYTES)
         {
-            self.flush()?;
-            // A cache eviction may include uncommitted originals. Publish the
-            // complete native batch before releasing any of their backing.
+            // The native transaction owns and charges its pending row bytes.
+            // Evicting these duplicate-read copies does not publish the batch.
             self.known.clear();
             self.bytes = 0;
-        }
-        // The existing native single-row corridor accepts large manifests up
-        // to its 32 MiB row cap; do not increase the bounded batch cap for one.
-        if row_bytes > EncryptedTableBatch::MAX_BYTES {
-            return table.insert(&key, bytes);
         }
         let retained = (bytes.len() as u64)
             .checked_mul(2)
@@ -384,7 +388,7 @@ impl ObjectBatch {
             .context("document pending row overflow")?;
         let grant = memory.clone().reserve_document_decode(retained)?;
         if self.batch.is_none() {
-            self.batch = Some(table.begin_batch()?);
+            self.batch = Some(table.begin_index_batch()?);
         }
         self.batch
             .as_mut()
@@ -428,7 +432,6 @@ impl Builder {
         Ok(Self {
             bodies: ObjectBatch::new(),
             blobs: ObjectBatch::new(),
-            documents_since_flush: 0,
             has_bodies: false,
             tables: Arc::new(Tables {
                 backing: Some(TableBacking { bodies, blobs }),
@@ -494,12 +497,6 @@ impl Builder {
         let wire = manifest.to_bytes(limits)?;
         let descriptor = measured.descriptor(&manifest, &wire)?;
         self.put(true, descriptor.body_object, &wire)?;
-        self.documents_since_flush += 1;
-        if self.documents_since_flush == EncryptedTableBatch::MAX_ENTRIES / 2 {
-            self.bodies.flush()?;
-            self.blobs.flush()?;
-            self.documents_since_flush = 0;
-        }
         self.failed = false;
         Ok(descriptor)
     }
@@ -1328,18 +1325,26 @@ mod workspace_tests {
         }
         assert_eq!(batch.known.len(), EncryptedTableBatch::MAX_ENTRIES);
         assert!(batch.bytes <= EncryptedTableBatch::MAX_BYTES);
-        // The next row evicts the cache while the previous fifteen writes are
-        // still pending. Every one must become durable before its copy drops.
+        // Evicting the duplicate-read cache keeps the transaction private.
+        // Its own read view must still detect a duplicate or collision.
         batch.put(&table, disk.memory(), [99; 64], &value).unwrap();
         assert_eq!(batch.known.len(), 1);
         assert_eq!(batch.bytes, value.len() + first.len());
+        assert!(table.get(&[2; 64]).unwrap().is_none());
+        batch.put(&table, disk.memory(), [2; 64], &value).unwrap();
+        assert!(
+            batch
+                .put(&table, disk.memory(), [2; 64], &collision)
+                .is_err()
+        );
+        batch.flush().unwrap();
         for ordinal in 1..=EncryptedTableBatch::MAX_ENTRIES {
             assert_eq!(
                 table.get(&[ordinal as u8; 64]).unwrap().unwrap().as_bytes(),
                 value
             );
         }
-        batch.flush().unwrap();
+        assert_eq!(table.get(&[99; 64]).unwrap().unwrap().as_bytes(), value);
         drop(batch);
         table.close().unwrap();
         assert_eq!(disk.snapshot().live_files, 0);

@@ -174,6 +174,33 @@ impl EncryptedTableBatch {
         self.entry_limit
     }
 
+    /// Bounds the transaction-local rows independently of any caller's cache.
+    pub fn has_capacity_for(&self, bytes: usize) -> bool {
+        self.entries < self.entry_limit
+            && self
+                .bytes
+                .checked_add(bytes)
+                .is_some_and(|n| n <= Self::MAX_BYTES)
+    }
+
+    /// Compare both committed and pending rows through the same writer's view.
+    pub fn contains_exact(&self, key: &[u8], bytes: &[u8]) -> Result<bool> {
+        ensure!(!self.failed, "staging batch previously failed");
+        let Some(previous) = self
+            .table
+            .as_ref()
+            .expect("live staging batch table")
+            .get(key)?
+        else {
+            return Ok(false);
+        };
+        ensure!(
+            previous.value() == bytes,
+            "staged content-address collision"
+        );
+        Ok(true)
+    }
+
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         ensure!(!self.failed, "staging batch previously failed");
         self.failed = true;
