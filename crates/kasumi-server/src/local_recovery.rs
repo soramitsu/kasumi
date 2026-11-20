@@ -1708,7 +1708,7 @@ impl Operator {
                     .administer(context, kasumi_types::Operation::Suspend(false))
                     .await?;
             }
-            self.publish_profile(journal)?;
+            self.publish_profile(journal, state.policy())?;
             self.event(journal, kasumi_engine::SecurityOutcome::Succeeded)
                 .await?;
             journal.status.phase = LocalRecoveryPhase::Finished;
@@ -1727,7 +1727,7 @@ impl Operator {
         target.shutdown().await?;
         result
     }
-    fn publish_profile(&self, journal: &mut Journal) -> Result<()> {
+    fn publish_profile(&self, journal: &mut Journal, policy: &kasumi_types::Policy) -> Result<()> {
         let request = &journal.status.request;
         let root = crate::standalone::installation_root(&self.config)?;
         // The application's client identity, wherever the latest certificate
@@ -1750,18 +1750,24 @@ impl Operator {
                 "recovery profile path is occupied by unrelated credentials"
             );
         }
+        // A replay after family creation must present its original specification.
+        // New families can only request actions held by the restored principal.
+        let scopes = match self.credentials.existing_family(journal.target_family)? {
+            Some(existing) => existing.specification.scopes,
+            None => policy
+                .grants
+                .iter()
+                .filter(|grant| grant.principal == request.source_principal)
+                .flat_map(|grant| grant.actions.iter().copied())
+                .collect(),
+        };
         let mut token = self.credentials.create(
             kasumi_types::CreateCredential {
                 family_id: journal.target_family,
                 principal: request.source_principal.clone(),
                 tenant: request.tenant.clone(),
                 resource: resource.clone(),
-                scopes: std::collections::BTreeSet::from([
-                    kasumi_types::Action::Read,
-                    kasumi_types::Action::Write,
-                    kasumi_types::Action::Admin,
-                    kasumi_types::Action::Audit,
-                ]),
+                scopes,
                 lifetime_seconds: 3600,
                 // A binding installation binds it to the certificate the
                 // published profile presents.

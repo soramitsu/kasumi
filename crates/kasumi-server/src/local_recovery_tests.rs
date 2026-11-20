@@ -319,6 +319,16 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         LocalRecoveryPhase::Finished
     );
     let profile = ClientProfile::load(completed.client_profile.as_ref().unwrap()).unwrap();
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let published = operator.credentials.status(profile.family_id).unwrap();
+    assert_eq!(
+        published.specification.scopes,
+        BTreeSet::from([Action::Read, Action::Admin, Action::Audit])
+    );
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
     let runtime = NodeRuntime::open_using_storage(
         config.clone(),
         crate::runtime::file_secret,

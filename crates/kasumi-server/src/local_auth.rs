@@ -415,34 +415,32 @@ impl LocalCredentials {
         Ok(self)
     }
     pub fn status(&self, family: Uuid) -> Result<CredentialStatus> {
+        self.existing_family(family)?
+            .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found").into())
+    }
+
+    pub(crate) fn existing_family(&self, family: Uuid) -> Result<Option<CredentialStatus>> {
         let (epoch, cached) = self.statuses.get(family);
         if let Some(status) = cached {
             self.store.check_access()?;
-            return Ok(status);
+            return Ok(Some(status));
         }
-        let bytes = self
+        let Some(bytes) = self
             .store
             .get_bounded(FAMILIES, family.as_bytes(), MAX_RECORD)?
-            .ok_or_else(|| Error::new(ErrorCode::NotFound, "credential family not found"))?;
+        else {
+            return Ok(None);
+        };
         let status = Self::family(&bytes).context(InvalidFamilyRecord)?;
         self.statuses.insert(epoch, family, &status);
-        Ok(status)
+        Ok(Some(status))
     }
-    /// A missing family gives the same policy refusal as another audience.
-    /// An unreadable ledger must reach the worker and its drain as a failure.
+
+    /// Only an absent row or another audience can give a policy refusal here.
     pub(crate) fn is_mcp_family(&self, family: Uuid) -> Result<bool> {
-        match self.status(family) {
-            Ok(status) => Ok(status.specification.audience == CredentialAudience::Mcp),
-            Err(error)
-                if error.chain().len() == 1
-                    && error.downcast_ref::<Error>().is_some_and(|e| {
-                        e.code == ErrorCode::NotFound && !e.has_physical_source()
-                    }) =>
-            {
-                Ok(false)
-            }
-            Err(error) => Err(error),
-        }
+        Ok(self
+            .existing_family(family)?
+            .is_some_and(|status| status.specification.audience == CredentialAudience::Mcp))
     }
 
     fn authorization_status(&self, family: Uuid) -> kasumi_types::Result<CredentialStatus> {
