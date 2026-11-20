@@ -212,15 +212,18 @@ async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation
     drop(fence);
     assert!(member.backend.authorize_admin(&reader).is_err());
     assert_eq!(first.entries.len(), 1);
+    let committed = &fixture.bootstrap.membership;
     assert_eq!(
         first.members,
-        fixture
-            .settings
-            .installed_members
-            .keys()
-            .copied()
-            .collect::<Vec<_>>()
+        committed.members.keys().copied().collect::<Vec<_>>()
     );
+    assert_eq!(
+        first.membership_sha256,
+        kasumi_types::staged_digest(committed).unwrap().0
+    );
+    // Node 4 has installed credentials for later enrollment and has not joined.
+    assert!(fixture.settings.installed_members.contains_key(&4));
+    assert!(!first.members.contains(&4));
     let continuation = AuthorityCatalogRequest {
         nonce: Uuid::new_v4(),
         cursor: Some(first.next.clone().unwrap()),
