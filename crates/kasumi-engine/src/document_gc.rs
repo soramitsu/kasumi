@@ -58,6 +58,7 @@ const MAX_MANIFEST_BYTES: usize = 32 << 20;
 /// Bookkeeping below this many bytes is the engine's fixed floor.
 const FLOOR_BYTES: u64 = 32 << 10;
 const MAX_PENDING: usize = 1 << 18;
+const CANDIDATE_BYTES: u64 = 72;
 const MAX_REGISTRATION_SLOTS: usize = 1 << 18;
 const MAX_FAILURES: u32 = 3;
 
@@ -289,7 +290,8 @@ struct State {
     last_error: Option<&'static str>,
     /// Chunk ownership was lost: only manifests are collected until a restore.
     blobs_off: bool,
-    pending: Vec<(Digest, bool)>,
+    // The same admitted tree moves into the cycle when its state is frozen.
+    pending: BTreeMap<Digest, bool>,
     cycle: Option<Cycle>,
     /// `(manifest?, digest)` deleted since the current generation's selection.
     fence: BTreeSet<(bool, Digest)>,
@@ -328,7 +330,7 @@ impl Default for ObjectGc {
                 consecutive_failures: 0,
                 last_error: None,
                 blobs_off: false,
-                pending: Vec::new(),
+                pending: BTreeMap::new(),
                 cycle: None,
                 fence: BTreeSet::new(),
                 registrations: VecDeque::new(),
@@ -348,9 +350,8 @@ impl State {
             .cycle
             .as_ref()
             .map_or(0, |cycle| cycle.candidates.len());
-        (self.pending.capacity() as u64)
-            .saturating_mul(40)
-            .saturating_add((candidates as u64).saturating_mul(72))
+        (self.pending.len().saturating_add(candidates) as u64)
+            .saturating_mul(CANDIDATE_BYTES)
             .saturating_add((self.fence.len() as u64).saturating_mul(72))
             .saturating_add((self.registration_slots as u64).saturating_mul(32))
             .saturating_add(
@@ -385,11 +386,20 @@ impl State {
         admitted
     }
 
+    fn record_candidate(&mut self, admission: &Arc<NodeAdmission>, body: Digest, large: bool) {
+        if let Some(already_large) = self.pending.get_mut(&body) {
+            *already_large |= large;
+            return;
+        }
+        if self.pending.len() >= MAX_PENDING || !self.admit(admission, CANDIDATE_BYTES) {
+            self.stats.dropped += 1;
+            return;
+        }
+        self.pending.insert(body, large);
+    }
+
     /// Return capacity the bookkeeping no longer needs.
     fn settle(&mut self) {
-        if self.pending.is_empty() && self.pending.capacity() > 1024 {
-            self.pending = Vec::new();
-        }
         if self.registrations.is_empty() && self.registrations.capacity() > 512 {
             self.registrations = VecDeque::new();
         }
@@ -452,7 +462,7 @@ impl State {
     /// Forget every candidate and owner. The fence outlives this: only a
     /// published selection or a completed restore ends it.
     fn clear(&mut self) {
-        self.pending = Vec::new();
+        self.pending = BTreeMap::new();
         self.cycle = None;
         self.registrations = VecDeque::new();
         self.registration_slots = 0;
@@ -538,23 +548,11 @@ impl ObjectGc {
             let DocumentSlot::Stored(descriptor) = slot else {
                 return;
             };
-            if state.pending.len() >= MAX_PENDING {
-                state.stats.dropped += 1;
-                return;
-            }
-            if state.pending.len() == state.pending.capacity() {
-                let grow = state.pending.capacity().max(64);
-                if !state.admit(admission, (grow as u64).saturating_mul(40))
-                    || state.pending.try_reserve_exact(grow).is_err()
-                {
-                    state.stats.dropped += 1;
-                    return;
-                }
-            }
-            state.pending.push((
+            state.record_candidate(
+                admission,
                 descriptor.body_object,
                 descriptor.body_bytes >= document_encoding::STRING_THRESHOLD as u64,
-            ));
+            );
         };
         let still_named = |documents: Option<&Documents>, id: &str, before: &Arc<DocumentSlot>| {
             documents
@@ -772,14 +770,10 @@ impl State {
     }
 
     fn begin(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) {
-        // The sorted set costs more per digest than the pending buffer.
-        if !self.admit(admission, (self.pending.len() as u64).saturating_mul(72)) {
-            return;
-        }
         let Some(walk) = Walk::freeze(step.state, admission) else {
             return;
         };
-        let candidates = std::mem::take(&mut self.pending).into_iter().collect();
+        let candidates = std::mem::take(&mut self.pending);
         self.cycle = Some(Cycle {
             revision: step.state.revision,
             candidates,
@@ -1065,6 +1059,24 @@ pub(crate) fn clear_links(
 mod tests {
     use super::*;
     use kasumi_types::{ChangeRecord, StoredDocument};
+
+    #[tokio::test]
+    async fn repeated_displacements_leave_room_for_a_distinct_manifest() -> Result<()> {
+        let admission = NodeAdmission::with_fixed_memory(Default::default(), 2 << 30, 0)?;
+        let gc = ObjectGc::default();
+        let mut state = gc.lock();
+        for _ in 0..=MAX_PENDING {
+            state.record_candidate(&admission, [1; 32], false);
+        }
+        state.record_candidate(&admission, [1; 32], true);
+        state.record_candidate(&admission, [2; 32], false);
+        assert_eq!(state.pending.len(), 2);
+        assert_eq!(state.pending.get(&[1; 32]), Some(&true));
+        assert_eq!(state.pending.get(&[2; 32]), Some(&false));
+        assert_eq!(state.stats.dropped, 0);
+        assert_eq!(state.footprint(), 2 * CANDIDATE_BYTES);
+        Ok(())
+    }
 
     #[test]
     fn collect_feed_resumes_inside_a_commit_after_budget_stop_and_failed_visit() -> Result<()> {
