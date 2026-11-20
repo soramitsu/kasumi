@@ -427,10 +427,11 @@ impl Serving {
         };
         let started = Instant::now();
         while serving.registry.database(&administrator()).is_err() {
-            ensure!(
-                !serving.task.is_finished() && started.elapsed() < PATIENCE,
-                "the deployed tenant did not serve"
-            );
+            if serving.task.is_finished() || started.elapsed() >= PATIENCE {
+                return serving
+                    .finish(Err(anyhow::anyhow!("the deployed tenant did not serve")))
+                    .await;
+            }
             tokio::time::sleep(Duration::from_millis(20)).await;
         }
         Ok(serving)
@@ -440,7 +441,9 @@ impl Serving {
         Ok(self.registry.database(&administrator())?)
     }
 
-    async fn stop(self) -> Result<()> {
+    // Finish every serving attempt before another copy with the same
+    // installation UUID starts, including when a read or audit fails.
+    async fn finish<T>(self, checks: Result<T>) -> Result<T> {
         let Self {
             stop,
             task,
@@ -450,8 +453,20 @@ impl Serving {
             control,
         } = self;
         drop((registry, administration, security, control));
-        stop.send(true)?;
-        task.await?
+        let signal = stop.send(true);
+        let joined = task
+            .await
+            .map_err(anyhow::Error::from)
+            .and_then(|result| result);
+        let drain = joined.and_then(|()| Ok(signal?));
+        match (checks, drain) {
+            (Ok(value), Ok(())) => Ok(value),
+            (Err(check), Ok(())) => Err(check),
+            (Ok(_), Err(drain)) => Err(drain),
+            (Err(check), Err(drain)) => {
+                Err(check.context(drain.context("deployed fixture shutdown also failed")))
+            }
+        }
     }
 }
 
@@ -892,8 +907,40 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     }
     let bootstraps = rebind_in_child(&copy)?;
 
-    // First open: the deployed build's snapshot and journal tail.
+    // Each phase returns its original evidence after its serving owner joins.
     let serving = Serving::start(&copy).await?;
+    let checks = exercise_deployed_state(&copy, &serving, killed).await;
+    let (expected, selected) = serving.finish(checks).await?;
+    check_node_files(&copy)?;
+    let serving = Serving::start(&copy).await?;
+    let checks = verify_reopened_state(&copy, &serving, expected, selected, &bootstraps).await;
+    serving.finish(checks).await
+}
+
+fn snapshot_manifest(
+    store: &Arc<TenantStore>,
+) -> Result<kasumi_store::application_manifest::ApplicationManifest> {
+    let view = store.read_view()?;
+    let selected = kasumi_store::application_manifest::ApplicationManifest::load_at(&view)?
+        .context("new snapshot has no application descriptor manifest")?;
+    view.close()?;
+    ensure!(
+        selected.tenant == TENANT
+            && selected.document_count > 0
+            && selected.records.count() >= selected.document_count
+    );
+    Ok(selected)
+}
+
+async fn exercise_deployed_state(
+    copy: &Copy,
+    serving: &Serving,
+    killed: bool,
+) -> Result<(
+    Vec<Value>,
+    kasumi_store::application_manifest::ApplicationManifest,
+)> {
+    let manifest = &copy.manifest;
     let database = serving.database()?;
     let group = database.raft_group();
     ensure!(
@@ -925,7 +972,7 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         remove_in_flight(&database, manifest).await?;
     }
     check_manifest(&database, manifest).await?;
-    check_credentials(&copy, &serving)?;
+    check_credentials(copy, serving)?;
     let control = serving.control.engine().generation()?;
     ensure!(
         control.state.audit_retention.next_sequence
@@ -957,18 +1004,6 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
     })
     .await?;
     let store = database.stores().application().clone();
-    let snapshot_manifest = |store: &Arc<TenantStore>| -> Result<_> {
-        let view = store.read_view()?;
-        let selected = kasumi_store::application_manifest::ApplicationManifest::load_at(&view)?
-            .context("new snapshot has no application descriptor manifest")?;
-        view.close()?;
-        ensure!(
-            selected.tenant == TENANT
-                && selected.document_count > 0
-                && selected.records.count() >= selected.document_count
-        );
-        Ok(selected)
-    };
     let selected = snapshot_manifest(&store)?;
     let cycles = store.storage_maintenance_status()?.cycles_completed;
     let control = configured_control_context(copy.config.hosted_control().unwrap())?;
@@ -991,17 +1026,17 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         answers(&database, manifest).await? == expected,
         "answers changed across the snapshot and compaction"
     );
-    drop((store, database));
-    serving.stop().await?;
+    Ok((expected, selected))
+}
 
-    // What the current code left on disk keeps every pinned layout, and the
-    // bootstrap manifests are the deployed build's bytes. The root may list
-    // garbage again: a reclaim round can start after the cycle, and the next
-    // open finishes it.
-    check_node_files(&copy)?;
-
-    // Second open: this build's own snapshot of the deployed state.
-    let serving = Serving::start(&copy).await?;
+async fn verify_reopened_state(
+    copy: &Copy,
+    serving: &Serving,
+    expected: Vec<Value>,
+    selected: kasumi_store::application_manifest::ApplicationManifest,
+    bootstraps: &BTreeMap<String, Vec<u8>>,
+) -> Result<()> {
+    let manifest = &copy.manifest;
     let database = serving.database()?;
     let audit = database.tenant_audit_status(&administrator()).await?;
     audit.validate()?;
@@ -1172,7 +1207,7 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
             "{tenant}'s bootstrap manifest changed"
         );
     }
-    check_credentials(&copy, &serving)?;
+    check_credentials(copy, serving)?;
     let current = database
         .get(&administrator(), "blobs", "blob-current")
         .await?
@@ -1198,11 +1233,14 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
         "the deployed large document changed"
     );
     drop(untouched);
-    drop(database);
-    serving.stop().await
+    Ok(())
 }
 
-fn run(name: &'static str, fixture: &'static str) {
+fn run(
+    name: &'static str,
+    fixture: &'static str,
+    check: impl for<'a> AsyncFnOnce(Source<'a>) -> Result<()> + Send + 'static,
+) {
     let _owner = DEPLOYED_SERVING_OWNER
         .lock()
         .unwrap_or_else(|e| e.into_inner());
@@ -1220,7 +1258,7 @@ fn run(name: &'static str, fixture: &'static str) {
                 .unwrap()
                 .block_on(Box::pin(async move {
                     let fixtures = Fixtures::load();
-                    serve_deployed_copy(Source::Packed(&fixtures, fixture))
+                    check(Source::Packed(&fixtures, fixture))
                         .await
                         .unwrap_or_else(|error| panic!("{fixture}: {error:#}"));
                 }));
@@ -1231,18 +1269,55 @@ fn run(name: &'static str, fixture: &'static str) {
 }
 
 #[test]
+fn a_failed_deployed_read_joins_its_owner_before_reopening_the_installation() {
+    run("deployed failed read", FIRST_CLEAN, async |source| {
+        let copy = install(source)?;
+        rebind_in_child(&copy)?;
+        let serving = Serving::start(&copy).await?;
+        let original = kasumi_types::Error::new(
+            kasumi_types::ErrorCode::AuditUnavailable,
+            "fixture read audit failure",
+        );
+        let error = serving
+            .finish::<()>(Err(original.clone().into()))
+            .await
+            .unwrap_err();
+        ensure!(error.downcast_ref::<kasumi_types::Error>() == Some(&original));
+        ensure!(
+            error.chain().count() == 1,
+            "unexpected drain failure: {error:#}"
+        );
+        let reopened = Serving::start(&copy).await?;
+        let checks = reopened.database().and_then(|database| {
+            ensure!(
+                database.engine().generation()?.incarnation()
+                    == copy.manifest["installation"]["incarnation"]
+                        .as_str()
+                        .context("deployed tenant incarnation")?
+            );
+            Ok(())
+        });
+        reopened.finish(checks).await
+    });
+}
+
+#[test]
 fn the_store_the_first_build_stopped_cleanly_serves_snapshots_compacts_and_reopens() {
-    run("deployed 12140939 clean", FIRST_CLEAN);
+    run("deployed 12140939 clean", FIRST_CLEAN, serve_deployed_copy);
 }
 
 #[test]
 fn the_store_the_first_build_was_killed_in_recovers_and_serves() {
-    run("deployed 12140939 killed", FIRST_KILLED);
+    run(
+        "deployed 12140939 killed",
+        FIRST_KILLED,
+        serve_deployed_copy,
+    );
 }
 
 #[test]
 fn the_store_the_second_build_served_keeps_its_reference_snapshot_readable() {
-    run("deployed cf9959f1 clean", SECOND_CLEAN);
+    run("deployed cf9959f1 clean", SECOND_CLEAN, serve_deployed_copy);
 }
 
 /// A copy `scripts/deployed_format_fixture.py` wrote, before it is packed:
