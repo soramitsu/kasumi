@@ -306,7 +306,8 @@ def check_boundaries(db, witness, failed):
             "independent boundary record identities differ")
     passes = cleanup["passes"]
     require(isinstance(passes, list) and len(passes) >= 2 and cleanup["bound"] == 256 and
-            cleanup["over_bound_request"] and cleanup["zero_request"], "missing cleanup boundary")
+            all(isinstance(cleanup[key], str) and cleanup[key].startswith("InvalidArgument:")
+                for key in ("over_bound_request", "zero_request")), "missing cleanup boundary")
     staged = uint(cleanup["staged_objects"], "staged cleanup objects", 257)
     ident = identity(cleanup["session_id"])
     deleted = 0

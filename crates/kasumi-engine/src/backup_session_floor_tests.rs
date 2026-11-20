@@ -1227,6 +1227,86 @@ fn plan_of(root: &Path) -> anyhow::Result<Plan> {
     Ok(plan)
 }
 
+#[derive(Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CleanupPages {
+    session_id: uuid::Uuid,
+    ordinal: u64,
+    bound: usize,
+    staged_objects: u64,
+    over_bound_request: String,
+    zero_request: String,
+    passes: Vec<BackupCleanupResult>,
+    repeat: Option<BackupCleanupResult>,
+}
+
+async fn record_cleanup(root: &Path, inst: &Installation, plan: &Plan) -> anyhow::Result<()> {
+    let ordinal = plan.cleanup_ordinal();
+    let session_id = plan.session_id(ordinal);
+    let bound = kasumi_store::MAX_SESSION_GC_OBJECTS;
+    anyhow::ensure!(bound == 256, "historical cleanup page bound differs");
+    let path = root.join("cleanup.json");
+    let mut record: CleanupPages = if path.try_exists()? {
+        read_json(&path)?
+    } else {
+        let invalid = |answer: std::result::Result<BackupCleanupResult, String>| {
+            let error = answer.err().context("out-of-bounds cleanup was accepted")?;
+            anyhow::ensure!(
+                error.starts_with("InvalidArgument:"),
+                "cleanup boundary: {error}"
+            );
+            anyhow::Ok(error)
+        };
+        let record = CleanupPages {
+            session_id,
+            ordinal,
+            bound,
+            staged_objects: plan.cleanup_objects,
+            over_bound_request: invalid(cleanup(inst, plan, bound + 1).await)?,
+            zero_request: invalid(cleanup(inst, plan, 0).await)?,
+            passes: Vec::new(),
+            repeat: None,
+        };
+        write_json(&path, &record)?;
+        record
+    };
+    anyhow::ensure!(
+        record.session_id == session_id
+            && record.ordinal == ordinal
+            && record.bound == bound
+            && record.staged_objects == plan.cleanup_objects,
+        "persisted cleanup evidence belongs to a different plan"
+    );
+    while record.passes.last().is_none_or(|p| p.more_objects_observed) {
+        anyhow::ensure!(record.passes.len() < 16, "cleanup did not converge");
+        let pass = cleanup(inst, plan, bound)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(pass.deleted_objects <= bound as u64 && pass.session_id == session_id);
+        record.passes.push(pass);
+        write_json(&path, &record)?;
+    }
+    let deleted: u64 = record.passes.iter().map(|p| p.deleted_objects).sum();
+    anyhow::ensure!(
+        record.passes.len() >= 2 && deleted == plan.cleanup_objects,
+        "retained cleanup responses account for {deleted} of {} objects",
+        plan.cleanup_objects
+    );
+    if record.repeat.is_none() {
+        let after = cleanup(inst, plan, bound)
+            .await
+            .map_err(anyhow::Error::msg)?;
+        anyhow::ensure!(
+            after.session_id == session_id
+                && after.deleted_objects == 0
+                && !after.more_objects_observed
+        );
+        record.repeat = Some(after);
+        write_json(&path, &record)?;
+    }
+    Ok(())
+}
+
 async fn populate(root: &Path) -> anyhow::Result<()> {
     let plan = plan_of(root)?;
     let started = Instant::now();
@@ -1240,10 +1320,12 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
     let done = read_originals(root)?;
     let mut journal = Journal::open(root)?;
     let mut durations: BTreeMap<Kind, Vec<f64>> = BTreeMap::new();
-    let mut cleanup_record = None;
     let reserve = plan.reserve_start();
     for ordinal in 0..reserve {
         if done.contains_key(&ordinal) {
+            if ordinal == plan.cleanup_ordinal() {
+                record_cleanup(root, &inst, &plan).await?;
+            }
             continue;
         }
         let original = run_session(&inst, &plan, ordinal, "populate").await?;
@@ -1253,45 +1335,8 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
             .push(original.seconds);
         journal.append(&original)?;
         if ordinal == plan.cleanup_ordinal() {
-            let bound = kasumi_store::MAX_SESSION_GC_OBJECTS;
-            anyhow::ensure!(bound == 256, "historical cleanup page bound differs");
-            let over = cleanup(&inst, &plan, bound + 1).await;
-            let zero = cleanup(&inst, &plan, 0).await;
-            let mut passes = Vec::new();
-            loop {
-                let pass = cleanup(&inst, &plan, bound)
-                    .await
-                    .map_err(|e| anyhow::anyhow!("cleanup pass: {e}"))?;
-                anyhow::ensure!(pass.deleted_objects <= bound as u64);
-                let more = pass.more_objects_observed;
-                passes.push(pass);
-                if !more {
-                    break;
-                }
-                anyhow::ensure!(passes.len() < 16, "cleanup did not converge");
-            }
-            let deleted: u64 = passes.iter().map(|p| p.deleted_objects).sum();
-            anyhow::ensure!(
-                over.is_err()
-                    && zero.is_err()
-                    && passes.len() >= 2
-                    && deleted == plan.cleanup_objects,
-                "cleanup page bound was not exercised"
-            );
-            let after = cleanup(&inst, &plan, bound)
-                .await
-                .map_err(|e| anyhow::anyhow!("repeat cleanup: {e}"))?;
-            anyhow::ensure!(after.deleted_objects == 0 && !after.more_objects_observed);
-            cleanup_record = Some(serde_json::json!({
-                "session_id": plan.session_id(ordinal),
-                "ordinal": ordinal,
-                "bound": bound,
-                "staged_objects": plan.cleanup_objects,
-                "over_bound_request": over.err(),
-                "zero_request": zero.err(),
-                "passes": passes,
-                "repeat": after,
-            }));
+            journal.sync()?;
+            record_cleanup(root, &inst, &plan).await?;
         }
         if (ordinal + 1) % 256 == 0 {
             journal.sync()?;
@@ -1309,9 +1354,6 @@ async fn populate(root: &Path) -> anyhow::Result<()> {
     let mut summary = BTreeMap::new();
     for (kind, values) in &mut durations {
         summary.insert(format!("{kind:?}").to_lowercase(), stats(values));
-    }
-    if let Some(record) = cleanup_record {
-        write_json(&root.join("cleanup.json"), &record)?;
     }
     let report = serde_json::json!({
         "process_id": std::process::id(),
