@@ -26,8 +26,6 @@ pub const MAX_SHARD_BYTES: u64 = 16 << 20;
 /// A shard holds one segment's components plus its metadata.
 const MAX_SHARD_FILES: usize = 16;
 const META: &str = "meta.json";
-/// Writer arena of one shard build: far above one shard's postings.
-const WRITER_ARENA: usize = 15_000_000;
 
 /// One definition's text layout, shared by every shard built for it.
 #[derive(Clone)]
@@ -102,6 +100,9 @@ pub struct TextShardWriter {
 }
 
 impl TextShardWriter {
+    /// Tantivy's configured arena for the single indexing worker.
+    pub const ARENA_BYTES: usize = 15_000_000;
+
     pub fn new(layout: &TextShardLayout) -> Result<Self> {
         let directory = RamDirectory::create();
         let index = Index::create(
@@ -112,7 +113,7 @@ impl TextShardWriter {
         .map_err(search_error)?;
         layout.0.register(&index)?;
         let writer = index
-            .writer_with_num_threads::<TantivyDocument>(1, WRITER_ARENA)
+            .writer_with_num_threads::<TantivyDocument>(1, Self::ARENA_BYTES)
             .map_err(search_error)?;
         writer.set_merge_policy(Box::new(NoMergePolicy));
         Ok(Self {

@@ -232,6 +232,93 @@ fn stored(id: &str, version: u64) -> Arc<DocumentSlot> {
     }))
 }
 
+#[test]
+fn writer_arena_is_admitted_before_the_first_body_and_released_on_error() {
+    use kasumi_store::test_utils::TestDiskMemory;
+    struct FailAtBody<'a>(&'a TestDiskMemory, u64);
+    impl TextBodies for FailAtBody<'_> {
+        fn with_body(
+            &self,
+            _: &DocumentSlot,
+            _: &mut dyn FnMut(&Document) -> Result<()>,
+        ) -> Result<()> {
+            assert_eq!(self.0.snapshot().used_bytes, self.1);
+            anyhow::bail!("original body read failed")
+        }
+    }
+    let base = TestDiskMemory::required_bookkeeping_bytes(1).unwrap();
+    let arena =
+        TestDiskMemory::required_reservation_bytes(TextShardWriter::ARENA_BYTES as u64).unwrap();
+    let layout = TextShardLayout::for_definition(&definition("/title")).unwrap();
+    let slot = stored("one", 1);
+    for available in [arena - 1, arena] {
+        let memory = TestDiskMemory::new(base + available, 1);
+        let provider: Arc<dyn NodeDiskMemoryAdmission> = memory.clone();
+        let bodies = FailAtBody(&memory, arena);
+        build_shards(
+            &provider,
+            &layout,
+            std::iter::empty(),
+            &bodies,
+            |_| unreachable!(),
+        )
+        .unwrap();
+        assert_eq!(memory.snapshot().attempts, 0);
+        let error = build_shards(
+            &provider,
+            &layout,
+            [("one", slot.as_ref())].into_iter(),
+            &bodies,
+            |_| unreachable!(),
+        )
+        .unwrap_err();
+        if available == arena {
+            assert_eq!(error.to_string(), "original body read failed");
+        } else {
+            assert_eq!(
+                error.downcast_ref::<std::io::Error>().unwrap().kind(),
+                std::io::ErrorKind::OutOfMemory
+            );
+        }
+        assert_eq!(memory.snapshot().used_bytes, 0);
+    }
+}
+
+#[tokio::test]
+async fn proposal_reserves_the_writer_for_indexed_mutations_and_eligible_rebuilds() {
+    use kasumi_types::{Command, MutationBatch, Operation, RequestContext};
+    let fixture = Fixture::new().await;
+    let empty = genesis();
+    let (state, changed) = next(&empty, &[("one", "winter")], &[]);
+    let quote = |op| {
+        fixture
+            .owner
+            .writer_quote(
+                &fixture.store,
+                &state,
+                &Command {
+                    context: RequestContext::trusted("tenant", "owner", []),
+                    timestamp_ms: 1,
+                    operation: op,
+                },
+            )
+            .unwrap()
+    };
+    let expected = fixture
+        .store
+        .plaintext_memory_owner()
+        .quote_installed(TextShardWriter::ARENA_BYTES as u64)
+        .unwrap();
+    assert_eq!(quote(Operation::Suspend(false)), expected);
+    fixture.publish(&empty, &state, &changed).unwrap();
+    assert_eq!(quote(Operation::Suspend(false)), 0);
+    for (target, bytes) in [("docs", expected), ("unindexed", 0)] {
+        let batch = MutationBatch::new().upsert(target, "one", json!({"title": "spring"}));
+        assert_eq!(quote(Operation::Mutate(batch)), bytes);
+    }
+    fixture.close().await;
+}
+
 #[tokio::test]
 async fn publications_index_supersede_merge_and_drop_documents() {
     let fixture = Fixture::new().await;

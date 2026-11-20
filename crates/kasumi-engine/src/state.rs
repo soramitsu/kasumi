@@ -1273,6 +1273,12 @@ impl TenantEngine {
         }
         let mut joined = false;
         let quote = (|| -> anyhow::Result<u64> {
+            let generation = self.generation()?;
+            let state = &generation.state;
+            let text_arena = match self.snapshot_store.get() {
+                Some(store) => self.text.writer_quote(store, state, command)?,
+                None => 0,
+            };
             if matches!(
                 command.operation,
                 Operation::CreateCollection(_)
@@ -1289,10 +1295,8 @@ impl TenantEngine {
                     | Operation::CompleteKeyRetirement(_)
                     | Operation::AbortKeyRetirement(_)
             ) {
-                return Ok(0);
+                return Ok(text_arena);
             }
-            let generation = self.generation()?;
-            let state = &generation.state;
             let mut bytes = crate::accounting::encoded_len(command)? as u64;
             fn document_work<'a>(
                 mut mutations: impl Iterator<Item = &'a Mutation>,
@@ -1391,6 +1395,7 @@ impl TenantEngine {
             // typed quote; encoded after-images remain through joint publication.
             maximum
                 .checked_mul(2)
+                .and_then(|n| n.checked_add(text_arena))
                 .and_then(|n| n.checked_add(bytes.checked_mul(24)?))
                 .and_then(|n| n.checked_add(typed.checked_mul(2)?))
                 .and_then(|n| n.checked_add(patched.checked_mul(16)?))

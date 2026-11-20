@@ -32,7 +32,7 @@ use kasumi_query::{
     TextShardWriter, merge_text_shards,
 };
 use kasumi_store::{
-    NamespaceStage, SelectedGeneration, TenantStore, WriteOp,
+    NamespaceStage, NodeDiskMemoryAdmission, SelectedGeneration, TenantStore, WriteOp,
     ordered_pages::{
         self, Direction, Edit, EditWorkspace, PageSource, TreeReader, TreeRoot, ValueRef,
     },
@@ -377,6 +377,7 @@ impl TextBodies for ResolverBodies<'_> {
 /// Build a collection's shards from `rows` in ID order, cutting at the shard
 /// row and text bounds. `emit` receives each finished shard.
 fn build_shards<'a>(
+    memory: &Arc<dyn NodeDiskMemoryAdmission>,
     layout: &TextShardLayout,
     rows: impl Iterator<Item = (&'a str, &'a DocumentSlot)>,
     bodies: &dyn TextBodies,
@@ -384,6 +385,11 @@ fn build_shards<'a>(
 ) -> Result<()> {
     let mut rows = rows.peekable();
     while rows.peek().is_some() {
+        // The index writer destroys its workers before the actual arena grant
+        // is released on success, a failed body read, or a publication unwind.
+        let _arena = memory
+            .clone()
+            .reserve_document_decode(TextShardWriter::ARENA_BYTES as u64)?;
         let mut writer = TextShardWriter::new(layout)?;
         for (id, slot) in rows.by_ref() {
             bodies.with_body(slot, &mut |document| {
@@ -418,6 +424,84 @@ impl Default for TextOwner {
     }
 }
 impl TextOwner {
+    /// Quote the same arena used by the writer before the local proposer can
+    /// commit. A healthy directory builds only for new live rows or a schema
+    /// rebuild. An eligible stale directory may rebuild on any publication.
+    pub(crate) fn writer_quote(
+        &self,
+        store: &TenantStore,
+        state: &TenantState,
+        command: &kasumi_types::Command,
+    ) -> Result<u64> {
+        use kasumi_types::{CollectionDefinition, Mutation, Operation};
+        let indexed = |definition: &CollectionDefinition| {
+            definition.indexes.iter().any(|index| index.text.is_some())
+        };
+        let writes_text = |mutation: &Mutation| {
+            !matches!(mutation, Mutation::Delete { .. })
+                && state
+                    .collections
+                    .get(mutation.target().0)
+                    .is_some_and(|c| indexed(&c.definition))
+        };
+        let creates_over_rows = |definition: &CollectionDefinition| {
+            indexed(definition)
+                && state
+                    .collections
+                    .get(&definition.name)
+                    .is_some_and(|c| !c.documents.is_empty())
+        };
+        let builds = match &command.operation {
+            Operation::Mutate(batch) => batch.operations.iter().any(writes_text),
+            Operation::FinalizeStaged(reference) => {
+                let key = crate::state::staging::identity(
+                    &command.context.principal,
+                    &reference.transaction_id,
+                )?;
+                state.staged_transactions.get(&key).is_some_and(|stage| {
+                    stage
+                        .chunks
+                        .values()
+                        .flat_map(|chunk| &chunk.operations)
+                        .any(writes_text)
+                })
+            }
+            Operation::ReplaceCollection(definition) => creates_over_rows(definition),
+            Operation::ActivateSchema(set) => set
+                .changes
+                .iter()
+                .any(|change| creates_over_rows(change.definition())),
+            _ => false,
+        };
+        if !builds {
+            if state.revision.saturating_add(1) < self.rebuild_after.load(Ordering::Acquire)
+                || !state
+                    .collections
+                    .values()
+                    .any(|c| !c.documents.is_empty() && indexed(&c.definition))
+            {
+                return Ok(0);
+            }
+            let schema_change = matches!(
+                command.operation,
+                Operation::ReplaceCollection(_) | Operation::ActivateSchema(_)
+            );
+            if !schema_change
+                && TextManifest::load(store)?.is_some_and(|manifest| {
+                    manifest.is_current()
+                        && manifest.incarnation == state.incarnation
+                        && manifest.revision_base == state.revision_base
+                        && manifest.revision >= state.revision
+                })
+            {
+                return Ok(0);
+            }
+        }
+        Ok(store
+            .plaintext_memory_owner()
+            .quote_installed(TextShardWriter::ARENA_BYTES as u64)?)
+    }
+
     /// Finish published journals, abandon unpublished ones and reclaim
     /// unselected or replaced generations. Under the apply gate.
     fn settle(&self, store: &Arc<TenantStore>) -> Result<()> {
@@ -602,18 +686,24 @@ fn stage_generation(
                 .iter()
                 .filter(|(id, _)| !collection.archived_documents.contains_key(*id))
                 .map(|(id, slot)| (id.as_str(), slot.as_ref()));
-            build_shards(&layout, rows, bodies, |built| {
-                let seq = descriptor.next_shard;
-                descriptor.next_shard += 1;
-                for (file, bytes) in &built.files {
-                    builder.push(&file_key(name, seq, file), bytes)?;
-                }
-                let shard = ShardDescriptor::of(&layout, &built);
-                builder.push(&shard_key(name, seq), &encode(&shard)?)?;
-                descriptor.add(built.documents, built.bytes(), &built.tokens)?;
-                last_level = Some((level(built.documents), seq));
-                Ok(())
-            })?;
+            build_shards(
+                store.plaintext_memory_owner(),
+                &layout,
+                rows,
+                bodies,
+                |built| {
+                    let seq = descriptor.next_shard;
+                    descriptor.next_shard += 1;
+                    for (file, bytes) in &built.files {
+                        builder.push(&file_key(name, seq, file), bytes)?;
+                    }
+                    let shard = ShardDescriptor::of(&layout, &built);
+                    builder.push(&shard_key(name, seq), &encode(&shard)?)?;
+                    descriptor.add(built.documents, built.bytes(), &built.tokens)?;
+                    last_level = Some((level(built.documents), seq));
+                    Ok(())
+                },
+            )?;
             // All full rebuild shards are already packed. Keep only the last
             // partial shard at its natural merge level, followed by sealed rows.
             if let Some((last, seq)) = last_level {
@@ -740,6 +830,7 @@ fn edit(
                 );
                 let ids = changed.get(name);
                 CollectionEdit {
+                    memory: store.plaintext_memory_owner(),
                     tree: &tree,
                     name,
                     layout: &layout,
@@ -837,6 +928,7 @@ impl Member {
 }
 
 struct CollectionEdit<'e, 't> {
+    memory: &'e Arc<dyn NodeDiskMemoryAdmission>,
     tree: &'e TreeReader<'t>,
     name: &'e str,
     layout: &'e TextShardLayout,
@@ -885,7 +977,7 @@ impl CollectionEdit<'_, '_> {
                 live_version(self.collection, id)?;
                 Some((id.as_str(), self.collection.documents.get(id)?.as_ref()))
             });
-            build_shards(self.layout, rows, bodies, |shard| {
+            build_shards(self.memory, self.layout, rows, bodies, |shard| {
                 let seq = descriptor.next_shard;
                 descriptor.next_shard += 1;
                 descriptor.add(shard.documents, shard.bytes(), &shard.tokens)?;
