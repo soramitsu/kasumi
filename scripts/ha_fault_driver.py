@@ -33,7 +33,7 @@ COMMAND_SECONDS = 1800
 POLL_SECONDS = 120
 # Signals a scenario may send to an owned daemon without ending it. SIGKILL and
 # SIGTERM are the process controller's own crash and stop.
-SIGNALS = {"SIGSTOP": signal.SIGSTOP, "SIGCONT": signal.SIGCONT, "SIGHUP": signal.SIGHUP}
+SIGNALS = {"SIGHUP": signal.SIGHUP}
 # A replaced installed file: TLS chains, private keys and node configurations
 # that the operator staged beside the file they replace.
 REPLACEMENT_KINDS = ("public", "private")
@@ -238,7 +238,7 @@ class Live(Driver):
         return record
 
     def signal(self, name, signame):
-        """Freeze, thaw or reload one owned daemon without ending it."""
+        """Reload one owned daemon without ending it."""
         require(signame in SIGNALS, "unsupported owned daemon signal")
         self.run.services.check()
         attempt = self.run.services.active.get(name)
@@ -253,6 +253,27 @@ class Live(Driver):
         os.killpg(process.pid, SIGNALS[signame])
         self._row("signal", name=name, process=record["id"], signal=signame, elapsed=elapsed,
                   group=process.pid, birth=record["leader_birth"])
+
+    def cut_peers(self, links, isolated, names):
+        self.run.services.check()
+        processes, pids = {}, {}
+        for node, name in names.items():
+            attempt = self.run.services.active[name]
+            proc, record = attempt["process"], attempt["record"]
+            require(proc.poll() is None and gate_process.leader_identity(proc.pid) ==
+                    {"group": proc.pid, "birth": record["leader_birth"]},
+                    "peer cut requires the live enrolled process")
+            pids[node] = proc.pid
+            processes[name] = record["id"]
+        drained = links.call(links.cut(isolated, pids))
+        self._row("cut-peers", isolated=isolated, processes=processes, drained=drained,
+                  elapsed=self.run.services.elapsed())
+
+    def heal_peers(self, links, isolated):
+        observations = links.call(links.heal())
+        self._row("heal-peers", isolated=isolated, observations=observations,
+                  elapsed=self.run.services.elapsed())
+        return observations
 
     def replace(self, source, destination, kind):
         """Rename an operator-staged file over the installed file it replaces.
@@ -639,6 +660,27 @@ class Replay(Driver):
                 <= original["record"]["finished_elapsed_seconds"],
                 "owned daemon signal is outside its original process lifetime: " + name)
         self.signals.append(row)
+
+    def cut_peers(self, links, isolated, names):
+        row = self._next("cut-peers", isolated=isolated)
+        require(type(row["drained"]) is int and row["drained"] >= 0 and
+                set(row["processes"]) == set(names.values()), "invalid peer cut roster")
+        self.cut_processes = []
+        for name, identifier in row["processes"].items():
+            receipt = self.facts["receipts"].get(identifier)
+            require(receipt is not None and receipt["service"], "peer cut lacks its owned process")
+            original = receipt["record"]
+            require(original["name"] == name and
+                    original["started_elapsed_seconds"] <= row["elapsed"] <= original["finished_elapsed_seconds"],
+                    "peer cut outside the original daemon lifetime")
+            self.cut_processes.append(original)
+        self.cut_at = row["elapsed"]
+
+    def heal_peers(self, links, isolated):
+        row = self._next("heal-peers", isolated=isolated)
+        require(self.cut_at <= row["elapsed"] and all(row["elapsed"] <= p["finished_elapsed_seconds"]
+                for p in self.cut_processes), "daemon changed during the peer cut")
+        return row["observations"]
 
     def replace(self, source, destination, kind):
         row = self._next("replace", source=str(source), destination=str(destination),

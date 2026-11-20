@@ -174,6 +174,17 @@ parent-sync, and durable-evidence phases. It also requires absent source quorum,
 separate source/target authorization, one activation winner, forward completion,
 physical bindings, and unrelated-file isolation.
 
+For the Linux ARM64 `ha-faults` run, allocate a local advertised HTTPS endpoint
+and a separate `replication.listener.listen` socket for each of the three Data
+voters. Keep the advertised URLs and certificate pins in the enrolled peer
+roster. The runner binds those advertised endpoints and passes the original
+TLS streams to the installed listeners. The runner must be able to read the
+socket descriptors of the nine processes it starts. During the cut it records
+the two blocked outbound paths from the isolated leader and incoming traffic
+from the new majority, polls the isolated member's protected administration
+endpoint, verifies a committed majority write, then checks the original
+member's applied index after reconnection.
+
 A domain receipt has `schema`, `id`, `status`, `identity`, `binaries`,
 `configuration_ids`, `runner`, `started_at`, `finished_at`, `host`, `processes`,
 `topology`, `scenarios`, `details`, and `artifacts`. The binary map must equal

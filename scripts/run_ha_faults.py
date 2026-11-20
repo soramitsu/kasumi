@@ -1,17 +1,12 @@
 #!/usr/bin/env python3
 """Inject HA faults into the installed nine-process topology and replay them.
 
-Every fault is an owned action on an owned candidate daemon: a controller
-SIGKILL (leader loss, authority outage), a whole-group SIGSTOP/SIGCONT freeze
-(an isolated minority: no peer or client reaches it and it reaches no one), a
-clean stop and respawn, a SIGHUP reload after an operator-staged certificate
-rename, and Raft membership commands. Every observation is an owned candidate
-``kasumictl`` process. The adapter replays the same scenario script against the
-retained receipts, so each verdict is recomputed by the code that produced it.
-
-A network partition between separate hosts, and failure domains reserved by an
-operator, are outside what a single installation's process owner can create;
-this runner never changes host networking.
+The runner kills owned daemons, isolates the live Data leader's peer traffic,
+rotates an installed endpoint and changes Raft membership. During a partition
+the three advertised Data peer endpoints forward TLS bytes to separate installed
+replication listeners. The Linux runner attributes sockets to the owned daemons.
+The protected administration and client listeners stay reachable. The adapter
+replays the original client results, peer refusals and application positions.
 """
 from __future__ import annotations
 
@@ -41,12 +36,13 @@ if __name__ == "__main__":
 import domain_run
 from domain_run import require
 import ha_fault_driver as driver
+import ha_peer_links
 import process_ha_topology as topology
 import repeatable_assembly as owned
 
 KIND = "ha-faults"
 RUNNER = "scripts/run_ha_faults.py"
-MODULES = ("scripts/ha_fault_driver.py",)
+MODULES = ("scripts/ha_fault_driver.py", "scripts/ha_peer_links.py")
 PLAN_SCHEMA = "kasumi-ha-faults-plan-v1"
 REFERENCE = "aarch64-unknown-linux-gnu"
 # The qualifying contract; any other value is a labelled rehearsal.
@@ -225,6 +221,8 @@ class Context:
         self.pause = parameters["poll_pause_seconds"]
         self.reload_seconds = parameters["reload_seconds"]
         self.status = None
+        self.peer_routes = ha_peer_links.routes(admitted["nodes"], configs)
+        self.links = None
         # After an administrative-endpoint rotation the rotated member is
         # reached only through the profile that pins its new leaf.
         self.rotated_admin = None
@@ -370,19 +368,41 @@ def leader_loss(d, ctx):
 
 
 def partition(d, ctx):
-    """Isolate the data leader: its whole process group is frozen, then thawed."""
+    """Cut the live leader off from its two Data peers and verify both sides."""
     scenario = ["partition"]
     before = view(d, ctx, "partition-before", ctx.voters[0], ctx.voters)
     isolated = before["leader"]
-    d.signal(ctx.name(isolated), "SIGSTOP")
+    d.cut_peers(ctx.links, isolated, {n["node_id"]: n["id"] for n in ctx.nodes})
     survivors = [node for node in ctx.voters if node != isolated]
     majority = view(d, ctx, "partition-majority", survivors[0], ctx.voters, survivors,
                     scenarios=scenario)
+    status = ctx.ctl(ctx.member(isolated), "manage", ctx.status)
+    def minority(label):
+        value = d.json(label, status, scenario)
+        require(value.get("observation") == "local_committed_state" and value["node_id"] == isolated
+                and value["incarnation"] == ctx.incarnation and value["raft_voters"] == ctx.voters
+                and type(value["raft_applied_index"]) is int, "isolated voter did not answer locally")
+        return value["raft_applied_index"]
+
+    position = minority("partition-minority-before-write")
     probe(d, ctx, "partition-write", 3, scenario)
     committed = view(d, ctx, "partition-committed", majority["leader"], ctx.voters,
                      [majority["leader"]], scenarios=scenario)
-    d.signal(ctx.name(isolated), "SIGCONT")
-    status = ctx.ctl(ctx.member(isolated), "manage", ctx.status)
+    require(minority("partition-minority-after-write") == position < committed["raft_applied_index"],
+            "isolated voter advanced or the majority did not commit beyond it")
+    observations = d.heal_peers(ctx.links, isolated)
+    require(type(observations["unidentified"]) is int and observations["unidentified"] >= 0,
+            "invalid unattributed peer count")
+    rejected = set()
+    for row in observations["rejected"]:
+        pair = (row["source"], row["target"])
+        require(pair not in rejected and isolated in pair and pair[0] != pair[1]
+                and set(pair) <= set(ctx.voters) and type(row["count"]) is int and row["count"] > 0,
+                "invalid rejected peer connection")
+        rejected.add(pair)
+    require({(isolated, n) for n in survivors} <= rejected
+            and any((n, isolated) in rejected for n in survivors),
+            "peer cut did not observe both outgoing minority links and incoming majority traffic")
     d.poll("partition-healed-poll", status,
            lambda value: (settled(value, ctx, ctx.voters, [majority["leader"]])
                           and value["raft_applied_index"] >= committed["raft_applied_index"]),
@@ -691,7 +711,8 @@ def execute(run, parameters, topology_path, plan_path):
     d = driver.Live(run, details)
     load = Load(run, d, ctx)
     try:
-        facts = script(d, ctx, load)
+        with ha_peer_links.Links(ctx.peer_routes) as ctx.links:
+            facts = script(d, ctx, load)
     finally:
         if not load.rows.closed:
             if load.thread is not None:
@@ -834,15 +855,6 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     require(report["topology"] == topology_members == domain["topology"],
             "HA fault topology differs from the nine original spawns")
     acceptance.check_topology(topology_members, domain["processes"], domain["binaries"], "required")
-    thawed = {}
-    for row in d.signals:
-        if row["signal"] == "SIGSTOP":
-            require(row["process"] not in thawed, "a daemon was frozen twice")
-            thawed[row["process"]] = False
-        elif row["signal"] == "SIGCONT":
-            require(thawed.get(row["process"]) is False, "a daemon was thawed without a freeze")
-            thawed[row["process"]] = True
-    require(thawed and all(thawed.values()), "an isolated daemon was never thawed")
     staged = {ctx.plan["trust_rotation"][key]: name for key, name in (
         ("certificate", "trust-certificate"), ("invalid_certificate", "trust-invalid-certificate"),
         ("restore_certificate", "trust-certificate"))}

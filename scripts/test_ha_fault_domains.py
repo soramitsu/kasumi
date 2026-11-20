@@ -88,7 +88,7 @@ def alive(node):
         if time.time() - path.stat().st_mtime < STALE:
             return True
         # A busy native builder can delay all Python heartbeats. Distinguish
-        # a live but unscheduled stand-in from the SIGSTOP/SIGKILL fault the
+        # a live but unscheduled stand-in from the SIGKILL fault the
         # controller actually sent. Both BSD and Linux ps expose these states.
         result = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)],
                                 capture_output=True, text=True, check=False)
@@ -105,6 +105,9 @@ def beat(node):
 
 
 def elect(cluster, key, members):
+    if key == "leader":
+        isolated = load("partition.json", {}).get("node")
+        members = [n for n in members if n != isolated]
     current = cluster.get(key)
     if current in members and alive(current):
         return current
@@ -211,6 +214,10 @@ if args[:1] == ["--profile"]:
                           "raft_applied_index": cluster["applied"] + 1,
                           "raft_membership_index": 1, "raft_snapshot_index": None,
                           "control_leader": cluster["control_leader"]}
+                cut = load("partition.json", {})
+                if cut.get("node") == node:
+                    output["leader"] = node
+                    output["raft_applied_index"] = cut["position"]
             elif operation == "add_learner":
                 if not alive(request["node_id"]) or node != cluster["leader"]:
                     fail("learner unreachable")
@@ -530,7 +537,8 @@ class FaultFixture(test_domain_runs.DomainFixture):
                   "signer_verifier": {"identity": {"node_id": node_id},
                                       "database_path": str(home / "persistent/verifier.kv")},
                   "replication": {"node_id": node_id,
-                                  "listener": {"tls": {"certificate": str(home / "leaf.pem")}}},
+                                  "listener": {"listen": f"127.0.0.1:{22000 + node_id}",
+                                               "tls": {"certificate": str(home / "leaf.pem")}}},
                   "admin": {"tls": {"certificate": str(home / "admin.pem"),
                                     "private_key": str(home / "admin-key.pem")}},
                   "native": {"tls": {"certificate": str(home / "admin.pem"),
@@ -556,6 +564,37 @@ class FaultFixture(test_domain_runs.DomainFixture):
 
 
 class HaFaultTests(FaultFixture):
+
+    def setUp(self):
+        super().setUp()
+        state = self.evidence / "target/release/state"
+
+        class FixtureLinks:
+            def __init__(self, routes):
+                self.nodes = set(routes)
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                (state / "partition.json").unlink(missing_ok=True)
+
+            def call(self, value):
+                return value
+
+            def cut(self, isolated, pids):
+                self.isolated = isolated
+                position = owned.read(state / "cluster.json")["applied"] + 1
+                (state / "partition.json").write_text(json.dumps({"node": isolated, "position": position}))
+                return 3
+
+            def heal(self):
+                (state / "partition.json").unlink()
+                edges = [(a, b) for a in self.nodes for b in self.nodes if a != b and self.isolated in (a, b)]
+                return {"unidentified": 0, "rejected": [{"source": a, "target": b, "count": 1}
+                                                        for a, b in edges]}
+
+        self.enterContext(patch.object(faults.ha_peer_links, "Links", FixtureLinks))
 
     def run_faults(self, attempt="faults-1"):
         output = self.root / "runs" / attempt
@@ -649,16 +688,11 @@ class HaFaultTests(FaultFixture):
 
         forged(outage_facts, "facts differ from the replayed script")
 
-        def thaw_dropped(report):
-            path = custody / driver.LEDGER
-            rows = [json.loads(line) for line in path.read_bytes().splitlines()]
-            for row in rows:
-                if row["kind"] == "signal" and row["signal"] == "SIGCONT":
-                    row["signal"] = "SIGHUP"
-            path.write_bytes(b"".join(driver.canonical(row) for row in rows))
-            report["details"]["ledger"] = owned.ref(custody, path)
-
-        forged(thaw_dropped, "action ledger differs")
+        forged(ledger(lambda rows: [row for row in rows if row["kind"] != "heal-peers"]),
+               "action ledger differs")
+        forged(ledger(lambda rows: [dict(row, observations={"unidentified": 3, "rejected": []})
+                                    if row["kind"] == "heal-peers" else row for row in rows]),
+               "did not observe both")
 
         def load_error(report):
             path = custody / "load.jsonl"
