@@ -92,9 +92,13 @@ impl Database {
             Err(error) if error.code == ErrorCode::Unavailable => return Ok(None),
             Err(error) => return Err(error),
         };
-        let tenant_fence = self.response_fence(context)?;
+        // These gates only recheck the two original owners. The caller funds
+        // the bounded page and identities; each row and backup verification
+        // separately retains its own workspace across the asynchronous reads.
+        let tenant_fence =
+            ResponseFence::capture_workspace(ResponseDatabase::Borrowed(self), context, true)?;
         control.engine.authorize(&operator, None, Action::Admin)?;
-        let control_fence = control.response_fence(&operator)?;
+        let control_fence = control.admitted_response_fence(&operator)?;
         let registration = Arc::new(control.work.begin(cancellation.clone())?);
         control.barrier().await?;
         let generation = control.engine.generation()?;
