@@ -590,6 +590,37 @@ async fn retained_readers_keep_their_generation_and_the_cache_obeys_its_budget()
 }
 
 #[tokio::test]
+async fn recreated_collection_with_the_same_shard_sequence_uses_its_own_files() {
+    let fixture = Fixture::new().await;
+    let s0 = genesis();
+    let (s1, changed) = next(&s0, &[("a", "alpha")], &[]);
+    let first = fixture.publish(&s0, &s1, &changed).unwrap();
+    let pinned = fixture.store.read_view().unwrap();
+    assert_eq!(
+        search_at(&fixture.storage.admission, &pinned, &s1, "alpha"),
+        ["a"]
+    );
+
+    let mut dropped = s1.clone();
+    dropped.revision += 1;
+    dropped.collections.remove("docs");
+    fixture.publish(&s1, &dropped, &Changed::new()).unwrap();
+    let (empty, changed) = next(&dropped, &[], &[]);
+    fixture.publish(&dropped, &empty, &changed).unwrap();
+    let (s2, changed) = next(&empty, &[("a", "zulu")], &[]);
+    let current = fixture.publish(&empty, &s2, &changed).unwrap();
+    assert_eq!(first.records.tree, current.records.tree);
+    assert_eq!(fixture.search(&s2, "zulu"), ["a"]);
+    assert!(fixture.search(&s2, "alpha").is_empty());
+    assert_eq!(
+        search_at(&fixture.storage.admission, &pinned, &s1, "alpha"),
+        ["a"]
+    );
+    pinned.close().unwrap();
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn restore_keeps_a_covering_directory_and_rebuilds_anything_else() {
     let fixture = Fixture::new().await;
     let s0 = genesis();

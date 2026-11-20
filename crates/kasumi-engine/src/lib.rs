@@ -25,6 +25,7 @@ mod application_records;
 mod application_sources;
 mod application_structured;
 mod application_text;
+pub use application_text::{TextWarmupState, TextWarmupStatus};
 mod audit_source;
 mod current_json;
 mod document_encoding;

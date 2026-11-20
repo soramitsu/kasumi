@@ -187,16 +187,32 @@ impl CollectionDescriptor {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ShardDescriptor {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    contents_sha256: Option<[u8; 32]>,
     pub(crate) layout: [u8; 32],
     pub(crate) documents: u32,
     pub(crate) tokens: Vec<u64>,
     /// `(name, length)` in name order.
     pub(crate) files: Vec<(String, u64)>,
 }
+fn shard_contents(files: &[(String, Vec<u8>)]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut digest = Sha256::new();
+    digest.update(b"kasumi.text-shard.files.v1");
+    for (name, bytes) in files {
+        digest.update((name.len() as u64).to_be_bytes());
+        digest.update(name.as_bytes());
+        digest.update((bytes.len() as u64).to_be_bytes());
+        digest.update(bytes);
+    }
+    digest.finalize().into()
+}
+
 impl ShardDescriptor {
     fn of(layout: &TextShardLayout, built: &BuiltTextShard) -> Self {
         Self {
             layout: layout.sha256(),
+            contents_sha256: Some(shard_contents(&built.files)),
             documents: built.documents,
             tokens: built.tokens.clone(),
             files: built
@@ -323,6 +339,12 @@ fn open_shard(
             Ok(bytes.to_vec())
         })?;
         files.push((name.clone(), bytes));
+    }
+    if let Some(expected) = descriptor.contents_sha256 {
+        ensure!(
+            shard_contents(&files) == expected,
+            "text shard file digest differs"
+        );
     }
     Ok(TextShard::open(layout, files, descriptor.documents)?)
 }
@@ -1204,13 +1226,15 @@ pub(crate) fn prepare_restore(
 // Reads
 
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct CacheKey {
+struct ShardAddress {
     tenant: String,
     tree: [u8; 16],
     collection: String,
     seq: u64,
     layout: [u8; 32],
 }
+
+type CacheKey = (ShardAddress, [u8; 32]);
 
 struct OpenShard {
     shard: TextShard,
@@ -1226,11 +1250,37 @@ struct Cached {
 
 #[derive(Default)]
 pub(crate) struct ShardCache {
+    evictions: u64,
     clock: u64,
     entries: BTreeMap<CacheKey, Cached>,
 }
 
 impl ShardCache {
+    fn next_in_tree(
+        &self,
+        tenant: &str,
+        tree: [u8; 16],
+        after: Option<&CacheKey>,
+    ) -> Option<CacheKey> {
+        let first = (
+            ShardAddress {
+                tenant: tenant.into(),
+                tree,
+                collection: String::new(),
+                seq: 0,
+                layout: [0; 32],
+            },
+            [0; 32],
+        );
+        let from = after.map_or(Bound::Included(&first), Bound::Excluded);
+        self.entries
+            .range((from, Bound::Unbounded))
+            .next()
+            .map(|(key, _)| key)
+            .filter(|key| key.0.tenant == tenant && key.0.tree == tree)
+            .cloned()
+    }
+
     fn get(&mut self, key: &CacheKey) -> Option<Arc<OpenShard>> {
         self.clock = self.clock.saturating_add(1);
         let clock = self.clock;
@@ -1248,6 +1298,7 @@ impl ShardCache {
             .filter(|(_, entry)| Arc::strong_count(&entry.shard) == 1)
             .min_by_key(|(_, entry)| entry.used)
             .map(|(key, _)| key.clone())?;
+        self.evictions = self.evictions.saturating_add(1);
         self.entries
             .remove(&oldest)
             .map(|entry| entry.shard.charged_bytes)
@@ -1318,75 +1369,117 @@ impl DirectoryShards<'_, '_> {
     }
 
     fn load(&self, seq: u64) -> Result<Arc<OpenShard>> {
-        // Cached plaintext is never authorization.
-        self.source.check_access()?;
-        let key = CacheKey {
+        let key = ShardAddress {
             tenant: self.tenant.clone(),
             tree: self.tree_id,
             collection: self.name.to_owned(),
             seq,
             layout: self.layout.sha256(),
         };
-        if let Some(shard) = self.admission.text_shards.lock().unwrap().get(&key) {
-            return Ok(shard);
+        match load_selected_shard(
+            self.tree,
+            self.source,
+            key,
+            &self.layout,
+            self.admission,
+            true,
+        )? {
+            ShardLoad::Open(shard) => Ok(shard),
+            ShardLoad::Capacity(_) => {
+                unreachable!("a demand read obtains its own grant or an error")
+            }
         }
-        let descriptor: ShardDescriptor = read(self.tree, &shard_key(self.name, seq))?
-            .context("text shard descriptor missing")?;
-        // Admit the file bytes before reading them; the lease then funds the
-        // retained shard, or ends with this search.
-        let file_bytes = descriptor.bytes();
-        ensure!(
-            file_bytes <= MAX_SHARD_BYTES,
-            "text shard exceeds its byte bound"
-        );
-        let charged_bytes = file_bytes * 2 + MAX_DESCRIPTOR_BYTES as u64;
-        let optional = self.admission.try_reserve_text_shard(charged_bytes)?;
-        let retain = optional.is_some();
-        let lease = match optional {
-            Some(lease) => lease,
-            None => {
-                // A cold scan that fits the transient budget leaves the hot set
-                // alone. Required reads still respect installed audit protection.
-                let mut cache = self.admission.text_shards.lock().unwrap();
-                if let Some(existing) = cache.get(&key) {
-                    return Ok(existing);
-                }
-                let mut reclaimed = 0;
-                loop {
-                    match self.admission.reserve_waiting(charged_bytes, None) {
-                        Ok(lease) => break lease,
-                        Err(error) => {
-                            if error.code == kasumi_types::ErrorCode::ResourceExhausted
-                                && reclaimed < charged_bytes
-                                && let Some(bytes) = cache.evict_oldest_idle()
-                            {
-                                reclaimed += bytes;
-                            } else {
-                                return Err(error.into());
-                            }
+    }
+}
+
+enum ShardLoad {
+    Open(Arc<OpenShard>),
+    Capacity(u64),
+}
+
+fn load_selected_shard(
+    tree: &TreeReader<'_>,
+    source: &dyn PageSource,
+    address: ShardAddress,
+    layout: &TextShardLayout,
+    admission: &Arc<NodeAdmission>,
+    demand: bool,
+) -> Result<ShardLoad> {
+    // A cache hit still requires access to this immutable selected source.
+    source.check_access()?;
+    let descriptor: ShardDescriptor = read(tree, &shard_key(&address.collection, address.seq))?
+        .context("text shard descriptor missing")?;
+    ensure!(
+        descriptor.layout == layout.sha256(),
+        "selected text shard layout differs"
+    );
+    // An empty collection can be dropped and recreated in the same physical
+    // tree with the same layout and sequence. Legacy descriptors have no
+    // content commitment and can share a reader only within their exact root.
+    let digest = descriptor
+        .contents_sha256
+        .or_else(|| tree.root().root.map(|page| page.sha256))
+        .context("text shard has no authenticated root")?;
+    let key = (address, digest);
+    if let Some(shard) = admission.text_shards.lock().unwrap().get(&key) {
+        return Ok(ShardLoad::Open(shard));
+    }
+    // Admit the file bytes before reading them; the lease then funds the
+    // retained shard, or ends with this search.
+    let file_bytes = descriptor.bytes();
+    ensure!(
+        file_bytes <= MAX_SHARD_BYTES,
+        "text shard exceeds its byte bound"
+    );
+    let charged_bytes = file_bytes * 2 + MAX_DESCRIPTOR_BYTES as u64;
+    let optional = admission.try_reserve_text_shard(charged_bytes)?;
+    let retain = optional.is_some();
+    let lease = match optional {
+        Some(lease) => lease,
+        None if !demand => return Ok(ShardLoad::Capacity(charged_bytes)),
+        None => {
+            // A cold scan that fits the transient budget leaves the hot set
+            // alone. Required reads still respect installed audit protection.
+            let mut cache = admission.text_shards.lock().unwrap();
+            if let Some(existing) = cache.get(&key) {
+                return Ok(ShardLoad::Open(existing));
+            }
+            let mut reclaimed = 0;
+            loop {
+                match admission.reserve_waiting(charged_bytes, None) {
+                    Ok(lease) => break lease,
+                    Err(error) => {
+                        if error.code == kasumi_types::ErrorCode::ResourceExhausted
+                            && reclaimed < charged_bytes
+                            && let Some(bytes) = cache.evict_oldest_idle()
+                        {
+                            reclaimed += bytes;
+                        } else {
+                            return Err(error.into());
                         }
                     }
                 }
             }
-        };
-        let shard = Arc::new(OpenShard {
-            shard: open_shard(self.tree, &self.layout, self.name, seq, &descriptor)?,
-            charged_bytes,
-            _lease: lease,
-        });
-        self.source.check_access()?;
-        if retain {
-            Ok(self
-                .admission
-                .text_shards
-                .lock()
-                .unwrap()
-                .insert(key, shard))
-        } else {
-            Ok(shard)
         }
-    }
+    };
+    let shard = Arc::new(OpenShard {
+        shard: open_shard(tree, layout, &key.0.collection, key.0.seq, &descriptor)?,
+        charged_bytes,
+        _lease: lease,
+    });
+    source.check_access()?;
+    let shard = if retain {
+        admission.text_shards.lock().unwrap().insert(key, shard)
+    } else {
+        shard
+    };
+    Ok(ShardLoad::Open(shard))
 }
+
+#[path = "application_text_warmup.rs"]
+mod warmup;
+pub(crate) use warmup::Warmup;
+pub use warmup::{TextWarmupState, TextWarmupStatus};
 
 impl TextShardSet for DirectoryShards<'_, '_> {
     fn layout(&self) -> &TextShardLayout {

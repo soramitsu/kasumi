@@ -326,6 +326,7 @@ pub(crate) struct GroupObservation {
     pub figures_age_seconds: Option<f64>,
     pub retention: Option<RetentionObservation>,
     pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
+    pub text_warmup: Option<kasumi_engine::TextWarmupStatus>,
     pub capacity: Option<CapacityObservation>,
     /// Whether this group's records live in a node database of its own (a
     /// standalone generation's), reported in `storage` under this group.
@@ -384,6 +385,7 @@ pub(crate) struct CachedGroup {
     pub retention: RetentionObservation,
     pub capacity: CapacityObservation,
     pub audit_maintenance: Option<kasumi_engine::AuditMaintenanceStatus>,
+    pub text_warmup: Option<kasumi_engine::TextWarmupStatus>,
     pub storage_dedicated: bool,
     pub storage: Option<kasumi_store::PublishedStorageStatus>,
 }
@@ -489,6 +491,7 @@ impl ObservationState {
                     retention,
                     capacity,
                     audit_maintenance: observation.audit_maintenance.clone(),
+                    text_warmup: observation.text_warmup,
                     storage_dedicated: observation.storage_dedicated.unwrap_or(false),
                     storage: dedicated_storage,
                 },
@@ -509,6 +512,7 @@ impl ObservationState {
         observation.retention = Some(cached.retention);
         observation.capacity = Some(cached.capacity);
         observation.audit_maintenance = cached.audit_maintenance.clone();
+        observation.text_warmup = cached.text_warmup;
         observation.storage_dedicated = observation
             .storage_dedicated
             .or(Some(cached.storage_dedicated));
@@ -2195,6 +2199,7 @@ mod tests {
                 hot_budget_bytes: 1000,
                 archive_budget_bytes: 1000,
             }),
+            text_warmup: figures.then_some(Default::default()),
             audit_maintenance: figures.then_some(kasumi_engine::AuditMaintenanceStatus {
                 failures: 0,
                 committed_segments: 2,

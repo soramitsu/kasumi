@@ -212,12 +212,19 @@ Health and readiness JSON include
 other resident grants, including native installed work; `audit_maintenance`
 counts maintenance grants; `scoped_application_source` counts source grants
 acquired in maintenance scope. `native_cache` counts native cache grants.
-`text_shard_cache` counts retained Tantivy reader grants.
+`text_shard_cache` counts retained Tantivy readers and temporary grants for the text warmup worker.
 `document_source` counts selected-source metadata and logical document backing.
 Active operations and bookkeeping are excluded. These values measure reserved
 capacity, including unused headroom, rather than RSS, decoded data size, or actual
 cache occupancy. A grant keeps its original category when retained or resized
 and leaves the counters when released. The breakdown is JSON-only.
+
+Each available group's protected health JSON reports `text_warmup`. Its revision,
+visited shards and skipped shards describe the current sweep of the selected
+directory. `complete` means every shard in that sweep fit in the cache.
+`capacity_limited` records a refused optional grant. The registered database
+monitor revisits the directory after capacity returns, a cache eviction or a new
+publication. The sweep count is cumulative for this database process.
 
 A 200 response always carries every family, and every per-group family for
 every rostered group. Unknown values are `NaN` in Prometheus, so the series

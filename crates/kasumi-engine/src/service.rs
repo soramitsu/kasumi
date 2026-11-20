@@ -1225,6 +1225,8 @@ pub struct Database {
         database_workers::BlockingChild<anyhow::Result<audit_maintenance_service::Prepared>>,
     background_stop: tokio::sync::watch::Sender<bool>,
     seal_monitor_wake: Arc<tokio::sync::Notify>,
+    text_warmup: Mutex<crate::application_text::Warmup>,
+    text_warmup_status: Mutex<crate::TextWarmupStatus>,
     audit_worker_wake: Arc<tokio::sync::Notify>,
     #[cfg(test)]
     audit_worker_pause: Mutex<Option<Arc<audit_maintenance_service::WorkerPause>>>,
@@ -1637,6 +1639,8 @@ impl Database {
             audit_preparation: database_workers::BlockingChild::new("database audit preparation"),
             background_stop: tokio::sync::watch::channel(false).0,
             seal_monitor_wake: Arc::new(tokio::sync::Notify::new()),
+            text_warmup: Default::default(),
+            text_warmup_status: Default::default(),
             audit_worker_wake: Arc::new(tokio::sync::Notify::new()),
             #[cfg(test)]
             audit_worker_pause: Mutex::new(None),
@@ -1929,6 +1933,30 @@ impl Database {
         Ok(())
     }
 
+    /// Last completed monitor step, sampled without taking its native read lock.
+    pub fn text_warmup_status(&self) -> crate::TextWarmupStatus {
+        *self
+            .text_warmup_status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+    }
+
+    fn warm_selected_text(&self, generation: &Arc<crate::Generation>) {
+        let mut warmup = self.text_warmup.lock().unwrap_or_else(|p| p.into_inner());
+        let mut sampled = warmup.status;
+        match warmup.step(generation, &self.admission) {
+            Ok(()) => sampled = warmup.status,
+            Err(_) => {
+                sampled.revision = Some(generation.revision());
+                sampled.state = crate::TextWarmupState::DirectoryUnavailable;
+            }
+        }
+        *self
+            .text_warmup_status
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = sampled;
+    }
+
     /// TenantStore refreshes keys. Its watch signal plus independent expiry checks
     /// evict idle resident state even if no client makes another request.
     fn spawn_seal_monitor(self: &Arc<Self>) {
@@ -1983,7 +2011,7 @@ impl Database {
                                     hook();
                                 }
                                 let db = &work.database;
-                                let _ = db.access();
+                                let access = db.access();
                                 if db.engine.generation().is_err() {
                                     db.work.seal();
                                 }
@@ -2003,6 +2031,9 @@ impl Database {
                                             io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                                             "primary maintenance deferred until its next scheduled step");
                                     }
+                                }
+                                if !pressured && access.is_ok() && let Ok(generation) = db.engine.generation() {
+                                    db.warm_selected_text(&generation);
                                 }
                                 drop(work);
                                 serving

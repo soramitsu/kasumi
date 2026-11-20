@@ -68,6 +68,7 @@ impl Administration {
                 figures_age_seconds: None,
                 retention: None,
                 audit_maintenance: None,
+                text_warmup: None,
                 capacity: None,
                 storage_dedicated: None,
                 storage: None,
@@ -131,6 +132,7 @@ impl Administration {
                         archive_budget_bytes: budget.archive_bytes,
                     });
                     observation.audit_maintenance = managed.database.audit_maintenance_status();
+                    observation.text_warmup = Some(managed.database.text_warmup_status());
                     observation.store_available = true;
                     stores.push(managed.store);
                 }

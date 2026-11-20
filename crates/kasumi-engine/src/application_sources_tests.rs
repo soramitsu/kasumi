@@ -3026,6 +3026,31 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         )
         .await?;
     }
+    // Prove the registered idle worker reaches the published shard set before
+    // the first text query has any opportunity to populate it on demand.
+    let revision = engine.generation()?.revision();
+    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            let progress = db.text_warmup_status();
+            if progress.revision == Some(revision)
+                && progress.state == crate::TextWarmupState::Complete
+                && progress.visited_shards == 2
+                && progress.skipped_shards == 0
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("selected text warmup did not complete before the first search")?;
+    let before_search = source
+        .storage
+        .admission
+        .snapshot()
+        .resident_reserved_bytes_by_origin
+        .text_shard_cache;
+    assert!(before_search > 0);
     assert_eq!(search(&db, &context, "shared").await?, ["a", "b"]);
     let generation = engine.generation()?;
     // Ordinary writes keep the directory current at every published revision
