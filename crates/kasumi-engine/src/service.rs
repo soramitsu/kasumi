@@ -1509,11 +1509,10 @@ impl ResponseFence<'static> {
         + Send
         + 'static,
     ) -> anyhow::Result<(Self, T)> {
-        let core = self.database.admission().memory().clone();
+        let admission = self.database.admission().clone();
         let registration = self.database.work.begin(self.cancellation.clone())?;
-        let child = core
-            .blocking_children()
-            .start(move || {
+        admission
+            .adapter_child(move || {
                 let _registration = registration;
                 self.check().map_err(|error| {
                     if error.has_physical_source()
@@ -1531,16 +1530,7 @@ impl ResponseFence<'static> {
                 })?;
                 work().map(|output| (self, output))
             })
-            .map_err(|refused| match refused {
-                kasumi_serving::ChildRefused::Full => Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "blocking adapter capacity exhausted",
-                ),
-                kasumi_serving::ChildRefused::Sealed => {
-                    Error::new(ErrorCode::Unavailable, "blocking adapter owner sealed")
-                }
-            })?;
-        child.wait().await?
+            .await
     }
 }
 

@@ -1397,6 +1397,36 @@ impl NodeAdmission {
         *slot = Some(Arc::downgrade(&owner));
         Ok(owner)
     }
+    /// Run admitted adapter work on the installed core's bounded child table.
+    /// An abandoned caller leaves its actual handle and any failed outcome
+    /// here for shutdown. The closure owns its input and workspace.
+    pub async fn adapter_child<T, E>(
+        &self,
+        work: impl FnOnce() -> std::result::Result<T, kasumi_serving::ChildFailure<E>> + Send + 'static,
+    ) -> std::result::Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<Error> + Into<anyhow::Error> + Send + 'static,
+    {
+        let child = self
+            .core
+            .blocking_children()
+            .start(work)
+            .map_err(|refused| match refused {
+                kasumi_serving::ChildRefused::Full => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "blocking adapter capacity exhausted",
+                ),
+                kasumi_serving::ChildRefused::Sealed => {
+                    Error::new(ErrorCode::Unavailable, "blocking adapter owner sealed")
+                }
+            })?;
+        child
+            .wait()
+            .await
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "blocking adapter worker stopped"))?
+    }
+
     /// Join the blocking verification and backup children accepted on this
     /// node's core, including those whose callers were cancelled or timed out.
     /// A panic, or a failure no caller received, is reported here and by every

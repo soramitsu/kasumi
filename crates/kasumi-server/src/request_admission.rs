@@ -105,6 +105,20 @@ struct InspectedMutation {
     workspace: Arc<Mutex<Reservation>>,
 }
 impl InspectedMutation {
+    async fn inspect_on(self, admission: &NodeAdmission) -> Result<Self, Error> {
+        admission
+            .adapter_child(move || {
+                self.inspect().map_err(|error| {
+                    if error.code == ErrorCode::Unavailable || error.has_physical_source() {
+                        kasumi_serving::ChildFailure::Failed(error)
+                    } else {
+                        kasumi_serving::ChildFailure::Stopped(error)
+                    }
+                })
+            })
+            .await
+    }
+
     fn inspect(self) -> Result<Self, Error> {
         let required = mutation_quote(&self.bytes)?;
         self.workspace
@@ -302,16 +316,9 @@ pub(crate) async fn admit(
             bytes,
             workspace: workspace.clone(),
         };
-        let inspected = tokio::task::spawn_blocking(move || inspecting.inspect()).await;
-        let bytes = match inspected {
-            Ok(Ok(inspected)) => inspected.bytes,
-            Ok(Err(error)) => return refused(grpc, error),
-            Err(_) => {
-                return refused(
-                    grpc,
-                    Error::new(ErrorCode::Unavailable, "request inspection failed"),
-                );
-            }
+        let bytes = match inspecting.inspect_on(&state.admission).await {
+            Ok(inspected) => inspected.bytes,
+            Err(error) => return refused(grpc, error),
         };
         request = Request::from_parts(parts, Body::from(bytes));
     }
@@ -500,7 +507,8 @@ mod tests {
         };
         // No HTTP owner remains. A completed but unclaimed result still owns
         // the encoded body and must retain its reservation until retirement.
-        let worker = tokio::task::spawn_blocking(move || inspecting.inspect());
+        let owner = admission.clone();
+        let worker = tokio::spawn(async move { inspecting.inspect_on(&owner).await });
         tokio::time::timeout(Duration::from_secs(10), async {
             while !worker.is_finished() {
                 tokio::time::sleep(Duration::from_millis(1)).await;
@@ -510,6 +518,43 @@ mod tests {
         .unwrap();
         assert_eq!(admission.snapshot().reserved_bytes, baseline + required);
         drop(worker);
+        assert_eq!(admission.snapshot().reserved_bytes, baseline);
+    }
+
+    #[tokio::test]
+    async fn disconnected_mutation_inspector_stays_in_the_node_drain() {
+        use std::task::{Context, Waker};
+        let admission = NodeAdmission::new(Default::default()).unwrap();
+        let baseline = admission.snapshot().reserved_bytes;
+        let bytes = Bytes::from(frame(
+            &crate::rpc::proto::MutateRequest {
+                batch_json: br#"{"proof":"retained"}"#.to_vec(),
+            }
+            .encode_to_vec(),
+        ));
+        let workspace = Arc::new(Mutex::new(
+            admission
+                .reserve_waiting(wire_quote(bytes.len() as u64), None)
+                .unwrap(),
+        ));
+        let inspecting = InspectedMutation {
+            bytes,
+            workspace: workspace.clone(),
+        };
+        {
+            let _held = workspace.lock().unwrap();
+            let mut cx = Context::from_waker(Waker::noop());
+            let mut caller = Box::pin(inspecting.inspect_on(&admission));
+            assert!(caller.as_mut().poll(&mut cx).is_pending());
+            drop(caller);
+            let mut draining = Box::pin(admission.drain_blocking_children());
+            assert!(draining.as_mut().poll(&mut cx).is_pending());
+        }
+        drop(workspace);
+        tokio::time::timeout(Duration::from_secs(10), admission.drain_blocking_children())
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(admission.snapshot().reserved_bytes, baseline);
     }
 
