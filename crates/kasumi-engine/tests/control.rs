@@ -273,6 +273,7 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         ) -> anyhow::Result<kasumi_engine::AuthoritySignerKeys> {
             anyhow::ensure!(id == self.id && partition == 0);
             Ok(kasumi_engine::AuthoritySignerKeys {
+                audit_owners: Default::default(),
                 inventory_sha256: [5; 32],
                 entries: vec![self.row.clone()],
             })

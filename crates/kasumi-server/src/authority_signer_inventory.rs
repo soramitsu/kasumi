@@ -37,6 +37,14 @@ impl AuthoritySignerKeyInventory for ControlSignerRuntime {
         let mut catalogs = BTreeSet::new();
         let mut entries = BTreeSet::new();
         let mut observed = BTreeMap::new();
+        let mut audit_owners = BTreeMap::new();
+        let scope = match request.scope {
+            kasumi_types::KeyRetentionScope::Signer {} => AuthorityCatalogScope::Wrapping,
+            kasumi_types::KeyRetentionScope::SecurityAudit {} => {
+                AuthorityCatalogScope::ServiceAudit
+            }
+            _ => anyhow::bail!("unsupported issuer inventory scope"),
+        };
         for recheck in [false, true] {
             for (&node_id, endpoint) in members {
                 let connection = KasumiClientConfig {
@@ -55,6 +63,7 @@ impl AuthoritySignerKeyInventory for ControlSignerRuntime {
                 loop {
                     let query = AuthorityCatalogRequest {
                         authority_id,
+                        scope,
                         partition,
                         node_id,
                         limit: AUTHORITY_CATALOG_PAGE_LIMIT,
@@ -100,24 +109,30 @@ impl AuthoritySignerKeyInventory for ControlSignerRuntime {
                                 "issuer physical catalog belongs to multiple members"
                             );
                         }
+                        if let Some(stream) = page.audit_stream {
+                            audit_owners.insert(physical.security_audit, stream);
+                        }
                         observed.insert(node_id, page.inventory_sha256);
                     }
                     if recheck {
                         break;
                     }
                     for entry in page.entries {
-                        if matches!(
-                            entry.reference,
-                            KeyReference::Catalog {
-                                domain: KeyCatalogDomain::IndependentAuthority
-                                    | KeyCatalogDomain::RetirementCustody
-                                    | KeyCatalogDomain::LiveSignerTrust,
-                                ..
-                            }
-                        ) && request
-                            .cursor
-                            .as_ref()
-                            .is_none_or(|cursor| entry > cursor.after)
+                        let selected = scope == AuthorityCatalogScope::ServiceAudit
+                            || matches!(
+                                entry.reference,
+                                KeyReference::Catalog {
+                                    domain: KeyCatalogDomain::IndependentAuthority
+                                        | KeyCatalogDomain::RetirementCustody
+                                        | KeyCatalogDomain::LiveSignerTrust,
+                                    ..
+                                }
+                            );
+                        if selected
+                            && request
+                                .cursor
+                                .as_ref()
+                                .is_none_or(|cursor| entry > cursor.after)
                         {
                             retain_entry(&mut entries, entry, request.limit);
                         }
@@ -133,14 +148,16 @@ impl AuthoritySignerKeyInventory for ControlSignerRuntime {
         serde_json::to_writer(
             &mut digest,
             &(
-                "kasumi.issuer-signer-inventory.v1",
+                "kasumi.issuer-key-inventory.v2",
                 authority_id,
                 partition,
+                scope,
                 position,
                 observed,
             ),
         )?;
         Ok(AuthoritySignerKeys {
+            audit_owners,
             inventory_sha256: digest.finalize().into(),
             entries: entries.into_iter().collect(),
         })

@@ -1,5 +1,7 @@
 use super::*;
-use kasumi_raft::member_catalog::{CatalogStart, MemberCatalogRequest};
+use kasumi_raft::member_catalog::{
+    CatalogPurpose, CatalogStart, MemberAuditInventory, MemberAuditReport, MemberCatalogRequest,
+};
 use kasumi_store::{StoragePurpose, TenantStore};
 use kasumi_types::{
     KeyCatalogDomain, KeyReference, KeyRetentionEntry, KeyVersionRef, staged_digest,
@@ -9,6 +11,7 @@ use std::sync::Weak;
 pub(super) struct OperationalStores {
     audit: Weak<TenantStore>,
     signer: Weak<TenantStore>,
+    archives: OnceLock<Weak<dyn MemberAuditInventory>>,
 }
 
 #[derive(Eq, PartialEq, serde::Serialize)]
@@ -22,10 +25,22 @@ pub(super) struct CatalogObservation {
     catalog: [u8; 32],
     membership_sha256: String,
     operational: Option<OperationalObservation>,
+    audit_report_sha256: Option<String>,
     _workspace: kasumi_store::DiskMemoryLease,
 }
 
 impl CatalogObservation {
+    pub(super) async fn check_archives(&self, authority: &IndependentAuthority) -> Result<()> {
+        if let Some(original) = &self.audit_report_sha256 {
+            let report = authority.read_audit_archives(&self.position).await?;
+            if staged_digest(&report)?.0 != *original {
+                return Err(unavailable(
+                    "Authority service audit changed before release",
+                ));
+            }
+        }
+        Ok(())
+    }
     pub(super) fn check(&self, authority: &IndependentAuthority) -> Result<()> {
         self.position
             .check_position(&authority.group)
@@ -108,16 +123,71 @@ impl IndependentAuthority {
         let expected = OperationalStores {
             audit: Arc::downgrade(audit),
             signer: Arc::downgrade(signer),
+            archives: OnceLock::new(),
         };
         let installed = self.operational_catalogs.get_or_init(|| OperationalStores {
             audit: expected.audit.clone(),
             signer: expected.signer.clone(),
+            archives: OnceLock::new(),
         });
         ensure!(
             installed.audit.ptr_eq(&expected.audit) && installed.signer.ptr_eq(&expected.signer),
             "different operational key stores already installed"
         );
         Ok(())
+    }
+
+    pub fn install_audit_archive_inventory(
+        &self,
+        store: &Arc<TenantStore>,
+        inventory: &Arc<dyn MemberAuditInventory>,
+    ) -> anyhow::Result<()> {
+        let stores = self
+            .operational_catalogs
+            .get()
+            .context("Authority key catalogs are not installed")?;
+        ensure!(
+            stores.audit.ptr_eq(&Arc::downgrade(store)),
+            "different Authority audit store"
+        );
+        let original = Arc::downgrade(inventory);
+        ensure!(
+            stores
+                .archives
+                .get_or_init(|| original.clone())
+                .ptr_eq(&original),
+            "another Authority archive writer is installed"
+        );
+        Ok(())
+    }
+
+    async fn read_audit_archives(
+        &self,
+        position: &MemberCatalogRequest,
+    ) -> Result<MemberAuditReport> {
+        let owner = self
+            .operational_catalogs
+            .get()
+            .and_then(|stores| stores.archives.get())
+            .and_then(Weak::upgrade)
+            .ok_or_else(|| unavailable("Authority audit writer unavailable"))?;
+        let request = MemberCatalogRequest {
+            purpose: CatalogPurpose::ServiceAudit,
+            ..position.clone()
+        };
+        let report = owner
+            .read_member_audit(self.local_node_id, request.clone())
+            .await
+            .map_err(unavailable)?;
+        report
+            .validate(&request, self.local_node_id)
+            .map_err(unavailable)?;
+        if report.truncated || !report.unreadable_objects.is_empty() {
+            return Err(unavailable(
+                "retained Authority audit archive could not be authenticated",
+            ));
+        }
+        Ok(report)
     }
 
     fn visit_operational_catalogs(
@@ -244,8 +314,24 @@ impl IndependentAuthority {
                 Ok(())
             })
             .map_err(unavailable)?;
+        let mut audit_report_sha256 = None;
+        let mut audit_identity = None;
+        if query.scope == AuthorityCatalogScope::ServiceAudit {
+            let report = self.read_audit_archives(&position).await?;
+            if !operational.as_ref().is_some_and(|catalogs| {
+                catalogs.ids.security_audit == report.catalog
+                    && catalogs.digests[0] == report.catalog_sha256
+            }) {
+                return Err(unavailable(
+                    "Authority audit writer differs from installed wrapping catalog",
+                ));
+            }
+            audit_report_sha256 = Some(staged_digest(&report)?.0);
+            audit_identity = Some((report.stream, report.archives_sha256));
+            physical.entries = report.entries;
+        }
         let inventory_sha256 = staged_digest(&(
-            "kasumi.authority-member.catalog.v1",
+            "kasumi.authority-member.catalog.v2",
             self.bootstrap_digest(),
             query.authority_id,
             query.partition,
@@ -258,6 +344,8 @@ impl IndependentAuthority {
             physical.custody_catalog,
             physical.catalog_sha256,
             &operational,
+            query.scope,
+            audit_identity,
         ))?
         .0;
         if query
@@ -283,6 +371,7 @@ impl IndependentAuthority {
             application_catalog: physical.application_catalog,
             custody_catalog: physical.custody_catalog,
             operational_catalogs: operational.as_ref().map(|v| v.ids.clone()),
+            audit_stream: audit_identity.map(|(stream, _)| stream),
             next: more.then(|| AuthorityCatalogCursor {
                 inventory_sha256: inventory_sha256.clone(),
                 after: physical
@@ -301,6 +390,7 @@ impl IndependentAuthority {
             catalog: physical.catalog_sha256,
             membership_sha256,
             operational,
+            audit_report_sha256,
             _workspace: workspace,
         });
         fence.check()?;

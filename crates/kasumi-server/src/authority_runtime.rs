@@ -447,7 +447,7 @@ impl AuthorityRuntime {
                 }).await.map_err(crate::administration::original_serving_runtime::OriginalRecoveryObservation::foreign_error)?
             };
             pending.authorities.push(authority.clone());
-            signer_verifier.install_authority_key_catalogs(&authority, &audit_store)?;
+            signer_verifier.install_authority_key_catalogs(&authority, &audit)?;
             let group =
                 &config.installation.manifest.partitions[&config.installation.partition].group;
             let access = stores.clone();

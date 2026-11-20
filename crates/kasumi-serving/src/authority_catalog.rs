@@ -8,6 +8,13 @@ use uuid::Uuid;
 
 pub const AUTHORITY_CATALOG_PAGE_LIMIT: u16 = 4;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AuthorityCatalogScope {
+    Wrapping,
+    ServiceAudit,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityCatalogCursor {
@@ -19,6 +26,7 @@ pub struct AuthorityCatalogCursor {
 #[serde(deny_unknown_fields)]
 pub struct AuthorityCatalogRequest {
     pub nonce: Uuid,
+    pub scope: AuthorityCatalogScope,
     pub authority_id: Uuid,
     pub partition: u16,
     pub node_id: u64,
@@ -39,10 +47,26 @@ impl AuthorityCatalogRequest {
             validate_sha256(&cursor.inventory_sha256)?;
             cursor.after.validate()?;
             ensure!(
-                matches!(&cursor.after.reference, KeyReference::Catalog { node_id, domain:
-                    KeyCatalogDomain::IndependentAuthority | KeyCatalogDomain::RetirementCustody
-                    | KeyCatalogDomain::SecurityAudit | KeyCatalogDomain::LiveSignerTrust, .. }
-                if *node_id == self.node_id),
+                match &cursor.after.reference {
+                    KeyReference::Catalog {
+                        node_id, domain, ..
+                    } =>
+                        *node_id == self.node_id
+                            && match self.scope {
+                                AuthorityCatalogScope::Wrapping => matches!(
+                                    domain,
+                                    KeyCatalogDomain::IndependentAuthority
+                                        | KeyCatalogDomain::RetirementCustody
+                                        | KeyCatalogDomain::SecurityAudit
+                                        | KeyCatalogDomain::LiveSignerTrust
+                                ),
+                                AuthorityCatalogScope::ServiceAudit =>
+                                    *domain == KeyCatalogDomain::SecurityAudit,
+                            },
+                    KeyReference::AuditArchive { .. } =>
+                        self.scope == AuthorityCatalogScope::ServiceAudit,
+                    _ => false,
+                },
                 "cursor belongs to another Authority catalog"
             );
         }
@@ -71,6 +95,8 @@ pub struct AuthorityCatalogPage {
     pub custody_catalog: Uuid,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
     pub operational_catalogs: Option<AuthorityOperationalCatalogs>,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub audit_stream: Option<Uuid>,
     pub inventory_sha256: String,
     pub entries: Vec<KeyRetentionEntry>,
     pub next: Option<AuthorityCatalogCursor>,
@@ -105,7 +131,22 @@ impl AuthorityCatalogPage {
                         .is_none_or(|entry| *entry > cursor.after),
                 "Authority catalog continuation changed or repeated an entry"
             );
+            if let KeyReference::AuditArchive { stream_id, .. } = cursor.after.reference {
+                ensure!(
+                    self.audit_stream == Some(stream_id),
+                    "Authority cursor belongs to another audit stream"
+                );
+            }
         }
+        ensure!(
+            match query.scope {
+                AuthorityCatalogScope::Wrapping => self.audit_stream.is_none(),
+                AuthorityCatalogScope::ServiceAudit =>
+                    self.operational_catalogs.is_some()
+                        && self.audit_stream.is_some_and(|id| !id.is_nil()),
+            },
+            "Authority audit stream differs from requested scope"
+        );
         if let Some(catalogs) = &self.operational_catalogs {
             let ids = [
                 self.application_catalog,
@@ -122,6 +163,27 @@ impl AuthorityCatalogPage {
         }
         for entry in &self.entries {
             entry.validate()?;
+            if query.scope == AuthorityCatalogScope::ServiceAudit {
+                ensure!(
+                    match entry.reference {
+                        KeyReference::AuditArchive { stream_id, .. } =>
+                            self.audit_stream == Some(stream_id),
+                        KeyReference::Catalog {
+                            node_id,
+                            catalog_id,
+                            domain: KeyCatalogDomain::SecurityAudit,
+                        } =>
+                            node_id == query.node_id
+                                && self
+                                    .operational_catalogs
+                                    .as_ref()
+                                    .is_some_and(|c| c.security_audit == catalog_id),
+                        _ => false,
+                    },
+                    "entry belongs to another physical Authority audit"
+                );
+                continue;
+            }
             ensure!(
                 matches!(&entry.reference, KeyReference::Catalog { node_id, catalog_id, domain }
                 if *node_id == query.node_id && match domain {

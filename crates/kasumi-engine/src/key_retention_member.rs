@@ -99,7 +99,7 @@ impl SignerCatalog {
 }
 
 impl SecurityAudit {
-    fn member_audit_report(
+    pub(crate) fn member_audit_report(
         &self,
         node: u64,
         request: &MemberCatalogRequest,

@@ -114,6 +114,9 @@ pub(super) struct IssuerCoverage {
     digest: Sha256,
     missing: BTreeSet<MissingKeyDependency>,
     truncated: bool,
+    catalogs: BTreeSet<uuid::Uuid>,
+    streams: BTreeSet<uuid::Uuid>,
+    owner_charges: Vec<Reservation>,
 }
 
 impl IssuerCoverage {
@@ -122,6 +125,7 @@ impl IssuerCoverage {
         (authority_id, partition): (uuid::Uuid, u16),
         request: &ReadKeyRetentionRequest,
         report: anyhow::Result<AuthoritySignerKeys>,
+        admission: &Arc<NodeAdmission>,
     ) -> Result<()> {
         self.digest.update(authority_id.as_bytes());
         self.digest.update(partition.to_be_bytes());
@@ -132,6 +136,34 @@ impl IssuerCoverage {
                         ErrorCode::Unavailable,
                         "issuer inventory exceeded the requested window",
                     ));
+                }
+                let audit = matches!(request.scope, KeyRetentionScope::SecurityAudit {});
+                if (audit && !(3..=64).contains(&report.audit_owners.len()))
+                    || (!audit && !report.audit_owners.is_empty())
+                {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "issuer physical audit roster differs from scope",
+                    ));
+                }
+                if audit {
+                    // Retain both ordered identity sets across partitions and the local comparison.
+                    self.owner_charges.push(
+                        admission
+                            .reserve_resident(4096 + 1024 * report.audit_owners.len() as u64)?,
+                    );
+                    for (catalog, stream) in report.audit_owners {
+                        if catalog.is_nil()
+                            || stream.is_nil()
+                            || !self.catalogs.insert(catalog)
+                            || !self.streams.insert(stream)
+                        {
+                            return Err(Error::new(
+                                ErrorCode::Unavailable,
+                                "multiple issuer members claim the same physical audit",
+                            ));
+                        }
+                    }
                 }
                 self.digest.update([1]);
                 self.digest.update(report.inventory_sha256);
@@ -199,11 +231,14 @@ impl SecurityAudit {
         let _topology = self.admission().reserve_resident(size)?;
         let roster =
             crate::control::ControlPlane::applied_topology(state, generation.document_resolver())?;
-        let issuer_digest = if let Some(issuers) = issuers {
-            entries = issuers.entries;
-            missing = issuers.missing;
+        let mut issuers = issuers;
+        let issuer_digest = if let Some(issuers) = &mut issuers {
+            entries = std::mem::take(&mut issuers.entries);
+            missing = std::mem::take(&mut issuers.missing);
             truncated = issuers.truncated;
-            Some(<[u8; 32]>::from(issuers.digest.finalize()))
+            Some(<[u8; 32]>::from(
+                std::mem::take(&mut issuers.digest).finalize(),
+            ))
         } else {
             None
         };
@@ -233,6 +268,15 @@ impl SecurityAudit {
             request.limit
         };
         if let Some(peers) = &mut member_inventories {
+            if issuers.as_ref().is_some_and(|issuer| {
+                !issuer.streams.is_disjoint(&peers.streams)
+                    || !issuer.catalogs.is_disjoint(&peers.catalogs)
+            }) {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "Control and Authority claim the same physical audit",
+                ));
+            }
             truncated |= peers.truncated;
             for dependency in std::mem::take(&mut peers.missing) {
                 add_missing(&mut missing, &mut truncated, dependency);
@@ -274,6 +318,21 @@ impl SecurityAudit {
             }
         }
         let service_audit = matches!(request.scope, KeyRetentionScope::SecurityAudit {});
+        if service_audit
+            && let Some(issuer) = &issuers
+            && issuer.streams.contains(
+                &self
+                    .status()
+                    .map_err(Error::from_physical_source)?
+                    .position
+                    .stream_id,
+            )
+        {
+            return Err(Error::new(
+                ErrorCode::Unavailable,
+                "local and Authority audit streams coincide",
+            ));
+        }
         let journal = journal.filter(|journal| {
             let (installed, _) = journal.key_inventory_owner();
             matches!(request.scope, KeyRetentionScope::TargetJournal {})
@@ -307,6 +366,12 @@ impl SecurityAudit {
                 store
                     .visit_wrapping_identities(|catalog_id, provider, key_ref, version| {
                         token.check()?;
+                        anyhow::ensure!(
+                            !issuers
+                                .as_ref()
+                                .is_some_and(|issuer| issuer.catalogs.contains(&catalog_id)),
+                            "local and Authority members share the same physical audit catalog"
+                        );
                         if let Some(peers) = &member_inventories {
                             anyhow::ensure!(
                                 !peers.catalogs.contains(&catalog_id),

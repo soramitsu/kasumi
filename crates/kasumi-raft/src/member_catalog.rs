@@ -230,6 +230,17 @@ pub struct MemberAuditReport {
     pub truncated: bool,
 }
 
+/// The service that owns the installed writer keeps custody of archive reads
+/// through cancellation and shutdown. Both service roles use its same projection.
+#[async_trait::async_trait]
+pub trait MemberAuditInventory: Send + Sync {
+    async fn read_member_audit(
+        &self,
+        node: u64,
+        request: MemberCatalogRequest,
+    ) -> Result<MemberAuditReport>;
+}
+
 impl MemberAuditReport {
     pub fn validate(&self, request: &MemberCatalogRequest, node: u64) -> Result<()> {
         request.validate()?;

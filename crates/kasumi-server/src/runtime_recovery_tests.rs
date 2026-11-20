@@ -585,6 +585,8 @@ impl Fixture {
                         kasumi_store::StorageAccess::live_signer_trust(verifier.clone()).unwrap()
                     ).await.unwrap();
                     authority.install_operational_key_catalogs(audit.store(), &signer).unwrap();
+                    let inventory: Arc<dyn kasumi_raft::member_catalog::MemberAuditInventory> = audit.clone();
+                    authority.install_audit_archive_inventory(audit.store(), &inventory).unwrap();
                     issuer_signers.push(signer);
                 }
                 network
@@ -1401,17 +1403,15 @@ impl Fixture {
         let mut first_cursor = None;
         loop {
             let audit = control.read_key_retention(&operator, audit_query.clone()).await.unwrap();
-            assert!(matches!(&audit.coverage,
-                KeyRetentionCoverage::Incomplete { missing: gaps, .. } if gaps.contains(&missing)
-                    && !gaps.iter().any(|gap| matches!(gap, MissingKeyDependency::MemberUnreported { .. }))),
+            assert!(matches!(&audit.coverage, KeyRetentionCoverage::Complete { .. }),
                 "physical Control audits and independent issuer coverage: {:?}", audit.coverage);
             audit_entries.extend(audit.entries.iter().cloned());
             audit_query.cursor = audit.next_cursor.clone();
             if first_cursor.is_none() { first_cursor = audit_query.cursor.clone(); }
             if audit_query.cursor.is_none() { break; }
         }
-        for (index, handle) in handles.iter().enumerate() {
-            handle.audit.store().visit_wrapping_identities(|catalog, provider, key_ref, version| {
+        for (index, audit) in handles.iter().map(|h| &h.audit).enumerate().chain(self.issuer_audits.iter().enumerate()) {
+            audit.store().visit_wrapping_identities(|catalog, provider, key_ref, version| {
                 assert!(audit_entries.iter().any(|entry| entry.key.provider == provider
                     && entry.key.key_ref == key_ref && entry.key.version == version
                     && matches!(entry.reference, KeyReference::Catalog {node_id, catalog_id,
@@ -1419,10 +1419,16 @@ impl Fixture {
                 Ok(())
             }).unwrap();
         }
+        self.issuer_audits[1].store().rotate_data_key().await.unwrap();
+        let stale_issuer = ReadKeyRetentionRequest { cursor: first_cursor, ..audit_request.clone() };
+        assert!(matches!(control.read_key_retention(&operator, stale_issuer).await,
+            Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
+        let fresh = control.read_key_retention(&operator, audit_request.clone()).await.unwrap();
         let peer = handles.iter().enumerate()
             .find(|(index, _)| *index as u64 + 1 != control.raft_group().node_id()).unwrap().1;
         peer.audit.store().rotate_data_key().await.unwrap();
-        let stale_audit = ReadKeyRetentionRequest { cursor: Some(first_cursor.unwrap()), ..audit_request };
+        let stale_audit = ReadKeyRetentionRequest { cursor: Some(fresh.next_cursor.clone().unwrap()), ..audit_request.clone() };
+        drop(fresh);
         assert!(matches!(control.read_key_retention(&operator, stale_audit).await,
             Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
         let short = ReadKeyRetentionRequest {limit: 1, ..request.clone()};
@@ -1437,6 +1443,8 @@ impl Fixture {
         private_files::publish(&path, self.control_token.as_bytes()).unwrap();
         let refused = control.read_key_retention(&operator, request).await.unwrap();
         assert!(matches!(&refused.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
+        let refused_audit = control.read_key_retention(&operator, audit_request).await.unwrap();
+        assert!(matches!(&refused_audit.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
         private_files::publish(&path, &original).unwrap();
     }
     /// Drive installed Control/issuer/target services through Start and the

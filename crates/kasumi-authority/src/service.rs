@@ -121,12 +121,15 @@ pub struct AuthorityResponseFence {
 }
 impl AuthorityResponseFence {
     pub async fn release(&self) -> Result<()> {
-        if self.member_catalog.is_some() {
+        if let Some(catalog) = &self.member_catalog {
+            self.context.authorization.check_live()?;
+            self.authority.check_open()?;
             self.authority
                 .group
                 .observation_barrier()
                 .await
                 .map_err(unavailable)?;
+            catalog.check_archives(&self.authority).await?;
         } else if self.authority.barrier(&self.context).await? != self.term {
             return Err(unavailable("authority term changed before release"));
         }

@@ -33,6 +33,8 @@ pub trait LocalRecoveryKeyInventory: Send + Sync {
 pub struct AuthoritySignerKeys {
     pub inventory_sha256: [u8; 32],
     pub entries: Vec<KeyRetentionEntry>,
+    /// The full installed catalog-to-stream mapping, independent of the entry cursor.
+    pub audit_owners: BTreeMap<uuid::Uuid, uuid::Uuid>,
 }
 
 #[async_trait::async_trait]
@@ -543,7 +545,10 @@ impl Database {
             context.authorization.require_control(&state.incarnation)?;
             let audit = self.security_audit.clone();
             let signer = self.signer_keys.get().cloned();
-            let issuer_keys = if matches!(request.scope, KeyRetentionScope::Signer {}) {
+            let issuer_keys = if matches!(
+                request.scope,
+                KeyRetentionScope::Signer {} | KeyRetentionScope::SecurityAudit {}
+            ) {
                 let inventory = self
                     .authority_signer_keys
                     .get()
@@ -560,7 +565,7 @@ impl Database {
                             _ = cancelled(&cancellation) => return Err(cancelled_error()),
                             _ = tokio::time::sleep_until(deadline) => Err(anyhow::anyhow!("issuer key inventory deadline elapsed")),
                         };
-                        reports.observe((id, partition), request, report)?;
+                        reports.observe((id, partition), request, report, self.admission())?;
                     }
                     Some(reports)
                 } else {

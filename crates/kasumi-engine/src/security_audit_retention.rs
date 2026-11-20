@@ -28,6 +28,26 @@ const MAX_ROOT_BYTES: usize = 64 << 10;
 // Reserve wire-envelope and per-record separator bytes inside the shared limit.
 const MAX_PAGE_BYTES: usize = kasumi_types::MAX_SECURITY_AUDIT_PAGE_BYTES - 4096;
 
+#[async_trait::async_trait]
+impl kasumi_raft::member_catalog::MemberAuditInventory for SecurityAudit {
+    async fn read_member_audit(
+        &self,
+        node: u64,
+        request: kasumi_raft::member_catalog::MemberCatalogRequest,
+    ) -> Result<kasumi_raft::member_catalog::MemberAuditReport> {
+        let token = QueryCancellation::default();
+        let _cancel = crate::admission::CancelOnDrop(token.clone());
+        let workspace = self
+            .admission()
+            .reserve_resident((6 * kasumi_raft::member_catalog::MEMBER_CATALOG_BYTES) as u64)?;
+        self.read_metadata(move |audit| {
+            let _workspace = workspace;
+            Ok(audit.member_audit_report(node, &request, &token)?)
+        })
+        .await
+    }
+}
+
 /// A hot or archived row is admitted only as the exact current writer's
 /// bytes for its own sequence; an equivalent spelling is never normalized.
 fn decode_record(sequence: u64, bytes: &[u8]) -> Result<SecurityAuditRecord> {
@@ -3218,6 +3238,22 @@ mod tests {
         let observed = installed_key_references(audit.clone()).await;
         assert!(observed.contains(&(roots[0].object.object_id, false)));
         assert!(observed.contains(&(roots[1].object.object_id, true)));
+        use kasumi_raft::member_catalog::{
+            CatalogPurpose, CatalogStart, MemberAuditInventory, MemberCatalogRequest,
+        };
+        let request = MemberCatalogRequest {
+            purpose: CatalogPurpose::ServiceAudit,
+            nonce: Uuid::new_v4(),
+            leader: 1,
+            term: 1,
+            membership: None,
+            applied: kasumi_raft::LogId::new(openraft::CommittedLeaderId::new(1, 1), 1),
+            start: CatalogStart::First,
+            limit: 4,
+        };
+        let interrupted = audit.read_member_audit(1, request.clone()).await.unwrap();
+        assert_eq!(interrupted.unreadable_objects, [roots[0].object.object_id]);
+        assert_eq!(interrupted.stream, roots[0].stream_id);
         let fixture = fixture.restart(Some(audit)).await;
         let audit = fixture.open().unwrap();
         assert_eq!(
@@ -3242,6 +3278,10 @@ mod tests {
                 .all(|root| !present(&fixture, root))
         );
         assert!(present(&fixture, &roots[through as usize]));
+        let finished = audit.read_member_audit(1, request).await.unwrap();
+        assert!(finished.unreadable_objects.is_empty());
+        assert_eq!(finished.stream, interrupted.stream);
+        assert_ne!(finished.archives_sha256, interrupted.archives_sha256);
         let (fresh, _) = export_all(&audit, None, 64).await;
         assert_eq!(
             fresh[..fresh.len() - 1],

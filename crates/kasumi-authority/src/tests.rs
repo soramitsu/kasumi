@@ -175,6 +175,7 @@ async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation
     let id = member.local_node_id;
     let original = AuthorityCatalogRequest {
         nonce: Uuid::new_v4(),
+        scope: AuthorityCatalogScope::Wrapping,
         authority_id: fixture.installation.manifest.authority_id,
         partition: fixture.installation.partition,
         node_id: id,

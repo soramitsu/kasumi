@@ -281,9 +281,11 @@ impl InstalledSignerVerifier {
     pub(crate) fn install_authority_key_catalogs(
         &self,
         authority: &kasumi_authority::IndependentAuthority,
-        audit: &Arc<kasumi_store::TenantStore>,
+        audit: &Arc<kasumi_engine::SecurityAudit>,
     ) -> Result<()> {
-        authority.install_operational_key_catalogs(audit, &self.store)
+        authority.install_operational_key_catalogs(audit.store(), &self.store)?;
+        let inventory: Arc<dyn kasumi_raft::member_catalog::MemberAuditInventory> = audit.clone();
+        authority.install_audit_archive_inventory(audit.store(), &inventory)
     }
     pub(crate) fn install_key_inventory(
         &self,
