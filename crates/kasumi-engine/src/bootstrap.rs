@@ -1134,6 +1134,7 @@ pub async fn restore_local(
     let restored = verified
         .into_genesis(
             deadline,
+            cancellation.clone(),
             admission.clone(),
             target.tenant().into(),
             incarnation.to_string(),

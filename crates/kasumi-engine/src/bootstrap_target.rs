@@ -254,6 +254,7 @@ async fn materialize_origin(
     let restored = operation
         .run(verified.into_genesis(
             operation.deadline,
+            operation.token.clone(),
             replica.admission.clone(),
             target.tenant().into(),
             bootstrap.incarnation.clone(),

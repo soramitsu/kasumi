@@ -1941,15 +1941,7 @@ impl TenantEngine {
     ) -> std::result::Result<Self, SnapshotFailure> {
         let decoded = crate::snapshot_codec::read(bytes.disk(), &mut bytes.reader())
             .map_err(SnapshotFailure::from)?;
-        let engine = Self::from_bootstrap_state(
-            expected_tenant,
-            decoded.state,
-            decoded.receipts,
-            decoded.backup_bindings,
-            decoded.terminals,
-            decoded.target_resolutions,
-            Some(decoded.documents),
-        )?;
+        let engine = Self::from_bootstrap_state(expected_tenant, decoded, &|| Ok(()))?;
         engine
             .bootstrap_sha256
             .set(bytes.sha256().into())
@@ -1959,13 +1951,10 @@ impl TenantEngine {
 
     fn from_bootstrap_state(
         expected_tenant: &str,
-        state: TenantState,
-        receipts: crate::mutation_receipt::View,
-        backup_bindings: crate::backup_binding::View,
-        terminals: crate::staged_terminal::View,
-        target_resolutions: crate::target_resolution::View,
-        documents: Option<crate::document_restore::StagedDocuments>,
+        decoded: crate::snapshot_codec::Decoded,
+        check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> anyhow::Result<Self> {
+        let state = decoded.state;
         if state.tenant != expected_tenant || state.revision != state.revision_base {
             return Err(Error::new(
                 ErrorCode::Corruption,
@@ -1975,14 +1964,16 @@ impl TenantEngine {
         }
         let uninitialized = UninitializedEngine::new(&state)?;
         let engine = uninitialized.engine();
-        let generation = engine.prepare_state(
+        let generation = engine.prepare_state_checked(
             &uninitialized.baseline(),
             state,
-            receipts,
-            backup_bindings,
-            terminals,
-            target_resolutions,
-            documents,
+            decoded.receipts,
+            decoded.backup_bindings,
+            decoded.terminals,
+            decoded.target_resolutions,
+            Some(decoded.documents),
+            decoded.receipts_verified,
+            check,
         )?;
         Ok(uninitialized.finish(generation))
     }
@@ -2121,7 +2112,7 @@ impl TenantEngine {
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
         handoff_workspace: impl FnOnce() -> Result<Workspace>,
-        check: &dyn Fn() -> anyhow::Result<()>,
+        check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> std::result::Result<(kasumi_store::SnapshotImage, Self), SnapshotFailure> {
         if source.header().tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch").into());
@@ -2138,15 +2129,7 @@ impl TenantEngine {
         phase.complete();
         let phase = VerificationPhase::start("restore.snapshot_decode", None);
         let scratch_disk = image.disk().clone();
-        let crate::snapshot_codec::Decoded {
-            mut state,
-            receipts,
-            backup_bindings,
-            terminals,
-            target_resolutions,
-            documents,
-            ..
-        } = crate::snapshot_codec::read_placed(
+        let mut decoded = crate::snapshot_codec::read_placed(
             image.disk(),
             &mut snapshot_api::CheckedIo {
                 io: image.reader(),
@@ -2162,18 +2145,10 @@ impl TenantEngine {
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
         check()?;
-        Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
+        Self::rebind_restored_state(&mut decoded.state, incarnation, checkpoint, target_origin)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.prepare_generation", None);
-        let engine = Self::from_bootstrap_state(
-            expected_tenant,
-            state,
-            receipts,
-            backup_bindings,
-            terminals,
-            target_resolutions,
-            Some(documents),
-        )?;
+        let engine = Self::from_bootstrap_state(expected_tenant, decoded, check)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.genesis_snapshot", None);
         check()?;
@@ -3271,6 +3246,7 @@ impl TenantEngine {
                 .into());
             }
             for (id, document) in &collection.documents {
+                check()?;
                 validate_name(id)?;
                 if id != document.id() || document.version() > collection.data_epoch {
                     return Err(Error::new(
@@ -3428,6 +3404,7 @@ impl TenantEngine {
             .validate_state(&state)
             .map_err(terminal_error)?;
         for row in backup_bindings.records() {
+            check()?;
             row.map_err(terminal_error)?
                 .validate(&state)
                 .map_err(terminal_error)?;

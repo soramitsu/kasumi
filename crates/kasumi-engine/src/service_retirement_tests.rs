@@ -465,22 +465,22 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
     };
     let target_incarnation = uuid::Uuid::new_v4().to_string();
     let files = fixture.storage.scratch.snapshot().live_files;
-    let reads = std::cell::Cell::new(0);
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let reads = AtomicUsize::new(0);
     let stopped = Error::new(ErrorCode::ResourceExhausted, "original restore deadline");
     let interrupted = TenantEngine::materialize_verified_restore(
         validate_image(), &fixture.context.tenant, target_incarnation.clone(), checkpoint.clone(), None,
         || Ok(()),
         &|| {
-            reads.set(reads.get() + 1);
-            if reads.get() == 6 { return Err(stopped.clone().into()); }
+            if reads.fetch_add(1, Ordering::Relaxed) == 5 { return Err(stopped.clone().into()); }
             Ok(())
         },
     ).err().expect("blocked genesis reader must release partial staging");
     assert!(
         crate::backup_verify::WorkerFailure::matches_stop(&interrupted, &stopped),
-        "restore returned {interrupted:?} after {} checks", reads.get()
+        "restore returned {interrupted:?} after {} checks", reads.load(Ordering::Relaxed)
     );
-    assert_eq!(reads.get(), 6);
+    assert_eq!(reads.load(Ordering::Relaxed), 6);
     assert_eq!(fixture.storage.scratch.snapshot().live_files, files);
     let validated = validate_image();
     drop(source_image);

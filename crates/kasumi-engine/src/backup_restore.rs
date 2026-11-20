@@ -51,6 +51,7 @@ impl VerifiedBackup {
     pub(super) async fn into_genesis(
         self,
         deadline: VerificationDeadline,
+        cancellation: kasumi_query::QueryCancellation,
         admission: Arc<NodeAdmission>,
         tenant: String,
         incarnation: String,
@@ -113,6 +114,7 @@ impl VerifiedBackup {
                         },
                         &|| {
                             deadline.check()?;
+                            cancellation.check()?;
                             if let Some(work) = &self._registration {
                                 work.check()?;
                             }
