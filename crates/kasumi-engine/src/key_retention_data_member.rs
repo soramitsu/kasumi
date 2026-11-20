@@ -108,10 +108,15 @@ impl Database {
                 applied: metrics
                     .last_applied
                     .ok_or_else(|| unavailable("Data group lacks an applied position"))?,
-                start: read
-                    .after
-                    .clone()
-                    .map_or(CatalogStart::First, |entry| CatalogStart::After { entry }),
+                start: if let Some(identity) = &read.from_identity {
+                    CatalogStart::Identity {
+                        identity: identity.clone(),
+                    }
+                } else {
+                    read.after
+                        .clone()
+                        .map_or(CatalogStart::First, |entry| CatalogStart::After { entry })
+                },
                 limit: read.limit,
             };
             request.check_position(&self.group).map_err(unavailable)?;
@@ -174,6 +179,7 @@ impl Database {
                         report.catalog,
                         report.dependencies_sha256,
                         DataCatalogContents::TargetJournal {
+                            writer_state_sha256: report.writer_state_sha256.clone(),
                             unreadable_targets: report.unreadable_targets.iter().copied().collect(),
                             truncated: report.truncated,
                         },

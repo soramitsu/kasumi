@@ -48,6 +48,9 @@ impl ControlQuorumFence {
     pub(super) fn term(&self) -> u64 {
         self.term
     }
+    pub(super) fn membership_epoch(&self) -> u64 {
+        self.membership.log_id().map_or(0, |id| id.index)
+    }
     pub(super) fn policy_epoch(&self) -> u64 {
         self.policy_epoch
     }

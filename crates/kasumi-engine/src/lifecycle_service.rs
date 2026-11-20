@@ -12,6 +12,131 @@ pub struct LifecycleSigner {
     key: Ed25519KeyPair,
 }
 impl LifecycleSigner {
+    /// Sign only the currently committed state of this Control after both
+    /// quorum checks. No caller-supplied fence or key identity is signed.
+    pub async fn observe_target_writer(
+        &self,
+        control: &Arc<Database>,
+        context: &RequestContext,
+        signed_challenge: &kasumi_types::SignedTargetWriterChallenge,
+    ) -> Result<AdmittedOutput<kasumi_types::SignedTargetWriterObservation>> {
+        use super::control_administration::ControlObservationAccess;
+        let quorum = control
+            .authorize_control_quorum(context.clone(), ControlObservationAccess::Administration)
+            .await?;
+        let challenge = &signed_challenge.challenge;
+        if let Some(command) = challenge.lifecycle_command {
+            let generation = control.engine.generation()?;
+            let original = generation.state.lifecycle_intent(command)?.ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    "writer enrollment lacks its original committed lifecycle command",
+                )
+            })?;
+            let node = original
+                .request
+                .target_nodes
+                .get(&challenge.verifier.node_id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Forbidden,
+                        "writer is outside the committed target roster",
+                    )
+                })?;
+            crate::TargetSigner::verify_writer_challenge(signed_challenge, node)
+                .map_err(Error::from_physical_source)?;
+        } else {
+            control
+                .target_writer_network
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "original writable recovery routes unavailable",
+                    )
+                })?
+                .verify_participant(signed_challenge)
+                .map_err(Error::from_physical_source)?;
+        }
+        if self.root != quorum.installation().root || challenge.root != self.root {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "target writer belongs to another Control installation",
+            ));
+        }
+        let charge = Arc::new(control.admission().reserve_resident(
+            3 * MAX_KEY_RETIREMENT_STATE_BYTES as u64 + 4096 + crate::output::OUTPUT_CHARGE_BYTES,
+        )?);
+        let participant = challenge.participant();
+        if control
+            .engine
+            .generation()?
+            .state
+            .target_journal_writers
+            .binary_search(&participant)
+            .is_err()
+        {
+            control
+                .submit(
+                    context.clone(),
+                    Operation::RegisterTargetJournalWriter(participant.clone()),
+                )
+                .await?;
+            quorum.release().await?;
+        }
+        let observed = {
+            let generation = control.engine.generation()?;
+            if generation
+                .state
+                .target_journal_writers
+                .binary_search(&participant)
+                .is_err()
+            {
+                return Err(Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "original target writer registration is unresolved",
+                ));
+            }
+            let observation = kasumi_types::TargetWriterObservation {
+                challenge: challenge.clone(),
+                membership_epoch: quorum.membership_epoch(),
+                observed_term: quorum.term(),
+                observed_revision: generation.state.revision,
+                observed_policy_epoch: quorum.policy_epoch(),
+                retirements: generation.state.target_journal_retirements.clone(),
+            };
+            observation.validate()?;
+            observation
+        };
+        quorum.release().await?;
+        let signature = hex::encode(
+            self.key
+                .sign(
+                    &serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observed))
+                        .map_err(encoding)?,
+                )
+                .as_ref(),
+        );
+        quorum.release().await?;
+        let state = control.engine.generation()?;
+        if state.state.target_journal_retirements != observed.retirements
+            || state.state.revision < observed.observed_revision
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "original target writer state changed before signing release",
+            ));
+        }
+        quorum.check()?;
+        Ok(AdmittedOutput::new(
+            kasumi_types::SignedTargetWriterObservation {
+                observation: observed,
+                signature,
+            },
+            charge,
+        ))
+    }
     pub async fn sign_topology(
         &self,
         proof: &super::control_topology_service::VerifiedControlTopology,

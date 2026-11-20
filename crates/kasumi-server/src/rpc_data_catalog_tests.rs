@@ -287,6 +287,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         verifier: kasumi_serving::test_utils::fixture_verifier(f.source),
         service: DataMemberService::Signer,
         nonce: Uuid::new_v4(),
+        from_identity: None,
         after: None,
         limit: 1,
     };
@@ -447,7 +448,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         .await
         .unwrap();
     assert!(
-        matches!(journal_page.contents, DataCatalogContents::TargetJournal { ref unreadable_targets, truncated:false } if unreadable_targets.is_empty())
+        matches!(journal_page.contents, DataCatalogContents::TargetJournal { ref unreadable_targets, truncated:false, .. } if unreadable_targets.is_empty())
     );
     let owner = &f.journals[follower as usize - 1].1;
     owner

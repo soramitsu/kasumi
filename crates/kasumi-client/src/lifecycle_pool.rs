@@ -79,6 +79,18 @@ impl KasumiLifecyclePool {
             )
             .await
     }
+    pub async fn observe_target_writer(
+        &mut self,
+        challenge: &SignedTargetWriterChallenge,
+        timeout: Duration,
+    ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let challenge = challenge.clone();
+                Box::pin(async move { client.observe_target_writer(bearer, &challenge).await })
+            })
+            .await
+    }
     pub async fn observe_intent(
         &mut self,
         id: uuid::Uuid,

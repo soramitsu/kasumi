@@ -2031,6 +2031,8 @@ impl NodeRuntime {
                 let control = runtime.control.as_ref().context("lifecycle signer requires a hosted Control group")?.database.clone();
                 if config.hosted_control()?.lifecycle.as_ref().is_some_and(|lifecycle| lifecycle.recovery.is_some()) {
                     let coordinator = crate::recovery_runtime::ControlRecoveryCoordinator::new(&config, control.clone(), signer.clone(), runtime.authority_trusts.clone())?;
+                    let writer_network:Arc<dyn kasumi_engine::TargetWriterNetwork>=coordinator.clone();
+                    control.install_target_writer_network(Arc::downgrade(&writer_network))?;
                     admin = admin.add_service(crate::rpc::NativeRecoveryControl::new(coordinator, auth.clone()).service());
                 }
                 admin = admin.add_service(crate::rpc::NativeLifecycleControl::new(control, signer, auth.clone())?.service());

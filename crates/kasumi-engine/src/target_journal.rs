@@ -17,7 +17,7 @@ mod accounting;
 #[path = "target_journal_retirements.rs"]
 mod retirements;
 use retirements::JournalCheckpointPermit;
-pub use retirements::TargetWriterRead;
+pub use retirements::{CurrentTargetJournalWriter, TargetWriterRead};
 const NS: &str = "target.journal";
 #[cfg(test)]
 #[path = "target_journal_open_tests.rs"]
@@ -419,12 +419,31 @@ impl TargetJournal {
             // Keep the authenticated root pinned, but release the writer before
             // the visitor contacts a backup destination or a historical provider.
             drop(_guard);
-            if head.generations != 0 {
+            if head.generations != 0 || head.dispatches != 0 {
                 view.visit(NS, MAX_RECORD, |key, value| {
                     token.check()?;
                     if key.starts_with(b"generation/") {
                         let row: GenerationBinding = decode_current(value)?;
                         checkpoint(row.target_incarnation, &row.checkpoint)?;
+                    } else if key.starts_with(b"dispatch/") {
+                        let row = self.validate_dispatch_record(key, value)?;
+                        let request = &row.lifecycle.request;
+                        let generation =
+                            generation_key(&request.tenant, request.target_incarnation);
+                        if let Some(bytes) = view.get(NS, &generation, MAX_RECORD)? {
+                            let original: GenerationBinding = decode_current(&bytes)?;
+                            ensure!(
+                                original.checkpoint == request.checkpoint
+                                    && original.source_incarnation == request.source_incarnation
+                                    && original.source_epoch == request.source_authority_epoch
+                                    && original.nodes == request.target_nodes,
+                                "target dispatch differs from its retained generation"
+                            );
+                        } else {
+                            // A lost initial dispatch can precede the first local
+                            // prepare. Its immutable checkpoint is already retained.
+                            checkpoint(request.target_incarnation, &request.checkpoint)?;
+                        }
                     }
                     Ok(())
                 })?;
@@ -639,13 +658,14 @@ impl TargetJournal {
         op: &TargetOperation,
         exact_input_sha256: &str,
     ) -> Result<TargetJournalIntent> {
-        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None)
+        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None, None)
     }
     fn prepare_with_checkpoint_permit(
         &self,
         op: &TargetOperation,
         exact_input_sha256: &str,
         permit: Option<&JournalCheckpointPermit>,
+        writer: Option<&CurrentTargetJournalWriter>,
     ) -> Result<TargetJournalIntent> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
@@ -713,6 +733,11 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            writer
+                .context(
+                    "first target generation requires its registered Control writer observation",
+                )?
+                .require(self, &metadata.retirements)?;
             if metadata.retirements.requires_graph() {
                 permit
                     .context(

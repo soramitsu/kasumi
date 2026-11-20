@@ -358,6 +358,8 @@ pub struct MemberJournalReport {
     /// encrypted security store holding the enrollment.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub excluded_by_enrollment: Option<[u8; 32]>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub writer_state_sha256: Option<String>,
     pub request_sha256: String,
     pub verifier: kasumi_types::TrustVerifierIdentity,
     pub catalog: Uuid,
@@ -370,10 +372,14 @@ impl MemberJournalReport {
     pub fn validate(&self, request: &MemberCatalogRequest, node: u64) -> Result<()> {
         request.validate()?;
         self.verifier.validate()?;
+        if let Some(digest) = &self.writer_state_sha256 {
+            kasumi_types::validate_sha256(digest)?;
+        }
         if self.excluded_by_enrollment.is_some() {
             ensure!(
                 matches!(request.purpose, CatalogPurpose::ControlJournal { .. })
                     && self.entries.is_empty()
+                    && self.writer_state_sha256.is_none()
                     && self.unreadable_targets.is_empty()
                     && !self.truncated,
                 "dedicated Control enrollment cannot report physical journal keys"
@@ -698,6 +704,7 @@ mod tests {
         };
         let journal = MemberJournalReport {
             excluded_by_enrollment: None,
+            writer_state_sha256: None,
             request_sha256: staged_digest(&journal_request)?.0,
             verifier: kasumi_types::TrustVerifierIdentity {
                 node_id: 2,

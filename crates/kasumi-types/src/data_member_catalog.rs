@@ -30,6 +30,8 @@ pub struct DataMemberCatalogRead {
     pub nonce: Uuid,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub after: Option<KeyRetentionEntry>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_identity: Option<crate::KeyIdentityRef>,
     pub limit: u16,
 }
 
@@ -43,6 +45,12 @@ impl DataMemberCatalogRead {
             || !(1..=DATA_MEMBER_CATALOG_LIMIT).contains(&self.limit)
         {
             return Err(invalid("invalid Data service catalog request"));
+        }
+        if let Some(identity) = &self.from_identity {
+            identity.validate()?;
+            if self.after.is_some() {
+                return Err(invalid("Data catalog has two starting positions"));
+            }
         }
         if let Some(after) = &self.after {
             after.validate()?;
@@ -94,6 +102,8 @@ pub enum DataCatalogContents {
         partitions_sha256: String,
     },
     TargetJournal {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        writer_state_sha256: Option<String>,
         #[serde(deserialize_with = "unreadable_ids")]
         unreadable_targets: BTreeSet<Uuid>,
         truncated: bool,
@@ -138,6 +148,7 @@ impl DataMemberCatalogPage {
         let (domain, audit_stream) = match (&self.contents, read.service) {
             (
                 DataCatalogContents::TargetJournal {
+                    writer_state_sha256,
                     unreadable_targets,
                     truncated,
                 },
@@ -146,6 +157,9 @@ impl DataMemberCatalogPage {
                 && (!truncated || unreadable_targets.len() == MAX_MISSING_KEY_DEPENDENCIES)
                 && !unreadable_targets.contains(&Uuid::nil()) =>
             {
+                if let Some(digest) = writer_state_sha256 {
+                    validate_sha256(digest)?;
+                }
                 (KeyCatalogDomain::TargetJournal, None)
             }
             (DataCatalogContents::Signer { partitions_sha256 }, DataMemberService::Signer) => {
@@ -171,7 +185,9 @@ impl DataMemberCatalogPage {
         };
         for entry in &self.entries {
             entry.validate()?;
-            if read.after.as_ref().is_some_and(|after| entry <= after)
+            if read.from_identity.as_ref().is_some_and(|from| {
+                (&entry.key.provider, &entry.key.key_ref) < (&from.provider, &from.key_ref)
+            }) || read.after.as_ref().is_some_and(|after| entry <= after)
                 || !match entry.reference {
                     KeyReference::Catalog {
                         node_id,

@@ -285,6 +285,27 @@ struct MaterialFixture {
     target_start_timeout_ms: u64,
 }
 impl MaterialFixture {
+    fn writer(
+        &self,
+        journal: &Arc<kasumi_engine::TargetJournal>,
+    ) -> kasumi_engine::CurrentTargetJournalWriter {
+        let read = journal.begin_writer_read().unwrap();
+        let observation = TargetWriterObservation {
+            challenge: read.challenge().clone(),
+            observed_term: 1,
+            observed_revision: 1,
+            observed_policy_epoch: 1,
+            membership_epoch: 1,
+            retirements: KeyRetirementState::default(),
+        };
+        let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation)).unwrap();
+        let signature = hex::encode(self.control.key.sign(&bytes).as_ref());
+        read.admit(&SignedTargetWriterObservation {
+            observation,
+            signature,
+        })
+        .unwrap()
+    }
     async fn new() -> Self {
         let control = ControlFixture::new();
         let issuer = control.issuer().await;
@@ -2134,7 +2155,11 @@ async fn exercise_target_activation(maintenance: bool) {
             .is_none()
     );
     journal
-        .prepare(&selected.operation, &activation_input.digest().unwrap())
+        .prepare_observed(
+            &selected.operation,
+            &activation_input.digest().unwrap(),
+            &f.writer(&journal),
+        )
         .unwrap();
     let completed = exact_target_activation(selected, &accepted_signed).await;
     assert_eq!(
@@ -2620,7 +2645,10 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         let j = journal.clone();
         let op = op.clone();
         let hash = f.input.digest().unwrap();
-        jobs.push(tokio::spawn(async move { j.prepare(&op, &hash).unwrap() }));
+        let writer = f.writer(&j);
+        jobs.push(tokio::spawn(async move {
+            j.prepare_observed(&op, &hash, &writer).unwrap()
+        }));
     }
     for job in jobs {
         assert_eq!(job.await.unwrap().intent(), &f.intent.observation.intent);
@@ -3027,7 +3055,7 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
     let scope = f.journal_scope(&f.intent).await;
     let operation = scope.begin_operation(60_000).unwrap();
     journal
-        .prepare(&operation, &f.input.digest().unwrap())
+        .prepare_observed(&operation, &f.input.digest().unwrap(), &f.writer(&journal))
         .unwrap();
     let path = f.physical[&1].path("creation-outcome-target.kv");
     let MaterializationNode::Created(target) = journal

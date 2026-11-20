@@ -14,6 +14,7 @@ mod journal_member;
 #[path = "key_retention_member.rs"]
 mod member;
 pub(super) use journal_member::RecoveryInventoryFence;
+pub use journal_member::TargetWriterNetwork;
 use journal_member::{InventoryWindowSelection, RecoveryInventoryAuthority};
 #[path = "key_retirement_service.rs"]
 mod retirement;
@@ -829,9 +830,9 @@ impl Database {
                     .observe_service_members(
                         &metrics,
                         context,
-                        epoch,
-                        &state.incarnation,
+                        state,
                         request,
+                        probe,
                         &cancellation,
                     )
                     .await?;
@@ -840,6 +841,7 @@ impl Database {
                         &generation,
                         request,
                         &cancellation,
+                        probe,
                         &mut members,
                     )
                     .await?;
@@ -862,6 +864,7 @@ impl Database {
                         &generation,
                         &request,
                         &metrics,
+                        probe,
                         security_audit::InstalledInventories {
                             context: &control_context,
                             signer: signer.as_deref(),

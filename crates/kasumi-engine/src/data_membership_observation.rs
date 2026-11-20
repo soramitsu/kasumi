@@ -57,6 +57,7 @@ impl Database {
                     verifier: verifier.clone(),
                     service: DataMemberService::Signer,
                     nonce: uuid::Uuid::new_v4(),
+                    from_identity: None,
                     after: None,
                     limit: 1,
                 };

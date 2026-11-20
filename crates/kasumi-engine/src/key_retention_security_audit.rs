@@ -255,6 +255,7 @@ impl SecurityAudit {
         generation: &crate::Generation,
         request: &ReadKeyRetentionRequest,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
+        probe: bool,
         owners: InstalledInventories<'_>,
         token: &QueryCancellation,
     ) -> Result<KeyRetentionPage> {
@@ -381,6 +382,33 @@ impl SecurityAudit {
             }
         }
         if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
+            if !state.target_journal_retirements.is_empty() {
+                let expected = state.target_journal_retirements.target_writer_digest()?;
+                if let Some(owner) = journal
+                    && owner
+                        .writer_state_sha256()
+                        .map_err(Error::from_physical_source)?
+                        != expected
+                {
+                    add_missing(
+                        &mut missing,
+                        &mut truncated,
+                        MissingKeyDependency::MemberUnreported { node_id: local },
+                    );
+                }
+                if let Some(peers) = &member_inventories {
+                    for (&node_id, identity) in &peers.reported {
+                        if matches!(identity,member::ServiceIdentity::Journal(_,_,_,position) if position.as_ref()!=Some(&expected))
+                        {
+                            add_missing(
+                                &mut missing,
+                                &mut truncated,
+                                MissingKeyDependency::MemberUnreported { node_id },
+                            );
+                        }
+                    }
+                }
+            }
             for operation in state.recovery_control.operations.values() {
                 token.check()?;
                 for (&id, node) in &operation.request.target_nodes {
@@ -389,7 +417,7 @@ impl SecurityAudit {
                     } else {
                         member_inventories.as_ref().and_then(|members| {
                             match members.reported.get(&id) {
-                                Some(member::ServiceIdentity::Journal(verifier, _, _)) => {
+                                Some(member::ServiceIdentity::Journal(verifier, _, _, _)) => {
                                     Some(verifier)
                                 }
                                 _ => None,
@@ -548,6 +576,7 @@ impl SecurityAudit {
         } else {
             None
         };
+        let mut local_participant = None;
         let journal_digest = if let Some(journal) = journal {
             let read = LocalRecoveryKeyRead {
                 authority: RecoveryInventoryAuthority::Operator(context),
@@ -557,6 +586,10 @@ impl SecurityAudit {
                 token,
             };
             let rows = read.journal_rows(journal, target_checkpoints)?;
+            local_participant = Some(TargetWriterParticipant {
+                verifier: journal.key_inventory_owner().0.node.verifier.clone(),
+                catalog: rows.catalog,
+            });
             if member_inventories
                 .as_ref()
                 .is_some_and(|peers| peers.catalogs.contains(&rows.catalog))
@@ -584,6 +617,28 @@ impl SecurityAudit {
         } else {
             None
         };
+        if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
+            for participant in &state.target_journal_writers {
+                token.check()?;
+                let id = participant.verifier.node_id;
+                let reported = if id == local {
+                    local_participant.as_ref() == Some(participant)
+                } else {
+                    member_inventories.as_ref().is_some_and(|members| {
+                        matches!(members.reported.get(&id),
+                            Some(member::ServiceIdentity::Journal(verifier, catalog, _, _))
+                            if verifier == &participant.verifier && catalog == &participant.catalog)
+                    })
+                };
+                if !reported {
+                    add_missing(
+                        &mut missing,
+                        &mut truncated,
+                        MissingKeyDependency::MemberUnreported { node_id: id },
+                    );
+                }
+            }
+        }
         let local_digest = if matches!(request.scope, KeyRetentionScope::LocalRecovery {})
             && let Some(owner) = local_recovery
         {
@@ -669,6 +724,6 @@ impl SecurityAudit {
             revision,
             membership_epoch,
         }
-        .page(request, page_limit, false)
+        .page(request, page_limit, probe)
     }
 }

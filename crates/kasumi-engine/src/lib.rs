@@ -96,7 +96,7 @@ pub use service::{
     Database, LocalRecoveryCheckpoint, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory,
     LocalRecoveryKeyRead, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
     RemoteDataCatalogReader, ResponseFence, RetiredCustody, RetirementResponseFence, SignerCatalog,
-    TargetCheckpointInventory, TargetCheckpointSource, TargetJournalExclusion,
+    TargetCheckpointInventory, TargetCheckpointSource, TargetJournalExclusion, TargetWriterNetwork,
     VerifiedBackupSource,
 };
 pub use state::{
@@ -157,8 +157,8 @@ impl EncodedResponseFence for RetirementResponseFence<'_> {
 
 mod target_journal;
 pub use target_journal::{
-    AcceptedInitialDispatchPrebind, InitialDispatchReservation, InitialDispatchStatus,
-    InitialInitializePermit, MaterializationFile, MaterializationNode,
+    AcceptedInitialDispatchPrebind, CurrentTargetJournalWriter, InitialDispatchReservation,
+    InitialDispatchStatus, InitialInitializePermit, MaterializationFile, MaterializationNode,
     ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetCleanup, TargetCleanupStage,
     TargetFileBinding, TargetJournal, TargetJournalInstallation, TargetJournalIntent,
     TargetOwnerDrain, TargetWriterRead, VerifiedInitialMembership,

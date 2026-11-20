@@ -1058,6 +1058,89 @@ impl TargetRecoveryRuntime {
         Ok(())
     }
 
+    async fn observe_current_writer(
+        &self,
+        context: &RequestContext,
+        bearer: &Zeroizing<String>,
+        operation: Option<&kasumi_engine::TargetOperation>,
+    ) -> Result<(
+        kasumi_engine::TargetWriterRead,
+        kasumi_types::SignedTargetWriterObservation,
+    )> {
+        context.authorization.check_live()?;
+        context
+            .authorization
+            .require_control(&self.installed.control_root.control_incarnation.to_string())?;
+        ensure!(
+            context.tenant == "__kasumi_control" && context.scopes.contains(&Action::Admin),
+            "current installed Control administrator required"
+        );
+        ensure!(
+            !self.closing.load(Ordering::Acquire),
+            "target writer has closed"
+        );
+        let original = match operation {
+            Some(op) => self.journal.begin_generation_writer_read(op)?,
+            None => self.journal.begin_writer_read()?,
+        };
+        let signed_challenge = self.signer.sign_writer_challenge(&original)?;
+        let credential = bearer.clone();
+        let mut control = kasumi_client::KasumiLifecyclePool::new(
+            self.installed.control_connections()?,
+            ControlTrust::install(self.installed.control_root.clone())?,
+            Arc::new(move || Ok(credential.clone())),
+        )?;
+        let observation = control
+            .observe_target_writer(&signed_challenge, std::time::Duration::from_secs(25))
+            .await?;
+        ensure!(
+            !self.closing.load(Ordering::Acquire),
+            "target writer has closed"
+        );
+        context.authorization.check_live()?;
+        Ok((original, observation))
+    }
+    pub(crate) async fn refresh_writer(
+        &self,
+        context: &RequestContext,
+        bearer: Zeroizing<String>,
+        query: &kasumi_types::RefreshTargetWriter,
+    ) -> Result<kasumi_types::TargetWriterReceipt> {
+        query.validate()?;
+        ensure!(
+            query.root == self.installed.control_root
+                && query.verifier == self.installed.node.verifier,
+            "writer refresh differs from installed target"
+        );
+        let _call = self
+            .calls
+            .clone()
+            .try_acquire_owned()
+            .context("target writer concurrency exhausted")?;
+        let (original, observation) = self.observe_current_writer(context, &bearer, None).await?;
+        let catalog = original.challenge().catalog;
+        let digest = observation.observation.retirements.target_writer_digest()?;
+        ensure!(
+            digest == query.state_sha256,
+            "committed writer state changed during synchronization"
+        );
+        context.authorization.check_live()?;
+        original.accept(&observation)?;
+        context.authorization.check_live().map_err(|e| {
+            anyhow::Error::from(
+                kasumi_types::Error::new(
+                    kasumi_types::ErrorCode::UnknownOutcome,
+                    "target writer release lost its original credential after persistence",
+                )
+                .with_physical_source(e.into()),
+            )
+        })?;
+        Ok(kasumi_types::TargetWriterReceipt {
+            request_sha256: kasumi_types::staged_digest(query)?.0,
+            catalog,
+            state_sha256: digest,
+        })
+    }
     pub fn control_root(&self) -> &ControlSigningRoot {
         &self.installed.control_root
     }
@@ -1381,14 +1464,25 @@ impl TargetRecoveryRuntime {
         checked?;
         let operation = phase.scope().begin_followup(admission)?;
         self.journal
-            .prepare_runtime(&operation, &request.step, &input_hash, |input| {
-                self.materialization_source(
-                    &template,
-                    intent.request.source_incarnation,
-                    input,
-                    true,
-                )
-            })
+            .prepare_runtime(
+                &operation,
+                &request.step,
+                &input_hash,
+                || async {
+                    let (original, signed) = self
+                        .observe_current_writer(&context, &bearer, Some(&operation))
+                        .await?;
+                    original.admit(&signed)
+                },
+                |input| {
+                    self.materialization_source(
+                        &template,
+                        intent.request.source_incarnation,
+                        input,
+                        true,
+                    )
+                },
+            )
             .await?;
         failure.accepted();
         // From this accepted durable identity onward, any local failure is an

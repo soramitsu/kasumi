@@ -10,6 +10,55 @@ pub struct TargetSigner {
     key: Ed25519KeyPair,
 }
 impl TargetSigner {
+    pub fn verify_writer_challenge(
+        input: &SignedTargetWriterChallenge,
+        node: &LifecycleNode,
+    ) -> anyhow::Result<()> {
+        let challenge = &input.challenge;
+        challenge.root.validate()?;
+        node.validate()?;
+        anyhow::ensure!(
+            input.signature.len() == 128
+                && node.verifier == challenge.verifier
+                && !challenge.catalog.is_nil()
+                && !challenge.nonce.is_nil(),
+            "physical writer challenge differs from its enrolled target"
+        );
+        ring::signature::UnparsedPublicKey::new(
+            &ring::signature::ED25519,
+            hex::decode(&node.attestation_public_key)?,
+        )
+        .verify(
+            &serde_json::to_vec(&("kasumi.target-writer-challenge.v1", challenge))?,
+            &hex::decode(&input.signature)?,
+        )
+        .map_err(|_| {
+            anyhow::anyhow!("target writer challenge signature differs from original enrollment")
+        })
+    }
+    /// Only the actual physical journal can construct the read passed here.
+    pub fn sign_writer_challenge(
+        &self,
+        read: &crate::TargetWriterRead,
+    ) -> anyhow::Result<SignedTargetWriterChallenge> {
+        let challenge = read.challenge();
+        anyhow::ensure!(
+            challenge.verifier == self.node.verifier,
+            "journal and target signer differ"
+        );
+        let signature = hex::encode(
+            self.key
+                .sign(&serde_json::to_vec(&(
+                    "kasumi.target-writer-challenge.v1",
+                    challenge,
+                ))?)
+                .as_ref(),
+        );
+        Ok(SignedTargetWriterChallenge {
+            challenge: challenge.clone(),
+            signature,
+        })
+    }
     pub fn sign_initialization_association(
         &self,
         proof: &crate::VerifiedTargetInitializationAssociation<'_>,

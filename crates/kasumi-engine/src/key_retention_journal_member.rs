@@ -8,27 +8,26 @@ use kasumi_raft::member_catalog::{
 pub(super) struct InventoryWindowSelection<'a> {
     pub(super) limit: u16,
     after: Option<&'a KeyRetentionEntry>,
+    from_identity: Option<&'a KeyIdentityRef>,
 }
 impl<'a> InventoryWindowSelection<'a> {
     pub(super) fn from_page(request: &'a ReadKeyRetentionRequest) -> Self {
         Self {
             limit: request.limit,
             after: request.cursor.as_ref().map(|cursor| &cursor.after),
+            from_identity: None,
         }
     }
     fn from_member(request: &'a MemberCatalogRequest) -> Result<Self> {
-        let after = match &request.start {
-            CatalogStart::First => None,
-            CatalogStart::After { entry } => Some(entry),
-            CatalogStart::Identity { .. } => {
-                return Err(unavailable(
-                    "target journal requires an ordered public page",
-                ));
-            }
+        let (after, from_identity) = match &request.start {
+            CatalogStart::First => (None, None),
+            CatalogStart::After { entry } => (Some(entry), None),
+            CatalogStart::Identity { identity } => (None, Some(identity)),
         };
         Ok(Self {
             limit: request.limit,
             after,
+            from_identity,
         })
     }
     pub(super) fn consider(
@@ -37,7 +36,11 @@ impl<'a> InventoryWindowSelection<'a> {
         entry: KeyRetentionEntry,
     ) -> Result<()> {
         entry.validate()?;
-        if self.after.is_none_or(|start| entry > *start) {
+        if self.after.is_none_or(|start| entry > *start)
+            && self.from_identity.is_none_or(|from| {
+                (&entry.key.provider, &entry.key.key_ref) >= (&from.provider, &from.key_ref)
+            })
+        {
             entries.insert(entry);
             if entries.len() > usize::from(self.limit) + 1 {
                 entries.pop_last();
@@ -383,6 +386,7 @@ impl ExcludedJournal {
         .map_err(|error| Error::from_physical_source(error.into()))?;
         let report = MemberJournalReport {
             excluded_by_enrollment: Some(enrollment),
+            writer_state_sha256: None,
             request_sha256: staged_digest(request)?.0,
             verifier: self.verifier.clone(),
             catalog,
@@ -471,6 +475,11 @@ impl ActiveJournal {
         )?;
         let report = MemberJournalReport {
             excluded_by_enrollment: None,
+            writer_state_sha256: Some(
+                self.journal
+                    .writer_state_sha256()
+                    .map_err(Error::from_physical_source)?,
+            ),
             request_sha256: staged_digest(request)?.0,
             verifier: self.journal.key_inventory_owner().0.node.verifier.clone(),
             catalog: rows.catalog,
@@ -486,6 +495,30 @@ impl ActiveJournal {
     }
 }
 
+/// Installed, writable original recovery routes. Physical observations use the
+/// separate read-only service census to confirm which journals actually fenced.
+#[async_trait::async_trait]
+pub trait TargetWriterNetwork: Send + Sync {
+    fn verify_participant(&self, challenge: &SignedTargetWriterChallenge) -> anyhow::Result<()>;
+    async fn synchronize(
+        &self,
+        context: &RequestContext,
+        state_sha256: &str,
+    ) -> anyhow::Result<BTreeSet<TargetWriterParticipant>>;
+}
+impl Database {
+    pub fn install_target_writer_network(
+        &self,
+        network: std::sync::Weak<dyn TargetWriterNetwork>,
+    ) -> Result<()> {
+        if self.store.tenant() != crate::control::CONTROL_TENANT {
+            return Err(unavailable("writer network requires installed Control"));
+        }
+        self.target_writer_network
+            .set(network)
+            .map_err(|_| unavailable("writer network already installed"))
+    }
+}
 impl Database {
     /// A dedicated Control role may prove that its original encrypted enrollment
     /// excludes a target. Every physical read authenticates that source again.

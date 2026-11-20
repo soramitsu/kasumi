@@ -73,7 +73,7 @@ pub use key_retention::{
     AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryCheckpoint,
     LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, LocalRecoveryKeyRead,
     RemoteDataCatalogReader, SignerCatalog, TargetCheckpointInventory, TargetCheckpointSource,
-    TargetJournalExclusion,
+    TargetJournalExclusion, TargetWriterNetwork,
 };
 
 #[path = "point_read.rs"]
@@ -1205,6 +1205,8 @@ pub struct Database {
     journal_exclusion: std::sync::OnceLock<Arc<TargetJournalExclusion>>,
     target_checkpoint_keys: std::sync::OnceLock<Arc<dyn TargetCheckpointInventory>>,
     target_keys: std::sync::OnceLock<std::sync::Weak<crate::TargetJournal>>,
+    target_writer_network:
+        std::sync::OnceLock<std::sync::Weak<dyn key_retention::TargetWriterNetwork>>,
     archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
@@ -1656,6 +1658,7 @@ impl Database {
             signer_keys: Default::default(),
             remote_data_catalog_reader: Default::default(),
             target_keys: Default::default(),
+            target_writer_network: Default::default(),
             journal_exclusion: Default::default(),
             target_checkpoint_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
@@ -2361,6 +2364,9 @@ impl Database {
                 | Operation::RetireSource(_)
                 | Operation::AbortRetirement(_)
                 | Operation::BeginKeyRetirement(_)
+                | Operation::RegisterTargetJournalWriter(_)
+                | Operation::CompleteTargetJournalRetirement(_)
+                | Operation::AbortTargetJournalRetirement(_)
                 | Operation::CompleteKeyRetirement(_)
                 | Operation::AbortKeyRetirement(_)
         ) {

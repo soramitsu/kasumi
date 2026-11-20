@@ -76,7 +76,9 @@ pub(super) async fn record_follower_projection(
     input_digest: &str,
 ) {
     let (journal, store, node) = journal(f, follower.id, &journal_path(f, follower.id), true).await;
-    journal.prepare(&follower.operation, input_digest).unwrap();
+    journal
+        .prepare_observed(&follower.operation, input_digest, &f.writer(&journal))
+        .unwrap();
     let projection = journal
         .record_activation(&follower.operation, proof, &f.signers[&follower.id])
         .await

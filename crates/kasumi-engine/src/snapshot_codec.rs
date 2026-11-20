@@ -483,6 +483,8 @@ pub(crate) fn metadata_with_shared(
         retirement_bytes: state.retirement_bytes,
         audit_retention: state.audit_retention.clone(),
         key_retirements: state.key_retirements.clone(),
+        target_journal_retirements: state.target_journal_retirements.clone(),
+        target_journal_writers: state.target_journal_writers.clone(),
         audits: Default::default(),
     }
 }
@@ -980,11 +982,7 @@ fn visit_image<E: From<anyhow::Error>>(
                         intent_record_limit = installed.saturating_add(256).min(head.encoded_bytes);
                     }
                     header.audit_retention.validate()?;
-                    header.key_retirements.validate_scope(
-                        &header.tenant,
-                        crate::control::CONTROL_TENANT,
-                        header.revision,
-                    )?;
+                    header.validate_key_retirement_scopes(crate::control::CONTROL_TENANT)?;
                     audit = Some(header.audit_retention.pruned_before);
                     audit_next = header.audit_retention.next_sequence;
                 }

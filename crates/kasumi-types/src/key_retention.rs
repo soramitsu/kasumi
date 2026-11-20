@@ -853,6 +853,75 @@ pub struct KeyRetirementState {
     pub aborted: Vec<AbortedKeyRetirement>,
 }
 
+/// A physical catalog stays registered after its host leaves the current
+/// topology. Retiring keys requires accounting for every original writer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterParticipant {
+    pub verifier: crate::TrustVerifierIdentity,
+    pub catalog: Uuid,
+}
+pub(crate) fn writer_participants<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<TargetWriterParticipant>, D::Error> {
+    ascending(d, 1024, "registered target writers")
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedTargetWriterChallenge {
+    pub challenge: TargetWriterChallenge,
+    pub signature: String,
+}
+impl TargetWriterChallenge {
+    pub fn participant(&self) -> TargetWriterParticipant {
+        TargetWriterParticipant {
+            verifier: self.verifier.clone(),
+            catalog: self.catalog,
+        }
+    }
+}
+/// Refresh one enrolled target at the expected globally committed state. The
+/// target obtains and checks that state independently from its original Control.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct RefreshTargetWriter {
+    pub root: crate::ControlSigningRoot,
+    pub verifier: crate::TrustVerifierIdentity,
+    pub state_sha256: String,
+    pub nonce: uuid::Uuid,
+}
+impl RefreshTargetWriter {
+    pub fn validate(&self) -> Result<()> {
+        self.root.validate()?;
+        self.verifier.validate()?;
+        validate_sha256(&self.state_sha256)?;
+        if self.nonce.is_nil() {
+            return Err(invalid("target writer refresh nonce is absent"));
+        }
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterReceipt {
+    pub request_sha256: String,
+    pub catalog: uuid::Uuid,
+    pub state_sha256: String,
+}
+impl TargetWriterReceipt {
+    pub fn validate_for(&self, request: &RefreshTargetWriter) -> Result<()> {
+        request.validate()?;
+        if self.catalog.is_nil()
+            || self.state_sha256 != request.state_sha256
+            || self.request_sha256 != staged_digest(request)?.0
+        {
+            return Err(invalid(
+                "target writer receipt differs from the original request",
+            ));
+        }
+        Ok(())
+    }
+}
 /// The physical target requests its own current committed Control writer
 /// state. The nonce is generated and retained by that journal before the read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -861,6 +930,8 @@ pub struct TargetWriterChallenge {
     pub root: crate::ControlSigningRoot,
     pub verifier: crate::TrustVerifierIdentity,
     pub catalog: uuid::Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_command: Option<Uuid>,
     pub nonce: uuid::Uuid,
 }
 
@@ -919,6 +990,22 @@ impl KeyRetirementState {
         })
     }
 
+    pub fn target_writer_digest(&self) -> Result<String> {
+        self.validate_journal_scope(self.last_transition_revision())?;
+        Ok(staged_digest(&("kasumi.target-writer-position.v1", self))?.0)
+    }
+
+    /// Latest change of this retirement state. Unrelated Control observations
+    /// do not change the physical journal's durable dependency position.
+    pub fn last_transition_revision(&self) -> u64 {
+        self.fence
+            .iter()
+            .map(|f| f.fence_revision)
+            .chain(self.completed.iter().map(|r| r.completed_revision))
+            .chain(self.aborted.iter().map(|r| r.aborted_revision))
+            .max()
+            .unwrap_or(0)
+    }
     pub fn validate_scope(&self, tenant: &str, control_tenant: &str, revision: u64) -> Result<()> {
         self.validate_owner(revision, |scope| match scope {
             KeyRetentionScope::Tenant { tenant: name } => {
@@ -1242,6 +1329,57 @@ impl<I: Iterator<Item = T>, T: Serialize> Serialize for Each<I> {
 }
 
 impl crate::TenantState {
+    /// The applied topology and recovery operations select the possible
+    /// physical writers in addition to the ordinary Control dependency set.
+    pub fn journal_writer_dependency_sha256(&self) -> Result<String> {
+        let topology = self
+            .collections
+            .get("topology")
+            .and_then(|c| c.documents.get("current"))
+            .ok_or_else(|| Error::new(ErrorCode::Unavailable, "writer topology is absent"))?;
+        let installation = self.lifecycle_control.as_ref().ok_or_else(|| {
+            Error::new(
+                ErrorCode::Unavailable,
+                "writer Control installation is absent",
+            )
+        })?;
+        Ok(staged_digest(&(
+            "kasumi.target-writer-dependencies.v1",
+            self.key_dependency_sha256()?,
+            &self.target_journal_writers,
+            topology.version(),
+            &installation.installation,
+            &self.target_journal_retirements,
+        ))?
+        .0)
+    }
+    pub fn validate_key_retirement_scopes(&self, control_tenant: &str) -> Result<()> {
+        validate_ascending(
+            &self.target_journal_writers,
+            1024,
+            "registered target writers",
+        )?;
+        if self.tenant != control_tenant && !self.target_journal_writers.is_empty() {
+            return Err(invalid("target writer registrations belong to Control"));
+        }
+        let mut catalogs = BTreeSet::new();
+        for participant in &self.target_journal_writers {
+            participant.verifier.validate()?;
+            if participant.catalog.is_nil() || !catalogs.insert(participant.catalog) {
+                return Err(invalid("duplicated or missing physical target catalog"));
+            }
+        }
+        self.key_retirements
+            .validate_scope(&self.tenant, control_tenant, self.revision)?;
+        if self.tenant != control_tenant && !self.target_journal_retirements.is_empty() {
+            return Err(invalid(
+                "target journal retirement belongs to the installed Control",
+            ));
+        }
+        self.target_journal_retirements
+            .validate_journal_scope(self.revision)
+    }
+
     /// Digest of every replicated record of this state that can name a
     /// wrapping key version: the authority epoch, the audit archive chain,
     /// retained history archives, recovery operations and, for Control, the
