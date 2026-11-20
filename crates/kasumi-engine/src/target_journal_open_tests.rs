@@ -2717,8 +2717,8 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
             challenge: challenge.clone(),
             observed_term: 1,
             observed_revision,
-            membership_epoch: 3,
-            observed_policy_epoch: 2,
+            membership_epoch: if state.is_empty() { 0 } else { 3 },
+            observed_policy_epoch: if state.is_empty() { 0 } else { 2 },
             retirements: state.clone(),
         };
         let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation))?;
