@@ -202,6 +202,29 @@ impl EncryptedTableBatch {
     }
 
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
+        self.stage(key, value, |table| {
+            ensure!(table.insert(key, value)?.is_none(), "duplicate staged key");
+            Ok(())
+        })
+    }
+
+    /// Store a content-addressed row once. The private writer's point read
+    /// covers pending and committed rows, and stays valid through the put.
+    /// An exact duplicate consumes no additional transaction capacity.
+    pub fn insert_content(&mut self, key: &[u8], value: &[u8]) -> Result<bool> {
+        if self.contains_exact(key, value)? {
+            return Ok(false);
+        }
+        self.stage(key, value, |table| Ok(table.put(key, value)?))?;
+        Ok(true)
+    }
+
+    fn stage(
+        &mut self,
+        key: &[u8],
+        value: &[u8],
+        write: impl FnOnce(&mut kasumi_kv::Table<&'static [u8], &'static [u8]>) -> Result<()>,
+    ) -> Result<()> {
         ensure!(!self.failed, "staging batch previously failed");
         self.failed = true;
         ensure!(
@@ -217,14 +240,7 @@ impl EncryptedTableBatch {
             bytes <= Self::MAX_BYTES && self.entries < self.entry_limit,
             "staging batch capacity exceeded"
         );
-        ensure!(
-            self.table
-                .as_mut()
-                .expect("live staging batch table")
-                .insert(key, value)?
-                .is_none(),
-            "duplicate staged key"
-        );
+        write(self.table.as_mut().expect("live staging batch table"))?;
         self.bytes = bytes;
         self.entries += 1;
         self.failed = false;

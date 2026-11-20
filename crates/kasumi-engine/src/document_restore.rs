@@ -363,14 +363,20 @@ impl ObjectBatch {
             .len()
             .checked_add(bytes.len())
             .context("document staging batch overflow")?;
-        if let Some(batch) = &self.batch {
+        if let Some(batch) = &self.batch
+            && !batch.has_capacity_for(row_bytes)
+        {
+            // Keep a full transaction private when the object is already in
+            // its view. Only a genuinely new object needs the next writer.
             if batch.contains_exact(&key, bytes)? {
                 return Ok(());
             }
-            if !batch.has_capacity_for(row_bytes) {
-                self.flush()?;
-            }
-        } else if let Some(previous) = table.get(&key)? {
+            self.flush()?;
+        }
+        // A committed duplicate alone does not need another private writer.
+        if self.batch.is_none()
+            && let Some(previous) = table.get(&key)?
+        {
             ensure!(
                 previous.as_bytes() == bytes,
                 "document restore content-address collision"
@@ -380,6 +386,17 @@ impl ObjectBatch {
         // Keep the single-row corridor for large manifests.
         if row_bytes > EncryptedTableBatch::MAX_BYTES {
             return table.insert(&key, bytes);
+        }
+        if self.batch.is_none() {
+            self.batch = Some(table.begin_index_batch()?);
+        }
+        if !self
+            .batch
+            .as_mut()
+            .expect("opened object batch")
+            .insert_content(&key, bytes)?
+        {
+            return Ok(());
         }
         if self.known.len() == EncryptedTableBatch::MAX_ENTRIES
             || self
@@ -397,13 +414,6 @@ impl ObjectBatch {
             .and_then(|value| value.checked_add(2048))
             .context("document pending row overflow")?;
         let grant = memory.clone().reserve_document_decode(retained)?;
-        if self.batch.is_none() {
-            self.batch = Some(table.begin_index_batch()?);
-        }
-        self.batch
-            .as_mut()
-            .expect("opened object batch")
-            .insert(&key, bytes)?;
         self.known.push(KnownObject {
             key,
             value: bytes.to_vec(),
