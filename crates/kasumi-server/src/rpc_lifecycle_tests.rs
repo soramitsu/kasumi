@@ -502,6 +502,23 @@ async fn pinned_native_control_signs_actual_quorum_commitments_and_rejects_wrong
                 .await
                 .is_err()
         );
+        let credential = routing.clone();
+        let mut pool = kasumi_client::KasumiLifecyclePool::new(
+            BTreeMap::from([(leader.raft_group().metrics().id, config.clone())]),
+            ControlTrust::install(root.clone()).unwrap(),
+            Arc::new(move || Ok(zeroize::Zeroizing::new(credential.clone()))),
+        )
+        .unwrap();
+        let confirmed = pool
+            .observe_released_topology("router", 5000, Duration::from_secs(5))
+            .await
+            .unwrap();
+        assert_eq!(confirmed.observation().unwrap().root, root);
+        assert_eq!(
+            confirmed.release().unwrap().not_after_ms,
+            confirmed.observation().unwrap().not_after_ms
+        );
+        drop(confirmed);
         let current = client
             .observe_topology(&routing, "router", 5000)
             .await

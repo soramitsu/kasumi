@@ -123,6 +123,26 @@ impl KasumiLifecyclePool {
             })
             .await
     }
+    /// Confirm the observed topology against the current Control quorum on the
+    /// same pinned connection, with the same bearer and original deadline.
+    pub async fn observe_released_topology(
+        &mut self,
+        principal: &str,
+        maximum_lifetime_ms: u64,
+        timeout: Duration,
+    ) -> std::result::Result<crate::CurrentControlTopologyRelease, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let principal = principal.to_owned();
+                Box::pin(async move {
+                    let original = client
+                        .observe_topology(bearer, &principal, maximum_lifetime_ms)
+                        .await?;
+                    client.release_topology(bearer, &original).await
+                })
+            })
+            .await
+    }
     pub async fn read_status(
         &mut self,
         request: &ReadLifecycleStatus,

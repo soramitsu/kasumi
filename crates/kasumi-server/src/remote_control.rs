@@ -499,6 +499,46 @@ impl RemoteControl {
         result
     }
 
+    /// Read the dedicated Control quorum at learner admission. A previously
+    /// cached route can continue serving reads through an outage.
+    pub(crate) async fn approved_learner(
+        &self,
+        tenant: &str,
+        incarnation: &str,
+        local_voter: u64,
+        peer: &crate::runtime::ReplicaConfig,
+    ) -> Result<kasumi_raft::BasicNode> {
+        let _registration = self.fence.begin().ok_or(Failure::Closed)?;
+        let mut closed = self.closed.subscribe();
+        ensure!(!*closed.borrow_and_update(), Failure::Closed);
+        // Release validation retains its original signed response while the
+        // request and the confirming response are encoded and verified.
+        let _work = self.admission.reserve(2 * OBSERVATION_CHARGE, None)?;
+        let read = async {
+            let mut pool = self.pool.lock().await;
+            pool.as_mut()
+                .ok_or(Failure::Closed)?
+                .observe_released_topology(
+                    &self.principal,
+                    MAX_CONTROL_TOPOLOGY_LIFETIME_MS,
+                    self.timeout,
+                )
+                .await
+                .map_err(|error| Failure::of(&error))
+        };
+        let confirmed = tokio::select! {
+            biased;
+            _ = closed.wait_for(|closed| *closed) => return Err(Failure::Closed.into()),
+            result = tokio::time::timeout(self.timeout, read) => result.map_err(|_| Failure::Expired)??,
+        };
+        let observation = confirmed.observation()?;
+        ensure!(observation.root == self.root, Failure::InvalidResponse);
+        let topology = &observation.topology.topology;
+        let learner = approved_learner(topology, tenant, incarnation, local_voter, peer)?;
+        confirmed.check()?;
+        Ok(learner)
+    }
+
     async fn observe(&self) -> Result<Arc<RemoteTopology>, Failure> {
         let mut closed = self.closed.subscribe();
         if *closed.borrow_and_update() {
@@ -661,4 +701,39 @@ impl RemoteControl {
     pub(crate) fn active_observations(&self) -> usize {
         self.fence.active()
     }
+}
+
+fn approved_learner(
+    topology: &ControlTopology,
+    tenant: &str,
+    incarnation: &str,
+    local_voter: u64,
+    peer: &crate::runtime::ReplicaConfig,
+) -> Result<kasumi_raft::BasicNode> {
+    let route = topology
+        .tenants
+        .get(tenant)
+        .context("tenant has no approved Control route")?;
+    ensure!(
+        route.incarnation == incarnation
+            && route.mode == kasumi_types::control_topology::DeploymentMode::Replicated
+            && route.voters.contains(&local_voter),
+        "learner request differs from the approved Data tenant or voter"
+    );
+    let node = topology
+        .nodes
+        .get(&peer.node_id)
+        .context("learner absent from approved Control metadata")?;
+    ensure!(
+        crate::runtime::origin(&node.endpoint)?.origin()
+            == crate::runtime::origin(&peer.endpoint)?.origin()
+            && node.failure_domain == peer.failure_domain
+            && node.certificate_pins.len() == peer.certificate_pins.len()
+            && peer
+                .certificate_pins
+                .iter()
+                .all(|pin| node.certificate_pins.contains(&pin.to_ascii_lowercase())),
+        "learner transport differs from the approved Control route"
+    );
+    Ok(kasumi_raft::BasicNode::new(node.endpoint.clone()))
 }

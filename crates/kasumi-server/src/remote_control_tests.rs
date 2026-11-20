@@ -96,3 +96,52 @@ fn remote_topology_keeps_the_last_verified_snapshot_and_its_readers() {
         Err(Failure::Closed)
     ));
 }
+
+#[test]
+fn a_data_learner_needs_its_approved_route_and_the_calling_voter() {
+    use kasumi_types::control_topology::{ControlNode, DeploymentMode};
+
+    let incarnation = uuid::Uuid::new_v4().to_string();
+    let peer = crate::runtime::ReplicaConfig {
+        node_id: 4,
+        endpoint: "https://learner.test:8443".into(),
+        failure_domain: "fourth".into(),
+        certificate_pins: vec!["ab".repeat(32)],
+    };
+    let mut topology = ControlTopology::default();
+    topology.tenants.insert(
+        "tenant".into(),
+        TenantRoute {
+            incarnation: incarnation.clone(),
+            mode: DeploymentMode::Replicated,
+            voters: BTreeSet::from([1, 2, 3]),
+        },
+    );
+    topology.nodes.insert(
+        peer.node_id,
+        ControlNode {
+            endpoint: peer.endpoint.clone(),
+            failure_domain: peer.failure_domain.clone(),
+            certificate_pins: peer.certificate_pins.iter().cloned().collect(),
+        },
+    );
+    assert_eq!(
+        approved_learner(&topology, "tenant", &incarnation, 1, &peer).unwrap(),
+        kasumi_raft::BasicNode::new(peer.endpoint.clone())
+    );
+    assert!(approved_learner(&topology, "tenant", &incarnation, 4, &peer).is_err());
+    assert!(approved_learner(&topology, "other", &incarnation, 1, &peer).is_err());
+    assert!(approved_learner(&topology, "tenant", "other", 1, &peer).is_err());
+    let mut equivalent = peer.clone();
+    equivalent.certificate_pins[0].make_ascii_uppercase();
+    equivalent.endpoint.push('/');
+    assert!(approved_learner(&topology, "tenant", &incarnation, 1, &equivalent).is_ok());
+    let mut replaced = peer.clone();
+    replaced.certificate_pins = vec!["cd".repeat(32)];
+    assert!(approved_learner(&topology, "tenant", &incarnation, 1, &replaced).is_err());
+    let mut moved = peer.clone();
+    moved.endpoint = "https://other.test:8443".into();
+    assert!(approved_learner(&topology, "tenant", &incarnation, 1, &moved).is_err());
+    topology.nodes.remove(&peer.node_id);
+    assert!(approved_learner(&topology, "tenant", &incarnation, 1, &peer).is_err());
+}

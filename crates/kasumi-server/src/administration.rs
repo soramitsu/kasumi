@@ -1238,18 +1238,19 @@ impl Administration {
                         "Raft membership requires replicated mode"
                     )
                 );
-                let topology = self.committed_topology()?;
-                let node = topology
-                    .nodes
-                    .get(&node_id)
-                    .context("learner absent from approved control metadata")?;
-                ensure!(
-                    self.config
-                        .replication
-                        .as_ref()
-                        .is_some_and(|r| r.peers.iter().any(|p| p.node_id == node_id)),
-                    "learner requires configured pinned transport"
-                );
+                let replication = self
+                    .config
+                    .replication
+                    .as_ref()
+                    .context("replication missing")?;
+                let peer = replication
+                    .peers
+                    .iter()
+                    .find(|peer| peer.node_id == node_id)
+                    .context("learner requires configured pinned transport")?
+                    .clone();
+                let local_voter = replication.node_id;
+                let access = self.control.clone();
                 self.event(
                     context,
                     SecurityEventKind::Membership,
@@ -1267,11 +1268,36 @@ impl Administration {
                     .await?;
                 let selected = source.clone();
                 let original_context = context.clone();
-                let learner = kasumi_raft::BasicNode::new(node.endpoint.clone());
                 self.command_jobs
                     .execute(
                         tokio::time::Instant::now() + std::time::Duration::from_secs(30),
                         async move {
+                            let learner = match access {
+                                ControlAccess::Local(control) => {
+                                    let topology = ControlPlane::local_topology(&control)?;
+                                    let node =
+                                        topology.topology.nodes.get(&node_id).context(
+                                            "learner absent from approved control metadata",
+                                        )?;
+                                    kasumi_raft::BasicNode::new(node.endpoint.clone())
+                                }
+                                ControlAccess::Remote(remote) => {
+                                    let incarnation = selected
+                                        .database
+                                        .engine()
+                                        .generation()?
+                                        .incarnation()
+                                        .to_owned();
+                                    remote
+                                        .approved_learner(
+                                            &original_context.tenant,
+                                            &incarnation,
+                                            local_voter,
+                                            &peer,
+                                        )
+                                        .await?
+                                }
+                            };
                             // The child may wait behind a prior accepted command
                             // after this caller has disappeared. Recheck original
                             // authority immediately before Raft dispatch.
