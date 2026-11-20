@@ -806,6 +806,16 @@ impl RegisteredNodeOpening {
             TypedOwnerLookup::Missing => OpeningLookup::Missing,
         }
     }
+    /// Sample native handles without delaying an operation that holds the
+    /// opening. A missing observation cannot establish that close is complete.
+    pub(crate) fn active_native_handles(&self) -> Option<usize> {
+        let state = self.registration.owner().state.try_lock()?;
+        state
+            .engine
+            .database()
+            .map(kasumi_kv::Database::active_transactions)
+    }
+
     /// Dispose actual native owner, keeping the composite node allocation live.
     pub(crate) fn dispose_native(&self) -> io::Result<DatabaseOpenSettlement> {
         let owner = self.registration.owner();
