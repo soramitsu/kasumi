@@ -42,6 +42,27 @@ impl Fixture {
         bootstrap: Option<&SnapshotImage>,
         memory: Option<Arc<dyn crate::admission::MemorySource>>,
     ) -> crate::test_fixture_failure::FixtureResult<Self> {
+        Self::with_admission(node_id, bootstrap, |config| match memory {
+            None => NodeAdmission::with_fixed_memory(config, 2 << 30, 0),
+            Some(memory) => NodeAdmission::create(
+                AdmissionConfig {
+                    sample_interval_ms: 10,
+                    max_sample_age_ms: 10,
+                    ..config
+                },
+                1 << 30,
+                memory,
+                Arc::new(kasumi_clock::SystemLeaseClock),
+            ),
+        })
+        .await
+    }
+
+    async fn with_admission(
+        node_id: u64,
+        bootstrap: Option<&SnapshotImage>,
+        governor: impl FnOnce(AdmissionConfig) -> anyhow::Result<Arc<NodeAdmission>>,
+    ) -> crate::test_fixture_failure::FixtureResult<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let (mut persistent, mut scratch) =
             crate::test_utils::fixture_disk_configs(directory.path())?;
@@ -56,19 +77,7 @@ impl Fixture {
             &scratch,
         )?;
         let budget = config.max_inflight_bytes.unwrap();
-        let admission = match memory {
-            None => NodeAdmission::with_fixed_memory(config, 2 << 30, 0)?,
-            Some(memory) => NodeAdmission::create(
-                AdmissionConfig {
-                    sample_interval_ms: 10,
-                    max_sample_age_ms: 10,
-                    ..config
-                },
-                1 << 30,
-                memory,
-                Arc::new(kasumi_clock::SystemLeaseClock),
-            )?,
-        };
+        let admission = governor(config)?;
         let storage =
             crate::test_utils::FixtureStorage::with_admission(&persistent, &scratch, admission)?;
         let node = storage.create_new(
@@ -3021,7 +3030,8 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         Ok(ids)
     }
 
-    let mut source = Fixture::new().await?;
+    // Idle warmup needs ongoing RSS samples after the last foreground write.
+    let mut source = Fixture::with_admission(1, None, NodeAdmission::new_fixture).await?;
     let source_audit = audit(&source.node, &source.storage.admission, false).await?;
     crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
     let engine = Arc::new(TenantEngine::from_bootstrap(
@@ -3114,7 +3124,11 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         }
     })
     .await
-    .context("selected text warmup did not complete before the first search")?;
+    .with_context(|| format!(
+        "selected text warmup did not complete before the first search: expected {revision}, observed {:?}, sample usable = {}, pressure = {}",
+        db.text_warmup_status(), source.storage.admission.snapshot().sample_usable,
+        source.storage.admission.snapshot().pressured
+    ))?;
     let before_search = source
         .storage
         .admission
