@@ -65,7 +65,7 @@ impl KasumiTargetClient {
         bearer: &str,
         query: &RefreshTargetWriter,
     ) -> std::result::Result<TargetWriterReceipt, ClientError> {
-        query.validate()?;
+        query.validate().map_err(anyhow::Error::from)?;
         if query.verifier.node_id != self.node_id || query.root != *self.control.root() {
             return Err(ClientError::Authorization);
         }
@@ -82,7 +82,7 @@ impl KasumiTargetClient {
             .await?
             .into_inner();
         let receipt: TargetWriterReceipt = serde_json::from_slice(&reply.response_json)?;
-        receipt.validate_for(query)?;
+        receipt.validate_for(query).map_err(anyhow::Error::from)?;
         Ok(receipt)
     }
     pub async fn connect(
