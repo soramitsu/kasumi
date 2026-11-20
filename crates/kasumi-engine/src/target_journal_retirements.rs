@@ -46,7 +46,20 @@ impl WriterRetirements {
                     | KeyRetirementStatus::Aborted { fence, .. },
                 ) => fence == *original,
                 Some(KeyRetirementStatus::Completed { record }) => record.fence == *original,
-                None => false,
+                None => {
+                    // Control retains one permanent floor per identity and its
+                    // eight newest aborts. A signed newer state can outlive
+                    // this exact record only through one of those compactions.
+                    next.state.completed.iter().any(|record| {
+                        record.fence.request.identity == original.request.identity
+                            && record.fence.request.retire_below_version
+                                >= original.request.retire_below_version
+                            && record.completed_revision > original.fence_revision
+                    }) || (next.state.aborted.len() == kasumi_types::MAX_KEY_RETIREMENT_ABORTS
+                        && next.state.aborted.first().is_some_and(|oldest| {
+                            oldest.fence.fence_revision > original.fence_revision
+                        }))
+                }
             };
             ensure!(
                 held,

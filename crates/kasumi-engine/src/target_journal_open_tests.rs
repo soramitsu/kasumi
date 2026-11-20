@@ -2826,5 +2826,41 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
     let final_journal = f.reopen()?;
     assert!(check(&final_journal, 2).is_err());
     check(&final_journal, 3)?;
+    let mut revision = 6;
+    for number in 2..=(2 + kasumi_types::MAX_KEY_RETIREMENT_ABORTS) {
+        let next_request = RetireKeyVersionsRequest {
+            retirement_id: number.to_string(),
+            retire_below_version: 4,
+            ..request.clone()
+        };
+        revision += 1;
+        state.begin(
+            &BeginKeyRetirement {
+                request: next_request.clone(),
+                membership_epoch: 3,
+                expected_dependency_sha256: "bb".repeat(32),
+            },
+            revision,
+        )?;
+        if number == 2 {
+            apply(&final_journal, revision, &state)?;
+        }
+        revision += 1;
+        state.abort(
+            &kasumi_types::AbortKeyRetirement {
+                retirement_id: next_request.retirement_id.clone(),
+                request_sha256: next_request.request_sha256()?,
+            },
+            revision,
+        )?;
+    }
+    assert!(state.status("2").is_none());
+    assert!(check(&final_journal, 3).is_err());
+    drop(final_journal);
+    let returned = f.reopen()?;
+    apply(&returned, revision, &state)?;
+    check(&returned, 3)?;
+    assert!(check(&returned, 2).is_err());
+
     Ok(())
 }
