@@ -131,12 +131,7 @@ impl Database {
                             workspace,
                         )))
                     };
-                    read().map_err(|_| {
-                        Error::new(
-                            ErrorCode::Corruption,
-                            "Control binding inventory read failed",
-                        )
-                    })
+                    read().map_err(Error::from_physical_source)
                 })
                 .await?;
             let Some((record, terminal, _row_workspace)) = row else {
