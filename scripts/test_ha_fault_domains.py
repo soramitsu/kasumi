@@ -448,15 +448,18 @@ class FaultFixture(test_domain_runs.DomainFixture):
                 plan["nodes"].append({"id": name, "role": role, "group": role,
                                       "config": str(installed / name / "config.json")})
                 roles[str(node_id)] = role
+            voters = [peer["node_id"] for peer in peers]
+            if role == "data":
+                spare_home, spare = self.node(installed, "data-spare", "data", 10, manifest, peers)
+                spare["replication"].update(peers=peers, initial_voters=voters)
+                (spare_home / "config.json").write_text(json.dumps(spare))
+                spare_route = {key: peers[-1][key] for key in ("endpoint", "certificate_pins", "failure_domain")}
             for home, config in configs:
                 config.update(fixture_control_placement(role))
-                config["replication"].update(peers=peers,
-                                             initial_voters=[peer["node_id"] for peer in peers])
+                if role == "control":
+                    config["control"]["remote_data"]["nodes"]["10"] = spare_route
+                config["replication"].update(peers=peers, initial_voters=voters)
                 (home / "config.json").write_text(json.dumps(config))
-        spare_peers = []
-        home, spare = self.node(installed, "data-spare", "data", 10, manifest, spare_peers)
-        spare["replication"].update(peers=spare_peers, initial_voters=[1, 2, 3])
-        (home / "config.json").write_text(json.dumps(spare))
         roles["10"] = "data"
         self.topology = installed / "topology.json"
         self.topology.write_text(json.dumps(plan))
@@ -515,6 +518,7 @@ class FaultFixture(test_domain_runs.DomainFixture):
         private(home / "admin-key.pem", b"stand-in private key\n")
         self.leaves[node_id] = hashlib.sha256(admin_der).hexdigest()
         peers.append({"node_id": node_id, "endpoint": f"https://127.0.0.1:{20000 + node_id}",
+                      "failure_domain": name,
                       "certificate_pins": [hashlib.sha256(der).hexdigest()]})
         config = {"mode": "replicated", "tenants": [], "target_recovery": None,
                   "database_path": str(home / "persistent/node.kv"),
@@ -723,6 +727,27 @@ class HaFaultTests(FaultFixture):
             self.run_faults("faults-staged")
         outcome = owned.read(self.root / "runs/faults-staged/outcome.json")
         self.assertEqual((outcome["status"], outcome["dispatch_started"]), ("failed", False))
+
+
+    def test_learner_requires_pinned_transport_and_control_approval_before_dispatch(self):
+        configs = {row["id"]: Path(row["config"]) for row in owned.read(self.topology)["nodes"]}
+        for label, message in (("transport", "installed pinned transport pool"),
+                               ("approval", "approved Control topology")):
+            originals = {name: path.read_bytes() for name, path in configs.items()}
+            with self.subTest(label=label):
+                for name, path in configs.items():
+                    config = json.loads(originals[name])
+                    if label == "transport" and name.startswith("data-"):
+                        config["replication"]["peers"].pop()
+                    if label == "approval" and name == "control-2":
+                        config["control"]["remote_data"]["nodes"]["10"]["endpoint"] += "/other"
+                    path.write_text(json.dumps(config))
+                with self.assertRaisesRegex(ValueError, message):
+                    self.run_faults("learner-" + label)
+                outcome = owned.read(self.root / "runs" / ("learner-" + label) / "outcome.json")
+                self.assertFalse(outcome["dispatch_started"])
+            for name, path in configs.items():
+                path.write_bytes(originals[name])
 
 
 class RecoveryFixture(FaultFixture):

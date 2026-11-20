@@ -14,6 +14,13 @@ with three processes per role and three distinct groups. Configuration paths
 select original installed product configurations; this is not an alternate
 product configuration decoder.
 
+The three original Data voters may install a larger pinned transport pool.
+For the HA fault run, give the spare learner and all three Data voters the
+same peer entries. Keep the three original IDs in `initial_voters`. On each
+Control voter, enroll the learner's endpoint, failure domain and leaf pins
+under its node ID in `control.remote_data.nodes`. The runner checks these
+inputs before it starts any processes.
+
 Inspection records original input hashes and the actual executable hashes.
 It rejects shared or overlapping persistent/scratch roots, symlink roots,
 storage outside the selected node's roots, shared database paths, substituted

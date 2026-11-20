@@ -93,7 +93,7 @@ def check_plan(plan):
     return plan
 
 
-def spare_member(spare, config, nodes, data_voters, leaf):
+def spare_member(spare, config, configs, nodes, data_voters, leaf):
     """The learner: a separately installed data process outside the nine."""
     require(spare["id"] not in {node["id"] for node in nodes}
             and re.fullmatch(r"[a-z][a-z0-9-]{0,63}", spare["id"]),
@@ -106,10 +106,24 @@ def spare_member(spare, config, nodes, data_voters, leaf):
             and node_id not in {node["node_id"] for node in nodes}
             and sorted(replication.get("initial_voters", [])) == data_voters
             and node_id not in data_voters, "spare must join the original data voters as a learner")
-    own = [peer for peer in replication.get("peers", []) if peer.get("node_id") == node_id]
-    require(len(own) == 1 and own[0].get("certificate_pins") == [leaf]
+    peers = topology.transport_roster("data", replication.get("peers"), replication["initial_voters"])
+    own = peers.get(node_id)
+    require(own is not None and own.get("certificate_pins") == [leaf]
             and leaf not in {node["certificate"]["leaf_sha256"] for node in nodes},
             "spare TLS identity is not its own distinct pinned leaf")
+    require(isinstance(own.get("failure_domain"), str) and own["failure_domain"]
+            and isinstance(own.get("endpoint"), str) and own["endpoint"],
+            "spare transport has no installed endpoint or failure domain")
+    route = {key: own[key] for key in ("endpoint", "certificate_pins", "failure_domain")}
+    for node in nodes:
+        installed = configs[node["id"]]
+        if node["role"] == "data":
+            data = installed["replication"]
+            require(topology.transport_roster("data", data["peers"], data["initial_voters"]) == peers,
+                    "spare and original Data voters must share the installed pinned transport pool")
+        elif node["role"] == "control":
+            require(installed["control"]["remote_data"]["nodes"].get(str(node_id)) == route,
+                    "spare is absent from the approved Control topology or has a different route")
     roots = [*config["persistent_disk"]["roots"].values(), config["scratch_disk"]["directory"]]
     require(all(isinstance(root, str) and Path(root).is_absolute() for root in roots),
             "spare storage roots are not absolute")
@@ -223,7 +237,7 @@ class Context:
         data = profiles["data"]
         self.tenant = data["tenant"]
         self.incarnation = data["resource"]["incarnation"]
-        self.spare = spare_member(plan["spare"], inputs["spare_config"], self.nodes, self.voters,
+        self.spare = spare_member(plan["spare"], inputs["spare_config"], configs, self.nodes, self.voters,
                                   inputs["leaves"]["spare"])
         self.spare_executable = admitted["binaries"]["kasumid"]
         require(set(map(int, plan["members"])) == {*self.voters, self.spare["node_id"]}

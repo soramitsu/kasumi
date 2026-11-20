@@ -87,6 +87,20 @@ def beneath(path, roots):
     return selected
 
 
+def transport_roster(role, peers, voters):
+    """Three genesis voters may share a Data transport pool with future learners."""
+    require(isinstance(voters, list) and len(voters) == 3
+            and all(type(node) is int and node > 0 for node in voters)
+            and len(set(voters)) == 3, "each HA group requires three original voters")
+    require(isinstance(peers, list) and 3 <= len(peers) <= (64 if role == "data" else 3)
+            and all(isinstance(peer, dict) and type(peer.get("node_id")) is int
+                    and peer["node_id"] > 0 for peer in peers), "invalid HA peer roster")
+    by_id = {peer["node_id"]: peer for peer in peers}
+    require(len(by_id) == len(peers) and set(voters) <= by_id.keys(),
+            "transport peer IDs repeat or omit an original voter")
+    return by_id
+
+
 def verify_control_placement(nodes, configs):
     """Bind the three data voters to the signing root of the three hosted Control voters."""
     controls = [n for n in nodes if n["role"] == "control"]
@@ -171,16 +185,13 @@ def inspect(plan_path, environment):
                 "HA physical node identities must be distinct")
         physical_ids.add(node_id)
         peers, voters = replication.get("peers"), replication.get("initial_voters")
-        require(isinstance(peers, list) and len(peers) == 3 and isinstance(voters, list)
-                and len(voters) == 3 and all(type(v) is int and v > 0 for v in voters)
-                and len(set(voters)) == 3 and node_id in voters, "each HA group requires three original voters")
-        require(all(isinstance(p, dict) and type(p.get("node_id")) is int for p in peers)
-                and {p["node_id"] for p in peers} == set(voters), "peer roster differs from original voters")
+        transports = transport_roster(role, peers, voters)
+        require(node_id in voters, "each HA process must host an original voter")
         tls = replication["listener"]["tls"]
         cert = certificate(tls["certificate"])
         require(cert["leaf_sha256"] not in certificates, "HA leaf TLS identities are not distinct")
         certificates.add(cert["leaf_sha256"])
-        own = next(p for p in peers if p["node_id"] == node_id)
+        own = transports[node_id]
         require(own.get("certificate_pins") == [cert["leaf_sha256"]], "installed leaf differs from exact current peer pin")
         persistent = config.get("persistent_disk", {}).get("roots")
         require(isinstance(persistent, dict) and persistent, "persistent roots missing")
@@ -215,6 +226,8 @@ def inspect(plan_path, environment):
         roster = sorted(node["node_id"] for node in selected)
         require(all(node["voters"] == roster and node["peers"] == selected[0]["peers"] for node in selected),
                 "installed peer sets differ or cross role boundaries")
+        require(all(peer["node_id"] in roster or peer["node_id"] not in physical_ids
+                    for peer in selected[0]["peers"]), "transport learner reuses another group's member")
     verify_control_placement(nodes, configs)
     return {"schema": SCHEMA, "plan": str(plan_path), "plan_sha256": plan_sha,
             "qualification": "local-input-inspection-only", "binaries": binaries, "nodes": nodes}

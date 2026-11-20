@@ -572,6 +572,7 @@ def replay_members(custody, report, admission, topology_plan, configs, paths, ph
             if v["role"] == n["role"]
         }
         peers = replication["peers"]
+        transports = topology.transport_roster(n["role"], peers, replication["initial_voters"])
         tls = replication["listener"]["tls"]["certificate"]
         cert = topology.certificate(owned.check_ref(custody, certs["replication"]))
         exe = "kasumi-authority" if n["role"] == "authority" else "kasumid"
@@ -596,10 +597,8 @@ def replay_members(custody, report, admission, topology_plan, configs, paths, ph
             and n["node_id"] == replication["node_id"]
             and n["voters"] == sorted(replication["initial_voters"]) == members
             and n["peers"] == peers
-            and len(peers) == 3
-            and {p["node_id"] for p in peers} == set(members)
             and all(
-                p["certificate_pins"] == [expected_pins[p["node_id"]]] for p in peers
+                transports[node]["certificate_pins"] == [pin] for node, pin in expected_pins.items()
             )
             and (n["role"] == "authority" or cfg["mode"] == "replicated")
             and (
