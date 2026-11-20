@@ -541,7 +541,24 @@ impl EncryptedBackup {
         max_snapshot_bytes: usize,
         owner: &TenantStore,
     ) -> Result<Self> {
+        Self::from_source_bytes(bytes, max_snapshot_bytes, owner.tenant(), owner)
+    }
+    pub(crate) fn from_source_bytes(
+        bytes: &[u8],
+        max_snapshot_bytes: usize,
+        source_tenant: &str,
+        owner: &TenantStore,
+    ) -> Result<Self> {
         owner.check_access()?;
+        ensure!(
+            source_tenant == owner.tenant()
+                || matches!(
+                    owner.storage_access().purpose(),
+                    crate::StoragePurpose::TargetJournal { .. }
+                ),
+            "backup source tenant differs from installed owner"
+        );
+
         ensure!(
             bytes.len() >= 12 && &bytes[..8] == MAGIC,
             "invalid backup magic"
@@ -560,8 +577,8 @@ impl EncryptedBackup {
             serde_json::from_slice(header).context("invalid backup manifest")?;
         ensure!(manifest.format == FORMAT, "unsupported backup format");
         ensure!(
-            manifest.tenant == owner.tenant(),
-            "backup tenant differs from installed owner"
+            manifest.tenant == source_tenant,
+            "backup tenant differs from selected source"
         );
         manifest.catalog.validate(&manifest.tenant)?;
         ensure!(
@@ -626,6 +643,23 @@ impl EncryptedBackup {
         provider: Arc<dyn KeyProvider>,
         owner: &TenantStore,
     ) -> Result<BackupContents> {
+        owner.storage_access().validate_tenant(source_tenant)?;
+        self.decrypt_session_source(source_tenant, provider, owner)
+            .await
+    }
+    pub(crate) async fn decrypt_session_source(
+        &self,
+        source_tenant: &str,
+        provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
+    ) -> Result<BackupContents> {
+        owner.check_access()?;
+        if !matches!(
+            owner.storage_access().purpose(),
+            crate::StoragePurpose::TargetJournal { .. }
+        ) {
+            owner.storage_access().validate_tenant(source_tenant)?;
+        }
         self.check_memory_owner(owner)?;
         self.decrypt_with_clock(
             source_tenant,
@@ -652,7 +686,7 @@ impl EncryptedBackup {
         clock: &dyn LeaseClock,
         access: &crate::StorageAccess,
     ) -> Result<BackupContents> {
-        access.validate_tenant(source_tenant)?;
+        access.check()?;
         ensure!(
             self.manifest.tenant == source_tenant,
             "backup source tenant mismatch"
