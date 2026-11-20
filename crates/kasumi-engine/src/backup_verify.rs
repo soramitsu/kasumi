@@ -574,6 +574,7 @@ pub(crate) async fn verify(
             .checked_mul((PAGE_BYTES + 8) as u64)
             .ok_or_else(|| anyhow::anyhow!("backup page count overflow"))?;
         let mut pages = kasumi_store::EncryptedSpool::new(reader.scratch_disk(), page_budget)?;
+        pages.reserve(page_budget)?;
         let mut reference = Some(manifest.last_page.clone());
         for expected in (0..manifest.page_count).rev() {
             reader.check_access().await?;
@@ -614,10 +615,13 @@ pub(crate) async fn verify(
         let mut spool = if capture.is_some() {
             None
         } else {
-            Some(kasumi_store::EncryptedSpool::new(
-                reader.scratch_disk(),
-                manifest.resident_bytes,
-            )?)
+            let mut spool =
+                kasumi_store::EncryptedSpool::new(reader.scratch_disk(), manifest.resident_bytes)?;
+            // The authenticated manifest gives the exact total. Admit it
+            // before copying so the anonymous file can extend in bounded
+            // steps instead of resizing once per encrypted block.
+            spool.reserve(manifest.resident_bytes)?;
+            Some(spool)
         };
         let mut resident_bytes = 0u64;
         let mut digest = Sha256::new();
