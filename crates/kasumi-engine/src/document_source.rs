@@ -182,7 +182,9 @@ impl GenerationDocumentSource<'_> {
                                 work.checked_add(2 * bytes.len() as u64 + 512).ok_or_else(
                                     || anyhow::anyhow!("primary record workspace overflow"),
                                 )?;
-                            leases.push(memory.clone().reserve_document_decode(required)?);
+                            leases.push(crate::document_restore::ReadAdmissionFailure::reserve(
+                                memory, required,
+                            )?);
                             Ok(())
                         },
                     )?;
@@ -437,7 +439,8 @@ impl DocumentSource for GenerationDocumentSource<'_> {
                     if layout < kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
                         return Ok(None);
                     }
-                    let workspace = memory.clone().reserve_document_decode(2048)?;
+                    let workspace =
+                        crate::document_restore::ReadAdmissionFailure::reserve(memory, 2048)?;
                     let mut row = None;
                     crate::application_records::visit_snapshot_headers(
                         tree,

@@ -115,7 +115,8 @@ impl<'a, 'view> SnapshotFeed<'a, 'view> {
         self.tree.with_value(key, 8 << 10, |bytes| {
             let bytes = bytes.context("selected change feed row is missing")?;
             let work = crate::snapshot_codec::inspect_external_json_work(bytes, &mut || Ok(()))?;
-            let _lease = self.memory.clone().reserve_document_decode(
+            let _lease = crate::document_restore::ReadAdmissionFailure::reserve(
+                self.memory,
                 work.checked_add(2 * bytes.len() as u64 + 512)
                     .context("change row workspace overflow")?,
             )?;

@@ -286,7 +286,7 @@ pub(crate) fn document_load_error(error: anyhow::Error) -> Error {
         } else if let Some(failure) =
             cause.downcast_ref::<crate::document_restore::ReadAdmissionFailure>()
         {
-            // Only the staged reader's explicit decode-admission call can mint
+            // Only a reader's explicit decode-admission call can mint
             // this wrapper; arbitrary I/O errors retain Unavailable behavior.
             if !failure.is_capacity_denied() {
                 capacity_denied = false;

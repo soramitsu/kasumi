@@ -46,13 +46,23 @@ pub(crate) struct ReadAdmissionFailure {
     original: std::io::Error,
 }
 impl ReadAdmissionFailure {
+    pub(crate) fn reserve(
+        memory: &Arc<dyn NodeDiskMemoryAdmission>,
+        bytes: u64,
+    ) -> Result<DiskMemoryLease> {
+        memory
+            .clone()
+            .reserve_document_decode(bytes)
+            .map_err(|original| anyhow::Error::new(Self { original }))
+    }
+
     pub(crate) fn is_capacity_denied(&self) -> bool {
         self.original.kind() == std::io::ErrorKind::OutOfMemory
     }
 }
 impl std::fmt::Display for ReadAdmissionFailure {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("staged document read admission failed")
+        formatter.write_str("document decode admission failed")
     }
 }
 impl std::error::Error for ReadAdmissionFailure {
@@ -689,12 +699,7 @@ impl StagedDocuments {
     }
 
     fn read_grant(&self, bytes: u64) -> Result<DiskMemoryLease> {
-        self.tables
-            .disk
-            .memory()
-            .clone()
-            .reserve_document_decode(bytes)
-            .map_err(|original| anyhow::Error::new(ReadAdmissionFailure { original }))
+        ReadAdmissionFailure::reserve(self.tables.disk.memory(), bytes)
     }
 
     /// Explicit physical ownership in this immutable authenticated bootstrap
