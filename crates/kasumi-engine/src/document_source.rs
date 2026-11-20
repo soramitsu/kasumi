@@ -74,11 +74,23 @@ pub(crate) struct DocumentReads {
 }
 impl DocumentReads {
     pub(crate) fn new(generation: &Arc<Generation>, deadline: Instant) -> anyhow::Result<Self> {
-        Ok(Self {
-            generation: generation.clone(),
-            shared: generation.shared_document_read()?,
+        Ok(Self::from_shared(
+            generation,
             deadline,
-        })
+            generation.shared_document_read()?,
+        ))
+    }
+
+    pub(crate) fn from_shared(
+        generation: &Arc<Generation>,
+        deadline: Instant,
+        shared: Option<Box<dyn SharedRead>>,
+    ) -> Self {
+        Self {
+            generation: generation.clone(),
+            shared,
+            deadline,
+        }
     }
 
     pub(crate) fn shared(&self) -> Option<&dyn SharedRead> {

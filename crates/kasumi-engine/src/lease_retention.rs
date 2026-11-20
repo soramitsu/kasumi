@@ -37,6 +37,8 @@ impl LeaseHandle {
 pub(crate) struct SelectedSnapshot {
     pub handle: Arc<LeaseHandle>,
     pub generation: Arc<Generation>,
+    /// The same physical reader that selected the ordered IDs will read their bodies.
+    pub scan_reader: Option<Box<dyn crate::document_store::SharedRead>>,
     pub scan_ids: Vec<String>,
     pub scan_has_more: bool,
     // The selected generation keeps these already-admitted bytes live while
@@ -620,6 +622,7 @@ impl LeaseManager {
             .saturating_add(4096);
         let mut reservation = node.reserve(initial as u64, Some(cancellation.clone()))?;
         let mut durable_ids = None;
+        let mut scan_reader = None;
         if let PageSelection::Scan(request) = &request {
             if request.lease_id != id {
                 return Err(Error::new(
@@ -651,10 +654,17 @@ impl LeaseManager {
                 reservation.reserve_additional(((request.limit + 1) * 768) as u64)?;
                 let metadata = crate::snapshot_codec::metadata(&root.generation.state);
                 let selection = selection.clone();
+                scan_reader = root
+                    .generation
+                    .shared_document_read()
+                    .map_err(crate::service::document_load_error)?;
                 let handle = root.handle.clone();
                 drop(entries);
                 drop(current);
-                let read = selection.with_serving_primary(None, &metadata, |tree, _, layout| {
+                let shared = scan_reader
+                    .as_deref()
+                    .map(crate::document_store::SharedRead::selected);
+                let read = selection.with_serving_primary(shared, &metadata, |tree, _, layout| {
                     let check = || -> anyhow::Result<()> {
                         cancellation.check()?;
                         context.authorization.check_live()?;
@@ -818,6 +828,7 @@ impl LeaseManager {
                             document_sources: root.generation.clone_document_sources(),
                             _read_reservations: vec![],
                         }),
+                        scan_reader,
                         scan_ids: ids,
                         scan_has_more: false,
                         selected_input_bytes: root.metadata_bytes as u64,
@@ -908,6 +919,7 @@ impl LeaseManager {
                 document_sources: root.generation.clone_document_sources(),
                 _read_reservations: vec![],
             }),
+            scan_reader,
             scan_ids,
             scan_has_more,
             selected_input_bytes: retained_bytes as u64,

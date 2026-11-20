@@ -310,6 +310,13 @@ fn with_document_reads<T>(
     read: impl FnOnce(&DocumentReads) -> Result<T>,
 ) -> Result<T> {
     let reads = DocumentReads::new(generation, deadline).map_err(document_load_error)?;
+    finish_document_read(reads, read)
+}
+
+fn finish_document_read<T>(
+    reads: DocumentReads,
+    read: impl FnOnce(&DocumentReads) -> Result<T>,
+) -> Result<T> {
     let result = read(&reads);
     match (result, reads.finish()) {
         (result, Ok(())) => result,

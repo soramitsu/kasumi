@@ -7,6 +7,7 @@ use crate::state::lease_retention::{LeaseHandle, PageAccess, PageSelection, Sele
 struct SelectedPageInput {
     handle: Arc<LeaseHandle>,
     generation: Arc<crate::Generation>,
+    scan_reader: Option<Box<dyn crate::document_store::SharedRead>>,
     scan_ids: Vec<String>,
     scan_has_more: bool,
     selected_input_bytes: u64,
@@ -17,6 +18,7 @@ impl SelectedPageInput {
         Self {
             handle: selected.handle,
             generation: selected.generation,
+            scan_reader: selected.scan_reader,
             scan_ids: selected.scan_ids,
             scan_has_more: selected.scan_has_more,
             selected_input_bytes: selected.selected_input_bytes,
@@ -432,6 +434,7 @@ impl Database {
             lease: input.handle.clone(),
             generation,
             deadline: deadline.into_std(),
+            scan_reader: input.scan_reader,
             ids: input.scan_ids,
             has_more: input.scan_has_more,
             request: request.clone(),
@@ -466,6 +469,7 @@ struct ScanWork {
     lease: Arc<LeaseHandle>,
     generation: Arc<crate::Generation>,
     deadline: std::time::Instant,
+    scan_reader: Option<Box<dyn crate::document_store::SharedRead>>,
     ids: Vec<String>,
     has_more: bool,
     request: ScanSnapshotPage,
@@ -493,9 +497,15 @@ impl ScanOutput {
 }
 impl ScanWork {
     fn run(mut self) -> Result<ScanOutput> {
-        let generation = self.generation.clone();
-        let response =
-            with_document_reads(&generation, self.deadline, |reads| self.evaluate(reads))?;
+        let reads = match self.scan_reader.take() {
+            Some(shared) => {
+                DocumentReads::from_shared(&self.generation, self.deadline, Some(shared))
+            }
+            None => {
+                DocumentReads::new(&self.generation, self.deadline).map_err(document_load_error)?
+            }
+        };
+        let response = finish_document_read(reads, |reads| self.evaluate(reads))?;
         Ok(ScanOutput {
             response,
             memory: self.memory,
