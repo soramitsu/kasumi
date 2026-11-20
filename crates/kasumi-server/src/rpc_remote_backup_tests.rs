@@ -620,6 +620,17 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         .authenticate(&format!("Bearer {control_bearer}"))
         .await
         .unwrap();
+    let topology_bearer = make_token(
+        "operator",
+        crate::runtime::CONTROL_TENANT,
+        "control",
+        control_inc,
+        "kasumi:read kasumi:write kasumi:admin",
+    );
+    let topology_operator = control_auth
+        .authenticate(&format!("Bearer {topology_bearer}"))
+        .await
+        .unwrap();
     let failed = |i: usize, participant: &str| {
         crate::administration::OriginalRecoveries::new(
             &physicals[i].admission,
@@ -742,6 +753,7 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         denied_token: &writer,
         control: &control,
         operator: &control_operator,
+        topology_operator: &topology_operator,
         topology: &topology,
         root: control_inc,
         admission: &physicals[control_index].admission,

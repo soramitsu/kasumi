@@ -129,6 +129,7 @@ pub(super) struct Installation<'a> {
     pub denied_token: &'a str,
     pub control: &'a Arc<Database>,
     pub operator: &'a RequestContext,
+    pub topology_operator: &'a RequestContext,
     pub topology: &'a kasumi_engine::control::ControlTopology,
     pub root: Uuid,
     pub admission: &'a Arc<kasumi_engine::admission::NodeAdmission>,
@@ -324,7 +325,10 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     // The Control route can still name a prior voter set after Data has
     // completed its Raft transition. Exercise the actual versioned write.
     let plane = kasumi_engine::control::ControlPlane::new(f.control.clone()).unwrap();
-    let original = plane.topology(f.operator).await.unwrap().unwrap();
+    assert!(
+        matches!(plane.topology(f.operator).await, Err(error) if error.code == ErrorCode::Forbidden)
+    );
+    let original = plane.topology(f.topology_operator).await.unwrap().unwrap();
     let mut previous_topology = original.topology.clone();
     previous_topology
         .nodes
@@ -333,19 +337,24 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     previous_topology.tenants.get_mut(f.tenant).unwrap().voters = previous.clone();
     plane
         .replace_topology(
-            f.operator.clone(),
+            f.topology_operator.clone(),
             previous_topology,
             Precondition::Version(original.version),
             "catalog-fixture-previous-route".into(),
         )
         .await
         .unwrap();
-    let before = plane.topology(f.operator).await.unwrap().unwrap().version;
+    let before = plane
+        .topology(f.topology_operator)
+        .await
+        .unwrap()
+        .unwrap()
+        .version;
     let publish = crate::administration::publish_data_voters;
     assert!(
         publish(
             f.control,
-            f.operator,
+            f.topology_operator,
             f.tenant,
             f.incarnation,
             &BTreeSet::from([1, 3, 12]),
@@ -359,7 +368,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     assert!(
         publish(
             f.control,
-            f.operator,
+            f.topology_operator,
             f.tenant,
             f.incarnation,
             &previous,
@@ -369,13 +378,18 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         .is_err()
     );
     assert_eq!(
-        plane.topology(f.operator).await.unwrap().unwrap().version,
+        plane
+            .topology(f.topology_operator)
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
         before
     );
     write_token(f.token_path, f.reader_token);
     publish(
         f.control,
-        f.operator,
+        f.topology_operator,
         f.tenant,
         f.incarnation,
         &previous,
@@ -383,12 +397,12 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     )
     .await
     .unwrap();
-    let published = plane.topology(f.operator).await.unwrap().unwrap();
+    let published = plane.topology(f.topology_operator).await.unwrap().unwrap();
     assert!(published.version > before);
     assert_eq!(published.topology.tenants[f.tenant].voters, voters);
     publish(
         f.control,
-        f.operator,
+        f.topology_operator,
         f.tenant,
         f.incarnation,
         &previous,
@@ -397,7 +411,12 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     .await
     .unwrap();
     assert_eq!(
-        plane.topology(f.operator).await.unwrap().unwrap().version,
+        plane
+            .topology(f.topology_operator)
+            .await
+            .unwrap()
+            .unwrap()
+            .version,
         published.version
     );
     plane
