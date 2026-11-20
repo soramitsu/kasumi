@@ -1588,6 +1588,10 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
     };
     journal.validate_intent(&intent)?;
     let binding = GenerationBinding::from_intent(&intent);
+    let token = kasumi_query::QueryCancellation::default();
+    journal.visit_key_dependencies(&token, |_, _| {
+        anyhow::bail!("empty journal returned a dependency")
+    })?;
     let intent_key = intent_key(intent.intent.request.command_id);
     let generation_key = generation_key(&binding.tenant, binding.target_incarnation);
     let intent_bytes = serde_json::to_vec(&intent)?;
@@ -1610,7 +1614,23 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
     )?
     .write(&f.store)?;
     drop(journal);
-    drop(f.reopen()?);
+    let reopened = f.reopen()?;
+    let mut dependencies = Vec::new();
+    reopened.visit_key_dependencies(&token, |id, checkpoint| {
+        dependencies.push((id, checkpoint.clone()));
+        Ok(())
+    })?;
+    assert_eq!(
+        dependencies,
+        [(binding.target_incarnation, binding.checkpoint)]
+    );
+    token.cancel();
+    assert!(
+        reopened
+            .visit_key_dependencies(&token, |_, _| Ok(()))
+            .is_err()
+    );
+    drop(reopened);
 
     for (key, original) in [
         (intent_key, intent_bytes),

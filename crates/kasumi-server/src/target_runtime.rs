@@ -627,6 +627,10 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
+    pub(crate) fn install_key_inventory(&self, control: &kasumi_engine::Database) -> Result<()> {
+        control.install_target_key_inventory(&self.journal)
+    }
+
     #[cfg(test)]
     pub(crate) fn test_initial_dispatch_status(
         &self,

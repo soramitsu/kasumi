@@ -169,6 +169,26 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         cursor: None,
         limit: 8,
     };
+    let journal_read = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::TargetJournal {},
+        cursor: None,
+        limit: 8,
+    };
+    let journal = db
+        .read_key_retention(&operator, journal_read.clone())
+        .await
+        .unwrap();
+    assert!(journal.entries.is_empty());
+    assert!(
+        matches!(&journal.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
+        if missing.contains(&MissingKeyDependency::MemberUnreported { node_id }))
+    );
+    drop(journal);
+    assert!(
+        db.read_key_retention(&context("writer", CONTROL_TENANT), journal_read)
+            .await
+            .is_err()
+    );
     let no_signer = db
         .read_key_retention(&operator, signer_query.clone())
         .await

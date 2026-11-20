@@ -305,6 +305,52 @@ pub struct TargetJournal {
 type JournalOwner = Arc<Mutex<std::sync::Weak<TargetJournal>>>;
 
 impl TargetJournal {
+    pub(crate) fn key_inventory_owner(&self) -> (&TargetJournalInstallation, &Arc<TenantStore>) {
+        (&self.installed, &self.store)
+    }
+
+    /// Each permanent generation retains an external checkpoint. A journal
+    /// authenticates its binding but cannot prove the checkpoint's key roster.
+    pub(crate) fn visit_key_dependencies(
+        &self,
+        token: &kasumi_query::QueryCancellation,
+        mut checkpoint: impl FnMut(Uuid, &kasumi_types::FullBackupCheckpoint) -> Result<()>,
+    ) -> Result<()> {
+        let _workspace = self
+            .admission
+            .reserve((MAX_RECORD * 8) as u64, Some(token.clone()))?;
+        let count = self.metadata()?.generations;
+        let mut observed = 0u64;
+        if count > 0 {
+            self.store.visit(NS, MAX_RECORD, |key, value| {
+                token.check()?;
+                if key.starts_with(b"generation/") {
+                    let row: GenerationBinding = decode_current(value)?;
+                    ensure!(
+                        key == generation_key(&row.tenant, row.target_incarnation)
+                            && row.control_incarnation == self.installed.root.control_incarnation
+                            && row.checkpoint.tenant == row.tenant
+                            && row.checkpoint.source_incarnation
+                                == row.source_incarnation.to_string(),
+                        "target journal generation differs from its checkpoint"
+                    );
+                    row.checkpoint.validate()?;
+                    checkpoint(row.target_incarnation, &row.checkpoint)?;
+                    observed = observed
+                        .checked_add(1)
+                        .context("target generation count exhausted")?;
+                }
+                Ok(())
+            })?;
+        }
+        token.check()?;
+        ensure!(
+            observed == count && self.metadata()?.generations == count,
+            "target journal generation membership changed during key inventory"
+        );
+        Ok(())
+    }
+
     /// The installed runner must first close and drain its operations. Retained
     /// journal handles remain sealed after this store's own workers are joined.
     pub async fn shutdown(&self) -> kasumi_types::drain::DrainResult {

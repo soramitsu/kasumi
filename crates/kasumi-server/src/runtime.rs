@@ -1904,6 +1904,9 @@ impl NodeRuntime {
             if config.target_recovery.is_some() {
                 runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone(),runtime.original_recoveries.as_ref().expect("same installed original inventory")).await?);
             }
+            if let (Some(control), Some(target)) = (&runtime.control, &runtime.target_recovery) {
+                target.install_key_inventory(&control.database)?;
+            }
             let administration = crate::administration::Administration::new(
                 config.clone(),
                 runtime.authority_trusts.clone(),

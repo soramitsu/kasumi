@@ -447,7 +447,9 @@ impl Database {
         self.engine.authorize(context, None, Action::Admin)?;
         let independent = matches!(
             request.scope,
-            KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
+            KeyRetentionScope::SecurityAudit {}
+                | KeyRetentionScope::Signer {}
+                | KeyRetentionScope::TargetJournal {}
         );
         let control = if independent && !probe {
             if context.tenant != crate::control::CONTROL_TENANT
@@ -507,6 +509,7 @@ impl Database {
             context.authorization.require_control(&state.incarnation)?;
             let audit = self.security_audit.clone();
             let signer = self.signer_keys.get().cloned();
+            let journal = self.target_keys.get().and_then(std::sync::Weak::upgrade);
             let request = request.clone();
             let term = metrics.current_term;
             let membership = *membership.log_id();
@@ -519,6 +522,7 @@ impl Database {
                         &request,
                         &metrics,
                         signer.as_deref(),
+                        journal.as_deref(),
                         token,
                     )?;
                     let revision = state.revision;

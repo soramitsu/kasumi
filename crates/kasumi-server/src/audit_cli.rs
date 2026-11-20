@@ -73,7 +73,9 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
                     let request: ReadKeyRetentionRequest = serde_json::from_slice(&input)?;
                     if matches!(
                         request.scope,
-                        KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
+                        KeyRetentionScope::SecurityAudit {}
+                            | KeyRetentionScope::Signer {}
+                            | KeyRetentionScope::TargetJournal {}
                     ) {
                         ensure!(
                             matches!(profile.resource, CredentialResource::Control { .. }),

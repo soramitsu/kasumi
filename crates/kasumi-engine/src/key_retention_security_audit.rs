@@ -8,6 +8,29 @@ pub(in crate::service) struct SignerCatalog {
 }
 
 impl Database {
+    /// Attach the independently opened journal without taking custody of its workers.
+    pub fn install_target_key_inventory(
+        &self,
+        journal: &Arc<crate::TargetJournal>,
+    ) -> anyhow::Result<()> {
+        let (installation, store) = journal.key_inventory_owner();
+        anyhow::ensure!(
+            self.store.tenant() == crate::control::CONTROL_TENANT
+                && installation.node.node_id == self.group.node_id()
+                && Arc::ptr_eq(self.store.persistent_disk(), store.persistent_disk()),
+            "target journal differs from the installed Control member or disk owner"
+        );
+        store.check_access()?;
+        let original = Arc::downgrade(journal);
+        anyhow::ensure!(
+            self.target_keys
+                .get_or_init(|| original.clone())
+                .ptr_eq(&original),
+            "another target journal is already installed"
+        );
+        Ok(())
+    }
+
     /// Attach the catalog opened by this node's enrolled signer verifier. Its runtime
     /// retains shutdown custody. Replicated authority manifests supply the independent
     /// partition identities that still owe reports from their own installations.
@@ -52,6 +75,7 @@ impl SecurityAudit {
         request: &ReadKeyRetentionRequest,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
         signer: Option<&SignerCatalog>,
+        journal: Option<&crate::TargetJournal>,
         token: &QueryCancellation,
     ) -> Result<KeyRetentionPage> {
         let state = &generation.state;
@@ -81,7 +105,9 @@ impl SecurityAudit {
         let _topology = self.admission().reserve_resident(size)?;
         let roster =
             crate::control::ControlPlane::applied_topology(state, generation.document_resolver())?;
-        if let Some(signer) = signer {
+        if !matches!(request.scope, KeyRetentionScope::TargetJournal {})
+            && let Some(signer) = signer
+        {
             for &(authority_id, partition) in &signer.partitions {
                 add_missing(
                     &mut missing,
@@ -108,13 +134,34 @@ impl SecurityAudit {
             }
         }
         let service_audit = matches!(request.scope, KeyRetentionScope::SecurityAudit {});
-        let (store, domain) = if service_audit {
-            (Some(self.store().clone()), KeyCatalogDomain::SecurityAudit)
-        } else {
-            (
+        let journal = journal.filter(|journal| {
+            let (installed, _) = journal.key_inventory_owner();
+            matches!(request.scope, KeyRetentionScope::TargetJournal {})
+                && state
+                    .lifecycle_control
+                    .as_ref()
+                    .is_some_and(|control| control.installation.root == installed.root)
+                && installed.root.control_incarnation.to_string() == state.incarnation
+                && signer.is_some_and(|signer| signer.verifier == installed.node.verifier)
+        });
+        let (store, domain) = match request.scope {
+            KeyRetentionScope::SecurityAudit {} => {
+                (Some(self.store().clone()), KeyCatalogDomain::SecurityAudit)
+            }
+            KeyRetentionScope::Signer {} => (
                 signer.and_then(|owner| owner.store.upgrade()),
                 KeyCatalogDomain::LiveSignerTrust,
-            )
+            ),
+            KeyRetentionScope::TargetJournal {} => (
+                journal.map(|owner| owner.key_inventory_owner().1.clone()),
+                KeyCatalogDomain::TargetJournal,
+            ),
+            _ => {
+                return Err(Error::new(
+                    ErrorCode::InvalidArgument,
+                    "unsupported installed key inventory scope",
+                ));
+            }
         };
         let catalog_digest = if let Some(store) = store {
             Some(
@@ -190,6 +237,32 @@ impl SecurityAudit {
         } else {
             None
         };
+        let journal_digest = if let Some(journal) = journal {
+            let mut digest = Sha256::new();
+            digest.update(staged_digest(journal.key_inventory_owner().0)?.0.as_bytes());
+            journal
+                .visit_key_dependencies(token, |id, checkpoint| {
+                    digest.update(staged_digest(&(id, checkpoint))?.0.as_bytes());
+                    add_missing(
+                        &mut missing,
+                        &mut truncated,
+                        MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::TargetJournal,
+                            id: id.to_string(),
+                        },
+                    );
+                    Ok(())
+                })
+                .map_err(|error| {
+                    error
+                        .downcast_ref::<Error>()
+                        .cloned()
+                        .unwrap_or_else(|| Error::from_physical_source(error))
+                })?;
+            Some(<[u8; 32]>::from(digest.finalize()))
+        } else {
+            None
+        };
         let inventory_sha256 = staged_digest(&(
             "kasumi.installed-key-inventory.v1",
             &request.scope,
@@ -201,6 +274,7 @@ impl SecurityAudit {
             &roster,
             catalog_digest,
             archive_digest,
+            journal_digest,
             &missing,
             truncated,
         ))?

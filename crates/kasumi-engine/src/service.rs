@@ -1176,6 +1176,7 @@ pub struct Database {
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
     signer_keys: std::sync::OnceLock<Arc<key_retention::SignerCatalog>>,
+    target_keys: std::sync::OnceLock<std::sync::Weak<crate::TargetJournal>>,
     archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
@@ -1586,6 +1587,7 @@ impl Database {
             proposals: proposal_jobs::Jobs::default(),
             backup_control: Default::default(),
             signer_keys: Default::default(),
+            target_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });
