@@ -5,6 +5,21 @@ use kasumi_types::{
     DocumentSlot, Limits, Policy, StoredDocument,
 };
 
+// These low-level fixtures supply synthetic log positions. The replicated
+// database case separately exercises the actual pinned consensus boundary.
+fn prepare_publication(
+    owner: &PrimaryOwner,
+    store: &Arc<TenantStore>,
+    previous: &TenantState,
+    candidate: &TenantState,
+    changed: &ChangedIds,
+    applied: Option<PrimaryApplied>,
+) -> Result<Option<PrimaryPublication>> {
+    prepare_publication_at(owner, store, previous, candidate, changed, applied, |_| {
+        Ok(true)
+    })
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     _storage: crate::test_utils::FixtureStorage,
@@ -662,6 +677,25 @@ async fn a_single_document_edit_rewrites_only_its_paths() {
     );
     assert!(bytes <= 2 * height * ordered_pages::MAX_PAGE_BYTES);
     store.write_batch(&writes).unwrap();
+    fixture.verify(&s2);
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn idle_service_rebuilds_a_directory_that_missed_its_last_log_entry() {
+    let fixture = Fixture::new().await;
+    let store = &fixture.store;
+    let owner = PrimaryOwner::default();
+    let s0 = genesis();
+    let (s1, delta) = next(&s0, s0.revision + 1, "docs", &["gone", "old"], &[]);
+    fixture.publish(prepare_publication(&owner, store, &s0, &s1, &delta, applied(&s1, 1)).unwrap());
+    let (s2, _) = next(&s1, s1.revision + 1, "docs", &["new"], &["gone"]);
+    let selected = applied(&s2, 1).unwrap();
+    for _ in 0..8 {
+        if maintain(&owner, store, &s2, &selected).unwrap() {
+            break;
+        }
+    }
     fixture.verify(&s2);
     fixture.close().await;
 }

@@ -521,13 +521,14 @@ fn visit_changed_ids(
 /// stale directory. Every other failure to follow the candidate,
 /// including a replayed boundary that differs, publishes a stale manifest;
 /// errors are reserved for failing to read the selected manifest itself.
-pub(crate) fn prepare_publication(
+pub(crate) fn prepare_publication_at(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     previous: &TenantState,
     candidate: &TenantState,
     changed: &ChangedIds,
     applied: Option<PrimaryApplied>,
+    matches_predecessor: impl FnOnce(&PrimaryManifest) -> Result<bool>,
 ) -> Result<Option<PrimaryPublication>> {
     // A budget refusal may have staged earlier windows before leaving the
     // root stale. Reclaim its original journal even while the root is stale.
@@ -548,10 +549,7 @@ pub(crate) fn prepare_publication(
         Step::Replace => return Ok(None),
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
-            let same = manifest.applied.as_ref().zip(applied.as_ref()).map_or(
-                manifest.applied.is_none() && applied.is_none(),
-                |(selected, replayed)| selected.same_position(replayed),
-            );
+            let same = manifest.matches_applied(applied.as_ref());
             let verified = if same && manifest.rebuild().is_some() {
                 Ok(())
             } else if same {
@@ -585,6 +583,15 @@ pub(crate) fn prepare_publication(
             return stale(&manifest, candidate, applied, anyhow::anyhow!(reason));
         }
         Step::Edit => match manifest {
+            Some(manifest) if !matches_predecessor(&manifest)? => {
+                owner.maintenance_due.store(true, Ordering::Release);
+                return stale(
+                    &manifest,
+                    candidate,
+                    applied,
+                    anyhow::anyhow!("primary predecessor differs from the selected Raft boundary"),
+                );
+            }
             Some(manifest) => manifest,
             None => {
                 let selected =
@@ -659,17 +666,18 @@ pub(crate) fn maintain(
         {
             return Ok(false);
         }
-        Some(m) if m.is_current() => {
-            return Ok(m.revision == state.revision
-                && m.applied.as_ref().is_some_and(|p| p.same_position(applied))
-                && may_replace);
+        Some(m)
+            if m.is_current()
+                && m.revision == state.revision
+                && m.matches_applied(Some(applied)) =>
+        {
+            return Ok(may_replace);
         }
-        Some(m) if m.rebuild().is_some() => {
-            // No skipped entry can be repaired merely by walking its current
-            // rows. The foreground writer owns every intervening delta.
-            if m.revision != state.revision || m.applied.as_ref() != Some(applied) {
-                return Ok(false);
-            }
+        Some(m)
+            if m.rebuild().is_some()
+                && m.revision == state.revision
+                && m.applied.as_ref() == Some(applied) =>
+        {
             Some(edit(
                 owner,
                 store,

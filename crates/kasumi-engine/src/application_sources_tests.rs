@@ -2821,11 +2821,11 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .collect::<Vec<_>>(),
         ["c", "d", "e", "f"]
     );
-    // Recreate an incomplete native directory at its genuine committed
-    // position. The next ordinary command selects the incomplete root and
-    // the registered monitor must finish it while this tenant is idle.
+    // An old physical root claims the same revision from a different log
+    // history. The serving reader and next ordinary writer must reject it.
+    // The monitor recovers at the new committed position while idle.
     let old_versions = versions(&generation)?;
-    engine.seed_idle_primary_rebuild_for_test()?;
+    engine.select_wrong_primary_history_for_test()?;
     db.mutate(
         context,
         kasumi_types::MutationBatch::new().upsert("docs", "c", serde_json::json!({"value":8})),

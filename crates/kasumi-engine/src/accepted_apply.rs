@@ -410,13 +410,17 @@ impl AcceptedGeneration<'_> {
         let Some(store) = engine.snapshot_store.get() else {
             return Ok(None);
         };
-        crate::application_primary::prepare_publication(
+        crate::application_primary::prepare_publication_at(
             &engine.primary,
             store,
             &self.owner.previous.state,
             &self.candidate.state,
             &self.delta.changed,
             Some(crate::application_primary::entry_applied(position)?),
+            |manifest| match self.owner.previous.application_selection.get() {
+                Some(selected) => selected.matches_primary_boundary(manifest),
+                None => Ok(false),
+            },
         )
     }
 

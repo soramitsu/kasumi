@@ -279,7 +279,10 @@ impl SelectedApplication {
             let Some(manifest) = PrimaryManifest::load_from_pair(view)? else {
                 return Ok(None);
             };
-            if !manifest.is_current() || manifest.revision != state.revision {
+            if !manifest.is_current()
+                || manifest.revision != state.revision
+                || !self.matches_primary_boundary(&manifest)?
+            {
                 return Ok(None);
             }
             ensure!(

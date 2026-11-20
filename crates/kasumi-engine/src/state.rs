@@ -1139,36 +1139,61 @@ impl TenantEngine {
         });
     }
     #[cfg(test)]
-    pub(crate) fn seed_idle_primary_rebuild_for_test(&self) -> anyhow::Result<()> {
+    pub(crate) fn select_wrong_primary_history_for_test(&self) -> anyhow::Result<()> {
         use kasumi_store::primary_manifest::PrimaryManifest;
         let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
-        let state = &apply.current().state;
-        let selection = apply
-            .current()
+        let current = apply.current();
+        let selection = current
             .application_selection
             .get()
             .expect("installed sources");
         let applied = selection.primary_entry()?.expect("selected ordinary entry");
-        let store = self
-            .application_sources
-            .get()
-            .expect("installed store")
-            .primary_installation()
-            .0
-            .application();
-        self.primary.caught_up();
-        let manifest = PrimaryManifest::load(store)?.expect("current directory");
-        store.write_batch(&[manifest
-            .stale(state.revision, Some(applied.clone()))
-            .write()?])?;
-        crate::application_primary::maintain(&self.primary, store, state, &applied)?;
+        let sources = self.application_sources.get().expect("installed store");
+        let store = sources.primary_installation().0.application();
+        // The complete directory has the right row bytes, totals and
+        // revision but names another term's log. Only its secondary root is
+        // substituted. The committed application/custody boundary stays real.
+        let meta = kasumi_raft::SnapshotMeta {
+            last_log_id: Some(kasumi_raft::LogId {
+                index: applied.index,
+                ..Default::default()
+            }),
+            last_membership: Default::default(),
+            snapshot_id: "foreign-primary-term".into(),
+        };
+        let mut writes = Vec::new();
+        crate::application_primary::prepare_restore(
+            &self.primary,
+            store,
+            &current.state,
+            &meta,
+            false,
+            &mut writes,
+        )?;
+        store.write_batch(&writes)?;
+        let stored = PrimaryManifest::load(store)?.expect("physically complete primary");
         anyhow::ensure!(
-            PrimaryManifest::load(store)?
-                .expect("seeded directory")
-                .rebuild()
-                .is_some(),
-            "idle fixture failed to seed a resumable directory"
+            stored.is_current()
+                && stored.revision == current.state.revision
+                && !stored.matches_applied(Some(&applied)),
+            "fixture failed to install a different log identity"
         );
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selection, None)?,
+            "fixture failed to select substituted secondary"
+        );
+        let replaced = self.current_generation()?;
+        let selected = replaced
+            .application_selection
+            .get()
+            .expect("selected original Raft boundary");
+        anyhow::ensure!(
+            selected
+                .with_primary_records(None, &replaced.state, |_, _| Ok(()))?
+                .is_none(),
+            "serving reader accepted another primary log identity"
+        );
+        self.primary.caught_up();
         Ok(())
     }
 
