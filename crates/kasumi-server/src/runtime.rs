@@ -1714,9 +1714,6 @@ impl NodeRuntime {
                 )
             }
         };
-        if let (Some(owner), Some(control)) = (&pending.standalone_owner, &control) {
-            crate::local_recovery::inventory::install(&config, owner, &audit, &control.database)?;
-        }
         if let (Some(control), Some(verifier)) = (&control, &signer_verifier) {
             verifier.install_key_inventory(&control.database, &authority_trusts)?;
         }
@@ -1759,6 +1756,7 @@ impl NodeRuntime {
         #[cfg(test)]
         crate::startup_preparation::checkpoint(config.database_id, "data-runtime");
         let result = async {
+            let mut active_recoveries = BTreeMap::new();
             let mut managed = runtime.control.iter().map(|control| crate::administration::ManagedTenant {
                 database: control.database.clone(),
                 store: control.store.clone(),
@@ -1900,6 +1898,8 @@ impl NodeRuntime {
                     if generation.restored_from().as_ref() != Some(&active.checkpoint) || generation.pending_restore().is_some() {
                         anyhow::bail!("active standalone generation is incomplete or differs from its committed checkpoint");
                     }
+                    ensure!(active_recoveries.insert(active.operation_id, Arc::downgrade(opened.database.stores())).is_none(),
+                        "standalone recovery operation owns more than one active generation");
                 }
                 managed.push(crate::administration::ManagedTenant {
                     database: opened.database.clone(),
@@ -1920,6 +1920,9 @@ impl NodeRuntime {
                 };
                 crate::startup_progress::phase("opened tenant", &detail);
                 runtime.tenants.push(opened);
+            }
+            if let (Some(owner), Some(control)) = (&pending.standalone_owner, &runtime.control) {
+                crate::local_recovery::inventory::install(&config, owner, &runtime.audit, &control.database, active_recoveries)?;
             }
             if config.target_recovery.is_some() {
                 runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone(),runtime.original_recoveries.as_ref().expect("same installed original inventory")).await?);

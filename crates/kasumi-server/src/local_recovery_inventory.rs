@@ -16,6 +16,7 @@ pub(crate) fn install(
     owner: &Arc<crate::standalone::InstalledStandaloneOwner>,
     audit: &SecurityAudit,
     database: &Database,
+    active: BTreeMap<Uuid, std::sync::Weak<kasumi_store::TenantStorageSet>>,
 ) -> Result<()> {
     ensure!(
         config.mode == crate::runtime::DeploymentMode::Standalone,
@@ -47,6 +48,7 @@ pub(crate) fn install(
             database_path: config.database_path.clone(),
             disk_settings: config.persistent_disk.clone(),
             tenants,
+            active,
             owner: Arc::downgrade(owner),
             admission: audit.admission().clone(),
         }),
@@ -58,6 +60,7 @@ struct Coordinator {
     database_path: PathBuf,
     disk_settings: kasumi_store::NodeDiskConfig,
     tenants: BTreeMap<String, (Uuid, String)>,
+    active: BTreeMap<Uuid, std::sync::Weak<kasumi_store::TenantStorageSet>>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 }
 
@@ -139,8 +142,10 @@ impl Coordinator {
         view: &TenantReadView,
         key: &[u8],
         value: &[u8],
+        node_id: u64,
+        token: &QueryCancellation,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
-    ) -> Result<Uuid> {
+    ) -> Result<(Uuid, Option<[u8; 32]>)> {
         let journal: Journal = decode(value)?;
         let request = &journal.status.request;
         request.validate()?;
@@ -218,6 +223,40 @@ impl Coordinator {
         if journal.target_preparation != TargetPreparation::Uncreated
             && journal.status.phase != LocalRecoveryPhase::Stopped
         {
+            if let Some(owner) = self.active.get(&operation) {
+                let stores = owner
+                    .upgrade()
+                    .context("active recovery stores have closed")?;
+                let active: ActiveGeneration = decode(
+                    &view
+                        .get(ACTIVE, request.tenant.as_bytes(), MAX_RECORD)?
+                        .context("active recovery journal binding missing")?,
+                )?;
+                ensure!(
+                    active.operation_id == operation
+                        && active.incarnation == request.target_incarnation
+                        && active.checkpoint == request.checkpoint
+                        && active.directory == journal.target_directory
+                        && matches!(
+                            journal.status.phase,
+                            LocalRecoveryPhase::Publish | LocalRecoveryPhase::Finished
+                        )
+                        && matches!(stores.application().storage_access().purpose(),
+                        StoragePurpose::Standalone { installation_id, tenant, incarnation }
+                        if *installation_id == journal.installation_id && tenant == &request.tenant && *incarnation == request.target_incarnation),
+                    "active recovery catalog belongs to a different installation or operation"
+                );
+                check_database_group(&journal)?;
+                let physical = stores.application().node_store().physical_identity()?;
+                ensure!(
+                    journal.database_group.as_ref() == Some(&physical)
+                        && stores.custody().store().node_store().physical_identity()? == physical,
+                    "active recovery catalog descriptors belong to a different physical generation"
+                );
+                let catalogs = Self::active_catalogs(&stores, node_id, token, visit)?;
+                check_database_group(&journal)?;
+                return Ok((operation, Some(catalogs)));
+            }
             visit(LocalRecoveryKeyFinding::Missing(
                 MissingKeyDependency::RecordUnreadable {
                     record_kind: KeyReferenceKind::LocalRecovery,
@@ -225,7 +264,58 @@ impl Coordinator {
                 },
             ))?;
         }
-        Ok(operation)
+        Ok((operation, None))
+    }
+
+    fn active_catalogs(
+        stores: &kasumi_store::TenantStorageSet,
+        node_id: u64,
+        token: &QueryCancellation,
+        visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
+    ) -> Result<[u8; 32]> {
+        let app = stores.application().read_view()?;
+        let observed = (|| {
+            let application = app.wrapping_inventory()?;
+            let custody = stores.custody().store().read_view()?;
+            let result = (|| {
+                let physical = custody.wrapping_inventory()?;
+                let mut fingerprint = Sha256::new();
+                let mut application_id = None;
+                for (inventory, domain) in [
+                    (&application, KeyCatalogDomain::Application),
+                    (&physical, KeyCatalogDomain::RetirementCustody),
+                ] {
+                    fingerprint.update(inventory.visit_catalog(
+                        |catalog_id, provider, key_ref, version| {
+                            token.check()?;
+                            if domain == KeyCatalogDomain::Application {
+                                application_id = Some(catalog_id);
+                            } else {
+                                ensure!(
+                                    Some(catalog_id) != application_id,
+                                    "active recovery catalogs are not independent"
+                                );
+                            }
+                            visit(entry(
+                                KeyReference::Catalog {
+                                    node_id,
+                                    catalog_id,
+                                    domain,
+                                },
+                                provider,
+                                key_ref,
+                                version,
+                            )?)
+                        },
+                    )?);
+                }
+                application.check_current()?;
+                physical.check_current()?;
+                Ok(fingerprint.finalize().into())
+            })();
+            finish(result, custody.close())
+        })();
+        finish(observed, app.close())
     }
 
     fn phase_owner(
@@ -404,11 +494,9 @@ impl Coordinator {
         token: &QueryCancellation,
         namespace: &str,
         row: (&[u8], &[u8]),
-        visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<Uuid> {
         let (key, value) = row;
         match namespace {
-            OPERATIONS => self.operation(view, key, value, visit),
             PHASES => self.phase_owner(view, token, key, value),
             PUBLICATION_OWNERS => self.indexed_publication_owner(view, token, uuid(key)?, value),
             GENERATIONS => {
@@ -499,6 +587,7 @@ impl LocalRecoveryKeyInventory for Coordinator {
                     )?)
                 })?,
             );
+            let mut active_reports = 0;
             for namespace in [
                 OPERATIONS,
                 PHASES,
@@ -515,13 +604,19 @@ impl LocalRecoveryKeyInventory for Coordinator {
                     |key, value, provider, key_ref, version| {
                         token.check()?;
                         let _decoded = self.decoding_workspace(value.len(), token)?;
-                        let operation_id = if namespace == archives::OBJECTS {
+                        let operation_id = if namespace == OPERATIONS {
+                            let (operation, catalogs) =
+                                self.operation(&view, key, value, node_id, token, visit)?;
+                            active_reports += usize::from(catalogs.is_some());
+                            serde_json::to_writer(&mut digest, &catalogs)?;
+                            operation
+                        } else if namespace == archives::OBJECTS {
                             let (operation, observed) =
                                 self.archive_owner(&view, store, token, (key, value), visit)?;
                             serde_json::to_writer(&mut digest, &observed)?;
                             operation
                         } else {
-                            self.row_owner(&view, token, namespace, (key, value), visit)?
+                            self.row_owner(&view, token, namespace, (key, value))?
                         };
                         visit(entry(
                             KeyReference::LocalRecovery { operation_id },
@@ -539,6 +634,10 @@ impl LocalRecoveryKeyInventory for Coordinator {
                 )?;
             }
             token.check()?;
+            ensure!(
+                active_reports == self.active.len(),
+                "active standalone catalog has no matching recovery operation"
+            );
             physical.check_current()?;
             ensure!(
                 owner.identity_for(store.persistent_disk())? == identity,

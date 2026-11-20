@@ -333,7 +333,7 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
         cursor: None,
         limit: 32,
     };
-    let database = runtime.control_database().unwrap();
+    let database = runtime.control_database().unwrap().clone();
     let inventory = database
         .read_key_retention(&control, query.clone())
         .await
@@ -343,7 +343,28 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     )));
     assert!(
         matches!(&inventory.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
-        if missing.contains(&MissingKeyDependency::ArchiveUnavailable { id: request.checkpoint.backup_id.to_string() }))
+        if missing == &[MissingKeyDependency::ArchiveUnavailable { id: request.checkpoint.backup_id.to_string() }])
+    );
+    let active_catalogs = inventory
+        .entries
+        .iter()
+        .filter_map(|row| match row.reference {
+            KeyReference::Catalog {
+                domain, catalog_id, ..
+            } if matches!(
+                domain,
+                KeyCatalogDomain::Application | KeyCatalogDomain::RetirementCustody
+            ) =>
+            {
+                Some((domain, catalog_id))
+            }
+            _ => None,
+        })
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(active_catalogs.len(), 2);
+    assert_ne!(
+        active_catalogs[&KeyCatalogDomain::Application],
+        active_catalogs[&KeyCatalogDomain::RetirementCustody]
     );
     let store = runtime.security_audit().store();
     let publication = record(store, request.operation_id)
@@ -373,7 +394,12 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
             unrelated.as_bytes().as_slice(),
         )])
         .unwrap();
-    assert!(database.read_key_retention(&control, query).await.is_err());
+    assert!(
+        database
+            .read_key_retention(&control, query.clone())
+            .await
+            .is_err()
+    );
     store
         .write_batch(&[WriteOp::put(
             PUBLICATION_OWNERS,
@@ -392,6 +418,26 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     })
     .await
     .unwrap();
+    let restored = registry.database(&context()).unwrap();
+    let page = ReadKeyRetentionRequest { limit: 1, ..query };
+    for store in [
+        restored.stores().application(),
+        restored.stores().custody().store(),
+    ] {
+        let first = database
+            .read_key_retention(&control, page.clone())
+            .await
+            .unwrap();
+        let cursor = first.next_cursor.clone().unwrap();
+        drop(first);
+        store.rotate_data_key().await.unwrap();
+        assert!(matches!(
+            database.read_key_retention(&control, ReadKeyRetentionRequest { cursor: Some(cursor), ..page.clone() }).await,
+            Err(error) if error.code == ErrorCode::CursorExpired
+        ));
+    }
+    drop(restored);
+    drop(database);
     let mut client = kasumi_client::KasumiClient::connect(&profile.connection(false).unwrap())
         .await
         .unwrap();
@@ -649,6 +695,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
         &operator.installed_owner,
         &operator.audit,
         &control,
+        Default::default(),
     )
     .unwrap();
     let page = control
