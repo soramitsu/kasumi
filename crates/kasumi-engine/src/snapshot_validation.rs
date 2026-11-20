@@ -16,6 +16,32 @@ pub(crate) struct ValidatedApplicationSnapshot {
     header: Box<TenantState>,
     lineage: EncryptedTable,
 }
+/// The immutable image and the admission bounds measured from these exact
+/// bytes. Consuming validation releases both encrypted point indexes.
+pub(crate) struct VerifiedRecords {
+    image: SnapshotImage,
+    summary: crate::snapshot_codec::StreamSummary,
+}
+impl VerifiedRecords {
+    pub(crate) fn image(&self) -> &SnapshotImage {
+        &self.image
+    }
+
+    pub(crate) fn summary(&self) -> &crate::snapshot_codec::StreamSummary {
+        &self.summary
+    }
+
+    pub(crate) fn reader<'a>(
+        &self,
+        check: &'a dyn Fn() -> anyhow::Result<()>,
+    ) -> impl std::io::Read + use<'a> {
+        super::snapshot_api::CheckedIo {
+            io: self.image.reader(),
+            check,
+        }
+    }
+}
+
 impl ValidatedApplicationSnapshot {
     pub(crate) fn validate(
         image: SnapshotImage,
@@ -93,8 +119,11 @@ impl ValidatedApplicationSnapshot {
     pub(crate) fn image(&self) -> &SnapshotImage {
         self.index.image()
     }
-    pub(crate) fn into_image(self) -> SnapshotImage {
-        self.index.image().clone()
+    pub(crate) fn into_records(self) -> VerifiedRecords {
+        VerifiedRecords {
+            image: self.index.image().clone(),
+            summary: self.index.summary(),
+        }
     }
     pub(crate) fn relocate(
         self,
@@ -1776,7 +1805,7 @@ mod tests {
         // after rolling. Test custody independently of that physical layout.
         assert!(disk.snapshot().live_files > image_files);
         assert!(disk.snapshot().charged_bytes > image_bytes);
-        let retained_image = verified.into_image();
+        let retained_image = verified.into_records();
         assert_eq!(disk.snapshot().live_files, image_files);
         assert_eq!(disk.snapshot().charged_bytes, image_bytes);
         drop(retained_image);

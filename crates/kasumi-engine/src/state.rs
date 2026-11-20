@@ -2127,7 +2127,7 @@ impl TenantEngine {
         use crate::backup_verify::VerificationPhase;
         let phase = VerificationPhase::start("restore.release_validation_indexes", None);
         check()?;
-        let image = source.into_image();
+        let records = source.into_records();
         phase.complete();
         let phase = VerificationPhase::start("restore.materialization_admission", None);
         // Both encrypted point-table caches are now destroyed. Reserve the
@@ -2135,20 +2135,15 @@ impl TenantEngine {
         let _workspace = handoff_workspace()?;
         phase.complete();
         let phase = VerificationPhase::start("restore.snapshot_decode", None);
-        let scratch_disk = image.disk().clone();
-        let mut decoded = crate::snapshot_codec::read_placed(
-            image.disk(),
-            &mut snapshot_api::CheckedIo {
-                io: image.reader(),
-                check,
-            },
-            crate::snapshot_codec::SnapshotPlacement::VerifiedTarget {
-                tenant: expected_tenant,
-                incarnation: &incarnation,
-            },
+        let scratch_disk = records.image().disk().clone();
+        let mut decoded = crate::snapshot_codec::read_verified_target(
+            &records,
+            expected_tenant,
+            &incarnation,
+            check,
         )
         .map_err(SnapshotFailure::from)?;
-        drop(image);
+        drop(records);
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
         check()?;

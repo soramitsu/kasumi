@@ -1,6 +1,7 @@
 //! Canonical tenant snapshots consist of independently bounded semantic records.
 //! The decoder builds unpublished state one record at a time and accepts it only
 //! after checking strict record ordering, counts, byte totals, digest, and EOF.
+use crate::state::snapshot_validation::VerifiedRecords;
 use kasumi_types::*;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -830,10 +831,26 @@ fn finish_summary(
     reader: &mut dyn Read,
     digest: Sha256,
     summary: StreamSummary,
+    verified: Option<&VerifiedRecords>,
 ) -> anyhow::Result<StreamSummary> {
     let mut footer = [0; 48];
     reader.read_exact(&mut footer)?;
+    if let Some(source) = verified {
+        let mut whole_image = digest.clone();
+        whole_image.update(0u64.to_be_bytes());
+        whole_image.update(footer);
+        anyhow::ensure!(
+            hex::encode(whole_image.finalize()) == source.image().sha256(),
+            "materialized snapshot image changed"
+        );
+    }
     let summary = authenticated_summary(digest, summary, &footer)?;
+    if let Some(source) = verified {
+        anyhow::ensure!(
+            &summary == source.summary(),
+            "materialized snapshot layout changed"
+        );
+    }
     anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
     Ok(summary)
 }
@@ -848,6 +865,14 @@ pub(crate) use inspection::{StreamInspector, inspect};
 /// caller; observing a record before the terminal proof never authorizes publish.
 pub(crate) fn visit<E: From<anyhow::Error>>(
     reader: &mut dyn Read,
+    visitor: impl FnMut(RecordPosition, Record) -> std::result::Result<(), E>,
+) -> std::result::Result<StreamSummary, E> {
+    visit_image(reader, None, visitor)
+}
+
+fn visit_image<E: From<anyhow::Error>>(
+    reader: &mut dyn Read,
+    verified: Option<&VerifiedRecords>,
     mut visitor: impl FnMut(RecordPosition, Record) -> std::result::Result<(), E>,
 ) -> std::result::Result<StreamSummary, E> {
     let mut magic = [0; 8];
@@ -875,7 +900,7 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
         if size == 0 {
             return (|| -> anyhow::Result<StreamSummary> {
                 anyhow::ensure!(audit == Some(audit_next), "audit final sequence differs");
-                finish_summary(reader, digest, summary)
+                finish_summary(reader, digest, summary, verified)
             })()
             .map_err(E::from);
         }
@@ -892,6 +917,15 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                     "lifecycle snapshot row exceeds selected byte allowance"
                 );
             }
+            // A replay reads from the same frozen, authenticated spool. Keep the
+            // original per-kind admission before allocating any payload.
+            let measured = verified.map(|source| &source.summary().kinds[usize::from(kind[0])]);
+            if let Some(bound) = measured {
+                anyhow::ensure!(
+                    size <= bound.maximum_payload_bytes,
+                    "snapshot replay exceeds the verified record size"
+                );
+            }
             let position = RecordPosition {
                 offset: summary
                     .bytes
@@ -904,8 +938,15 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
             digest.update(length);
             digest.update(kind);
             digest.update(&bytes);
-            let work = record_work::measure(&bytes)?;
-            let record = decode_record(&bytes)?;
+            // The initial structural visit compared canonical bytes and measured
+            // decode work. Only verified immutable replay can reuse those facts.
+            let (record, work) = match measured {
+                Some(bound) => (serde_json::from_slice(&bytes)?, bound.maximum_decode_work),
+                None => {
+                    let work = record_work::measure(&bytes)?;
+                    (decode_record(&bytes)?, work)
+                }
+            };
             let order = record.order();
             anyhow::ensure!(
                 order.0 == kind[0],
@@ -1090,30 +1131,50 @@ pub(crate) fn read_reopening(
     reader: &mut dyn Read,
     reopen: Option<&ReopenRows<'_>>,
 ) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
-    read_placed(disk, reader, SnapshotPlacement::Local(reopen))
+    read_placed(disk, SnapshotInput::Local { reader, reopen })
 }
 
-/// Reopening may reuse objects in the original store. A verified restore
-/// writes its private document objects under the requested target on first decode.
-pub(crate) enum SnapshotPlacement<'a> {
-    Local(Option<&'a ReopenRows<'a>>),
+pub(crate) fn read_verified_target(
+    records: &VerifiedRecords,
+    tenant: &str,
+    incarnation: &str,
+    check: &dyn Fn() -> anyhow::Result<()>,
+) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    read_placed(
+        records.image().disk(),
+        SnapshotInput::VerifiedTarget {
+            records,
+            tenant,
+            incarnation,
+            check,
+        },
+    )
+}
+
+enum SnapshotInput<'a> {
+    Local {
+        reader: &'a mut dyn Read,
+        reopen: Option<&'a ReopenRows<'a>>,
+    },
     VerifiedTarget {
+        records: &'a VerifiedRecords,
         tenant: &'a str,
         incarnation: &'a str,
+        check: &'a dyn Fn() -> anyhow::Result<()>,
     },
 }
 
-pub(crate) fn read_placed(
+fn read_placed(
     disk: &Arc<kasumi_store::ScratchDisk>,
-    reader: &mut dyn Read,
-    placement: SnapshotPlacement<'_>,
+    input: SnapshotInput<'_>,
 ) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
-    let (reopen, target) = match placement {
-        SnapshotPlacement::Local(reopen) => (reopen, None),
-        SnapshotPlacement::VerifiedTarget {
+    let (reopen, target) = match &input {
+        SnapshotInput::Local { reopen, .. } => (*reopen, None),
+        SnapshotInput::VerifiedTarget {
             tenant,
             incarnation,
-        } => (None, Some((tenant, incarnation))),
+            ..
+        } => (None, Some((*tenant, *incarnation))),
     };
     let mut state: Option<TenantState> = None;
     let mut receipts: Option<ReceiptSink> = None;
@@ -1122,7 +1183,7 @@ pub(crate) fn read_placed(
     let mut target_resolutions: Option<crate::target_resolution::Builder> = None;
     let mut documents: Option<crate::document_restore::Builder> = None;
     let mut document_table_limit = None;
-    let summary = visit(reader, |_, record| {
+    let accept = |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
                 if let Some((tenant, incarnation)) = target {
@@ -1469,7 +1530,13 @@ pub(crate) fn read_placed(
             }
             Ok(())
         })
-    })?;
+    };
+    let summary = match input {
+        SnapshotInput::Local { reader, .. } => visit(reader, accept)?,
+        SnapshotInput::VerifiedTarget { records, check, .. } => {
+            visit_image(&mut records.reader(check), Some(records), accept)?
+        }
+    };
     kasumi_store::ScratchOperationFailure::ordinary(|| {
         let mut state = state.ok_or_else(|| anyhow::anyhow!("snapshot metadata absent"))?;
         anyhow::ensure!(
@@ -1601,6 +1668,43 @@ mod tests {
         .state
         .clone()
     }
+    #[test]
+    fn verified_replay_rejects_an_independently_valid_image_with_equal_layout() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory).unwrap();
+        let mut state = state();
+        let mut bytes = Vec::new();
+        write(&state, &mut bytes).unwrap();
+        let image = kasumi_store::SnapshotImage::from_bytes(&scratch.disk, &bytes).unwrap();
+        let source = crate::state::snapshot_validation::ValidatedApplicationSnapshot::validate(
+            image,
+            128 << 20,
+            || Ok(()),
+        )
+        .unwrap()
+        .into_records();
+        let decoded =
+            super::read_verified_target(&source, &state.tenant, "restored", &|| Ok(())).unwrap();
+        assert_eq!(decoded.summary, *source.summary());
+        drop(decoded);
+
+        Arc::make_mut(&mut state.policy).grants[0].principal = "other".into();
+        let mut substituted = Vec::new();
+        write(&state, &mut substituted).unwrap();
+        assert_ne!(bytes, substituted);
+        let layout = visit::<anyhow::Error>(&mut substituted.as_slice(), |_, _| Ok(())).unwrap();
+        assert_eq!(&layout, source.summary());
+        let error =
+            visit_image::<anyhow::Error>(&mut substituted.as_slice(), Some(&source), |_, _| Ok(()))
+                .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("materialized snapshot image changed"),
+            "{error:#}"
+        );
+    }
+
     #[test]
     fn empty_decoded_snapshots_retain_scope_without_scratch_databases() {
         let memory = kasumi_store::test_utils::TestDiskMemory::new(64 << 20, 256);
