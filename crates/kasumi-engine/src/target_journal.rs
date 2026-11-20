@@ -453,22 +453,14 @@ impl TargetJournal {
                     if key.starts_with(b"generation/") {
                         let row: GenerationBinding = decode_current(value)?;
                         if row.stop_before_prepare {
-                            let stop: TargetJournalStop = decode_current(
-                                &view
-                                    .get(
-                                        NS,
-                                        &stop_key(&row.tenant, row.target_incarnation),
-                                        MAX_RECORD,
-                                    )?
-                                    .context("stop-only generation lacks its terminal proof")?,
-                            )?;
-                            self.validate_stop(&stop)?;
-                            let mut original = GenerationBinding::from_intent(&stop.intent);
-                            original.stop_before_prepare = true;
-                            ensure!(
-                                original == row,
-                                "stop-only generation differs from its original signed stop"
-                            );
+                            let bytes = view
+                                .get(
+                                    NS,
+                                    &stop_key(&row.tenant, row.target_incarnation),
+                                    MAX_RECORD,
+                                )?
+                                .context("stop-only generation lacks its terminal proof")?;
+                            self.validate_terminal_generation(&row, &bytes)?;
                             if let Some(bytes) = view.get(
                                 NS,
                                 &cleanup_key(&row.tenant, row.target_incarnation),
@@ -671,13 +663,38 @@ impl TargetJournal {
         // a time. Permanent identities are never silently dropped or truncated.
         let mut accounting = accounting::JournalAccounting::new();
         journal.store.visit(NS, MAX_RECORD, |key, value| {
-            accounting.observe(&journal, key, value, |_| Ok(()))?;
+            accounting.observe(&journal, key, value, |row| {
+                if row.stop_before_prepare {
+                    let bytes = journal
+                        .store
+                        .get_bounded(
+                            NS,
+                            &stop_key(&row.tenant, row.target_incarnation),
+                            MAX_RECORD,
+                        )?
+                        .context("stop-only generation lacks its terminal proof")?;
+                    journal.validate_terminal_generation(row, &bytes)?;
+                }
+                Ok(())
+            })?;
             Ok(())
         })?;
         accounting.verify(&metadata)?;
         *owner = Arc::downgrade(&journal);
         Ok(journal)
     }
+    fn validate_terminal_generation(&self, row: &GenerationBinding, bytes: &[u8]) -> Result<()> {
+        let stop: TargetJournalStop = decode_current(bytes)?;
+        self.validate_stop(&stop)?;
+        let mut original = GenerationBinding::from_intent(&stop.intent);
+        original.stop_before_prepare = true;
+        ensure!(
+            original == *row,
+            "stop-only generation differs from its original signed stop"
+        );
+        Ok(())
+    }
+
     fn metadata(&self) -> Result<Metadata> {
         let value = self
             .store

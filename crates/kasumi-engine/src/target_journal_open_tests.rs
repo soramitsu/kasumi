@@ -2806,6 +2806,7 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
         .await;
     assert!(matches!(result,Err(ref e) if e.to_string().contains("original backup unavailable")));
     assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before_new);
+    drop((prior_writer, fenced));
     drop(journal);
     let reopened = f.reopen()?;
     assert!(check(&reopened, 1).is_err());

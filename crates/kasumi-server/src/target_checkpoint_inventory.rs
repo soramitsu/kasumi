@@ -18,6 +18,15 @@ impl TargetCheckpointInventory for Installed {
             return Ok(false);
         }
         let key = (tenant.to_owned(), target);
+        let no_local_owner = || {
+            runtime
+                .generations
+                .try_lock()
+                .is_ok_and(|owners| !owners.contains_key(&key))
+        };
+        if !no_local_owner() {
+            return Ok(false);
+        }
         let path = runtime.path(&key)?;
         if target_file_exists(&path)? {
             return Ok(false);
@@ -27,7 +36,7 @@ impl TargetCheckpointInventory for Installed {
             runtime.audit.store().persistent_disk(),
             &path,
         )?;
-        Ok(!runtime.closing.load(Ordering::Acquire))
+        Ok(no_local_owner() && !runtime.closing.load(Ordering::Acquire))
     }
     fn source(
         &self,
