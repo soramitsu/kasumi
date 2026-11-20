@@ -161,8 +161,8 @@ pub use target_journal::{
     InitialInitializePermit, MaterializationFile, MaterializationNode,
     ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetCleanup, TargetCleanupStage,
     TargetFileBinding, TargetJournal, TargetJournalInstallation, TargetJournalIntent,
-    TargetOwnerDrain, VerifiedInitialMembership, VerifiedTargetInitializationAssociation,
-    VerifiedTargetServingProjection,
+    TargetOwnerDrain, TargetWriterRead, VerifiedInitialMembership,
+    VerifiedTargetInitializationAssociation, VerifiedTargetServingProjection,
 };
 
 pub use bootstrap::target_serving::{TargetServingReplica, open_serving_target};

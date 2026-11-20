@@ -14,6 +14,10 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 #[path = "target_journal_accounting.rs"]
 mod accounting;
+#[path = "target_journal_retirements.rs"]
+mod retirements;
+use retirements::JournalCheckpointPermit;
+pub use retirements::TargetWriterRead;
 const NS: &str = "target.journal";
 #[cfg(test)]
 #[path = "target_journal_open_tests.rs"]
@@ -294,6 +298,11 @@ struct Metadata {
     dispatch_starts: u64,
     dispatch_initializes: u64,
     charged_bytes: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "retirements::WriterRetirements::is_empty"
+    )]
+    retirements: retirements::WriterRetirements,
 }
 /// The unique store catalog owns the mutation lock; runtime retains this one
 /// journal handle. No application provider is constructed by opening it.
@@ -549,6 +558,7 @@ impl TargetJournal {
                 dispatch_starts: 0,
                 dispatch_initializes: 0,
                 charged_bytes: MAX_RECORD as u64,
+                retirements: Default::default(),
             };
             journal.store.write_batch(&[WriteOp::put(
                 NS,
@@ -584,6 +594,7 @@ impl TargetJournal {
                 && m.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal binding or capacity differs"
         );
+        m.retirements.validate()?;
         Ok(m)
     }
     fn validate_intent(&self, i: &TargetJournalIntent) -> Result<()> {
@@ -627,6 +638,14 @@ impl TargetJournal {
         &self,
         op: &TargetOperation,
         exact_input_sha256: &str,
+    ) -> Result<TargetJournalIntent> {
+        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None)
+    }
+    fn prepare_with_checkpoint_permit(
+        &self,
+        op: &TargetOperation,
+        exact_input_sha256: &str,
+        permit: Option<&JournalCheckpointPermit>,
     ) -> Result<TargetJournalIntent> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
@@ -694,6 +713,13 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            if metadata.retirements.requires_graph() {
+                permit
+                    .context(
+                        "new target checkpoint requires verification at its durable writer fence",
+                    )?
+                    .require(self, &binding, &metadata.retirements)?;
+            }
             let encoded = serde_json::to_vec(&binding)?;
             metadata.generations = metadata
                 .generations

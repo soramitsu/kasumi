@@ -853,6 +853,52 @@ pub struct KeyRetirementState {
     pub aborted: Vec<AbortedKeyRetirement>,
 }
 
+/// The physical target requests its own current committed Control writer
+/// state. The nonce is generated and retained by that journal before the read.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterChallenge {
+    pub root: crate::ControlSigningRoot,
+    pub verifier: crate::TrustVerifierIdentity,
+    pub catalog: uuid::Uuid,
+    pub nonce: uuid::Uuid,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterObservation {
+    pub challenge: TargetWriterChallenge,
+    pub observed_term: u64,
+    pub observed_revision: u64,
+    pub membership_epoch: u64,
+    pub observed_policy_epoch: u64,
+    pub retirements: KeyRetirementState,
+}
+impl TargetWriterObservation {
+    pub fn validate(&self) -> Result<()> {
+        self.challenge.root.validate()?;
+        self.challenge.verifier.validate()?;
+        if self.challenge.catalog.is_nil()
+            || self.challenge.nonce.is_nil()
+            || self.observed_term == 0
+            || self.observed_revision == 0
+            || self.membership_epoch == 0
+            || self.observed_policy_epoch == 0
+        {
+            return Err(invalid(
+                "target writer observation lacks its physical or quorum position",
+            ));
+        }
+        self.retirements
+            .validate_journal_scope(self.observed_revision)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedTargetWriterObservation {
+    pub observation: TargetWriterObservation,
+    pub signature: String,
+}
 impl KeyRetirementState {
     pub fn is_empty(&self) -> bool {
         self.fence.is_none() && self.completed.is_empty() && self.aborted.is_empty()
@@ -874,16 +920,30 @@ impl KeyRetirementState {
     }
 
     pub fn validate_scope(&self, tenant: &str, control_tenant: &str, revision: u64) -> Result<()> {
+        self.validate_owner(revision, |scope| match scope {
+            KeyRetentionScope::Tenant { tenant: name } => {
+                name == tenant && tenant != control_tenant
+            }
+            KeyRetentionScope::Control {} => tenant == control_tenant,
+            _ => false,
+        })
+    }
+
+    pub fn validate_journal_scope(&self, revision: u64) -> Result<()> {
+        self.validate_owner(revision, |scope| {
+            matches!(scope, KeyRetentionScope::TargetJournal {})
+        })
+    }
+
+    fn validate_owner(
+        &self,
+        revision: u64,
+        owns: impl Fn(&KeyRetentionScope) -> bool,
+    ) -> Result<()> {
         self.validate()?;
         let mut seen = std::collections::BTreeSet::new();
         for fence in self.retained_fences() {
-            let owned = match &fence.request.scope {
-                KeyRetentionScope::Tenant { tenant: name } => {
-                    name == tenant && tenant != control_tenant
-                }
-                KeyRetentionScope::Control {} => tenant == control_tenant,
-                _ => false,
-            };
+            let owned = owns(&fence.request.scope);
             if !owned
                 || fence.fence_revision > revision
                 || !seen.insert(&fence.request.retirement_id)
