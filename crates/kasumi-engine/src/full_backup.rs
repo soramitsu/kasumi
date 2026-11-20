@@ -28,6 +28,33 @@ impl PublishedRoot {
     }
 }
 
+#[derive(Debug)]
+struct AuditCopyFailure {
+    object_id: uuid::Uuid,
+    upload: Option<anyhow::Error>,
+    readback: anyhow::Error,
+}
+
+impl std::fmt::Display for AuditCopyFailure {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "audit object {} readback: {:#}",
+            self.object_id, self.readback
+        )?;
+        if let Some(upload) = &self.upload {
+            write!(f, ", original upload: {upload:#}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for AuditCopyFailure {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(self.readback.as_ref())
+    }
+}
+
 struct StateStream {
     sender: tokio::sync::mpsc::Sender<Vec<u8>>,
     buffer: Vec<u8>,
@@ -676,17 +703,20 @@ impl Database {
                     "backup audit accounting exceeded",
                 ));
             }
-            let _uncertain = tokio::select! {
+            let upload = tokio::select! {
                 result = destination.put(link.object_id, kasumi_store::BackupUpload::received(ciphertext)) => result,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             ownership.check()?;
             let copied = tokio::select! {
-                result = destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup audit copy unavailable"))?,
+                result = destination.get(link.object_id, MAX_AUDIT_SEGMENT_BYTES) => result.map_err(|readback| {
+                    Error::new(ErrorCode::Unavailable, "backup audit copy unavailable")
+                        .with_physical_source(AuditCopyFailure { object_id: link.object_id, upload: upload.err(), readback }.into())
+                })?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             let verified = tokio::select! {
-                result = crate::backup_verify::verify_audit_dependency(state, root, &self.store, &copied, &link) => result.map_err(|_| Error::new(ErrorCode::Corruption, "backup audit copy verification failed"))?,
+                result = crate::backup_verify::verify_audit_dependency(state, root, &self.store, &copied, &link) => result.map_err(|original| Error::new(ErrorCode::Corruption, "backup audit copy verification failed").with_physical_source(original))?,
                 _ = cancelled(cancellation) => return Err(cancelled_error()),
             };
             if verified != reference {
