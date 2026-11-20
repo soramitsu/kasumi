@@ -23,10 +23,11 @@ pub(super) struct EditJournal<'a> {
     store: &'a TenantStore,
     owner: Vec<u8>,
     pub(super) batches: u32,
+    max_batches: u32,
 }
 
 impl<'a> EditJournal<'a> {
-    pub(super) fn new(store: &'a TenantStore, space: &str) -> Result<Self> {
+    pub(super) fn new(store: &'a TenantStore, space: &str, max_batches: u32) -> Result<Self> {
         validate_space(space)?;
         let mut owner = Vec::with_capacity(2 + space.len() + 16);
         owner.extend_from_slice(&(space.len() as u16).to_be_bytes());
@@ -36,6 +37,7 @@ impl<'a> EditJournal<'a> {
             store,
             owner,
             batches: 0,
+            max_batches,
         })
     }
 
@@ -54,6 +56,10 @@ impl<'a> EditJournal<'a> {
             .batches
             .checked_add(1)
             .context("ordered edit batch count exhausted")?;
+        ensure!(
+            next <= self.max_batches,
+            "ordered edit exceeds its staged transaction budget"
+        );
         let mut entries = Vec::with_capacity(rows * 22);
         let mut writes = Vec::with_capacity(created.len() + 2);
         for (key, value) in created {

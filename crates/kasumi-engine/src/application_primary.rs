@@ -29,20 +29,24 @@ use kasumi_store::{
     ordered_pages::{self, Direction, Edit, PageSource, TreeReader, TreeRoot},
     primary_manifest::{self as primary, PrimaryApplied, PrimaryManifest},
 };
-use kasumi_types::{CollectionState, TenantState};
+use kasumi_types::TenantState;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::{
-    Arc,
+    Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Changed document IDs by collection, as the accepted producer supplies them.
 pub(crate) type ChangedIds = BTreeMap<String, BTreeSet<String>>;
 
-/// Documents one ordinary publication may edit in place.
-pub(crate) const MAX_EDIT_IDS: usize = 4096;
+/// Maximum population for a synchronous rebuild of an absent or stale root.
+pub(crate) const MAX_REBUILD_IDS: usize = 4096;
+/// Producer keys and descriptors held during an ordinary edit.
+const WINDOW_IDS: usize = 64;
+/// Each staged native transaction owns at most fourteen page/chunk dispositions.
+const MAX_EDIT_BATCHES: u32 = 256;
 /// Encoded key and value bytes of those documents' rows.
 pub(crate) const MAX_EDIT_BYTES: usize = 16 << 20;
 /// Period between attempts after a staged replacement exhausts its byte budget
@@ -53,6 +57,13 @@ const REBUILD_RETRY_REVISIONS: u64 = 4096;
 pub(crate) struct PrimaryOwner {
     recovery_pending: AtomicBool,
     rebuild_after: AtomicU64,
+    replacement: Mutex<Option<PendingReplacement>>,
+}
+
+struct PendingReplacement {
+    previous: String,
+    candidate: String,
+    _workspace: kasumi_store::DiskMemoryLease,
 }
 
 impl Default for PrimaryOwner {
@@ -62,6 +73,7 @@ impl Default for PrimaryOwner {
         Self {
             recovery_pending: AtomicBool::new(true),
             rebuild_after: AtomicU64::new(0),
+            replacement: Mutex::new(None),
         }
     }
 }
@@ -76,6 +88,70 @@ impl PrimaryOwner {
         }
         Ok(())
     }
+    fn replacement_slot(&self) -> Result<std::sync::MutexGuard<'_, Option<PendingReplacement>>> {
+        self.replacement
+            .lock()
+            .map_err(|_| anyhow::anyhow!("primary replacement owner poisoned"))
+    }
+
+    /// A failed Native begin can have a durable outcome. Record the original
+    /// proposed namespace before starting it and retain the two exact names.
+    fn begin_replacement(
+        &self,
+        store: &Arc<TenantStore>,
+        previous: &str,
+    ) -> Result<NamespaceStage> {
+        let mut slot = self.replacement_slot()?;
+        ensure!(
+            slot.is_none(),
+            "previous primary replacement still owns native pages"
+        );
+        let workspace = store
+            .plaintext_memory_owner()
+            .clone()
+            .reserve_installed(1024)?;
+        let candidate = format!("{}@{}", primary::FAMILY, uuid::Uuid::new_v4());
+        *slot = Some(PendingReplacement {
+            previous: previous.to_owned(),
+            candidate,
+            _workspace: workspace,
+        });
+        NamespaceStage::begin(
+            store,
+            &slot
+                .as_ref()
+                .expect("installed original replacement")
+                .candidate,
+        )
+    }
+
+    /// The paired selector determines whether the prior or proposed space is
+    /// unselected. Four deletion commits bound one ordinary application.
+    /// A process restart recovers the same durable native owners on reopen.
+    fn advance_replacement_cleanup(&self, store: &Arc<TenantStore>) -> Result<bool> {
+        let mut slot = self.replacement_slot()?;
+        let Some(pending) = slot.as_ref() else {
+            return Ok(true);
+        };
+        let selected = SelectedGeneration::load(store, primary::FAMILY, &primary::INITIAL_SPACE)?;
+        let unselected = if selected.namespace(0) == pending.candidate {
+            &pending.previous
+        } else {
+            ensure!(
+                selected.namespace(0) == pending.previous,
+                "primary replacement selection changed"
+            );
+            &pending.candidate
+        };
+        for _ in 0..4 {
+            if NamespaceStage::reclaim(store, unselected)? {
+                *slot = None;
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     fn pending(&self) {
         self.recovery_pending.store(true, Ordering::Release);
     }
@@ -177,9 +253,13 @@ fn rebuild(
     state: &TenantState,
     applied: Option<PrimaryApplied>,
     mut byte_budget: usize,
+    ordinary_owner: Option<&PrimaryOwner>,
 ) -> Result<Vec<WriteOp>> {
     let family = SelectedGeneration::adopt(store, primary::FAMILY, &primary::INITIAL_SPACE)?;
-    let stage = NamespaceStage::begin_generation(store, primary::FAMILY)?;
+    let stage = match ordinary_owner {
+        Some(owner) => owner.begin_replacement(store, family.namespace(0))?,
+        None => NamespaceStage::begin_generation(store, primary::FAMILY)?,
+    };
     let memory = store.plaintext_memory_owner().clone();
     let records = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
         application_records::visit_primary(state, &memory, |key, value| {
@@ -220,6 +300,7 @@ pub(crate) fn prepare_restore(
     ordered_pages::recover_abandoned_edits_in(store, primary::FAMILY)?;
     owner.settled();
     NamespaceStage::reclaim_family(store, primary::FAMILY)?;
+    *owner.replacement_slot()? = None;
     let applied = snapshot_applied(meta)?;
     if reopen
         && let Some(Some(manifest)) = load_or_skip(store)?
@@ -242,7 +323,7 @@ pub(crate) fn prepare_restore(
             return Ok(());
         }
     }
-    writes.extend(rebuild(store, state, applied, usize::MAX)?);
+    writes.extend(rebuild(store, state, applied, usize::MAX, None)?);
     Ok(())
 }
 
@@ -272,7 +353,6 @@ fn load_or_skip(store: &Arc<TenantStore>) -> Result<Option<Option<PrimaryManifes
 pub(crate) struct PrimaryPublication {
     writes: Vec<WriteOp>,
     _workspace: Option<ordered_pages::EditWorkspace>,
-    _rows: Option<kasumi_store::DiskMemoryLease>,
 }
 
 impl PrimaryPublication {
@@ -283,7 +363,6 @@ impl PrimaryPublication {
         Self {
             writes,
             _workspace: None,
-            _rows: None,
         }
     }
 }
@@ -352,61 +431,57 @@ fn pristine(state: &TenantState) -> bool {
     })
 }
 
-/// The document IDs whose rows can differ between the two states, or `None`
-/// beyond the edit bound. Same-definition collections are covered by the
-/// producer's exact delta (Accepted rejects a changed map without one); a new,
-/// removed or redefined collection contributes every ID whose maps differ.
-fn changed_ids(
+/// Emit the producer's exact delta without copying its ID set. A new,
+/// removed or redefined collection also contributes IDs from either side.
+fn visit_changed_ids(
     previous: &TenantState,
     candidate: &TenantState,
     changed: &ChangedIds,
-) -> Option<BTreeMap<String, BTreeSet<String>>> {
-    let mut count = changed
-        .values()
-        .try_fold(0usize, |count, ids| count.checked_add(ids.len()))?;
-    if count > MAX_EDIT_IDS {
-        return None;
+    mut visit: impl FnMut(&str, &str) -> Result<()>,
+) -> Result<()> {
+    for (name, ids) in changed {
+        for id in ids {
+            visit(name, id)?;
+        }
     }
-    let mut ids = changed.clone();
     let names = previous.collections.keys().chain(
         candidate
             .collections
             .keys()
             .filter(|name| !previous.collections.contains_key(*name)),
     );
-    let same = |old: &CollectionState, new: &CollectionState| {
-        old.documents.ptr_eq(&new.documents)
-            && old.archived_documents.ptr_eq(&new.archived_documents)
-    };
     for name in names {
         let old = previous.collections.get(name);
         let new = candidate.collections.get(name);
-        match (old, new) {
-            (Some(old), Some(new))
-                if Arc::ptr_eq(&old.definition, &new.definition)
-                    || same(old, new)
-                    || old.definition == new.definition =>
-            {
-                continue;
-            }
-            _ => {}
+        if let (Some(old), Some(new)) = (old, new)
+            && (Arc::ptr_eq(&old.definition, &new.definition)
+                || (old.documents.ptr_eq(&new.documents)
+                    && old.archived_documents.ptr_eq(&new.archived_documents))
+                || old.definition == new.definition)
+        {
+            continue;
         }
-        let entry = ids.entry(name.clone()).or_default();
-        for collection in [old, new].into_iter().flatten() {
-            for id in crate::index_source::resident_ids_after(collection, None) {
-                if entry.insert(id.clone()) {
-                    count += 1;
-                    if count > MAX_EDIT_IDS {
-                        return None;
-                    }
+        let supplied = |id: &str| changed.get(name).is_some_and(|ids| ids.contains(id));
+        if let Some(old) = old {
+            for id in crate::index_source::resident_ids_after(old, None) {
+                if !supplied(id) {
+                    visit(name, id)?;
                 }
             }
         }
-        if entry.is_empty() {
-            ids.remove(name);
+        if let Some(new) = new {
+            for id in crate::index_source::resident_ids_after(new, None) {
+                if !supplied(id)
+                    && !old.is_some_and(|c| {
+                        c.documents.contains_key(id) || c.archived_documents.contains_key(id)
+                    })
+                {
+                    visit(name, id)?;
+                }
+            }
         }
     }
-    Some(ids)
+    Ok(())
 }
 
 /// Under the apply owner, after the candidate's after-images are stored.
@@ -423,12 +498,17 @@ pub(crate) fn prepare_publication(
     changed: &ChangedIds,
     applied: Option<PrimaryApplied>,
 ) -> Result<Option<PrimaryPublication>> {
+    // A budget refusal may have staged earlier windows before leaving the
+    // root stale. Reclaim its original journal even while the root is stale.
+    owner.recover(store)?;
+    let may_replace = owner.advance_replacement_cleanup(store)?;
     let Some(manifest) = load_or_skip(store)? else {
         return Ok(None);
     };
     let base = match step(manifest.as_ref(), previous, candidate) {
         Step::Nothing | Step::Covered => return Ok(None),
-        Step::Replace => return replace(owner, store, candidate, applied),
+        Step::Replace if may_replace => return replace(owner, store, candidate, applied),
+        Step::Replace => return Ok(None),
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
             let same = manifest.applied.as_ref().zip(applied.as_ref()).map_or(
@@ -489,13 +569,7 @@ pub(crate) fn prepare_publication(
         changed,
         applied.clone(),
     ) {
-        Ok(Some(publication)) => Ok(Some(publication)),
-        Ok(None) => stale(
-            &base,
-            candidate,
-            applied,
-            anyhow::anyhow!("primary edit exceeds its ordinary bound"),
-        ),
+        Ok(publication) => Ok(Some(publication)),
         Err(error) => stale(&base, candidate, applied, error),
     }
 }
@@ -513,7 +587,7 @@ fn replace(
     if candidate.revision < owner.rebuild_after.load(Ordering::Acquire) {
         return Ok(None);
     }
-    let mut remaining = MAX_EDIT_IDS;
+    let mut remaining = MAX_REBUILD_IDS;
     for collection in candidate.collections.values() {
         let Some(count) = remaining
             .checked_sub(collection.documents.len())
@@ -523,12 +597,7 @@ fn replace(
         };
         remaining = count;
     }
-    let built = (|| {
-        owner.recover(store)?;
-        NamespaceStage::reclaim_family(store, primary::FAMILY)?;
-        rebuild(store, candidate, applied, MAX_EDIT_BYTES)
-    })();
-    match built {
+    match rebuild(store, candidate, applied, MAX_EDIT_BYTES, Some(owner)) {
         Ok(writes) => Ok(Some(PrimaryPublication::only(writes))),
         Err(error) => {
             if let Err(access) = store.check_access() {
@@ -577,46 +646,78 @@ fn edit(
     candidate: &TenantState,
     changed: &ChangedIds,
     applied: Option<PrimaryApplied>,
-) -> Result<Option<PrimaryPublication>> {
-    owner.recover(store)?;
-    let Some(ids) = changed_ids(previous, candidate, changed) else {
-        return Ok(None);
-    };
+) -> Result<PrimaryPublication> {
     let memory = store.plaintext_memory_owner();
-    let mut rows = BTreeMap::new();
-    let mut bytes = 0usize;
-    for (name, set) in &ids {
-        let collection = candidate.collections.get(name);
-        for id in set {
-            bytes = bytes.saturating_add(application_records::primary_rows(
-                name,
-                collection,
-                id,
-                candidate.revision,
-                memory,
-                &mut rows,
-            )?);
-            if bytes > MAX_EDIT_BYTES {
-                return Ok(None);
-            }
-        }
-    }
-    let rows_lease = memory
-        .clone()
-        .reserve_installed(u64::try_from(bytes)? + 96 * rows.len() as u64)?;
-    let edits: Vec<Edit<'_>> = rows
-        .iter()
-        .map(|(key, value)| match value {
-            Some(value) => Edit::Put(key, value),
-            None => Edit::Delete(key),
-        })
-        .collect();
-    // A staged edit writes journaled batches before its publication.
+    // A single decision covers pages created and then displaced in this same
+    // edit. Failed or lost publications retain the original recovery journal.
     owner.pending();
-    let edit = ordered_pages::edit_tree_staged(store, &base.page_space, &base.records, &edits)?;
+    let edit = ordered_pages::edit_tree_staged_batches(
+        store,
+        &base.page_space,
+        &base.records,
+        MAX_EDIT_BATCHES,
+        |apply| {
+            let lease_count = 3 * WINDOW_IDS;
+            let _lease_table = memory.clone().reserve_installed(u64::try_from(
+                lease_count * std::mem::size_of::<kasumi_store::DiskMemoryLease>(),
+            )?)?;
+            let mut leases = Vec::new();
+            leases.try_reserve_exact(lease_count)?;
+            let mut rows = BTreeMap::new();
+            let mut window_ids = 0;
+            let mut input_bytes = 0usize;
+            let mut flush = |rows: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>| -> Result<()> {
+                let edits: Vec<_> = rows
+                    .iter()
+                    .map(|(key, value)| match value {
+                        Some(value) => Edit::Put(key, value),
+                        None => Edit::Delete(key),
+                    })
+                    .collect();
+                apply(&edits)?;
+                drop(edits);
+                rows.clear();
+                Ok(())
+            };
+            visit_changed_ids(previous, candidate, changed, |name, id| {
+                // Three tuple keys, their spare capacity, tree/Vec entries,
+                // header value, and borrowed edit descriptors. Each encoded
+                // primary value retains its separately measured original grant.
+                let framing = 12 * (name.len() + id.len() + 8) + 3 * 256;
+                let framing_lease = memory.clone().reserve_installed(u64::try_from(framing)?)?;
+                leases.push(framing_lease);
+                let added = application_records::primary_rows(
+                    name,
+                    candidate.collections.get(name),
+                    id,
+                    candidate.revision,
+                    memory,
+                    &mut rows,
+                    &mut leases,
+                )?;
+                input_bytes = input_bytes
+                    .checked_add(added + 3 * 96)
+                    .context("primary edit byte total overflow")?;
+                ensure!(
+                    input_bytes <= MAX_EDIT_BYTES,
+                    "primary edit exceeds its input work budget"
+                );
+                window_ids += 1;
+                if window_ids == WINDOW_IDS {
+                    flush(&mut rows)?;
+                    leases.clear();
+                    window_ids = 0;
+                }
+                Ok(())
+            })?;
+            if !rows.is_empty() {
+                flush(&mut rows)?;
+            }
+            Ok(())
+        },
+    )?;
     let staged = edit.staged_batches() > 0;
     let (root, mut writes, workspace) = edit.into_parts();
-    drop(edits);
     if !staged {
         owner.settled();
     }
@@ -630,11 +731,10 @@ fn edit(
         )
         .write()?,
     );
-    Ok(Some(PrimaryPublication {
+    Ok(PrimaryPublication {
         writes,
         _workspace: Some(workspace),
-        _rows: Some(rows_lease),
-    }))
+    })
 }
 
 #[cfg(test)]

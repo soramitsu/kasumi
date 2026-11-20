@@ -146,7 +146,7 @@ pub fn edit_tree(
     base: &TreeRoot,
     edits: &[Edit<'_>],
 ) -> Result<TreeEdit> {
-    run(source, space, base, edits, None)
+    run(source, space, base, None, |apply| apply(edits))
 }
 
 /// `edit_tree` whose publication stays small whatever the edit's size: once
@@ -160,18 +160,31 @@ pub fn edit_tree_staged(
     base: &TreeRoot,
     edits: &[Edit<'_>],
 ) -> Result<TreeEdit> {
-    let staging = EditJournal::new(store, space)?;
-    run(store, space, base, edits, Some(staging))
+    edit_tree_staged_batches(store, space, base, u32::MAX, |apply| apply(edits))
+}
+
+/// Apply individually sorted windows to one evolving unpublished root. Each
+/// window may release its producer's row buffers as soon as the callback
+/// returns. Only the final root and the single original journal decision can
+/// become visible. A producer error leaves the original selection reachable.
+pub fn edit_tree_staged_batches(
+    store: &TenantStore,
+    space: &str,
+    base: &TreeRoot,
+    max_batches: u32,
+    produce: impl FnOnce(&mut dyn FnMut(&[Edit<'_>]) -> Result<()>) -> Result<()>,
+) -> Result<TreeEdit> {
+    let staging = EditJournal::new(store, space, max_batches)?;
+    run(store, space, base, Some(staging), produce)
 }
 
 fn run<'a>(
     source: &'a dyn PageSource,
     space: &'a str,
     base: &TreeRoot,
-    edits: &[Edit<'_>],
     staging: Option<EditJournal<'a>>,
+    produce: impl FnOnce(&mut dyn FnMut(&[Edit<'_>]) -> Result<()>) -> Result<()>,
 ) -> Result<TreeEdit> {
-    check_edits(edits)?;
     super::edit_journal::validate_space(space)?;
     let workspace = EditWorkspace::new(source.memory(), path_workspace(base.height() + 1))?;
     let mut editor = Editor {
@@ -184,7 +197,18 @@ fn run<'a>(
         staging,
         workspace,
     };
-    let root = editor.edit_root(base, edits)?;
+    let mut root = *base;
+    let mut funded_path = path_workspace(base.height() + 1);
+    produce(&mut |edits| {
+        check_edits(edits)?;
+        let path = path_workspace(root.height() + 1);
+        if path > funded_path {
+            editor.workspace.charge(path - funded_path)?;
+            funded_path = path;
+        }
+        root = editor.edit_root(&root, edits)?;
+        Ok(())
+    })?;
     let staged = editor
         .staging
         .as_ref()

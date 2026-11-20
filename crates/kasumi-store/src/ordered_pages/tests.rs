@@ -1081,7 +1081,27 @@ async fn a_large_staged_edit_publishes_one_decision_and_preserves_pinned_readers
             .iter()
             .map(|(key, value)| Edit::Put(key, value.as_deref().unwrap()))
             .collect();
-        let edit = edit_tree_staged(store, SPACE, &root, &edits)?;
+        if round == 0 {
+            let refused = edit_tree_staged_batches(store, SPACE, &root, 1, |apply| {
+                for window in edits.chunks(64) {
+                    apply(window)?;
+                }
+                Ok(())
+            });
+            assert!(
+                refused
+                    .err()
+                    .is_some_and(|error| error.to_string().contains("staged transaction budget"))
+            );
+            assert_eq!(recover_abandoned_edits(store)?, 1);
+            assert_eq!(TreeReader::new(&**store, SPACE, root, None)?.verify()?, 0);
+        }
+        let edit = edit_tree_staged_batches(store, SPACE, &root, u32::MAX, |apply| {
+            for window in edits.chunks(128) {
+                apply(window)?;
+            }
+            Ok(())
+        })?;
         assert!(edit.staged_batches() > 1);
         assert!(edit.put_bytes() < 128);
         assert!(

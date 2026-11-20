@@ -28,7 +28,9 @@ pub use builder::{BulkBuilder, RowSink, stage_tree};
 pub use cache::{PageCache, PageCacheStats};
 pub use cursor::{Direction, TreeReader};
 pub use edit_journal::{EDIT_JOURNAL, recover_abandoned_edits, recover_abandoned_edits_in};
-pub use editor::{Edit, EditWorkspace, TreeEdit, edit_tree, edit_tree_staged};
+pub use editor::{
+    Edit, EditWorkspace, TreeEdit, edit_tree, edit_tree_staged, edit_tree_staged_batches,
+};
 
 /// Plaintext bound of one page, header included.
 pub const MAX_PAGE_BYTES: usize = 32 << 10;
