@@ -25,21 +25,35 @@ def write(path, value):
     staged.replace(path)
 
 
+def synced_directory_extent(path):
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        before = os.fstat(descriptor).st_blocks * 512
+        os.fsync(descriptor)
+        return max(before, os.fstat(descriptor).st_blocks * 512)
+    finally:
+        os.close(descriptor)
+
+
 def measure(directory, count, unit):
     # The session directory holds UUID names. Its objects directory must
     # also allow a cleanup that crosses the 256-object page boundary.
     sessions = directory / "sessions"
     sessions.mkdir()
-    high = sessions.stat().st_blocks * 512
+    high = synced_directory_extent(sessions)
     for ordinal in range(1, count + 1):
-        (sessions / str(uuid.UUID(int=ordinal))).mkdir()
+        child = sessions / str(uuid.UUID(int=ordinal))
+        child.mkdir()
         high = max(high, sessions.stat().st_blocks * 512)
+        if (ordinal & (ordinal - 1)) == 0 or ordinal == count:
+            high = max(high, synced_directory_extent(child), synced_directory_extent(sessions))
     one = sessions / str(uuid.UUID(int=1))
     objects = one / "objects"
     objects.mkdir()
     for ordinal in range(1, 306):
         (objects / (str(uuid.UUID(int=ordinal)) + ".kasumi")).touch()
         high = max(high, objects.stat().st_blocks * 512)
+    high = max(high, synced_directory_extent(objects), synced_directory_extent(one))
     rows = []
     for size in (0, 1, 4095, 4096, 65536, 65537, 131072, 1 << 20, 2 << 20, 32 << 20):
         part = one / "part"
@@ -55,7 +69,7 @@ def measure(directory, count, unit):
         terminal = one / "terminal"
         part.replace(terminal)
         allocated = terminal.stat().st_blocks * 512
-        high = max(high, one.stat().st_blocks * 512)
+        high = max(high, synced_directory_extent(one))
         rounded = (size + unit - 1) // unit * unit
         rows.append(dict(logical=size, allocated=allocated, excess=max(0, allocated - rounded)))
         terminal.unlink()
