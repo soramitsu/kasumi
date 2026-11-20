@@ -355,3 +355,72 @@ async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_
     control.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn retirement_decision_rechecks_the_ordered_membership_and_dependency_position()
+-> std::result::Result<(), crate::SnapshotFailure> {
+    let fixture = CredentialFixture::new().await;
+    let (control, operator) = backup_test_control(&fixture.db, &fixture.context, true).await?;
+    fixture.db.install_backup_control(&control, &operator)?;
+    let destination = Arc::new(kasumi_store::FilesystemBackupDestination::new(
+        fixture._directory.path().join("persistent").join("retirement-race"),
+        32 << 20,
+        fixture.storage.persistent.clone(),
+    )?);
+    fixture.db.install_archive_destination("race".into(), destination.clone())?;
+    let state = control.engine.generation()?;
+    let mut begin = BeginKeyRetirement {
+        request: RetireKeyVersionsRequest {
+            retirement_id: "1".into(),
+            scope: KeyRetentionScope::Control {},
+            identity: KeyIdentityRef { provider: "file".into(), key_ref: "previous-wrapping-key".into() },
+            retire_below_version: 2,
+            expected_coverage_sha256: "c".repeat(64),
+        },
+        membership_epoch: control.group.metrics().membership_config.log_id().as_ref().map_or(0, |id| id.index),
+        expected_dependency_sha256: state.state.key_dependency_sha256()?,
+    };
+    drop(state);
+    let epoch = begin.membership_epoch;
+    begin.membership_epoch += 1;
+    let refused = control.submit(operator.clone(), Operation::BeginKeyRetirement(begin.clone())).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    assert!(control.engine.generation()?.state.key_retirements.is_empty());
+    begin.membership_epoch = epoch;
+    control.submit(operator.clone(), Operation::BeginKeyRetirement(begin.clone())).await?;
+    let after_fence = control.engine.generation()?.state.key_dependency_sha256()?;
+    // A real backup claim wins the race between the coverage check and decision.
+    let generation = fixture.db.engine.generation()?;
+    let intent = BackupSessionIntent {
+        session_id: uuid::Uuid::new_v4(),
+        tenant: fixture.context.tenant.clone(),
+        source_incarnation: generation.incarnation().into(),
+        revision: generation.state.revision,
+        principal: fixture.context.principal.clone(),
+        request_id: fixture.context.request_id.clone(),
+    };
+    fixture.db.claim_backup_intent(&fixture.context, destination.as_ref(), &intent, &generation, Some("race")).await?;
+    drop(generation);
+    let mut decision = CompleteKeyRetirement {
+        retirement_id: "1".into(), request_sha256: begin.request.request_sha256()?,
+        expected_dependency_sha256: after_fence.clone(), completed_coverage_sha256: "d".repeat(64),
+    };
+    let refused = control.submit(operator.clone(), Operation::CompleteKeyRetirement(decision.clone())).await.unwrap_err();
+    assert_eq!(refused.code, ErrorCode::Conflict);
+    let observed = control.engine.generation()?;
+    assert!(observed.state.key_retirements.fence.is_some());
+    decision.expected_dependency_sha256 = observed.state.key_dependency_sha256()?;
+    assert_ne!(decision.expected_dependency_sha256, after_fence);
+    drop(observed);
+    control.submit(operator.clone(), Operation::CompleteKeyRetirement(decision)).await?;
+    let persisted = control.engine.generation()?.state.key_retirements.clone();
+    assert_eq!(persisted.floor(&begin.request.identity), 2);
+    control.group.snapshot().await?;
+    control.shutdown().await?;
+    drop(control);
+    let (reopened, _) = backup_test_control(&fixture.db, &fixture.context, false).await?;
+    assert_eq!(reopened.engine.generation()?.state.key_retirements, persisted);
+    reopened.shutdown().await?;
+    fixture.close().await;
+    Ok(())
+}

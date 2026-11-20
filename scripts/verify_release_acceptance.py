@@ -554,6 +554,9 @@ def check_host(root, host, target, started, finished):
 
 
 def domain_expected_exits(kind):
+    if kind == "key-retention":
+        import run_key_retention
+        return run_key_retention.REFUSALS
     if kind == "installed":
         import run_installed
         return run_installed.EXPECTED_REFUSALS
@@ -1205,6 +1208,12 @@ def recovery_adapter(root, domain, files, configs, artifacts, candidates):
     return run_recovery.verify_domain(root, domain, files, configs, artifacts, candidates)
 
 
+def key_retention_adapter(root, domain, files, configs, artifacts, candidates):
+    import run_key_retention
+
+    return run_key_retention.verify_domain(root, domain, files, configs, artifacts, candidates)
+
+
 def audit_retention_adapter(root, domain, files, configs, artifacts, candidates):
     import run_audit_retention
 
@@ -1295,6 +1304,7 @@ DOMAIN_ADAPTERS = {
     "capacity-standalone": capacity_standalone_adapter,
     "capacity-ha": capacity_ha_adapter,
     "audit-retention": audit_retention_adapter,
+    "key-retention": key_retention_adapter,
     "benchmark-matrix": benchmark_matrix_adapter,
     "concurrency": concurrency_adapter,
     "observability": observability_adapter,

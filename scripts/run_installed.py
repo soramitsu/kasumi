@@ -800,6 +800,8 @@ def lifecycle(run):
 class Replay:
     """Replay every original binary, helper, input, refusal and service lifetime."""
 
+    expected_refusals = EXPECTED_REFUSALS
+
     def __init__(self, facts, params, binary, hashes, inputs, intent):
         self.facts = facts
         report = facts["report"]
@@ -848,7 +850,7 @@ class Replay:
     def command(self, name, args, scenario=None, expected=0):
         item, record = self.take(name, list(map(str, args)), False)
         require(
-            expected == EXPECTED_REFUSALS.get(name, 0)
+            expected == self.expected_refusals.get(name, 0)
             and record["exit_code"] == expected
             and item["receipt"]["path"] == name + "/process.json"
             and item["log"]["path"] == name + "/stdout.log"
