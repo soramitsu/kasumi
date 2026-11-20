@@ -1100,6 +1100,10 @@ pub async fn restore_local(
         Ok(())
     })?;
     phase.complete();
+    // Reserve the target's mandatory audit pool while its store is still empty.
+    // Verification and persistence can otherwise fill the shared governor with
+    // optional pages before start_prepared installs that very same pool.
+    let maintenance = crate::audit_maintenance::NodeAuditMaintenance::install(&admission)?;
     let phase = VerificationPhase::start("restore.load_authorized", Some(deadline));
     let verified = deadline
         .run(Box::pin(backup_restore::load_authorized(
@@ -1180,6 +1184,8 @@ pub async fn restore_local(
         phase.complete();
         database
     };
+    // The serving engine has adopted the pool for this exact MemoryCore.
+    drop(maintenance);
     let phase = VerificationPhase::start("restore.maintenance_audit", Some(deadline));
     database.install_archive_destination(
         source.destination_alias.clone(),
