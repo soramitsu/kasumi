@@ -3052,8 +3052,26 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
         Ok(ids)
     }
 
-    // Idle warmup needs ongoing RSS samples after the last foreground write.
-    let mut source = Fixture::with_admission(1, None, NodeAdmission::new_fixture).await?;
+    // This replicated fixture keeps databases and disk owners live beside the
+    // three work reserves that optional text cache leases must preserve.
+    let mut source = Fixture::with_admission(1, None, |mut config| {
+        let total = config
+            .max_inflight_bytes
+            .context("fixture admission cap absent")?;
+        let (work, _) = config.cache_work_headroom(total);
+        config.max_inflight_bytes = Some(
+            total
+                .checked_add(work)
+                .context("text fixture cap overflow")?,
+        );
+        NodeAdmission::new_fixture(config)
+    })
+    .await?;
+    let admission = &source.storage.admission;
+    let (work, _) = admission.policy().cache_work_headroom(source.budget);
+    // Withhold only that additional grant until the real monitor reports its
+    // capacity decision. The running sampler remains healthy through both phases.
+    let constrained = admission.reserve_resident(work)?;
     let source_audit = audit(&source.node, &source.storage.admission, false).await?;
     crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
     let engine = Arc::new(TenantEngine::from_bootstrap(
@@ -3132,6 +3150,29 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
     // Prove the registered idle worker reaches the published shard set before
     // the first text query has any opportunity to populate it on demand.
     let revision = engine.generation()?.revision();
+    tokio::time::timeout(std::time::Duration::from_secs(45), async {
+        loop {
+            let progress = db.text_warmup_status();
+            if progress.revision == Some(revision)
+                && progress.state == crate::TextWarmupState::CapacityLimited
+                && progress.visited_shards == 0
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .context("text warmup did not observe the held cache work reserve")?;
+    let snapshot = admission.snapshot();
+    eprintln!(
+        "idle text warmup constrained revision={revision} charged={} cap={} work_reserve={work} usable={} pressured={}",
+        snapshot.reserved_bytes,
+        admission.policy().max_inflight_bytes.unwrap(),
+        snapshot.sample_usable,
+        snapshot.pressured
+    );
+    drop(constrained);
     tokio::time::timeout(std::time::Duration::from_secs(45), async {
         loop {
             let progress = db.text_warmup_status();
