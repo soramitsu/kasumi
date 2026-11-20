@@ -204,16 +204,25 @@ pub(super) fn write(
         file.owner_failed();
         return Err(io::ErrorKind::InvalidData.into());
     }
-    // Write the header last. A reserve remains a reserve even if a write fails;
-    // only a later successful immutable rename can expose a terminal record.
-    file.write_all_at(payload, HEADER_BYTES as u64)?;
-    let zero = [0; IO_CHUNK_BYTES];
+    // A fresh reserve is already zero. Materializing its padding can pin
+    // the entire large COW extent to one live block even after truncate.
+    // Repair only stale bytes from a previous attempt. Persist that tail
+    // separately so the final payload can occupy its own short extent.
+    let mut buffer = [0; IO_CHUNK_BYTES];
     let mut offset = HEADER_BYTES + payload.len();
     while offset < FILE_BYTES {
-        let length = zero.len().min(FILE_BYTES - offset);
-        file.write_all_at(&zero[..length], offset as u64)?;
-        offset += length;
+        let count = buffer.len().min(FILE_BYTES - offset);
+        file.read_exact_at(&mut buffer[..count], offset as u64)?;
+        if buffer[..count].iter().any(|&byte| byte != 0) {
+            buffer[..count].fill(0);
+            file.write_all_at(&buffer[..count], offset as u64)?;
+        }
+        offset += count;
     }
+    file.sync_all()?;
+    // The reserve stays private until the complete contents and header have
+    // been synchronized and the original immutable rename publishes them.
+    file.write_all_at(payload, HEADER_BYTES as u64)?;
     file.write_all_at(&header, 0)?;
     // The reserve's name is already durable; publication syncs the rename.
     file.sync_all()

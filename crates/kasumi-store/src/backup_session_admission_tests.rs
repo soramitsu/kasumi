@@ -110,6 +110,65 @@ fn terminal_publication_keeps_original_inode_and_reclaims_only_published_padding
     );
 }
 
+#[test]
+fn retry_clears_stale_reserved_payload_without_materializing_the_untouched_tail() {
+    use std::os::unix::fs::MetadataExt;
+    let directory = private_tempdir().unwrap();
+    let disk = open(directory.path(), 2);
+    let destination = Directory::open(directory.path(), disk).unwrap();
+    let session = Uuid::new_v4();
+    destination
+        .put(session, BackupSessionSlot::Intent, b"immutable intent")
+        .unwrap();
+    let owner = destination.session(session).unwrap().unwrap();
+    let reserve_path = directory
+        .path()
+        .join("sessions")
+        .join(session.to_string())
+        .join("outcome.reserve");
+    let before = reserve_path.metadata().unwrap();
+    let reserve = owner.open_leaf("outcome.reserve").unwrap().unwrap();
+    let long = vec![0x5a; 3 * terminal::IO_CHUNK_BYTES + 17];
+    terminal::write(&reserve, session, Terminal::Outcome, &long).unwrap();
+    let after = reserve_path.metadata().unwrap();
+    assert_eq!(after.len(), terminal::FILE_BYTES as u64);
+    if before.blocks() == 0 {
+        assert!(
+            after.blocks() * 512 < terminal::FILE_BYTES as u64,
+            "small record materialized the full sparse reserve"
+        );
+    }
+    let short = b"retried outcome";
+    terminal::write(&reserve, session, Terminal::Outcome, short).unwrap();
+    assert_eq!(
+        terminal::read(&reserve, session, Terminal::Outcome, short.len()).unwrap(),
+        short
+    );
+    drop(reserve);
+    assert!(
+        destination
+            .get(session, BackupSessionSlot::Outcome, short.len())
+            .unwrap()
+            .is_none()
+    );
+    destination
+        .put(session, BackupSessionSlot::Outcome, short)
+        .unwrap();
+    let final_path = reserve_path.with_file_name("outcome.kasumi");
+    let published = final_path.metadata().unwrap();
+    assert_eq!(
+        (published.dev(), published.ino()),
+        (before.dev(), before.ino())
+    );
+    assert_eq!(
+        destination
+            .get(session, BackupSessionSlot::Outcome, short.len())
+            .unwrap()
+            .unwrap(),
+        short
+    );
+}
+
 /// An object put into a classified session synchronizes once per namespace
 /// change: the session directory's classification, the temporary's create
 /// (file and parent), its contents, and the publishing rename. It reads only
