@@ -71,17 +71,17 @@ pub(super) struct CheckedIo<'a, T> {
 }
 impl<T: Read> Read for CheckedIo<'_, T> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        (self.check)().map_err(std::io::Error::other)?;
+        (self.check)().map_err(super::snapshot_encoding_failure::checked_io_failure)?;
         self.io.read(bytes)
     }
 }
 impl<T: Write> Write for CheckedIo<'_, T> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        (self.check)().map_err(std::io::Error::other)?;
+        (self.check)().map_err(super::snapshot_encoding_failure::checked_io_failure)?;
         self.io.write(bytes)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        (self.check)().map_err(std::io::Error::other)?;
+        (self.check)().map_err(super::snapshot_encoding_failure::checked_io_failure)?;
         self.io.flush()
     }
 }

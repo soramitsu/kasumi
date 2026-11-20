@@ -235,19 +235,19 @@ async fn concurrent_pinned_strict_reads_refuse_before_proposal_and_keep_the_tena
                 .await;
             drop(permit);
             // Keep each released response pinned until every reader finishes.
-            outcome.map_err(|error| error.code)
+            outcome
         });
     }
     let mut pinned = Vec::new();
     while let Some(outcome) = reads.join_next().await {
         match outcome.unwrap() {
             Ok(response) => pinned.push(response),
-            Err(code) => assert!(
+            Err(error) => assert!(
                 matches!(
-                    code,
+                    error.code,
                     ErrorCode::ResourceExhausted | ErrorCode::AuditUnavailable
                 ),
-                "strict read failed with {code:?}"
+                "strict read failed with {error:?}"
             ),
         }
         assert_eq!(fixture.database.serving_failure_class(), None);

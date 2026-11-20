@@ -32,7 +32,8 @@ impl StagedSnapshot {
         }
         impl<F: FnMut() -> Result<()>> Read for Checked<'_, F> {
             fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-                (self.check)().map_err(std::io::Error::other)?;
+                (self.check)()
+                    .map_err(crate::state::snapshot_encoding_failure::checked_io_failure)?;
                 self.reader.read(bytes)
             }
         }

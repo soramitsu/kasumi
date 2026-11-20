@@ -476,7 +476,10 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
             Ok(())
         },
     ).err().expect("blocked genesis reader must release partial staging");
-    assert!(crate::backup_verify::WorkerFailure::matches_stop(&interrupted, &stopped));
+    assert!(
+        crate::backup_verify::WorkerFailure::matches_stop(&interrupted, &stopped),
+        "restore returned {interrupted:?} after {} checks", reads.get()
+    );
     assert_eq!(reads.get(), 6);
     assert_eq!(fixture.storage.scratch.snapshot().live_files, files);
     let validated = validate_image();
