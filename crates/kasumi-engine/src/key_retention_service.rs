@@ -10,7 +10,7 @@ mod member;
 mod retirement;
 #[path = "key_retention_security_audit.rs"]
 mod security_audit;
-pub(super) use security_audit::SignerCatalog;
+pub use security_audit::SignerCatalog;
 
 /// Installed standalone journal interpretation. Only references from the
 /// already-opened security store enter this administrative read.

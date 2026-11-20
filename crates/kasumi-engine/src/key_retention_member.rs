@@ -184,6 +184,28 @@ impl SecurityAudit {
 }
 
 impl Database {
+    fn check_data_service_access(&self, purpose: CatalogPurpose) -> Result<()> {
+        if let Some(installation_id) = purpose.data_installation() {
+            let signer = self
+                .signer_keys
+                .get()
+                .ok_or_else(|| unavailable("Data signer unavailable"))?;
+            let access = self.store.storage_access();
+            if signer.verifier.installation_id != installation_id
+                || !matches!(access.purpose(), kasumi_store::StoragePurpose::Serving { identity, .. }
+                    if identity.node.verifier == signer.verifier)
+            {
+                return Err(unavailable(
+                    "Data member verifier differs from its serving identity",
+                ));
+            }
+            access
+                .check_serving()
+                .map_err(Error::from_physical_source)?;
+        }
+        Ok(())
+    }
+
     /// Verify the physical projection again after response encoding. Archive
     /// reads run under the same retained blocking-worker admission as capture.
     pub async fn check_member_catalog_release(
@@ -200,7 +222,11 @@ impl Database {
                 ));
             }
         }
+        self.check_data_service_access(request.purpose)?;
         if let kasumi_raft::RpcResponse::MemberSignerCatalog(report) = report {
+            report
+                .validate(request, self.group.node_id())
+                .map_err(unavailable)?;
             let store = self
                 .signer_keys
                 .get()
@@ -213,6 +239,7 @@ impl Database {
             if digest != report.catalog_sha256 {
                 return Err(unavailable("member signer catalog changed before release"));
             }
+            self.check_data_service_access(request.purpose)?;
         }
         Ok(())
     }
@@ -225,6 +252,7 @@ impl Database {
     ) -> Result<AdmittedOutput<kasumi_raft::RpcResponse>> {
         request.validate().map_err(unavailable)?;
         self.access()?;
+        self.check_data_service_access(request.purpose)?;
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
         let registration = self.work.begin(token.clone())?;
@@ -237,7 +265,7 @@ impl Database {
         }
         let group = self.group.clone();
         let control = self.store.tenant() == crate::control::CONTROL_TENANT;
-        let signer = self.signer_keys.get().filter(|_| control).cloned();
+        let signer = self.signer_keys.get().cloned();
         let audit = self.security_audit.clone();
         charge
             .retained_read(token, move |mut charge, token| {
@@ -247,17 +275,25 @@ impl Database {
                 } else {
                     KeyCatalogDomain::Application
                 };
-                let response = if request.purpose == CatalogPurpose::ControlSigner {
+                let response = if matches!(
+                    request.purpose,
+                    CatalogPurpose::ControlSigner | CatalogPurpose::DataSigner { .. }
+                ) {
+                    if control != (request.purpose == CatalogPurpose::ControlSigner) {
+                        return Err(unavailable(
+                            "signer inventory belongs to another group role",
+                        ));
+                    }
                     request.check_position(&group).map_err(unavailable)?;
                     let signer = signer
-                        .ok_or_else(|| unavailable("Control signer catalog is unavailable"))?;
+                        .ok_or_else(|| unavailable("enrolled signer catalog is unavailable"))?;
                     let report = signer.capture(&request, token)?;
                     request.check_position(&group).map_err(unavailable)?;
                     kasumi_raft::RpcResponse::MemberSignerCatalog(Box::new(report))
-                } else if request.purpose == CatalogPurpose::ServiceAudit {
-                    if !control {
+                } else if request.purpose.is_service_audit() {
+                    if control != (request.purpose == CatalogPurpose::ServiceAudit) {
                         return Err(unavailable(
-                            "service audit inventory requires the enrolled Control group",
+                            "service audit inventory belongs to another group role",
                         ));
                     }
                     request.check_position(&group).map_err(unavailable)?;
@@ -368,7 +404,11 @@ impl Database {
                                 report.truncated,
                             ))
                         }
-                        CatalogPurpose::Group => anyhow::bail!("unexpected group catalog"),
+                        CatalogPurpose::Group
+                        | CatalogPurpose::DataSigner { .. }
+                        | CatalogPurpose::DataServiceAudit { .. } => {
+                            anyhow::bail!("unexpected Control service inventory purpose")
+                        }
                     }
                 };
                 let report: anyhow::Result<_> = tokio::select! {

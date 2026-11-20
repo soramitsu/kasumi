@@ -1670,8 +1670,12 @@ impl NodeRuntime {
             auth.install_local_credentials(credentials.clone())?;
             mcp_auth.install_local_credentials(credentials)?;
         }
+        let signer_catalog = signer_verifier.as_ref().map(|verifier| verifier.key_inventory(&authority_trusts)).transpose()?;
         if let Some(cluster) = &cluster {
             cluster.install_audit(audit.clone())?;
+            if let Some(catalog) = &signer_catalog {
+                cluster.install_signer_catalog(catalog.clone())?;
+            }
         }
         let control = match control_providers {
             None => None,
@@ -1714,8 +1718,8 @@ impl NodeRuntime {
                 )
             }
         };
-        if let (Some(control), Some(verifier)) = (&control, &signer_verifier) {
-            verifier.install_key_inventory(&control.database, &authority_trusts)?;
+        if let (Some(control), Some(catalog)) = (&control, &signer_catalog) {
+            control.database.install_member_signer_key_inventory(catalog)?;
         }
         let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
@@ -6961,6 +6965,14 @@ mod lifecycle_tests {
             // observe Prepare or resolve lost Start and Initialize replies
             // through the actual owned children. Terminal recovery is separate.
             if protected_prepare_only {
+                let data_leader = quorum_ready_leader(&databases, "Data signer inventory").await;
+                fixture_operation(|| {
+                    recovery.assert_data_member_service_inventories(
+                        &databases[data_leader],
+                        &recovery_handles,
+                    )
+                })
+                .await;
                 let leader = quorum_ready_leader(&controls, "issuer signer inventory").await;
                 fixture_operation(|| {
                     recovery.assert_authority_signer_inventory(&controls[leader], &recovery_handles)

@@ -1364,6 +1364,129 @@ impl Fixture {
             .await;
     }
 
+    pub async fn assert_data_member_service_inventories(
+        &self,
+        leader: &kasumi_engine::Database,
+        handles: &[Handles],
+    ) {
+        use kasumi_raft::member_catalog::{CatalogPurpose, CatalogStart, MemberCatalogRequest};
+        let group = leader.raft_group();
+        let metrics = group.metrics();
+        let mut observed = BTreeSet::new();
+        let mut streams = BTreeSet::new();
+        for (&id, node) in metrics.membership_config.membership().nodes() {
+            let physical = &handles[usize::try_from(id - 1).unwrap()];
+            let verifier = physical
+                .verifier
+                .as_ref()
+                .unwrap()
+                .identity_for(physical.audit.store().persistent_disk())
+                .unwrap();
+            let mut request = MemberCatalogRequest {
+                nonce: Uuid::new_v4(),
+                leader: metrics.id,
+                term: metrics.current_term,
+                membership: *metrics.membership_config.log_id(),
+                applied: metrics.last_applied.unwrap(),
+                purpose: CatalogPurpose::DataSigner {
+                    installation_id: verifier.installation_id,
+                },
+                start: CatalogStart::First,
+                limit: 4,
+            };
+            let report = if id == metrics.id {
+                let reply = leader.member_key_catalog(request.clone()).await.unwrap();
+                leader
+                    .check_member_catalog_release(&reply, &request)
+                    .await
+                    .unwrap();
+                let kasumi_raft::RpcResponse::MemberSignerCatalog(report) = &*reply else {
+                    panic!("local Data verifier returned an unrelated catalog");
+                };
+                (**report).clone()
+            } else {
+                let report = group
+                    .read_member_signer_catalog(id, node, &request)
+                    .await
+                    .unwrap();
+                request.purpose = CatalogPurpose::DataSigner {
+                    installation_id: Uuid::new_v4(),
+                };
+                assert!(
+                    group
+                        .read_member_signer_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                request.purpose = CatalogPurpose::ControlSigner;
+                assert!(
+                    group
+                        .read_member_signer_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                report
+            };
+            assert_eq!(report.verifier, verifier);
+            assert!(!report.entries.is_empty());
+            assert!(observed.insert(report.catalog));
+
+            request.purpose = CatalogPurpose::DataServiceAudit {
+                installation_id: verifier.installation_id,
+            };
+            let audit = if id == metrics.id {
+                let reply = leader.member_key_catalog(request.clone()).await.unwrap();
+                leader
+                    .check_member_catalog_release(&reply, &request)
+                    .await
+                    .unwrap();
+                let kasumi_raft::RpcResponse::MemberAuditCatalog(report) = &*reply else {
+                    panic!("local Data audit returned an unrelated catalog");
+                };
+                (**report).clone()
+            } else {
+                let report = group
+                    .read_member_audit_catalog(id, node, &request)
+                    .await
+                    .unwrap();
+                request.purpose = CatalogPurpose::DataServiceAudit {
+                    installation_id: Uuid::new_v4(),
+                };
+                assert!(
+                    group
+                        .read_member_audit_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                request.purpose = CatalogPurpose::ServiceAudit;
+                assert!(
+                    group
+                        .read_member_audit_catalog(id, node, &request)
+                        .await
+                        .is_err()
+                );
+                report
+            };
+            assert_eq!(
+                audit.stream,
+                physical.audit.status().unwrap().position.stream_id
+            );
+            physical
+                .audit
+                .store()
+                .visit_wrapping_identities(|catalog, _, _, _| {
+                    assert_eq!(audit.catalog, catalog);
+                    Ok(())
+                })
+                .unwrap();
+            assert!(audit.unreadable_objects.is_empty() && !audit.truncated);
+            assert!(observed.insert(audit.catalog));
+            assert!(streams.insert(audit.stream));
+        }
+        assert_eq!(observed.len(), 6);
+        assert_eq!(streams.len(), 3);
+    }
+
     pub async fn assert_authority_signer_inventory(&self, control: &kasumi_engine::Database, handles: &[Handles]) {
         use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionCoverage, KeyRetentionScope, MissingKeyDependency, ReadKeyRetentionRequest};
         let auth = self.authenticator(self.issuer_audits[0].clone()).await;

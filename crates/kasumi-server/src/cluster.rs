@@ -129,6 +129,7 @@ pub struct ClusterNetwork {
     outgoing: Arc<Semaphore>,
     limits: PeerLimits,
     audit: OnceLock<Arc<dyn RequestAuditSink>>,
+    signer_catalog: OnceLock<Arc<kasumi_engine::SignerCatalog>>,
     readiness: OnceLock<std::sync::Weak<dyn EnrollmentReadinessProvider>>,
     maintenance: OnceLock<std::sync::Weak<kasumi_authority::IndependentAuthority>>,
 }
@@ -274,9 +275,24 @@ impl ClusterNetwork {
             outgoing: Arc::new(Semaphore::new(limits.max_inflight_requests)),
             limits,
             audit: OnceLock::new(),
+            signer_catalog: OnceLock::new(),
             readiness: OnceLock::new(),
             maintenance: OnceLock::new(),
         }))
+    }
+
+    pub(crate) fn install_signer_catalog(
+        &self,
+        catalog: Arc<kasumi_engine::SignerCatalog>,
+    ) -> Result<()> {
+        ensure!(
+            Arc::ptr_eq(
+                self.signer_catalog.get_or_init(|| catalog.clone()),
+                &catalog
+            ),
+            "cluster signer catalog already installed"
+        );
+        Ok(())
     }
 
     /// Mandatory before receiving peer requests. Missing audit configuration
@@ -444,6 +460,15 @@ impl ClusterNetwork {
         sha256: String,
         access: BootstrapAccess,
     ) -> Result<()> {
+        // This entry point also registers recovered and newly activated Data groups.
+        if let Some(catalog) = self.signer_catalog.get()
+            && matches!(
+                database.stores().application().storage_access().purpose(),
+                kasumi_store::StoragePurpose::Serving { .. }
+            )
+        {
+            database.install_member_signer_key_inventory(catalog)?;
+        }
         self.register(
             group,
             database.raft_group().raft().clone(),

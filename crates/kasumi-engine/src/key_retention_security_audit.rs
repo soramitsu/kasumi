@@ -1,10 +1,35 @@
 //! Installed signer and service-audit wrapping keys observed at a Control read position.
 use super::*;
 
-pub(in crate::service) struct SignerCatalog {
+/// The physical verifier store remains under its runtime's shutdown custody. All
+/// hosted groups on a member share this immutable admission and issuer roster.
+pub struct SignerCatalog {
     pub(super) store: std::sync::Weak<TenantStore>,
     pub(super) verifier: TrustVerifierIdentity,
     pub(super) partitions: BTreeSet<(uuid::Uuid, u16)>,
+}
+
+impl SignerCatalog {
+    pub fn installed(
+        store: &Arc<TenantStore>,
+        verifier: &TrustVerifierIdentity,
+        partitions: BTreeSet<(uuid::Uuid, u16)>,
+    ) -> anyhow::Result<Arc<Self>> {
+        verifier.validate()?;
+        anyhow::ensure!(
+            matches!(store.storage_access().purpose(),
+                kasumi_store::StoragePurpose::LiveSignerTrust {verifier: owner} if owner == verifier)
+                && store.tenant() == verifier.tenant()
+                && partitions.iter().all(|(id, _)| !id.is_nil()),
+            "signer catalog differs from the installed physical verifier"
+        );
+        store.check_access()?;
+        Ok(Arc::new(Self {
+            store: Arc::downgrade(store),
+            verifier: verifier.clone(),
+            partitions,
+        }))
+    }
 }
 
 impl Database {
@@ -13,7 +38,8 @@ impl Database {
         inventory: std::sync::Weak<dyn AuthoritySignerKeyInventory>,
     ) -> anyhow::Result<()> {
         anyhow::ensure!(
-            self.signer_keys.get().is_some(),
+            self.store.tenant() == crate::control::CONTROL_TENANT
+                && self.signer_keys.get().is_some(),
             "install the enrolled Control signer before attaching its issuer reader"
         );
         self.authority_signer_keys
@@ -72,23 +98,44 @@ impl Database {
         verifier: &TrustVerifierIdentity,
         partitions: BTreeSet<(uuid::Uuid, u16)>,
     ) -> anyhow::Result<()> {
-        verifier.validate()?;
         anyhow::ensure!(
-            self.store.tenant() == crate::control::CONTROL_TENANT
-                && verifier.node_id == self.group.node_id()
-                && Arc::ptr_eq(self.store.persistent_disk(), store.persistent_disk())
-                && matches!(store.storage_access().purpose(),
-                    kasumi_store::StoragePurpose::LiveSignerTrust {verifier: owner} if owner == verifier)
-                && store.tenant() == verifier.tenant()
-                && partitions.iter().all(|(id, _)| !id.is_nil()),
-            "signer inventory differs from the installed Control node or physical verifier"
+            self.store.tenant() == crate::control::CONTROL_TENANT,
+            "Control signer owner required"
         );
+        self.install_member_signer_key_inventory(&SignerCatalog::installed(
+            store, verifier, partitions,
+        )?)
+    }
+
+    /// The Data member's own current serving capability binds its physical
+    /// verifier UUID. The same numeric node ID on another disk is insufficient.
+    pub fn install_member_signer_key_inventory(
+        &self,
+        original: &Arc<SignerCatalog>,
+    ) -> anyhow::Result<()> {
+        let store = original
+            .store
+            .upgrade()
+            .ok_or_else(|| anyhow::anyhow!("signer store was closed"))?;
+        let member = match self.store.storage_access().purpose() {
+            kasumi_store::StoragePurpose::NodeControl => {
+                self.store.tenant() == crate::control::CONTROL_TENANT
+            }
+            kasumi_store::StoragePurpose::Serving { identity, .. } => {
+                !self.group.is_local()
+                    && identity.node.verifier == original.verifier
+                    && identity.tenant == self.store.tenant()
+            }
+            _ => false,
+        };
+        anyhow::ensure!(
+            member
+                && original.verifier.node_id == self.group.node_id()
+                && Arc::ptr_eq(self.store.persistent_disk(), store.persistent_disk()),
+            "signer inventory differs from the installed member's storage or serving identity"
+        );
+        self.store.check_access()?;
         store.check_access()?;
-        let original = Arc::new(SignerCatalog {
-            store: Arc::downgrade(store),
-            verifier: verifier.clone(),
-            partitions,
-        });
         let installed = self.signer_keys.get_or_init(|| original.clone());
         anyhow::ensure!(
             installed.store.ptr_eq(&original.store)

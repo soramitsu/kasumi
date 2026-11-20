@@ -23,10 +23,30 @@ pub enum CatalogPurpose {
     #[default]
     Group,
     ControlSigner,
+    /// A Data-group leader addresses the exact physical verifier on its voter.
+    DataSigner {
+        installation_id: Uuid,
+    },
     ServiceAudit,
+    DataServiceAudit {
+        installation_id: Uuid,
+    },
 }
 
 impl CatalogPurpose {
+    pub fn data_installation(self) -> Option<Uuid> {
+        match self {
+            Self::DataSigner { installation_id } | Self::DataServiceAudit { installation_id } => {
+                Some(installation_id)
+            }
+            _ => None,
+        }
+    }
+
+    pub fn is_service_audit(self) -> bool {
+        matches!(self, Self::ServiceAudit | Self::DataServiceAudit { .. })
+    }
+
     fn is_group(&self) -> bool {
         *self == Self::Group
     }
@@ -79,6 +99,12 @@ impl MemberCatalogRequest {
                 && (1..=MEMBER_CATALOG_LIMIT).contains(&self.limit),
             "invalid member catalog window"
         );
+        if let Some(installation_id) = self.purpose.data_installation() {
+            ensure!(
+                !installation_id.is_nil(),
+                "missing physical Data verifier installation"
+            );
+        }
         match &self.start {
             CatalogStart::First => {}
             CatalogStart::After { entry } => entry.validate()?,
@@ -193,7 +219,11 @@ impl MemberSignerReport {
         self.verifier.validate()?;
         kasumi_types::validate_sha256(&self.partitions_sha256)?;
         ensure!(
-            request.purpose == CatalogPurpose::ControlSigner
+            (request.purpose == CatalogPurpose::ControlSigner
+                || request.purpose
+                    == CatalogPurpose::DataSigner {
+                        installation_id: self.verifier.installation_id
+                    })
                 && self.verifier.node_id == node
                 && !self.catalog.is_nil()
                 && self.request_sha256 == staged_digest(request)?.0
@@ -245,7 +275,7 @@ impl MemberAuditReport {
     pub fn validate(&self, request: &MemberCatalogRequest, node: u64) -> Result<()> {
         request.validate()?;
         ensure!(
-            request.purpose == CatalogPurpose::ServiceAudit
+            request.purpose.is_service_audit()
                 && node != 0
                 && self.node_id == node
                 && !self.catalog.is_nil()
@@ -405,8 +435,11 @@ impl RaftGroup {
         request: &MemberCatalogRequest,
     ) -> Result<MemberSignerReport> {
         ensure!(
-            request.purpose == CatalogPurpose::ControlSigner,
-            "Control signer catalog purpose required"
+            matches!(
+                request.purpose,
+                CatalogPurpose::ControlSigner | CatalogPurpose::DataSigner { .. }
+            ),
+            "member signer catalog purpose required"
         );
         match self.request_member_catalog(node_id, node, request).await? {
             RpcResponse::MemberSignerCatalog(report) => {
@@ -424,7 +457,7 @@ impl RaftGroup {
         request: &MemberCatalogRequest,
     ) -> Result<MemberAuditReport> {
         ensure!(
-            request.purpose == CatalogPurpose::ServiceAudit,
+            request.purpose.is_service_audit(),
             "service audit purpose required"
         );
         match self.request_member_catalog(node_id, node, request).await? {
@@ -460,7 +493,7 @@ impl RaftGroup {
             RpcRequest::MemberCatalog(Box::new(request.clone())),
         );
         // Service audit reads also authenticate each retained archive from its destination.
-        let timeout = if request.purpose == CatalogPurpose::ServiceAudit {
+        let timeout = if request.purpose.is_service_audit() {
             30
         } else {
             3
@@ -562,6 +595,24 @@ mod tests {
         audit.truncated = true;
         assert!(audit.validate(&audit_request, 2).is_err());
         signer.validate(&signer_request, 2)?;
+        let mut data_request = MemberCatalogRequest {
+            purpose: CatalogPurpose::DataSigner {
+                installation_id: signer.verifier.installation_id,
+            },
+            ..signer_request.clone()
+        };
+        let mut data_report = MemberSignerReport {
+            request_sha256: staged_digest(&data_request)?.0,
+            ..signer.clone()
+        };
+        data_report.validate(&data_request, 2)?;
+        assert!(data_report.validate(&signer_request, 2).is_err());
+        data_report.verifier.installation_id = Uuid::new_v4();
+        assert!(data_report.validate(&data_request, 2).is_err());
+        data_request.purpose = CatalogPurpose::DataSigner {
+            installation_id: Uuid::nil(),
+        };
+        assert!(data_request.validate().is_err());
         assert!(signer.validate(&request, 2).is_err());
         assert!(signer.validate(&signer_request, 3).is_err());
         assert!(report.validate(&signer_request, 2, application).is_err());

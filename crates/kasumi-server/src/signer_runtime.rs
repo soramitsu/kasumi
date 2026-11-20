@@ -287,11 +287,10 @@ impl InstalledSignerVerifier {
         let inventory: Arc<dyn kasumi_raft::member_catalog::MemberAuditInventory> = audit.clone();
         authority.install_audit_archive_inventory(audit.store(), &inventory)
     }
-    pub(crate) fn install_key_inventory(
+    pub(crate) fn key_inventory(
         &self,
-        control: &kasumi_engine::Database,
         trusts: &BTreeMap<String, AuthorityTrust>,
-    ) -> Result<()> {
+    ) -> Result<Arc<kasumi_engine::SignerCatalog>> {
         let partitions = trusts
             .values()
             .flat_map(|trust| {
@@ -302,7 +301,7 @@ impl InstalledSignerVerifier {
                     .map(move |&partition| (manifest.authority_id, partition))
             })
             .collect();
-        control.install_signer_key_inventory(&self.store, &self.installed_identity, partitions)
+        kasumi_engine::SignerCatalog::installed(&self.store, &self.installed_identity, partitions)
     }
 
     /// The parent runtime's acknowledged handoff activates this already
