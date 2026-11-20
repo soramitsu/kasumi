@@ -2455,3 +2455,108 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     node.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test]
+async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reopen() -> Result<()>
+{
+    use kasumi_types::{
+        BeginKeyRetirement, CompleteKeyRetirement, KeyIdentityRef, KeyRetentionScope,
+        KeyRetirementState, RetireKeyVersionsRequest, SignedTargetWriterObservation,
+        TargetWriterChallenge, TargetWriterObservation,
+    };
+    let f = Fixture::new().await?;
+    let journal = f.create()?;
+    let before = f
+        .store
+        .get(NS, b"metadata")?
+        .context("journal head missing")?;
+    assert!(
+        !serde_json::from_slice::<serde_json::Value>(&before)?
+            .as_object()
+            .unwrap()
+            .contains_key("retirements")
+    );
+    let identity = KeyIdentityRef {
+        provider: "historical".into(),
+        key_ref: "source".into(),
+    };
+    let request = RetireKeyVersionsRequest {
+        retirement_id: "1".into(),
+        scope: KeyRetentionScope::TargetJournal {},
+        identity: identity.clone(),
+        retire_below_version: 3,
+        expected_coverage_sha256: "aa".repeat(32),
+    };
+    let mut state = KeyRetirementState::default();
+    state.begin(
+        &BeginKeyRetirement {
+            request: request.clone(),
+            membership_epoch: 3,
+            expected_dependency_sha256: "bb".repeat(32),
+        },
+        5,
+    )?;
+    let sign = |challenge: &TargetWriterChallenge,
+                observed_revision,
+                state: &KeyRetirementState|
+     -> Result<SignedTargetWriterObservation> {
+        let observation = TargetWriterObservation {
+            challenge: challenge.clone(),
+            observed_term: 1,
+            observed_revision,
+            membership_epoch: 3,
+            observed_policy_epoch: 2,
+            retirements: state.clone(),
+        };
+        let bytes = serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observation))?;
+        Ok(SignedTargetWriterObservation {
+            observation,
+            signature: hex::encode(f.control_key.sign(&bytes).as_ref()),
+        })
+    };
+    let apply =
+        |journal: &Arc<TargetJournal>, revision, state: &KeyRetirementState| -> Result<String> {
+            let read = journal.begin_writer_read()?;
+            let signed = sign(read.challenge(), revision, state)?;
+            read.accept(&signed)
+        };
+    let check = |journal: &TargetJournal| {
+        journal
+            .metadata()?
+            .retirements
+            .require_verified_checkpoint()
+    };
+    check(&journal)?;
+    let original = journal.begin_writer_read()?;
+    let signed = sign(original.challenge(), 5, &state)?;
+    assert!(journal.begin_writer_read()?.accept(&signed).is_err());
+    let mut wrong = signed.clone();
+    wrong.signature = "00".repeat(64);
+    assert!(original.accept(&wrong).is_err());
+    assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before);
+    let accepted = apply(&journal, 5, &state)?;
+    assert_eq!(accepted, apply(&journal, 5, &state)?);
+    assert!(check(&journal).is_err());
+
+    drop(journal);
+    let reopened = f.reopen()?;
+    assert!(check(&reopened).is_err());
+    let active = state.clone();
+    state.complete(
+        &CompleteKeyRetirement {
+            retirement_id: request.retirement_id.clone(),
+            request_sha256: request.request_sha256()?,
+            completed_coverage_sha256: "cc".repeat(32),
+            expected_dependency_sha256: "dd".repeat(32),
+        },
+        6,
+    )?;
+    apply(&reopened, 6, &state)?;
+    assert!(apply(&reopened, 5, &active).is_err());
+    assert!(apply(&reopened, 7, &KeyRetirementState::default()).is_err());
+    drop(reopened);
+    let final_journal = f.reopen()?;
+    assert!(check(&final_journal).is_err());
+
+    Ok(())
+}

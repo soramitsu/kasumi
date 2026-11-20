@@ -14,6 +14,9 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 #[path = "target_journal_accounting.rs"]
 mod accounting;
+#[path = "target_journal_retirements.rs"]
+mod retirements;
+pub use retirements::TargetWriterRead;
 const NS: &str = "target.journal";
 #[cfg(test)]
 #[path = "target_journal_open_tests.rs"]
@@ -294,6 +297,11 @@ struct Metadata {
     dispatch_starts: u64,
     dispatch_initializes: u64,
     charged_bytes: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "retirements::WriterRetirements::is_empty"
+    )]
+    retirements: retirements::WriterRetirements,
 }
 /// The unique store catalog owns the mutation lock; runtime retains this one
 /// journal handle. No application provider is constructed by opening it.
@@ -549,6 +557,7 @@ impl TargetJournal {
                 dispatch_starts: 0,
                 dispatch_initializes: 0,
                 charged_bytes: MAX_RECORD as u64,
+                retirements: Default::default(),
             };
             journal.store.write_batch(&[WriteOp::put(
                 NS,
@@ -584,6 +593,7 @@ impl TargetJournal {
                 && m.charged_bytes <= self.limits.max_metadata_bytes,
             "target journal binding or capacity differs"
         );
+        m.retirements.validate()?;
         Ok(m)
     }
     fn validate_intent(&self, i: &TargetJournalIntent) -> Result<()> {
@@ -694,6 +704,7 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            metadata.retirements.require_verified_checkpoint()?;
             let encoded = serde_json::to_vec(&binding)?;
             metadata.generations = metadata
                 .generations

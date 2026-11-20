@@ -186,6 +186,25 @@ impl ControlTrust {
             &signed.signature,
         )
     }
+    pub fn verify_target_writer(
+        &self,
+        expected: &TargetWriterChallenge,
+        signed: &SignedTargetWriterObservation,
+    ) -> Result<()> {
+        signed.observation.validate()?;
+        ensure!(
+            expected.root == self.root
+                && &signed.observation.challenge == expected
+                && signed.signature.len() == 128,
+            "target writer observation differs from its original challenge"
+        );
+        verify(
+            &self.root.public_key,
+            "kasumi.target-journal-writer.v1",
+            &signed.observation,
+            &signed.signature,
+        )
+    }
     pub fn verify_intent(&self, signed: &SignedControlIntent) -> Result<VerifiedControlIntent> {
         let observation = &signed.observation;
         let intent = &observation.intent;
