@@ -38,6 +38,9 @@ const MAX_OBJECT_BYTES: usize = 32 << 20;
 const RECENT: usize = 16;
 /// Digests a reopened snapshot's name set first admits, then doubles.
 const NAMES_GROWTH: usize = 4096;
+// At most 8 MiB of digest vectors per namespace. Later distinct names share
+// the same encrypted table and bounded native transaction as the staged objects.
+const RESIDENT_NAMES: usize = 128 << 10;
 
 /// Only read-side decode admission constructs this error. Keep its original
 /// provider observation separate from native I/O and retirement failures.
@@ -145,7 +148,7 @@ struct Tables {
 
 /// Immutable after the builder has been consumed. Clones share encrypted
 /// backing, never a map of decoded payloads. Only a reopened snapshot keeps
-/// the sorted digests of the objects it names, until its publication.
+/// a bounded sorted prefix of object digests and encrypted overflow rows.
 #[derive(Clone)]
 pub(crate) struct StagedDocuments {
     tables: Arc<Tables>,
@@ -174,10 +177,56 @@ pub(crate) struct Builder {
 struct Names {
     all: Vec<[u8; 32]>,
     staged: Vec<[u8; 32]>,
+    limit: usize,
+    // Once the resident prefix is sealed, count distinct keys in the private
+    // table. Its 32-byte membership keys and 64-byte object keys are disjoint.
+    spill: Option<NameCounts>,
     // LAST: the buffers retire before the credit that admitted them.
     grant: Option<DiskMemoryLease>,
 }
+#[derive(Default)]
+struct NameCounts {
+    held: usize,
+    staged: usize,
+}
+
 impl Names {
+    fn new(limit: usize) -> Self {
+        Self {
+            limit,
+            ..Self::default()
+        }
+    }
+
+    fn record(
+        &mut self,
+        table: &EncryptedTable,
+        batch: &mut ObjectBatch,
+        memory: &Arc<dyn NodeDiskMemoryAdmission>,
+        digest: [u8; 32],
+        staged: bool,
+    ) -> Result<()> {
+        if self.spill.is_none() && self.all.len() < self.limit {
+            return self.push(memory, digest, staged);
+        }
+        if self.spill.is_none() {
+            self.seal();
+            self.spill = Some(NameCounts::default());
+        }
+        if self.all.binary_search(&digest).is_err() && batch.put_name(table, digest, staged)? {
+            let counts = self.spill.as_mut().expect("sealed name prefix");
+            let count = if staged {
+                &mut counts.staged
+            } else {
+                &mut counts.held
+            };
+            *count = count
+                .checked_add(1)
+                .context("document name count overflow")?;
+        }
+        Ok(())
+    }
+
     fn push(
         &mut self,
         memory: &Arc<dyn NodeDiskMemoryAdmission>,
@@ -188,12 +237,20 @@ impl Names {
         let grow_staged = staged && self.staged.len() == self.staged.capacity();
         if grow_all || grow_staged {
             let all = if grow_all {
-                self.all.capacity().saturating_mul(2).max(NAMES_GROWTH)
+                self.all
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(NAMES_GROWTH)
+                    .min(self.limit)
             } else {
                 self.all.capacity()
             };
             let staged = if grow_staged {
-                self.staged.capacity().saturating_mul(2).max(16)
+                self.staged
+                    .capacity()
+                    .saturating_mul(2)
+                    .max(16)
+                    .min(self.limit)
             } else {
                 self.staged.capacity()
             };
@@ -222,11 +279,25 @@ impl Names {
             digests.dedup();
         }
     }
-    fn names(&self, digest: &[u8; 32]) -> bool {
-        self.all.binary_search(digest).is_ok()
+    /// None means the snapshot does not name this object. A true value means
+    /// its authenticated replacement is staged in this same private table.
+    fn is_staged(&self, table: &EncryptedTable, digest: &[u8; 32]) -> Result<Option<bool>> {
+        if self.all.binary_search(digest).is_ok() {
+            return Ok(Some(self.staged.binary_search(digest).is_ok()));
+        }
+        if self.spill.is_none() {
+            return Ok(None);
+        }
+        table
+            .get(digest)?
+            .map(|value| name_marker(value.as_bytes()))
+            .transpose()
     }
-    fn staged(&self, digest: &[u8; 32]) -> bool {
-        self.staged.binary_search(digest).is_ok()
+    fn counts(&self) -> NameCounts {
+        NameCounts {
+            held: self.all.len() - self.staged.len() + self.spill.as_ref().map_or(0, |s| s.held),
+            staged: self.staged.len() + self.spill.as_ref().map_or(0, |s| s.staged),
+        }
     }
 }
 
@@ -253,41 +324,28 @@ struct Comparing {
     next: usize,
 }
 impl Comparing {
-    /// Record `digest` as named, and whether the store already holds exactly
-    /// `bytes` under its key. A row with other bytes is replaced by the
-    /// staged copy when the restore publishes.
+    /// Compare an object absent from the recent held-object cache against
+    /// the pinned view. A different row needs an authenticated staged copy.
     fn holds(
         &mut self,
-        memory: &Arc<dyn NodeDiskMemoryAdmission>,
         body: bool,
         digest: [u8; 32],
         key: &[u8; 64],
         bytes: &[u8],
     ) -> Result<bool> {
-        let held = if self.recent.contains(&Some((body, digest))) {
-            true
+        let (namespace, bound) = if body {
+            (BODIES, MAX_OBJECT_BYTES)
         } else {
-            let (namespace, bound) = if body {
-                (BODIES, MAX_OBJECT_BYTES)
-            } else {
-                (BLOBS, BLOB_CHUNK_BYTES)
-            };
-            let held = self
-                .view
-                .get(namespace, key, bound)?
-                .is_some_and(|published| published.as_bytes() == bytes);
-            if held {
-                self.recent[self.next] = Some((body, digest));
-                self.next = (self.next + 1) % RECENT;
-            }
-            held
+            (BLOBS, BLOB_CHUNK_BYTES)
         };
-        let names = if body {
-            &mut self.published.bodies
-        } else {
-            &mut self.published.blobs
-        };
-        names.push(memory, digest, !held)?;
+        let held = self
+            .view
+            .get(namespace, key, bound)?
+            .is_some_and(|published| published.as_bytes() == bytes);
+        if held {
+            self.recent[self.next] = Some((body, digest));
+            self.next = (self.next + 1) % RECENT;
+        }
         Ok(held)
     }
     fn finish(self) -> Result<Published> {
@@ -324,6 +382,25 @@ fn scoped_digest(scope: &[u8; 64], key: &[u8]) -> Option<[u8; 32]> {
         .then(|| key[32..].try_into().expect("checked object key width"))
 }
 
+fn name_marker(value: &[u8]) -> Result<bool> {
+    match value {
+        [0] => Ok(false),
+        [1] => Ok(true),
+        _ => anyhow::bail!("invalid reopened document name marker"),
+    }
+}
+
+fn visit_objects(
+    table: &EncryptedTable,
+    mut visit: impl FnMut(&[u8], &[u8]) -> Result<()>,
+) -> Result<()> {
+    table.visit(|key, value| match key.len() {
+        64 => visit(key, value),
+        32 => name_marker(value).map(|_| ()),
+        _ => anyhow::bail!("invalid private document key width"),
+    })
+}
+
 struct KnownObject {
     key: [u8; 64],
     value: Vec<u8>,
@@ -344,6 +421,22 @@ impl ObjectBatch {
             known: Vec::with_capacity(EncryptedTableBatch::MAX_ENTRIES),
             bytes: 0,
         }
+    }
+    fn put_name(&mut self, table: &EncryptedTable, digest: [u8; 32], staged: bool) -> Result<bool> {
+        if self
+            .batch
+            .as_ref()
+            .is_some_and(|batch| !batch.has_capacity_for(33))
+        {
+            self.flush()?;
+        }
+        if self.batch.is_none() {
+            self.batch = Some(table.begin_index_batch()?);
+        }
+        self.batch
+            .as_mut()
+            .expect("opened name batch")
+            .insert_content(&digest, &[u8::from(staged)])
     }
     fn put(
         &mut self,
@@ -486,14 +579,25 @@ impl Builder {
         self.comparing = Some(Comparing {
             published: Published {
                 store: store.clone(),
-                bodies: Names::default(),
-                blobs: Names::default(),
+                bodies: Names::new(RESIDENT_NAMES),
+                blobs: Names::new(RESIDENT_NAMES),
             },
             view: store.read_view()?,
             recent: [None; RECENT],
             next: 0,
         });
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn limit_resident_names_for_test(&mut self, limit: usize) {
+        let published = &mut self
+            .comparing
+            .as_mut()
+            .expect("reopening builder")
+            .published;
+        published.bodies.limit = limit;
+        published.blobs.limit = limit;
     }
 
     /// The caller already owns/admitted this single decoded snapshot record.
@@ -527,18 +631,28 @@ impl Builder {
             "document restore object digest differs"
         );
         let key = self.tables.scope.key(digest);
-        if let Some(comparing) = &mut self.comparing
-            && comparing.holds(self.tables.disk.memory(), body, digest, &key, bytes)?
-        {
-            self.has_bodies |= body;
-            return Ok(());
-        }
         let backing = self.tables.backing.as_ref().expect("builder table backing");
         let (table, batch) = if body {
             (&backing.bodies, &mut self.bodies)
         } else {
             (&backing.blobs, &mut self.blobs)
         };
+        if let Some(comparing) = &mut self.comparing {
+            if comparing.recent.contains(&Some((body, digest))) {
+                return Ok(());
+            }
+            let held = comparing.holds(body, digest, &key, bytes)?;
+            let names = if body {
+                &mut comparing.published.bodies
+            } else {
+                &mut comparing.published.blobs
+            };
+            names.record(table, batch, self.tables.disk.memory(), digest, !held)?;
+            if held {
+                self.has_bodies |= body;
+                return Ok(());
+            }
+        }
         batch.put(table, self.tables.disk.memory(), key, bytes)?;
         self.has_bodies |= body;
         Ok(())
@@ -642,7 +756,7 @@ impl<'a> Correction<'a> {
     /// bytes: no reader names another row under an object's content address.
     /// Each lookup is bounded by the object's own length.
     fn write_missing(&mut self, table: &EncryptedTable) -> Result<()> {
-        table.visit(|key, value| {
+        visit_objects(table, |key, value| {
             if self
                 .store
                 .get_bounded(self.namespace, key, value.len())?
@@ -684,19 +798,6 @@ impl StagedDocuments {
     /// such object. A published row is bounded by the object's own length.
     fn object(&self, body: bool, digest: [u8; 32], bytes: usize) -> Result<Option<ObjectBytes>> {
         let key = self.tables.scope.key(digest);
-        if let Some(published) = &self.published {
-            let names = published.names(body);
-            if !names.names(&digest) {
-                return Ok(None);
-            }
-            if !names.staged(&digest) {
-                let namespace = if body { BODIES } else { BLOBS };
-                return Ok(published
-                    .store
-                    .get_bounded(namespace, &key, bytes)?
-                    .map(ObjectBytes::Published));
-            }
-        }
         let Some(backing) = &self.tables.backing else {
             return Ok(None);
         };
@@ -705,6 +806,19 @@ impl StagedDocuments {
         } else {
             &backing.blobs
         };
+        if let Some(published) = &self.published {
+            match published.names(body).is_staged(table, &digest)? {
+                None => return Ok(None),
+                Some(false) => {
+                    let namespace = if body { BODIES } else { BLOBS };
+                    return Ok(published
+                        .store
+                        .get_bounded(namespace, &key, bytes)?
+                        .map(ObjectBytes::Published));
+                }
+                Some(true) => {}
+            }
+        }
         Ok(table.get(&key)?.map(ObjectBytes::Staged))
     }
 
@@ -823,7 +937,7 @@ impl StagedDocuments {
             correction.flush()?;
             let Some(table) = table else { continue };
             let mut staged = 0u64;
-            table.visit(|_, _| {
+            visit_objects(table, |_, _| {
                 staged += 1;
                 Ok(())
             })?;
@@ -858,14 +972,16 @@ impl StagedDocuments {
         let scope = self.tables.scope.key([0; 32]);
         for (namespace, table, max_bytes) in self.namespaces() {
             let names = published.names(namespace == BODIES);
+            let counts = names.counts();
+            let table = table.context("reopened document staging table missing")?;
             let mut correction = Correction::new(store, memory, namespace)?;
             let mut held = 0usize;
             let view = store.read_view()?;
             view.visit(namespace, max_bytes, |key, value| {
                 if let Some(digest) = scoped_digest(&scope, key)
-                    && names.names(&digest)
+                    && let Some(staged) = names.is_staged(table, &digest)?
                 {
-                    if !names.staged(&digest) {
+                    if !staged {
                         ensure!(
                             <[u8; 32]>::from(Sha256::digest(value)) == digest,
                             "reopened document object changed after decoding"
@@ -879,15 +995,13 @@ impl StagedDocuments {
             view.close()?;
             // Every named object decoding did not stage is still published.
             ensure!(
-                held == names.all.len() - names.staged.len(),
+                held == counts.held,
                 "reopened document object disappeared after decoding"
             );
             correction.flush()?;
             // Rewrites a named row held with other bytes, and writes a
             // missing one.
-            if !names.staged.is_empty()
-                && let Some(table) = table
-            {
+            if counts.staged != 0 {
                 correction.write_missing(table)?;
             }
         }
@@ -900,12 +1014,12 @@ impl StagedDocuments {
             return Ok((0, 0));
         };
         let mut bodies = 0u64;
-        backing.bodies.visit(|_, _| {
+        visit_objects(&backing.bodies, |_, _| {
             bodies += 1;
             Ok(())
         })?;
         let mut blobs = 0u64;
-        backing.blobs.visit(|_, _| {
+        visit_objects(&backing.blobs, |_, _| {
             blobs += 1;
             Ok(())
         })?;
@@ -918,14 +1032,14 @@ impl StagedDocuments {
             return Ok((0, 0));
         };
         let mut bodies = 0u64;
-        backing.bodies.visit(|_, value| {
+        visit_objects(&backing.bodies, |_, value| {
             bodies = bodies
                 .checked_add(value.len() as u64)
                 .context("body byte count overflow")?;
             Ok(())
         })?;
         let mut blobs = 0u64;
-        backing.blobs.visit(|_, value| {
+        visit_objects(&backing.blobs, |_, value| {
             blobs = blobs
                 .checked_add(value.len() as u64)
                 .context("blob byte count overflow")?;
@@ -942,7 +1056,7 @@ impl StagedDocuments {
             .as_ref()
             .context("staged fixture has no proof blob")?;
         let mut first = None;
-        backing.blobs.visit(|key, value| {
+        visit_objects(&backing.blobs, |key, value| {
             if first.is_none() {
                 first = Some((key.to_vec(), value.to_vec()));
             }
@@ -1176,6 +1290,67 @@ impl StagedDocuments {
 #[cfg(test)]
 mod workspace_tests {
     use super::*;
+
+    #[test]
+    fn reopened_name_index_keeps_a_fixed_resident_prefix_across_native_batches() {
+        let memory = kasumi_store::test_utils::TestDiskMemory::new(128 << 20, 4096);
+        let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
+        let table =
+            EncryptedTable::new(&scratch.disk, 128 << 20, scratch.disk.native_cache_config())
+                .unwrap();
+        let mut batch = ObjectBatch::new();
+        let mut names = Names::new(8);
+        let digest = |id: usize| <[u8; 32]>::from(Sha256::digest(id.to_be_bytes()));
+        let count = 2 * EncryptedTableBatch::MAX_INDEX_ENTRIES + 17;
+        for i in 0..count {
+            names
+                .record(
+                    &table,
+                    &mut batch,
+                    scratch.disk.memory(),
+                    digest(i),
+                    i % 2 == 0,
+                )
+                .unwrap();
+        }
+        batch.flush().unwrap();
+        // Duplicate claims across committed transactions retain the original counts.
+        for i in [0, 1, 7, 8, 512, count - 1] {
+            names
+                .record(
+                    &table,
+                    &mut batch,
+                    scratch.disk.memory(),
+                    digest(i),
+                    i % 2 == 0,
+                )
+                .unwrap();
+        }
+        batch.flush().unwrap();
+        assert_eq!(names.all.capacity(), 8);
+        assert!(names.staged.capacity() <= 8);
+        assert_eq!(names.counts().held, count / 2);
+        assert_eq!(names.counts().staged, count.div_ceil(2));
+        for i in 0..count {
+            assert_eq!(
+                names.is_staged(&table, &digest(i)).unwrap(),
+                Some(i % 2 == 0)
+            );
+        }
+        assert_eq!(names.is_staged(&table, &digest(count)).unwrap(), None);
+        visit_objects(&table, |_, _| {
+            anyhow::bail!("name reached object publication")
+        })
+        .unwrap();
+        table.set(&digest(8), &[2]).unwrap();
+        assert!(names.is_staged(&table, &digest(8)).is_err());
+        assert!(visit_objects(&table, |_, _| Ok(())).is_err());
+        drop(batch);
+        drop(names);
+        table.close().unwrap();
+        drop(table);
+        assert_eq!(scratch.disk.snapshot().live_files, 0);
+    }
 
     #[test]
     fn restore_measurements_match_independent_descriptors_and_roundtrip_all_encodings() {
