@@ -843,6 +843,63 @@ mod tests {
         .await?
     }
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn key_inventory_observes_cache_and_external_archive_disappear_independently() {
+        let (_directory, node, engine, store, _archive) = fixture().await;
+        let command = prepare(engine.clone()).await.unwrap().unwrap();
+        apply(engine.clone(), command, 51).await.unwrap().unwrap();
+        let generation = engine.generation().unwrap();
+        let reference = generation
+            .state
+            .audit_retention
+            .archive_head
+            .clone()
+            .unwrap();
+        let worker_store = store.clone();
+        tokio::task::spawn_blocking(move || {
+            let disk = worker_store.persistent_disk();
+            let check = || {
+                crate::Database::check_tenant_audit_copies(
+                    &generation.state,
+                    &worker_store,
+                    &reference.object,
+                    &kasumi_query::QueryCancellation::default(),
+                )
+                .unwrap()
+            };
+            let healthy = (
+                AuditObjectCheck::Verified,
+                AuditObjectCheck::Verified,
+                Some(reference.clone()),
+            );
+            assert_eq!(check(), healthy);
+            for (folder, external) in [("external", true), ("tenant-audit-archives", false)] {
+                let active = std::path::Path::new(folder)
+                    .join(format!("{}.audit", reference.object.object_id));
+                let label = "fixture";
+                let offline = active.with_extension("offline");
+                let original = disk.open_file(label, &active).unwrap();
+                let parked = disk.publish_file(original, label, &offline).unwrap();
+                let (cache, destination, observed) = check();
+                let (available, absent) = if external {
+                    (cache, destination)
+                } else {
+                    (destination, cache)
+                };
+                assert_eq!(available, AuditObjectCheck::Verified);
+                assert_ne!(absent, AuditObjectCheck::Verified);
+                assert_eq!(observed.as_ref(), Some(&reference));
+                drop(disk.publish_file(parked, label, &active).unwrap());
+                assert_eq!(check(), healthy);
+            }
+        })
+        .await
+        .unwrap();
+        drop(engine);
+        store.shutdown().await.unwrap();
+        node.shutdown().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn replay_without_an_installed_placement_is_unavailable_and_selects_no_default() {
         let (directory, mut node, mut store) = fixture_store().await;
         let engine = TenantEngine::new(

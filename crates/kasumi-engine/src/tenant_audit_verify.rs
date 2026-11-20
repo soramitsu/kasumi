@@ -87,6 +87,45 @@ fn check_copy(
 }
 
 impl Database {
+    /// Authenticate both installed copies of one selected archive link. The
+    /// caller holds the archive decode workspace and runs on a retained worker.
+    pub(crate) fn check_tenant_audit_copies(
+        state: &TenantState,
+        store: &TenantStore,
+        link: &AuditArchiveLink,
+        token: &QueryCancellation,
+    ) -> Result<(
+        AuditObjectCheck,
+        AuditObjectCheck,
+        Option<AuditArchiveReference>,
+    )> {
+        let placement = store.tenant_audit_archive().map_err(|_| {
+            Error::new(ErrorCode::Unavailable, "tenant audit placement unavailable")
+        })?;
+        token.check()?;
+        let (cache, cached) = check_copy(state, store, link, placement.cache().read_blocking(link));
+        token.check()?;
+        let remote = tokio::runtime::Handle::current().block_on(async {
+            tokio::select! {
+                result = placement.read_destination(link) => Ok(result),
+                _ = cancelled(token) => Err(cancelled_error()),
+            }
+        })?;
+        let (destination, external) = check_copy(state, store, link, remote);
+        token.check()?;
+        if cached
+            .as_ref()
+            .zip(external.as_ref())
+            .is_some_and(|(a, b)| a != b)
+        {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "verified audit copies differ",
+            ));
+        }
+        Ok((cache, destination, cached.or(external)))
+    }
+
     pub(super) fn audit_token_key(&self) -> Result<&hmac::Key> {
         if self.audit_cursor_key.get().is_none() {
             let key = hmac::Key::generate(hmac::HMAC_SHA256, &ring::rand::SystemRandom::new())
@@ -185,28 +224,10 @@ impl Database {
                     if clock.now() >= position.expires {
                         return Err(expired());
                     }
-                    let placement = store.tenant_audit_archive().map_err(|_| {
-                        Error::new(ErrorCode::Unavailable, "tenant audit placement unavailable")
-                    })?;
                     let index = position.remaining.checked_sub(1).ok_or_else(expired)?;
                     let state = &generation.state;
-                    let (cache, cached) =
-                        check_copy(state, &store, &link, placement.cache().read_blocking(&link));
-                    token.check()?;
-                    let remote = tokio::runtime::Handle::current()
-                        .block_on(placement.read_destination(&link));
-                    let (destination, external) = check_copy(state, &store, &link, remote);
-                    if cached
-                        .as_ref()
-                        .zip(external.as_ref())
-                        .is_some_and(|(a, b)| a != b)
-                    {
-                        return Err(Error::new(
-                            ErrorCode::Corruption,
-                            "verified audit copies differ",
-                        ));
-                    }
-                    let reference = cached.or(external);
+                    let (cache, destination, reference) =
+                        Self::check_tenant_audit_copies(state, &store, &link, &token)?;
                     if let Some(r) = &reference {
                         if r.previous.is_some() != (index > 0)
                             || (index + 1 == state.audit_retention.archive_segments

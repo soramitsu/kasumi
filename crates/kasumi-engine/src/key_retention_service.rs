@@ -418,9 +418,18 @@ impl Database {
         let stores = self.stores.clone();
         let revision = state.revision;
         let strict = state.policy.strict_read_audit;
+        let archive_workspace = if state.audit_retention.archive_segments > 0 {
+            Some(
+                self.admission()
+                    .reserve_resident(4 * MAX_AUDIT_SEGMENT_BYTES as u64)?,
+            )
+        } else {
+            None
+        };
         let (observation, reservation) = reservation
             .retained_read(cancellation, move |reservation, token| {
                 let _registration = registration;
+                let _archive_workspace = archive_workspace;
                 let mut consider = |entry| {
                     token.check()?;
                     consider_entry(&request, &mut entries, entry)
@@ -467,7 +476,38 @@ impl Database {
                     &state.audit_retention,
                     |reference| {
                         token.check()?;
-                        archive_digest.update(staged_digest(reference)?.0.as_bytes());
+                        let (cache, destination, authenticated) = Self::check_tenant_audit_copies(
+                            state,
+                            stores.application(),
+                            &reference.object,
+                            &token,
+                        )?;
+                        if authenticated
+                            .as_ref()
+                            .is_some_and(|actual| actual != reference)
+                        {
+                            return Err(Error::new(
+                                ErrorCode::Corruption,
+                                "tenant audit object differs from selected key reference",
+                            ));
+                        }
+                        if cache != AuditObjectCheck::Verified
+                            || destination != AuditObjectCheck::Verified
+                        {
+                            add_missing(
+                                &mut missing,
+                                &mut truncated,
+                                MissingKeyDependency::RecordUnreadable {
+                                    record_kind: KeyReferenceKind::AuditArchive,
+                                    id: reference.object.object_id.to_string(),
+                                },
+                            );
+                        }
+                        archive_digest.update(
+                            staged_digest(&(reference, cache, destination))?
+                                .0
+                                .as_bytes(),
+                        );
                         consider(KeyRetentionEntry {
                             key: KeyVersionRef::from(&reference.key),
                             reference: KeyReference::AuditArchive {
