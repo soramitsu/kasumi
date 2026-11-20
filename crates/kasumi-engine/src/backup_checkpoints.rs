@@ -213,7 +213,7 @@ impl Database {
         selected: &LocalRecoveryCheckpoint<'_>,
         cancellation: &QueryCancellation,
         observe: &KeyObserver<'_>,
-    ) -> std::result::Result<(), crate::SnapshotFailure> {
+    ) -> std::result::Result<[u8; 32], crate::SnapshotFailure> {
         control.check()?;
         self.access()?;
         cancellation.check()?;
@@ -299,7 +299,21 @@ impl Database {
                 .into());
             }
             reader.check_access().await?;
-            Ok::<_, crate::SnapshotFailure>(())
+            // The checkpoint commits the manifest and all its immutable dependencies.
+            // The permanent intent and terminal can have their own wrapping catalog.
+            let mut digest = Sha256::new();
+            digest.update(b"kasumi.recovery.checkpoint-inventory.v1\0");
+            serde_json::to_writer(
+                &mut digest,
+                &(
+                    expected,
+                    session.intent_ciphertext_sha256(),
+                    session.outcome_ciphertext_sha256().ok_or_else(|| {
+                        anyhow::anyhow!("completed session lacks its physical outcome")
+                    })?,
+                ),
+            )?;
+            Ok::<_, crate::SnapshotFailure>(digest.finalize().into())
         };
         tokio::select! {
             value = deadline.run(read) => value?,

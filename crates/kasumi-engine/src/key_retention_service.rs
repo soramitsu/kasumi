@@ -47,7 +47,7 @@ impl LocalRecoveryKeyRead<'_> {
         tenant: &Database,
         selected: LocalRecoveryCheckpoint<'_>,
         mut visit: impl FnMut(KeyRetentionEntry) -> anyhow::Result<()>,
-    ) -> anyhow::Result<bool> {
+    ) -> anyhow::Result<Option<[u8; 32]>> {
         self.token.check()?;
         anyhow::ensure!(
             matches!(self.request.scope, KeyRetentionScope::LocalRecovery {})
@@ -104,26 +104,29 @@ impl LocalRecoveryKeyRead<'_> {
         ));
         self.token.check()?;
         fence.check()?;
-        if let Err(error) = outcome {
-            if let Some(original) = error.operation_error()
-                && original.code == ErrorCode::ResourceExhausted
-            {
-                return Err(original.clone().into());
+        let digest = match outcome {
+            Ok(digest) => digest,
+            Err(error) => {
+                if let Some(original) = error.operation_error()
+                    && original.code == ErrorCode::ResourceExhausted
+                {
+                    return Err(original.clone().into());
+                }
+                if error.admission_refusal().is_some() {
+                    return Err(Error::new(
+                        ErrorCode::ResourceExhausted,
+                        "recovery key inventory admission exhausted",
+                    )
+                    .into());
+                }
+                tracing::warn!(backup_id = %selected.checkpoint.backup_id, %error, "could not authenticate the original local recovery backup");
+                return Ok(None);
             }
-            if error.admission_refusal().is_some() {
-                return Err(Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "recovery key inventory admission exhausted",
-                )
-                .into());
-            }
-            tracing::warn!(backup_id = %selected.checkpoint.backup_id, %error, "could not authenticate the original local recovery backup");
-            return Ok(false);
-        }
+        };
         for entry in rows.into_inner().unwrap_or_else(|e| e.into_inner()) {
             visit(entry)?;
         }
-        Ok(true)
+        Ok(Some(digest))
     }
 }
 

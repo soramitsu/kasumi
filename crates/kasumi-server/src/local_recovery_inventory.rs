@@ -61,6 +61,12 @@ pub(crate) fn install(
     )
 }
 
+struct OperationInventory {
+    operation: Uuid,
+    catalogs: Option<[u8; 32]>,
+    external_checkpoint: Option<[u8; 32]>,
+}
+
 struct Coordinator {
     control: std::sync::Weak<Database>,
     applications: BTreeMap<String, std::sync::Weak<Database>>,
@@ -153,7 +159,7 @@ impl Coordinator {
         node_id: u64,
         read: &LocalRecoveryKeyRead<'_>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
-    ) -> Result<(Uuid, Option<[u8; 32]>, bool)> {
+    ) -> Result<OperationInventory> {
         let token = read.cancellation();
         let journal: Journal = decode(value)?;
         let request = &journal.status.request;
@@ -215,8 +221,8 @@ impl Coordinator {
                 ensure!(uuid(&owner)? == operation, "conflicting publication owner");
             }
         }
-        let observed = self.checkpoint(&journal, read, visit)?;
-        if !observed {
+        let external_checkpoint = self.checkpoint(&journal, read, visit)?;
+        if external_checkpoint.is_none() {
             visit(LocalRecoveryKeyFinding::Missing(
                 MissingKeyDependency::ArchiveUnavailable {
                     id: request.checkpoint.backup_id.to_string(),
@@ -265,7 +271,11 @@ impl Coordinator {
                 );
                 let catalogs = Self::active_catalogs(&stores, node_id, token, visit)?;
                 check_database_group(&journal)?;
-                return Ok((operation, Some(catalogs), observed));
+                return Ok(OperationInventory {
+                    operation,
+                    catalogs: Some(catalogs),
+                    external_checkpoint,
+                });
             }
             visit(LocalRecoveryKeyFinding::Missing(
                 MissingKeyDependency::RecordUnreadable {
@@ -274,7 +284,11 @@ impl Coordinator {
                 },
             ))?;
         }
-        Ok((operation, None, observed))
+        Ok(OperationInventory {
+            operation,
+            catalogs: None,
+            external_checkpoint,
+        })
     }
 
     fn checkpoint(
@@ -282,14 +296,14 @@ impl Coordinator {
         journal: &Journal,
         read: &LocalRecoveryKeyRead<'_>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
-    ) -> Result<bool> {
+    ) -> Result<Option<[u8; 32]>> {
         let request = &journal.status.request;
         let Some(application) = self
             .applications
             .get(&request.tenant)
             .and_then(std::sync::Weak::upgrade)
         else {
-            return Ok(false);
+            return Ok(None);
         };
         ensure!(
             matches!(application.stores().application().storage_access().purpose(),
@@ -302,7 +316,7 @@ impl Coordinator {
             Ok(keys) => keys,
             Err(error) => {
                 tracing::warn!(operation = %request.operation_id, %error, "original recovery key provider unavailable");
-                return Ok(false);
+                return Ok(None);
             }
         };
         let control = self
@@ -661,12 +675,14 @@ impl LocalRecoveryKeyInventory for Coordinator {
                         token.check()?;
                         let _decoded = self.decoding_workspace(value.len(), token)?;
                         let operation_id = if namespace == OPERATIONS {
-                            let (operation, catalogs, checkpoint_verified) =
+                            let observed =
                                 self.operation(&view, key, value, node_id, read, visit)?;
-                            digest.update([u8::from(checkpoint_verified)]);
-                            active_reports += usize::from(catalogs.is_some());
-                            serde_json::to_writer(&mut digest, &catalogs)?;
-                            operation
+                            active_reports += usize::from(observed.catalogs.is_some());
+                            serde_json::to_writer(
+                                &mut digest,
+                                &(observed.catalogs, observed.external_checkpoint),
+                            )?;
+                            observed.operation
                         } else if namespace == archives::OBJECTS {
                             let (operation, observed) =
                                 self.archive_owner(&view, store, token, (key, value), visit)?;

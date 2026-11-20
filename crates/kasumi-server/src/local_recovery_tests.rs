@@ -2123,6 +2123,17 @@ async fn local_recovery_inventory_case() {
     assert!(page.entries.iter().any(|row| matches!(row.reference,
         KeyReference::CompletedBackup { backup_id, .. } if backup_id == request.checkpoint.backup_id)));
     drop(page);
+    let one = ReadKeyRetentionRequest {
+        limit: 1,
+        ..query.clone()
+    };
+    let cursor = db
+        .read_key_retention(&control, one.clone())
+        .await
+        .unwrap()
+        .next_cursor
+        .clone()
+        .unwrap();
     let withheld = root.path().join("original-manifest");
     std::fs::rename(&manifest, &withheld).unwrap();
     let incomplete = db
@@ -2136,7 +2147,20 @@ async fn local_recovery_inventory_case() {
     assert!(!incomplete.entries.iter().any(|row|
         matches!(row.reference, KeyReference::CompletedBackup { backup_id, .. } if backup_id == id)));
     drop(incomplete);
+    let resume = ReadKeyRetentionRequest {
+        cursor: Some(cursor),
+        ..one
+    };
+    assert_eq!(
+        db.read_key_retention(&control, resume.clone())
+            .await
+            .err()
+            .unwrap()
+            .code,
+        ErrorCode::CursorExpired
+    );
     std::fs::rename(&withheld, &manifest).unwrap();
+    db.read_key_retention(&control, resume).await.unwrap();
     assert_eq!(recovery_rows(runtime.security_audit().store()), before);
     let first = db
         .read_key_retention(
