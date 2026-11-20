@@ -1634,6 +1634,11 @@ impl NodeStore {
         self.body().db.physical_identity()
     }
 
+    /// Read the original materialization stamp from the verified group directory.
+    pub fn target_directory_stamp(&self) -> Result<Option<Uuid>> {
+        self.body().db.target_directory_stamp()
+    }
+
     /// Observe the actual native publication generation for physical fixtures.
     #[cfg(any(test, feature = "test-utils"))]
     pub fn fixture_native_generation(&self) -> Result<u64> {
