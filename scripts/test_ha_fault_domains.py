@@ -393,7 +393,9 @@ if args[:1] == ["control-recovery"]:
                 fail("another request changed the pending step")
             state["sub"] += 1
             state["updated_revision"] += 1
-            if state["sub"] == 4:
+            # One surviving activation wins under this lock. Both racing
+            # clients must be able to read the original winner on return.
+            if state["phase"] == "activate" or state["sub"] == 4:
                 state["sub"] = 0
                 state["pending_phase"] = None
                 complete(state)
