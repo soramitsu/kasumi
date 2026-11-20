@@ -164,8 +164,7 @@ def procedure(io, plan_path, attempt):
     observers = {member: owned.read(io.config("observer-" + member, path))
                  for member, path in sorted(plan["observer_profiles"].items())}
     tenant_limits = owned.read(io.config("tenant-limits", plan["tenant_limits"]))
-    require(type(tenant_limits.get("max_logical_bytes")) is int
-            and tenant_limits["max_logical_bytes"] >= cap.corpus_bytes(corpus), "tenant limit cannot admit the corpus")
+    cap.check_corpus_limits(tenant_limits, corpus)
     data, voters, tenant, incarnation = check_data(plan, nodes, configs, profiles, observers)
     spec = plan["replacement"]
     replacement = owned.read(io.config("replacement-node", spec["configuration"]))

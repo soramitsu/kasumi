@@ -155,6 +155,13 @@ def corpus_bytes(corpus):
     return corpus["documents"] * corpus["document_bytes"]
 
 
+def check_corpus_limits(limits, corpus):
+    minimum = corpus_bytes(corpus)
+    for name in ("max_logical_bytes", "max_snapshot_bytes"):
+        require(isinstance(limits, dict) and type(limits.get(name)) is int and limits[name] >= minimum,
+                f"tenant {name} cannot admit the document bodies of the corpus")
+
+
 def document_id(corpus, ordinal):
     return "capacity-" + uuid.UUID(corpus["run_id"]).hex + "-" + str(ordinal)
 

@@ -403,7 +403,7 @@ class Fixture:
             "control": {"resource": {"kind": "control"}, "bearer_file": str(install / "control.token")}}
         self.plan = {"schema": cap.PLAN_SCHEMA, "kind": standalone.KIND,
                      "configuration": write_json(install / "kasumi.json", config),
-                     "tenant_limits": write_json(root / "limits.json", {"max_logical_bytes": 1 << 40}),
+                     "tenant_limits": write_json(root / "limits.json", {"max_logical_bytes": 1 << 40, "max_snapshot_bytes": 1 << 40}),
                      "corpus": self.corpus, "churn": {"pad_bytes": 64, "rounds": 3},
                      "pressure": {"readers": 2, "requests": 2, "documents": 2},
                      "compaction_growth_percent": 110, "filesystem_destination": "files",
@@ -439,6 +439,12 @@ def replay(facts):
 
 
 class GeneratorTests(unittest.TestCase):
+    def test_snapshot_limit_rejects_impossible_capacity_corpus(self):
+        corpus = {"documents": 98400, "document_bytes": 32768}
+        with self.assertRaisesRegex(ValueError, "max_snapshot_bytes"):
+            cap.check_corpus_limits({"max_logical_bytes": 4 << 30, "max_snapshot_bytes": 1536 << 20}, corpus)
+        cap.check_corpus_limits({"max_logical_bytes": 4 << 30, "max_snapshot_bytes": 6 << 30}, corpus)
+
     def test_python_generator_matches_the_rust_driver_vectors(self):
         corpus = {"run_id": RUN_ID, "seed_sha256": "12" * 32, "collection": "capacity",
                   "documents": 3 << 20, "document_bytes": 1024, "batch_documents": 128}

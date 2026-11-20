@@ -71,9 +71,7 @@ def check_installation(config, profiles, limits, plan, corpus):
     members = list(profiles["operator"]["administrative_members"].values())
     require(len(members) == 1 and int(members[0]["endpoint"].rsplit(":", 1)[1].rstrip("/")) == admin_port,
             "operator profile addresses another administrative listener")
-    require(isinstance(limits, dict) and type(limits.get("max_logical_bytes")) is int
-            and limits["max_logical_bytes"] >= cap.corpus_bytes(corpus),
-            "tenant logical limit cannot admit the corpus")
+    cap.check_corpus_limits(limits, corpus)
     return name, incarnation, tenant
 
 
