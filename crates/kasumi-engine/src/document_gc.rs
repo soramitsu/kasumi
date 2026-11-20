@@ -509,7 +509,10 @@ impl ObjectGc {
         {
             state.stats.rescued += 1;
         }
-        if !blobs.is_empty() && !state.blobs_off {
+        // Before the first census, its frozen state will include every
+        // published live owner. Once frozen, newly staged owners must join
+        // the registration queue even when the walk has passed their slot.
+        if !blobs.is_empty() && !state.blobs_off && !matches!(state.census, Census::Idle) {
             state.queue_registration(admission, body, blobs);
         }
         self.rearm(&state);
@@ -553,24 +556,26 @@ impl ObjectGc {
                 descriptor.body_bytes >= document_encoding::STRING_THRESHOLD as u64,
             ));
         };
+        let still_named = |documents: Option<&Documents>, id: &str, before: &Arc<DocumentSlot>| {
+            documents
+                .and_then(|current| current.get(id))
+                .is_some_and(|after| match (before.as_ref(), after.as_ref()) {
+                    (DocumentSlot::Stored(before), DocumentSlot::Stored(after)) => {
+                        before.body_object == after.body_object
+                    }
+                    _ => Arc::ptr_eq(before, after),
+                })
+        };
         for (name, ids) in changed {
             let Some(old) = previous.collections.get(name) else {
                 continue;
             };
-            let new = next.collections.get(name);
+            let current = next.collections.get(name).map(|group| &group.documents);
             for id in ids {
                 let Some(before) = old.documents.get(id) else {
                     continue;
                 };
-                let kept = new
-                    .and_then(|collection| collection.documents.get(id))
-                    .is_some_and(|after| match (before.as_ref(), after.as_ref()) {
-                        (DocumentSlot::Stored(before), DocumentSlot::Stored(after)) => {
-                            before.body_object == after.body_object
-                        }
-                        _ => Arc::ptr_eq(before, after),
-                    });
-                if !kept {
+                if !still_named(current, id, before) {
                     record(&mut state, before);
                 }
             }
@@ -584,8 +589,16 @@ impl ObjectGc {
             if retained.is_some_and(|retained| *sequence >= retained) {
                 break;
             }
-            for slot in commit.records.iter().filter_map(|r| r.document.as_deref()) {
-                record(&mut state, slot);
+            for change in &commit.records {
+                if let Some(slot) = &change.document {
+                    let current = next
+                        .collections
+                        .get(&change.collection)
+                        .map(|group| &group.documents);
+                    if !still_named(current, &change.id, slot) {
+                        record(&mut state, slot);
+                    }
+                }
             }
         }
         self.rearm(&state);

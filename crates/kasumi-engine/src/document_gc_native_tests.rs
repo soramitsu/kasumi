@@ -333,6 +333,11 @@ async fn document_gc_native_keeps_shared_chunks_until_their_last_manifest_is_col
     replica.commit(put("y", "y", second.clone())).await?;
     let store = replica.store().clone();
     let both = published(&store, <[u8]>::len)?;
+    // The feed trimmed x, but its live document still names the manifest.
+    // Inserting and replaying this prefix needs no collection transaction.
+    assert_eq!(replica.gc().stats().cycles, 0);
+    assert_eq!(replica.gc().stats().transactions, 0);
+    assert!(rows(&store, LINKS)?.is_empty());
     let chunks = |objects: &Published<usize>| {
         objects
             .keys()
