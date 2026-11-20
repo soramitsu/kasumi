@@ -45,6 +45,7 @@ pub(crate) fn install(
         audit.store(),
         Arc::new(Coordinator {
             database_path: config.database_path.clone(),
+            disk_settings: config.persistent_disk.clone(),
             tenants,
             owner: Arc::downgrade(owner),
             admission: audit.admission().clone(),
@@ -55,6 +56,7 @@ pub(crate) fn install(
 struct Coordinator {
     owner: std::sync::Weak<crate::standalone::InstalledStandaloneOwner>,
     database_path: PathBuf,
+    disk_settings: kasumi_store::NodeDiskConfig,
     tenants: BTreeMap<String, (Uuid, String)>,
     admission: Arc<kasumi_engine::admission::NodeAdmission>,
 }
@@ -328,6 +330,54 @@ impl Coordinator {
         Ok(expected)
     }
 
+    fn archive_owner(
+        &self,
+        view: &TenantReadView,
+        store: &TenantStore,
+        token: &QueryCancellation,
+        row: (&[u8], &[u8]),
+        visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
+    ) -> Result<(Uuid, Option<bool>)> {
+        let (operation, object) = archives::RetainedObject::read(row.0, row.1)?;
+        let (journal, _charge) = self.journal_at(view, operation, token)?;
+        let reference = object.reference();
+        if journal.status.phase == LocalRecoveryPhase::Stopped {
+            ensure!(
+                journal.status.cleanup_evidence.as_deref()
+                    == Some(cleanup_evidence(&journal)?.as_str()),
+                "stopped local archive lacks cleanup evidence"
+            );
+            // The journal's own envelope remains retained after physical deletion.
+            match std::fs::symlink_metadata(&journal.target_directory) {
+                Err(error) if error.kind() == ErrorKind::NotFound => return Ok((operation, None)),
+                Err(error) => return Err(error.into()),
+                Ok(_) => anyhow::bail!("stopped local archive generation is still present"),
+            }
+        }
+        visit(entry(
+            KeyReference::AuditArchive {
+                stream_id: reference.stream_id,
+                first_sequence: reference.object.first_sequence,
+            },
+            &reference.key.provider,
+            &reference.key.key_ref,
+            reference.key.version,
+        )?)?;
+        let _bytes = self
+            .admission
+            .reserve_waiting(65536 + 4 * reference.ciphertext_bytes, Some(token.clone()))?;
+        let authentic = object.inspect(&journal, &self.disk_settings, store, token)?;
+        if !authentic {
+            visit(LocalRecoveryKeyFinding::Missing(
+                MissingKeyDependency::RecordUnreadable {
+                    record_kind: KeyReferenceKind::AuditArchive,
+                    id: reference.object.object_id.to_string(),
+                },
+            ))?;
+        }
+        Ok((operation, Some(authentic)))
+    }
+
     fn row_owner(
         &self,
         view: &TenantReadView,
@@ -430,7 +480,14 @@ impl LocalRecoveryKeyInventory for Coordinator {
                     )?)
                 })?,
             );
-            for namespace in [OPERATIONS, PHASES, GENERATIONS, ACTIVE, INSTALLATION] {
+            for namespace in [
+                OPERATIONS,
+                PHASES,
+                GENERATIONS,
+                ACTIVE,
+                INSTALLATION,
+                archives::OBJECTS,
+            ] {
                 digest.update(namespace.as_bytes());
                 physical.visit_records(
                     namespace,
@@ -438,14 +495,21 @@ impl LocalRecoveryKeyInventory for Coordinator {
                     |key, value, provider, key_ref, version| {
                         token.check()?;
                         let _decoded = self.decoding_workspace(value.len(), token)?;
-                        let operation_id = self.row_owner(
-                            &view,
-                            token,
-                            namespace,
-                            (key, value),
-                            &mut publications,
-                            visit,
-                        )?;
+                        let operation_id = if namespace == archives::OBJECTS {
+                            let (operation, observed) =
+                                self.archive_owner(&view, store, token, (key, value), visit)?;
+                            serde_json::to_writer(&mut digest, &observed)?;
+                            operation
+                        } else {
+                            self.row_owner(
+                                &view,
+                                token,
+                                namespace,
+                                (key, value),
+                                &mut publications,
+                                visit,
+                            )?
+                        };
                         visit(entry(
                             KeyReference::LocalRecovery { operation_id },
                             provider,

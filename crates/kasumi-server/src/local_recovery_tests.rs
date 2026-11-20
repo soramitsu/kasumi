@@ -610,6 +610,45 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
     let cache_directory = target.join("tenant-audit-archives");
     let archive = cache_directory.join(format!("{}.audit", segment.reference.object.object_id));
     drop(cache);
+    let control = operator.state.control().await.unwrap();
+    inventory::install(
+        &operator.config,
+        &operator.installed_owner,
+        &operator.audit,
+        &control,
+    )
+    .unwrap();
+    let page = control
+        .read_key_retention(
+            &crate::standalone::offline_context(&control).unwrap(),
+            ReadKeyRetentionRequest {
+                scope: KeyRetentionScope::LocalRecovery {},
+                cursor: None,
+                limit: 32,
+            },
+        )
+        .await
+        .unwrap();
+    let expected = &segment.reference;
+    assert!(
+        page.entries
+            .iter()
+            .any(|entry| entry.key == KeyVersionRef::from(&expected.key)
+                && entry.reference
+                    == KeyReference::AuditArchive {
+                        stream_id: expected.stream_id,
+                        first_sequence: expected.object.first_sequence,
+                    })
+    );
+    assert!(
+        matches!(&page.coverage, KeyRetentionCoverage::Incomplete {missing, ..} if
+        !missing.contains(&MissingKeyDependency::RecordUnreadable {
+            record_kind: KeyReferenceKind::AuditArchive, id: expected.object.object_id.to_string()
+        }))
+    );
+    drop(page);
+    drop(control);
+
     let persistent_disk = operator.store().persistent_disk().clone();
     let persistent_config = operator.config.persistent_disk.clone();
     let unrelated = target.join("unrelated.txt");
