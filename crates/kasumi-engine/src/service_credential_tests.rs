@@ -972,3 +972,50 @@ async fn tenant_audit_export_keeps_its_end_across_new_events_and_rejects_changed
     );
     fixture.close().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn disconnected_adapter_retains_its_workspace_database_and_original_child_error() {
+    let fixture = CredentialFixture::new().await;
+    let fence = fixture.db.owned_response_fence(&fixture.context).unwrap();
+    let observe = fence.workspace.observe_fixture_charge();
+    let original = observe().unwrap();
+    let (entered, waiting) = tokio::sync::oneshot::channel();
+    let (resume, blocked) = std::sync::mpsc::channel();
+
+    let caller = tokio::spawn(async move {
+        let _ = fence.run_blocking(move || {
+            entered.send(()).unwrap();
+            blocked.recv_timeout(std::time::Duration::from_secs(30)).unwrap();
+            Err::<(), _>(kasumi_serving::ChildFailure::Failed(
+                std::io::Error::from_raw_os_error(libc::EIO).into(),
+            ))
+        }).await;
+    });
+    waiting.await.unwrap();
+    caller.abort();
+    assert!(caller.await.unwrap_err().is_cancelled());
+    assert_eq!(observe(), Some(original));
+
+    fixture.db.seal_admission();
+    let mut work = Box::pin(fixture.db.work.drain());
+    let mut children = Box::pin(fixture.storage.admission.drain_blocking_children());
+    std::future::poll_fn(|cx| {
+        assert!(work.as_mut().poll(cx).is_pending());
+        assert!(children.as_mut().poll(cx).is_pending());
+        std::task::Poll::Ready(())
+    }).await;
+    drop(children);
+    resume.send(()).unwrap();
+    work.await;
+    let failure = fixture.storage.admission.drain_blocking_children().await.unwrap_err();
+    let original_issue = failure.issues().iter().find(|issue| {
+        issue.error().downcast_ref::<std::io::Error>().and_then(|e| e.raw_os_error()) == Some(libc::EIO)
+    }).unwrap();
+    let repeated = fixture.storage.admission.drain_blocking_children().await.unwrap_err();
+    assert!(repeated.issues().iter().any(|issue| {
+        kasumi_types::drain::DrainIssueRef::ptr_eq(issue, original_issue)
+    }));
+    assert_eq!(observe(), None);
+    drop(observe);
+    fixture.close().await;
+}

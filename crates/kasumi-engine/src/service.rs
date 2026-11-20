@@ -1498,6 +1498,51 @@ impl<'a> ResponseFence<'a> {
     }
 }
 
+impl ResponseFence<'static> {
+    /// Keep an admitted adapter's workspace and database work registration
+    /// with its actual blocking child, including after the request disconnects.
+    /// A surviving caller gets the original fence back for final release.
+    pub async fn run_blocking<T: Send + 'static>(
+        self,
+        work: impl FnOnce() -> std::result::Result<T, kasumi_serving::ChildFailure<anyhow::Error>>
+        + Send
+        + 'static,
+    ) -> anyhow::Result<(Self, T)> {
+        let core = self.database.admission().memory().clone();
+        let registration = self.database.work.begin(self.cancellation.clone())?;
+        let child = core
+            .blocking_children()
+            .start(move || {
+                let _registration = registration;
+                self.check().map_err(|error| {
+                    if error.has_physical_source()
+                        || matches!(
+                            error.code,
+                            ErrorCode::Corruption
+                                | ErrorCode::Unavailable
+                                | ErrorCode::AuditUnavailable
+                        )
+                    {
+                        kasumi_serving::ChildFailure::Failed(error.into())
+                    } else {
+                        kasumi_serving::ChildFailure::Stopped(error.into())
+                    }
+                })?;
+                work().map(|output| (self, output))
+            })
+            .map_err(|refused| match refused {
+                kasumi_serving::ChildRefused::Full => Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "blocking adapter capacity exhausted",
+                ),
+                kasumi_serving::ChildRefused::Sealed => {
+                    Error::new(ErrorCode::Unavailable, "blocking adapter owner sealed")
+                }
+            })?;
+        child.wait().await?
+    }
+}
+
 impl Database {
     /// Network adapters must retain this gate across the authorized engine call
     /// and response serialization. It never replaces that call's RBAC checks,
