@@ -3022,6 +3022,7 @@ impl TenantEngine {
         .map_err(Into::into)
     }
 
+    #[cfg(test)]
     #[allow(
         clippy::too_many_arguments,
         reason = "keep each authenticated snapshot owner explicit through validation and generation handoff"
