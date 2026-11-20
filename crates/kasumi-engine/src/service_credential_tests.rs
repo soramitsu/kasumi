@@ -166,6 +166,30 @@ fn credential_batch(id: &str) -> MutationBatch {
 }
 
 #[tokio::test]
+async fn public_snapshot_includes_the_selected_permanent_receipt_prefix() {
+    let fixture = CredentialFixture::new().await;
+    let suffix = "r".repeat(160);
+    for group in 0..8 {
+        let mut batch = MutationBatch::with_key(format!("snapshot-receipts-{group}"));
+        for row in 0..64 {
+            batch = batch.insert("docs", format!("row-{group}-{row}-{suffix}"), json!({"value":7}));
+        }
+        fixture.db.mutate(fixture.context.clone(), batch).await.unwrap();
+    }
+    let engine = fixture.db.engine();
+    let generation = engine.generation().unwrap();
+    let receipts = generation.state.mutation_receipt_head.encoded_bytes;
+    assert!(receipts > 80 << 10);
+    let resident = generation.snapshot_bytes().unwrap() as u64;
+    drop(generation);
+    let snapshot = engine.snapshot(fixture.storage.admission.clone(), 120_000).await.unwrap();
+    assert!(snapshot.len() >= resident + receipts);
+    let restored = engine.prepare_snapshot_restore(snapshot, fixture.storage.admission.clone(), 120_000).await.unwrap();
+    drop(restored);
+    fixture.close().await;
+}
+
+#[tokio::test]
 async fn owned_response_fence_retains_workspace_and_original_credential_after_adapter_return() {
     let fixture = CredentialFixture::new().await;
     let clock = Arc::new(CredentialClock(std::sync::atomic::AtomicU64::new(0)));

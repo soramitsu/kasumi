@@ -15,6 +15,21 @@ use std::{
 
 const WORKSPACE: u64 = 64 << 20;
 
+/// The selected generation already knows the framed size of its logical
+/// stream. Reserve that prefix before writing. Bundle metadata and archives
+/// can still grow to the separate output limit.
+pub(super) fn capture_reserved(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    limit: u64,
+    logical: u64,
+    write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
+) -> anyhow::Result<SnapshotImage> {
+    let mut spool = kasumi_store::EncryptedSpool::new(disk, limit)?;
+    spool.reserve(logical)?;
+    write(&mut spool)?;
+    SnapshotImage::freeze(spool)
+}
+
 /// A fully verified backend image, staged without changing live state or Raft
 /// applied position. Installation still requires its enclosing Raft snapshot
 /// metadata and the owning coordinator's atomic publication path.
@@ -119,15 +134,7 @@ impl TenantEngine {
         let token = QueryCancellation::default();
         let _cancel = CancelOnDrop(token.clone());
         let generation = self.generation()?;
-        let logical = u64::try_from(generation.snapshot_bytes()?)
-            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?
-            .checked_add(generation.state.target_resolution_head.encoded_bytes)
-            .ok_or_else(|| {
-                Error::new(
-                    ErrorCode::ResourceExhausted,
-                    "target snapshot size overflow",
-                )
-            })?;
+        let logical = generation.encoded_snapshot_bytes()?;
         let retention = &generation.state.audit_retention;
         let maximum = logical
             .checked_add(retention.archive_bytes)
@@ -144,13 +151,14 @@ impl TenantEngine {
         let output = work
             .run(move |work| -> anyhow::Result<_> {
                 work.check()?;
-                let image = SnapshotImage::capture(work.store.scratch_disk(), maximum, |writer| {
-                    let mut checked = CheckedIo {
-                        io: writer,
-                        check: &|| work.check(),
-                    };
-                    snapshot_bundle::write(&generation, &work.store, &mut checked)
-                })?;
+                let image =
+                    capture_reserved(work.store.scratch_disk(), maximum, logical, |writer| {
+                        let mut checked = CheckedIo {
+                            io: writer,
+                            check: &|| work.check(),
+                        };
+                        snapshot_bundle::write(&generation, &work.store, &mut checked)
+                    })?;
                 work.check()?;
                 Ok(image)
             })

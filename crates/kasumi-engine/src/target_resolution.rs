@@ -19,6 +19,12 @@ pub(crate) fn scratch_limit(table_budget: u64) -> Result<u64> {
 /// Resident application, receipts, target records and Control backup bindings
 /// have independent budgets. The snapshot spool admits their checked aggregate.
 pub(crate) fn snapshot_limit(state: &TenantState) -> Result<u64> {
+    with_permanent_bytes(state, state.limits.max_snapshot_bytes)
+}
+
+/// The resident quota excludes these independently budgeted framed rows.
+/// A complete logical stream carries all four prefixes under their own heads.
+pub(crate) fn with_permanent_bytes(state: &TenantState, resident: u64) -> Result<u64> {
     let lifecycle = state
         .lifecycle_control
         .as_ref()
@@ -32,9 +38,7 @@ pub(crate) fn snapshot_limit(state: &TenantState) -> Result<u64> {
             && state.backup_binding_head.encoded_bytes <= state.limits.max_backup_binding_bytes,
         "selected permanent bytes exceed configured table budget"
     );
-    state
-        .limits
-        .max_snapshot_bytes
+    resident
         .checked_add(state.target_resolution_head.encoded_bytes)
         .and_then(|bytes| bytes.checked_add(state.mutation_receipt_head.encoded_bytes))
         .and_then(|bytes| bytes.checked_add(state.backup_binding_head.encoded_bytes))

@@ -186,6 +186,13 @@ impl Generation {
     pub(crate) fn snapshot_bytes(&self) -> Result<usize> {
         self.snapshot_accounting.bytes(&self.state)
     }
+
+    fn encoded_snapshot_bytes(&self) -> Result<u64> {
+        let resident = u64::try_from(self.snapshot_bytes()?)
+            .map_err(|_| Error::new(ErrorCode::ResourceExhausted, "snapshot size overflow"))?;
+        crate::target_resolution::with_permanent_bytes(&self.state, resident)
+            .map_err(|error| Error::new(ErrorCode::Corruption, error.to_string()))
+    }
 }
 
 /// A current application selection whose root predates the node's latest
@@ -2909,10 +2916,11 @@ impl TenantEngine {
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
         check: Option<&dyn Fn() -> anyhow::Result<()>>,
     ) -> Result<kasumi_store::SnapshotImage> {
-        kasumi_store::SnapshotImage::capture(
+        snapshot_api::capture_reserved(
             scratch_disk,
             crate::target_resolution::snapshot_limit(&generation.state)
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
+            generation.encoded_snapshot_bytes()?,
             |writer| match check {
                 Some(check) => Ok(Self::write_generation(
                     generation,

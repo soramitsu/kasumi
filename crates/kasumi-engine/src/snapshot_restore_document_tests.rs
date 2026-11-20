@@ -290,6 +290,7 @@ mod proof_documents {
         .unwrap();
         assert_eq!(generation.state.logical_bytes, state.logical_bytes);
         assert_eq!(generation.receipts.head(), &state.mutation_receipt_head);
+        assert_eq!(generation.encoded_snapshot_bytes().unwrap(), layout.bytes);
         for ordinal in 1..=ROWS {
             let id = format!("proof-{ordinal:04}");
             let slot = &generation.state.collections["proofs"].documents[&id];
