@@ -807,13 +807,11 @@ pub(crate) fn bounded_json_work(wire_bytes: u64, sites: u64) -> anyhow::Result<u
     record_work::bounded_work(wire_bytes, sites)
 }
 
-fn finish_summary(
-    reader: &mut dyn Read,
+fn authenticated_summary(
     digest: Sha256,
     mut summary: StreamSummary,
+    footer: &[u8; 48],
 ) -> anyhow::Result<StreamSummary> {
-    let mut footer = [0; 48];
-    reader.read_exact(&mut footer)?;
     anyhow::ensure!(
         summary.records > 0
             && u64::from_be_bytes(footer[..8].try_into()?) == summary.records
@@ -821,7 +819,6 @@ fn finish_summary(
             && digest.finalize().as_slice() == &footer[16..],
         "snapshot terminal authentication differs"
     );
-    anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
     summary.bytes = summary
         .bytes
         .checked_add(56)
@@ -829,48 +826,21 @@ fn finish_summary(
     Ok(summary)
 }
 
-/// Authenticate typed framing with fixed scratch before allocating any JSON
-/// record. Kind hints determine admission only; `visit` must independently bind
-/// every hint to its actual decoded enum before forwarding a semantic record.
-pub(crate) fn inspect(reader: &mut dyn Read) -> anyhow::Result<StreamSummary> {
-    let mut magic = [0; 8];
-    reader.read_exact(&mut magic)?;
-    anyhow::ensure!(&magic == MAGIC, "unsupported tenant snapshot format");
-    let mut hash = Sha256::new();
-    hash.update(magic);
-    let mut summary = StreamSummary::empty();
-    let mut previous = 0;
-    let mut buffer = [0; 64 << 10];
-    loop {
-        let mut length = [0; 8];
-        reader.read_exact(&mut length)?;
-        let bytes = u64::from_be_bytes(length);
-        if bytes == 0 {
-            return finish_summary(reader, hash, summary);
-        }
-        let mut kind = [0];
-        reader.read_exact(&mut kind)?;
-        anyhow::ensure!(
-            (summary.records == 0 && kind[0] == 0)
-                || (summary.records > 0 && kind[0] > 0 && kind[0] >= previous),
-            "snapshot typed frames duplicated or unordered"
-        );
-        summary.add(kind[0], bytes)?;
-        previous = kind[0];
-        hash.update(length);
-        hash.update(kind);
-        let mut remaining = bytes;
-        let mut work = record_work::Meter::default();
-        while remaining != 0 {
-            let take = usize::try_from(remaining.min(buffer.len() as u64))?;
-            reader.read_exact(&mut buffer[..take])?;
-            hash.update(&buffer[..take]);
-            work.consume(&buffer[..take])?;
-            remaining -= take as u64;
-        }
-        summary.record_work(kind[0], work.finish()?)?;
-    }
+fn finish_summary(
+    reader: &mut dyn Read,
+    digest: Sha256,
+    summary: StreamSummary,
+) -> anyhow::Result<StreamSummary> {
+    let mut footer = [0; 48];
+    reader.read_exact(&mut footer)?;
+    let summary = authenticated_summary(digest, summary, &footer)?;
+    anyhow::ensure!(reader.read(&mut [0])? == 0, "trailing snapshot data");
+    Ok(summary)
 }
+
+#[path = "snapshot_inspection.rs"]
+mod inspection;
+pub(crate) use inspection::{StreamInspector, inspect};
 
 /// Visit canonical records without retaining preceding records. Successful return
 /// proves framing, canonical encoding, strict order, terminal authentication and

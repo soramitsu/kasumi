@@ -21,6 +21,40 @@ fn header() -> Vec<u8> {
 }
 
 #[test]
+fn chunked_inspection_authenticates_split_frames_and_rejects_incomplete_or_trailing_bytes() {
+    let document = Record::Document(
+        "rows".into(),
+        kasumi_types::OwnedDocument::Pending(Arc::new(Document {
+            id: "one".into(),
+            version: 1,
+            body: serde_json::json!({"proof": "a\"\\b".repeat(8192)}),
+        })),
+    );
+    let bytes = raw(&[(0, header()), (3, serde_json::to_vec(&document).unwrap())]);
+    let expected = visit::<anyhow::Error>(&mut bytes.as_slice(), |_, _| Ok(())).unwrap();
+    for width in [1, 7, 8, 9, 47, 48, 4096, 64 << 10] {
+        let mut inspector = StreamInspector::new();
+        for chunk in bytes.chunks(width) {
+            inspector.push(chunk).unwrap();
+        }
+        assert_eq!(inspector.finish().unwrap(), expected);
+    }
+    for end in [0, 7, 8, 16, 17, bytes.len() - 48, bytes.len() - 1] {
+        let mut inspector = StreamInspector::new();
+        inspector.push(&bytes[..end]).unwrap();
+        assert!(inspector.finish().is_err());
+    }
+    let mut inspector = StreamInspector::new();
+    inspector.push(&bytes).unwrap();
+    assert!(inspector.push(b"x").is_err());
+    assert!(inspector.finish().is_err());
+    let mut inspector = StreamInspector::new();
+    inspector.push(&bytes[..bytes.len() - 1]).unwrap();
+    assert!(inspector.push(&[bytes[bytes.len() - 1] ^ 1]).is_err());
+    assert!(inspector.finish().is_err());
+}
+
+#[test]
 fn permanent_kind_cannot_forward_a_resident_payload_to_semantic_consumers() {
     let document = serde_json::to_vec(&Record::Document(
         "rows".into(),

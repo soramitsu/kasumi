@@ -630,6 +630,7 @@ pub(crate) async fn verify(
         );
         phase.complete();
         let phase = VerificationPhase::start("verify.resident_chunks", Some(deadline));
+        let cancellation = reader.cancellation();
         let mut spool = if capture.is_some() {
             None
         } else {
@@ -639,10 +640,15 @@ pub(crate) async fn verify(
             // before copying so the anonymous file can extend in bounded
             // steps instead of resizing once per encrypted block.
             spool.reserve(manifest.resident_bytes)?;
-            Some(spool)
+            Some((
+                spool,
+                Box::new(crate::snapshot_codec::StreamInspector::new()),
+            ))
         };
         let mut resident_bytes = 0u64;
-        let mut digest = Sha256::new();
+        // The encrypted append-only spool hashes every byte it accepts. Only
+        // the captured-generation path, which has no spool, needs its own hash.
+        let mut captured_digest = capture.as_ref().map(|_| Sha256::new());
         let mut chunk_count = 0u64;
         for index in (0..manifest.page_count).rev() {
             pages.seek(SeekFrom::Start(index * (PAGE_BYTES + 8) as u64))?;
@@ -680,13 +686,28 @@ pub(crate) async fn verify(
                     "backup chunk order or size differs"
                 );
                 key_catalogs.add(&contents.key_catalog_sha256)?;
-                digest.update(&contents.snapshot);
+                if let Some(hash) = &mut captured_digest {
+                    hash.update(&contents.snapshot);
+                }
                 resident_bytes = resident_bytes
                     .checked_add(contents.snapshot.len() as u64)
                     .filter(|bytes| *bytes <= manifest.resident_bytes)
                     .ok_or_else(|| anyhow::anyhow!("backup resident byte count exceeded"))?;
-                if let Some(spool) = &mut spool {
-                    spool.write_all(&contents.snapshot)?;
+                if let Some((spool, inspector)) = &mut spool {
+                    // Inspect the same authenticated bytes that enter the private
+                    // image. The later canonical visit checks the frozen image
+                    // independently against these bounds before publication.
+                    for block in contents.snapshot.chunks(64 << 10) {
+                        deadline.check()?;
+                        if let Some(work) = &ownership {
+                            work.check()?;
+                        }
+                        if let Some(token) = &cancellation {
+                            token.check()?;
+                        }
+                        inspector.push(block)?;
+                        spool.write_all(block)?;
+                    }
                 }
             }
         }
@@ -696,7 +717,8 @@ pub(crate) async fn verify(
         );
         anyhow::ensure!(
             resident_bytes == manifest.resident_bytes
-                && hex::encode(digest.finalize()) == manifest.resident_sha256,
+                && captured_digest
+                    .is_none_or(|hash| hex::encode(hash.finalize()) == manifest.resident_sha256),
             "full backup resident stream differs"
         );
         phase.complete();
@@ -717,6 +739,8 @@ pub(crate) async fn verify(
     let semantic_reservation = reservation.clone();
     let semantic_admission = admission.clone();
     let semantic_cancellation = reader.cancellation();
+    let resident_bytes = manifest.resident_bytes;
+    let resident_sha256 = manifest.resident_sha256.clone();
     let (state, bytes) = deadline
         .blocking(
             reservation.clone(),
@@ -731,10 +755,15 @@ pub(crate) async fn verify(
                                     "verify.snapshot_freeze",
                                     Some(deadline),
                                 );
-                                let bytes =
-                                    kasumi_store::SnapshotImage::freeze(spool.ok_or_else(
-                                        || anyhow::anyhow!("historical backup staging missing"),
-                                    )?)?;
+                                let (spool, inspector) = spool.ok_or_else(|| {
+                                    anyhow::anyhow!("historical backup staging missing")
+                                })?;
+                                let bytes = kasumi_store::SnapshotImage::freeze(spool)?;
+                                anyhow::ensure!(
+                                    bytes.len() == resident_bytes
+                                        && bytes.sha256() == resident_sha256,
+                                    "full backup resident stream differs"
+                                );
                                 phase.complete();
                                 let disk = bytes
                                     .len()
@@ -743,25 +772,15 @@ pub(crate) async fn verify(
                                     .ok_or_else(|| {
                                         anyhow::anyhow!("snapshot index disk budget overflow")
                                     })?;
-                                let mut check = || -> anyhow::Result<()> {
-                                    deadline.check()?;
-                                    if let Some(work) = &semantic_work {
-                                        work.check()?;
-                                    }
-                                    if let Some(token) = &semantic_cancellation {
-                                        token.check()?;
-                                    }
-                                    Ok(())
-                                };
-                                let phase = VerificationPhase::start(
-                                    "verify.structural_inspection",
-                                    Some(deadline),
-                                );
-                                let layout = crate::snapshot_index::StagedSnapshot::inspect(
-                                    &bytes, &mut check,
-                                )?;
+                                deadline.check()?;
+                                if let Some(work) = &semantic_work {
+                                    work.check()?;
+                                }
+                                if let Some(token) = &semantic_cancellation {
+                                    token.check()?;
+                                }
+                                let layout = inspector.finish()?;
                                 phase::snapshot_layout(&layout);
-                                phase.complete();
                                 let phase = VerificationPhase::start(
                                     "verify.semantic_admission",
                                     Some(deadline),
