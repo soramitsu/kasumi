@@ -2571,25 +2571,48 @@ impl Fixture {
             control: &kasumi_engine::Database,
             operator: &RequestContext,
             initial: &ReadKeyRetentionRequest,
-        ) -> kasumi_types::Result<(BTreeSet<KeyRetentionEntry>, KeyRetentionCoverage)> {
-            let mut next = initial.clone();
-            next.limit = 2;
-            let mut entries = BTreeSet::new();
-            loop {
-                let page = control.read_key_retention(operator, next.clone()).await?;
-                for row in &page.entries {
-                    assert!(
-                        entries.insert(row.clone()),
-                        "duplicate journal inventory entry"
-                    );
-                }
-                next.cursor = page.next_cursor.clone();
-                if next.cursor.is_none() {
-                    return Ok((entries, page.coverage.clone()));
+            phase: &str,
+        ) -> kasumi_types::Result<(BTreeSet<KeyRetentionEntry>, KeyRetentionCoverage, Option<kasumi_types::KeyRetentionCursor>)> {
+            // All pages must belong to one physical inventory. This live
+            // cluster may finish recovery or catch up a peer between pages.
+            // Discard every row of an expired cursor and retain its evidence.
+            for attempt in 1..=4 {
+                let mut next = initial.clone();
+                next.limit = 2;
+                let mut entries = BTreeSet::new();
+                let mut first_continuation = None;
+                loop {
+                    let page = match control.read_key_retention(operator, next.clone()).await {
+                        Ok(page) => page,
+                        Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired
+                            && next.cursor.is_some() => {
+                            eprintln!("journal inventory expired phase={phase} attempt={attempt} cursor={:?} observed={entries:?} error={error:?}",next.cursor);
+                            if attempt == 4 { return Err(error); }
+                            break;
+                        }
+                        Err(error) => return Err(error),
+                    };
+                    page.validate(&next)?;
+                    eprintln!("journal inventory page phase={phase} attempt={attempt} requested={:?} returned={:?} coverage={:?} entries={:?}",
+                        next.cursor,page.next_cursor,page.coverage,page.entries);
+                    for row in &page.entries {
+                        assert!(entries.last().is_none_or(|previous| previous < row),
+                            "journal inventory repeated or regressed");
+                        entries.insert(row.clone());
+                    }
+                    if next.cursor.is_none() {
+                        first_continuation = page.next_cursor.clone();
+                    }
+                    next.cursor = page.next_cursor.clone();
+                    if next.cursor.is_none() {
+                        return Ok((entries, page.coverage.clone(), first_continuation));
+                    }
                 }
             }
+            unreachable!("fourth expired enumeration returned its original error")
         }
-        let (entries, coverage) = pages(control, &operator, &request).await.unwrap();
+        let (entries, coverage, held_cursor) = pages(control, &operator, &request, "installed").await.unwrap();
+        let held_cursor = held_cursor.expect("three installed journals need a second two-row page");
         assert!(
             matches!(coverage, KeyRetentionCoverage::Complete { .. }),
             "incomplete physical journal coverage {coverage:?}"
@@ -2626,14 +2649,20 @@ impl Fixture {
         let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
         let withheld = self.directory.join("withheld-target-checkpoint");
         std::fs::rename(&manifest, &withheld).unwrap();
-        let unavailable = pages(control, &operator, &request).await;
-        std::fs::rename(&withheld, &manifest).unwrap();
+        let held_request = ReadKeyRetentionRequest {cursor:Some(held_cursor.clone()),limit:2,..request.clone()};
+        let rejected = control.read_key_retention(&operator,held_request).await;
+        let unavailable = pages(control, &operator, &request, "withheld").await;
+        let restored = disk.publish_file(held, root, name).unwrap();
+        assert_eq!(restored.identity().unwrap(), identity);
+        drop(restored);
+        assert!(matches!(rejected,Err(ref error) if error.code==kasumi_types::ErrorCode::CursorExpired),
+            "withheld checkpoint did not expire the original complete journal cursor {held_cursor:?}");
         let unavailable = unavailable.unwrap();
         assert!(!has_checkpoint(&unavailable.0));
         assert!(
             matches!(&unavailable.1,KeyRetentionCoverage::Incomplete{missing,..} if missing.contains(&MissingKeyDependency::RecordUnreadable{record_kind:KeyReferenceKind::TargetJournal,id:self.target.to_string()}))
         );
-        let restored = pages(control, &operator, &request).await.unwrap();
+        let restored = pages(control, &operator, &request, "restored").await.unwrap();
         assert!(
             matches!(restored.1, KeyRetentionCoverage::Complete { .. })
                 && has_checkpoint(&restored.0)
@@ -2701,7 +2730,7 @@ impl Fixture {
             .unwrap();
         assert_eq!(replay.as_ref(), completed.as_ref());
         assert!(matches!(
-            pages(control, &operator, &request).await.unwrap().1,
+            pages(control, &operator, &request, "retired").await.unwrap().1,
             KeyRetentionCoverage::Complete { .. }
         ));
     }
