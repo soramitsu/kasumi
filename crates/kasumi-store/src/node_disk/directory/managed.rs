@@ -1331,27 +1331,8 @@ fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDisk
         .as_ref()
         .expect("retained child")
         .metadata()?;
-    let entry = state.accounted[&operation.identity.expect("recorded child")]
-        .directory()
-        .expect("recorded child");
-    if metadata.len() != entry.len
-        || census::directory_extent(&metadata)? != entry.bytes - entry.pending
-    {
-        return Err(io::ErrorKind::InvalidData.into());
-    }
-    settle_parent(disk, state)?;
-    let identity = state
-        .pending_directory
-        .as_ref()
-        .expect("retained operation")
-        .identity
-        .expect("observed child");
-    state
-        .accounted
-        .get_mut(&identity)
-        .and_then(AccountedInode::directory_mut)
-        .expect("observed child")
-        .settled = true;
+    let identity = operation.identity.expect("recorded child");
+    settle_parent(disk, state, Some((identity, metadata)))?;
     Ok(publish_child(disk, state))
 }
 fn publish_child(disk: &Arc<NodeDisk>, state: &mut State) -> NodeDiskDirectory {
@@ -1457,7 +1438,11 @@ fn record_child(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
     }
     Ok(())
 }
-fn settle_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
+fn settle_parent(
+    disk: &NodeDisk,
+    state: &mut State,
+    created: Option<(Identity, std::fs::Metadata)>,
+) -> io::Result<()> {
     step(state, NodeDiskDirectoryOperationStep::Settle)?;
     let operation = state
         .pending_directory
@@ -1467,10 +1452,11 @@ fn settle_parent(disk: &NodeDisk, state: &mut State) -> io::Result<()> {
         operation.parent.identity(),
         operation.parent.file().metadata()?,
     );
-    operation
-        .plan
-        .expect("mutation plan")
-        .settle_observed(disk, state, [Some(observation), None])
+    let plan = operation.plan.expect("mutation plan");
+    match created {
+        Some(child) => plan.settle_created_child(disk, state, observation, child),
+        None => plan.settle_observed(disk, state, [Some(observation), None]),
+    }
 }
 fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) -> io::Result<()> {
     use NodeDiskDirectoryOperationStep as Step;
@@ -1533,7 +1519,7 @@ fn remove_effect(disk: &NodeDisk, state: &mut State, entry: AccountedDirectory) 
     if absence.kind() != io::ErrorKind::NotFound {
         return Err(absence);
     }
-    settle_parent(disk, state)?;
+    settle_parent(disk, state, None)?;
     let bytes = state
         .bytes
         .checked_sub(entry.bytes)

@@ -637,6 +637,42 @@ impl ParentTransition {
         self.settle_observed(disk, state, observations)
     }
 
+    /// A new child's empty namespace was observed before its first fsync.
+    /// That sync can allocate directory metadata. Settle its actual extent
+    /// and its parent's together against their existing promises.
+    pub(super) fn settle_created_child(
+        mut self,
+        disk: &NodeDisk,
+        state: &mut State,
+        parent: (Identity, std::fs::Metadata),
+        child: (Identity, std::fs::Metadata),
+    ) -> io::Result<()> {
+        let before = *state
+            .accounted
+            .get(&child.0)
+            .and_then(AccountedInode::directory)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        if self.changes[1].is_some()
+            || before.settled
+            || before.parent != Some(parent.0)
+            || before.children != 0
+            || child.1.len() != before.len
+            || census::directory_extent(&child.1)?
+                < before
+                    .bytes
+                    .checked_sub(before.pending)
+                    .ok_or(io::ErrorKind::InvalidData)?
+        {
+            return Err(io::ErrorKind::InvalidData.into());
+        }
+        self.changes[1] = Some(Change {
+            identity: child.0,
+            before,
+            children: 0,
+        });
+        self.settle_observed(disk, state, [Some(parent), Some(child)])
+    }
+
     /// The observations are taken from the operation's retained descriptors
     /// under the same State guard. This separates borrows without taking the
     /// unresolved operation out of its custody slot during fallible work.
