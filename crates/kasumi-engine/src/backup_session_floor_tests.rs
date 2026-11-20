@@ -1886,9 +1886,37 @@ async fn replay_retained(root: &Path) -> anyhow::Result<()> {
     inst.close().await
 }
 
+/// Reopen a failed population and exercise only the first unacknowledged
+/// input. Its result is kept apart from the acceptance journal and witness.
+async fn diagnose_next(root: &Path) -> anyhow::Result<()> {
+    let plan = plan_of(root)?;
+    let original = read_originals(root)?;
+    let ordinal = original.len() as u64;
+    anyhow::ensure!(
+        ordinal < plan.reserve_start() && original.keys().copied().eq(0..ordinal),
+        "diagnosis requires a contiguous interrupted population"
+    );
+    let installation = Installation::open(root, &plan).await?;
+    let attempt = run_session(&installation, &plan, ordinal, "diagnose").await;
+    let drain = installation.close().await;
+    let evidence = serde_json::json!({
+        "ordinal": ordinal, "session_id": plan.session_id(ordinal),
+        "source_commit": std::env::var("KASUMI_SOURCE_COMMIT").ok(),
+        "original": attempt.as_ref().ok(), "error": attempt.as_ref().err().map(|e| format!("{e:#}")),
+        "drain_error": drain.as_ref().err().map(|e| format!("{e:#}")),
+    });
+    write_json(
+        &root.join(format!("diagnose-{ordinal}-{}.json", std::process::id())),
+        &evidence,
+    )?;
+    attempt?;
+    drain
+}
+
 async fn child(stage: &str, root: &Path) -> anyhow::Result<()> {
     match stage {
         "populate" => populate(root).await,
+        "diagnose-next" => diagnose_next(root).await,
         "kill" => kill_child(root).await,
         "resolve" => resolve(root).await,
         "verify" => verify(root).await,
