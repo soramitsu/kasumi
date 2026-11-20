@@ -294,6 +294,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     admitted = owned.read(owned.check_ref(custody, details["admission"]))
     topology_plan = owned.read(retained["ha-topology"])
     nodes = admitted["nodes"]
+    topology.verify_retained_control(nodes, retained)
     require(len(nodes) == 9 and admitted["plan_sha256"] == owned.sha256(retained["ha-topology"])
             and len({n["id"] for n in nodes}) == len({n["node_id"] for n in nodes}) == 9
             and topology_plan["nodes"] == [{k:n[k] for k in ("id","role","group","config")} for n in nodes]

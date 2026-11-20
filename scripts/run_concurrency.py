@@ -430,6 +430,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
     plan = owned.read(retained["concurrency-plan"])
     topology_plan = owned.read(retained["ha-topology"])
     nodes = admission["nodes"]
+    topology.verify_retained_control(nodes, retained)
     require(len(nodes) == 9 and admission["plan_sha256"] == ac.sha256(retained["ha-topology"])
             and topology_plan["nodes"] == [{k: n[k] for k in ("id", "role", "group", "config")} for n in nodes]
             and set(retained) == {"ha-topology", "concurrency-plan", "data-profile", "operator-profile",

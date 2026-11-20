@@ -18,6 +18,7 @@ from unittest.mock import patch
 import attempt_index
 import domain_run
 import process_ha_topology as topology
+from test_process_ha import fixture_control_placement
 import release_gate
 import repeatable_assembly as owned
 import run_ha_soak as soak
@@ -134,6 +135,7 @@ class DomainFixture(unittest.TestCase):
                 plan["nodes"].append({"id": name, "role": role, "group": role,
                                       "config": str(home / "config.json")})
             for home, config in configs:
+                config.update(fixture_control_placement(role))
                 config["replication"].update(peers=peers,
                                              initial_voters=[peer["node_id"] for peer in peers])
                 (home / "config.json").write_text(json.dumps(config))

@@ -98,6 +98,7 @@ def admitted_topology(io, plan, paths, digests):
         require(sha256(path) == node["config_sha256"], "HA node configuration changed after admission")
         configs[node["id"]] = owned.read(path)
         require(configs[node["id"]]["replication"]["node_id"] == node["node_id"], "HA node identity differs")
+    topology.verify_control_placement(nodes, configs)
     return nodes, configs
 
 

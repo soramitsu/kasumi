@@ -13,6 +13,7 @@ import json
 from pathlib import Path
 import re
 import stat
+import uuid
 
 import gate_process
 
@@ -86,6 +87,48 @@ def beneath(path, roots):
     return selected
 
 
+def verify_control_placement(nodes, configs):
+    """Bind the three data voters to the signing root of the three hosted Control voters."""
+    controls = [n for n in nodes if n["role"] == "control"]
+    data = [n for n in nodes if n["role"] == "data"]
+    require(len(controls) == len(data) == 3, "dedicated placements require three data and three Control voters")
+    control_ids = {str(node["node_id"]) for node in controls}
+    data_ids = {str(node["node_id"]) for node in data}
+    root = None
+    for node in controls:
+        config = configs[node["id"]]
+        hosted = config.get("control")
+        require(isinstance(hosted, dict) and config.get("remote_control") is None
+                and config.get("tenants") == [] and config.get("target_recovery") is None,
+                "Control-only process must not host data or target recovery and must host Control")
+        catalog = hosted.get("remote_data")
+        require(isinstance(catalog, dict) and isinstance(catalog.get("nodes"), dict)
+                and data_ids <= set(catalog["nodes"]), "hosted Control does not enroll the data voters")
+        lifecycle = hosted.get("lifecycle")
+        require(isinstance(lifecycle, dict) and isinstance(lifecycle.get("installation"), dict),
+                "dedicated Control lacks its signing installation")
+        signing = lifecycle["installation"].get("root")
+        exact(signing, {"control_incarnation", "public_key"}, "hosted Control signing root")
+        incarnation = signing["control_incarnation"]
+        require(isinstance(incarnation, str) and len(incarnation) == 36 and uuid.UUID(incarnation).int
+                and str(uuid.UUID(incarnation)) == incarnation and incarnation == hosted.get("incarnation")
+                and isinstance(signing["public_key"], str) and re.fullmatch(r"[0-9a-f]{64}", signing["public_key"])
+                and (root is None or root == signing), "dedicated Control signing roots differ")
+        root = signing
+    for node in data:
+        config = configs[node["id"]]
+        remote = config.get("remote_control")
+        require(config.get("control") is None and config.get("tenants") and isinstance(remote, dict),
+                "data voter must host tenants and use remote Control")
+        require(remote.get("root") == root and isinstance(remote.get("endpoints"), dict)
+                and set(remote["endpoints"]) == control_ids, "data voter selects another Control root or roster")
+
+
+def verify_retained_control(nodes, retained):
+    configs = {n["id"]: read_json(retained["node-" + n["id"]])[0] for n in nodes if n["role"] != "authority"}
+    verify_control_placement(nodes, configs)
+
+
 def inspect(plan_path, environment):
     """Read exact installed inputs without opening any private key or token."""
     plan, plan_sha = read_json(plan_path)
@@ -100,6 +143,7 @@ def inspect(plan_path, environment):
     require(isinstance(plan["nodes"], list) and len(plan["nodes"]) == 9, "HA requires nine installed processes")
     ids, physical_ids, certificates, roots, databases, roles = set(), set(), set(), [], set(), {}
     nodes = []
+    configs = {}
     for value in plan["nodes"]:
         exact(value, {"id", "role", "group", "config"}, "HA node")
         name, role, group = value["id"], value["role"], value["group"]
@@ -111,6 +155,7 @@ def inspect(plan_path, environment):
         roles.setdefault(role, []).append(group)
         config, config_sha = read_json(value["config"])
         if role != "authority":
+            configs[name] = config
             require(config.get("mode") == "replicated", "data and Control require replicated mode")
             tenants = config.get("tenants")
             require(isinstance(tenants, list), "tenant roster missing")
@@ -170,6 +215,7 @@ def inspect(plan_path, environment):
         roster = sorted(node["node_id"] for node in selected)
         require(all(node["voters"] == roster and node["peers"] == selected[0]["peers"] for node in selected),
                 "installed peer sets differ or cross role boundaries")
+    verify_control_placement(nodes, configs)
     return {"schema": SCHEMA, "plan": str(plan_path), "plan_sha256": plan_sha,
             "qualification": "local-input-inspection-only", "binaries": binaries, "nodes": nodes}
 

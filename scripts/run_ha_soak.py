@@ -444,6 +444,7 @@ def verify_domain(root, domain, files, configs, artifacts, candidates):
                 for item in report["configurations"]}
     admission = acceptance.json_reference(custody, details["admission"])
     nodes = admission["nodes"]
+    topology.verify_retained_control(nodes, retained)
     require(len(nodes) == 9 and set(retained) == {
                 "soak-plan", "ha-topology", *("node-" + node["id"] for node in nodes)}
             and admission["plan_sha256"] == acceptance.sha256(retained["ha-topology"])
