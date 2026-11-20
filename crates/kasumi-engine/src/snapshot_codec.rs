@@ -1120,6 +1120,31 @@ pub(crate) fn read_reopening(
     reader: &mut dyn Read,
     reopen: Option<&ReopenRows<'_>>,
 ) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    read_placed(disk, reader, SnapshotPlacement::Local(reopen))
+}
+
+/// Reopening may reuse objects in the original store. A verified restore
+/// writes its private document objects under the requested target on first decode.
+pub(crate) enum SnapshotPlacement<'a> {
+    Local(Option<&'a ReopenRows<'a>>),
+    VerifiedTarget {
+        tenant: &'a str,
+        incarnation: &'a str,
+    },
+}
+
+pub(crate) fn read_placed(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    reader: &mut dyn Read,
+    placement: SnapshotPlacement<'_>,
+) -> std::result::Result<Decoded, kasumi_store::ScratchOperationFailure> {
+    let (reopen, target) = match placement {
+        SnapshotPlacement::Local(reopen) => (reopen, None),
+        SnapshotPlacement::VerifiedTarget {
+            tenant,
+            incarnation,
+        } => (None, Some((tenant, incarnation))),
+    };
     let mut state: Option<TenantState> = None;
     let mut receipts: Option<ReceiptSink> = None;
     let mut backup_bindings: Option<crate::backup_binding::Builder> = None;
@@ -1130,6 +1155,10 @@ pub(crate) fn read_reopening(
     let summary = visit(reader, |_, record| {
         if let Record::Header(header) = record {
             kasumi_store::ScratchOperationFailure::ordinary(|| {
+                if let Some((tenant, incarnation)) = target {
+                    anyhow::ensure!(header.tenant == tenant, "restore document tenant differs");
+                    kasumi_types::validate_name(incarnation)?;
+                }
                 anyhow::ensure!(
                     state.is_none() && empty_records(&header),
                     "snapshot header contains embedded records"
@@ -1237,7 +1266,7 @@ pub(crate) fn read_reopening(
                 document_table_limit
                     .ok_or_else(|| anyhow::anyhow!("document staging budget absent"))?,
                 &state.tenant,
-                &state.incarnation,
+                target.map_or(state.incarnation.as_str(), |(_, incarnation)| incarnation),
             )?);
             if let Some(rows) = reopen.filter(|rows| rows.documents) {
                 kasumi_store::ScratchOperationFailure::ordinary(|| {
@@ -1546,10 +1575,8 @@ pub(crate) fn read_reopening(
             Some(builder) => builder.finish()?,
             None => crate::document_restore::StagedDocuments::empty(
                 disk,
-                document_table_limit
-                    .ok_or_else(|| anyhow::anyhow!("document staging budget absent"))?,
                 &state.tenant,
-                &state.incarnation,
+                target.map_or(state.incarnation.as_str(), |(_, incarnation)| incarnation),
             )?,
         };
         Ok(Decoded {

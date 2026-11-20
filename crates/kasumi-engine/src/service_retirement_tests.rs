@@ -472,6 +472,7 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
         checkpoint,
         None,
         || Ok(()),
+        &|| Ok(()),
     )
     .unwrap();
     let target_engine = Arc::new(target_engine);

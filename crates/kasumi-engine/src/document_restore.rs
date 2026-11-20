@@ -129,7 +129,6 @@ struct Tables {
     backing: Option<TableBacking>,
     disk: Arc<ScratchDisk>,
     scope: Scope,
-    max_table_bytes: u64,
     // LAST: table handles and their backing retire before this owner's credit.
     _metadata: DiskMemoryLease,
 }
@@ -435,7 +434,6 @@ impl Builder {
                 backing: Some(TableBacking { bodies, blobs }),
                 disk: disk.clone(),
                 scope,
-                max_table_bytes,
                 _metadata: metadata,
             }),
             comparing: None,
@@ -642,12 +640,7 @@ impl<'a> Correction<'a> {
 }
 
 impl StagedDocuments {
-    pub(crate) fn empty(
-        disk: &Arc<ScratchDisk>,
-        max_table_bytes: u64,
-        tenant: &str,
-        incarnation: &str,
-    ) -> Result<Self> {
+    pub(crate) fn empty(disk: &Arc<ScratchDisk>, tenant: &str, incarnation: &str) -> Result<Self> {
         kasumi_types::validate_name(incarnation)?;
         let scope = Scope::new(tenant, incarnation)?;
         let metadata = disk.memory().clone().reserve_installed(FLOOR)?;
@@ -656,7 +649,6 @@ impl StagedDocuments {
                 backing: None,
                 disk: disk.clone(),
                 scope,
-                max_table_bytes,
                 _metadata: metadata,
             }),
             has_bodies: false,
@@ -706,69 +698,6 @@ impl StagedDocuments {
             .clone()
             .reserve_document_decode(bytes)
             .map_err(|original| anyhow::Error::new(ReadAdmissionFailure { original }))
-    }
-
-    /// Rebind a verified logical restore to its explicitly selected new
-    /// incarnation. Copy authenticated immutable objects without decoding JSON,
-    /// preserving the original per-table cap and exact disk/memory governor.
-    pub(crate) fn rebind_scope(
-        &self,
-        tenant: &str,
-        incarnation: &str,
-    ) -> std::result::Result<Self, kasumi_store::ScratchOperationFailure> {
-        let target_scope =
-            kasumi_store::ScratchOperationFailure::ordinary(|| Scope::new(tenant, incarnation))?;
-        if target_scope == self.tables.scope {
-            return Ok(self.clone());
-        }
-        kasumi_store::ScratchOperationFailure::ordinary(|| {
-            ensure!(
-                self.published.is_none(),
-                "a reopened snapshot keeps its own document scope"
-            );
-            Ok(())
-        })?;
-        let Some(backing) = &self.tables.backing else {
-            return Ok(Self::empty(
-                &self.tables.disk,
-                self.tables.max_table_bytes,
-                tenant,
-                incarnation,
-            )?);
-        };
-        let mut builder = Builder::new(
-            &self.tables.disk,
-            self.tables.max_table_bytes,
-            tenant,
-            incarnation,
-        )?;
-        kasumi_store::ScratchOperationFailure::ordinary(|| {
-            let source_prefix = self.tables.scope.key([0; 32]);
-            for (body, table) in [(true, &backing.bodies), (false, &backing.blobs)] {
-                let mut since_flush = 0;
-                table.visit(|key, value| {
-                    ensure!(
-                        key.len() == 64 && key[..32] == source_prefix[..32],
-                        "restored document object scope differs"
-                    );
-                    let digest = key[32..].try_into().expect("checked object key width");
-                    // put authenticates the exact original value against its digest
-                    // and admits each bounded pending copy before allocation.
-                    builder.put(body, digest, value)?;
-                    since_flush += 1;
-                    if since_flush == EncryptedTableBatch::MAX_ENTRIES / 2 {
-                        if body {
-                            builder.bodies.flush()?;
-                        } else {
-                            builder.blobs.flush()?;
-                        }
-                        since_flush = 0;
-                    }
-                    Ok(())
-                })?;
-            }
-            builder.finish()
-        })
     }
 
     /// Explicit physical ownership in this immutable authenticated bootstrap
@@ -1294,8 +1223,7 @@ mod workspace_tests {
         let scratch = crate::codec_fixture::ScratchScope::new(memory.clone()).unwrap();
         let before_empty = memory.snapshot();
         let files = scratch.disk.snapshot().live_files;
-        let empty =
-            StagedDocuments::empty(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
+        let empty = StagedDocuments::empty(&scratch.disk, "tenant", "incarnation").unwrap();
         assert_eq!(scratch.disk.snapshot().live_files, files);
         assert_eq!(
             memory.snapshot().live_reservations,
@@ -1303,11 +1231,7 @@ mod workspace_tests {
             "only the scope/metadata owner is admitted"
         );
         assert_eq!(empty.object_counts().unwrap(), (0, 0));
-        let rebound_empty = empty.rebind_scope("tenant", "empty-rebound").unwrap();
-        assert_eq!(scratch.disk.snapshot().live_files, files);
-        assert_eq!(rebound_empty.object_counts().unwrap(), (0, 0));
-        assert!(empty.rebind_scope("tenant", "").is_err());
-        drop(rebound_empty);
+        assert!(StagedDocuments::empty(&scratch.disk, "tenant", "").is_err());
         let mut builder = Builder::new(&scratch.disk, 64 << 20, "tenant", "incarnation").unwrap();
         let document = Document {
             id: "native-only".into(),
@@ -1325,10 +1249,6 @@ mod workspace_tests {
             assert!(!empty.contains(&descriptor).unwrap());
         }
         assert_eq!(memory.snapshot(), before, "not even a transient read grant");
-        let rebound = populated.rebind_scope("tenant", "rebound").unwrap();
-        assert!(rebound.has_bodies);
-        assert!(rebound.contains(&descriptor).unwrap());
-        drop(rebound);
         drop(populated);
         drop(empty);
         assert_eq!(scratch.disk.snapshot().live_files, 0);

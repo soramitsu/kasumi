@@ -65,23 +65,23 @@ impl Work {
         self.store.check_access()
     }
 }
-struct CheckedIo<'a, T> {
-    io: T,
-    work: &'a Work,
+pub(super) struct CheckedIo<'a, T> {
+    pub(super) io: T,
+    pub(super) check: &'a dyn Fn() -> anyhow::Result<()>,
 }
 impl<T: Read> Read for CheckedIo<'_, T> {
     fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
-        self.work.check().map_err(std::io::Error::other)?;
+        (self.check)().map_err(std::io::Error::other)?;
         self.io.read(bytes)
     }
 }
 impl<T: Write> Write for CheckedIo<'_, T> {
     fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.work.check().map_err(std::io::Error::other)?;
+        (self.check)().map_err(std::io::Error::other)?;
         self.io.write(bytes)
     }
     fn flush(&mut self) -> std::io::Result<()> {
-        self.work.check().map_err(std::io::Error::other)?;
+        (self.check)().map_err(std::io::Error::other)?;
         self.io.flush()
     }
 }
@@ -145,7 +145,10 @@ impl TenantEngine {
             .run(move |work| -> anyhow::Result<_> {
                 work.check()?;
                 let image = SnapshotImage::capture(work.store.scratch_disk(), maximum, |writer| {
-                    let mut checked = CheckedIo { io: writer, work };
+                    let mut checked = CheckedIo {
+                        io: writer,
+                        check: &|| work.check(),
+                    };
                     snapshot_bundle::write(&generation, &work.store, &mut checked)
                 })?;
                 work.check()?;
@@ -188,7 +191,7 @@ impl TenantEngine {
                             VerificationPhase::start("public_restore.framing", Some(deadline));
                         let layout = snapshot_bundle::inspect(&mut CheckedIo {
                             io: image.reader(),
-                            work,
+                            check: &|| work.check(),
                         })?;
                         phase.complete();
                         let additional = layout
@@ -224,7 +227,7 @@ impl TenantEngine {
                         &prior.baseline(),
                         &mut CheckedIo {
                             io: image.reader(),
-                            work,
+                            check: &|| work.check(),
                         },
                         Some(layout),
                         // A public restore installs a transported bundle.

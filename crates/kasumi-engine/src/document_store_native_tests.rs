@@ -663,7 +663,6 @@ async fn document_store_native_reopen_reconciles_published_objects_in_bounded_ba
     let files = fixture.image.disk().snapshot().live_files;
     let empty = crate::document_restore::StagedDocuments::empty(
         fixture.image.disk(),
-        128 << 20,
         TENANT,
         &incarnation(),
     )?;
@@ -811,11 +810,16 @@ async fn document_store_native_reopen_compares_published_objects_instead_of_stag
     other.write_missing(store)?;
     assert!(third_descriptor.load(&reopened).is_err());
     assert!(!reopened.contains(&third_descriptor)?);
-    // A reopened decode keeps its own scope and store.
+    // The selected owner rejects another incarnation even on the same store.
     assert!(
-        reopened
-            .rebind_scope(TENANT, "another-incarnation")
-            .is_err()
+        crate::document_restore::BootstrapDocuments::new(
+            reopened.clone(),
+            fixture.roots.clone(),
+            fixture.select()?,
+            TENANT,
+            "another-incarnation",
+        )
+        .is_err()
     );
     let mut foreign = crate::document_restore::Builder::new(
         fixture.image.disk(),
@@ -1302,11 +1306,26 @@ async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corru
     assert!(staged.contains(&old_descriptor)?);
     assert_eq!(old_descriptor.load(&old_owner)?.as_ref(), &old);
     let target_incarnation = uuid::Uuid::from_u128(74).to_string();
-    let rebound = staged.rebind_scope(TENANT, &target_incarnation)?;
-    assert_eq!(rebound.object_value_bytes()?, staged.object_value_bytes()?);
-    assert_eq!(old_descriptor.load(&rebound)?.as_ref(), &old);
-    assert_eq!(old_descriptor.load(&staged)?.as_ref(), &old);
-    drop(rebound);
+    let mut target = crate::document_restore::Builder::new(
+        fixture.image.disk(),
+        128 << 20,
+        TENANT,
+        &target_incarnation,
+    )?;
+    assert_eq!(target.push(&old)?, old_descriptor);
+    let target = target.finish()?;
+    assert_eq!(target.object_value_bytes()?, staged.object_value_bytes()?);
+    assert_eq!(old_descriptor.load(&target)?.as_ref(), &old);
+    assert!(
+        crate::document_restore::BootstrapDocuments::new(
+            target,
+            fixture.roots.clone(),
+            bootstrap.clone(),
+            TENANT,
+            &incarnation(),
+        )
+        .is_err()
+    );
 
     let mut prepared = PreparedDocuments::new(&fixture.roots, &bootstrap, TENANT, &incarnation())?;
     let new_descriptor = prepared.stage(&new)?;
@@ -1347,7 +1366,7 @@ async fn document_store_native_bootstrap_composite_has_exact_owners_and_no_corru
     assert_eq!(new_descriptor.load(&empty_owner)?.as_ref(), &new);
     drop(empty_owner);
     staged.corrupt_first_blob_for_test()?;
-    assert!(staged.rebind_scope(TENANT, &target_incarnation).is_err());
+    assert!(old_descriptor.load(&staged).is_err());
     assert!(staged.contains(&old_descriptor)?);
     assert!(old_descriptor.load(&current_owner).is_err());
     assert_eq!(old_descriptor.load(&native)?.as_ref(), &old);

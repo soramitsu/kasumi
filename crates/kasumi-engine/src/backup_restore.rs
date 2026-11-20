@@ -111,6 +111,13 @@ impl VerifiedBackup {
                             .enter()
                             .map(Some)
                         },
+                        &|| {
+                            deadline.check()?;
+                            if let Some(work) = &self._registration {
+                                work.check()?;
+                            }
+                            Ok(())
+                        },
                     )
                     .map_err(crate::SnapshotFailure::into_scratch_failure)?;
                     kasumi_store::ScratchOperationFailure::ordinary(|| {

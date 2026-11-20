@@ -1708,7 +1708,7 @@ impl TenantEngine {
         if self.bootstrap_sha256.get().is_none()
             && store.storage_access().purpose().is_local_fixture()
         {
-            let image = Self::logical_snapshot_of(previous, store.scratch_disk())?;
+            let image = Self::logical_snapshot_of(previous, store.scratch_disk(), None)?;
             self.bootstrap_sha256
                 .set(image.sha256().into())
                 .map_err(|_| {
@@ -2121,12 +2121,14 @@ impl TenantEngine {
         checkpoint: FullBackupCheckpoint,
         target_origin: Option<TargetOrigin>,
         handoff_workspace: impl FnOnce() -> Result<Workspace>,
+        check: &dyn Fn() -> anyhow::Result<()>,
     ) -> std::result::Result<(kasumi_store::SnapshotImage, Self), SnapshotFailure> {
         if source.header().tenant != expected_tenant {
             return Err(Error::new(ErrorCode::Forbidden, "backup tenant mismatch").into());
         }
         use crate::backup_verify::VerificationPhase;
         let phase = VerificationPhase::start("restore.release_validation_indexes", None);
+        check()?;
         let image = source.into_image();
         phase.complete();
         let phase = VerificationPhase::start("restore.materialization_admission", None);
@@ -2144,16 +2146,23 @@ impl TenantEngine {
             target_resolutions,
             documents,
             ..
-        } = crate::snapshot_codec::read(image.disk(), &mut image.reader())
-            .map_err(SnapshotFailure::from)?;
+        } = crate::snapshot_codec::read_placed(
+            image.disk(),
+            &mut snapshot_api::CheckedIo {
+                io: image.reader(),
+                check,
+            },
+            crate::snapshot_codec::SnapshotPlacement::VerifiedTarget {
+                tenant: expected_tenant,
+                incarnation: &incarnation,
+            },
+        )
+        .map_err(SnapshotFailure::from)?;
         drop(image);
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
+        check()?;
         Self::rebind_restored_state(&mut state, incarnation, checkpoint, target_origin)?;
-        // Source objects were staged under the authenticated source header.
-        // Retarget their physical keys only after validating the restore lineage;
-        // the content digests and every collection/feed descriptor stay exact.
-        let documents = documents.rebind_scope(&state.tenant, &state.incarnation)?;
         phase.complete();
         let phase = VerificationPhase::start("restore.prepare_generation", None);
         let engine = Self::from_bootstrap_state(
@@ -2167,7 +2176,10 @@ impl TenantEngine {
         )?;
         phase.complete();
         let phase = VerificationPhase::start("restore.genesis_snapshot", None);
-        let image = engine.logical_snapshot(&scratch_disk)?;
+        check()?;
+        let generation = engine.generation()?;
+        let image = Self::logical_snapshot_of(&generation, &scratch_disk, Some(check))?;
+        check()?;
         engine
             .bootstrap_sha256
             .set(image.sha256().into())
@@ -2914,18 +2926,25 @@ impl TenantEngine {
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
     ) -> Result<kasumi_store::SnapshotImage> {
         let generation = self.generation()?;
-        Self::logical_snapshot_of(&generation, scratch_disk)
+        Self::logical_snapshot_of(&generation, scratch_disk, None)
     }
 
     fn logical_snapshot_of(
         generation: &Generation,
         scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+        check: Option<&dyn Fn() -> anyhow::Result<()>>,
     ) -> Result<kasumi_store::SnapshotImage> {
         kasumi_store::SnapshotImage::capture(
             scratch_disk,
             crate::target_resolution::snapshot_limit(&generation.state)
                 .map_err(|e| Error::new(ErrorCode::Corruption, e.to_string()))?,
-            |writer| Ok(Self::write_generation(generation, writer)?),
+            |writer| match check {
+                Some(check) => Ok(Self::write_generation(
+                    generation,
+                    &mut snapshot_api::CheckedIo { io: writer, check },
+                )?),
+                None => Ok(Self::write_generation(generation, writer)?),
+            },
         )
         // Keeps write_generation's classification; scratch spool creation
         // and flush failures are classified by the same rule.
