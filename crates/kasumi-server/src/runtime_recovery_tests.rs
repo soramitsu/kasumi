@@ -2624,10 +2624,18 @@ impl Fixture {
         };
         let id = checkpoint.backup_id;
         let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
-        let withheld = self.directory.join("withheld-target-checkpoint");
-        std::fs::rename(&manifest, &withheld).unwrap();
+        let disk = source.stores().application().persistent_disk();
+        let config = &configurations[source_index].persistent_disk;
+        let withheld = manifest.with_file_name("withheld-target-checkpoint");
+        let (root, name) = config.binding(&manifest).unwrap();
+        let (held_root, held_name) = config.binding(&withheld).unwrap();
+        let original = disk.open_file(root, name).unwrap();
+        let identity = original.identity().unwrap();
+        let held = disk.publish_file(original, held_root, held_name).unwrap();
         let unavailable = pages(control, &operator, &request).await;
-        std::fs::rename(&withheld, &manifest).unwrap();
+        let restored = disk.publish_file(held, root, name).unwrap();
+        assert_eq!(restored.identity().unwrap(), identity);
+        drop(restored);
         let unavailable = unavailable.unwrap();
         assert!(!has_checkpoint(&unavailable.0));
         assert!(
