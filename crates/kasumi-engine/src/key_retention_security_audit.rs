@@ -384,18 +384,17 @@ impl SecurityAudit {
         if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
             if !state.target_journal_retirements.is_empty() {
                 let expected = state.target_journal_retirements.target_writer_digest()?;
-                if let Some(owner) = journal {
-                    if owner
+                if let Some(owner) = journal
+                    && owner
                         .writer_state_sha256()
                         .map_err(Error::from_physical_source)?
                         != expected
-                    {
-                        add_missing(
-                            &mut missing,
-                            &mut truncated,
-                            MissingKeyDependency::MemberUnreported { node_id: local },
-                        );
-                    }
+                {
+                    add_missing(
+                        &mut missing,
+                        &mut truncated,
+                        MissingKeyDependency::MemberUnreported { node_id: local },
+                    );
                 }
                 if let Some(peers) = &member_inventories {
                     for (&node_id, identity) in &peers.reported {

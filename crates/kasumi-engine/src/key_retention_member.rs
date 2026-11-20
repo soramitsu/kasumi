@@ -342,8 +342,7 @@ impl Database {
         &self,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
         context: &RequestContext,
-        policy_epoch: u64,
-        control_incarnation: &str,
+        state: &TenantState,
         page: &ReadKeyRetentionRequest,
         probe: bool,
         token: &QueryCancellation,
@@ -356,13 +355,13 @@ impl Database {
         let (purpose, partitions) = match page.scope {
             KeyRetentionScope::TargetJournal {} => {
                 context.authorization.check_live()?;
-                let control = uuid::Uuid::parse_str(control_incarnation)
+                let control = uuid::Uuid::parse_str(&state.incarnation)
                     .map_err(|error| Error::from_physical_source(error.into()))?;
                 let deadline = now_ms()?.saturating_add(30_000);
                 (
                     CatalogPurpose::ControlJournal {
                         control,
-                        policy_epoch,
+                        policy_epoch: state.policy_epoch,
                         principal_sha256: Sha256::digest(context.principal.as_bytes()).into(),
                         expires_at_ms: context
                             .authorization

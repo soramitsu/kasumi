@@ -829,8 +829,7 @@ impl Database {
                     .observe_service_members(
                         &metrics,
                         context,
-                        epoch,
-                        &state.incarnation,
+                        state,
                         request,
                         probe,
                         &cancellation,
