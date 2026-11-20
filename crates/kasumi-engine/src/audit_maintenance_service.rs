@@ -639,7 +639,13 @@ mod tests {
                 .unwrap()
                 .unwrap();
             let raft = group.raft();
-            let admitted = group.metrics();
+            // A write can return before the Raft metrics watcher publishes its
+            // application. Observe the final fixture revision before changing term.
+            let admitted = raft
+                .wait(Some(Duration::from_secs(5)))
+                .applied_index(Some(before.state.revision), "final audit write applied")
+                .await
+                .unwrap();
             raft.append_entries(openraft::raft::AppendEntriesRequest {
                 vote: openraft::Vote::new_committed(admitted.current_term + 1, 2),
                 prev_log_id: admitted.last_applied,
