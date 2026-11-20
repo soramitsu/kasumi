@@ -767,3 +767,7 @@ mod participant_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "issuer_process_member.rs"]
+mod issuer_process_member;
