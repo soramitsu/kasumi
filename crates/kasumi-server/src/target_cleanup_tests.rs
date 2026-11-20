@@ -33,8 +33,8 @@ impl CleanupLedger for MemoryLedger {
             None => {}
             Some(old) if old == cleanup => return Ok(()),
             Some(old)
-                if old.stage.permits_successor(cleanup.stage)
-                    && old.binding == cleanup.binding => {}
+                if old.stage.permits_successor(cleanup.stage) && old.binding == cleanup.binding => {
+            }
             Some(_) => anyhow::bail!("target cleanup outcome differs"),
         }
         *recorded = Some(cleanup.clone());

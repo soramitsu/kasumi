@@ -996,8 +996,7 @@ impl TargetJournal {
                     return Ok(());
                 }
                 ensure!(
-                    old.stage.permits_successor(cleanup.stage)
-                        && old.binding == cleanup.binding,
+                    old.stage.permits_successor(cleanup.stage) && old.binding == cleanup.binding,
                     "target cleanup outcome differs"
                 );
             }
