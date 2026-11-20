@@ -747,8 +747,9 @@ impl NodeSegmentGroup {
                 acquisition_stage!("existing-census", self.census(resources, slots))?;
             }
             Acquisition::Cleanup => {
-                // Only an interrupted cleanup leaves an empty directory; it
-                // holds nothing to recognize or to lose.
+                // A crash between directory and root creation, or after the
+                // last file unlink, can leave the directory empty. The caller
+                // verifies its materialization stamp before deleting it.
                 if self.listing_summary()?.0 != 0 {
                     resources.root = Some(self.disk.open_file(root, &root_path)?);
                     self.verify_root(resources, &[PREPARED, READY])?;

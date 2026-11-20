@@ -102,15 +102,20 @@ pub(super) fn delete_exact(
                 ledger.record(&file.cleanup(TargetCleanupStage::Deleted, None))?;
                 return Ok(());
             }
-            // Only a durable Deleting record explains missing root bytes. For a
-            // first attempt, require the original store envelope before recording
-            // any progress. Keep this claim through the directory unlink.
+            // An unbound materialization may have synced its stamped directory
+            // before creating the root file. The creation journal validates the
+            // stamp in bind(). Once bound, only Deleting explains a missing root.
             let claimed = file.claim(storage)?;
+            let directory = if existing.is_some() {
+                claimed.identity()?.directory
+            } else {
+                claimed.directory_identity()?
+            };
             let binding = TargetFileBinding {
                 tenant: file.tenant.to_owned(),
                 target_incarnation: file.target,
                 path: file.path.to_owned(),
-                directory: claimed.identity()?.directory,
+                directory,
                 directory_stamp: Some(claimed.target_directory_stamp()?.context(
                     "target cleanup requires the original materialization directory stamp",
                 )?),

@@ -7,6 +7,7 @@ use std::{path::PathBuf, sync::Mutex};
 /// record, an exact replay or the next stage of the same binding.
 #[derive(Default)]
 struct MemoryLedger {
+    creation_stamp: Option<Uuid>,
     binding: Mutex<Option<TargetFileBinding>>,
     cleanup: Mutex<Option<TargetCleanup>>,
     records: Mutex<usize>,
@@ -16,6 +17,12 @@ impl CleanupLedger for MemoryLedger {
         Ok(self.binding.lock().unwrap().clone())
     }
     fn bind(&self, binding: &TargetFileBinding) -> Result<()> {
+        if let Some(expected) = self.creation_stamp {
+            ensure!(
+                binding.directory_stamp == Some(expected),
+                "wrong creation stamp"
+            );
+        }
         let mut bound = self.binding.lock().unwrap();
         ensure!(
             bound.as_ref().is_none_or(|old| old == binding),
@@ -249,8 +256,21 @@ async fn deleting_resumes_from_the_original_stamped_rootless_directory() {
     ledger.bind(&binding).unwrap();
     interruption::stop_after(&path, "deleting");
     assert!(delete_exact(&ledger, &fixture.storage(), &target).is_err());
+    remove_group_files(&fixture, &target, &binding);
+    delete_exact(&ledger, &fixture.storage(), &target).unwrap();
+    assert_eq!(
+        ledger.cleanup().unwrap(),
+        Some(target.cleanup(TargetCleanupStage::Deleted, Some(binding)))
+    );
+    assert!(!path.exists());
+}
+
+/// Reproduce the observable native directory after its creation sync and
+/// before the first root write, or after the last file unlink.
+fn remove_group_files(fixture: &Fixture, target: &TargetFile<'_>, binding: &TargetFileBinding) {
+    let path = target.path;
     let disk = &fixture.physical.persistent;
-    let mut files = std::fs::read_dir(&path)
+    let mut files = std::fs::read_dir(path)
         .unwrap()
         .map(|entry| entry.unwrap().path())
         .collect::<Vec<_>>();
@@ -274,9 +294,43 @@ async fn deleting_resumes_from_the_original_stamped_rootless_directory() {
         binding.directory_stamp
     );
     drop(claim);
-    delete_exact(&ledger, &fixture.storage(), &target).unwrap();
+}
+
+#[tokio::test]
+async fn rootless_materialization_requires_original_creation_and_no_prior_binding() {
+    let fixture = Fixture::new();
+    let key = ("city".to_owned(), Uuid::new_v4());
+    let id = Uuid::new_v4();
+    let binding = fixture.create(&key, id).await;
+    let path = fixture.path(&key);
+    let target = file(&key, &path, id);
+    remove_group_files(&fixture, &target, &binding);
+
+    let wrong = MemoryLedger {
+        creation_stamp: Some(Uuid::new_v4()),
+        ..Default::default()
+    };
+    let error = delete_exact(&wrong, &fixture.storage(), &target).unwrap_err();
+    assert!(
+        format!("{error:#}").contains("wrong creation stamp"),
+        "{error:#}"
+    );
+    assert!(wrong.binding().unwrap().is_none());
+    assert!(wrong.cleanup().unwrap().is_none());
+
+    let already_bound = MemoryLedger::default();
+    already_bound.bind(&binding).unwrap();
+    assert!(delete_exact(&already_bound, &fixture.storage(), &target).is_err());
+    assert!(already_bound.cleanup().unwrap().is_none());
+    assert!(path.is_dir());
+
+    let original = MemoryLedger {
+        creation_stamp: binding.directory_stamp,
+        ..Default::default()
+    };
+    delete_exact(&original, &fixture.storage(), &target).unwrap();
     assert_eq!(
-        ledger.cleanup().unwrap(),
+        original.cleanup().unwrap(),
         Some(target.cleanup(TargetCleanupStage::Deleted, Some(binding)))
     );
     assert!(!path.exists());
