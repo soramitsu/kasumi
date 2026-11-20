@@ -637,6 +637,55 @@ async fn ordinary_writes_keep_every_posting_current_for_each_predicate() {
     fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn structured_edits_borrow_overflow_values_until_the_producer_fits() {
+    let fixture = Fixture::new().await;
+    let owner = StructuredOwner::default();
+    let genesis = genesis();
+    let first = genesis.next(vec![("original".into(), small(1))], &[], None);
+    assert!(fixture.publish(&owner, &genesis, &first, 1));
+    let selected = fixture.manifest();
+
+    let scalar = "x".repeat(MAX_EDIT_BYTES + 1);
+    let value = FieldValue {
+        tag: 5,
+        bytes: std::borrow::Cow::Borrowed(scalar.as_bytes()),
+    };
+    let (_, borrowed) = encode_row(
+        "docs",
+        StructuredRow::Value {
+            field: 0,
+            value: &value,
+        },
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(borrowed.as_ptr(), scalar.as_ptr());
+
+    let next = first.next(vec![("large".into(), json!({"status":scalar}))], &[], None);
+    let before = crate::test_utils::reserved_payload_bytes(&fixture._storage.admission);
+    assert!(
+        edit(
+            &owner,
+            &fixture.store,
+            &selected,
+            &first.indexes,
+            &next.state,
+            &next.indexes,
+            Some(applied(&next.state, 1)),
+        )
+        .unwrap()
+        .is_none()
+    );
+    assert_eq!(
+        crate::test_utils::reserved_payload_bytes(&fixture._storage.admission),
+        before
+    );
+    assert_eq!(fixture.manifest(), selected);
+    fixture.verify(&first);
+    fixture.close().await;
+}
+
 fn small(n: usize) -> Value {
     json!({"status": format!("s{:04}", n % 97), "n": n})
 }
@@ -1117,8 +1166,9 @@ async fn an_interrupted_publication_leaves_the_selected_directory_and_no_orphan_
         fixture.reachable()
     );
 
-    // A replacement generation whose publication never commits stays sealed
-    // and unselected; the next replacement reclaims it.
+    // An interrupted replacement stays sealed and unselected. Its running
+    // owner may reclaim four batches per tick. A process which reopens the
+    // older snapshot must recover its durable stages before replaying.
     let fourth = third.next(
         (1000..2500)
             .map(|n| (format!("d{n:06}"), small(n + 7)))
@@ -1155,10 +1205,34 @@ async fn an_interrupted_publication_leaves_the_selected_directory_and_no_orphan_
             .expect("manifest write")
     };
     let abandoned = page_space(&replace(&restarted).take_writes());
-    assert!(fixture.space_rows(&abandoned) > 0);
+    let staged_rows = fixture.space_rows(&abandoned);
+    assert!(staged_rows > 60);
     assert_eq!(fixture.manifest().revision, third.state.revision);
     fixture.verify(&third);
+    assert!(
+        !restarted
+            .finish_replacement_for_test(&fixture.store)
+            .unwrap()
+    );
+    let remaining = fixture.space_rows(&abandoned);
+    assert!(remaining < staged_rows && staged_rows - remaining <= 60);
+    assert!(remaining > 0);
+
     let restarted = StructuredOwner::default();
+    let mut recovered = Vec::new();
+    prepare_restore(
+        &restarted,
+        &fixture.store,
+        &first.state,
+        &first.indexes,
+        &snapshot_meta(&first.state, 1),
+        true,
+        &mut recovered,
+    )
+    .unwrap();
+    assert!(recovered.is_empty());
+    assert_eq!(fixture.space_rows(&abandoned), 0);
+    fixture.verify(&third);
     let writes = replace(&restarted).take_writes();
     let replacement = page_space(&writes);
     assert_ne!(replacement, abandoned);

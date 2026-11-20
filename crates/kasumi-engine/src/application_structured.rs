@@ -261,19 +261,20 @@ fn checked_key(key: Vec<u8>) -> Result<Vec<u8>> {
     Ok(key)
 }
 
-/// One row as its key and value.
-fn encode_row(collection: &str, row: StructuredRow<'_>) -> Result<Option<(Vec<u8>, Vec<u8>)>> {
+/// Only the bounded native key is allocated. A long scalar remains borrowed
+/// from the immutable input until the entire edit has storage admission.
+fn encode_row<'a>(collection: &str, row: StructuredRow<'a>) -> Result<Option<(Vec<u8>, &'a [u8])>> {
     Ok(Some(match row {
         StructuredRow::Present { field, id } => {
             let mut key = field_prefix(PRESENT, collection, field);
             key.extend_from_slice(id.as_bytes());
-            (checked_key(key)?, Vec::new())
+            (checked_key(key)?, &[][..])
         }
         StructuredRow::Posting { field, value, id } => {
             let mut key = field_prefix(POSTING, collection, field);
             push_value(&mut key, value)?;
             key.extend_from_slice(id.as_bytes());
-            (checked_key(key)?, Vec::new())
+            (checked_key(key)?, &[][..])
         }
         StructuredRow::Value { field, value } => {
             let mut key = field_prefix(LONG, collection, field);
@@ -284,7 +285,7 @@ fn encode_row(collection: &str, row: StructuredRow<'_>) -> Result<Option<(Vec<u8
                 value.bytes.len() <= MAX_VALUE_BYTES,
                 "structured scalar exceeds the ordered value bound"
             );
-            (checked_key(key)?, value.bytes.to_vec())
+            (checked_key(key)?, value.bytes.as_ref())
         }
     }))
 }
@@ -984,18 +985,40 @@ fn edit(
     if base.rebuild().is_some() && layout != base.layout_sha256 {
         return Ok(None);
     }
-    let mut rows: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
+    let memory = store.plaintext_memory_owner();
+    let mut key_workspace = None;
+    let mut operations = 0usize;
     let mut bytes = 0usize;
+    let mut allocations = 0usize;
+    // Both generations are immutable. Quote the producer stream without
+    // retaining rows, before any map node, edit array or payload is allocated.
     let within = candidate_indexes.visit_structured_changes(
         previous_indexes,
         |collection, added, row| -> Result<bool> {
+            if let StructuredRow::Value { value, .. } = row {
+                if value.bytes.len() <= INLINE_VALUE {
+                    return Ok(true);
+                }
+                if value.bytes.len() > MAX_EDIT_BYTES {
+                    return Ok(false);
+                }
+            }
+            if key_workspace.is_none() {
+                key_workspace = Some(
+                    memory
+                        .clone()
+                        .reserve_installed((4 * MAX_KEY_BYTES) as u64)?,
+                );
+            }
             let Some((key, value)) = encode_row(collection, row)? else {
                 return Ok(true);
             };
-            bytes = bytes.saturating_add(key.len()).saturating_add(value.len());
-            // A rebuilt collection removes a row before adding it again.
-            rows.insert(key, added.then_some(value));
-            Ok(rows.len() <= MAX_EDIT_ROWS && bytes <= MAX_EDIT_BYTES)
+            operations += 1;
+            bytes += key.len() + value.len();
+            allocations += key.capacity() + if added { value.len() } else { 0 };
+            // A row appears at most once in each generation: a removal and
+            // then an insertion may map to the same native key.
+            Ok(bytes <= MAX_EDIT_BYTES && operations <= 2 * MAX_EDIT_ROWS)
         },
     )?;
     if !within {
@@ -1003,14 +1026,26 @@ fn edit(
     }
     let mut next = base.advance(candidate.revision, applied, layout, base.records);
     next.status = base.status.clone();
-    if rows.is_empty() {
-        // Metadata, denials and unindexed changes only move the boundary.
+    if operations == 0 {
         return Ok(Some(StructuredPublication::only(vec![next.write()?])));
     }
-    let memory = store.plaintext_memory_owner();
-    let rows_lease = memory
-        .clone()
-        .reserve_installed(u64::try_from(bytes)? + 96 * rows.len() as u64)?;
+    // The fixed allowance funds a partially filled B-tree root. Per-row
+    // framing includes both a map slot and its borrowed Edit descriptor.
+    let retained = allocations + 2048 + 256 * operations.min(MAX_EDIT_ROWS + 1);
+    let rows_lease = memory.clone().reserve_installed(retained.try_into()?)?;
+    let mut rows = BTreeMap::new();
+    let within = candidate_indexes.visit_structured_changes(
+        previous_indexes,
+        |collection, added, row| -> Result<bool> {
+            if let Some((key, value)) = encode_row(collection, row)? {
+                rows.insert(key, added.then(|| value.to_vec()));
+            }
+            Ok(rows.len() <= MAX_EDIT_ROWS)
+        },
+    )?;
+    if !within {
+        return Ok(None);
+    }
     let edits: Vec<Edit<'_>> = rows
         .iter()
         .map(|(key, value)| match value {

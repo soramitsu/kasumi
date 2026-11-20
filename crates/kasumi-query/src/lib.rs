@@ -68,9 +68,10 @@ struct CollectionIndexes {
 
 impl CollectionIndexes {
     fn empty(definition: &CollectionDefinition) -> Result<Self> {
+        let (validator, schema_sha256) = validation::validate_definition_and_compile(definition)?;
         Ok(Self {
-            validator: validation::validate_definition_and_compile(definition)?,
-            schema_sha256: validation::schema_sha256(&definition.schema)?,
+            validator,
+            schema_sha256,
             definition_sha256: index_input::definition_sha256(definition)?,
             structured: Structured::empty(definition),
             text: None,
@@ -168,10 +169,10 @@ impl QueryIndexes {
     /// A missing collection or changed schema takes the fully checked compiler
     /// path. Index and text constraints always use the supplied definition.
     pub fn schema_validator(&self, definition: &CollectionDefinition) -> Result<SchemaValidator> {
-        let schema_sha256 = validation::schema_sha256(&definition.schema)?;
+        let schema = validation::DigestedSchema::new(&definition.schema)?;
         let validator = match self.collections.get(&definition.name) {
-            Some(indexes) if indexes.schema_sha256 == schema_sha256 => indexes.validator.clone(),
-            _ => validation::compile(&definition.schema)?,
+            Some(indexes) if indexes.schema_sha256 == schema.sha256 => indexes.validator.clone(),
+            _ => validation::compile_digested(&schema)?,
         };
         Ok(SchemaValidator {
             collection: definition.name.clone(),
