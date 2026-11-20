@@ -1362,7 +1362,7 @@ impl Fixture {
             .await;
     }
 
-    pub async fn assert_authority_signer_inventory(&self, control: &kasumi_engine::Database) {
+    pub async fn assert_authority_signer_inventory(&self, control: &kasumi_engine::Database, handles: &[Handles]) {
         use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionCoverage, KeyRetentionScope, MissingKeyDependency, ReadKeyRetentionRequest};
         let auth = self.authenticator(self.issuer_audits[0].clone()).await;
         let operator = auth.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
@@ -1391,6 +1391,40 @@ impl Fixture {
                 Ok(())
             }).unwrap();
         }
+        let audit_request = ReadKeyRetentionRequest {
+            scope: KeyRetentionScope::SecurityAudit {},
+            limit: 1,
+            cursor: None,
+        };
+        let mut audit_query = audit_request.clone();
+        let mut audit_entries = std::collections::BTreeSet::new();
+        let mut first_cursor = None;
+        loop {
+            let audit = control.read_key_retention(&operator, audit_query.clone()).await.unwrap();
+            assert!(matches!(&audit.coverage,
+                KeyRetentionCoverage::Incomplete { missing: gaps, .. } if gaps.contains(&missing)
+                    && !gaps.iter().any(|gap| matches!(gap, MissingKeyDependency::MemberUnreported { .. }))),
+                "physical Control audits and independent issuer coverage: {:?}", audit.coverage);
+            audit_entries.extend(audit.entries.iter().cloned());
+            audit_query.cursor = audit.next_cursor.clone();
+            if first_cursor.is_none() { first_cursor = audit_query.cursor.clone(); }
+            if audit_query.cursor.is_none() { break; }
+        }
+        for (index, handle) in handles.iter().enumerate() {
+            handle.audit.store().visit_wrapping_identities(|catalog, provider, key_ref, version| {
+                assert!(audit_entries.iter().any(|entry| entry.key.provider == provider
+                    && entry.key.key_ref == key_ref && entry.key.version == version
+                    && matches!(entry.reference, KeyReference::Catalog {node_id, catalog_id,
+                        domain: KeyCatalogDomain::SecurityAudit} if node_id == index as u64 + 1 && catalog_id == catalog)));
+                Ok(())
+            }).unwrap();
+        }
+        let peer = handles.iter().enumerate()
+            .find(|(index, _)| *index as u64 + 1 != control.raft_group().node_id()).unwrap().1;
+        peer.audit.store().rotate_data_key().await.unwrap();
+        let stale_audit = ReadKeyRetentionRequest { cursor: Some(first_cursor.unwrap()), ..audit_request };
+        assert!(matches!(control.read_key_retention(&operator, stale_audit).await,
+            Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
         let short = ReadKeyRetentionRequest {limit: 1, ..request.clone()};
         let page = control.read_key_retention(&operator, short.clone()).await.unwrap();
         let cursor = page.next_cursor.clone().unwrap();

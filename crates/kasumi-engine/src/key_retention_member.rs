@@ -1,17 +1,38 @@
 //! Physical member contribution to a distributed wrapping-key inventory.
 use super::*;
 use kasumi_raft::member_catalog::{
-    CatalogPurpose, CatalogStart, MEMBER_CATALOG_BYTES, MEMBER_CATALOG_LIMIT, MemberCatalogRequest,
-    MemberSignerReport,
+    CatalogPurpose, CatalogStart, MEMBER_CATALOG_BYTES, MEMBER_CATALOG_LIMIT, MemberAuditReport,
+    MemberCatalogRequest, MemberSignerReport,
 };
 
-type SignerIdentity = (TrustVerifierIdentity, uuid::Uuid, [u8; 32]);
+#[derive(Clone, PartialEq, Eq, serde::Serialize)]
+pub(super) enum ServiceIdentity {
+    Signer(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
+    Audit {
+        catalog: uuid::Uuid,
+        stream: uuid::Uuid,
+        catalog_sha256: [u8; 32],
+        archives_sha256: [u8; 32],
+    },
+}
+
+impl ServiceIdentity {
+    fn catalog(&self) -> uuid::Uuid {
+        match self {
+            Self::Signer(_, id, _) => *id,
+            Self::Audit { catalog, .. } => *catalog,
+        }
+    }
+}
 
 #[derive(Default)]
-pub(super) struct MemberSigners {
-    pub(super) reported: std::collections::BTreeMap<u64, SignerIdentity>,
+pub(super) struct MemberInventories {
+    pub(super) reported: std::collections::BTreeMap<u64, ServiceIdentity>,
     pub(super) catalogs: BTreeSet<uuid::Uuid>,
+    pub(super) streams: BTreeSet<uuid::Uuid>,
     pub(super) entries: BTreeSet<KeyRetentionEntry>,
+    pub(super) missing: BTreeSet<MissingKeyDependency>,
+    pub(super) truncated: bool,
 }
 
 fn unavailable(error: impl std::fmt::Display) -> Error {
@@ -77,9 +98,108 @@ impl SignerCatalog {
     }
 }
 
+impl SecurityAudit {
+    fn member_audit_report(
+        &self,
+        node: u64,
+        request: &MemberCatalogRequest,
+        token: &QueryCancellation,
+    ) -> Result<MemberAuditReport> {
+        let stream = self
+            .status()
+            .map_err(Error::from_physical_source)?
+            .position
+            .stream_id;
+        let mut entries = BTreeSet::new();
+        let mut select = |entry: KeyRetentionEntry| -> anyhow::Result<()> {
+            token.check()?;
+            entry.validate()?;
+            if request.start.includes(&entry) {
+                entries.insert(entry);
+                if entries.len() > usize::from(request.limit) + 1 {
+                    entries.pop_last();
+                }
+            }
+            Ok(())
+        };
+        let mut catalog = None;
+        let catalog_sha256 = self
+            .store()
+            .visit_wrapping_identities(|id, provider, key_ref, version| {
+                anyhow::ensure!(
+                    provider.len() <= MAX_KEY_PROVIDER_BYTES && key_ref.len() <= MAX_KEY_REF_BYTES,
+                    "service audit wrapping identity exceeds its bound"
+                );
+                catalog = Some(id);
+                select(KeyRetentionEntry {
+                    key: KeyVersionRef {
+                        provider: provider.into(),
+                        key_ref: key_ref.into(),
+                        version,
+                    },
+                    reference: KeyReference::Catalog {
+                        node_id: node,
+                        catalog_id: id,
+                        domain: KeyCatalogDomain::SecurityAudit,
+                    },
+                })
+            })
+            .map_err(Error::from_physical_source)?;
+        let mut unreadable_objects = BTreeSet::new();
+        let mut truncated = false;
+        let archives_sha256 = self
+            .visit_retained_archive_keys(token, |item, authentic| {
+                anyhow::ensure!(item.stream_id == stream, "member audit stream changed");
+                select(KeyRetentionEntry {
+                    key: KeyVersionRef::from(&item.key),
+                    reference: KeyReference::AuditArchive {
+                        stream_id: stream,
+                        first_sequence: item.object.first_sequence,
+                    },
+                })?;
+                if !authentic {
+                    unreadable_objects.insert(item.object.object_id);
+                    if unreadable_objects.len() > MAX_MISSING_KEY_DEPENDENCIES {
+                        unreadable_objects.pop_last();
+                        truncated = true;
+                    }
+                }
+                Ok(())
+            })
+            .map_err(Error::from_physical_source)?;
+        let report = MemberAuditReport {
+            request_sha256: staged_digest(request)?.0,
+            node_id: node,
+            stream,
+            catalog: catalog.ok_or_else(|| unavailable("no installed service audit catalog"))?,
+            catalog_sha256,
+            archives_sha256,
+            entries: entries.into_iter().collect(),
+            unreadable_objects: unreadable_objects.into_iter().collect(),
+            truncated,
+        };
+        report.validate(request, node).map_err(unavailable)?;
+        Ok(report)
+    }
+}
+
 impl Database {
-    /// Recheck the same physical signer after response encoding on the enrolled cluster route.
-    pub fn check_member_signer_release(&self, report: &kasumi_raft::RpcResponse) -> Result<()> {
+    /// Verify the physical projection again after response encoding. Archive
+    /// reads run under the same retained blocking-worker admission as capture.
+    pub async fn check_member_catalog_release(
+        &self,
+        report: &kasumi_raft::RpcResponse,
+        request: &MemberCatalogRequest,
+    ) -> Result<()> {
+        if let kasumi_raft::RpcResponse::MemberAuditCatalog(original) = report {
+            let next = self.member_key_catalog(request.clone()).await?;
+            if !matches!(&*next, kasumi_raft::RpcResponse::MemberAuditCatalog(current) if current == original)
+            {
+                return Err(unavailable(
+                    "member audit dependencies changed before release",
+                ));
+            }
+        }
         if let kasumi_raft::RpcResponse::MemberSignerCatalog(report) = report {
             let store = self
                 .signer_keys
@@ -118,6 +238,7 @@ impl Database {
         let group = self.group.clone();
         let control = self.store.tenant() == crate::control::CONTROL_TENANT;
         let signer = self.signer_keys.get().filter(|_| control).cloned();
+        let audit = self.security_audit.clone();
         charge
             .retained_read(token, move |mut charge, token| {
                 let _registration = registration;
@@ -133,6 +254,16 @@ impl Database {
                     let report = signer.capture(&request, token)?;
                     request.check_position(&group).map_err(unavailable)?;
                     kasumi_raft::RpcResponse::MemberSignerCatalog(Box::new(report))
+                } else if request.purpose == CatalogPurpose::ServiceAudit {
+                    if !control {
+                        return Err(unavailable(
+                            "service audit inventory requires the enrolled Control group",
+                        ));
+                    }
+                    request.check_position(&group).map_err(unavailable)?;
+                    let report = audit.member_audit_report(group.node_id(), &request, token)?;
+                    request.check_position(&group).map_err(unavailable)?;
+                    kasumi_raft::RpcResponse::MemberAuditCatalog(Box::new(report))
                 } else {
                     let report = group
                         .capture_member_catalog(&request, domain, || Ok(token.check()?))
@@ -146,21 +277,30 @@ impl Database {
             .await
     }
 
-    pub(super) async fn observe_member_signers(
+    pub(super) async fn observe_service_members(
         &self,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
         page: &ReadKeyRetentionRequest,
         token: &QueryCancellation,
-    ) -> Result<MemberSigners> {
+    ) -> Result<MemberInventories> {
         let members = metrics.membership_config.membership();
         let _wire = self
             .admission()
             .reserve_resident((6 * MEMBER_CATALOG_BYTES) as u64)?;
-        let mut result = MemberSigners::default();
-        let Some(local_signer) = self.signer_keys.get() else {
-            return Ok(result);
+        let mut result = MemberInventories::default();
+        let (purpose, partitions) = match page.scope {
+            KeyRetentionScope::SecurityAudit {} => (CatalogPurpose::ServiceAudit, None),
+            KeyRetentionScope::Signer {} => {
+                let Some(signer) = self.signer_keys.get() else {
+                    return Ok(result);
+                };
+                (
+                    CatalogPurpose::ControlSigner,
+                    Some(staged_digest(&signer.partitions)?.0),
+                )
+            }
+            _ => return Err(unavailable("unsupported enrolled member inventory")),
         };
-        let partitions = staged_digest(&local_signer.partitions)?.0;
         let mut observed = std::collections::BTreeMap::new();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         for recheck in [false, true] {
@@ -170,7 +310,7 @@ impl Database {
                     continue;
                 }
                 let request = MemberCatalogRequest {
-                    purpose: CatalogPurpose::ControlSigner,
+                    purpose,
                     nonce: uuid::Uuid::new_v4(),
                     leader: metrics.id,
                     term: metrics.current_term,
@@ -189,25 +329,60 @@ impl Database {
                         1
                     },
                 };
-                let read = self
-                    .group
-                    .read_member_signer_catalog(node_id, node, &request);
-                let report = tokio::select! {
+                let read = async {
+                    match purpose {
+                        CatalogPurpose::ControlSigner => {
+                            let report = self
+                                .group
+                                .read_member_signer_catalog(node_id, node, &request)
+                                .await?;
+                            anyhow::ensure!(
+                                Some(&report.partitions_sha256) == partitions.as_ref(),
+                                "issuer roster differs"
+                            );
+                            Ok((
+                                ServiceIdentity::Signer(
+                                    report.verifier,
+                                    report.catalog,
+                                    report.catalog_sha256,
+                                ),
+                                report.entries,
+                                Vec::new(),
+                                false,
+                            ))
+                        }
+                        CatalogPurpose::ServiceAudit => {
+                            let report = self
+                                .group
+                                .read_member_audit_catalog(node_id, node, &request)
+                                .await?;
+                            Ok((
+                                ServiceIdentity::Audit {
+                                    catalog: report.catalog,
+                                    stream: report.stream,
+                                    catalog_sha256: report.catalog_sha256,
+                                    archives_sha256: report.archives_sha256,
+                                },
+                                report.entries,
+                                report.unreadable_objects,
+                                report.truncated,
+                            ))
+                        }
+                        CatalogPurpose::Group => anyhow::bail!("unexpected group catalog"),
+                    }
+                };
+                let report: anyhow::Result<_> = tokio::select! {
                     result = read => result,
                     _ = cancelled(token) => return Err(cancelled_error()),
                     _ = tokio::time::sleep_until(deadline) => return Ok(result),
                 };
-                let report = match report {
+                let (identity, entries, unreadable, truncated) = match report {
                     Ok(report) => report,
                     Err(error) => {
-                        tracing::warn!(node_id, %error, "Control member signer inventory unavailable");
+                        tracing::warn!(node_id, %error, "Control member inventory unavailable");
                         continue;
                     }
                 };
-                let identity = (report.verifier, report.catalog, report.catalog_sha256);
-                if report.partitions_sha256 != partitions {
-                    continue;
-                }
                 if !recheck {
                     observed.insert(node_id, identity);
                     continue;
@@ -215,13 +390,31 @@ impl Database {
                 if observed.get(&node_id) != Some(&identity) {
                     continue;
                 }
-                if !result.catalogs.insert(report.catalog) {
+                if let ServiceIdentity::Audit { stream, .. } = &identity
+                    && !result.streams.insert(*stream)
+                {
                     return Err(unavailable(
-                        "multiple Control members share a physical signer catalog",
+                        "multiple Control members claim the same physical audit stream",
+                    ));
+                }
+                if !result.catalogs.insert(identity.catalog()) {
+                    return Err(unavailable(
+                        "multiple Control members share a physical wrapping catalog",
                     ));
                 }
                 result.reported.insert(node_id, identity);
-                for entry in report.entries {
+                result.truncated |= truncated;
+                for id in unreadable {
+                    add_missing(
+                        &mut result.missing,
+                        &mut result.truncated,
+                        MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::AuditArchive,
+                            id: id.to_string(),
+                        },
+                    );
+                }
+                for entry in entries {
                     consider_entry(page, &mut result.entries, entry)?;
                 }
             }

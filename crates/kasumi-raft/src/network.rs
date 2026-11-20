@@ -89,6 +89,7 @@ pub type ReadIndexError = RaftError<u64, CheckIsLeaderError<u64, BasicNode>>;
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "rpc", content = "payload", rename_all = "snake_case")]
 pub enum RpcResponse {
+    MemberAuditCatalog(Box<crate::member_catalog::MemberAuditReport>),
     MemberSignerCatalog(Box<crate::member_catalog::MemberSignerReport>),
     MemberCatalog(Option<Box<crate::member_catalog::MemberCatalogReport>>),
     Append(Result<AppendEntriesResponse<u64>, RaftError<u64>>),

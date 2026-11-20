@@ -103,7 +103,7 @@ impl Database {
 pub(in crate::service) struct InstalledInventories<'a> {
     pub(super) signer: Option<&'a SignerCatalog>,
     pub(super) issuers: Option<IssuerCoverage>,
-    pub(super) member_signers: Option<member::MemberSigners>,
+    pub(super) member_inventories: Option<member::MemberInventories>,
     pub(super) journal: Option<&'a crate::TargetJournal>,
     pub(super) local_recovery: Option<&'a dyn LocalRecoveryKeyInventory>,
 }
@@ -168,7 +168,7 @@ impl SecurityAudit {
         let InstalledInventories {
             signer,
             issuers,
-            mut member_signers,
+            mut member_inventories,
             journal,
             local_recovery,
         } = owners;
@@ -225,14 +225,32 @@ impl SecurityAudit {
                 );
             }
         }
-        let page_limit = if member_signers.is_some() {
+        let page_limit = if member_inventories.is_some() {
             request
                 .limit
                 .min(kasumi_raft::member_catalog::MEMBER_CATALOG_LIMIT)
         } else {
             request.limit
         };
-        if let Some(peers) = &mut member_signers {
+        if let Some(peers) = &mut member_inventories {
+            truncated |= peers.truncated;
+            for dependency in std::mem::take(&mut peers.missing) {
+                add_missing(&mut missing, &mut truncated, dependency);
+            }
+            if matches!(request.scope, KeyRetentionScope::SecurityAudit {})
+                && peers.streams.contains(
+                    &self
+                        .status()
+                        .map_err(Error::from_physical_source)?
+                        .position
+                        .stream_id,
+                )
+            {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "local and remote service audit streams coincide",
+                ));
+            }
             for entry in std::mem::take(&mut peers.entries) {
                 consider_entry(request, &mut entries, entry)?;
             }
@@ -244,7 +262,7 @@ impl SecurityAudit {
             .chain(member_set.membership().nodes().map(|(id, _)| id))
         {
             if node_id != local
-                && !member_signers
+                && !member_inventories
                     .as_ref()
                     .is_some_and(|peers| peers.reported.contains_key(&node_id))
             {
@@ -289,10 +307,10 @@ impl SecurityAudit {
                 store
                     .visit_wrapping_identities(|catalog_id, provider, key_ref, version| {
                         token.check()?;
-                        if let Some(peers) = &member_signers {
+                        if let Some(peers) = &member_inventories {
                             anyhow::ensure!(
                                 !peers.catalogs.contains(&catalog_id),
-                                "remote and local members share the same physical signer catalog"
+                                "remote and local members share the same physical wrapping catalog"
                             );
                         }
                         anyhow::ensure!(
@@ -441,9 +459,9 @@ impl SecurityAudit {
             truncated,
         ))?
         .0;
-        let inventory_sha256 = if let Some(peers) = member_signers {
+        let inventory_sha256 = if let Some(peers) = member_inventories {
             staged_digest(&(
-                "kasumi.control-member-signers.v1",
+                "kasumi.control-member-inventories.v1",
                 inventory_sha256,
                 peers.reported,
             ))?

@@ -6958,8 +6958,10 @@ mod lifecycle_tests {
             // through the actual owned children. Terminal recovery is separate.
             if protected_prepare_only {
                 let leader = quorum_ready_leader(&controls, "issuer signer inventory").await;
-                fixture_operation(|| recovery.assert_authority_signer_inventory(&controls[leader]))
-                    .await;
+                fixture_operation(|| {
+                    recovery.assert_authority_signer_inventory(&controls[leader], &recovery_handles)
+                })
+                .await;
                 fixture_stage!("checking protected Prepare status");
                 fixture_operation(|| recovery.assert_protected_prepare_status(&configurations))
                     .await;

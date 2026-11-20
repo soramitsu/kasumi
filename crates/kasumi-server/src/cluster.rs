@@ -730,7 +730,10 @@ async fn receive(
         let Ok(bytes) = encode_bounded(&report, limit) else {
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         };
-        if owner.check_member_signer_release(&report).is_err()
+        if owner
+            .check_member_catalog_release(&report, &request)
+            .await
+            .is_err()
             || request.check_position(owner.raft_group()).is_err()
             || !network
                 .catalog_owner(&message.group, message.source, binding)

@@ -23,6 +23,7 @@ pub enum CatalogPurpose {
     #[default]
     Group,
     ControlSigner,
+    ServiceAudit,
 }
 
 impl CatalogPurpose {
@@ -213,6 +214,64 @@ impl MemberSignerReport {
     }
 }
 
+/// One installed service audit writer's wrapping catalog and authenticated
+/// archive chain, tied to the leader's original position and cursor.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberAuditReport {
+    pub request_sha256: String,
+    pub node_id: u64,
+    pub catalog: Uuid,
+    pub stream: Uuid,
+    pub catalog_sha256: [u8; 32],
+    pub archives_sha256: [u8; 32],
+    pub entries: Vec<KeyRetentionEntry>,
+    pub unreadable_objects: Vec<Uuid>,
+    pub truncated: bool,
+}
+
+impl MemberAuditReport {
+    pub fn validate(&self, request: &MemberCatalogRequest, node: u64) -> Result<()> {
+        request.validate()?;
+        ensure!(
+            request.purpose == CatalogPurpose::ServiceAudit
+                && node != 0
+                && self.node_id == node
+                && !self.catalog.is_nil()
+                && !self.stream.is_nil()
+                && self.request_sha256 == staged_digest(request)?.0
+                && self.entries.len() <= usize::from(request.limit) + 1
+                && self.entries.windows(2).all(|pair| pair[0] < pair[1])
+                && self.unreadable_objects.len() <= kasumi_types::MAX_MISSING_KEY_DEPENDENCIES
+                && (!self.truncated
+                    || self.unreadable_objects.len() == kasumi_types::MAX_MISSING_KEY_DEPENDENCIES)
+                && self.unreadable_objects.iter().all(|id| !id.is_nil())
+                && self
+                    .unreadable_objects
+                    .windows(2)
+                    .all(|pair| pair[0] < pair[1]),
+            "service audit report differs from the enrolled member or requested window"
+        );
+        for entry in &self.entries {
+            entry.validate()?;
+            ensure!(
+                request.start.includes(entry)
+                    && match entry.reference {
+                        KeyReference::Catalog {
+                            node_id,
+                            catalog_id,
+                            domain: KeyCatalogDomain::SecurityAudit,
+                        } => node_id == node && catalog_id == self.catalog,
+                        KeyReference::AuditArchive { stream_id, .. } => stream_id == self.stream,
+                        _ => false,
+                    },
+                "service audit dependency belongs to another physical owner"
+            );
+        }
+        Ok(())
+    }
+}
+
 impl RaftGroup {
     pub fn reserve_member_catalog_workspace(&self) -> Result<kasumi_store::DiskMemoryLease> {
         Ok(self
@@ -347,6 +406,25 @@ impl RaftGroup {
         }
     }
 
+    pub async fn read_member_audit_catalog(
+        &self,
+        node_id: u64,
+        node: &BasicNode,
+        request: &MemberCatalogRequest,
+    ) -> Result<MemberAuditReport> {
+        ensure!(
+            request.purpose == CatalogPurpose::ServiceAudit,
+            "service audit purpose required"
+        );
+        match self.request_member_catalog(node_id, node, request).await? {
+            RpcResponse::MemberAuditCatalog(report) => {
+                report.validate(request, node_id)?;
+                Ok(*report)
+            }
+            _ => anyhow::bail!("member service audit unavailable"),
+        }
+    }
+
     async fn request_member_catalog(
         &self,
         node_id: u64,
@@ -370,7 +448,13 @@ impl RaftGroup {
             node,
             RpcRequest::MemberCatalog(Box::new(request.clone())),
         );
-        let response = tokio::time::timeout(Duration::from_secs(3), send).await??;
+        // Service audit reads also authenticate each retained archive from its destination.
+        let timeout = if request.purpose == CatalogPurpose::ServiceAudit {
+            30
+        } else {
+            3
+        };
+        let response = tokio::time::timeout(Duration::from_secs(timeout), send).await??;
         request.check_position(self)?;
         Ok(response)
     }
@@ -437,6 +521,35 @@ mod tests {
             partitions_sha256: "a".repeat(64),
             entries: vec![entry(3, signer_id, KeyCatalogDomain::LiveSignerTrust)],
         };
+        let audit_request = MemberCatalogRequest {
+            purpose: CatalogPurpose::ServiceAudit,
+            ..request.clone()
+        };
+        let stream = Uuid::new_v4();
+        let mut audit = MemberAuditReport {
+            request_sha256: staged_digest(&audit_request)?.0,
+            node_id: 2,
+            catalog: app,
+            stream,
+            catalog_sha256: [1; 32],
+            archives_sha256: [2; 32],
+            entries: vec![entry(2, app, KeyCatalogDomain::SecurityAudit)],
+            unreadable_objects: vec![],
+            truncated: false,
+        };
+        audit.validate(&audit_request, 2)?;
+        assert!(audit.validate(&request, 2).is_err());
+        assert!(audit.validate(&audit_request, 3).is_err());
+        audit.entries[0].reference = KeyReference::AuditArchive {
+            stream_id: stream,
+            first_sequence: 11,
+        };
+        audit.validate(&audit_request, 2)?;
+        audit.stream = Uuid::new_v4();
+        assert!(audit.validate(&audit_request, 2).is_err());
+        audit.stream = stream;
+        audit.truncated = true;
+        assert!(audit.validate(&audit_request, 2).is_err());
         signer.validate(&signer_request, 2)?;
         assert!(signer.validate(&request, 2).is_err());
         assert!(signer.validate(&signer_request, 3).is_err());

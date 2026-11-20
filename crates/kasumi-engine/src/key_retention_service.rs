@@ -570,16 +570,19 @@ impl Database {
                 None
             };
             let journal = self.target_keys.get().and_then(std::sync::Weak::upgrade);
-            let member_signers = if matches!(request.scope, KeyRetentionScope::Signer {})
-                && membership.membership().nodes().any(|(&id, _)| id != local)
-            {
-                Some(
-                    self.observe_member_signers(&metrics, request, &cancellation)
-                        .await?,
-                )
-            } else {
-                None
-            };
+            let member_inventories =
+                if matches!(
+                    request.scope,
+                    KeyRetentionScope::Signer {} | KeyRetentionScope::SecurityAudit {}
+                ) && membership.membership().nodes().any(|(&id, _)| id != local)
+                {
+                    Some(
+                        self.observe_service_members(&metrics, request, &cancellation)
+                            .await?,
+                    )
+                } else {
+                    None
+                };
             let local_recovery = self.local_recovery_keys.get().cloned();
             let request = request.clone();
             let term = metrics.current_term;
@@ -595,7 +598,7 @@ impl Database {
                         security_audit::InstalledInventories {
                             signer: signer.as_deref(),
                             issuers: issuer_keys,
-                            member_signers,
+                            member_inventories,
                             journal: journal.as_deref(),
                             local_recovery: local_recovery.as_deref(),
                         },
