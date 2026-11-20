@@ -36,7 +36,7 @@ CONTROL_INCARNATION = "0b5c0d63-3d56-4f0e-9d0b-4b3ad7a0c002"
 LEASE_MS = 1000
 
 PRODUCT = r'''
-import base64, fcntl, hashlib, json, os, signal, sys, time
+import base64, fcntl, hashlib, json, os, signal, subprocess, sys, time
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 STATE = HERE / "state"
@@ -82,10 +82,17 @@ def leaf(path):
 def alive(node):
     path = STATE / ("hb-" + str(node))
     try:
-        if time.time() - path.stat().st_mtime >= STALE:
-            return False
-        os.kill(int(path.read_text()), 0)
-        return True
+        pid = int(path.read_text())
+        os.kill(pid, 0)
+        if time.time() - path.stat().st_mtime < STALE:
+            return True
+        # A busy native builder can delay all Python heartbeats. Distinguish
+        # a live but unscheduled stand-in from the SIGSTOP/SIGKILL fault the
+        # controller actually sent. Both BSD and Linux ps expose these states.
+        result = subprocess.run(["/bin/ps", "-o", "stat=", "-p", str(pid)],
+                                capture_output=True, text=True, check=False)
+        state = result.stdout.strip()
+        return result.returncode == 0 and bool(state) and state[0] not in "TXZ"
     except (OSError, ValueError):
         return False
 
@@ -153,7 +160,7 @@ def data(words):
         heard = [(STATE / ("hb-" + str(a))).stat().st_mtime for a in registry["authorities"]
                  if (STATE / ("hb-" + str(a))).exists()]
         expired = not heard or time.time() - max(heard) > registry["lease_ms"] / 1000
-        if expired and not behavior.get("ignore_lease"):
+        if expired and not any(alive(a) for a in registry["authorities"]) and not behavior.get("ignore_lease"):
             return 1, {"ok": False, "error": "authority lease expired"}
         documents = load("documents.json", {})
         if words[0] == "put":
