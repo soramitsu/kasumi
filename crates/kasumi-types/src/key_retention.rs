@@ -993,12 +993,13 @@ impl TargetWriterObservation {
         }
         self.challenge.root.validate()?;
         self.challenge.verifier.validate()?;
+        // Genesis is a real Control policy epoch and the first installed Raft
+        // membership may occupy index zero. The live signer proves both
+        // positions against its elected quorum and explicit authorization.
         if self.challenge.catalog.is_nil()
             || self.challenge.nonce.is_nil()
             || self.observed_term == 0
             || self.observed_revision == 0
-            || self.membership_epoch == 0
-            || self.observed_policy_epoch == 0
         {
             return Err(invalid(
                 "target writer observation lacks its physical or quorum position",
