@@ -121,6 +121,7 @@ pub struct EncryptedTableBatch {
     transaction: kasumi_kv::WriteTransaction,
     bytes: usize,
     entries: usize,
+    entry_limit: usize,
     failed: bool,
     // Failed native staging may release its writer gate early. Every still-live
     // batch therefore owns its own charge through the last field retirement.
@@ -165,6 +166,9 @@ impl Drop for BatchMemory {
 impl EncryptedTableBatch {
     pub const MAX_BYTES: usize = 4 << 20;
     pub const MAX_ENTRIES: usize = 16;
+    /// Compact keys and offsets in an unpublished snapshot index. The native
+    /// transaction charges each staged row and keeps the same byte ceiling.
+    pub const MAX_INDEX_ENTRIES: usize = 512;
 
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         ensure!(!self.failed, "staging batch previously failed");
@@ -179,7 +183,7 @@ impl EncryptedTableBatch {
             .and_then(|n| n.checked_add(value.len()))
             .ok_or_else(|| anyhow::anyhow!("staging batch byte overflow"))?;
         ensure!(
-            bytes <= Self::MAX_BYTES && self.entries < Self::MAX_ENTRIES,
+            bytes <= Self::MAX_BYTES && self.entries < self.entry_limit,
             "staging batch capacity exceeded"
         );
         ensure!(
@@ -328,6 +332,11 @@ impl EncryptedTable {
         };
         self.open_batch(transaction, memory)
     }
+    pub fn begin_index_batch(&self) -> Result<EncryptedTableBatch> {
+        let mut batch = self.begin_batch()?;
+        batch.entry_limit = EncryptedTableBatch::MAX_INDEX_ENTRIES;
+        Ok(batch)
+    }
     fn open_batch(
         &self,
         transaction: kasumi_kv::WriteTransaction,
@@ -347,6 +356,7 @@ impl EncryptedTable {
             transaction,
             bytes: 0,
             entries: 0,
+            entry_limit: EncryptedTableBatch::MAX_ENTRIES,
             failed: false,
             _memory: memory,
         })

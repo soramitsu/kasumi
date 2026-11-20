@@ -1395,7 +1395,7 @@ mod tests {
             let mut state = state();
             let mut feed = ChangeFeedState::empty();
             for (revision, count) in [
-                (2, kasumi_store::EncryptedTableBatch::MAX_ENTRIES + 1),
+                (2, kasumi_store::EncryptedTableBatch::MAX_INDEX_ENTRIES + 1),
                 (3, 1),
             ] {
                 let sequence = feed.next_sequence;

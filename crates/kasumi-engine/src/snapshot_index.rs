@@ -376,7 +376,7 @@ impl<'a> PendingIndex<'a> {
             bytes <= EncryptedTableBatch::MAX_BYTES,
             "snapshot index entry exceeds batch bound"
         );
-        if self.entries == EncryptedTableBatch::MAX_ENTRIES
+        if self.entries == EncryptedTableBatch::MAX_INDEX_ENTRIES
             || self
                 .bytes
                 .checked_add(bytes)
@@ -385,7 +385,7 @@ impl<'a> PendingIndex<'a> {
             self.flush(check)?;
         }
         if self.batch.is_none() {
-            self.batch = Some(self.index.begin_batch()?);
+            self.batch = Some(self.index.begin_index_batch()?);
         }
         self.batch
             .as_mut()
