@@ -344,6 +344,19 @@ The native macOS production executable hashes for `dd43ef28` are
 (kasumictl, 8,827,360 bytes). The release ledger indexes the build commands,
 resource limits, durations, original failures and retained hashes by source.
 
+## November 20 integration after the frozen run
+
+| Gate | Incorporated change and measured result |
+| --- | --- |
+| G01, G03, G07–G09 | The original cancelled target monitor also passed alone on the frozen source in 4.251 seconds. The Store crash-cut regression in `f392577d` passed three native runs in 79.722, 51.219 and 44.754 seconds. Each run verifies every recovered key and value after the backend reports a real injected failure. |
+| G02 | `68832bb2` collects displaced document bodies and shared proof chunks after authenticating the snapshot selected by the current view. `fdc50370` stores full-text postings in versioned Tantivy shards alongside ordinary primary and structured indexes. Readers retain their memory reservation through cache eviction. The combined native GC and text checks are pending. |
+| G04–G06 | `930604a0`, `2ef6ef25` and `59d15670` persist scoped key-retirement decisions, reserve their outcomes, spend request ordinals once and check membership when Raft applies the fence and decision. Eleven type tests passed on the retirement protocol. Existing format generations report missing session origin until an authoritative census exists. Independent storage owners and remote replicas still need complete, authenticated reports. |
+| G09, G10 | `7a457acc` routes data-only processes through their configured remote Control identity and retains protected observation readers through shutdown. Local native testing and nine-voter installed qualification remain open. |
+| G11 | `db974e57` registers the nineteenth adapter. It exercises a fresh Control catalog, pages and rotates its wrapping keys, refuses a referenced or stale retirement and checks the durable decision after restart. Two key-adapter tests and the 34-test acceptance verifier passed. All 19 domains still require their original qualifying runs. |
+| G12 | The workspace all-target, all-feature check passed on `54e74d07` in 308.103 seconds after a backup test binding shadowed its authorization helper. `599f1a0f` addresses the subsequent strict Clippy map-entry finding. Both original failures are retained. The Linux OpenBao 2.6.2 archives and extracted amd64 and arm64 executables passed digest and architecture verification. Native Linux interoperability remains open. |
+| G13 | The frozen daemon acknowledged 44,824 of 98,400 documents at revision 5,605. Its next eight-document request reached the configured 1.5-GiB serialized snapshot limit. A separate cold reopen in 153.692 seconds confirmed the original quota refusal and stopped cleanly. `92801ac5` verifies that both logical and serialized limits can hold the capacity corpus. All 30 capacity adapter tests passed. A fresh installed cohort uses a 6-GiB serialized limit and a 4-GiB logical limit. |
+| G14 | The previous archive, binary hashes and original failures are retained under the exact provisional source. The integrated storage, remote Control and retirement changes require a new common candidate and independent native qualification. |
+
 ## Required infrastructure and decisions
 
 The available machine is native macOS ARM64, macOS 27.2.1 build 26B131, 16
@@ -356,8 +369,7 @@ at xhigh effort could find neither a host reservation nor an admitted plan
 for the three Data, three Control and three Authority voters. The September
 ARM64 reference is a past measurement. At this check the Mac had 77 GiB free.
 The infrastructure owner supplies the Linux x86-64 alias, the ARM64 reservation
-and the nine voter placements. Linux-hosted MinIO requires the approved pinned image
-and an owned Docker endpoint. Preserve the independent build and physical
+and the nine voter placements. The Linux providers adapter extracts MinIO directly from a verified OCI archive. Docker Hub and Quay returned HTTP 401 for anonymous access to the pin, and Google’s mirror returned HTTP 404. Supply a digest-matching archive or registry read access. The separate OCI smoke gate requires a Linux container runtime. Preserve the independent build and physical
 failure-domain attestations with the native evidence.
 
 The format owner acts only if retirement beyond the two pinned revisions is
