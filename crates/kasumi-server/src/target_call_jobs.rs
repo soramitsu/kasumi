@@ -367,6 +367,16 @@ impl TargetCallJobs {
                 Some(Terminal::Claimed | Terminal::AbandonedSuccess) => {
                     registry.jobs[index] = None;
                 }
+                Some(Terminal::AbandonedFailure(error)) if !error.unresolved_custody() => {
+                    // Both the producer and destructor returned. The joined
+                    // issue keeps the actual error and its paid diagnostic cell.
+                    registry.report.record(
+                        "abandoned target call",
+                        index,
+                        anyhow::Error::msg(error),
+                    );
+                    registry.jobs[index] = None;
+                }
                 Some(Terminal::AbandonedFailure(error)) => {
                     let issue = registry.report.record(
                         "abandoned target call",
@@ -1008,6 +1018,54 @@ mod tests {
             .unwrap();
         assert_eq!(dropped.load(Ordering::Acquire), 1);
         assert_eq!(capacity.available_permits(), 1);
+    }
+
+    #[tokio::test]
+    async fn abandoned_unavailable_operation_completes_drain_but_a_physical_cause_retains_custody()
+    {
+        for physical in [false, true] {
+            let jobs = jobs();
+            let original = if physical {
+                Error::from_physical_source(anyhow!("original disk error"))
+            } else {
+                Error::new(ErrorCode::Unavailable, "original deadline")
+            };
+            let receive = submission::<u64>(&jobs, Instant::now() + Duration::from_secs(5))
+                .await
+                .unwrap()
+                .submit::<SnapshotFailure, _>(async move { Err(original.into()) })
+                .unwrap();
+            drop(receive.await.unwrap());
+            let first = jobs.drain().await.unwrap_err();
+            let next = jobs.drain().await.unwrap_err();
+            assert!(kasumi_types::drain::DrainIssueRef::ptr_eq(
+                &first.issues()[0],
+                &next.issues()[0]
+            ));
+            if physical {
+                assert_eq!(first.completion(), DrainCompletion::Retained);
+                jobs.original_failure(0).unwrap().with_original(|report| {
+                    assert!(
+                        report
+                            .unwrap()
+                            .operation_error()
+                            .unwrap()
+                            .has_physical_source()
+                    );
+                });
+            } else {
+                assert_eq!(first.completion(), DrainCompletion::Complete);
+                first.issues()[0]
+                    .error()
+                    .downcast_ref::<TargetCallFailure>()
+                    .unwrap()
+                    .with_original(|report| {
+                        let original = report.unwrap().operation_error().unwrap();
+                        assert_eq!(original.code, ErrorCode::Unavailable);
+                        assert_eq!(original.message, "original deadline");
+                    });
+            }
+        }
     }
 
     #[tokio::test]

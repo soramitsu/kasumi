@@ -190,10 +190,11 @@ impl Original {
         }
     }
     fn native_free(&self) -> bool {
-        matches!(
-            self,
-            Self::Snapshot(SnapshotFailure::Operation(_) | SnapshotFailure::AdmissionRefused(_))
-        )
+        match self {
+            Self::Snapshot(SnapshotFailure::Operation(error)) => !error.has_physical_source(),
+            Self::Snapshot(SnapshotFailure::AdmissionRefused(_)) => true,
+            _ => false,
+        }
     }
 }
 /// The two actual owning failures reach the same prepaid cell whole.

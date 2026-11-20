@@ -7126,11 +7126,17 @@ mod lifecycle_tests {
             );
             let issue = &failure.issues()[0];
             assert_eq!(issue.component(), "abandoned target call");
-            assert_eq!(
-                issue.error().to_string(),
-                "backup verification deadline expired",
-                "unexpected abandoned target call: {failure:?}"
-            );
+            issue
+                .error()
+                .downcast_ref::<crate::target_runtime::TargetCallFailure>()
+                .expect("joined diagnostic retains its admitted cell")
+                .with_original(|original| {
+                    let operation = original
+                        .and_then(kasumi_engine::SnapshotFailure::operation_error)
+                        .expect("joined target deadline holds its original typed error");
+                    assert_eq!(operation.code, ErrorCode::Unavailable);
+                    assert_eq!(operation.message, "backup verification deadline expired");
+                });
         }
         for stop in &stops {
             stop.send_replace(true);
