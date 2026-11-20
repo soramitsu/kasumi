@@ -254,6 +254,21 @@ fn persist(store: &TenantStore, journal: &Journal) -> Result<()> {
         encoded(journal)?,
     )])
 }
+
+/// Resolve the selected phase from its durable row before adding a diagnostic.
+/// A failed publication may already have advanced the journal.
+fn record_failure(store: &TenantStore, operation: Uuid, error: &anyhow::Error) -> Result<Journal> {
+    let mut journal = record(store, operation)?;
+    let mut failure = error.to_string();
+    while failure.len() > 1024 {
+        failure.pop();
+    }
+    if journal.status.last_failure.as_ref() != Some(&failure) {
+        journal.status.last_failure = Some(failure);
+        persist(store, &journal)?;
+    }
+    Ok(journal)
+}
 fn phase_entry(journal: &Journal) -> Result<WriteOp> {
     // Every dispatch has immutable exact inputs even after the mutable cursor
     // advances. The encrypted table retains the identities permanently.
@@ -822,13 +837,7 @@ async fn resume_owned(
             if let Err(error) = operator.step(&mut journal).await {
                 // Resolve a possibly committed atomic transition before writing
                 // diagnostics; never turn an uncertain activation into a stop.
-                journal = record(operator.store(), operation)?;
-                let mut failure = error.to_string();
-                while failure.len() > 1024 {
-                    failure.pop();
-                }
-                journal.status.last_failure = Some(failure);
-                persist(operator.store(), &journal)?;
+                journal = record_failure(operator.store(), operation, &error)?;
                 let _ = operator
                     .event(&journal, kasumi_engine::SecurityOutcome::Failed)
                     .await;
@@ -1317,6 +1326,17 @@ impl Operator {
                 resources: pending,
             }),
             Err(error) => {
+                // A native child can retain this target beyond the process
+                // deadline. Persist the original cause on the operator store
+                // before waiting. A diagnostic write failure still drains the
+                // same target and its original native resources.
+                let error =
+                    match record_failure(self.store(), journal.status.request.operation_id, &error)
+                    {
+                        Ok(_) => error,
+                        Err(write) => error
+                            .context(format!("recording target failure before drain: {write:#}")),
+                    };
                 let drained = crate::startup_owner::finish(&mut pending).await;
                 Err(match drained {
                     Ok(()) => error,

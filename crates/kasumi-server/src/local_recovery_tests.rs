@@ -1079,12 +1079,29 @@ async fn local_creation_replay_never_creates_or_adopts_an_absent_or_empty_file_i
         .prepare_stage(&mut journal, TargetPreparation::CreationDispatched)
         .unwrap();
     let path = journal.target_directory.join("node.kv");
-    assert!(
-        operator
-            .target(&mut journal, TargetOpen::Materialize)
-            .await
-            .is_err()
+    let original = operator
+        .target(&mut journal, TargetOpen::Materialize)
+        .await
+        .err()
+        .expect("dispatched creation cannot recreate the absent target");
+    let failed = record(operator.store(), request.operation_id).unwrap();
+    assert_eq!(failed.status.phase_id, journal.status.phase_id);
+    assert_eq!(
+        failed.status.last_failure.as_deref(),
+        Some(original.to_string().as_str())
     );
+    // Read the error through the independent cold operator before invoking
+    // resume: its outer failure handler has never run for this direct attempt.
+    crate::startup_owner::finish(&mut operator).await.unwrap();
+    drop(operator);
+    let cold = status_with_storage(&configuration, request.operation_id, storage.clone())
+        .await
+        .unwrap();
+    assert_eq!(cold.last_failure, failed.status.last_failure);
+    let mut operator = Operator::open(&configuration, storage.clone())
+        .await
+        .unwrap();
+    let mut journal = record(operator.store(), request.operation_id).unwrap();
     assert!(!path.exists());
     let persistent_disk = operator.store().persistent_disk().clone();
     let persistent_config = operator.config.persistent_disk.clone();
