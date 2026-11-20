@@ -87,6 +87,8 @@ const NS: &str = "kasumi.independent-authority";
 /// Generation selector key for the Authority state namespace.
 const FAMILY: &str = "kasumi.independent-authority";
 const META: &[u8] = b"meta";
+#[path = "issuer_stop_storage.rs"]
+mod issuer_stop_storage;
 const MAX_RECORD_BYTES: usize = 256 << 10;
 
 use crate::installation::{AuthorityBootstrap, AuthorityInstallation};

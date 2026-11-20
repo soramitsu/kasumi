@@ -258,6 +258,28 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
         }
         [command, action, profile, operation, phase, timeout]
+            if command == "control-recovery" && action == "issuer-stop" =>
+        {
+            let duration = request_timeout(timeout)?;
+            let profile = ClientProfile::load(Path::new(profile))?;
+            binding(&profile)?;
+            let mut client = client(&profile)?;
+            println!(
+                "{}",
+                serde_json::to_string_pretty(
+                    &client
+                        .read_issuer_stop(
+                            &RecoveryPhaseRequest {
+                                operation_id: Uuid::parse_str(operation)?,
+                                phase_id: Uuid::parse_str(phase)?
+                            },
+                            duration
+                        )
+                        .await?
+                )?
+            );
+        }
+        [command, action, profile, operation, phase, timeout]
             if command == "control-recovery" && action == "phase" =>
         {
             let duration = request_timeout(timeout)?;
@@ -280,7 +302,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             );
         }
         [command, ..] if command == "control-recovery" => anyhow::bail!(
-            "usage: kasumid control-recovery source-key-digest SOURCE_JSON | configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS"
+            "usage: kasumid control-recovery source-key-digest SOURCE_JSON | configuration-digest CONFIGURATION ROUTE | start CONTROL_PROFILE REQUEST_JSON PRIVATE_ATTEMPT_JSON TIMEOUT_MS | stop CONTROL_PROFILE OPERATION_UUID PRIVATE_ATTEMPT_JSON TIMEOUT_MS | status CONTROL_PROFILE OPERATION_UUID TIMEOUT_MS | resume CONTROL_PROFILE OPERATION_UUID MAX_STEPS TIMEOUT_MS | phase CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | issuer-stop CONTROL_PROFILE OPERATION_UUID PHASE_UUID TIMEOUT_MS | target-deletion TARGET_CONTROL_PROFILE OPERATION_UUID PHASE_UUID INCARNATION_UUID NODE_ID TIMEOUT_MS"
         ),
         _ => return Ok(false),
     }

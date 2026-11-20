@@ -980,5 +980,73 @@ class DeletionObservationTests(unittest.TestCase):
                 self.run_fault(12, [observation])
 
 
+class IssuerObservationTests(unittest.TestCase):
+    op = DeletionObservationTests.operation
+    phase_id = DeletionObservationTests.phase
+    target = DeletionObservationTests.incarnation
+    command = DeletionObservationTests.intent
+    attempt = DeletionObservationTests.attempt
+    authority = "11000000-0000-0000-0000-000000000001"
+    boot = "22000000-0000-0000-0000-000000000002"
+    grace = "33000000-0000-0000-0000-000000000003"
+
+    def observation(self, stage, begun=True):
+        query = {"tenant": "city", "command_id": self.command, "target_incarnation": self.target}
+        observed = None if stage is None else {"query": query, "node_id": 22, "authority_id": self.authority,
+                "partition": 0, "boot_id": self.boot, "term": 4, "stage": stage, "command_sha256": "c" * 64,
+                "first_stop_sha256": None if stage == "submitting" else "d" * 64,
+                "interval_id": self.grace if stage in ("draining", "drained") else None}
+        return {"phase": {"phase_id": self.phase_id, "operation_id": self.op}, "query": query,
+                "attempt_id": self.attempt if begun else None, "observed": observed}
+
+    def trial(self, phase_input, views):
+        route = lambda *fields: list(fields)
+        node = {"id": "issuer-22", "role": "authority", "executable": {}, "config": "installed"}
+        ctx = SimpleNamespace(stopped={"tenant": "city", "target_incarnation": self.target}, issuer_domains={22: (self.authority, 0)},
+                              by_node={22: node}, name=lambda _: node["id"], live={22},
+                              polls=1, pause=0, timeout=10000, recovery=route, resume=route, parameters={"fault_delays": [0.2]})
+        control = {"phase_id": self.phase_id, "operation_id": self.op, "outcome": None,
+                   "effect_attempts": {}, "input": phase_input}
+        d = Mock()
+        d.call.return_value = json.dumps(control).encode()
+        d.attempt.side_effect = [(0, json.dumps(v).encode()) for v in views]
+        d.crash.return_value = {"id": "caller"}
+        d.faulted.return_value = {"process": "original-issuer", "exit_code": 1,
+                                  "started": 1, "fault_elapsed": 2, "finished": 3}
+        facts = {"cells": {}}
+        recovery.issuer_stop_fault(d, ctx, self.op, self.phase_id, 0, facts)
+        return d, facts["cells"]
+
+    def test_original_submission_and_issuer_interval_are_independently_attributed(self):
+        command = {"tenant": "city", "command_id": self.command}
+        permanent = {"kind": "authority", "input": {**command, "action": {"kind": "stop_target"}}}
+        issuer = {"kind": "target", "input": {"request": {"step": {"Stop": command}}}}
+        for packet, initial, stage, label in ((permanent, None, "submitting", "permanent-stop"),
+                                               (issuer, "committed", "draining", "issuer-drain")):
+            pending = self.observation(stage)
+            d, facts = self.trial(packet, [self.observation(initial, False), pending, pending, pending])
+            self.assertEqual(set(facts), {label + "-crash", label + "-cancellation"})
+            self.assertEqual(facts[label + "-crash"]["victim"], 22)
+            self.assertEqual(d.mark.call_args_list[-1].args, (label + "-crash", "original-issuer", -9))
+
+    def test_restarted_grace_or_other_process_cannot_prove_the_original_crash(self):
+        packet = {"kind": "target", "input": {"request": {"step": {"Stop": {"tenant": "city", "command_id": self.command}}}}}
+        waiting = self.observation("draining")
+        for override in ({"boot_id": self.grace}, {"interval_id": self.boot}, {"term": 5}, {"stage": "drained"}):
+            cold = {**waiting, "observed": {**waiting["observed"], **override}}
+            _, facts = self.trial(packet, [self.observation("committed", False), waiting, waiting, cold])
+            self.assertEqual(set(facts), {"issuer-drain-cancellation"})
+        _, facts = self.trial(packet, [self.observation("draining", False)])
+        self.assertFalse(facts)
+
+    def test_different_authority_or_phase_rejected(self):
+        packet = {"kind": "authority", "input": {"tenant": "city", "command_id": self.command, "action": {"kind": "stop_target"}}}
+        pending = self.observation("submitting")
+        for other in ({**pending, "phase": {"phase_id": self.op, "operation_id": self.phase_id}},
+                      {**pending, "observed": {**pending["observed"], "authority_id": self.boot}}):
+            with self.assertRaises(ValueError):
+                self.trial(packet, [self.observation(None, False), other])
+
+
 if __name__ == "__main__":
     unittest.main()

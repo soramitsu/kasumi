@@ -58,6 +58,7 @@ fn unknown(_cause: impl std::fmt::Display) -> Error {
     )
 }
 struct Drain {
+    interval_id: Uuid,
     term: u64,
     started: Duration,
     last: Duration,
@@ -183,6 +184,7 @@ pub struct IndependentAuthority {
     drains: Mutex<BTreeMap<String, Drain>>,
     settings: AuthorityNodeSettings,
     local_node_id: u64,
+    process_boot_id: Uuid,
     voters: BTreeMap<u64, BasicNode>,
     bootstrap: AuthorityBootstrap,
     bootstrap_digest: String,
@@ -340,6 +342,7 @@ impl IndependentAuthority {
             drains: Mutex::new(BTreeMap::new()),
             settings,
             local_node_id: node_id,
+            process_boot_id: Uuid::new_v4(),
             voters,
             bootstrap,
             maintenance_transport: OnceLock::new(),
@@ -774,6 +777,16 @@ impl IndependentAuthority {
         if let Some(fence_digest) = &drained_fence {
             self.require_drain(fence_digest, term)?;
         }
+        if let AuthorityAction::StopTarget { target, .. } = &command.action {
+            self.note_issuer_stop(
+                &command,
+                target.incarnation,
+                term,
+                kasumi_types::IssuerStopStage::Submitting,
+                None,
+                None,
+            )?;
+        }
         let prepared = PreparedCommand {
             context: context.clone(),
             command,
@@ -883,6 +896,7 @@ fn require_drain_witness(
     for drain in drains.values_mut() {
         if now < drain.last {
             drain.started = now;
+            drain.interval_id = Uuid::new_v4();
         }
         drain.last = now;
     }
@@ -901,7 +915,8 @@ fn require_drain_witness(
             ));
         }
     }
-    let drain = drains.entry(digest.to_owned()).or_insert(Drain {
+    let drain = drains.entry(digest.to_owned()).or_insert_with(|| Drain {
+        interval_id: Uuid::new_v4(),
         term,
         started: now,
         last: now,

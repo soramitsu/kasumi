@@ -311,6 +311,18 @@ impl KasumiAuthorityPool {
         })
         .await
     }
+    pub async fn read_issuer_stop(
+        &mut self,
+        query: &kasumi_types::IssuerStopQuery,
+        timeout: Duration,
+    ) -> Result<Option<kasumi_types::IssuerStopStatus>, ClientError> {
+        self.request(timeout, |client, token| {
+            let query = query.clone();
+            Box::pin(async move { client.read_issuer_stop(token, &query).await })
+        })
+        .await
+    }
+
     pub async fn verify_target_stop(
         &mut self,
         request: &kasumi_serving::TargetStopReference,

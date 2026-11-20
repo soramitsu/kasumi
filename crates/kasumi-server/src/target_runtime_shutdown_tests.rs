@@ -928,3 +928,32 @@ async fn target_generation_close_joins_cancelled_catalog_initializers_before_fil
     .await
     .unwrap();
 }
+
+#[test]
+fn retryable_journal_observation_retains_its_cause_without_poisoning_drained_workers() {
+    let mut report = DrainReport::default();
+    let wait = std::io::Error::from(std::io::ErrorKind::Interrupted);
+    let failure = owner_drain_observation(&report, Err(wait.into())).unwrap_err();
+    assert_eq!(failure.completion(), DrainCompletion::Retained);
+    assert_eq!(
+        failure.issues()[0]
+            .error()
+            .downcast_ref::<std::io::Error>()
+            .unwrap()
+            .kind(),
+        std::io::ErrorKind::Interrupted
+    );
+    assert!(owner_drain_observation(&report, Ok(())).is_ok());
+    assert!(report.complete().is_ok());
+    let worker = report.record("original worker", 2, anyhow::anyhow!("join failed"));
+    let failed =
+        owner_drain_observation(&report, Err(anyhow::anyhow!("journal sealed"))).unwrap_err();
+    assert!(
+        failed
+            .issues()
+            .iter()
+            .any(|issue| kasumi_types::drain::DrainIssueRef::ptr_eq(issue, &worker))
+    );
+    assert_eq!(report.issues().len(), 1);
+    assert!(report.complete().is_err());
+}

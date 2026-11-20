@@ -106,6 +106,20 @@ impl KasumiRecoveryClient {
         }
         Ok(record)
     }
+    pub async fn read_issuer_stop(
+        &mut self,
+        bearer: &str,
+        request: &RecoveryPhaseRequest,
+    ) -> std::result::Result<RecoveryIssuerStop, ClientError> {
+        let response = self
+            .inner
+            .read_issuer_stop(self.wire(bearer, request)?)
+            .await?
+            .into_inner();
+        let observed: RecoveryIssuerStop = decode(response)?;
+        observed.validate_for(request)?;
+        Ok(observed)
+    }
     pub async fn read_phase(
         &mut self,
         bearer: &str,

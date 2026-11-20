@@ -100,6 +100,18 @@ impl KasumiRecoveryPool {
             })
             .await
     }
+    pub async fn read_issuer_stop(
+        &mut self,
+        request: &RecoveryPhaseRequest,
+        timeout: Duration,
+    ) -> std::result::Result<RecoveryIssuerStop, ClientError> {
+        self.inner
+            .request(timeout, true, |client, bearer| {
+                let request = request.clone();
+                Box::pin(async move { client.read_issuer_stop(bearer, &request).await })
+            })
+            .await
+    }
     pub async fn read_phase(
         &mut self,
         request: &RecoveryPhaseRequest,

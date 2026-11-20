@@ -474,6 +474,111 @@ impl ControlRecoveryCoordinator {
             .recovery_control(context, RecoveryControlCommand::Start(Box::new(request)))
             .await?)
     }
+    pub(crate) async fn issuer_stop_status(
+        &self,
+        context: &RequestContext,
+        input: &RecoveryPhaseRequest,
+    ) -> Result<RecoveryIssuerStop> {
+        let status = self
+            .database
+            .recovery_status(context.clone(), input.operation_id)
+            .await?;
+        let head = status.record();
+        ensure!(
+            head.pending_phase == Some(input.phase_id),
+            "issuer observation requires the original pending phase"
+        );
+        let phase = self
+            .database
+            .recovery_phase(context.clone(), input.operation_id, input.phase_id)
+            .await?;
+        let original = phase.record();
+        ensure!(original.outcome.is_none(), "issuer phase already resolved");
+        let (route, authority, trust, cas) = self.route(&head.request)?;
+        let (effect, command_id, reference, expected_command) = match &original.input {
+            RecoveryDispatch::Authority(command) => {
+                let AuthorityAction::StopTarget { target, .. } = &command.action else {
+                    anyhow::bail!("issuer command is not a permanent target stop");
+                };
+                ensure!(
+                    command.tenant == head.request.tenant
+                        && target.incarnation == head.request.target_incarnation,
+                    "issuer stop command target differs"
+                );
+                (
+                    RecoveryEffect::AuthorityCommand,
+                    command.command_id,
+                    None,
+                    Some(command.digest()?),
+                )
+            }
+            RecoveryDispatch::Target { request, .. } => {
+                let TargetRuntimeStep::Stop(reference) = &request.step else {
+                    anyhow::bail!("target is not waiting for a permanent issuer stop");
+                };
+                ensure!(
+                    reference.tenant == head.request.tenant
+                        && request.tenant == head.request.tenant,
+                    "issuer reference tenant differs"
+                );
+                (
+                    RecoveryEffect::TargetCommand,
+                    reference.command_id,
+                    Some(reference),
+                    None,
+                )
+            }
+            _ => anyhow::bail!("phase has no issuer stop"),
+        };
+        let query = IssuerStopQuery {
+            tenant: head.request.tenant.clone(),
+            command_id,
+            target_incarnation: head.request.target_incarnation,
+        };
+        let duration = Duration::from_millis(head.request.phase_timeout_ms);
+        let mut issuer = authority_pool(
+            authority,
+            trust.clone(),
+            &query.tenant,
+            &route.issuer_admin_bearer_file,
+            &cas.issuer_ca,
+        )?;
+        let expected = if let Some(reference) = reference {
+            let signed = issuer
+                .receipt(&query.tenant, command_id, duration)
+                .await?
+                .context("original issuer command not committed")?;
+            ensure!(
+                signed.receipt.digest()? == reference.receipt_digest
+                    && matches!(&signed.receipt.outcome,AuthorityOutcome::TargetStopped{target,..} if target.incarnation==query.target_incarnation),
+                "issuer stop reference differs from original signed outcome"
+            );
+            Some(signed.receipt.command.digest()?)
+        } else {
+            expected_command
+        };
+        let observed = issuer.read_issuer_stop(&query, duration).await?;
+        if let Some(found) = &observed {
+            ensure!(
+                Some(&found.command_sha256) == expected.as_ref(),
+                "issuer's stop command differs from Control"
+            );
+        }
+        let result = RecoveryIssuerStop {
+            phase: input.clone(),
+            attempt_id: original
+                .effect_attempts
+                .get(&effect)
+                .map(|attempt| attempt.attempt_id),
+            query,
+            observed,
+        };
+        result.validate_for(input)?;
+        phase.release().await?;
+        status.release().await?;
+        Ok(result)
+    }
+
     pub(crate) async fn resume(
         &self,
         context: RequestContext,

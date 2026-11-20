@@ -252,6 +252,12 @@ class Context:
             if "observer_profile" in target:
                 require(target["observer_resource"] == control["resource"],
                         "target observer belongs to another Control resource")
+        self.issuer_domains = {}
+        for node in self.nodes:
+            if node["role"] == "authority":
+                installed = inputs["configs"][node["id"]].get("installation", {})
+                self.issuer_domains[node["node_id"]] = (installed.get("manifest", {}).get("authority_id"),
+                                                        installed.get("partition"))
         self.live = set()
         self.status_request = None
 
@@ -411,6 +417,121 @@ def deletion_view(d, ctx, query, target, label):
     return status, raw
 
 
+def issuer_view(d, ctx, phase, query, label):
+    code, raw = d.attempt(label, ctx.recovery("issuer-stop", phase["operation_id"], phase["phase_id"],
+                                             str(ctx.timeout)))
+    if code:
+        return None, raw
+    result = driver.decode(raw)
+    owned.exact(result, {"phase", "attempt_id", "query", "observed"}, "issuer observation")
+    require(result["phase"] == phase and result["query"] == query,
+            "issuer observation has a different Control or stop identity")
+    attempt = result["attempt_id"]
+    require(attempt is None or (isinstance(attempt, str) and UUID.fullmatch(attempt)
+                                and attempt != "00000000-0000-0000-0000-000000000000"),
+            "issuer observation has an invalid Control attempt")
+    status = result["observed"]
+    if status is None:
+        return result, raw
+    owned.exact(status, {"query", "authority_id", "node_id", "partition", "boot_id", "term", "stage",
+                         "command_sha256", "first_stop_sha256", "interval_id"}, "issuer owner")
+    require(status["query"] == query and status["stage"] in ("submitting", "committed", "draining", "drained")
+            and type(status["term"]) is int and status["term"] > 0
+            and type(status["partition"]) is int and 0 <= status["partition"] < 65536
+            and type(status["node_id"]) is int and status["node_id"] in ctx.by_node
+            and ctx.by_node[status["node_id"]].get("role") == "authority"
+            and all(isinstance(status[k], str) and UUID.fullmatch(status[k])
+                    and status[k] != "00000000-0000-0000-0000-000000000000" for k in ("boot_id", "authority_id"))
+            and isinstance(status["command_sha256"], str) and re.fullmatch("[a-f0-9]{64}", status["command_sha256"]),
+            "invalid issuer stop owner or byte binding")
+    first, interval = status["first_stop_sha256"], status["interval_id"]
+    require((first is None if status["stage"] == "submitting"
+             else isinstance(first, str) and re.fullmatch("[a-f0-9]{64}", first))
+            and (interval is None if status["stage"] in ("submitting", "committed")
+                 else isinstance(interval, str) and UUID.fullmatch(interval)
+                 and interval != "00000000-0000-0000-0000-000000000000"),
+            "issuer stop lacks the actual interval or committed original")
+    domain = ctx.issuer_domains[status["node_id"]]
+    require(domain == (status["authority_id"], status["partition"]), "issuer is outside its installed partition")
+    return result, raw
+
+
+def issuer_stop_fault(d, ctx, operation, phase_id, step, facts):
+    prefix = f"issuer-stop-{step:04d}"
+    phase = {"operation_id": operation, "phase_id": phase_id}
+    record = driver.decode(d.call(prefix + "-phase", ctx.recovery("phase", operation, phase_id, str(ctx.timeout))))
+    require(record["operation_id"] == operation and record["phase_id"] == phase_id, "foreign issuer Control phase")
+    if record["outcome"] is not None or record["effect_attempts"]:
+        return
+    dispatch = record["input"]
+    if dispatch["kind"] == "authority" and dispatch["input"]["action"]["kind"] == "stop_target":
+        command = dispatch["input"]
+        label, pending = "permanent-stop", "submitting"
+    elif dispatch["kind"] == "target" and set(dispatch["input"]["request"]["step"]) == {"Stop"}:
+        command = dispatch["input"]["request"]["step"]["Stop"]
+        label, pending = "issuer-drain", "draining"
+    else:
+        return
+    if all(facts["cells"].get(label + "-" + kind, {}).get("landed") for kind in FAULTS):
+        return
+    query = {"tenant": ctx.stopped["tenant"], "command_id": command["command_id"],
+             "target_incarnation": ctx.stopped["target_incarnation"]}
+    require(command["tenant"] == query["tenant"], "foreign stop tenant")
+    initial, _ = issuer_view(d, ctx, phase, query, prefix + "-original")
+    if initial is None or initial["attempt_id"] is not None:
+        return
+    prior = initial["observed"]
+    if prior is not None and (pending == "submitting" or prior["stage"] != "committed"):
+        return
+    caller = prefix + "-resume"
+    d.spawn_client(caller, ctx.resume(operation, ctx.timeout))
+    ended = False
+    try:
+        for index in range(min(ctx.polls, 16)):
+            witness, raw = issuer_view(d, ctx, phase, query, prefix + f"-poll-{index:02d}")
+            if witness and witness["attempt_id"] and witness["observed"]:
+                state = witness["observed"]["stage"]
+                if state == pending:
+                    break
+                if state == "drained" or (state == "committed" and pending == "submitting"):
+                    return
+            d.pause(ctx.pause)
+        else:
+            return
+        owner = witness["observed"]["node_id"]
+        receipt = d.crash(caller, raw)
+        ended = True
+        after, _ = issuer_view(d, ctx, phase, query, prefix + "-after-disconnect")
+        if after != witness:
+            return
+        def mark(kind, process):
+            cell = label + "-" + kind
+            facts["cells"][cell] = {"landed": True, "victim": owner, "phase": phase,
+                                    "attempt_id": witness["attempt_id"], "issuer": witness["observed"]}
+            d.mark(cell, process, -9)
+            d.count_observation(cell)
+        mark("cancellation", receipt["id"])
+        # An actual second caller retries the same permanent identity. Stop the
+        # physical issuer while the caller is in flight and keep it down until
+        # the original process receipt has finished. A fresh leader or interval
+        # cannot attest to this member's historical interval.
+        failed = d.faulted(prefix + "-crash", ctx.resume(operation, ctx.timeout), ctx.name(owner), raw,
+                           ctx.parameters["fault_delays"][step % len(ctx.parameters["fault_delays"])])
+        ctx.live.discard(owner)
+        spawn(d, ctx, owner)
+        if not driver.interrupted(failed):
+            return
+        for index in range(min(ctx.polls, 16)):
+            cold, _ = issuer_view(d, ctx, phase, query, prefix + f"-cold-{index:02d}")
+            if cold == witness:
+                mark("crash", failed["process"])
+                break
+            d.pause(ctx.pause)
+    finally:
+        if not ended:
+            d.end_client(caller)
+
+
 def target_deletion_fault(d, ctx, operation, phase_id, step, facts):
     """Interrupt a registered resume while its exact local durable stage persists."""
     prefix = f"target-deletion-{step:04d}"
@@ -511,6 +632,13 @@ def drive(d, ctx, operation, label, terminal, facts, hooks=()):
             phases.append(value["phase"])
         if value["phase"] == terminal:
             return value, phases
+        if (value["phase"] in ("stop_target", "cleanup") and value.get("pending_phase")
+                and any("observer_profile" in target for target in ctx.targets)):
+            issuer_point = ("issuer-stop", value["pending_phase"])
+            if issuer_point not in seen:
+                seen.add(issuer_point)
+                issuer_stop_fault(d, ctx, operation, value["pending_phase"], step, facts)
+                continue
         if (value["phase"] == "cleanup" and value.get("pending_phase")
                 and any("observer_profile" in target for target in ctx.targets)):
             phase_id = value["pending_phase"]

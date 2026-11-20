@@ -143,6 +143,19 @@ struct StopDrainWitness<'a> {
     proof: &'a VerifiedTargetStop,
 }
 
+// A failed journal observation belongs to this still-owned StopLocal
+// attempt. Keep previous terminal child failures in the generation report,
+// and let a fresh authorized retry persist the missing progress mark.
+fn owner_drain_observation(report: &DrainReport, result: Result<()>) -> DrainResult {
+    match result {
+        Ok(()) => Ok(()),
+        Err(original) => {
+            let issue = DrainReport::default().record("target drain progress", 0, original);
+            report.outcome(Some(DrainFailure::retained(issue)))
+        }
+    }
+}
+
 impl Generation {
     async fn close(
         &mut self,
@@ -159,14 +172,14 @@ impl Generation {
         witness: Option<StopDrainWitness<'_>>,
     ) -> DrainResult {
         use kasumi_engine::TargetOwnerDrain::*;
-        let observe = |stage, report: &mut DrainReport| -> DrainResult {
+        let observe = |stage, report: &DrainReport| -> DrainResult {
             if let Some(witness) = &witness {
-                witness
-                    .journal
-                    .record_owner_drain(witness.operation, witness.proof, stage)
-                    .map_err(|error| {
-                        DrainFailure::retained(report.record("target drain progress", 0, error))
-                    })?;
+                owner_drain_observation(
+                    report,
+                    witness
+                        .journal
+                        .record_owner_drain(witness.operation, witness.proof, stage),
+                )?;
             }
             Ok(())
         };
@@ -179,7 +192,7 @@ impl Generation {
             || self.custody.is_some()
             || self.custody_probe.is_some();
         if gate_owner {
-            observe(ClosingGates, &mut self.report)?;
+            observe(ClosingGates, &self.report)?;
         }
         let mut retained = None;
         let mut custody_route_closed = true;
@@ -193,10 +206,10 @@ impl Generation {
             replica.database().seal_admission();
         }
         if gate_owner {
-            observe(GatesClosed, &mut self.report)?;
+            observe(GatesClosed, &self.report)?;
         }
         if worker_owner {
-            observe(DrainingWorkers, &mut self.report)?;
+            observe(DrainingWorkers, &self.report)?;
         }
         // StopLocal's active operation belongs to its fresh request phase;
         // self.phase is the prior generation phase. Join its detached work
@@ -361,7 +374,7 @@ impl Generation {
         }
         let workers_joined = retained.is_none() && self.report.issues().is_empty();
         if worker_owner && workers_joined {
-            observe(WorkersDrained, &mut self.report)?;
+            observe(WorkersDrained, &self.report)?;
         }
         let storage_owner = self.stores.is_some()
             || self.node.is_some()
@@ -370,7 +383,7 @@ impl Generation {
                 .as_ref()
                 .is_some_and(|owner| !owner.is_retired());
         if storage_owner && workers_joined {
-            observe(DrainingStorage, &mut self.report)?;
+            observe(DrainingStorage, &self.report)?;
         }
         if let Some(stores) = &self.stores {
             match stores.shutdown().await {
@@ -419,7 +432,7 @@ impl Generation {
         }
         let result = self.report.outcome(retained);
         if result.is_ok() && storage_owner && workers_joined {
-            observe(StorageDrained, &mut self.report)?;
+            observe(StorageDrained, &self.report)?;
         }
         result
     }

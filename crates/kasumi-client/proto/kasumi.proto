@@ -39,6 +39,7 @@ service KasumiAuthority {
   rpc VerifyControlStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc AcquireLifecycle(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc DiscoverLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
+  rpc ReadIssuerStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc VerifyTargetStop(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc AcquireLease(AuthorityJsonRequest) returns (AuthorityJsonResponse);
   rpc Execute(AuthorityJsonRequest) returns (AuthorityJsonResponse);
@@ -236,5 +237,6 @@ service KasumiRecoveryControl {
   rpc Status(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Resume(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Stop(ControlJsonRequest) returns (ControlJsonResponse);
+  rpc ReadIssuerStop(ControlJsonRequest) returns (ControlJsonResponse);
   rpc ReadPhase(ControlJsonRequest) returns (ControlJsonResponse);
 }
