@@ -333,7 +333,8 @@ def cancel(d, ctx, operation, before, cell, counted):
         if point(after) != start:
             return {"landed": False, "reason": "the point completed", "deadline_ms": deadline}
         if code != 0 and after["updated_revision"] > before["updated_revision"]:
-            d.json(f"{cell}-landed", ctx.status(operation), [cell] if counted else [])
+            if counted:
+                d.count_observation(cell)
             return {"landed": True, "deadline_ms": deadline,
                     "revisions": [before["updated_revision"], after["updated_revision"]]}
         before = after
@@ -359,7 +360,7 @@ def crash(d, ctx, operation, cell, counted, start):
                 and after["updated_revision"] > before["updated_revision"]):
             if counted:
                 d.mark(cell, killed, -9)
-            d.json(f"{cell}-landed", ctx.status(operation), [cell] if counted else [])
+                d.count_observation(cell)
             return {"landed": True, "delay_seconds": delay, "victim": target,
                     "revisions": [before["updated_revision"], after["updated_revision"]]}
         if point(after) != start:

@@ -170,6 +170,17 @@ class Live(Driver):
         self._row("attempt", step=step, argv=argv, exit_code=record["exit_code"])
         return record["exit_code"], owned.check_ref(self.run.output, item["stdout"]).read_bytes()
 
+    def count_observation(self, scenario):
+        """Use the exact successful poll that established a recovery point."""
+        item = self.details["attempts"][-1]
+        record = owned.read(owned.check_ref(self.run.output, item["receipt"]))
+        require(record["exit_code"] == 0 and record["status"] == "passed", "recovery observation failed")
+        self.run.report["processes"].append({"id": item["id"], "receipt": item["receipt"],
+                                             "log": item["stdout"], "executable": item["executable"]})
+        self.run.observe(scenario, item["id"], item["receipt"], 0, record["exit_code"])
+        self.run.save()
+        self._row("count-observation", scenario=scenario, step=item["id"])
+
     def phase(self, name):
         value = round(self.run.services.enter(name), 6)
         self._row("phase", name=name, elapsed=value)
@@ -529,7 +540,18 @@ class Replay(Driver):
         row = self._next("attempt", step=step, argv=argv)
         record, raw = self._attempt(step, argv, timeout)
         require(row["exit_code"] == record["exit_code"], "attempt exit differs from its receipt")
+        self.last_attempt = step
         return record["exit_code"], raw
+
+    def count_observation(self, scenario):
+        step = self.last_attempt
+        self._next("count-observation", scenario=scenario, step=step)
+        attempt = self.attempts[step]
+        require(self.processes.get(step) == {"id": step, "receipt": attempt["receipt"],
+                                             "log": attempt["stdout"], "executable": attempt["executable"]}
+                and self.facts["receipts"][step]["exit_code"] == 0,
+                "recovery scenario differs from the successful observation")
+        self.expected.setdefault(scenario, []).append((step, 0))
 
     def _service(self, identifier, name):
         original = self.facts["receipts"].get(identifier)
