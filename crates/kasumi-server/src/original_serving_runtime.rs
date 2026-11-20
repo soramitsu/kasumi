@@ -1603,10 +1603,7 @@ impl Administration {
                 RecoverStage::EnrollmentMismatch
             );
         }
-        let context = RequestContext {
-            tenant: tenant.to_owned(),
-            ..self.control_context.clone()
-        };
+        let context = self.retirement_registry_context(tenant);
         if matches!(
             self.registry.retirement_source(&context, incarnation),
             Ok(kasumi_engine::InstalledRetirementSource::RetiredCustody(_))
@@ -1715,17 +1712,17 @@ impl Administration {
             .map_err(|original| {
                 OriginalRecoveryFailure::snapshot_at(original.into(), RecoverStage::CustodyOpen)
             })?;
-            if kasumi_raft::ControlLog::installed(custody.clone())
+            if let Some(log) = kasumi_raft::ControlLog::installed(custody.clone())
                 .context(RecoverStage::CustodyOpen)?
-                .is_some()
-                && self
-                    .control
-                    .raft_group()
-                    .recover_retired_custody(&custody)
-                    .map_err(kasumi_engine::SnapshotFailure::from)
-                    .map_err(|original| {
-                        OriginalRecoveryFailure::snapshot_at(original, RecoverStage::CustodyOpen)
-                    })?
+                && crate::runtime::recover_original_retirement(
+                    self.control.local().ok().map(Arc::as_ref),
+                    &log,
+                    &custody,
+                )
+                .map_err(kasumi_engine::SnapshotFailure::from)
+                .map_err(|original| {
+                    OriginalRecoveryFailure::snapshot_at(original, RecoverStage::CustodyOpen)
+                })?
             {
                 let owner = crate::runtime::open_retired_source(
                     &self.config,

@@ -818,6 +818,24 @@ impl Administration {
         }))
     }
     /// The hosted Control operator, or a fixed refusal on a data-only node.
+    /// Identity for looking up this node's own installed retirement source.
+    /// It is never sent to a peer or used to submit Control commands.
+    fn retirement_registry_context(&self, tenant: &str) -> RequestContext {
+        match &self.control_context {
+            Some(control) => RequestContext {
+                tenant: tenant.to_owned(),
+                ..control.clone()
+            },
+            None => RequestContext {
+                authorization: kasumi_types::RequestAuthorization::service_identity(),
+                principal: "kasumi-node".into(),
+                tenant: tenant.to_owned(),
+                scopes: BTreeSet::from([Action::Admin]),
+                request_id: Uuid::new_v4().to_string(),
+            },
+        }
+    }
+
     fn control_context(&self) -> kasumi_types::Result<&RequestContext> {
         self.control_context
             .as_ref()
@@ -1650,19 +1668,7 @@ impl Administration {
             // This internal selection reads only the installed source route.
             // A data-only node has no Control operator; it uses the same
             // service identity for its own tenant.
-            let context = match &self.control_context {
-                Some(control) => RequestContext {
-                    tenant: tenant.clone(),
-                    ..control.clone()
-                },
-                None => RequestContext {
-                    authorization: kasumi_types::RequestAuthorization::service_identity(),
-                    principal: "kasumi-node".into(),
-                    tenant: tenant.clone(),
-                    scopes: BTreeSet::from([Action::Admin]),
-                    request_id: Uuid::new_v4().to_string(),
-                },
-            };
+            let context = self.retirement_registry_context(&tenant);
             if !matches!(
                 self.registry.retirement_source(&context, &incarnation),
                 Ok(kasumi_engine::InstalledRetirementSource::Serving(_))

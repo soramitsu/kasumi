@@ -111,11 +111,11 @@ impl TargetRecoveryConfig {
             "target cleanup root contains original or journal storage"
         );
         let journal_key = self.journal_keys.validate()?;
-        let mut protected = BTreeSet::from([
-            runtime.control.keys.validate()?,
-            runtime.control.custody_keys.validate()?,
-            runtime.security_audit.keys.validate()?,
-        ]);
+        let mut protected = BTreeSet::from([runtime.security_audit.keys.validate()?]);
+        if let Some(control) = &runtime.control {
+            protected.insert(control.keys.validate()?);
+            protected.insert(control.custody_keys.validate()?);
+        }
         for tenant in &runtime.tenants {
             protected.insert(tenant.keys.validate()?);
             protected.insert(tenant.custody_keys.validate()?);

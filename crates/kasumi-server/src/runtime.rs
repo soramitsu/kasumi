@@ -364,6 +364,20 @@ pub struct RuntimeConfig {
     pub remote_control: Option<crate::remote_control::RemoteControlConfig>,
 }
 
+/// Both callers run under the installed tenant's original recovery seat.
+/// Hosted Control also retains its own group's initial scratch failures. A
+/// data-only node recovers its actual local custody log under the tenant seat.
+pub(crate) fn recover_original_retirement(
+    hosted: Option<&Database>,
+    log: &kasumi_raft::ControlLog,
+    custody: &Arc<kasumi_store::CustodyStore>,
+) -> std::result::Result<bool, kasumi_store::ScratchOperationFailure> {
+    match hosted {
+        Some(database) => database.raft_group().recover_retired_custody(custody),
+        None => log.recover_retired(),
+    }
+}
+
 impl RuntimeConfig {
     /// Explicit first HA node enrollment. All local catalogs and immutable
     /// genesis are installed under the original captured serving grants.
@@ -1783,20 +1797,12 @@ impl NodeRuntime {
                     if let Some(control) = kasumi_raft::ControlLog::installed(custody_store.clone())? {
                         let incarnation = control.group().strip_prefix(&format!("{}/", tenant.tenant)).context("installed source group differs")?.to_owned();
                         if let Some(expected) = &tenant.incarnation { ensure!(*expected == incarnation, "configured source incarnation differs"); }
-                        let Some(recovery_owner) = runtime.control.as_ref().map(|control| control.database.clone()) else {
-                            // Retired custody recovers under the hosted Control
-                            // group's scratch owner. A data-only node keeps the
-                            // source closed until Control completes retirement.
-                            let source = kasumi_engine::InstalledRetirementSource::RecoveringControl { tenant: tenant.tenant.clone(), source_incarnation: incarnation.clone() };
-                            runtime.custody_sources.push(OpenedCustody { tenant: tenant.tenant.clone(), incarnation, source: source.clone(), store: custody_store });
-                            registry.install_retirement_source(source)?;
-                            continue;
-                        };
+                        let recovery_owner = runtime.control.as_ref().map(|control| control.database.clone());
                         let mut recovery_seat = runtime.original_recoveries.as_ref().expect("installed original recovery inventory").claim(tenant_index + 1).await;
                         let recovery_custody = custody_store.clone();
                         let recovered = recovery_seat.run_snapshot(async move {
                             tokio::task::spawn_blocking(move || {
-                                recovery_owner.raft_group().recover_retired_custody(&recovery_custody)
+                                recover_original_retirement(recovery_owner.as_deref(), &control, &recovery_custody)
                             }).await?.map_err(kasumi_engine::SnapshotFailure::from)
                         }).await;
                         if !matches!(recovered, Ok(false)) {

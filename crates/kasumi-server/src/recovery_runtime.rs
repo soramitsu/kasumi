@@ -173,7 +173,7 @@ impl RecoveryRuntimeConfig {
             "recovery requires bounded installed routes"
         );
         let lifecycle = runtime
-            .control
+            .hosted_control()?
             .lifecycle
             .as_ref()
             .context("recovery requires closed lifecycle Control")?;
@@ -396,7 +396,7 @@ impl ControlRecoveryCoordinator {
         trusts: BTreeMap<String, AuthorityTrust>,
     ) -> Result<Arc<Self>> {
         let configured = runtime
-            .control
+            .hosted_control()?
             .lifecycle
             .as_ref()
             .and_then(|c| c.recovery.clone())

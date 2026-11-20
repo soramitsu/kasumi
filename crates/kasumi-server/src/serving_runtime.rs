@@ -23,7 +23,7 @@ use uuid::Uuid;
 use zeroize::Zeroizing;
 
 pub(crate) type CredentialSource = Arc<dyn Fn(&str) -> Result<Zeroizing<String>> + Send + Sync>;
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct AuthorityEndpoint {
     pub endpoint: String,

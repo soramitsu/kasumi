@@ -57,7 +57,13 @@ fn record_genesis(enrollment: &Enrollment, store: &TenantStore, input: &Input) -
             enrollment.record_genesis_tenant(
                 store,
                 crate::runtime::CONTROL_TENANT,
-                Uuid::parse_str(configuration.control.incarnation.as_deref().unwrap())?,
+                Uuid::parse_str(
+                    configuration
+                        .hosted_control()?
+                        .incarnation
+                        .as_deref()
+                        .unwrap(),
+                )?,
                 "22".repeat(32),
             )?;
         }

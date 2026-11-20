@@ -102,7 +102,7 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
         {
             let runtime = crate::runtime::RuntimeConfig::load(configuration)?;
             let route = runtime
-                .control
+                .hosted_control()?
                 .lifecycle
                 .as_ref()
                 .and_then(|c| c.recovery.as_ref())
