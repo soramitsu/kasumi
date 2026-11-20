@@ -234,6 +234,26 @@ impl SelectedApplication {
             .get()
             .is_some_and(|position| position.applied().is_none())
     }
+    pub(crate) fn primary_entry(
+        &self,
+    ) -> Result<Option<kasumi_store::primary_manifest::PrimaryApplied>> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => crate::application_primary::entry_identity(&log_id, command_sha256).map(Some),
+            _ => Ok(None),
+        }
+    }
+
     /// This exact (not covered) selection was captured at `entry`.
     #[cfg(test)]
     pub(crate) fn selected_at_entry(&self, entry: &kasumi_raft::AppliedEntryContext) -> bool {

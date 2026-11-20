@@ -27,7 +27,7 @@ use anyhow::{Context, Result, ensure};
 use kasumi_store::{
     NamespaceStage, NodeDiskMemoryAdmission, SelectedGeneration, TenantStore, WriteOp,
     ordered_pages::{self, Direction, Edit, PageSource, TreeReader, TreeRoot},
-    primary_manifest::{self as primary, PrimaryApplied, PrimaryManifest},
+    primary_manifest::{self as primary, PrimaryApplied, PrimaryManifest, PrimaryStatus},
 };
 use kasumi_types::TenantState;
 use sha2::{Digest, Sha256};
@@ -37,6 +37,9 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
+
+#[path = "application_primary_rebuild.rs"]
+mod incremental;
 
 /// Changed document IDs by collection, as the accepted producer supplies them.
 pub(crate) type ChangedIds = BTreeMap<String, BTreeSet<String>>;
@@ -57,6 +60,8 @@ const REBUILD_RETRY_REVISIONS: u64 = 4096;
 pub(crate) struct PrimaryOwner {
     recovery_pending: AtomicBool,
     rebuild_after: AtomicU64,
+    prefer_incremental: AtomicBool,
+    maintenance_due: AtomicBool,
     replacement: Mutex<Option<PendingReplacement>>,
 }
 
@@ -73,6 +78,8 @@ impl Default for PrimaryOwner {
         Self {
             recovery_pending: AtomicBool::new(true),
             rebuild_after: AtomicU64::new(0),
+            prefer_incremental: AtomicBool::new(false),
+            maintenance_due: AtomicBool::new(true),
             replacement: Mutex::new(None),
         }
     }
@@ -87,6 +94,12 @@ impl PrimaryOwner {
             self.recovery_pending.store(false, Ordering::Release);
         }
         Ok(())
+    }
+    pub(crate) fn needs_maintenance(&self) -> bool {
+        self.maintenance_due.load(Ordering::Acquire)
+    }
+    pub(crate) fn caught_up(&self) {
+        self.maintenance_due.store(false, Ordering::Release);
     }
     fn replacement_slot(&self) -> Result<std::sync::MutexGuard<'_, Option<PendingReplacement>>> {
         self.replacement
@@ -168,12 +181,18 @@ fn log_sha256(log_id: &kasumi_raft::LogId<u64>) -> Result<[u8; 32]> {
 
 /// The boundary of one ordinary or metadata entry.
 pub(crate) fn entry_applied(position: &kasumi_raft::AppliedEntryContext) -> Result<PrimaryApplied> {
+    entry_identity(&position.log_id, &position.command_sha256)
+}
+
+pub(crate) fn entry_identity(
+    log: &kasumi_raft::LogId<u64>,
+    digest: &str,
+) -> Result<PrimaryApplied> {
     let mut command = [0u8; 32];
-    hex::decode_to_slice(&position.command_sha256, &mut command)
-        .context("applied command digest is not SHA-256")?;
+    hex::decode_to_slice(digest, &mut command).context("applied command digest is not SHA-256")?;
     Ok(PrimaryApplied {
-        index: position.log_id.index,
-        log_sha256: log_sha256(&position.log_id)?,
+        index: log.index,
+        log_sha256: log_sha256(log)?,
         command_sha256: Some(command),
     })
 }
@@ -245,6 +264,15 @@ pub(crate) fn verify_rows(
     Ok(())
 }
 
+#[derive(Debug)]
+struct RebuildByteBudget;
+impl std::fmt::Display for RebuildByteBudget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("primary directory exceeds the replacement byte budget")
+    }
+}
+impl std::error::Error for RebuildByteBudget {}
+
 /// Bulk-build `state`'s rows into a fresh staged generation. The returned
 /// writes select it with its manifest and retire the replaced space; they
 /// must join the publication that selects `state`.
@@ -266,7 +294,7 @@ fn rebuild(
             byte_budget = byte_budget
                 .checked_sub(key.len())
                 .and_then(|remaining| remaining.checked_sub(value.len()))
-                .context("primary directory exceeds the replacement byte budget")?;
+                .ok_or(RebuildByteBudget)?;
             builder.push(key, value)
         })
     })?;
@@ -301,10 +329,12 @@ pub(crate) fn prepare_restore(
     owner.settled();
     NamespaceStage::reclaim_family(store, primary::FAMILY)?;
     *owner.replacement_slot()? = None;
+    owner.prefer_incremental.store(false, Ordering::Release);
+    owner.maintenance_due.store(true, Ordering::Release);
     let applied = snapshot_applied(meta)?;
     if reopen
         && let Some(Some(manifest)) = load_or_skip(store)?
-        && manifest.is_current()
+        && (manifest.is_current() || manifest.rebuild().is_some())
         && manifest.tenant == state.tenant
         && manifest.incarnation == state.incarnation
         && manifest.revision_base == state.revision_base
@@ -318,7 +348,8 @@ pub(crate) fn prepare_restore(
                 .as_ref()
                 .zip(applied.as_ref())
                 .is_some_and(|(selected, snapshot)| selected.same_position(snapshot))
-            && verify_rows(&**store, &manifest, state, store.plaintext_memory_owner()).is_ok()
+            && (manifest.rebuild().is_some()
+                || verify_rows(&**store, &manifest, state, store.plaintext_memory_owner()).is_ok())
         {
             return Ok(());
         }
@@ -402,7 +433,7 @@ fn step(
     {
         return Step::Stale("primary directory scope differs from the candidate");
     }
-    if !manifest.is_current() {
+    if !manifest.is_current() && manifest.rebuild().is_none() {
         return if manifest.revision <= previous.revision {
             Step::Replace
         } else {
@@ -505,6 +536,12 @@ pub(crate) fn prepare_publication(
     let Some(manifest) = load_or_skip(store)? else {
         return Ok(None);
     };
+    if manifest
+        .as_ref()
+        .is_none_or(|manifest| !manifest.is_current())
+    {
+        owner.maintenance_due.store(true, Ordering::Release);
+    }
     let base = match step(manifest.as_ref(), previous, candidate) {
         Step::Nothing | Step::Covered => return Ok(None),
         Step::Replace if may_replace => return replace(owner, store, candidate, applied),
@@ -515,7 +552,9 @@ pub(crate) fn prepare_publication(
                 manifest.applied.is_none() && applied.is_none(),
                 |(selected, replayed)| selected.same_position(replayed),
             );
-            let verified = if same {
+            let verified = if same && manifest.rebuild().is_some() {
+                Ok(())
+            } else if same {
                 verify_rows(
                     &**store,
                     &manifest,
@@ -529,15 +568,19 @@ pub(crate) fn prepare_publication(
             };
             return match verified {
                 Ok(()) => Ok(None),
-                Err(error) => stale(
-                    &manifest,
-                    candidate,
-                    applied,
-                    error.context("replayed primary directory differs"),
-                ),
+                Err(error) => {
+                    owner.maintenance_due.store(true, Ordering::Release);
+                    stale(
+                        &manifest,
+                        candidate,
+                        applied,
+                        error.context("replayed primary directory differs"),
+                    )
+                }
             };
         }
         Step::Stale(reason) => {
+            owner.maintenance_due.store(true, Ordering::Release);
             let manifest = manifest.expect("stale directory");
             return stale(&manifest, candidate, applied, anyhow::anyhow!(reason));
         }
@@ -560,18 +603,102 @@ pub(crate) fn prepare_publication(
             }
         },
     };
-    match edit(
-        owner,
-        store,
-        &base,
-        previous,
-        candidate,
-        changed,
-        applied.clone(),
-    ) {
+    let prepare = |advance_cursor| {
+        edit(
+            owner,
+            store,
+            &base,
+            candidate,
+            (previous, changed),
+            applied.clone(),
+            advance_cursor,
+        )
+    };
+    let publication = match prepare(true) {
+        Err(error) if base.rebuild().is_some() && store.check_access().is_ok() => {
+            // If the optional scan used the last grant, keep the complete
+            // producer delta on the same partial root. The monitor can move
+            // its cursor later under its own budget.
+            owner.recover(store)?;
+            prepare(false).map_err(|retry| retry.context(error))
+        }
+        result => result,
+    };
+    match publication {
         Ok(publication) => Ok(Some(publication)),
-        Err(error) => stale(&base, candidate, applied, error),
+        Err(error) => {
+            owner.maintenance_due.store(true, Ordering::Release);
+            stale(&base, candidate, applied, error)
+        }
     }
+}
+
+/// One scheduled step at the committed serving position. Its native
+/// transactions can neither move Raft nor join a proposed command.
+pub(crate) fn maintain(
+    owner: &PrimaryOwner,
+    store: &Arc<TenantStore>,
+    state: &TenantState,
+    applied: &PrimaryApplied,
+) -> Result<bool> {
+    ensure!(
+        state.revision_base.checked_add(applied.index) == Some(state.revision),
+        "primary maintenance reached a different revision"
+    );
+    owner.recover(store)?;
+    let may_replace = owner.advance_replacement_cleanup(store)?;
+    let Some(manifest) = load_or_skip(store)? else {
+        return Ok(false);
+    };
+    let publication = match manifest {
+        Some(m)
+            if m.tenant != state.tenant
+                || m.incarnation != state.incarnation
+                || m.revision_base != state.revision_base
+                || m.revision > state.revision =>
+        {
+            return Ok(false);
+        }
+        Some(m) if m.is_current() => {
+            return Ok(m.revision == state.revision
+                && m.applied.as_ref().is_some_and(|p| p.same_position(applied))
+                && may_replace);
+        }
+        Some(m) if m.rebuild().is_some() => {
+            // No skipped entry can be repaired merely by walking its current
+            // rows. The foreground writer owns every intervening delta.
+            if m.revision != state.revision || m.applied.as_ref() != Some(applied) {
+                return Ok(false);
+            }
+            Some(edit(
+                owner,
+                store,
+                &m,
+                state,
+                (state, &ChangedIds::new()),
+                Some(applied.clone()),
+                true,
+            )?)
+        }
+        _ if may_replace => {
+            if pristine(state) {
+                Some(PrimaryPublication::only(rebuild(
+                    store,
+                    state,
+                    Some(applied.clone()),
+                    MAX_EDIT_BYTES,
+                    Some(owner),
+                )?))
+            } else {
+                incremental::seed(owner, store, state, Some(applied.clone()))?
+            }
+        }
+        _ => None,
+    };
+    if let Some(mut publication) = publication {
+        store.write_batch(&publication.take_writes())?;
+    }
+    Ok(false)
 }
 
 /// A fresh stage can be selected only by the candidate's paired publication.
@@ -587,13 +714,16 @@ fn replace(
     if candidate.revision < owner.rebuild_after.load(Ordering::Acquire) {
         return Ok(None);
     }
+    if owner.prefer_incremental.load(Ordering::Acquire) && !pristine(candidate) {
+        return try_seed(owner, store, candidate, applied);
+    }
     let mut remaining = MAX_REBUILD_IDS;
     for collection in candidate.collections.values() {
         let Some(count) = remaining
             .checked_sub(collection.documents.len())
             .and_then(|n| n.checked_sub(collection.archived_documents.len()))
         else {
-            return Ok(None);
+            return try_seed(owner, store, candidate, applied);
         };
         remaining = count;
     }
@@ -602,6 +732,10 @@ fn replace(
         Err(error) => {
             if let Err(access) = store.check_access() {
                 return Err(error.context(access));
+            }
+            if error.is::<RebuildByteBudget>() {
+                owner.prefer_incremental.store(true, Ordering::Release);
+                return Ok(None);
             }
             owner.rebuild_after.store(
                 candidate.revision.saturating_add(REBUILD_RETRY_REVISIONS),
@@ -612,6 +746,26 @@ fn replace(
                 io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                 "bounded primary directory replacement did not complete"
             );
+            Ok(None)
+        }
+    }
+}
+
+fn try_seed(
+    owner: &PrimaryOwner,
+    store: &Arc<TenantStore>,
+    state: &TenantState,
+    applied: Option<PrimaryApplied>,
+) -> Result<Option<PrimaryPublication>> {
+    match incremental::seed(owner, store, state, applied) {
+        Ok(publication) => Ok(publication),
+        Err(error) => {
+            if let Err(access) = store.check_access() {
+                return Err(error.context(access));
+            }
+            tracing::warn!(revision=state.revision,
+                io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+                "primary rebuild seed deferred");
             Ok(None)
         }
     }
@@ -630,9 +784,16 @@ fn stale(
         "primary directory stops following ordinary apply until it is replaced"
     );
     // A replayed boundary that differs goes stale at its own revision.
-    if candidate.revision < manifest.revision || !manifest.is_current() {
+    if candidate.revision < manifest.revision
+        || (!manifest.is_current() && manifest.rebuild().is_none())
+    {
         return Ok(None);
     }
+    let applied = if manifest.revision == candidate.revision {
+        manifest.applied.clone()
+    } else {
+        applied
+    };
     Ok(Some(PrimaryPublication::only(vec![
         manifest.stale(candidate.revision, applied).write()?,
     ])))
@@ -642,12 +803,14 @@ fn edit(
     owner: &PrimaryOwner,
     store: &Arc<TenantStore>,
     base: &PrimaryManifest,
-    previous: &TenantState,
     candidate: &TenantState,
-    changed: &ChangedIds,
+    delta: (&TenantState, &ChangedIds),
     applied: Option<PrimaryApplied>,
+    advance_cursor: bool,
 ) -> Result<PrimaryPublication> {
+    let (previous, changed) = delta;
     let memory = store.plaintext_memory_owner();
+    let mut status = base.status.clone();
     // A single decision covers pages created and then displaced in this same
     // edit. Failed or lost publications retain the original recovery journal.
     owner.pending();
@@ -679,7 +842,7 @@ fn edit(
                 rows.clear();
                 Ok(())
             };
-            visit_changed_ids(previous, candidate, changed, |name, id| {
+            let mut add = |name: &str, id: &str| -> Result<()> {
                 // Three tuple keys, their spare capacity, tree/Vec entries,
                 // header value, and borrowed edit descriptors. Each encoded
                 // primary value retains its separately measured original grant.
@@ -709,7 +872,30 @@ fn edit(
                     window_ids = 0;
                 }
                 Ok(())
+            };
+            let mut delta = 0usize;
+            visit_changed_ids(previous, candidate, changed, |name, id| {
+                add(name, id)?;
+                delta += 1;
+                Ok(())
             })?;
+            if advance_cursor && let Some(progress) = base.rebuild() {
+                let _cursor_workspace = memory.clone().reserve_installed(16 << 10)?;
+                let reader = TreeReader::new(&**store, &base.page_space, base.records, None)?;
+                status = incremental::advance(candidate, progress, delta, |name, id| {
+                    if delta > 0
+                        && (changed.get(name).is_some_and(|ids| ids.contains(id))
+                            || application_records::has_primary_header(&reader, name, id)?)
+                    {
+                        // Every mutation after capture already edits this
+                        // partial tree, wherever the cursor is.
+                        return Ok(false);
+                    }
+                    add(name, id)?;
+                    Ok(true)
+                })?;
+            }
+
             if !rows.is_empty() {
                 flush(&mut rows)?;
             }
@@ -721,16 +907,21 @@ fn edit(
     if !staged {
         owner.settled();
     }
-    writes.push(
-        base.advance(
-            candidate.revision,
-            applied,
-            root,
-            candidate.document_count,
-            candidate.logical_bytes,
-        )
-        .write()?,
+    let mut manifest = base.advance(
+        candidate.revision,
+        applied,
+        root,
+        candidate.document_count,
+        candidate.logical_bytes,
     );
+    if base.rebuild().is_some() && status == PrimaryStatus::Current {
+        ensure!(
+            manifest.document_count.checked_mul(2) == Some(root.count()),
+            "completed primary rebuild row count differs"
+        );
+    }
+    manifest.status = status;
+    writes.push(manifest.write()?);
     Ok(PrimaryPublication {
         writes,
         _workspace: Some(workspace),

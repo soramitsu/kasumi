@@ -1998,6 +1998,11 @@ impl Database {
                                 let serving = db.engine.generation().is_ok();
                                 if serving {
                                     db.rebase_stale_application_selection();
+                                    if !pressured && let Err(error) = db.engine.primary_maintenance_step() {
+                                        tracing::warn!(event="primary_maintenance_deferred",
+                                            io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+                                            "primary maintenance deferred until its next scheduled step");
+                                    }
                                 }
                                 drop(work);
                                 serving

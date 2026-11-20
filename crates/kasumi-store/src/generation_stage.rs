@@ -949,8 +949,8 @@ fn validate_primary_manifest(
         );
         if switched.is_some() {
             ensure!(
-                next.is_current(),
-                "a replacement primary generation must be current"
+                next.is_current() || next.is_rebuild_seed(),
+                "a replacement primary generation must be current or begin an empty rebuild"
             );
             continue;
         }
@@ -958,6 +958,11 @@ fn validate_primary_manifest(
             read_record(tx, store, state, MANIFESTS, CURRENT, MAX_MANIFEST_BYTES)?
         {
             next.check_successor(&PrimaryManifest::decode(&previous.value)?)?;
+        } else {
+            ensure!(
+                next.rebuild().is_none(),
+                "a primary rebuild needs a selected seed"
+            );
         }
     }
     Ok(())

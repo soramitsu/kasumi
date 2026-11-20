@@ -460,17 +460,109 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     let stale = fixture.current().stale(s7.revision, applied(&s7, 1));
     store.write_batch(&[stale.write().unwrap()]).unwrap();
     let (s8, changed) = next(&s7, s7.revision + 1, "docs", &["another"], &[]);
-    assert!(
-        prepare_publication(&owner, store, &s7, &s8, &changed, applied(&s8, 1))
-            .unwrap()
-            .is_none()
+    fixture
+        .publish(prepare_publication(&owner, store, &s7, &s8, &changed, applied(&s8, 1)).unwrap());
+    let seed = fixture.current();
+    let captured = applied(&s8, 1).unwrap();
+    assert_eq!(seed.rebuild().unwrap().captured, captured);
+    assert_eq!(seed.rebuild().unwrap().cursor, None);
+    assert_eq!(seed.records.count(), 0);
+    assert_ne!(seed.page_space, stale.page_space);
+    // Dropping a prepared window never commits its cursor. Recovery retains
+    // the physical checkpoint even when reopen starts from an older snapshot.
+    let (s9, delta) = next(
+        &s8,
+        s8.revision + 1,
+        "docs",
+        &["000-before", "new-after"],
+        &["bulk-04000"],
     );
-    assert_eq!(fixture.current(), stale);
-    // Installing an authenticated snapshot uses the streaming bulk recovery path.
+    drop(
+        prepare_publication(&owner, store, &s8, &s9, &delta, applied(&s9, 1))
+            .unwrap()
+            .unwrap(),
+    );
+    assert_eq!(fixture.current(), seed);
+    drop(owner);
+    let owner = PrimaryOwner::default();
     let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s8, &snapshot_meta(&s8), false, &mut writes).unwrap();
+    prepare_restore(&owner, store, &s7, &snapshot_meta(&s7), true, &mut writes).unwrap();
+    assert!(writes.is_empty());
+    fixture.publish(prepare_publication(&owner, store, &s8, &s9, &delta, applied(&s9, 1)).unwrap());
+    let advanced = fixture.current();
+    assert_eq!(advanced.rebuild().unwrap().captured, captured);
+    assert!(advanced.rebuild().unwrap().cursor.is_some());
+    assert!(advanced.records.count() <= 2 * (WINDOW_IDS as u64 + 2));
+    let partial = store.read_view().unwrap();
+
+    // Change keys on both sides of the cursor while continually inserting
+    // more than one scan window of fresh IDs ahead of the original end.
+    let mut state = s9;
+    for round in 0..4 {
+        let cursor = fixture.current().rebuild().unwrap().cursor.clone().unwrap();
+        let id = cursor.after_document.unwrap();
+        let extra: Vec<_> = (0..90)
+            .map(|n| format!("{id}-extra-{round}-{n:03}"))
+            .collect();
+        let mut put: Vec<_> = extra.iter().map(String::as_str).collect();
+        put.push("000-before");
+        let (candidate, delta) = next(&state, state.revision + 1, "docs", &put, &["bulk-04096"]);
+        fixture.publish(
+            prepare_publication(
+                &owner,
+                store,
+                &state,
+                &candidate,
+                &delta,
+                applied(&candidate, 1),
+            )
+            .unwrap(),
+        );
+        assert!(
+            fixture
+                .current()
+                .rebuild()
+                .unwrap()
+                .cursor
+                .as_ref()
+                .unwrap()
+                .after_document
+                .as_ref()
+                .unwrap()
+                > extra.last().unwrap(),
+            "newly inserted keys starved captured originals"
+        );
+        state = candidate;
+    }
+    // With no later log entry the idle worker must finish, at that same
+    // authenticated position, in independently durable, bounded transactions.
+    let final_applied = applied(&state, 1).unwrap();
+    for _ in 0..(MAX_REBUILD_IDS / WINDOW_IDS + 20) {
+        if maintain(&owner, store, &state, &final_applied).unwrap() {
+            break;
+        }
+    }
+    fixture.verify(&state);
+    assert_eq!(fixture.current().applied, Some(final_applied));
+    assert_eq!(
+        PrimaryManifest::load_at(&partial).unwrap().unwrap(),
+        advanced
+    );
+    partial.close().unwrap();
+
+    // Installing an authenticated snapshot still replaces a completed directory.
+    let mut writes = Vec::new();
+    prepare_restore(
+        &owner,
+        store,
+        &state,
+        &snapshot_meta(&state),
+        false,
+        &mut writes,
+    )
+    .unwrap();
     store.write_batch(&writes).unwrap();
-    fixture.verify(&s8);
+    fixture.verify(&state);
     fixture.close().await;
 }
 

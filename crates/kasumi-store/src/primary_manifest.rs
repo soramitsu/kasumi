@@ -39,10 +39,47 @@ const FORMAT: u32 = 1;
 /// Whether the tree holds exactly the rows at `revision`. A stale directory
 /// keeps naming its last tree so its space stays owned, but readers and
 /// ordinary edits ignore it until a replacement generation is selected.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum PrimaryStatus {
     Current,
     Stale,
+    Rebuilding(PrimaryRebuild),
+}
+
+/// An independent physical rebuild starts at one authenticated ordinary
+/// position. The cursor and tree advance in the same native transaction.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PrimaryRebuild {
+    pub captured: PrimaryApplied,
+    pub through: PrimaryCursor,
+    pub cursor: Option<PrimaryCursor>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct PrimaryCursor {
+    pub collection: String,
+    /// None means the whole collection, including an empty one, was visited.
+    pub after_document: Option<String>,
+}
+
+impl Ord for PrimaryCursor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.collection.cmp(&other.collection).then_with(|| {
+            match (&self.after_document, &other.after_document) {
+                (Some(a), Some(b)) => a.cmp(b),
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+            }
+        })
+    }
+}
+impl PartialOrd for PrimaryCursor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
 }
 
 /// The producer boundary of the revision: the applied Raft log position and,
@@ -118,6 +155,21 @@ impl PrimaryManifest {
         self.status == PrimaryStatus::Current
     }
 
+    pub fn rebuild(&self) -> Option<&PrimaryRebuild> {
+        match &self.status {
+            PrimaryStatus::Rebuilding(progress) => Some(progress),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn is_rebuild_seed(&self) -> bool {
+        self.rebuild().is_some_and(|p| {
+            p.cursor.is_none()
+                && self.records.count() == 0
+                && self.applied.as_ref() == Some(&p.captured)
+        })
+    }
+
     /// The edited successor at `revision`; tree identity and space are kept.
     pub fn advance(
         &self,
@@ -177,6 +229,35 @@ impl PrimaryManifest {
                 ),
             "primary manifest boundary differs from its revision"
         );
+        if let Some(progress) = self.rebuild() {
+            let current = self
+                .applied
+                .as_ref()
+                .context("primary rebuild lost its applied boundary")?;
+            ensure!(
+                progress.captured.index <= current.index
+                    && progress.captured.command_sha256.is_some(),
+                "invalid captured primary rebuild position"
+            );
+            kasumi_types::validate_name(&progress.through.collection)?;
+            kasumi_types::validate_name(
+                progress
+                    .through
+                    .after_document
+                    .as_deref()
+                    .context("primary rebuild missing terminal document")?,
+            )?;
+            if let Some(cursor) = &progress.cursor {
+                kasumi_types::validate_name(&cursor.collection)?;
+                if let Some(id) = &cursor.after_document {
+                    kasumi_types::validate_name(id)?;
+                }
+                ensure!(
+                    cursor <= &progress.through,
+                    "primary cursor exceeds its captured bound"
+                );
+            }
+        }
         kasumi_types::validate_name(&self.tenant)?;
         kasumi_types::validate_name(&self.incarnation)?;
         validate_record(&self.page_space, &[], 0)?;
@@ -208,7 +289,7 @@ impl PrimaryManifest {
     /// same batch does not select a replacement generation.
     pub(crate) fn check_successor(&self, previous: &Self) -> Result<()> {
         ensure!(
-            previous.is_current(),
+            previous.is_current() || previous.rebuild().is_some(),
             "a stale primary directory needs a replacement generation"
         );
         ensure!(
@@ -219,13 +300,43 @@ impl PrimaryManifest {
                 && self.records.tree == previous.records.tree,
             "primary directory successor changes its tree or scope"
         );
-        // Only a current directory may go stale at its own revision: a
-        // replayed boundary that differs from it.
-        ensure!(
-            self.revision > previous.revision
-                || (self.revision == previous.revision && !self.is_current()),
-            "primary directory cannot move backward or repeat a revision"
-        );
+        if let Some(prior) = previous.rebuild() {
+            let next = self.rebuild();
+            if let Some(next) = next {
+                ensure!(
+                    next.captured == prior.captured
+                        && next.through == prior.through
+                        && next.cursor >= prior.cursor,
+                    "primary rebuild changed its captured source or regressed"
+                );
+            }
+            if self.is_current() {
+                ensure!(
+                    prior.cursor.as_ref() == Some(&prior.through)
+                        && self.document_count.checked_mul(2) == Some(self.records.count()),
+                    "partial primary directory cannot become current"
+                );
+            }
+            let advanced =
+                next.is_some_and(|next| next.cursor > prior.cursor) || self.rebuild().is_none();
+            ensure!(
+                self.revision > previous.revision
+                    || self.revision == previous.revision
+                        && self.applied == previous.applied
+                        && advanced,
+                "primary rebuild repeated or regressed"
+            );
+        } else {
+            ensure!(
+                self.rebuild().is_none(),
+                "primary rebuild needs a new physical tree"
+            );
+            ensure!(
+                self.revision > previous.revision
+                    || self.revision == previous.revision && !self.is_current(),
+                "primary directory cannot move backward or repeat a revision"
+            );
+        }
         Ok(())
     }
 

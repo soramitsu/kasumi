@@ -2821,6 +2821,56 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .collect::<Vec<_>>(),
         ["c", "d", "e", "f"]
     );
+    // Recreate an incomplete native directory at its genuine committed
+    // position. The next ordinary command selects the incomplete root and
+    // the registered monitor must finish it while this tenant is idle.
+    let old_versions = versions(&generation)?;
+    engine.seed_idle_primary_rebuild_for_test()?;
+    db.mutate(
+        context,
+        kasumi_types::MutationBatch::new().upsert("docs", "c", serde_json::json!({"value":8})),
+    )
+    .await?;
+    let incomplete = engine.generation()?;
+    let idle_revision = incomplete.state.revision;
+    let incomplete_selection = incomplete.application_selection.get().unwrap();
+    assert!(
+        incomplete_selection
+            .with_primary_records(None, &incomplete.state, |_, _| Ok(()))?
+            .is_none()
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(30), async {
+        loop {
+            let now = engine.generation()?;
+            ensure!(
+                now.state.revision == idle_revision,
+                "idle repair invented an applied command"
+            );
+            if now
+                .application_selection
+                .get()
+                .unwrap()
+                .with_primary_records(None, &now.state, |_, _| Ok(()))?
+                .is_some()
+            {
+                ensure!(
+                    versions(&now)? == resident(&now),
+                    "idle primary rows differ"
+                );
+                break Ok::<_, anyhow::Error>(());
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .context("idle primary worker timed out")??;
+    assert!(
+        incomplete_selection
+            .with_primary_records(None, &incomplete.state, |_, _| Ok(()))?
+            .is_none()
+    );
+    assert_eq!(versions(&generation)?, old_versions);
+    drop(incomplete);
     drop(generation);
     db.shutdown().await?;
     drop(db);
