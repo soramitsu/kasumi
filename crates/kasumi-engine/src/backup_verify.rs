@@ -129,6 +129,20 @@ pub(crate) async fn verify_indexed_audit_dependency(
     ciphertext: &[u8],
     link: &AuditArchiveLink,
 ) -> anyhow::Result<AuditArchiveReference> {
+    let dependency = indexed_audit_dependency(state, root, ciphertext, link)?;
+    Ok(store
+        .verify_historical_audit(&dependency, dependency.source_purpose())
+        .await?
+        .reference()
+        .clone())
+}
+
+pub(crate) fn indexed_audit_dependency<'a>(
+    state: &VerifiedState,
+    root: &kasumi_store::StoragePurpose,
+    ciphertext: &'a [u8],
+    link: &AuditArchiveLink,
+) -> anyhow::Result<kasumi_store::InspectedAuditDependency<'a>> {
     let dependency = kasumi_store::InspectedAuditDependency::from_link(ciphertext, link)?;
     anyhow::ensure!(
         dependency.source_tenant() == state.metadata().tenant
@@ -136,11 +150,7 @@ pub(crate) async fn verify_indexed_audit_dependency(
         "backup audit stream differs"
     );
     state.authorize_source(root, dependency.source_purpose())?;
-    Ok(store
-        .verify_historical_audit(&dependency, dependency.source_purpose())
-        .await?
-        .reference()
-        .clone())
+    Ok(dependency)
 }
 
 /// What a blocking worker's failure leaves in the node's drain report when no

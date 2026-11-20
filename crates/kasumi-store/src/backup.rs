@@ -593,6 +593,20 @@ impl EncryptedBackup {
         })
     }
 
+    /// Authenticate an immutable object with the recovery operation's original
+    /// provider roster before lending its complete wrapping catalog.
+    pub async fn decrypt_and_visit_keys(
+        &self,
+        provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<BackupContents> {
+        let contents = self.decrypt(owner.tenant(), provider, owner).await?;
+        self.visit_catalog_keys(visit)?;
+        owner.check_access()?;
+        Ok(contents)
+    }
+
     pub async fn decrypt(
         &self,
         source_tenant: &str,

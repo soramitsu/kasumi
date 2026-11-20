@@ -101,6 +101,7 @@ impl Database {
 }
 
 pub(in crate::service) struct InstalledInventories<'a> {
+    pub(super) context: &'a RequestContext,
     pub(super) signer: Option<&'a SignerCatalog>,
     pub(super) issuers: Option<IssuerCoverage>,
     pub(super) member_inventories: Option<member::MemberInventories>,
@@ -198,6 +199,7 @@ impl SecurityAudit {
         token: &QueryCancellation,
     ) -> Result<KeyRetentionPage> {
         let InstalledInventories {
+            context,
             signer,
             issuers,
             mut member_inventories,
@@ -484,19 +486,29 @@ impl SecurityAudit {
         {
             Some(
                 owner
-                    .visit_keys(self.store(), local, token, &mut |finding| {
-                        token.check()?;
-                        match finding {
-                            LocalRecoveryKeyFinding::Entry(entry) => {
-                                consider_entry(request, &mut entries, entry)?
+                    .visit_keys(
+                        self.store(),
+                        local,
+                        &LocalRecoveryKeyRead {
+                            context,
+                            request,
+                            security: self,
+                            token,
+                        },
+                        &mut |finding| {
+                            token.check()?;
+                            match finding {
+                                LocalRecoveryKeyFinding::Entry(entry) => {
+                                    consider_entry(request, &mut entries, entry)?
+                                }
+                                LocalRecoveryKeyFinding::Missing(dependency) => {
+                                    dependency.validate()?;
+                                    add_missing(&mut missing, &mut truncated, dependency);
+                                }
                             }
-                            LocalRecoveryKeyFinding::Missing(dependency) => {
-                                dependency.validate()?;
-                                add_missing(&mut missing, &mut truncated, dependency);
-                            }
-                        }
-                        Ok(())
-                    })
+                            Ok(())
+                        },
+                    )
                     .map_err(|error| {
                         error
                             .downcast_ref::<Error>()

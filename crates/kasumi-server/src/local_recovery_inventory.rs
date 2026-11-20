@@ -1,7 +1,10 @@
 //! Administrative read of the encrypted coordinator, held by the same exclusive
 //! standalone installation that owns the recovery writer.
 use super::*;
-use kasumi_engine::{Database, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, SecurityAudit};
+use kasumi_engine::{
+    Database, LocalRecoveryCheckpoint, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory,
+    LocalRecoveryKeyRead, SecurityAudit,
+};
 use kasumi_query::QueryCancellation;
 use kasumi_store::TenantReadView;
 use kasumi_types::{
@@ -15,7 +18,8 @@ pub(crate) fn install(
     config: &RuntimeConfig,
     owner: &Arc<crate::standalone::InstalledStandaloneOwner>,
     audit: &SecurityAudit,
-    database: &Database,
+    database: &Arc<Database>,
+    applications: BTreeMap<String, std::sync::Weak<Database>>,
     active: BTreeMap<Uuid, std::sync::Weak<kasumi_store::TenantStorageSet>>,
 ) -> Result<()> {
     ensure!(
@@ -49,6 +53,8 @@ pub(crate) fn install(
             disk_settings: config.persistent_disk.clone(),
             tenants,
             active,
+            control: Arc::downgrade(database),
+            applications,
             owner: Arc::downgrade(owner),
             admission: audit.admission().clone(),
         }),
@@ -56,6 +62,8 @@ pub(crate) fn install(
 }
 
 struct Coordinator {
+    control: std::sync::Weak<Database>,
+    applications: BTreeMap<String, std::sync::Weak<Database>>,
     owner: std::sync::Weak<crate::standalone::InstalledStandaloneOwner>,
     database_path: PathBuf,
     disk_settings: kasumi_store::NodeDiskConfig,
@@ -143,9 +151,10 @@ impl Coordinator {
         key: &[u8],
         value: &[u8],
         node_id: u64,
-        token: &QueryCancellation,
+        read: &LocalRecoveryKeyRead<'_>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
-    ) -> Result<(Uuid, Option<[u8; 32]>)> {
+    ) -> Result<(Uuid, Option<[u8; 32]>, bool)> {
+        let token = read.cancellation();
         let journal: Journal = decode(value)?;
         let request = &journal.status.request;
         request.validate()?;
@@ -206,13 +215,14 @@ impl Coordinator {
                 ensure!(uuid(&owner)? == operation, "conflicting publication owner");
             }
         }
-        // The authenticated checkpoint binds its external graph by digest. Its
-        // wrapping versions require an independent read by the backup owner.
-        visit(LocalRecoveryKeyFinding::Missing(
-            MissingKeyDependency::ArchiveUnavailable {
-                id: request.checkpoint.backup_id.to_string(),
-            },
-        ))?;
+        let observed = self.checkpoint(&journal, read, visit)?;
+        if !observed {
+            visit(LocalRecoveryKeyFinding::Missing(
+                MissingKeyDependency::ArchiveUnavailable {
+                    id: request.checkpoint.backup_id.to_string(),
+                },
+            ))?;
+        }
         if journal.status.phase == LocalRecoveryPhase::Stopped {
             ensure!(
                 journal.status.cleanup_evidence.as_deref()
@@ -255,7 +265,7 @@ impl Coordinator {
                 );
                 let catalogs = Self::active_catalogs(&stores, node_id, token, visit)?;
                 check_database_group(&journal)?;
-                return Ok((operation, Some(catalogs)));
+                return Ok((operation, Some(catalogs), observed));
             }
             visit(LocalRecoveryKeyFinding::Missing(
                 MissingKeyDependency::RecordUnreadable {
@@ -264,7 +274,52 @@ impl Coordinator {
                 },
             ))?;
         }
-        Ok((operation, None))
+        Ok((operation, None, observed))
+    }
+
+    fn checkpoint(
+        &self,
+        journal: &Journal,
+        read: &LocalRecoveryKeyRead<'_>,
+        visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
+    ) -> Result<bool> {
+        let request = &journal.status.request;
+        let Some(application) = self
+            .applications
+            .get(&request.tenant)
+            .and_then(std::sync::Weak::upgrade)
+        else {
+            return Ok(false);
+        };
+        ensure!(
+            matches!(application.stores().application().storage_access().purpose(),
+                StoragePurpose::Standalone {installation_id,tenant,..} if *installation_id == journal.installation_id && tenant == &request.tenant),
+            "local backup reader is attached to another installation"
+        );
+        let keys = keys::RecoveryKeys::open(&request.source_keys, &request.historical_source_keys)
+            .and_then(|keys| keys.bound(&request.source_keys, &journal.source_provider));
+        let keys = match keys {
+            Ok(keys) => keys,
+            Err(error) => {
+                tracing::warn!(operation = %request.operation_id, %error, "original recovery key provider unavailable");
+                return Ok(false);
+            }
+        };
+        let control = self
+            .control
+            .upgrade()
+            .context("local recovery Control owner has closed")?;
+        read.visit_checkpoint(
+            &control,
+            &application,
+            LocalRecoveryCheckpoint {
+                checkpoint: &request.checkpoint,
+                source_purpose: &request.source_purpose,
+                keys,
+                destination: &request.destination,
+            },
+            |row| visit(LocalRecoveryKeyFinding::Entry(row)),
+        )
     }
 
     fn active_catalogs(
@@ -554,9 +609,10 @@ impl LocalRecoveryKeyInventory for Coordinator {
         &self,
         store: &Arc<TenantStore>,
         node_id: u64,
-        token: &QueryCancellation,
+        read: &LocalRecoveryKeyRead<'_>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> Result<()>,
     ) -> Result<[u8; 32]> {
+        let token = read.cancellation();
         token.check()?;
         let owner = self
             .owner
@@ -605,8 +661,9 @@ impl LocalRecoveryKeyInventory for Coordinator {
                         token.check()?;
                         let _decoded = self.decoding_workspace(value.len(), token)?;
                         let operation_id = if namespace == OPERATIONS {
-                            let (operation, catalogs) =
-                                self.operation(&view, key, value, node_id, token, visit)?;
+                            let (operation, catalogs, checkpoint_verified) =
+                                self.operation(&view, key, value, node_id, read, visit)?;
+                            digest.update([u8::from(checkpoint_verified)]);
                             active_reports += usize::from(catalogs.is_some());
                             serde_json::to_writer(&mut digest, &catalogs)?;
                             operation

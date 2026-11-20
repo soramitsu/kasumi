@@ -19,12 +19,120 @@ pub enum LocalRecoveryKeyFinding {
     Missing(MissingKeyDependency),
 }
 
+/// Source facts selected from a physically authenticated standalone journal row.
+pub struct LocalRecoveryCheckpoint<'a> {
+    pub checkpoint: &'a FullBackupCheckpoint,
+    pub source_purpose: &'a kasumi_store::StoragePurpose,
+    pub keys: Arc<dyn kasumi_store::KeyProvider>,
+    pub destination: &'a str,
+}
+
+pub struct LocalRecoveryKeyRead<'a> {
+    context: &'a RequestContext,
+    request: &'a ReadKeyRetentionRequest,
+    security: &'a SecurityAudit,
+    token: &'a QueryCancellation,
+}
+
+impl LocalRecoveryKeyRead<'_> {
+    pub fn cancellation(&self) -> &QueryCancellation {
+        self.token
+    }
+
+    /// Invoked by the coordinator on the retained physical census worker. Keep
+    /// partial keys private until the whole authenticated graph matches.
+    pub fn visit_checkpoint(
+        &self,
+        control: &Database,
+        tenant: &Database,
+        selected: LocalRecoveryCheckpoint<'_>,
+        mut visit: impl FnMut(KeyRetentionEntry) -> anyhow::Result<()>,
+    ) -> anyhow::Result<bool> {
+        self.token.check()?;
+        anyhow::ensure!(
+            matches!(self.request.scope, KeyRetentionScope::LocalRecovery {})
+                && control.store.tenant() == crate::control::CONTROL_TENANT
+                && self.context.tenant == control.store.tenant()
+                && Arc::ptr_eq(self.security.store(), control.security_audit.store())
+                && Arc::ptr_eq(self.security.store(), tenant.security_audit.store())
+                && Arc::ptr_eq(
+                    control.store.persistent_disk(),
+                    tenant.store.persistent_disk()
+                ),
+            "local recovery key reader belongs to another installation"
+        );
+        control
+            .engine
+            .authorize(self.context, None, Action::Admin)?;
+        let fence = ResponseFence::capture_workspace(
+            ResponseDatabase::Borrowed(control),
+            self.context,
+            true,
+        )?;
+        let _page = control.admission().reserve(
+            (u64::from(self.request.limit) + 2)
+                * (MAX_KEY_REF_BYTES + MAX_KEY_PROVIDER_BYTES + 1024) as u64,
+            Some(self.token.clone()),
+        )?;
+        let rows = Mutex::new(BTreeSet::new());
+        let reference = KeyReference::CompletedBackup {
+            backup_id: selected.checkpoint.backup_id,
+            checkpoint_sha256: staged_digest(selected.checkpoint)?.0,
+        };
+        let observe = |provider: &str, key_ref: &str, version| -> anyhow::Result<()> {
+            self.token.check()?;
+            anyhow::ensure!(
+                provider.len() <= MAX_KEY_PROVIDER_BYTES && key_ref.len() <= MAX_KEY_REF_BYTES,
+                "backup key identity exceeds bound"
+            );
+            consider_entry(
+                self.request,
+                &mut rows.lock().unwrap_or_else(|e| e.into_inner()),
+                KeyRetentionEntry {
+                    key: KeyVersionRef {
+                        provider: provider.into(),
+                        key_ref: key_ref.into(),
+                        version,
+                    },
+                    reference: reference.clone(),
+                },
+            )?;
+            Ok(())
+        };
+        let outcome = tokio::runtime::Handle::try_current()?.block_on(Box::pin(
+            tenant.recovery_checkpoint_keys(&fence, &selected, self.token, &observe),
+        ));
+        self.token.check()?;
+        fence.check()?;
+        if let Err(error) = outcome {
+            if let Some(original) = error.operation_error()
+                && original.code == ErrorCode::ResourceExhausted
+            {
+                return Err(original.clone().into());
+            }
+            if error.admission_refusal().is_some() {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "recovery key inventory admission exhausted",
+                )
+                .into());
+            }
+            tracing::warn!(backup_id = %selected.checkpoint.backup_id, %error, "could not authenticate the original local recovery backup");
+            return Ok(false);
+        }
+        for entry in rows.into_inner().unwrap_or_else(|e| e.into_inner()) {
+            visit(entry)?;
+        }
+        Ok(true)
+    }
+}
+
 pub trait LocalRecoveryKeyInventory: Send + Sync {
     fn visit_keys(
         &self,
         store: &Arc<TenantStore>,
         node_id: u64,
-        token: &QueryCancellation,
+        read: &LocalRecoveryKeyRead<'_>,
         visit: &mut dyn FnMut(LocalRecoveryKeyFinding) -> anyhow::Result<()>,
     ) -> anyhow::Result<[u8; 32]>;
 }
@@ -589,6 +697,7 @@ impl Database {
                     None
                 };
             let local_recovery = self.local_recovery_keys.get().cloned();
+            let control_context = context.clone();
             let request = request.clone();
             let term = metrics.current_term;
             let membership = *membership.log_id();
@@ -601,6 +710,7 @@ impl Database {
                         &request,
                         &metrics,
                         security_audit::InstalledInventories {
+                            context: &control_context,
                             signer: signer.as_deref(),
                             issuers: issuer_keys,
                             member_inventories,

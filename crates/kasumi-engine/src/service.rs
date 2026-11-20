@@ -67,8 +67,8 @@ mod history_reads;
 #[path = "key_retention_service.rs"]
 mod key_retention;
 pub use key_retention::{
-    AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryKeyFinding,
-    LocalRecoveryKeyInventory,
+    AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryCheckpoint,
+    LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, LocalRecoveryKeyRead,
 };
 
 #[path = "point_read.rs"]

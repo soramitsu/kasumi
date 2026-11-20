@@ -10,11 +10,21 @@ use crate::{
 const BACKUP_OPERATION_TIMEOUT_MS: u64 = 300_000;
 type KeyObserver<'a> = dyn Fn(&str, &str, u64) -> anyhow::Result<()> + Sync + 'a;
 
+enum BackupReadAuthority<'a> {
+    Tenant {
+        context: &'a RequestContext,
+        policy_epoch: u64,
+    },
+    Recovery {
+        control: &'a ResponseFence<'a>,
+        keys: Arc<dyn kasumi_store::KeyProvider>,
+    },
+}
+
 struct LiveBackupReader<'a> {
     database: &'a Database,
     destination: &'a dyn BackupDestination,
-    context: &'a RequestContext,
-    policy_epoch: u64,
+    authority: BackupReadAuthority<'a>,
     cancellation: QueryCancellation,
     registration: Arc<VerificationWork>,
     source_purpose: &'a kasumi_store::StoragePurpose,
@@ -29,7 +39,7 @@ impl BackupReader for LiveBackupReader<'_> {
         self.session_key_catalog
     }
     fn tenant(&self) -> &str {
-        &self.context.tenant
+        self.database.store.tenant()
     }
     fn work_registration(&self) -> Option<Arc<VerificationWork>> {
         Some(self.registration.clone())
@@ -40,12 +50,20 @@ impl BackupReader for LiveBackupReader<'_> {
     async fn check_access(&self) -> anyhow::Result<()> {
         self.cancellation.check()?;
         self.database.access()?;
-        self.database.engine.authorize_release(
-            self.context,
-            None,
-            Action::Admin,
-            self.policy_epoch,
-        )?;
+        match &self.authority {
+            BackupReadAuthority::Tenant {
+                context,
+                policy_epoch,
+            } => {
+                self.database.engine.authorize_release(
+                    context,
+                    None,
+                    Action::Admin,
+                    *policy_epoch,
+                )?;
+            }
+            BackupReadAuthority::Recovery { control, .. } => control.check()?,
+        }
         Ok(())
     }
     async fn authorize_state<'a>(&'a self, _: &'a TenantState) -> anyhow::Result<()> {
@@ -70,8 +88,29 @@ impl BackupReader for LiveBackupReader<'_> {
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         self.check_access().await?;
+        let verify = async {
+            if let BackupReadAuthority::Recovery { keys, .. } = &self.authority {
+                let inspected =
+                    crate::backup_verify::indexed_audit_dependency(state, root, &ciphertext, link)?;
+                let verifier = kasumi_store::HistoricalAuditVerifier::new(
+                    self.tenant(),
+                    inspected.source_purpose(),
+                    keys.as_ref(),
+                    self.database.store.storage_access(),
+                )?;
+                return Ok(inspected.verify(&verifier).await?.reference().clone());
+            }
+            crate::backup_verify::verify_indexed_audit_dependency(
+                state,
+                root,
+                &self.database.store,
+                &ciphertext,
+                link,
+            )
+            .await
+        };
         let reference = tokio::select! {
-            result = crate::backup_verify::verify_indexed_audit_dependency(state, root, &self.database.store, &ciphertext, link) => result?,
+            result = verify => result?,
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         self.check_access().await?;
@@ -109,6 +148,20 @@ impl BackupReader for LiveBackupReader<'_> {
         }
         let decrypt = async {
             if let Some(observe) = self.observe_keys {
+                if let BackupReadAuthority::Recovery { keys, .. } = &self.authority {
+                    let envelope = kasumi_store::EncryptedBackup::from_bytes(
+                        &encrypted,
+                        max_plaintext,
+                        &self.database.store,
+                    )?;
+                    anyhow::ensure!(
+                        envelope.id() == id,
+                        "recovery backup object identity differs"
+                    );
+                    return envelope
+                        .decrypt_and_visit_keys(keys.clone(), &self.database.store, observe)
+                        .await;
+                }
                 return self
                     .database
                     .store
@@ -151,6 +204,103 @@ fn verification_error(
 }
 
 impl Database {
+    /// Read a completed graph selected by the installed recovery journal. The
+    /// tenant supplies physical storage and the destination. The Control
+    /// administrator's fence governs release of wrapping references only.
+    pub(super) async fn recovery_checkpoint_keys(
+        &self,
+        control: &ResponseFence<'_>,
+        selected: &LocalRecoveryCheckpoint<'_>,
+        cancellation: &QueryCancellation,
+        observe: &KeyObserver<'_>,
+    ) -> std::result::Result<(), crate::SnapshotFailure> {
+        control.check()?;
+        self.access()?;
+        cancellation.check()?;
+        let expected = selected.checkpoint;
+        expected.validate()?;
+        selected
+            .source_purpose
+            .validate_application_identity(&expected.tenant, &expected.source_incarnation)?;
+        anyhow::ensure!(
+            self.store.tenant() == expected.tenant,
+            "recovery key reader belongs to another tenant"
+        );
+        let registration = self.work.begin(cancellation.clone())?;
+        let slot = self.query_slots.clone().try_acquire_owned().map_err(|_| {
+            Error::new(
+                ErrorCode::ResourceExhausted,
+                "recovery key verification concurrency exhausted",
+            )
+        })?;
+        let registration = VerificationWork::new(registration, slot);
+        let deadline = VerificationDeadline::new(BACKUP_OPERATION_TIMEOUT_MS)?;
+        let destination = self.archive_destination(selected.destination)?;
+        let read = async {
+            let session = kasumi_store::verify_backup_session(
+                destination.as_ref(),
+                expected.backup_id,
+                &self.store,
+                selected.keys.clone(),
+            )
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("retained recovery backup session missing"))?;
+            control.check()?;
+            cancellation.check()?;
+            anyhow::ensure!(
+                session.source_purpose() == selected.source_purpose
+                    && matches!(session.outcome(), Some(BackupSessionOutcome::Complete {checkpoint, ..}) if checkpoint == expected),
+                "retained recovery checkpoint or source purpose differs from the authenticated session"
+            );
+            session.visit_wrapping_keys(observe)?;
+            let objects =
+                kasumi_store::BackupSessionObjects::new(destination.as_ref(), expected.backup_id)?;
+            let reader = LiveBackupReader {
+                database: self,
+                destination: &objects,
+                authority: BackupReadAuthority::Recovery {
+                    control,
+                    keys: selected.keys.clone(),
+                },
+                cancellation: cancellation.clone(),
+                registration: registration.clone(),
+                source_purpose: session.source_purpose(),
+                session_key_catalog: session.key_catalog_sha256(),
+                observe_keys: Some(observe),
+            };
+            let verified = Box::pin(crate::backup_verify::verify(
+                &reader,
+                expected.backup_id,
+                self.admission(),
+                deadline,
+                None,
+            ))
+            .await?;
+            let matches = &verified.checkpoint == expected
+                && &verified.source_purpose == selected.source_purpose;
+            deadline
+                .blocking(
+                    verified._reservation.clone(),
+                    Some(registration),
+                    move || -> anyhow::Result<()> {
+                        drop(verified);
+                        Ok(())
+                    },
+                )
+                .await?;
+            anyhow::ensure!(
+                matches,
+                "retained recovery graph differs from the permanent checkpoint"
+            );
+            reader.check_access().await?;
+            Ok::<_, crate::SnapshotFailure>(())
+        };
+        tokio::select! {
+            value = deadline.run(read) => value?,
+            _ = cancelled(cancellation) => Err(cancelled_error().into()),
+        }
+    }
+
     pub async fn backup_checkpoint(
         &self,
         context: RequestContext,
@@ -536,8 +686,10 @@ impl Database {
             source_purpose: session.source_purpose(),
             session_key_catalog: session.key_catalog_sha256(),
             observe_keys,
-            context,
-            policy_epoch: epoch,
+            authority: BackupReadAuthority::Tenant {
+                context,
+                policy_epoch: epoch,
+            },
             cancellation: cancellation.clone(),
             registration: registration.clone(),
         };

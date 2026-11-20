@@ -341,10 +341,10 @@ async fn local_recovery_resumes_each_phase_and_fences_old_resources_after_activa
     assert!(inventory.entries.iter().any(|row| matches!(
         row.reference, KeyReference::LocalRecovery { operation_id } if operation_id == request.operation_id
     )));
-    assert!(
-        matches!(&inventory.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
-        if missing == &[MissingKeyDependency::ArchiveUnavailable { id: request.checkpoint.backup_id.to_string() }])
-    );
+    assert!(matches!(
+        &inventory.coverage,
+        KeyRetentionCoverage::Complete { .. }
+    ));
     let active_catalogs = inventory
         .entries
         .iter()
@@ -695,6 +695,7 @@ async fn local_stop_persists_identity_before_cleanup_and_rejects_unrelated_files
         &operator.installed_owner,
         &operator.audit,
         &control,
+        Default::default(),
         Default::default(),
     )
     .unwrap();
@@ -2093,6 +2094,13 @@ async fn local_recovery_inventory_case() {
     stop_with_storage(&configuration, request.operation_id, storage.clone())
         .await
         .unwrap();
+    let crate::administration::DestinationConfig::Filesystem { directory, .. } =
+        &config.backup_destinations[&request.destination]
+    else {
+        panic!("fixture backup is on disk")
+    };
+    let id = request.checkpoint.backup_id;
+    let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
     let mut runtime = NodeRuntime::open_using_storage(config, crate::runtime::file_secret, storage)
         .await
         .unwrap();
@@ -2108,11 +2116,27 @@ async fn local_recovery_inventory_case() {
         .then_some(entry.key.version)).collect::<BTreeSet<_>>()
     };
     assert_eq!(retained(&page), BTreeSet::from([1, 2]));
-    assert!(
-        matches!(&page.coverage, KeyRetentionCoverage::Incomplete {missing, truncated: false,..}
-        if missing == &[MissingKeyDependency::ArchiveUnavailable {id:request.checkpoint.backup_id.to_string()}])
-    );
+    assert!(matches!(
+        &page.coverage,
+        KeyRetentionCoverage::Complete { .. }
+    ));
+    assert!(page.entries.iter().any(|row| matches!(row.reference,
+        KeyReference::CompletedBackup { backup_id, .. } if backup_id == request.checkpoint.backup_id)));
     drop(page);
+    let withheld = root.path().join("original-manifest");
+    std::fs::rename(&manifest, &withheld).unwrap();
+    let incomplete = db
+        .read_key_retention(&control, query.clone())
+        .await
+        .unwrap();
+    assert!(
+        matches!(&incomplete.coverage, KeyRetentionCoverage::Incomplete {missing,truncated:false,..}
+        if missing == &[MissingKeyDependency::ArchiveUnavailable {id:id.to_string()}])
+    );
+    assert!(!incomplete.entries.iter().any(|row|
+        matches!(row.reference, KeyReference::CompletedBackup { backup_id, .. } if backup_id == id)));
+    drop(incomplete);
+    std::fs::rename(&withheld, &manifest).unwrap();
     assert_eq!(recovery_rows(runtime.security_audit().store()), before);
     let first = db
         .read_key_retention(
