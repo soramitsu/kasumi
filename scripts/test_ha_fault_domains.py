@@ -362,23 +362,34 @@ if args[:1] == ["control-recovery"]:
             fail("deadline exceeded before the step began")
         if not alive(worker):
             fail("working daemon is unavailable")
+        heartbeat = STATE / ("hb-" + str(worker))
+        worker_pid = heartbeat.read_bytes()
         with Lock():
             state = recovery_state(operation)
-            if state["phase"] not in ("finished", "stopped"):
-                state["sub"] += 1
-                state["updated_revision"] += 1
-                state["pending_phase"] = "pending" if state["sub"] < 4 else None
-                if state["sub"] == 4:
-                    state["sub"] = 0
-                    complete(state)
-                save("recovery-" + operation + ".json", state)
+            state["updated_revision"] += 1
+            started_revision = state["updated_revision"]
+            state["pending_phase"] = "pending"
+            save("recovery-" + operation + ".json", state)
         until = time.time() + .7
-        while time.time() < until:
+        while True:
             if time.time() > deadline:
                 fail("deadline exceeded after the step began")
-            if not alive(worker):
+            if not alive(worker) or heartbeat.read_bytes() != worker_pid:
                 fail("working daemon was lost in flight")
+            if time.time() >= until:
+                break
             time.sleep(.02)
+        with Lock():
+            state = recovery_state(operation)
+            if state["updated_revision"] != started_revision:
+                fail("another request changed the pending step")
+            state["sub"] += 1
+            state["updated_revision"] += 1
+            if state["sub"] == 4:
+                state["sub"] = 0
+                state["pending_phase"] = None
+                complete(state)
+            save("recovery-" + operation + ".json", state)
         print(json.dumps(show(state)))
         sys.exit(0)
     fail("unknown control-recovery action")
