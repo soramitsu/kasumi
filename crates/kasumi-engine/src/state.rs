@@ -412,11 +412,49 @@ impl LocalSnapshotForm {
 }
 
 enum ApplyScope {
-    Committed,
+    Committed {
+        membership_epoch: u64,
+    },
     #[cfg(any(test, feature = "test-utils"))]
     Fixture(Arc<kasumi_store::ScratchDisk>),
 }
 impl ApplyScope {
+    fn check_retirement_membership(
+        &self,
+        state: &TenantState,
+        operation: &Operation,
+    ) -> Result<()> {
+        let observed = match operation {
+            Operation::BeginKeyRetirement(begin) => Some(begin.membership_epoch),
+            Operation::CompleteKeyRetirement(complete) => state
+                .key_retirements
+                .fence
+                .as_ref()
+                .filter(|fence| fence.request_sha256 == complete.request_sha256)
+                .map(|fence| fence.membership_epoch),
+            _ => None,
+        };
+        if let Some(observed) = observed {
+            let applied = match self {
+                Self::Committed { membership_epoch } => *membership_epoch,
+                #[cfg(any(test, feature = "test-utils"))]
+                Self::Fixture(_) => {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "key retirement requires an applied membership",
+                    ));
+                }
+            };
+            if observed != applied {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "key retirement membership changed before ordered apply",
+                ));
+            }
+        }
+        Ok(())
+    }
+
     fn stage_terminals(
         &self,
         pending: crate::staged_terminal::Pending,
@@ -424,7 +462,7 @@ impl ApplyScope {
     ) -> std::result::Result<crate::staged_terminal::View, kasumi_store::ScratchOperationFailure>
     {
         match self {
-            Self::Committed => pending.stage().map_err(Into::into),
+            Self::Committed { .. } => pending.stage().map_err(Into::into),
             #[cfg(any(test, feature = "test-utils"))]
             Self::Fixture(disk) => pending.stage_fixture(disk, _previous_state),
         }
@@ -2336,7 +2374,7 @@ impl TenantEngine {
         if matches!(
             &command.operation,
             Operation::LifecycleControl(LifecycleControlCommand::CommitIntent(_))
-        ) && matches!(scope, ApplyScope::Committed)
+        ) && matches!(scope, ApplyScope::Committed { .. })
             && next
                 .lifecycle_control
                 .as_ref()
@@ -2355,6 +2393,8 @@ impl TenantEngine {
         {
             Err(error.into())
         } else if let Err(error) = authorize_resource(&next, &command.context) {
+            Err(error.into())
+        } else if let Err(error) = scope.check_retirement_membership(&next, &command.operation) {
             Err(error.into())
         } else {
             if let Some(key) = staged_command_key(command).map_err(anyhow::Error::from)?

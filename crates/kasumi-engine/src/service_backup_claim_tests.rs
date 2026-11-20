@@ -326,7 +326,22 @@ async fn completed_backup_inventory_discards_partial_key_evidence_when_the_root_
         record_kind: KeyReferenceKind::CompletedBackup,
         id: id.to_string(),
     }));
+    let candidate_key = partial.entries.first().expect("installed catalog key").key.identity();
     drop(partial);
+    let denied = fixture.db.retire_key_versions(&fixture.context, RetireKeyVersionsRequest {
+        retirement_id: "1".into(),
+        scope: request.scope.clone(),
+        identity: candidate_key,
+        retire_below_version: 2,
+        expected_coverage_sha256: "f".repeat(64),
+    }).await.expect_err("incomplete dependency inventory must refuse retirement");
+    assert_eq!(denied.code, ErrorCode::Unavailable);
+    let status = fixture.db.key_retirement_status(&fixture.context, KeyRetirementStatusRequest {
+        scope: request.scope.clone(), retirement_id: "1".into(),
+    }).await?;
+    assert_eq!(status.last_ordinal, 0);
+    assert!(status.status.is_none());
+    drop(status);
     std::fs::rename(offline, manifest)?;
     let repaired = read().await?;
     assert!(

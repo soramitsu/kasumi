@@ -349,6 +349,13 @@ impl Database {
         }
         let mut missing = BTreeSet::new();
         let mut truncated = false;
+        if !self
+            .stores
+            .sessions_bound_from_creation()
+            .map_err(|_| Error::new(ErrorCode::Unavailable, "session catalog origin unavailable"))?
+        {
+            missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
+        }
         for (&node_id, _) in membership.membership().nodes() {
             if node_id != local {
                 add_missing(
@@ -369,13 +376,7 @@ impl Database {
             )
             .await?;
         let session_digest = if control {
-            // Control's bindings hold each tenant's session records, which that
-            // tenant's scope lists. An installed Control owner claims no backup
-            // session of its own state; only a local fixture writes sessions
-            // that no index retains.
-            if self.store.storage_access().purpose().is_local_fixture() {
-                missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
-            }
+            // Each tenant enumerates its own Control-bound session ciphertext.
             None
         } else {
             let observe = self.binding_key_inventory(

@@ -191,7 +191,7 @@ impl Database {
                     {
                         return Err(error.clone());
                     }
-                    tracing::warn!(%id, %error, "could not authenticate retained backup session keys");
+                    tracing::warn!("could not authenticate retained backup session keys");
                     digest.update([0]);
                     add_missing(
                         missing,

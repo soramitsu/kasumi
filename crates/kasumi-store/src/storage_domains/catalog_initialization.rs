@@ -211,12 +211,17 @@ async fn prepare(input: Input, receiver: &oneshot::Sender<Ticket>) -> Result<Pre
         "catalog initialization receiver closed"
     );
     let custody_access = StorageAccess::custody(&tenant);
-    let application_catalog =
+    let mut application_catalog =
         TenantStore::generate_catalog(&tenant, &application_provider, &application_access).await?;
     ensure!(
         !receiver.is_closed(),
         "catalog initialization receiver closed"
     );
+    // Only pristine paired installations created under the Control-bound
+    // backup protocol can prove that no earlier destination-only sessions exist.
+    if !application_access.purpose().is_local_fixture() {
+        application_catalog.format = 2;
+    }
     let custody_catalog =
         TenantStore::generate_catalog(&custody_name, &custody_provider, &custody_access).await?;
     ensure!(

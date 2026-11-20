@@ -2032,7 +2032,7 @@ impl KeyCatalog {
             "invalid catalog tenant"
         );
         ensure!(
-            self.format == 1 && !self.catalog_id.is_nil() && self.tenant == tenant,
+            matches!(self.format, 1 | 2) && !self.catalog_id.is_nil() && self.tenant == tenant,
             "key catalog tenant/format mismatch"
         );
         ensure!(

@@ -899,6 +899,14 @@ impl TenantStorageSet {
     pub fn application(&self) -> &Arc<TenantStore> {
         &self.application
     }
+    /// Whether this encrypted application catalog was first created under the
+    /// Control session-claim protocol. Opening or rewrapping an existing
+    /// catalog preserves its origin.
+    pub fn sessions_bound_from_creation(&self) -> Result<bool> {
+        self.check_access()?;
+        Ok(self.application.catalog.read().format == 2)
+    }
+
     /// Observe both currently installed key catalogs at one local position.
     /// The callback receives wrapping identities only. Catalog ciphertext and
     /// unwrapped keys never leave their owners. Rotation may proceed after the

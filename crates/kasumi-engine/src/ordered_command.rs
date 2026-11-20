@@ -104,8 +104,18 @@ impl<'engine, 'entry> PreparedOrderedCommand<'engine, 'entry> {
                     .transpose()?;
                 Ok((command, applied, apply, reference))
             })?;
-        let prepared =
-            engine.prepare_command_ordered(&apply, &command, &applied, &ApplyScope::Committed)?;
+        let prepared = engine.prepare_command_ordered(
+            &apply,
+            &command,
+            &applied,
+            &ApplyScope::Committed {
+                membership_epoch: position
+                    .membership
+                    .log_id()
+                    .as_ref()
+                    .map_or(0, |id| id.index),
+            },
+        )?;
         kasumi_store::ScratchOperationFailure::ordinary(|| {
             let previous = apply.current();
             let retirement = if prepared.outcome.is_ok() {
@@ -369,7 +379,13 @@ impl<'engine, 'entry> PreparedOrderedGroup<'engine, 'entry> {
                 &apply,
                 &command,
                 &applied,
-                &ApplyScope::Committed,
+                &ApplyScope::Committed {
+                    membership_epoch: position
+                        .membership
+                        .log_id()
+                        .as_ref()
+                        .map_or(0, |id| id.index),
+                },
             )?;
             kasumi_store::ScratchOperationFailure::ordinary(|| {
                 responses.push(serde_json::to_vec(&prepared.outcome)?);
