@@ -1991,6 +1991,7 @@ impl TenantEngine {
             decoded.target_resolutions,
             Some(decoded.documents),
             decoded.receipts_verified,
+            decoded.document_indexes,
             check,
         )?;
         Ok(uninitialized.finish(generation))
@@ -3008,6 +3009,7 @@ impl TenantEngine {
             summary,
             documents,
             receipts_verified,
+            document_indexes,
         } = crate::snapshot_codec::read_reopening(disk, reader, reopen)
             .map_err(SnapshotFailure::from)?;
         if expected.is_some_and(|expected| expected != summary) {
@@ -3026,6 +3028,7 @@ impl TenantEngine {
             target_resolutions,
             Some(documents),
             receipts_verified,
+            document_indexes,
             check,
         )
         .map_err(Into::into)
@@ -3055,6 +3058,7 @@ impl TenantEngine {
             target_resolutions,
             documents,
             false,
+            None,
             &|| Ok(()),
         )
     }
@@ -3073,6 +3077,7 @@ impl TenantEngine {
         target_resolutions: crate::target_resolution::View,
         documents: Option<crate::document_restore::StagedDocuments>,
         receipts_verified: bool,
+        document_indexes: Option<kasumi_query::SnapshotIndexBuilder>,
         check: &(dyn Fn() -> anyhow::Result<()> + Send + Sync),
     ) -> anyhow::Result<Generation> {
         check()?;
@@ -3507,14 +3512,14 @@ impl TenantEngine {
             )
             .into());
         }
-        // The final index build validates every definition and body, including
-        // schema-only collections, and enforces unique indexes. Repeating those
-        // passes above would decrypt and decode each staged body three times.
         check()?;
-        let indexes = Arc::new(
-            crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
-                .map_err(crate::index_source::into_anyhow)?,
-        );
+        let indexes = Arc::new(match document_indexes {
+            Some(building) => building.finish(self.text_residency())?,
+            None => {
+                crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
+                    .map_err(crate::index_source::into_anyhow)?
+            }
+        });
         check()?;
         Ok(Generation {
             receipts,

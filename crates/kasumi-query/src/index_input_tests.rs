@@ -509,6 +509,55 @@ fn directory_rebuild_validates_and_indexes_each_document_in_one_loan() {
 }
 
 #[test]
+fn snapshot_primary_ids_match_the_rebuilt_root_and_invalid_input_cannot_finish() {
+    let rows = Rows::new(
+        "docs",
+        &[
+            ("a", serde_json::json!({})),
+            ("b", serde_json::json!({"text":"example"})),
+        ],
+        false,
+        false,
+    );
+    let definition = Arc::new(rows.definition.clone());
+    let mut building = SnapshotIndexBuilder::default();
+    building.add_collection(&definition).unwrap();
+    for (id, row) in &rows.rows {
+        let Decoded::Live(doc) = row.decode() else {
+            unreachable!()
+        };
+        assert_eq!(id, &doc.id);
+        building.add_document("docs", &doc).unwrap();
+    }
+    let restored = building.clone().finish(TextResidency::Directory).unwrap();
+    let rebuilt = QueryIndexes::build_with_residency([&rows], TextResidency::Directory).unwrap();
+    assert_eq!(
+        restored.collections["docs"].structured.ids,
+        rebuilt.collections["docs"].structured.ids
+    );
+    assert_eq!(
+        restored.collections["docs"].definition_sha256,
+        rebuilt.collections["docs"].definition_sha256
+    );
+    let earlier = Document {
+        id: "a".into(),
+        version: 2,
+        body: serde_json::json!({}),
+    };
+    assert!(building.add_document("docs", &earlier).is_err());
+    assert!(building.finish(TextResidency::Directory).is_err());
+
+    let mut invalid = SnapshotIndexBuilder::default();
+    invalid.add_collection(&definition).unwrap();
+    let wrong = Document {
+        body: serde_json::Value::Null,
+        ..earlier
+    };
+    assert!(invalid.add_document("docs", &wrong).is_err());
+    assert!(invalid.finish(TextResidency::Directory).is_err());
+}
+
+#[test]
 fn later_collection_rejection_never_advances_an_earlier_shared_text_writer() {
     let old_text = Rows::new(
         "a",

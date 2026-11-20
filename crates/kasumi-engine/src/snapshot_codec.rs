@@ -1103,6 +1103,8 @@ pub(crate) struct Decoded {
     /// Every receipt row was compared with the reopening replica's durable
     /// checkpoint rows while decoding, so `receipts` already is those rows.
     pub(crate) receipts_verified: bool,
+    /// Built from the same typed live records that produced the staged bodies.
+    pub(crate) document_indexes: Option<kasumi_query::SnapshotIndexBuilder>,
 }
 /// A reopening replica's own checkpoint: decoding compares rows with what it
 /// already published under `checkpoint_sha256` instead of staging them.
@@ -1173,6 +1175,14 @@ fn read_placed(
             incarnation,
             ..
         } => (None, Some((*tenant, *incarnation))),
+    };
+    let mut document_indexes = match &input {
+        SnapshotInput::VerifiedTarget { records, .. }
+            if records.summary().kinds[4].records == 0 =>
+        {
+            Some(kasumi_query::SnapshotIndexBuilder::default())
+        }
+        _ => None,
     };
     let mut state: Option<TenantState> = None;
     let mut receipts: Option<ReceiptSink> = None;
@@ -1324,6 +1334,13 @@ fn read_placed(
                         collection.documents.is_empty() && collection.archived_documents.is_empty(),
                         "collection contains embedded documents"
                     );
+                    if !collection.definition.indexes.is_empty() {
+                        // Every collection header precedes the first document.
+                        document_indexes = None;
+                    }
+                    if let Some(building) = &mut document_indexes {
+                        building.add_collection(&collection.definition)?;
+                    }
                     state.collections.insert(k, collection);
                 }
                 Record::Document(k, document) => {
@@ -1331,6 +1348,9 @@ fn read_placed(
                         .as_mut()
                         .ok_or_else(|| anyhow::anyhow!("document builder absent"))?
                         .push(&document)?;
+                    if let Some(building) = &mut document_indexes {
+                        building.add_document(&k, &document)?;
+                    }
                     state
                         .collections
                         .get_mut(&k)
@@ -1623,6 +1643,7 @@ fn read_placed(
             target_resolutions,
             documents,
             receipts_verified,
+            document_indexes,
         })
     })
 }
@@ -1684,6 +1705,13 @@ mod tests {
         let decoded =
             super::read_verified_target(&source, &state.tenant, "restored", &|| Ok(())).unwrap();
         assert_eq!(decoded.summary, *source.summary());
+        assert!(decoded.document_indexes.is_some());
+        assert!(
+            super::read(&scratch.disk, &mut bytes.as_slice())
+                .unwrap()
+                .document_indexes
+                .is_none()
+        );
         drop(decoded);
 
         Arc::make_mut(&mut state.policy).grants[0].principal = "other".into();

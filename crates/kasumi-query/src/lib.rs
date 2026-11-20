@@ -67,21 +67,27 @@ struct CollectionIndexes {
 }
 
 impl CollectionIndexes {
-    fn prepare<R: CollectionRecords>(
-        source: &index_input::CheckedRecords<'_, R>,
-    ) -> ReadResult<Self, R::Failure> {
-        let definition = source.definition();
-        let validator = validation::validate_definition_and_compile(definition)?;
-        let structured = Structured::build(source, &validator)?;
+    fn empty(definition: &CollectionDefinition) -> Result<Self> {
         Ok(Self {
-            validator,
+            validator: validation::validate_definition_and_compile(definition)?,
             schema_sha256: validation::schema_sha256(&definition.schema)?,
             definition_sha256: index_input::definition_sha256(definition)?,
-            structured,
+            structured: Structured::empty(definition),
             text: None,
         })
     }
+
+    fn prepare<R: CollectionRecords>(
+        source: &index_input::CheckedRecords<'_, R>,
+    ) -> ReadResult<Self, R::Failure> {
+        let mut indexes = Self::empty(source.definition())?;
+        indexes.structured.build(source, &indexes.validator)?;
+        Ok(indexes)
+    }
 }
+
+mod snapshot_indexes;
+pub use snapshot_indexes::SnapshotIndexBuilder;
 
 /// Where a generation's text indexes live.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

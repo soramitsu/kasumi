@@ -185,11 +185,7 @@ impl Structured {
         })?;
         Ok(unique)
     }
-    pub fn build<R: CollectionRecords + ?Sized>(
-        source: &R,
-        validator: &jsonschema::Validator,
-    ) -> ReadResult<Self, R::Failure> {
-        let definition = source.definition();
+    pub(crate) fn empty(definition: &CollectionDefinition) -> Self {
         let mut fields = BTreeMap::new();
         for index in &definition.indexes {
             for field in &index.fields {
@@ -202,11 +198,19 @@ impl Structured {
                     });
             }
         }
-        let mut result = Self {
+        Self {
             ids: IdSet::new(),
             unique: Self::empty_unique(definition),
             fields,
-        };
+        }
+    }
+
+    pub fn build<R: CollectionRecords + ?Sized>(
+        &mut self,
+        source: &R,
+        validator: &jsonschema::Validator,
+    ) -> ReadResult<(), R::Failure> {
+        let definition = source.definition();
         let mut index_failure = None;
         source.visit_records(|id, record| {
             if let Record::Live(document) = record {
@@ -220,14 +224,14 @@ impl Structured {
             // over a conflict in these unpublished roots. Keep checking rows
             // under their original loan even after the first index failure.
             if index_failure.is_none() {
-                index_failure = result.insert_record(id, record).err();
+                index_failure = self.insert_record(id, record).err();
             }
             Ok(())
         })?;
         if let Some(error) = index_failure {
             return Err(error.into());
         }
-        Ok(result)
+        Ok(())
     }
 
     fn insert_record(&mut self, id: &str, record: Record<'_>) -> Result<()> {
