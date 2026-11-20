@@ -3273,8 +3273,7 @@ async fn text_directory_serves_writes_snapshot_reopen_and_retained_readers()
                     .search(kasumi_types::TextSearch::new("text", "shared")),
             )
             .await
-            .err()
-            .expect("foreign text directory refused");
+            .expect_err("foreign text directory refused");
         assert_eq!(denied.code, kasumi_types::ErrorCode::Unavailable);
         assert_eq!(
             search_generation(&latest, &source.storage.admission, "shared")?,
