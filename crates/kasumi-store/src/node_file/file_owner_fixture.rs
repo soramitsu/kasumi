@@ -112,6 +112,7 @@ impl NodeFile {
         *guard = FileState::Acquiring;
         let (root, relative) = self.disk.binding(&self.path)?;
         let file = match mode {
+            NodeOpeningMode::CreateTarget(_) => return Err(io::Error::from(io::ErrorKind::Unsupported).into()),
             NodeOpeningMode::Create => {
                 self.disk
                     .create_file(root, relative, DiskWork::Foreground)?
@@ -145,7 +146,7 @@ impl NodeFile {
                     file.read_exact_at(&mut bytes, 0)?;
                     validate_header(&bytes, self.id, HeaderUse::Reopen)?;
                 }
-                NodeOpeningMode::Create => {}
+                NodeOpeningMode::Create | NodeOpeningMode::CreateTarget(_) => {}
             }
         }
         if !matches!(mode, NodeOpeningMode::Existing) {
