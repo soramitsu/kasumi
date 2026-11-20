@@ -172,7 +172,7 @@ def data(words):
             save("documents.json", documents)
             cluster["applied"] += 1
             save("cluster.json", cluster)
-            return 0, {"ok": True, "result": {"receipt": {"revision": cluster["applied"]}}}
+            return 0, {"ok": True, "result": {"receipt": {"revision": cluster["applied"] + 1}}}
         return 0, {"ok": True, "result": {"document": {"id": words[2],
                                                        "body": documents.get(words[2]),
                                                        "version": 1}}}

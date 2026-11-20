@@ -323,6 +323,9 @@ def probe(d, ctx, label, step, scenarios):
                                           document), scenarios)
     require(got.get("ok") is True and got["result"]["document"]["body"] == expected,
             "read-back differs from the acknowledged write")
+    revision = put["result"]["receipt"]["revision"]
+    require(type(revision) is int and revision > 0, "write acknowledged without its revision")
+    return revision
 
 
 def raw_view(d, ctx, label, node):
@@ -385,10 +388,16 @@ def partition(d, ctx):
         return value["raft_applied_index"]
 
     position = minority("partition-minority-before-write")
-    probe(d, ctx, "partition-write", 3, scenario)
+    revision = probe(d, ctx, "partition-write", 3, scenario)
+    require(position < revision, "minority already applied the purported partition write")
+    majority_status = ctx.ctl(ctx.member(majority["leader"]), "manage", ctx.status)
+    d.poll("partition-applied-poll", majority_status,
+           lambda value: settled(value, ctx, ctx.voters, [majority["leader"]])
+           and value["raft_applied_index"] >= revision, limit=ctx.polls, pause=ctx.pause)
     committed = view(d, ctx, "partition-committed", majority["leader"], ctx.voters,
                      [majority["leader"]], scenarios=scenario)
-    require(minority("partition-minority-after-write") == position < committed["raft_applied_index"],
+    require(committed["raft_applied_index"] >= revision
+            and minority("partition-minority-after-write") == position,
             "isolated voter advanced or the majority did not commit beyond it")
     observations = d.heal_peers(ctx.links, isolated)
     require(type(observations["unidentified"]) is int and observations["unidentified"] >= 0,
