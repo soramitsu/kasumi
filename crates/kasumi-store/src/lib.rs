@@ -2970,6 +2970,11 @@ impl TenantStore {
         self.require_access(&state)?;
         let mut catalog = self.clone_catalog_for_mutation()?;
         ensure!(catalog.keys.len() < 1024, "too many retained data keys");
+        catalog
+            .keys
+            .get(&catalog.active)
+            .context("active data key missing")?
+            .check_successor(&generated.wrapped)?;
         let id = Uuid::new_v4().to_string();
         catalog.keys.insert(id.clone(), generated.wrapped);
         catalog.active = id.clone();
@@ -2989,11 +2994,13 @@ impl TenantStore {
         self.check_access()?;
         let mut catalog = self.clone_catalog_for_mutation()?;
         for (id, wrapped) in &mut catalog.keys {
-            *wrapped = tokio::time::timeout(
+            let next = tokio::time::timeout(
                 PROVIDER_TIMEOUT,
                 self.provider.rewrap_key(&self.tenant, wrapped),
             )
             .await??;
+            wrapped.check_successor(&next)?;
+            *wrapped = next;
             let probe = tokio::time::timeout(
                 PROVIDER_TIMEOUT,
                 self.provider.unwrap_key(&self.tenant, wrapped),
