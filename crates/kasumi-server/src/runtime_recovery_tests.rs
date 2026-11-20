@@ -2709,7 +2709,8 @@ impl Fixture {
             .await;
         std::fs::rename(&withheld, &writer_token).unwrap();
         assert!(
-            matches!(failed,Err(ref error) if error.code==kasumi_types::ErrorCode::Unavailable && error.has_physical_source())
+            matches!(failed,Err(ref error) if error.code==kasumi_types::ErrorCode::Unavailable && error.has_physical_source()),
+            "withholding the writer credential did not return the original physical failure: {failed:?}"
         );
         let held = control
             .key_retirement_status(

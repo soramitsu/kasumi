@@ -2416,7 +2416,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         target_incarnation: incarnation,
         path: f.directory.path().join("persistent/targets/target.kv"),
         directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
-        directory_stamp: None,
+        directory_stamp: Some(Uuid::new_v4()),
         node_store_id: kasumi_store::node_store_ids::target_generation(
             f.installed.root.control_incarnation,
             &tenant,
@@ -2437,28 +2437,46 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     })?;
     let accepted = serde_json::to_vec(&intent)?;
     let generation = serde_json::to_vec(&GenerationBinding::from_intent(&intent))?;
-    let binding = serde_json::to_vec(&original)?;
     head.intents = 1;
     head.generations = 1;
-    head.charged_bytes +=
-        (accepted.len() + generation.len() + creation.len() + binding.len() + CLEANUP_RESERVE)
-            as u64
-            + COMPLETION_RESERVE
-            + GENERATION_RESERVE;
+    head.charged_bytes += (accepted.len() + generation.len() + creation.len()) as u64
+        + COMPLETION_RESERVE
+        + GENERATION_RESERVE;
     let key = cleanup_key(&tenant, incarnation);
     f.store.write_batch(&[
         WriteOp::put(NS, intent_key(request.command_id), accepted),
         WriteOp::put(NS, generation_key(&tenant, incarnation), generation),
         WriteOp::put(NS, file_key(&tenant, incarnation), creation),
-        WriteOp::put(NS, binding_key(&tenant, incarnation), binding),
         WriteOp::put(
             NS,
             stop_key(&tenant, incarnation),
             serde_json::to_vec(&stop)?,
         ),
-        WriteOp::put(NS, key.clone(), serde_json::to_vec(&cleanup)?),
         WriteOp::put(NS, b"metadata", serde_json::to_vec(&head)?),
     ])?;
+    let mut substituted = original.clone();
+    substituted.directory_stamp = Some(Uuid::new_v4());
+    assert!(
+        journal
+            .cleanup_writes(&TargetCleanup {
+                binding: Some(substituted),
+                ..cleanup.clone()
+            })
+            .is_err()
+    );
+    assert!(
+        journal
+            .materialization_file_binding(&tenant, incarnation)?
+            .is_none()
+    );
+    assert!(journal.target_cleanup(&tenant, incarnation)?.is_none());
+    let writes = journal.cleanup_writes(&cleanup)?;
+    f.store.write_batch(&writes)?;
+    assert!(journal.cleanup_writes(&cleanup)?.is_empty());
+    assert_eq!(
+        journal.metadata()?.charged_bytes,
+        head.charged_bytes + serde_json::to_vec(&original)?.len() as u64 + CLEANUP_RESERVE as u64
+    );
     journal.shutdown().await?;
     f.store.shutdown().await?;
     f.node.shutdown().await?;

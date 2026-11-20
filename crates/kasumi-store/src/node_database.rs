@@ -610,11 +610,24 @@ impl NodeDatabase {
                     state.interrupted = Some(failure.clone());
                     return Err(failure);
                 }
-                Ok(Ok(kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions)) | Ok(Err(_)) => {
+                Ok(Ok(kasumi_kv::DatabaseOpenSettlement::WaitingForTransactions)) => {
+                    let handles = opening.active_native_handles();
+                    let issue = state.busy.record(self.component, 0, anyhow::anyhow!(
+                        "registered node opening {id:?} waits for native close; active transaction handles: {handles:?}"
+                    ));
+                    return Err(DrainFailure::retained(issue));
+                }
+                Ok(Err(error)) => {
+                    // The opening's seal, close and disposal use try-locks.
+                    // Contention on their metadata can resolve during this
+                    // shutdown call. Preserve every actual I/O refusal.
+                    state.observation_contended = error.kind() == std::io::ErrorKind::WouldBlock;
                     let issue = state.busy.record(
                         self.component,
                         0,
-                        anyhow::anyhow!("registered node opening is waiting for admitted work"),
+                        anyhow::Error::new(error).context(format!(
+                            "registered node opening {id:?} close or disposal refused"
+                        )),
                     );
                     return Err(DrainFailure::retained(issue));
                 }

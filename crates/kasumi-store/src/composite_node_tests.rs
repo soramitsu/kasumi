@@ -312,6 +312,33 @@ async fn shutdown_waits_out_short_opening_metadata_contention() {
 }
 
 #[tokio::test]
+async fn retained_native_close_distinguishes_a_live_transaction_from_an_opening_observer() {
+    let fixture = Fixture::new();
+    let reader = fixture.node.opening.begin_store_read().unwrap();
+    let result = fixture.node.body().db.close().unwrap_err();
+    assert!(
+        result
+            .to_string()
+            .contains("active transaction handles: Some(1)"),
+        "{result}"
+    );
+    assert!(!fixture.node.body().db.close_observation_contended());
+    drop(reader);
+    fixture.node.shutdown().await.unwrap();
+
+    let fixture = Fixture::new();
+    let observation = fixture.node.opening.report();
+    let refused = fixture.node.body().db.close().unwrap_err();
+    assert!(
+        refused.to_string().contains("close or disposal refused"),
+        "{refused}"
+    );
+    assert!(fixture.node.body().db.close_observation_contended());
+    drop(observation);
+    fixture.node.shutdown().await.unwrap();
+}
+
+#[tokio::test]
 async fn shutdown_retains_opening_metadata_contention_past_its_bound() {
     let fixture = Fixture::new();
     let (release, released) = std::sync::mpsc::channel::<()>();

@@ -31,6 +31,7 @@ struct LoanSource {
     fail_at: usize,
     failure: Arc<()>,
     archived: bool,
+    field_postings: Vec<Vec<&'static str>>,
     expected: RefCell<Vec<Option<u64>>>,
 }
 impl LoanSource {
@@ -81,6 +82,7 @@ impl LoanSource {
             fail_at: usize::MAX,
             failure: Arc::new(()),
             archived: false,
+            field_postings: Vec::new(),
             expected: RefCell::new(vec![]),
         }
     }
@@ -99,6 +101,71 @@ impl LoanSource {
         }
     }
 }
+#[test]
+fn compound_postings_use_selected_ids_and_release_partial_results() {
+    let mut source = LoanSource::new();
+    source.field_postings = vec![vec!["a", "b"], vec!["b", "c", "d", "e"], vec!["b", "f"]];
+    // Only the field layout is resident. No resident posting contains these IDs.
+    let index = structured::Structured {
+        fields: ["/a", "/b", "/c", "/unavailable"]
+            .into_iter()
+            .map(|path| {
+                (
+                    path.to_owned(),
+                    structured::FieldIndex {
+                        kind: ScalarType::String,
+                        entries: Default::default(),
+                        present: Default::default(),
+                    },
+                )
+            })
+            .collect(),
+        ids: Default::default(),
+        unique: Default::default(),
+    };
+    let exists = |path| Filter::new().exists(path);
+    let intersection = exists("/a").and(exists("/b"));
+    let union = Filter::or([intersection.clone(), exists("/c")]);
+    let cancellation = QueryCancellation::default();
+    for (filter, expected) in [(intersection, vec!["b"]), (union, vec!["b", "f"])] {
+        let mut memory = query_memory();
+        let ids = index
+            .stored_posting(
+                &source,
+                &structured::plan(&filter).unwrap(),
+                2,
+                &cancellation,
+                &mut memory,
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(ids.iter().map(String::as_str).collect::<Vec<_>>(), expected);
+        assert!(memory.live_bytes() > 0);
+    }
+    let mut memory = query_memory();
+    let partial = Filter::or([exists("/a"), exists("/unavailable")]);
+    assert!(
+        index
+            .stored_posting(
+                &source,
+                &structured::plan(&partial).unwrap(),
+                2,
+                &cancellation,
+                &mut memory
+            )
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(memory.live_bytes(), 0);
+    let oversized = Filter::or([exists("/a"), exists("/c")]);
+    assert!(
+        matches!(index.stored_posting(&source, &structured::plan(&oversized).unwrap(), 2, &cancellation, &mut memory),
+        Err(ReadFailure::Query(error)) if error.code == ErrorCode::ResourceExhausted)
+    );
+    assert_eq!(memory.live_bytes(), 0);
+    assert_eq!(source.calls.get(), 0);
+}
+
 struct Loan<'a>(&'a Cell<bool>);
 impl Drop for Loan<'_> {
     fn drop(&mut self) {
@@ -441,6 +508,24 @@ impl CollectionRecords for LoanSource {
     }
 }
 impl DocumentSource for LoanSource {
+    fn visit_field_posting(
+        &self,
+        field: usize,
+        predicate: FieldPredicate<'_>,
+        cancellation: &QueryCancellation,
+        mut lend: impl FnMut(&str) -> Result<()>,
+    ) -> ReadResult<bool, Self::Failure> {
+        let Some(posting) = self.field_postings.get(field) else {
+            return Ok(false);
+        };
+        assert!(matches!(predicate, FieldPredicate::Exists(true)));
+        for id in posting {
+            cancellation.check()?;
+            lend(id)?;
+        }
+        Ok(true)
+    }
+
     fn indexes(&self) -> &QueryIndexes {
         &self.indexes
     }

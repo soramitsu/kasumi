@@ -2614,9 +2614,6 @@ impl cleanup::CleanupLedger for JournalCleanup<'_> {
         self.journal
             .materialization_file_binding(&self.key.0, self.key.1)
     }
-    fn bind(&self, binding: &kasumi_engine::TargetFileBinding) -> Result<()> {
-        self.journal.bind_materialization_file(self.op, binding)
-    }
     fn cleanup(&self) -> Result<Option<kasumi_engine::TargetCleanup>> {
         self.journal.target_cleanup(&self.key.0, self.key.1)
     }
