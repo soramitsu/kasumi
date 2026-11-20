@@ -159,8 +159,8 @@ impl Walk {
 
     /// Visit up to `budget` further stored slots. `visit` returns whether to
     /// continue; a stop leaves the walk resumable after the last slot visited.
-    /// A failed visit leaves the position where this call began or later, so
-    /// a retry visits again whatever this call had not finished.
+    /// A failed visit leaves the cursor before the failing slot, so a retry
+    /// resumes there without repeating successful owner registrations.
     fn advance(
         &mut self,
         mut budget: usize,
@@ -175,36 +175,38 @@ impl Walk {
                 Some(after) => Bound::Excluded(after),
                 None => Bound::Unbounded,
             };
+            let mut entries = documents
+                .range::<(Bound<&String>, Bound<&String>), String>((lower, Bound::Unbounded));
             let mut last = None;
-            let mut stopped = false;
-            let mut exhausted = true;
-            for (id, slot) in documents
-                .range::<(Bound<&String>, Bound<&String>), String>((lower, Bound::Unbounded))
-            {
+            let (exhausted, resume) = loop {
+                let Some((id, slot)) = entries.next() else {
+                    break (true, Ok(true));
+                };
                 if budget == 0 {
-                    exhausted = false;
-                    break;
+                    break (false, Ok(true));
                 }
                 budget -= 1;
-                if let DocumentSlot::Stored(descriptor) = slot.as_ref()
-                    && !visit(descriptor)?
-                {
-                    last = Some(id.clone());
-                    stopped = true;
-                    exhausted = false;
-                    break;
+                if let DocumentSlot::Stored(descriptor) = slot.as_ref() {
+                    match visit(descriptor) {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            last = Some(id);
+                            break (false, Ok(false));
+                        }
+                        Err(error) => break (false, Err(error)),
+                    }
                 }
-                last = Some(id.clone());
-            }
+                last = Some(id);
+            };
             if exhausted {
                 // Empty collections also consume a unit of scanning work.
                 budget = budget.saturating_sub(1);
                 self.collection += 1;
                 self.after_document = None;
-            } else if last.is_some() {
-                self.after_document = last;
+            } else if let Some(id) = last {
+                self.after_document = Some(id.clone());
             }
-            if stopped {
+            if !resume? {
                 return Ok(());
             }
         }
@@ -1112,8 +1114,16 @@ mod tests {
                 }),
             );
         }
+        let documents = feed
+            .get(&1)
+            .unwrap()
+            .records
+            .iter()
+            .take(5)
+            .map(|record| (record.id.clone(), record.document.clone().unwrap()))
+            .collect();
         let mut walk = Walk {
-            documents: Vec::new(),
+            documents: vec![documents],
             _collection_roots: None,
             feed,
             collection: 0,
@@ -1123,6 +1133,28 @@ mod tests {
             documents_done: false,
             done: false,
         };
+        let mut registered = Vec::new();
+        let failure = walk.advance(10, |doc| {
+            anyhow::ensure!(doc.version != 3, "original document census read failed");
+            registered.push(doc.version);
+            Ok(true)
+        });
+        assert_eq!(
+            failure.unwrap_err().to_string(),
+            "original document census read failed"
+        );
+        assert_eq!(registered, [1, 2]);
+        walk.advance(2, |doc| {
+            registered.push(doc.version);
+            Ok(true)
+        })?;
+        walk.advance(1, |doc| {
+            registered.push(doc.version);
+            Ok(false)
+        })?;
+        assert_eq!(registered, [1, 2, 3, 4, 5]);
+        // Advancing past the exhausted collection consumes one unit.
+        walk.advance(1, |_| panic!("already registered document"))?;
         let mut visited = Vec::new();
         walk.advance(3, |doc| {
             visited.push(doc.version);
