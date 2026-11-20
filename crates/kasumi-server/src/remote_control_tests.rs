@@ -14,7 +14,6 @@ fn remote() -> RemoteControl {
         pool: tokio::sync::Mutex::new(None),
         fence: Fence::default(),
         closed: watch::channel(false).0,
-        verified: watch::channel(0).0,
         state: Mutex::new(State {
             state: AccessState::Connecting,
             current: None,
