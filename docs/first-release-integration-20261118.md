@@ -565,3 +565,56 @@ Original Linux outcomes remain part of G11. The macOS ARM64 full workspace
 also found a distinct MCP failure on `820ebd90`. An isolated original hit
 the source query deadline before the intended tool-result allocation check.
 The same binary subsequently passed the full unchanged test in 10.03 seconds.
+
+### Common candidate and later findings, November 20
+
+The common source archive for Linux x86-64, Linux ARM64 and macOS ARM64 is
+`99cfb12eebbd949eacfd29b01b24a9c47253690a`. Its SHA-256 is
+`f083e9304d52f11ddc20007a16f27b039345b97d34c81434f0f66806e2cae54a`
+over 71,403,520 bytes. On macOS ARM64, formatting passed and all 519 Python
+cases passed in 864.799 seconds. The Python log has SHA-256
+`77a4a1247220d459e70dc04f5b539dd6f5b566907c4934ec54e998d79a786724`.
+The 483-package projected lockfile was also scanned against 1,550 advisories
+from observed upstream RustSec commit `074ea9a7ed619f511b5b7374c7a97e98d1e98be4`.
+The scan reported zero vulnerabilities and the previously reviewed LRU warning.
+Its receipt SHA-256 is
+`7f305128cbfb9648cdd119c48797632e57ec5fea887ed83b96f2471db3cfc1de`.
+
+The earlier `820ebd90` macOS workspace completed in 10,130.296 seconds
+with exit 101. Engine had 791 passes, one failure and seven ignores. Server
+had 536 passes, five failures and one ignore. On Linux ARM64, ten of eleven
+upstream dependency commands passed on `1747dbde`. The first OpenRaft
+integration command could not mount its log directory. Repeating with a
+writable copy of the test directory reached the real tests. Two client cases
+failed concurrently. Both passed individually with the original binary and
+crate working directory. A serial suite run still failed while a 200-ms
+assertion waited for leader election. The original process receipts and
+test-directory comparisons remain in the release evidence.
+
+The previous 98,400-document backup took 2,112.289 seconds to reopen on
+`bb0146f9`. Verification timed out at 300.522 seconds and shutdown also
+exceeded its deadline. The verifier recorded 49,156 document offsets over
+132.280 seconds. Commit `d097c4f2` packs document locations into bounded
+encrypted pages. All seven structural index cases and the separate 513-change
+identity test passed on `99cfb12e`. Qualification still requires the full
+original checkpoint within the installed deadline.
+
+Linux Btrfs allocated 4,096 bytes of directory metadata during the first
+fsync of a freshly created private directory. The old Store rejected that
+change despite its prepaid allowance. `68e382d4` settles the observed child
+and parent together. A native create and shutdown then passed. A separate
+100,009-entry filesystem calibration measured 102,400 bytes after sync.
+`95b3bbb0` measures both sides of the synchronization and produced a
+204,800-byte directory allowance on this device. The calibration and the
+100,001-session workload have separate receipts.
+
+A native Authority catalog test on `1747dbde` incorrectly expected a fourth,
+pre-enrolled identity in a three-member committed roster. Its original log
+has SHA-256 `ffeeeb23299e948a5af91feec9e578b130ae3a75d14f4119bf614f151ae00774`.
+`b6e093ae` compares the returned members and membership digest with the
+committed bootstrap. The fourth identity remains explicitly covered by the
+assertions. `f51cfe88` covers materialization, physical-directory and
+publication records in the standalone recovery inventory. `1bb3af71`
+includes the journaled archive objects, their declared wrapping versions and
+the physical ciphertext and inode checks. The external backup graph and
+independent generation inventory still require separate evidence.
