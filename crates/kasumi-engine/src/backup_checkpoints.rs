@@ -92,7 +92,10 @@ impl BackupReader for LiveBackupReader<'_> {
         self.check_access().await?;
         let max_encrypted = max_plaintext.saturating_add(OBJECT_OVERHEAD);
         let encrypted = tokio::select! {
-            result = self.destination.get(id, max_encrypted) => result.map_err(|_| Error::new(ErrorCode::Unavailable, "backup dependency unavailable"))?,
+            result = self.destination.get(id, max_encrypted) => result.map_err(|original| {
+                Error::new(ErrorCode::Unavailable, "backup dependency unavailable")
+                    .with_physical_source(original.context(format!("read backup dependency {id} with limit {max_encrypted}")))
+            })?,
             _ = cancelled(&self.cancellation) => return Err(cancelled_error().into()),
         };
         self.check_access().await?;

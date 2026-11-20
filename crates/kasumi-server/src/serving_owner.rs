@@ -141,6 +141,19 @@ impl Job {
                 Ok(owner.close().await)
             })
             .await;
+            // The supervisor can outlive the original waiter and the daemon may exit
+            // after its grace period. Preserve the first retained cause while it is
+            // still available to the protected diagnostic writer.
+            if delay == Duration::from_secs(1)
+                && let Ok(Err(failure)) = &outcome
+                && failure.completion() != DrainCompletion::Complete
+            {
+                crate::logging::drain_failed(
+                    "serving_owner_drain_retained",
+                    failure,
+                    Some(delay.as_secs()),
+                );
+            }
             let complete = {
                 let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
                 match outcome {
