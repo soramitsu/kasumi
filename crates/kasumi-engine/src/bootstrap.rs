@@ -580,23 +580,10 @@ pub(crate) fn load(store: &TenantStore) -> anyhow::Result<Option<SnapshotImage>>
     let Some(manifest) = read_current_manifest(store)? else {
         return Ok(None);
     };
-    let mut spool = EncryptedSpool::new(store.scratch_disk(), manifest.bytes)?;
-    for i in 0..manifest.chunks {
-        let bytes = store
-            .get_bounded(NS, &i.to_be_bytes(), CHUNK)?
-            .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
-        anyhow::ensure!(
-            bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
-            "invalid bootstrap chunk length"
-        );
-        spool.write_all(&bytes)?;
-    }
-    let snapshot = SnapshotImage::freeze(spool)?;
-    anyhow::ensure!(
-        snapshot.sha256() == manifest.digest,
-        "bootstrap digest mismatch"
-    );
-    Ok(Some(snapshot))
+    load_chunks(&manifest, store.scratch_disk(), |key| {
+        store.get_bounded(NS, key, CHUNK)
+    })
+    .map(Some)
 }
 
 fn load_at(
@@ -606,11 +593,24 @@ fn load_at(
     let Some(manifest) = read_current_manifest_at(view)? else {
         return Ok(None);
     };
+    load_chunks(&manifest, scratch_disk, |key| {
+        view.application_get(NS, key, CHUNK)
+    })
+    .map(Some)
+}
+
+fn load_chunks(
+    manifest: &ApplicationBootstrapManifest,
+    scratch_disk: &Arc<kasumi_store::ScratchDisk>,
+    mut get: impl FnMut(&[u8]) -> anyhow::Result<Option<kasumi_store::PlaintextValue>>,
+) -> anyhow::Result<SnapshotImage> {
+    // The authenticated extent is known, just as it is for a Raft snapshot.
+    // Reserve ciphertext space once before reading the immutable chunks.
     let mut spool = EncryptedSpool::new(scratch_disk, manifest.bytes)?;
+    spool.reserve(manifest.bytes)?;
     for i in 0..manifest.chunks {
-        let bytes = view
-            .application_get(NS, &i.to_be_bytes(), CHUNK)?
-            .ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
+        let bytes =
+            get(&i.to_be_bytes())?.ok_or_else(|| anyhow::anyhow!("incomplete bootstrap"))?;
         anyhow::ensure!(
             bytes.len() == (manifest.bytes - spool.len()).min(CHUNK as u64) as usize,
             "invalid bootstrap chunk length"
@@ -622,7 +622,7 @@ fn load_at(
         snapshot.sha256() == manifest.digest,
         "bootstrap digest mismatch"
     );
-    Ok(Some(snapshot))
+    Ok(snapshot)
 }
 
 fn validate_bootstrap_control_at(
