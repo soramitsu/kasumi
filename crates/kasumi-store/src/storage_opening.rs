@@ -175,6 +175,7 @@ impl NodeGroupIdentity {
 
 pub enum NodeOpeningMode {
     Create,
+    CreateTarget(Uuid),
     OwnedEmpty(NodeGroupIdentity),
     Existing,
 }
@@ -994,6 +995,16 @@ impl RegisteredNodeOpening {
             return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
         }
         state.file.physical()?.identity()
+    }
+
+    /// Read the materialization stamp from the enrolled directory descriptor.
+    pub fn target_directory_stamp(&self) -> anyhow::Result<Option<Uuid>> {
+        let owner = self.registration.owner();
+        let state = owner.state.lock();
+        if owner.stopped.load(Ordering::Acquire) || state.phase != NodeOpeningPhase::Open {
+            return Err(io::Error::from(io::ErrorKind::BrokenPipe).into());
+        }
+        state.file.physical()?.target_directory_stamp()
     }
 
     /// Admit one call into the open database. Under the opening's state this

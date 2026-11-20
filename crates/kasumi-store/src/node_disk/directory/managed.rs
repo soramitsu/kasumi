@@ -748,7 +748,16 @@ impl NodeDiskDirectory {
     /// before the first descriptor acquisition. This does not admit a multipart
     /// caller operation.
     pub fn create_child(&self, name: &CStr, work: DiskWork) -> io::Result<Self> {
-        self.create_child_with_admission(name, work, None)
+        self.create_child_with_admission(name, work, None, None)
+    }
+
+    /// Stamp the exclusive materialization directory before its extent is
+    /// observed and before the admitted child and parent syncs.
+    pub(crate) fn create_target_child(&self, name: &CStr, stamp: uuid::Uuid) -> io::Result<Self> {
+        if stamp.is_nil() {
+            return Err(io::ErrorKind::InvalidInput.into());
+        }
+        self.create_child_with_admission(name, DiskWork::Foreground, None, Some(stamp))
     }
 
     pub(crate) fn create_admitted_child(
@@ -760,7 +769,7 @@ impl NodeDiskDirectory {
             return Err(io::ErrorKind::InvalidInput.into());
         }
         let work = admission.work(&self.owner().disk.lock_state())?;
-        let result = self.create_child_with_admission(name, work, Some(admission));
+        let result = self.create_child_with_admission(name, work, Some(admission), None);
         if result.is_err() {
             self.owner().disk.fail();
         }
@@ -772,6 +781,7 @@ impl NodeDiskDirectory {
         name: &CStr,
         work: DiskWork,
         admission: Option<&mut super::super::batch::NamespaceAdmission>,
+        stamp: Option<uuid::Uuid>,
     ) -> io::Result<Self> {
         let owner = self.owner();
         let disk = &owner.disk;
@@ -801,7 +811,7 @@ impl NodeDiskDirectory {
                 .plan
                 .expect("create plan")
                 .activate(effect);
-            create_effect(disk, effect)
+            create_effect(disk, effect, stamp)
         });
         finish_result(disk, &mut effect, result)
     }
@@ -1265,7 +1275,11 @@ fn operation_absent(state: &mut State) -> io::Result<()> {
     Ok(())
 }
 
-fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDiskDirectory> {
+fn create_effect(
+    disk: &Arc<NodeDisk>,
+    state: &mut State,
+    stamp: Option<uuid::Uuid>,
+) -> io::Result<NodeDiskDirectory> {
     use NodeDiskDirectoryOperationStep as Step;
     step(state, Step::Mkdir)?;
     let operation = state
@@ -1293,6 +1307,9 @@ fn create_effect(disk: &Arc<NodeDisk>, state: &mut State) -> io::Result<NodeDisk
         operation.name(),
         libc::O_RDONLY | libc::O_DIRECTORY,
     )?);
+    if let Some(stamp) = stamp {
+        super::target_stamp::create(operation.child.as_ref().expect("opened child"), stamp)?;
+    }
     step(state, Step::ObserveChild)?;
     record_child(disk, state)?;
     step(state, Step::SyncChild)?;

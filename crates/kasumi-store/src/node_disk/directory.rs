@@ -2,6 +2,8 @@
 //!
 //! Census establishes exact identities/extents. Prepared child mutations retain
 //! affected-parent and unresolved-operation custody under the same State guard.
+mod target_stamp;
+
 use super::{
     AccountedDirectory, AccountedInode, Identity, NamespaceBinding, NodeDisk, NodeDiskPhase, State,
     census, namespace,
@@ -303,6 +305,16 @@ impl NodeDiskDirectory {
             .inspect_err(|_| self.owner().disk.fail_locked(&mut state))?;
         let Identity(device, inode) = self.owner().identity;
         Ok((device, inode))
+    }
+
+    pub(crate) fn target_stamp(&self) -> io::Result<Option<uuid::Uuid>> {
+        self.verified_identity()?;
+        target_stamp::read(
+            self.owner()
+                .file
+                .as_ref()
+                .expect("live directory descriptor"),
+        )
     }
 
     pub fn observed_allocated_bytes(&self) -> io::Result<u64> {

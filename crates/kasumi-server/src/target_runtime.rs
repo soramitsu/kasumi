@@ -1872,6 +1872,7 @@ impl TargetRecoveryRuntime {
             target_incarnation: key.1,
             path: self.path(key)?,
             directory: node.physical_identity()?.directory,
+            directory_stamp: node.target_directory_stamp()?,
             node_store_id: self.generation_file_id(key)?,
         };
         match self.journal.materialization_file_binding(&key.0, key.1)? {

@@ -1339,6 +1339,29 @@ impl NodeStore {
         )
     }
 
+    /// Create the directory for a single durable original materialization intent.
+    #[allow(
+        clippy::result_large_err,
+        reason = "original startup custody stays inline; an error Box would allocate at refusal"
+    )]
+    pub fn create_materialization_target(
+        path: impl AsRef<Path>,
+        node_store_id: Uuid,
+        directory_stamp: Uuid,
+        persistent_disk: Arc<NodeDisk>,
+        scratch_disk: Arc<ScratchDisk>,
+        config: impl Into<NodeStorageCreateOptions>,
+    ) -> std::result::Result<Self, NodeStoreStartFailure> {
+        Self::start_registered(
+            path.as_ref(),
+            node_store_id,
+            persistent_disk,
+            scratch_disk,
+            NodeOpeningMode::CreateTarget(directory_stamp),
+            config,
+        )
+    }
+
     /// Initialize the exact directory and empty root already durably owned by an
     /// installation journal. A populated or partial group is never reset.
     #[allow(

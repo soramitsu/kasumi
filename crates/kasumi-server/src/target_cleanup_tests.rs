@@ -94,12 +94,23 @@ impl Fixture {
     /// return the binding it records.
     async fn create(&self, key: &GenerationKey, id: Uuid) -> TargetFileBinding {
         let path = self.path(key);
-        let node = self.physical.create_new(&path, id).unwrap();
+        let stamp = Uuid::new_v4();
+        let node = NodeStore::create_materialization_target(
+            &path,
+            id,
+            stamp,
+            self.physical.persistent.clone(),
+            self.physical.scratch.clone(),
+            self.physical.persistent.native_storage_config(),
+        )
+        .unwrap();
+        assert_eq!(node.target_directory_stamp().unwrap(), Some(stamp));
         let binding = TargetFileBinding {
             tenant: key.0.clone(),
             target_incarnation: key.1,
             path: path.clone(),
             directory: node.physical_identity().unwrap().directory,
+            directory_stamp: Some(stamp),
             node_store_id: id,
         };
         node.shutdown().await.unwrap();
@@ -187,19 +198,39 @@ async fn substituted_directory_with_the_same_path_and_store_identity_is_refused(
     .delete()
     .unwrap();
     let substitute = fixture.create(&key, id).await;
-    assert_ne!(substitute.directory, binding.directory);
-    let ledger = MemoryLedger::default();
-    ledger.bind(&binding).unwrap();
-    let error = delete_exact(&ledger, &fixture.storage(), &file(&key, &path, id)).unwrap_err();
-    assert!(
-        format!("{error:#}").contains("not its originally enrolled directory"),
-        "{error:#}"
-    );
-    assert!(ledger.cleanup().unwrap().is_none());
+    assert_ne!(substitute.directory_stamp, binding.directory_stamp);
+    // Exercise the recycled-inode case deterministically on filesystems that
+    // allocate a different inode here as well as those that immediately reuse it.
+    let recycled = TargetFileBinding {
+        directory: substitute.directory,
+        ..binding.clone()
+    };
+    for enrolled in [binding, recycled] {
+        for deleting in [false, true] {
+            let ledger = MemoryLedger::default();
+            ledger.bind(&enrolled).unwrap();
+            let target = file(&key, &path, id);
+            let original = deleting
+                .then(|| target.cleanup(TargetCleanupStage::Deleting, Some(enrolled.clone())));
+            if let Some(record) = &original {
+                ledger.record(record).unwrap();
+            }
+            let error = delete_exact(&ledger, &fixture.storage(), &target).unwrap_err();
+            assert!(
+                format!("{error:#}").contains("not its originally enrolled directory"),
+                "{error:#}"
+            );
+            assert_eq!(ledger.cleanup().unwrap(), original);
+        }
+    }
     let kept = fixture.open(&key, id);
     assert_eq!(
         kept.physical_identity().unwrap().directory,
         substitute.directory
+    );
+    assert_eq!(
+        kept.target_directory_stamp().unwrap(),
+        substitute.directory_stamp
     );
     kept.shutdown().await.unwrap();
 }

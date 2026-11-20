@@ -192,6 +192,8 @@ impl GenerationBinding {
 #[serde(deny_unknown_fields)]
 struct FileCreation {
     materialization_command_id: Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    directory_stamp: Option<Uuid>,
 }
 
 /// The exact storage an original materialization created: its installed
@@ -204,6 +206,8 @@ pub struct TargetFileBinding {
     pub target_incarnation: Uuid,
     pub path: std::path::PathBuf,
     pub directory: kasumi_store::private_files::DirectoryIdentity,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub directory_stamp: Option<Uuid>,
     pub node_store_id: Uuid,
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -249,7 +253,7 @@ pub struct MaterializationFile {
     operation: TargetOperation,
     persistent_disk: Arc<kasumi_store::NodeDisk>,
     node_store_id: Uuid,
-    create: bool,
+    create_stamp: Option<Uuid>,
 }
 /// The catalog action follows this original journal decision, never a disk
 /// existence probe. Replayed file reservations always return `Existing`.
@@ -270,10 +274,11 @@ impl MaterializationFile {
         self.operation
             .check()
             .map_err(kasumi_store::NodeStoreStartFailure::Operation)?;
-        let node = if self.create {
-            kasumi_store::NodeStore::create_new(
+        let node = if let Some(stamp) = self.create_stamp {
+            kasumi_store::NodeStore::create_materialization_target(
                 path,
                 self.node_store_id,
+                stamp,
                 self.persistent_disk.clone(),
                 scratch,
                 self.persistent_disk.native_storage_config(),
@@ -290,7 +295,7 @@ impl MaterializationFile {
         // The runtime must first retain this physical owner, then recheck the
         // operation before starting catalog work. A failed post-open fence here
         // would discard the only explicit-close owner of the new file.
-        Ok(if self.create {
+        Ok(if self.create_stamp.is_some() {
             MaterializationNode::Created(node)
         } else {
             MaterializationNode::Existing(node)
@@ -886,6 +891,7 @@ impl TargetJournal {
         let request = &intent.intent.request;
         ensure!(
             request.command_id == file.materialization_command_id
+                && file.directory_stamp.is_none_or(|stamp| !stamp.is_nil())
                 && request.phase == LifecyclePhase::Materialize
                 && key == file_key(&request.tenant, request.target_incarnation),
             "target file creation identity differs"
@@ -932,7 +938,8 @@ impl TargetJournal {
                 && self.installed.source_key_bindings_sha256.is_some()
                 && matches!(target.storage_access().purpose(), kasumi_store::StoragePurpose::Serving {identity, ..} if identity.tenant == request.tenant && identity.incarnation == request.target_incarnation && identity.node == self.installed.node)
                 && Arc::ptr_eq(target.persistent_disk(), self.store.persistent_disk())
-                && target.node_store().physical_identity()?.directory == binding.directory,
+                && target.node_store().physical_identity()?.directory == binding.directory
+                && target.node_store().target_directory_stamp()? == binding.directory_stamp,
             "target genesis or physical owner differs from its journal"
         );
         target.check_access()
@@ -986,14 +993,7 @@ impl TargetJournal {
                 .is_none(),
             "target incarnation permanently stopped locally"
         );
-        let file = FileCreation {
-            materialization_command_id: request.command_id,
-        };
         let key = file_key(&request.tenant, request.target_incarnation);
-        ensure!(
-            self.validate_file_creation(&key, &file)? == intent,
-            "target file creation original intent differs"
-        );
         let node_store_id = kasumi_store::node_store_ids::target_generation(
             self.installed.root.control_incarnation,
             &request.tenant,
@@ -1002,7 +1002,8 @@ impl TargetJournal {
         )?;
         if let Some(old) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
             ensure!(
-                decode_current::<FileCreation>(&old)? == file,
+                self.validate_file_creation(&key, &decode_current::<FileCreation>(&old)?)?
+                    == intent,
                 "target file already bound to another original materialization"
             );
             op.check()?;
@@ -1010,9 +1011,18 @@ impl TargetJournal {
                 operation: op.clone(),
                 persistent_disk: self.store.persistent_disk().clone(),
                 node_store_id,
-                create: false,
+                create_stamp: None,
             });
         }
+        let stamp = Uuid::new_v4();
+        let file = FileCreation {
+            materialization_command_id: request.command_id,
+            directory_stamp: Some(stamp),
+        };
+        ensure!(
+            self.validate_file_creation(&key, &file)? == intent,
+            "target file creation original intent differs"
+        );
         let bytes = serde_json::to_vec(&file)?;
         let mut metadata = self.metadata()?;
         metadata.charged_bytes = metadata
@@ -1035,7 +1045,7 @@ impl TargetJournal {
             operation: op.clone(),
             persistent_disk: self.store.persistent_disk().clone(),
             node_store_id,
-            create: true,
+            create_stamp: Some(stamp),
         })
     }
 
@@ -1051,6 +1061,7 @@ impl TargetJournal {
         self.validate_file_creation(&key, &file)?;
         ensure!(
             binding.path.is_absolute()
+                && binding.directory_stamp == file.directory_stamp
                 && binding.node_store_id
                     == kasumi_store::node_store_ids::target_generation(
                         self.installed.root.control_incarnation,

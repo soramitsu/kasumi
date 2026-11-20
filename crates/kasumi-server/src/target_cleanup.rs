@@ -1,7 +1,7 @@
 //! Exact deletion of one stopped target generation's storage.
 //!
 //! The original materialization binds the directory it created (installed
-//! path, directory device/inode and the store identity its root carries)
+//! path, materialization stamp, directory device/inode and store identity)
 //! before any catalog is initialized. Cleanup deletes only that exact
 //! directory: it records `Deleting` before the first unlink and `Deleted`
 //! only after the deletion and the parent directory sync are confirmed. A
@@ -111,6 +111,9 @@ pub(super) fn delete_exact(
                 target_incarnation: file.target,
                 path: file.path.to_owned(),
                 directory: claimed.identity()?.directory,
+                directory_stamp: Some(claimed.target_directory_stamp()?.context(
+                    "target cleanup requires the original materialization directory stamp",
+                )?),
                 node_store_id: file.node_store_id,
             };
             if let Some(existing) = existing {
@@ -135,7 +138,9 @@ pub(super) fn delete_exact(
     );
     if let Some(claimed) = claimed {
         ensure!(
-            claimed.directory_identity()? == binding.directory
+            binding.directory_stamp.is_some()
+                && claimed.target_directory_stamp()? == binding.directory_stamp
+                && claimed.directory_identity()? == binding.directory
                 && kasumi_store::private_files::directory_identity(file.path)? == binding.directory,
             "target storage at {} is not its originally enrolled directory",
             file.path.display()

@@ -426,6 +426,10 @@ impl NodeSegmentGroupCleanup {
         ))
     }
 
+    pub fn target_directory_stamp(&self) -> Result<Option<Uuid>> {
+        self.owner.target_directory_stamp()
+    }
+
     pub fn root_identity(&self) -> Result<Option<FileIdentity>> {
         let guard = self.owner.state.read();
         guard
@@ -628,15 +632,20 @@ impl NodeSegmentGroup {
         guard.phase = Phase::Acquiring;
         let (root, relative) = self.disk.binding(&self.path)?;
         let directory = match acquisition {
-            Acquisition::Opening(NodeOpeningMode::Create) => {
+            Acquisition::Opening(
+                mode @ (NodeOpeningMode::Create | NodeOpeningMode::CreateTarget(_)),
+            ) => {
                 let name = relative
                     .file_name()
                     .context("segment group path has no final component")?;
                 let name = CString::new(name.as_bytes())?;
                 let parent = relative.parent().unwrap_or(Path::new(""));
-                self.disk
-                    .open_directory(root, parent)?
-                    .create_child(&name, DiskWork::Foreground)?
+                let parent = self.disk.open_directory(root, parent)?;
+                if let NodeOpeningMode::CreateTarget(stamp) = mode {
+                    parent.create_target_child(&name, *stamp)?
+                } else {
+                    parent.create_child(&name, DiskWork::Foreground)?
+                }
             }
             Acquisition::Opening(NodeOpeningMode::OwnedEmpty(_) | NodeOpeningMode::Existing)
             | Acquisition::Cleanup => {
@@ -703,7 +712,7 @@ impl NodeSegmentGroup {
         }
         let root_path = relative.join(ROOT_FILE_NAME);
         match acquisition {
-            Acquisition::Opening(NodeOpeningMode::Create) => {
+            Acquisition::Opening(NodeOpeningMode::Create | NodeOpeningMode::CreateTarget(_)) => {
                 resources.root = Some(self.disk.create_file(
                     root,
                     &root_path,
@@ -895,6 +904,10 @@ impl NodeSegmentGroup {
             file.sync_all_and_parent()
         })();
         Ok(self.effect(outcome)?)
+    }
+
+    pub(crate) fn target_directory_stamp(&self) -> Result<Option<Uuid>> {
+        Ok(self.state.read().open()?.directory()?.target_stamp()?)
     }
 
     pub(crate) fn identity(&self) -> Result<NodeGroupIdentity> {

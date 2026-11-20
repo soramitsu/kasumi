@@ -2178,6 +2178,7 @@ async fn cleanup_and_binding_records_require_their_stop_and_original_creation() 
         target_incarnation: target,
         path: f.directory.path().join("persistent/targets/target.kv"),
         directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
+        directory_stamp: None,
         node_store_id: kasumi_store::node_store_ids::target_generation(
             f.installed.root.control_incarnation,
             "documents",
@@ -2415,6 +2416,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
         target_incarnation: incarnation,
         path: f.directory.path().join("persistent/targets/target.kv"),
         directory: kasumi_store::private_files::directory_identity(f.directory.path())?,
+        directory_stamp: None,
         node_store_id: kasumi_store::node_store_ids::target_generation(
             f.installed.root.control_incarnation,
             &tenant,
@@ -2430,6 +2432,7 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     };
     let mut head = journal.metadata()?;
     let creation = serde_json::to_vec(&FileCreation {
+        directory_stamp: original.directory_stamp,
         materialization_command_id: request.command_id,
     })?;
     let accepted = serde_json::to_vec(&intent)?;
