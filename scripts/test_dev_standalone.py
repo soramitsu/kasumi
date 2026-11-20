@@ -280,6 +280,7 @@ class DevStandaloneTests(unittest.TestCase):
     def test_connections_left_in_time_wait_do_not_make_a_port_busy(self):
         # A stopped kasumid closes its connections first, leaving TIME_WAIT on its own ports.
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             listener.bind(("127.0.0.1", 0))
             listener.listen()
             port = listener.getsockname()[1]

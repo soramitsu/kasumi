@@ -1,7 +1,6 @@
 """Actual synthetic-process counterexamples; these are not native release evidence."""
 import copy
 import json
-import os
 import shutil
 from pathlib import Path
 import sys
@@ -17,9 +16,7 @@ from release_gate import inventory, sha256, write_json
 
 class AssemblyCustodyTests(unittest.TestCase):
     def setUp(self):
-        base = Path(os.environ["TMPDIR"]) / "repeatable-assembly-tests"
-        base.mkdir(parents=True, exist_ok=True)
-        self.temporary = tempfile.TemporaryDirectory(dir=base)
+        self.temporary = tempfile.TemporaryDirectory(prefix="repeatable-assembly-")
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name).resolve(strict=True)
         self.source = self.root / "source"

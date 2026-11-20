@@ -798,8 +798,9 @@ class RecoveryTests(RecoveryFixture):
         facts = report["details"]["facts"]
         # Everything that has a product witness still ran and landed.
         landed = {cell for cell, outcome in facts["cells"].items() if outcome.get("landed")}
-        self.assertTrue({f"{label}-{fault}" for label in recovery.RECOVERY_LABELS.values()
-                         for fault in ("crash", "cancellation")} <= landed)
+        required = {f"{label}-{fault}" for label in recovery.RECOVERY_LABELS.values()
+                    for fault in ("crash", "cancellation")}
+        self.assertEqual(required - landed, set(), facts["open"])
         # The Control-visible stop phases were faulted as diagnostics, not counted.
         self.assertTrue({"boundary-stop-target-crash", "boundary-cleanup-cancellation"} <= set(facts["cells"]))
         self.assertEqual([item["cell"] for item in facts["open"]],

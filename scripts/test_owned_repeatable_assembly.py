@@ -188,9 +188,7 @@ class OwnedRunnerTests(unittest.TestCase):
         for relative in assembly.SCRIPTS:
             target = source / relative
             target.parent.mkdir(parents=True, exist_ok=True)
-            original = Path(owned.__file__) if relative == owned.LAUNCHER else Path(assembly.__file__).parent / Path(relative).name
-            if not original.exists():
-                original = Path(assembly.__file__).resolve().parents[5] / "scripts" / Path(relative).name
+            original = Path(__file__).resolve().with_name(Path(relative).name)
             shutil.copyfile(original, target)
             inventory[relative] = {"sha256": sha256(target)}
         write_json(self.evidence / "source-files.json", inventory)

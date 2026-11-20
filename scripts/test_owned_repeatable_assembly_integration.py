@@ -149,16 +149,13 @@ class OwnedAssemblyIntegrationTests(unittest.TestCase):
         self.evidence = self.root / "evidence"
         self.source = self.evidence / "source"
         (self.source / "scripts").mkdir(parents=True)
-        checkout_scripts = Path(assembly.__file__).resolve().parents[5] / "scripts"
         inventory = {}
         for relative in assembly.SCRIPTS:
             path = self.source / relative
-            original = Path(assembly.__file__).parent / Path(relative).name
             if relative == owned.RUNNER:
                 path.write_text(STUB_RUNNER)
             else:
-                if not original.exists():
-                    original = checkout_scripts / Path(relative).name
+                original = Path(__file__).resolve().with_name(Path(relative).name)
                 shutil.copyfile(original, path)
             inventory[relative] = {"sha256": sha256(path), "bytes": path.stat().st_size,
                                    "executable": False}
