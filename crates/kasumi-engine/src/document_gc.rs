@@ -57,7 +57,7 @@ const MAX_MANIFEST_BYTES: usize = 32 << 20;
 /// Bookkeeping below this many bytes is the engine's fixed floor.
 const FLOOR_BYTES: u64 = 32 << 10;
 const MAX_PENDING: usize = 1 << 18;
-const MAX_REGISTRATION_DIGESTS: usize = 1 << 18;
+const MAX_REGISTRATION_SLOTS: usize = 1 << 18;
 const MAX_FAILURES: u32 = 3;
 
 type Digest = [u8; 32];
@@ -116,28 +116,43 @@ pub(crate) struct Stats {
 /// The persistent maps share their nodes with the published state.
 struct Walk {
     documents: Vec<Documents>,
+    _collection_roots: Option<Reservation>,
     feed: Feed,
     collection: usize,
     after_document: Option<String>,
     after_commit: Option<u64>,
+    next_record: usize,
     documents_done: bool,
     done: bool,
 }
 impl Walk {
-    fn freeze(state: &TenantState) -> Self {
-        Self {
-            documents: state
+    fn freeze(state: &TenantState, admission: &Arc<NodeAdmission>) -> Option<Self> {
+        let count = state.collections.len();
+        let bytes = count.checked_mul(std::mem::size_of::<Documents>())?;
+        let grant = if bytes == 0 {
+            None
+        } else {
+            Some(admission.reserve_resident(bytes.try_into().ok()?).ok()?)
+        };
+        let mut documents = Vec::new();
+        documents.try_reserve_exact(count).ok()?;
+        documents.extend(
+            state
                 .collections
                 .values()
-                .map(|collection| collection.documents.clone())
-                .collect(),
+                .map(|collection| collection.documents.clone()),
+        );
+        Some(Self {
+            documents,
+            _collection_roots: grant,
             feed: state.change_feed.commits.clone(),
             collection: 0,
             after_document: None,
             after_commit: None,
+            next_record: 0,
             documents_done: false,
             done: false,
-        }
+        })
     }
 
     /// Visit up to `budget` further stored slots. `visit` returns whether to
@@ -180,6 +195,8 @@ impl Walk {
                 last = Some(id.clone());
             }
             if exhausted {
+                // Empty collections also consume a unit of scanning work.
+                budget = budget.saturating_sub(1);
                 self.collection += 1;
                 self.after_document = None;
             } else if last.is_some() {
@@ -192,10 +209,11 @@ impl Walk {
         while !self.done && budget > 0 {
             let after = self.after_commit;
             let lower: Bound<&u64> = match &after {
-                Some(after) => Bound::Excluded(after),
+                Some(sequence) if self.next_record != 0 => Bound::Included(sequence),
+                Some(sequence) => Bound::Excluded(sequence),
                 None => Bound::Unbounded,
             };
-            let Some((sequence, commit)) = self
+            let Some((&sequence, commit)) = self
                 .feed
                 .range::<(Bound<&u64>, Bound<&u64>), u64>((lower, Bound::Unbounded))
                 .next()
@@ -203,19 +221,30 @@ impl Walk {
                 self.done = true;
                 break;
             };
-            // One commit's records are bounded by one transaction's events,
-            // and are visited together: the position names whole commits.
-            let sequence = *sequence;
-            let mut proceed = true;
-            for record in &commit.records {
-                budget = budget.saturating_sub(1);
-                if let Some(DocumentSlot::Stored(descriptor)) = record.document.as_deref() {
-                    proceed &= visit(descriptor)?;
-                }
+            if commit.records.is_empty() {
+                budget -= 1;
+                self.after_commit = Some(sequence);
+                continue;
             }
-            self.after_commit = Some(sequence);
-            if !proceed {
-                return Ok(());
+            while budget > 0 {
+                let record = &commit.records[self.next_record];
+                let proceed = match record.document.as_deref() {
+                    Some(DocumentSlot::Stored(descriptor)) => visit(descriptor)?,
+                    _ => true,
+                };
+                self.after_commit = Some(sequence);
+                self.next_record += 1;
+                budget -= 1;
+                let complete = self.next_record == commit.records.len();
+                if complete {
+                    self.next_record = 0;
+                }
+                if !proceed {
+                    return Ok(());
+                }
+                if complete {
+                    break;
+                }
             }
         }
         Ok(())
@@ -264,7 +293,7 @@ struct State {
     /// `(manifest?, digest)` deleted since the current generation's selection.
     fence: BTreeSet<(bool, Digest)>,
     registrations: VecDeque<Registration>,
-    registration_digests: usize,
+    registration_slots: usize,
     census: Census,
     grant: Option<Reservation>,
     granted: u64,
@@ -302,7 +331,7 @@ impl Default for ObjectGc {
                 cycle: None,
                 fence: BTreeSet::new(),
                 registrations: VecDeque::new(),
-                registration_digests: 0,
+                registration_slots: 0,
                 census: Census::Idle,
                 grant: None,
                 granted: 0,
@@ -322,8 +351,11 @@ impl State {
             .saturating_mul(40)
             .saturating_add((candidates as u64).saturating_mul(72))
             .saturating_add((self.fence.len() as u64).saturating_mul(72))
-            .saturating_add((self.registration_digests as u64).saturating_mul(32))
-            .saturating_add((self.registrations.len() as u64).saturating_mul(64))
+            .saturating_add((self.registration_slots as u64).saturating_mul(32))
+            .saturating_add(
+                (self.registrations.capacity() as u64)
+                    .saturating_mul(std::mem::size_of::<Registration>() as u64),
+            )
     }
 
     /// Admit `extra` further bytes of bookkeeping before allocating them.
@@ -357,6 +389,9 @@ impl State {
         if self.pending.is_empty() && self.pending.capacity() > 1024 {
             self.pending = Vec::new();
         }
+        if self.registrations.is_empty() && self.registrations.capacity() > 512 {
+            self.registrations = VecDeque::new();
+        }
         let needed = self.footprint();
         if needed <= FLOOR_BYTES {
             self.grant = None;
@@ -377,13 +412,39 @@ impl State {
             && (!self.pending.is_empty()
                 || self.cycle.is_some()
                 || (!self.registrations.is_empty()
-                    && self.registration_digests >= self.budgets.register_flush_digests))
+                    && self.registration_slots >= self.budgets.register_flush_digests))
+    }
+
+    fn queue_registration(
+        &mut self,
+        admission: &Arc<NodeAdmission>,
+        body: Digest,
+        blobs: Vec<Digest>,
+    ) -> bool {
+        let grow = if self.registrations.len() == self.registrations.capacity() {
+            self.registrations.len().max(8)
+        } else {
+            0
+        };
+        let extra = (blobs.capacity() as u64).saturating_mul(32).saturating_add(
+            (grow as u64).saturating_mul(std::mem::size_of::<Registration>() as u64),
+        );
+        if self.registration_slots.saturating_add(blobs.capacity()) > MAX_REGISTRATION_SLOTS
+            || !self.admit(admission, extra)
+            || self.registrations.try_reserve_exact(grow).is_err()
+        {
+            self.drop_blobs();
+            return false;
+        }
+        self.registration_slots += blobs.capacity();
+        self.registrations.push_back(Registration { body, blobs });
+        true
     }
 
     fn drop_blobs(&mut self) {
         self.blobs_off = true;
         self.registrations = VecDeque::new();
-        self.registration_digests = 0;
+        self.registration_slots = 0;
         self.census = Census::Idle;
     }
 
@@ -393,7 +454,7 @@ impl State {
         self.pending = Vec::new();
         self.cycle = None;
         self.registrations = VecDeque::new();
-        self.registration_digests = 0;
+        self.registration_slots = 0;
         self.census = Census::Idle;
         self.blobs_off = false;
         self.consecutive_failures = 0;
@@ -448,15 +509,7 @@ impl ObjectGc {
             state.stats.rescued += 1;
         }
         if !blobs.is_empty() && !state.blobs_off {
-            let extra = (blobs.len() as u64).saturating_mul(32).saturating_add(64);
-            if state.registration_digests.saturating_add(blobs.len()) > MAX_REGISTRATION_DIGESTS
-                || !state.admit(admission, extra)
-            {
-                state.drop_blobs();
-            } else {
-                state.registration_digests += blobs.len();
-                state.registrations.push_back(Registration { body, blobs });
-            }
+            state.queue_registration(admission, body, blobs);
         }
         self.rearm(&state);
     }
@@ -643,7 +696,7 @@ impl State {
             .is_some_and(|cycle| matches!(cycle.phase, Phase::Delete));
         // Owners are counted before any deletion decides a chunk is unowned.
         if !self.registrations.is_empty()
-            && (deleting || self.registration_digests >= self.budgets.register_flush_digests)
+            && (deleting || self.registration_slots >= self.budgets.register_flush_digests)
         {
             return self.register(step);
         }
@@ -703,11 +756,14 @@ impl State {
         if !self.admit(admission, (self.pending.len() as u64).saturating_mul(72)) {
             return;
         }
+        let Some(walk) = Walk::freeze(step.state, admission) else {
+            return;
+        };
         let candidates = std::mem::take(&mut self.pending).into_iter().collect();
         self.cycle = Some(Cycle {
             revision: step.state.revision,
             candidates,
-            phase: Phase::Walk(Walk::freeze(step.state)),
+            phase: Phase::Walk(walk),
         });
         self.stats.cycles += 1;
     }
@@ -717,16 +773,18 @@ impl State {
     /// after-image staged after the census began is queued by its own apply.
     fn take_census(&mut self, step: &Step<'_>, admission: &Arc<NodeAdmission>) -> Result<()> {
         if matches!(self.census, Census::Idle) {
-            self.census = Census::Walking(Walk::freeze(step.state));
+            let Some(walk) = Walk::freeze(step.state, admission) else {
+                return Ok(());
+            };
+            self.census = Census::Walking(walk);
         }
-        if self.registration_digests >= self.budgets.register_flush_digests {
+        if self.registration_slots >= self.budgets.register_flush_digests {
             return Ok(());
         }
         let Census::Walking(mut walk) = std::mem::replace(&mut self.census, Census::Idle) else {
             unreachable!("census is walking")
         };
         let mut reads = self.budgets.census_reads;
-        let mut found = Vec::new();
         let outcome = walk.advance(self.budgets.walk_slots, |descriptor| {
             if descriptor.body_bytes < document_encoding::STRING_THRESHOLD as u64 {
                 return Ok(true);
@@ -739,36 +797,23 @@ impl State {
                 && let Some(blobs) = manifest_blobs(step, descriptor.body_object)?
                 && !blobs.is_empty()
             {
-                found.push(Registration {
-                    body: descriptor.body_object,
-                    blobs,
-                });
+                // Queue each successful visit before moving the cursor. A
+                // later storage error must not lose a discovered owner.
+                if !self.queue_registration(admission, descriptor.body_object, blobs) {
+                    return Ok(false);
+                }
             }
             reads = reads.saturating_sub(1);
-            Ok(reads > 0)
+            Ok(reads > 0 && self.registration_slots < self.budgets.register_flush_digests)
         });
-        let done = walk.done;
-        self.census = Census::Walking(walk);
+        if !self.blobs_off {
+            self.census = if walk.done {
+                Census::Done
+            } else {
+                Census::Walking(walk)
+            };
+        }
         outcome?;
-        for registration in found {
-            let extra = (registration.blobs.len() as u64)
-                .saturating_mul(32)
-                .saturating_add(64);
-            if self
-                .registration_digests
-                .saturating_add(registration.blobs.len())
-                > MAX_REGISTRATION_DIGESTS
-                || !self.admit(admission, extra)
-            {
-                self.drop_blobs();
-                return Ok(());
-            }
-            self.registration_digests += registration.blobs.len();
-            self.registrations.push_back(registration);
-        }
-        if done {
-            self.census = Census::Done;
-        }
         Ok(())
     }
 
@@ -817,7 +862,7 @@ impl State {
             self.stats.registered += registered;
         }
         for registration in self.registrations.drain(..taken) {
-            self.registration_digests -= registration.blobs.len();
+            self.registration_slots -= registration.blobs.capacity();
         }
         Ok(())
     }
@@ -976,4 +1021,84 @@ pub(crate) fn clear_links(
     let close = view.close();
     outcome?;
     close
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kasumi_types::{ChangeRecord, StoredDocument};
+
+    #[test]
+    fn collect_feed_resumes_inside_a_commit_after_budget_stop_and_failed_visit() -> Result<()> {
+        let mut feed = Feed::default();
+        for start in [1u64, 12] {
+            let records = (start..start + 11)
+                .map(|version| {
+                    let id = version.to_string();
+                    ChangeRecord {
+                        collection: "docs".into(),
+                        id: id.clone(),
+                        document: Some(Arc::new(DocumentSlot::Stored(StoredDocument {
+                            id,
+                            version,
+                            body_bytes: 1,
+                            document_bytes: 1,
+                            body_sha256: [0; 32],
+                            body_object: [0; 32],
+                            body_object_bytes: 1,
+                            body_decode_work: 1,
+                            body_manifest_work: 1,
+                        }))),
+                    }
+                })
+                .collect();
+            feed.insert(
+                start,
+                Arc::new(ChangeCommit {
+                    revision: start,
+                    first_sequence: start,
+                    records,
+                    record_bytes: 0,
+                }),
+            );
+        }
+        let mut walk = Walk {
+            documents: Vec::new(),
+            _collection_roots: None,
+            feed,
+            collection: 0,
+            after_document: None,
+            after_commit: None,
+            next_record: 0,
+            documents_done: false,
+            done: false,
+        };
+        let mut visited = Vec::new();
+        walk.advance(3, |doc| {
+            visited.push(doc.version);
+            Ok(true)
+        })?;
+        assert_eq!(visited, [1, 2, 3]);
+        walk.advance(20, |doc| {
+            visited.push(doc.version);
+            Ok(false)
+        })?;
+        assert_eq!(visited, [1, 2, 3, 4]);
+        let fail = walk.advance(20, |doc| {
+            anyhow::ensure!(doc.version != 7, "original census read failed");
+            visited.push(doc.version);
+            Ok(true)
+        });
+        assert_eq!(fail.unwrap_err().to_string(), "original census read failed");
+        while !walk.done {
+            let before = visited.len();
+            walk.advance(2, |doc| {
+                visited.push(doc.version);
+                Ok(true)
+            })?;
+            assert!(visited.len() - before <= 2);
+        }
+        assert_eq!(visited, (1..23).collect::<Vec<_>>());
+        Ok(())
+    }
 }
