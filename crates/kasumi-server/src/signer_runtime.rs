@@ -278,6 +278,13 @@ pub(crate) struct InstalledSignerVerifier {
     drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
+    pub(crate) fn install_authority_key_catalogs(
+        &self,
+        authority: &kasumi_authority::IndependentAuthority,
+        audit: &Arc<kasumi_store::TenantStore>,
+    ) -> Result<()> {
+        authority.install_operational_key_catalogs(audit, &self.store)
+    }
     pub(crate) fn install_key_inventory(
         &self,
         control: &kasumi_engine::Database,

@@ -40,13 +40,21 @@ impl AuthorityCatalogRequest {
             cursor.after.validate()?;
             ensure!(
                 matches!(&cursor.after.reference, KeyReference::Catalog { node_id, domain:
-                KeyCatalogDomain::IndependentAuthority | KeyCatalogDomain::RetirementCustody, .. }
+                    KeyCatalogDomain::IndependentAuthority | KeyCatalogDomain::RetirementCustody
+                    | KeyCatalogDomain::SecurityAudit | KeyCatalogDomain::LiveSignerTrust, .. }
                 if *node_id == self.node_id),
                 "cursor belongs to another Authority catalog"
             );
         }
         Ok(())
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AuthorityOperationalCatalogs {
+    pub security_audit: Uuid,
+    pub live_signer_trust: Uuid,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +66,8 @@ pub struct AuthorityCatalogPage {
     pub applied_index: u64,
     pub application_catalog: Uuid,
     pub custody_catalog: Uuid,
+    #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+    pub operational_catalogs: Option<AuthorityOperationalCatalogs>,
     pub inventory_sha256: String,
     pub entries: Vec<KeyRetentionEntry>,
     pub next: Option<AuthorityCatalogCursor>,
@@ -88,6 +98,20 @@ impl AuthorityCatalogPage {
                 "Authority catalog continuation changed or repeated an entry"
             );
         }
+        if let Some(catalogs) = &self.operational_catalogs {
+            let ids = [
+                self.application_catalog,
+                self.custody_catalog,
+                catalogs.security_audit,
+                catalogs.live_signer_trust,
+            ];
+            ensure!(
+                ids.iter()
+                    .enumerate()
+                    .all(|(i, id)| !id.is_nil() && !ids[..i].contains(id)),
+                "Authority operational catalogs must be distinct installed identities"
+            );
+        }
         for entry in &self.entries {
             entry.validate()?;
             ensure!(
@@ -95,6 +119,8 @@ impl AuthorityCatalogPage {
                 if *node_id == query.node_id && match domain {
                     KeyCatalogDomain::IndependentAuthority => *catalog_id == self.application_catalog,
                     KeyCatalogDomain::RetirementCustody => *catalog_id == self.custody_catalog,
+                    KeyCatalogDomain::SecurityAudit => self.operational_catalogs.as_ref().is_some_and(|c| c.security_audit == *catalog_id),
+                    KeyCatalogDomain::LiveSignerTrust => self.operational_catalogs.as_ref().is_some_and(|c| c.live_signer_trust == *catalog_id),
                     _ => false,
                 }),
                 "entry belongs to another installed catalog"

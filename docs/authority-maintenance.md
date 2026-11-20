@@ -29,7 +29,11 @@ to the enrolled values. Generate a fresh nonce for each page.
 The installed client selects that member's pinned endpoint. Followers confirm
 the current quorum and apply its read position before checking the operator's
 grant. A page identifies the original request digest, Raft term and membership
-position, both physical catalog IDs and each referenced wrapping-key version.
+position, the application and custody catalogs, and each referenced wrapping-key
+version. The installed daemon also reports the physical catalog IDs for its
+service audit and signer verifier in `page.operational_catalogs`. A null value
+means this member supplied only the application and custody catalogs. Archive
+objects require a separate verification of their retained key dependencies.
 Copy `page.next` into the following request's `cursor` and stop when it is
 `null`. If the cursor expires, restart enumeration on the named member.
 Distributed retirement separately requires all current members and every other

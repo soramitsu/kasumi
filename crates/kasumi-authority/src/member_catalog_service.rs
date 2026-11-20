@@ -1,10 +1,26 @@
 use super::*;
 use kasumi_raft::member_catalog::{CatalogStart, MemberCatalogRequest};
-use kasumi_types::{KeyCatalogDomain, staged_digest};
+use kasumi_store::{StoragePurpose, TenantStore};
+use kasumi_types::{
+    KeyCatalogDomain, KeyReference, KeyRetentionEntry, KeyVersionRef, staged_digest,
+};
+use std::sync::Weak;
+
+pub(super) struct OperationalStores {
+    audit: Weak<TenantStore>,
+    signer: Weak<TenantStore>,
+}
+
+#[derive(Eq, PartialEq, serde::Serialize)]
+struct OperationalObservation {
+    ids: AuthorityOperationalCatalogs,
+    digests: [[u8; 32]; 2],
+}
 
 pub(super) struct CatalogObservation {
     position: MemberCatalogRequest,
     catalog: [u8; 32],
+    operational: Option<OperationalObservation>,
     _workspace: kasumi_store::DiskMemoryLease,
 }
 
@@ -16,11 +32,92 @@ impl CatalogObservation {
         authority
             .group
             .check_member_catalog_digest(&self.catalog)
-            .map_err(unavailable)
+            .map_err(unavailable)?;
+        let current = authority
+            .visit_operational_catalogs(|_, _, _, _, _| Ok(()))
+            .map_err(unavailable)?;
+        if current != self.operational {
+            return Err(unavailable(
+                "Authority operational key catalog changed before release",
+            ));
+        }
+        Ok(())
     }
 }
 
 impl IndependentAuthority {
+    /// The parent runtime retains shutdown ownership of both opened stores.
+    pub fn install_operational_key_catalogs(
+        &self,
+        audit: &Arc<TenantStore>,
+        signer: &Arc<TenantStore>,
+    ) -> anyhow::Result<()> {
+        let disk = self.group.storage_domains().application().persistent_disk();
+        let verifier = &self
+            .settings
+            .installed_members
+            .get(&self.local_node_id)
+            .context("Authority member missing")?
+            .verifier;
+        ensure!(
+            Arc::ptr_eq(audit.persistent_disk(), disk)
+                && Arc::ptr_eq(signer.persistent_disk(), disk)
+                && matches!(
+                    audit.storage_access().purpose(),
+                    StoragePurpose::SecurityAudit
+                )
+                && matches!(signer.storage_access().purpose(), StoragePurpose::LiveSignerTrust {verifier: original} if original == verifier),
+            "operational key stores differ from this Authority disk or enrolled verifier"
+        );
+        audit.check_access()?;
+        signer.check_access()?;
+        let expected = OperationalStores {
+            audit: Arc::downgrade(audit),
+            signer: Arc::downgrade(signer),
+        };
+        let installed = self.operational_catalogs.get_or_init(|| OperationalStores {
+            audit: expected.audit.clone(),
+            signer: expected.signer.clone(),
+        });
+        ensure!(
+            installed.audit.ptr_eq(&expected.audit) && installed.signer.ptr_eq(&expected.signer),
+            "different operational key stores already installed"
+        );
+        Ok(())
+    }
+
+    fn visit_operational_catalogs(
+        &self,
+        mut visit: impl FnMut(KeyCatalogDomain, Uuid, &str, &str, u64) -> anyhow::Result<()>,
+    ) -> anyhow::Result<Option<OperationalObservation>> {
+        let Some(stores) = self.operational_catalogs.get() else {
+            return Ok(None);
+        };
+        let mut read = |source: &Weak<TenantStore>, domain| -> anyhow::Result<_> {
+            let store = source
+                .upgrade()
+                .context("installed Authority operational store unavailable")?;
+            let mut catalog = None;
+            let digest = store.visit_wrapping_identities(|id, provider, key_ref, version| {
+                catalog = Some(id);
+                visit(domain, id, provider, key_ref, version)
+            })?;
+            Ok((
+                catalog.context("installed catalog lacks wrapping identities")?,
+                digest,
+            ))
+        };
+        let (security_audit, audit_digest) = read(&stores.audit, KeyCatalogDomain::SecurityAudit)?;
+        let (live_signer_trust, signer_digest) =
+            read(&stores.signer, KeyCatalogDomain::LiveSignerTrust)?;
+        Ok(Some(OperationalObservation {
+            ids: AuthorityOperationalCatalogs {
+                security_audit,
+                live_signer_trust,
+            },
+            digests: [audit_digest, signer_digest],
+        }))
+    }
     pub(super) async fn read_member_catalog(
         self: &Arc<Self>,
         context: RequestContext,
@@ -79,6 +176,38 @@ impl IndependentAuthority {
                 Ok(())
             })
             .map_err(unavailable)?;
+        let operational = self
+            .visit_operational_catalogs(|domain, catalog_id, provider, key_ref, version| {
+                context.authorization.check_live()?;
+                self.check_open()?;
+                ensure!(
+                    provider.len() <= kasumi_types::MAX_KEY_PROVIDER_BYTES
+                        && key_ref.len() <= kasumi_types::MAX_KEY_REF_BYTES,
+                    "wrapping identifier exceeds the Authority page bound"
+                );
+                let entry = KeyRetentionEntry {
+                    key: KeyVersionRef {
+                        provider: provider.into(),
+                        key_ref: key_ref.into(),
+                        version,
+                    },
+                    reference: KeyReference::Catalog {
+                        node_id: self.local_node_id,
+                        catalog_id,
+                        domain,
+                    },
+                };
+                entry.validate()?;
+                if position.start.includes(&entry)
+                    && let Err(index) = physical.entries.binary_search(&entry)
+                    && index <= usize::from(query.limit)
+                {
+                    physical.entries.insert(index, entry);
+                    physical.entries.truncate(usize::from(query.limit) + 1);
+                }
+                Ok(())
+            })
+            .map_err(unavailable)?;
         let inventory_sha256 = staged_digest(&(
             "kasumi.authority-member.catalog.v1",
             self.bootstrap_digest(),
@@ -91,6 +220,7 @@ impl IndependentAuthority {
             physical.application_catalog,
             physical.custody_catalog,
             physical.catalog_sha256,
+            &operational,
         ))?
         .0;
         if query
@@ -113,6 +243,7 @@ impl IndependentAuthority {
             applied_index: applied.index,
             application_catalog: physical.application_catalog,
             custody_catalog: physical.custody_catalog,
+            operational_catalogs: operational.as_ref().map(|v| v.ids.clone()),
             next: more.then(|| AuthorityCatalogCursor {
                 inventory_sha256: inventory_sha256.clone(),
                 after: physical
@@ -129,6 +260,7 @@ impl IndependentAuthority {
         fence.member_catalog = Some(CatalogObservation {
             position,
             catalog: physical.catalog_sha256,
+            operational,
             _workspace: workspace,
         });
         fence.check()?;

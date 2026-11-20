@@ -264,7 +264,101 @@ async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation
         (first.application_catalog, first.custody_catalog)
     );
     assert_ne!(cold.inventory_sha256, first.inventory_sha256);
+    let verifier = fixture.settings.installed_members[&id].verifier.clone();
+    let signer_access = kasumi_store::StorageAccess::live_signer_trust(verifier.clone()).unwrap();
+    let audit_key = Arc::new(LocalKeyProvider::new([33; 32]));
+    let signer_key = Arc::new(LocalKeyProvider::new([34; 32]));
+    let node = &fixture.nodes[&id];
+    let audit = kasumi_store::TenantStore::initialize_catalog(
+        node.clone(),
+        kasumi_engine::SECURITY_TENANT.into(),
+        audit_key.clone(),
+        kasumi_store::StorageAccess::security_audit(),
+    )
+    .await
+    .unwrap();
+    let signer = kasumi_store::TenantStore::initialize_catalog(
+        node.clone(),
+        verifier.tenant(),
+        signer_key.clone(),
+        signer_access.clone(),
+    )
+    .await
+    .unwrap();
+    assert!(
+        member
+            .install_operational_key_catalogs(&signer, &audit)
+            .is_err()
+    );
+    member
+        .install_operational_key_catalogs(&audit, &signer)
+        .unwrap();
+    assert!(fence.check().is_err());
     drop(fence);
+    let query = AuthorityCatalogRequest {
+        nonce: Uuid::new_v4(),
+        limit: 4,
+        ..original.clone()
+    };
+    let (installed, retained) = read(member, fixture.context("operator"), &query)
+        .await
+        .unwrap();
+    let catalogs = installed.operational_catalogs.as_ref().unwrap();
+    for (catalog, domain) in [
+        (
+            catalogs.security_audit,
+            kasumi_types::KeyCatalogDomain::SecurityAudit,
+        ),
+        (
+            catalogs.live_signer_trust,
+            kasumi_types::KeyCatalogDomain::LiveSignerTrust,
+        ),
+    ] {
+        assert!(installed.entries.iter().any(|entry| matches!(entry.reference, kasumi_types::KeyReference::Catalog { node_id, catalog_id, domain: d } if node_id == id && catalog_id == catalog && d == domain)));
+    }
+    signer.rotate_data_key().await.unwrap();
+    assert!(retained.check().is_err());
+    drop(retained);
+    audit.shutdown().await.unwrap();
+    signer.shutdown().await.unwrap();
+    drop((audit, signer));
+    fixture.reopen().await;
+    let member = fixture
+        .services
+        .iter()
+        .find(|s| s.local_node_id == id)
+        .unwrap();
+    let audit = kasumi_store::TenantStore::open_existing(
+        fixture.nodes[&id].clone(),
+        kasumi_engine::SECURITY_TENANT.into(),
+        audit_key,
+        kasumi_store::StorageAccess::security_audit(),
+    )
+    .await
+    .unwrap();
+    let signer = kasumi_store::TenantStore::open_existing(
+        fixture.nodes[&id].clone(),
+        verifier.tenant(),
+        signer_key,
+        signer_access,
+    )
+    .await
+    .unwrap();
+    member
+        .install_operational_key_catalogs(&audit, &signer)
+        .unwrap();
+    let (reopened, retained) = read(member, fixture.context("operator"), &query)
+        .await
+        .unwrap();
+    assert_eq!(
+        reopened.operational_catalogs,
+        installed.operational_catalogs
+    );
+    assert_ne!(reopened.inventory_sha256, installed.inventory_sha256);
+    drop(retained);
+    audit.shutdown().await.unwrap();
+    signer.shutdown().await.unwrap();
+    drop((audit, signer));
     fixture.close().await;
 }
 impl Fixture {

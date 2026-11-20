@@ -202,6 +202,7 @@ pub struct IndependentAuthority {
     bootstrap_digest: String,
     maintenance_transport: OnceLock<Arc<dyn AuthorityMaintenanceTransport>>,
     signer_publication_transport: OnceLock<Arc<dyn SignerPublicationTransport>>,
+    operational_catalogs: OnceLock<member_catalog_service::OperationalStores>,
 }
 impl IndependentAuthority {
     /// Explicit first enrollment under exclusive installation ownership. This
@@ -359,6 +360,7 @@ impl IndependentAuthority {
             bootstrap,
             maintenance_transport: OnceLock::new(),
             signer_publication_transport: OnceLock::new(),
+            operational_catalogs: OnceLock::new(),
             bootstrap_digest,
         }))
     }
