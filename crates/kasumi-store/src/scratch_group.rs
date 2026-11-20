@@ -293,6 +293,12 @@ impl std::fmt::Debug for Owner {
 }
 
 impl Owner {
+    pub(super) fn remaining_logical_bytes(&self) -> io::Result<u64> {
+        self.with(|state| {
+            let occupied = state.total()?;
+            Ok(state.limit.saturating_sub(occupied))
+        })
+    }
     pub(crate) fn census_id(&self) -> crate::StorageOwnerId {
         *self.census_id.get().unwrap()
     }

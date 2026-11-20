@@ -1394,10 +1394,7 @@ mod tests {
         for duplicate in [false, true] {
             let mut state = state();
             let mut feed = ChangeFeedState::empty();
-            for (revision, count) in [
-                (2, kasumi_store::EncryptedTableBatch::MAX_INDEX_ENTRIES + 1),
-                (3, 1),
-            ] {
+            for (revision, count) in [(2, 513), (3, 1)] {
                 let sequence = feed.next_sequence;
                 let records: Vec<_> = (0..count)
                     .map(|i| ChangeRecord {

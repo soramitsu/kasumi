@@ -20,7 +20,8 @@ fn pending_index_commits_full_prefix_and_final_tail_at_bounded_boundaries() {
     let scope = scratch();
     let index = table(&scope);
     let mut pending = PendingIndex::new(&index);
-    let limit = EncryptedTableBatch::MAX_INDEX_ENTRIES as u64;
+    let limit = index.index_batch_entry_limit().unwrap() as u64;
+    assert!((16..EncryptedTableBatch::MAX_INDEX_ENTRIES as u64).contains(&limit));
     for id in 0..limit {
         pending
             .insert(&id.to_be_bytes(), &[id as u8], &mut || Ok(()))

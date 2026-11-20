@@ -54,6 +54,10 @@ pub use root::{
     validate_transaction_space_roots,
 };
 pub use segment::MAX_BATCH_OPERATIONS;
+/// Maximum directory page payload that one private edit can append across
+/// every level and a new root. File framing and segment bytes are separate.
+pub const MAX_DIRECTORY_EDIT_APPEND_BYTES: u64 =
+    ((2 * directory::MAX_HEIGHT + 1) * directory::DIRECTORY_PAGE_BYTES) as u64;
 pub use tables::*;
 
 #[cfg(any(test, feature = "test-utils"))]

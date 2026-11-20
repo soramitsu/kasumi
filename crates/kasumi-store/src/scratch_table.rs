@@ -170,6 +170,10 @@ impl EncryptedTableBatch {
     /// transaction charges each staged row and keeps the same byte ceiling.
     pub const MAX_INDEX_ENTRIES: usize = 512;
 
+    pub fn entry_limit(&self) -> usize {
+        self.entry_limit
+    }
+
     pub fn insert(&mut self, key: &[u8], value: &[u8]) -> Result<()> {
         ensure!(!self.failed, "staging batch previously failed");
         self.failed = true;
@@ -334,8 +338,18 @@ impl EncryptedTable {
     }
     pub fn begin_index_batch(&self) -> Result<EncryptedTableBatch> {
         let mut batch = self.begin_batch()?;
-        batch.entry_limit = EncryptedTableBatch::MAX_INDEX_ENTRIES;
+        batch.entry_limit = self.index_batch_entry_limit()?;
         Ok(batch)
+    }
+    /// Schedule a bounded prefix against the space left in this physical
+    /// group. The transaction still preflights its exact segment/directory
+    /// layout before any append, including for a single large record.
+    pub fn index_batch_entry_limit(&self) -> Result<usize> {
+        let remaining = self.owner.admission.remaining_logical_bytes()?;
+        let payload_and_headers = 2 * EncryptedTableBatch::MAX_BYTES as u64;
+        let rows = remaining.saturating_sub(payload_and_headers)
+            / kasumi_kv::MAX_DIRECTORY_EDIT_APPEND_BYTES;
+        Ok(rows.clamp(1, EncryptedTableBatch::MAX_INDEX_ENTRIES as u64) as usize)
     }
     fn open_batch(
         &self,
