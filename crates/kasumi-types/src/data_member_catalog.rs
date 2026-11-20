@@ -186,6 +186,7 @@ fn invalid(message: &'static str) -> Error {
 #[serde(deny_unknown_fields)]
 pub struct DataCatalogGroup {
     pub incarnation: Uuid,
+    #[serde(deserialize_with = "member_ids")]
     pub members: BTreeSet<u64>,
 }
 

@@ -638,10 +638,10 @@ exact Control resource with the single `audit` scope.
 
 On each dedicated Control voter, set `control.catalog_sources` to the reader's
 `principal`, `tls`, `client_certificate_pins`, private `bearer_file` and
-`server_ca`. Its `members` map binds every Data node ID to its recorded
+`server_ca`. Its `members` map binds each enrolled Data node ID to its recorded
 `verifier.node_id`, `verifier.installation_id`, `admin.endpoint` and
 `admin.certificate_pins`. Its `groups` map binds each Data tenant to its
-`incarnation` UUID and `members` set, including learners. The administrative
+`incarnation` UUID and ascending `members` list, including learners. The administrative
 listeners must accept the reader's mTLS identity. These service grants and
 routes are part of the original node enrollment. A protected key inventory
 reports missing coverage when a currently enrolled physical catalog cannot

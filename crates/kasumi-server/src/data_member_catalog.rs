@@ -144,14 +144,19 @@ impl DataCatalogSources {
             );
         }
         ensure!(
-            self.members.keys().eq(topology.nodes.keys())
-                && self.groups.keys().eq(topology.tenants.keys())
-                && !self.groups.is_empty(),
-            "catalog sources must enroll every dedicated Data installation and group"
+            !self.groups.is_empty()
+                && self
+                    .members
+                    .keys()
+                    .all(|node| topology.nodes.contains_key(node)),
+            "catalog reader requires approved Data installations and groups"
         );
         let mut used = BTreeSet::new();
         for (tenant, group) in &self.groups {
-            let route = &topology.tenants[tenant];
+            let route = topology
+                .tenants
+                .get(tenant)
+                .context("catalog group absent from approved Data topology")?;
             ensure!(
                 uuid::Uuid::parse_str(&route.incarnation)? == group.incarnation
                     && !group.incarnation.is_nil()

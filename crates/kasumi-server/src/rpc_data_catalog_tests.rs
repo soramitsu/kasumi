@@ -101,6 +101,16 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         )]),
     };
     sources.validate(&remote, None).unwrap();
+    let mut expanded = remote.clone();
+    expanded.nodes.insert(
+        12,
+        kasumi_engine::control::ControlNode {
+            endpoint: "https://spare-data.example".into(),
+            failure_domain: "extra-zone".into(),
+            certificate_pins: BTreeSet::from(["fa".repeat(32)]),
+        },
+    );
+    sources.validate(&expanded, None).unwrap();
     let mut replacement = sources.clone();
     replacement.members.get_mut(&1).unwrap().verifier.node_id = 2;
     assert!(replacement.validate(&remote, None).is_err());
