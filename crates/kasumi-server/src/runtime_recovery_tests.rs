@@ -189,6 +189,9 @@ impl Credentials {
         Self { key, jwks }
     }
     fn token(&self, principal: &str, tenant: &str, resource: CredentialResource) -> String {
+        self.token_with_scope(principal, tenant, resource, "kasumi:admin kasumi:read kasumi:write kasumi:audit")
+    }
+    fn token_with_scope(&self, principal: &str, tenant: &str, resource: CredentialResource, scope: &str) -> String {
         let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::EdDSA);
         header.kid = Some("runtime-recovery".into());
         header.typ = Some("at+jwt".into());
@@ -201,7 +204,7 @@ impl Credentials {
             &header,
             &serde_json::json!({
                 "sub":principal,"tenant":tenant,"kasumi_resource":resource,
-                "scope":"kasumi:admin kasumi:read kasumi:write kasumi:audit",
+                "scope":scope,
                 "iss":"https://runtime-identity.example","aud":"https://runtime.example",
                 "exp":now+3600
             }),
@@ -254,6 +257,7 @@ pub(super) struct Fixture {
     issuer_nodes: Vec<NodeStore>,
     storage: crate::runtime_memory::RuntimeStorage,
     issuer_audits: Vec<Arc<SecurityAudit>>,
+    issuer_signers: Vec<Arc<TenantStore>>,
     issuer_networks: Vec<Arc<ClusterNetwork>>,
     issuer_stops: Vec<watch::Sender<bool>>,
     issuer_tasks: Vec<tokio::task::JoinHandle<Result<()>>>,
@@ -289,6 +293,7 @@ impl Fixture {
         kms_certificate: &std::path::Path,
         cluster: &crate::runtime_cluster_storage::ClusterStorage,
         fenced_source: bool,
+        inspect_signer_keys: bool,
     ) -> impl std::future::Future<Output = Self> {
         Box::pin(async move {
             let directory = directory.join("canonical-recovery");
@@ -396,6 +401,13 @@ impl Fixture {
             ] {
                 private_files::publish(&directory.join(name), value.as_bytes()).unwrap();
             }
+            if inspect_signer_keys {
+                let token = credentials.token_with_scope(
+                    OPERATOR, &format!("kasumi.authority.{}.0", manifest.authority_id),
+                    CredentialResource::Authority {authority_id: manifest.authority_id, partition: 0},
+                    "kasumi:read");
+                private_files::publish(&directory.join("issuer-catalog.jwt"), token.as_bytes()).unwrap();
+            }
             let mut sockets = Vec::new();
             for _ in 0..3 {
                 sockets.push(TcpListener::bind("127.0.0.1:0").await.unwrap());
@@ -460,6 +472,7 @@ impl Fixture {
             let mut issuer_stores = Vec::new();
             let mut issuer_nodes = Vec::new();
             let mut issuer_audits = Vec::new();
+            let mut issuer_signers = Vec::new();
             let mut issuer_networks = Vec::new();
             let mut issuer_stops = Vec::new();
             let mut issuer_tasks = Vec::new();
@@ -564,6 +577,16 @@ impl Fixture {
                 )
                 .await
                 .unwrap();
+                if inspect_signer_keys {
+                    let verifier = &authority_ids[index];
+                    let signer = TenantStore::initialize_catalog(
+                        issuer_nodes.last().unwrap().clone(), verifier.tenant(),
+                        Arc::new(LocalKeyProvider::new([80 + id as u8; 32])),
+                        kasumi_store::StorageAccess::live_signer_trust(verifier.clone()).unwrap()
+                    ).await.unwrap();
+                    authority.install_operational_key_catalogs(audit.store(), &signer).unwrap();
+                    issuer_signers.push(signer);
+                }
                 network
                     .register_group(
                         "runtime-issuer".into(),
@@ -684,6 +707,7 @@ impl Fixture {
                 issuer_nodes,
                 storage: cluster.storage.clone(),
                 issuer_audits,
+                issuer_signers,
                 issuer_networks,
                 issuer_stops,
                 issuer_tasks,
@@ -785,6 +809,8 @@ impl Fixture {
             endpoints: BTreeMap::from([(0, self.endpoints.clone())]),
             tls: self.files[index].clone(),
             server_ca: self.ca.clone(),
+            catalog_bearer_files: if self.issuer_signers.is_empty() { BTreeMap::new() }
+                else { BTreeMap::from([(0, self.path("issuer-catalog.jwt"))]) },
             bearer_files: BTreeMap::from([(0, self.path(&format!("node-{}.jwt", index + 1)))]),
             principal: self.node(index).principal,
         }
@@ -1334,6 +1360,40 @@ impl Fixture {
         assert!(expected.pending_phase.is_none());
         self.assert_protected_status_record(configurations, &expected)
             .await;
+    }
+
+    pub async fn assert_authority_signer_inventory(&self, control: &kasumi_engine::Database) {
+        use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionCoverage, KeyRetentionScope, MissingKeyDependency, ReadKeyRetentionRequest};
+        let auth = self.authenticator(self.issuer_audits[0].clone()).await;
+        let operator = auth.authenticate(&format!("Bearer {}", self.control_token)).await.unwrap();
+        let request = ReadKeyRetentionRequest {scope: KeyRetentionScope::Signer {}, cursor: None, limit: 64};
+        let missing = MissingKeyDependency::AuthorityPartitionUnreported {authority_id:self.manifest.authority_id, partition:0};
+        let first = control.read_key_retention(&operator, request.clone()).await.unwrap();
+        if let KeyRetentionCoverage::Incomplete {missing: gaps, ..} = &first.coverage {
+            assert!(!gaps.contains(&missing), "issuer read omitted an installed partition: {gaps:?}");
+        }
+        for (i, signer) in self.issuer_signers.iter().enumerate() {
+            signer.visit_wrapping_identities(|id, provider, key_ref, version| {
+                assert!(first.entries.iter().any(|entry| entry.key.provider == provider && entry.key.key_ref == key_ref && entry.key.version == version &&
+                    matches!(entry.reference, KeyReference::Catalog {node_id, catalog_id, domain: KeyCatalogDomain::LiveSignerTrust}
+                        if node_id == i as u64 + 1 && catalog_id == id)));
+                Ok(())
+            }).unwrap();
+        }
+        drop(first);
+        let short = ReadKeyRetentionRequest {limit: 1, ..request.clone()};
+        let page = control.read_key_retention(&operator, short.clone()).await.unwrap();
+        let cursor = page.next_cursor.clone().unwrap();
+        drop(page);
+        self.issuer_signers[1].rotate_data_key().await.unwrap();
+        let result = control.read_key_retention(&operator, ReadKeyRetentionRequest {cursor: Some(cursor), ..short}).await;
+        assert!(matches!(result, Err(error) if error.code == kasumi_types::ErrorCode::CursorExpired));
+        let path = self.directory.join("issuer-catalog.jwt");
+        let original = Zeroizing::new(std::fs::read(&path).unwrap());
+        private_files::publish(&path, self.control_token.as_bytes()).unwrap();
+        let refused = control.read_key_retention(&operator, request).await.unwrap();
+        assert!(matches!(&refused.coverage, KeyRetentionCoverage::Incomplete {missing: gaps, ..} if gaps.contains(&missing)));
+        private_files::publish(&path, &original).unwrap();
     }
     /// Drive installed Control/issuer/target services through Start and the
     /// distinct Initialize, discard each actual reply, and resolve their
@@ -2367,6 +2427,9 @@ impl Fixture {
         }
         self.issuers.clear();
         self.issuer_networks.clear();
+        for signer in self.issuer_signers.drain(..) {
+            signer.shutdown().await.unwrap();
+        }
         for audit in &self.issuer_audits {
             audit.admission().drain_snapshot_startups().await.unwrap();
         }

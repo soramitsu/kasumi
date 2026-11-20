@@ -98,6 +98,7 @@ pub(super) async fn exercise(f: Fixture<'_>) {
             private_key: dir.join("client-key.pem"),
         },
         server_ca: dir.join("ca.pem"),
+        catalog_bearer_files: BTreeMap::new(),
         bearer_files: BTreeMap::from([(0, dir.join("issuer.jwt").display().to_string())]),
         principal: "operator".into(),
     };

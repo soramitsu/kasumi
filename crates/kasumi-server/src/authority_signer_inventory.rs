@@ -27,6 +27,10 @@ impl AuthoritySignerKeyInventory for ControlSignerRuntime {
             "multiple installed routes for issuer partition"
         );
         let members = &config.endpoints[&partition];
+        let token_file = config
+            .catalog_bearer_files
+            .get(&partition)
+            .context("issuer catalog credential is not installed for this partition")?;
         let tls = config.tls.load()?;
         let ca = read_bounded(&config.server_ca, 1 << 20)?;
         let mut position = None;
@@ -57,7 +61,7 @@ impl AuthoritySignerKeyInventory for ControlSignerRuntime {
                         nonce: Uuid::new_v4(),
                         cursor: cursor.take(),
                     };
-                    let bearer = (self.credential)(&config.bearer_files[&partition])?;
+                    let bearer = (self.credential)(token_file)?;
                     let response = client
                         .maintenance(
                             &bearer,

@@ -59,6 +59,13 @@ and one `credentials_file` JSON bundle for S3. Every authority partition needs
 its own token file because JWT resources name one exact partition. Missing,
 extra, duplicate or noncanonical partition keys are rejected; the old single
 `bearer_file` authority setting is unsupported.
+For a Control node to report an issuer's signer key inventory, install a
+separate `catalog_bearer_files` map in that serving authority configuration.
+Each entry names a private file containing an Authority-partition JWT with
+the Read scope for a current Authority administrator. Use a separate file
+from the node's serving token. The Control reader contacts and rechecks every
+current voter and learner over its pinned endpoint. A missing credential,
+unreachable member or changed inventory leaves that partition unreported.
 Publish renewed credentials using a new private file, sync it, atomically rename
 it over the installed path and sync the parent directory. Every finite pooled
 operation reads one fresh snapshot after anchoring its original deadline and

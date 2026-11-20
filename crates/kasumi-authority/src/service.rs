@@ -149,13 +149,18 @@ impl AuthorityResponseFence {
         if let Some(catalog) = &self.member_catalog {
             catalog.check(&self.authority)?;
         }
-        if let Some(epoch) = self.policy_epoch
-            && self.authority.backend.authorize_admin(&self.context)? != epoch
-        {
-            return Err(Error::new(
-                ErrorCode::Conflict,
-                "authority policy changed before acknowledgement",
-            ));
+        if let Some(epoch) = self.policy_epoch {
+            let current = if self.member_catalog.is_some() {
+                self.authority.backend.authorize_catalog(&self.context)?
+            } else {
+                self.authority.backend.authorize_admin(&self.context)?
+            };
+            if current != epoch {
+                return Err(Error::new(
+                    ErrorCode::Conflict,
+                    "authority policy changed before acknowledgement",
+                ));
+            }
         }
         if let Some(request) = &self.lease {
             self.authority

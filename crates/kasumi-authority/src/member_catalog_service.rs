@@ -179,7 +179,7 @@ impl IndependentAuthority {
             .await
             .map_err(unavailable)?
             .ok_or_else(|| unavailable("Authority member has no applied quorum position"))?;
-        let epoch = self.backend.authorize_admin(&context)?;
+        let epoch = self.backend.authorize_catalog(&context)?;
         let metrics = self.group.metrics();
         let membership = (*metrics.membership_config.log_id())
             .ok_or_else(|| unavailable("Authority catalog has no installed membership"))?;

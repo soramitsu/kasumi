@@ -204,6 +204,13 @@ async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation
     let (first, held) = read(&member, fixture.context("operator"), &original)
         .await
         .unwrap();
+    let mut reader = fixture.context("operator");
+    reader.scopes = BTreeSet::from([kasumi_types::Action::Read]);
+    let (read_only, fence) = read(&member, reader.clone(), &original).await.unwrap();
+    assert_eq!(read_only.inventory_sha256, first.inventory_sha256);
+    assert_eq!(read_only.entries, first.entries);
+    drop(fence);
+    assert!(member.backend.authorize_admin(&reader).is_err());
     assert_eq!(first.entries.len(), 1);
     assert_eq!(
         first.members,

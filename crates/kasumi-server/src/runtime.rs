@@ -3152,6 +3152,7 @@ pub fn example_config(
                     private_key: "/etc/kasumi/node-authority-key.pem".into(),
                 },
                 server_ca: "/etc/kasumi/authority-ca.pem".into(),
+                catalog_bearer_files: BTreeMap::new(),
                 bearer_files: BTreeMap::from([(
                     0,
                     "/etc/kasumi/credentials/authority-0-token".into(),
@@ -5836,6 +5837,7 @@ mod lifecycle_tests {
                     &mock_files.certificate,
                     &cluster_storage,
                     fenced_source,
+                    protected_prepare_only,
                 )
                 .await,
             )
@@ -6955,6 +6957,9 @@ mod lifecycle_tests {
             // observe Prepare or resolve lost Start and Initialize replies
             // through the actual owned children. Terminal recovery is separate.
             if protected_prepare_only {
+                let leader = quorum_ready_leader(&controls, "issuer signer inventory").await;
+                fixture_operation(|| recovery.assert_authority_signer_inventory(&controls[leader]))
+                    .await;
                 fixture_stage!("checking protected Prepare status");
                 fixture_operation(|| recovery.assert_protected_prepare_status(&configurations))
                     .await;

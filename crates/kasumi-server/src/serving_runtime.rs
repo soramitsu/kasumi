@@ -39,6 +39,13 @@ pub struct ServingAuthorityConfig {
     pub server_ca: PathBuf,
     #[serde(deserialize_with = "deserialize_bearer_files")]
     pub bearer_files: BTreeMap<u16, String>,
+    /// Optional read-scoped operator credentials for Control's issuer inventory.
+    #[serde(
+        default,
+        skip_serializing_if = "BTreeMap::is_empty",
+        deserialize_with = "deserialize_bearer_files"
+    )]
+    pub catalog_bearer_files: BTreeMap<u16, String>,
     pub principal: String,
 }
 fn deserialize_endpoints<'de, D>(
@@ -86,7 +93,19 @@ impl ServingAuthorityConfig {
             "authority credential files differ from installed partition map"
         );
         let mut credential_files = BTreeSet::new();
-        for path in self.bearer_files.values() {
+        ensure!(
+            self.catalog_bearer_files.is_empty()
+                || self
+                    .catalog_bearer_files
+                    .keys()
+                    .eq(self.manifest.partitions.keys()),
+            "issuer catalog credential files differ from installed partition map"
+        );
+        for path in self
+            .bearer_files
+            .values()
+            .chain(self.catalog_bearer_files.values())
+        {
             credential_path(path)?;
             ensure!(
                 credential_files.insert(std::path::Path::new(path)),
@@ -463,6 +482,19 @@ mod partition_credential_tests {
             .bearer_files
             .insert(1, config.bearer_files[&0].clone());
         assert!(shared.validate().is_err());
+        let mut catalogs = config.clone();
+        catalogs
+            .catalog_bearer_files
+            .insert(0, "/etc/kasumi/credentials/catalog-0".into());
+        assert!(catalogs.validate().is_err());
+        catalogs
+            .catalog_bearer_files
+            .insert(1, "/etc/kasumi/credentials/catalog-1".into());
+        catalogs.validate().unwrap();
+        catalogs
+            .catalog_bearer_files
+            .insert(1, config.bearer_files[&0].clone());
+        assert!(catalogs.validate().is_err());
         let mut relative = config.clone();
         relative
             .bearer_files
