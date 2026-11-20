@@ -421,7 +421,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     );
     plane
         .replace_topology(
-            f.operator.clone(),
+            f.topology_operator.clone(),
             original.topology,
             Precondition::Version(published.version),
             "catalog-fixture-original-topology".into(),
