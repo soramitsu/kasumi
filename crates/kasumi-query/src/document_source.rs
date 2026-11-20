@@ -145,6 +145,15 @@ pub trait DocumentSource: crate::CollectionRecords {
     ) -> ReadResult<bool, Self::Failure> {
         Ok(false)
     }
+    /// Lend this exact generation's persisted text shards for the source's
+    /// collection. `Ok(None)` when no directory is current at this generation;
+    /// a directory that is selected but unreadable returns an error.
+    fn with_text_shards<T>(
+        &self,
+        _search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        Ok(None)
+    }
     /// Check cancellation before/after read work and immediately before lending.
     /// An expected version requires presence and an exact version match.
     fn with_record<T>(
@@ -228,6 +237,18 @@ impl<S: DocumentSource + ?Sized> DocumentSource for BoundSource<'_, S> {
             })?;
         self.check()?;
         Ok(available)
+    }
+    fn with_text_shards<T>(
+        &self,
+        search: impl FnOnce(&dyn crate::TextShardSet) -> kasumi_types::Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        self.check()?;
+        let result = self.source.with_text_shards(|shards| {
+            self.check()?;
+            search(shards)
+        })?;
+        self.check()?;
+        Ok(result)
     }
     fn with_record<T>(
         &self,

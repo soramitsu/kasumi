@@ -893,7 +893,8 @@ pub(super) fn validate_transitions(
             "generation selection lacks its owner transition"
         );
     }
-    validate_primary_manifest(tx, store, state, operations)
+    validate_primary_manifest(tx, store, state, operations)?;
+    validate_text_manifest(tx, store, state, operations)
 }
 
 /// The ordinary primary directory row changes only forward. A put names the
@@ -958,6 +959,67 @@ fn validate_primary_manifest(
         {
             next.check_successor(&PrimaryManifest::decode(&previous.value)?)?;
         }
+    }
+    Ok(())
+}
+
+/// The text directory row changes only forward. A put names the page space
+/// selected after this batch. Without a selection switch in the same batch it
+/// must succeed a current predecessor on the same tree; with one it starts a
+/// replacement generation. Deletion is left to whole-namespace removal.
+fn validate_text_manifest(
+    tx: &kasumi_kv::WriteTransaction,
+    store: &TenantStore,
+    state: &KeyState,
+    operations: &[WriteOp],
+) -> Result<()> {
+    use crate::text_manifest::{CURRENT, FAMILY, INITIAL_SPACE, MANIFESTS, TextManifest};
+    let mut seen = false;
+    for operation in operations {
+        let (namespace, key) = operation_target(operation);
+        if namespace != MANIFESTS {
+            continue;
+        }
+        ensure!(key.as_slice() == CURRENT, "unknown text manifest row");
+        ensure!(!seen, "duplicate text manifest write");
+        seen = true;
+        let WriteOp::Put { value, .. } = operation else {
+            anyhow::bail!("text manifest cannot be deleted")
+        };
+        let next = TextManifest::decode(value)?;
+        ensure!(next.tenant == store.tenant, "text manifest tenant differs");
+        let switched = operations.iter().find_map(|operation| match operation {
+            WriteOp::Put {
+                namespace,
+                key,
+                value,
+            } if namespace == SELECTIONS && key.as_slice() == FAMILY.as_bytes() => Some(value),
+            _ => None,
+        });
+        let selected = match switched {
+            Some(bytes) => Selection::decode(bytes)?.namespaces,
+            None => read_selection(tx, store, state, FAMILY.as_bytes())?.map_or_else(
+                || INITIAL_SPACE.iter().map(|space| (*space).into()).collect(),
+                |selection| selection.namespaces,
+            ),
+        };
+        ensure!(
+            selected.len() == INITIAL_SPACE.len() && selected[0] == next.page_space,
+            "text manifest names an unselected page space"
+        );
+        if switched.is_some() {
+            continue;
+        }
+        let previous = read_record(
+            tx,
+            store,
+            state,
+            MANIFESTS,
+            CURRENT,
+            crate::text_manifest::MAX_MANIFEST_BYTES,
+        )?
+        .context("text manifest edit lacks a predecessor")?;
+        next.check_successor(&TextManifest::decode(&previous.value)?)?;
     }
     Ok(())
 }

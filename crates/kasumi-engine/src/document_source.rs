@@ -328,6 +328,35 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         Ok(selected.unwrap_or(false))
     }
 
+    fn with_text_shards<T>(
+        &self,
+        search: impl FnOnce(&dyn kasumi_query::TextShardSet) -> Result<T>,
+    ) -> ReadResult<Option<T>, Self::Failure> {
+        self.check_deadline()?;
+        let state = &self.generation.state;
+        let Some(selection) = self.generation.application_selection.get() else {
+            return Ok(None);
+        };
+        let selected = selection
+            .with_text_records(state, |tree, source, manifest, memory| {
+                crate::application_text::search_collection(
+                    tree,
+                    source,
+                    manifest,
+                    &self.collection,
+                    self.collection(),
+                    memory,
+                    search,
+                )
+            })
+            .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
+        self.check_deadline()?;
+        match selected {
+            None => Ok(None),
+            Some(found) => Ok(Some(found?)),
+        }
+    }
+
     fn with_record<T>(
         &self,
         id: &str,

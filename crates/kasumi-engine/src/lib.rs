@@ -24,6 +24,7 @@ mod application_primary;
 mod application_records;
 mod application_sources;
 mod application_structured;
+mod application_text;
 mod audit_source;
 mod current_json;
 mod document_encoding;

@@ -86,6 +86,7 @@ impl UninitializedEngine {
         Ok(Self {
             engine: TenantEngine {
                 primary: Default::default(),
+                text: Default::default(),
                 local_snapshot_form: super::LocalSnapshotForm::from_process_default(),
                 access: std::sync::OnceLock::new(),
                 snapshot_store: std::sync::OnceLock::new(),

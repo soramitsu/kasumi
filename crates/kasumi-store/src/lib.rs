@@ -102,6 +102,7 @@ mod plaintext_scan;
 mod point_read_backing;
 pub mod primary_manifest;
 mod read_view;
+pub mod text_manifest;
 pub use generation_stage::{NamespaceStage, SelectedGeneration};
 pub use plaintext_scan::{PlaintextRecord, PlaintextScan};
 mod registered_read_scope;

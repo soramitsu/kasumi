@@ -284,6 +284,72 @@ impl SelectedApplication {
         })
     }
 
+    /// Lend the text directory this selection pinned, only when it is current
+    /// at exactly this generation's revision. Older generations keep their own
+    /// native root, so each searches the shards of its own revision even after
+    /// later edits or a rebuild deleted them from the current tree. `None`
+    /// when the pinned root holds no current directory at this revision.
+    pub(crate) fn with_text_records<T>(
+        &self,
+        state: &kasumi_types::TenantState,
+        read: impl FnOnce(
+            &kasumi_store::ordered_pages::TreeReader<'_>,
+            &dyn kasumi_store::ordered_pages::PageSource,
+            &kasumi_store::text_manifest::TextManifest,
+            &Arc<crate::admission::NodeAdmission>,
+        ) -> Result<T>,
+    ) -> Result<Option<T>> {
+        use kasumi_raft::SelectedAppliedRef;
+        use kasumi_store::{ordered_pages::TreeReader, text_manifest::TextManifest};
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(None);
+        };
+        let index = match position.applied() {
+            Some(SelectedAppliedRef::Entry { log_id, .. }) => log_id.index,
+            Some(SelectedAppliedRef::Snapshot { meta, .. }) => {
+                meta.last_log_id.map_or(0, |id| id.index)
+            }
+            None => 0,
+        };
+        if state.revision_base.checked_add(index) != Some(state.revision) {
+            return Ok(None);
+        }
+        let roots = self
+            .cell
+            .roots
+            .upgrade()
+            .context("selected text installation absent")?;
+        let reader = self.open_selected_reader(&roots)?;
+        let outcome: Result<_> = (|| {
+            reader.check_access()?;
+            let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
+            let view = permit.view.as_ref().expect("loaned text view");
+            let Some(manifest) = TextManifest::load_from_pair(view)? else {
+                return Ok(None);
+            };
+            if !manifest.is_current()
+                || manifest.revision != state.revision
+                || manifest.incarnation != state.incarnation
+                || manifest.revision_base != state.revision_base
+            {
+                return Ok(None);
+            }
+            let tree =
+                TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
+            read(&tree, view.as_ref(), &manifest, &reader.roots.admission).map(Some)
+        })();
+        let close = reader.close();
+        match (outcome, close) {
+            (Err(error), Err(close)) => Err(error.context(close)),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Ok(found), Ok(())) => Ok(found),
+        }
+    }
+
     /// Validate the immutable owner pairing without opening a reader or
     /// reserving another source cell during generation publication.
     pub(crate) fn require_document_roots(&self, roots: &SourceRootsRef) -> Result<()> {

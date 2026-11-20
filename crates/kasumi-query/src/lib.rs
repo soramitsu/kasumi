@@ -30,6 +30,10 @@ mod field_postings;
 mod scalar;
 pub use field_postings::{FieldPostingRow, FieldPredicate, FieldValue};
 mod search;
+pub use search::{
+    BuiltTextShard, MAX_SHARD_BYTES, MAX_SHARD_DOCUMENTS, TextShard, TextShardLayout, TextShardSet,
+    TextShardWriter, merge_text_shards, search_shards as search_text_shards,
+};
 mod seek;
 mod select;
 mod structured;
@@ -53,7 +57,7 @@ use search::TextSnapshot;
 use select::Selection;
 use structured::{IdSet, Structured};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct CollectionIndexes {
     validator: std::sync::Arc<jsonschema::Validator>,
     schema_sha256: [u8; 32],
@@ -62,10 +66,24 @@ struct CollectionIndexes {
     text: Option<Arc<TextSnapshot>>,
 }
 
+/// Where a generation's text indexes live.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TextResidency {
+    /// A private RAM Tantivy index per text collection, rebuilt or advanced
+    /// with every index update.
+    #[default]
+    Resident,
+    /// Bounded persisted shards owned by the storage engine. No resident text
+    /// index is built or maintained; a search borrows the exact generation's
+    /// shards through [`DocumentSource::with_text_shards`].
+    Directory,
+}
+
 /// Publish only after all structured and text indexes have finished construction.
 #[derive(Debug, Default)]
 pub struct QueryIndexes {
     collections: BTreeMap<String, Arc<CollectionIndexes>>,
+    text_residency: TextResidency,
 }
 
 /// Persistent primary-ID roots for coherent point/scan leases. This intentionally
@@ -283,6 +301,21 @@ impl QueryIndexes {
     pub fn build<R: CollectionRecords>(
         sources: impl IntoIterator<Item = R>,
     ) -> ReadResult<Self, R::Failure> {
+        Self::build_with_residency(sources, TextResidency::Resident)
+    }
+
+    /// Where this generation's text indexes live.
+    pub fn text_residency(&self) -> TextResidency {
+        self.text_residency
+    }
+
+    /// [`Self::build`] whose text indexes live as `residency` says. A
+    /// directory build validates every definition and body but builds no
+    /// resident text index.
+    pub fn build_with_residency<R: CollectionRecords>(
+        sources: impl IntoIterator<Item = R>,
+        residency: TextResidency,
+    ) -> ReadResult<Self, R::Failure> {
         let sources: Vec<_> = sources.into_iter().collect();
         let mut prepared = Vec::with_capacity(sources.len());
         let mut names = BTreeSet::new();
@@ -306,10 +339,15 @@ impl QueryIndexes {
         }
         let mut collections = BTreeMap::new();
         for (name, source, mut indexes) in prepared {
-            indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+            if residency == TextResidency::Resident {
+                indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+            }
             collections.insert(name, Arc::new(indexes));
         }
-        Ok(Self { collections })
+        Ok(Self {
+            collections,
+            text_residency: residency,
+        })
     }
 
     /// Explicit catalog actions. Omitted collections retain their captured
@@ -323,8 +361,40 @@ impl QueryIndexes {
         R: CollectionRecords,
         D: DocumentChanges<Failure = R::Failure>,
     {
+        self.update_with_residency(actions, self.text_residency)
+    }
+
+    /// [`Self::update`] producing indexes whose text lives as `residency`
+    /// says. Resident text can move to a directory, which drops every resident
+    /// text index; a directory generation cannot return to resident text.
+    pub fn update_with_residency<'a, R, D>(
+        &self,
+        actions: impl IntoIterator<Item = IndexUpdate<'a, R, D>>,
+        residency: TextResidency,
+    ) -> ReadResult<Self, R::Failure>
+    where
+        R: CollectionRecords,
+        D: DocumentChanges<Failure = R::Failure>,
+    {
+        if self.text_residency == TextResidency::Directory && residency == TextResidency::Resident {
+            return Err(Error::new(
+                ErrorCode::Corruption,
+                "directory text indexes cannot return to resident text",
+            )
+            .into());
+        }
+        let resident = residency == TextResidency::Resident;
         let actions: Vec<_> = actions.into_iter().collect();
         let mut collections = self.collections.clone();
+        if !resident {
+            for indexes in collections.values_mut() {
+                if indexes.text.is_some() {
+                    let mut moved = CollectionIndexes::clone(indexes);
+                    moved.text = None;
+                    *indexes = Arc::new(moved);
+                }
+            }
+        }
         let mut names = BTreeSet::new();
         let mut prepared = Vec::new();
         let mut claim_name = |name: &str| -> Result<String> {
@@ -381,15 +451,19 @@ impl QueryIndexes {
                     })?;
                     let structured = previous.structured.update(&source)?;
                     let text_changed = match &previous.text {
-                        Some(text) => text.fields_changed(&source)?,
-                        None => false,
+                        Some(text) if resident => text.fields_changed(&source)?,
+                        _ => false,
                     };
                     let indexes = CollectionIndexes {
                         validator: previous.validator.clone(),
                         schema_sha256: previous.schema_sha256,
                         definition_sha256: previous.definition_sha256,
                         structured,
-                        text: previous.text.clone(),
+                        text: if resident {
+                            previous.text.clone()
+                        } else {
+                            None
+                        },
                     };
                     prepared.push(PreparedIndexCollection {
                         name,
@@ -412,7 +486,9 @@ impl QueryIndexes {
         {
             match input {
                 PreparedIndexInput::Rebuild(source) => {
-                    indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+                    if resident {
+                        indexes.text = TextSnapshot::build(&source)?.map(Arc::new);
+                    }
                 }
                 PreparedIndexInput::Delta {
                     source,
@@ -431,7 +507,10 @@ impl QueryIndexes {
             }
             collections.insert(name, Arc::new(indexes));
         }
-        Ok(Self { collections })
+        Ok(Self {
+            collections,
+            text_residency: residency,
+        })
     }
 
     fn delta_indexes<D: DocumentChanges + ?Sized>(
@@ -654,19 +733,42 @@ impl QueryIndexes {
             aggregate_kinds.push(kind);
         }
 
-        let scores = request
-            .search
-            .as_ref()
-            .map(|search| {
-                indexes
-                    .text
-                    .as_ref()
-                    .ok_or_else(|| {
-                        Error::new(ErrorCode::IndexRequired, "collection has no text index")
-                    })?
-                    .search(search, limits.max_query_candidates, cancellation)
-            })
-            .transpose()?;
+        let scores = match &request.search {
+            None => None,
+            Some(search) => Some(match &indexes.text {
+                Some(text) => text.search(search, limits.max_query_candidates, cancellation)?,
+                None if self.text_residency == TextResidency::Directory
+                    && source
+                        .definition()
+                        .indexes
+                        .iter()
+                        .any(|index| index.text.is_some()) =>
+                {
+                    source
+                        .with_text_shards(|shards| {
+                            search::search_shards(
+                                shards,
+                                search,
+                                limits.max_query_candidates,
+                                cancellation,
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            Error::new(
+                                ErrorCode::Unavailable,
+                                "persisted text directory is not current at this generation",
+                            )
+                        })?
+                }
+                None => {
+                    return Err(Error::new(
+                        ErrorCode::IndexRequired,
+                        "collection has no text index",
+                    )
+                    .into());
+                }
+            }),
+        };
         let text_ids = scores
             .as_ref()
             .map(|scores| -> Result<IdSet> {

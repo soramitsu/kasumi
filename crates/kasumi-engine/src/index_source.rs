@@ -291,16 +291,20 @@ impl DocumentChanges for StateChanges<'_> {
 }
 
 pub(crate) fn build(state: &TenantState) -> SourceResult<QueryIndexes> {
-    build_with_resolver(state, None)
+    build_with_resolver(state, None, kasumi_query::TextResidency::Resident)
 }
 
 pub(crate) fn build_with_resolver(
     state: &TenantState,
     resolver: Option<&dyn DocumentResolver>,
+    residency: kasumi_query::TextResidency,
 ) -> SourceResult<QueryIndexes> {
-    QueryIndexes::build(state.collections.iter().map(|(name, collection)| {
-        StateCollection::with_resolver(state, name, collection, resolver)
-    }))
+    QueryIndexes::build_with_residency(
+        state.collections.iter().map(|(name, collection)| {
+            StateCollection::with_resolver(state, name, collection, resolver)
+        }),
+        residency,
+    )
 }
 
 fn check_scope(old: &TenantState, new: &TenantState) -> Result<()> {
@@ -427,9 +431,21 @@ pub(crate) fn update(
     new: &TenantState,
     changed: &BTreeMap<String, BTreeSet<String>>,
 ) -> SourceResult<QueryIndexes> {
-    update_with_resolvers(indexes, old, new, changed, None, None)
+    update_with_resolvers(
+        indexes,
+        old,
+        new,
+        changed,
+        None,
+        None,
+        indexes.text_residency(),
+    )
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "both exact generation states, their resolvers and the text residency stay explicit"
+)]
 pub(crate) fn update_with_resolvers(
     indexes: &QueryIndexes,
     old: &TenantState,
@@ -437,6 +453,7 @@ pub(crate) fn update_with_resolvers(
     changed: &BTreeMap<String, BTreeSet<String>>,
     old_resolver: Option<&dyn DocumentResolver>,
     new_resolver: Option<&dyn DocumentResolver>,
+    residency: kasumi_query::TextResidency,
 ) -> SourceResult<QueryIndexes> {
     check_scope(old, new)?;
     // Complete metadata planning before any shared text writer can advance.
@@ -480,7 +497,7 @@ pub(crate) fn update_with_resolvers(
                 .filter(|name| !new.collections.contains_key(*name))
                 .map(|name| IndexUpdate::Remove(name)),
         );
-    indexes.update(actions)
+    indexes.update_with_residency(actions, residency)
 }
 
 #[cfg(test)]

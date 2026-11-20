@@ -1,4 +1,11 @@
 mod japanese;
+mod shards;
+
+pub use shards::search_shards;
+pub use shards::{
+    BuiltTextShard, MAX_SHARD_BYTES, MAX_SHARD_DOCUMENTS, TextShard, TextShardLayout, TextShardSet,
+    TextShardWriter, merge_text_shards,
+};
 
 use crate::scalar::{exhausted, invalid};
 use crate::{CollectionRecords, DocumentChanges, QueryCancellation, ReadResult, Record};
@@ -6,13 +13,14 @@ use kasumi_types::{
     Analyzer, CollectionDefinition, Error, ErrorCode, Result, TextMode, TextSearch,
 };
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap},
     sync::{Arc, Mutex, OnceLock},
 };
 use tantivy::query::{
-    BooleanQuery, BoostQuery, DisjunctionMaxQuery, EmptyQuery, EnableScoring, Occur, PhraseQuery,
-    Query, TermQuery,
+    Bm25StatisticsProvider, BooleanQuery, BoostQuery, DisjunctionMaxQuery, EmptyQuery,
+    EnableScoring, Occur, PhraseQuery, Query, TermQuery,
 };
 use tantivy::schema::{
     Field, IndexRecordOption, STORED, STRING, Schema, TextFieldIndexing, TextOptions, Value as _,
@@ -31,10 +39,136 @@ struct TextFields {
     paths: Vec<(String, Field, Field)>,
 }
 
-struct TextCore {
-    index: Index,
+/// The Tantivy schema one collection definition's text indexes produce. The
+/// resident index and every persisted shard of that definition share it, so a
+/// field identifier means the same ranked or surface field in each.
+pub(crate) struct TextLayout {
+    schema: Schema,
     indexes: BTreeMap<String, TextFields>,
     id_field: Field,
+    version_field: Field,
+    sha256: [u8; 32],
+}
+
+/// Bumped whenever the persisted shard schema or tokenization changes.
+const LAYOUT_FORMAT: &str = "kasumi.text.shard.v1";
+
+impl TextLayout {
+    fn new(definition: &CollectionDefinition) -> Option<Self> {
+        if definition.indexes.iter().all(|index| index.text.is_none()) {
+            return None;
+        }
+        let mut builder = Schema::builder();
+        let id_field = builder.add_text_field("_kasumi_id", STRING | STORED);
+        let version_field = builder.add_u64_field("_kasumi_version", STORED);
+        let mut indexes = BTreeMap::new();
+        let mut identity = Vec::new();
+        let mut sequence = 0;
+        for definition in &definition.indexes {
+            let Some(text) = &definition.text else {
+                continue;
+            };
+            let mut paths = Vec::new();
+            for field in &definition.fields {
+                let options = |surface| {
+                    TextOptions::default().set_indexing_options(
+                        TextFieldIndexing::default()
+                            .set_tokenizer(&analyzer_name(text.analyzer, surface))
+                            .set_index_option(IndexRecordOption::WithFreqsAndPositions),
+                    )
+                };
+                let ranked = builder.add_text_field(&format!("text_{sequence}"), options(false));
+                let surface = builder.add_text_field(&format!("surface_{sequence}"), options(true));
+                sequence += 1;
+                paths.push((field.path.clone(), ranked, surface));
+            }
+            identity.push((
+                definition.name.clone(),
+                format!("{:?}", text.analyzer),
+                paths
+                    .iter()
+                    .map(|(path, ..)| path.clone())
+                    .collect::<Vec<_>>(),
+            ));
+            indexes.insert(
+                definition.name.clone(),
+                TextFields {
+                    analyzer: text.analyzer,
+                    paths,
+                },
+            );
+        }
+        let mut hash = Sha256::new();
+        hash.update(LAYOUT_FORMAT.as_bytes());
+        hash.update(serde_json::to_vec(&identity).expect("text layout identity encodes"));
+        Some(Self {
+            schema: builder.build(),
+            indexes,
+            id_field,
+            version_field,
+            sha256: hash.finalize().into(),
+        })
+    }
+
+    fn register(&self, index: &Index) -> Result<()> {
+        for fields in self.indexes.values() {
+            for surface in [false, true] {
+                index.tokenizers().register(
+                    &analyzer_name(fields.analyzer, surface),
+                    analyzer(fields.analyzer, surface)?,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn document(&self, id: &str, version: u64, body: &Value) -> TantivyDocument {
+        let mut indexed = TantivyDocument::default();
+        indexed.add_text(self.id_field, id);
+        indexed.add_u64(self.version_field, version);
+        for fields in self.indexes.values() {
+            for (path, ranked, surface) in &fields.paths {
+                for text in text_values(body, path) {
+                    let normalized: String = text.nfkc().collect();
+                    indexed.add_text(*ranked, &normalized);
+                    indexed.add_text(*surface, &normalized);
+                }
+            }
+        }
+        indexed
+    }
+
+    /// The stored identity of one indexed row.
+    fn row<'d>(&self, document: &'d TantivyDocument) -> Result<(&'d str, u64)> {
+        let mut ids = document.get_all(self.id_field);
+        let id = ids
+            .next()
+            .and_then(|id| id.as_str())
+            .filter(|id| kasumi_types::validate_name(id).is_ok())
+            .ok_or_else(|| search_error("missing or invalid stored document ID"))?;
+        let mut versions = document.get_all(self.version_field);
+        let version = versions
+            .next()
+            .and_then(|version| version.as_u64())
+            .ok_or_else(|| search_error("missing stored document version"))?;
+        if ids.next().is_some() || versions.next().is_some() {
+            return Err(search_error("duplicate stored document identity"));
+        }
+        Ok((id, version))
+    }
+}
+
+fn text_values<'a>(body: &'a Value, path: &str) -> Vec<&'a str> {
+    match body.pointer(path) {
+        Some(Value::String(text)) => vec![text.as_str()],
+        Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
+        _ => Vec::new(),
+    }
+}
+
+struct TextCore {
+    index: Index,
+    layout: Arc<TextLayout>,
     // None means an interrupted/failed update poisoned this writer corridor.
     // Older immutable readers remain usable, but new applies must recover.
     active: Mutex<Option<u64>>,
@@ -49,7 +183,7 @@ pub(crate) struct TextSnapshot {
 impl std::fmt::Debug for TextSnapshot {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("TextSnapshot")
-            .field("indexes", &self.core.indexes.keys())
+            .field("indexes", &self.core.layout.indexes.keys())
             .field("documents", &self.searcher.num_docs())
             .finish()
     }
@@ -147,56 +281,46 @@ pub(crate) fn validate_text_document(
     Ok(())
 }
 
+/// Whether a text-indexed field of any changed live pair differs. Shared by the
+/// resident index and the persisted-shard layout: both index the same paths.
+fn text_fields_changed<D: DocumentChanges + ?Sized>(
+    layout: &TextLayout,
+    changes: &D,
+) -> ReadResult<bool, D::Failure> {
+    let mut changed = false;
+    // The enclosing index preparation has validated every new live body,
+    // including text limits, before this comparison-only pass. Visit every
+    // delta so a later source failure cannot hide behind an earlier change.
+    changes.visit_changes(|delta| {
+        changed |= match (delta.old, delta.new) {
+            (Some(Record::Live(old)), Some(Record::Live(new))) => {
+                layout.indexes.values().any(|index| {
+                    index
+                        .paths
+                        .iter()
+                        .any(|(path, _, _)| old.body.pointer(path) != new.body.pointer(path))
+                })
+            }
+            (Some(Record::Live(_)), _) | (_, Some(Record::Live(_))) => true,
+            _ => false,
+        };
+        Ok(())
+    })?;
+    Ok(changed)
+}
+
 impl TextSnapshot {
     pub fn build<R: CollectionRecords + ?Sized>(
         source: &R,
     ) -> ReadResult<Option<Self>, R::Failure> {
-        if source.definition().indexes.iter().all(|i| i.text.is_none()) {
+        let Some(layout) = TextLayout::new(source.definition()) else {
             return Ok(None);
-        }
-        let mut builder = Schema::builder();
-        let id_field = builder.add_text_field("_kasumi_id", STRING | STORED);
-        let mut indexes = BTreeMap::new();
-        let mut sequence = 0;
-        for definition in &source.definition().indexes {
-            let Some(text) = &definition.text else {
-                continue;
-            };
-            let mut paths = Vec::new();
-            for field in &definition.fields {
-                let options = |surface| {
-                    TextOptions::default().set_indexing_options(
-                        TextFieldIndexing::default()
-                            .set_tokenizer(&analyzer_name(text.analyzer, surface))
-                            .set_index_option(IndexRecordOption::WithFreqsAndPositions),
-                    )
-                };
-                let ranked = builder.add_text_field(&format!("text_{sequence}"), options(false));
-                let surface = builder.add_text_field(&format!("surface_{sequence}"), options(true));
-                sequence += 1;
-                paths.push((field.path.clone(), ranked, surface));
-            }
-            indexes.insert(
-                definition.name.clone(),
-                TextFields {
-                    analyzer: text.analyzer,
-                    paths,
-                },
-            );
-        }
-        let index = Index::create_in_ram(builder.build());
-        for fields in indexes.values() {
-            for surface in [false, true] {
-                index.tokenizers().register(
-                    &analyzer_name(fields.analyzer, surface),
-                    analyzer(fields.analyzer, surface)?,
-                );
-            }
-        }
+        };
+        let index = Index::create_in_ram(layout.schema.clone());
+        layout.register(&index)?;
         let core = Arc::new(TextCore {
             index,
-            indexes,
-            id_field,
+            layout: Arc::new(layout),
             active: Mutex::new(Some(0)),
         });
         // Reopen the same RAM index per apply; no idle generation retains a
@@ -215,7 +339,7 @@ impl TextSnapshot {
                 return Ok(());
             };
             writer
-                .add_document(core.document(id, &document.body))
+                .add_document(core.layout.document(id, document.version, &document.body))
                 .map_err(search_error)?;
             Ok(())
         })?;
@@ -233,26 +357,7 @@ impl TextSnapshot {
         &self,
         changes: &D,
     ) -> ReadResult<bool, D::Failure> {
-        let mut changed = false;
-        // The enclosing index preparation has validated every new live body,
-        // including text limits, before this comparison-only pass. Visit every
-        // delta so a later source failure cannot hide behind an earlier change.
-        changes.visit_changes(|delta| {
-            changed |= match (delta.old, delta.new) {
-                (Some(Record::Live(old)), Some(Record::Live(new))) => {
-                    self.core.indexes.values().any(|index| {
-                        index
-                            .paths
-                            .iter()
-                            .any(|(path, _, _)| old.body.pointer(path) != new.body.pointer(path))
-                    })
-                }
-                (Some(Record::Live(_)), _) | (_, Some(Record::Live(_))) => true,
-                _ => false,
-            };
-            Ok(())
-        })?;
-        Ok(changed)
+        text_fields_changed(&self.core.layout, changes)
     }
 
     pub fn update<D: DocumentChanges + ?Sized>(&self, changes: &D) -> ReadResult<Self, D::Failure> {
@@ -276,11 +381,15 @@ impl TextSnapshot {
         changes.visit_changes(|delta| {
             let id = delta.id;
             if matches!(delta.old, Some(Record::Live(_))) {
-                writer.delete_term(Term::from_field_text(self.core.id_field, id));
+                writer.delete_term(Term::from_field_text(self.core.layout.id_field, id));
             }
             if let Some(Record::Live(document)) = delta.new {
                 writer
-                    .add_document(self.core.document(id, &document.body))
+                    .add_document(
+                        self.core
+                            .layout
+                            .document(id, document.version, &document.body),
+                    )
                     .map_err(search_error)?;
             }
             Ok(())
@@ -306,252 +415,480 @@ impl TextSnapshot {
         cap: usize,
         cancellation: &QueryCancellation,
     ) -> Result<BTreeMap<String, f32>> {
-        cancellation.check()?;
-        if request.query.len() > 4096 {
-            return Err(invalid("text query exceeds 4096 UTF-8 bytes"));
-        }
-        let fields = self.core.indexes.get(&request.index).ok_or_else(|| {
-            Error::new(ErrorCode::IndexRequired, "named text index does not exist")
-        })?;
-        let fuzzy = request.mode == TextMode::Fuzzy;
-        let surface_query = fuzzy || request.mode == TextMode::Prefix;
-        if fuzzy && request.fuzzy_distance() > 2 {
-            return Err(invalid("fuzzy distance must be 0, 1, or 2"));
-        }
-        let terms = tokens(fields.analyzer, &request.query, surface_query, 64)?;
-        if terms.is_empty() {
-            return Err(invalid("text query contains no searchable tokens"));
-        }
-        let mut tokenizations = vec![terms];
-        if fuzzy && fields.analyzer == Analyzer::JapaneseV1 {
-            // A typo can alter morphological segmentation (図書官 -> 図書 + 官,
-            // while 図書館 is a single indexed term). Try the unsegmented words
-            // as an alternative, with the same expansion and postings budgets.
-            let normalized: String = request.query.nfkc().flat_map(char::to_lowercase).collect();
-            let words: Vec<(usize, String)> = normalized
-                .split_whitespace()
-                .enumerate()
-                .map(|(position, word)| (position, word.to_owned()))
-                .collect();
-            if !words.is_empty()
-                && words.len() <= 64
-                && words.iter().all(|(_, word)| word.len() <= 240)
-                && words != tokenizations[0]
-            {
-                tokenizations.push(words);
-            }
-        }
-        let mut alternatives: Vec<Box<dyn Query>> = Vec::new();
-        let mut expanded_count = 0;
-        let mut posting_work = 0u64;
-        // Intersecting two very common terms can produce few hits while reading
-        // huge postings lists. Limit planned postings, as well as returned hits.
-        let posting_limit = cap.saturating_mul(8) as u64;
-        let searched: Vec<Field> = fields
-            .paths
-            .iter()
-            .map(|(_, ranked, surface)| if surface_query { *surface } else { *ranked })
+        run_search(&self.core.layout, self, request, cap, cancellation)
+    }
+}
+
+/// One searched set of immutable shards. The resident index is a single shard
+/// whose statistics and rows are its own; a persisted directory supplies
+/// statistics from its descriptors and filters rows superseded since a shard
+/// was written.
+pub(crate) trait ShardAccess {
+    fn shard_count(&self) -> usize;
+    fn with_searcher(
+        &self,
+        shard: usize,
+        visit: &mut dyn FnMut(&Searcher) -> Result<()>,
+    ) -> Result<()>;
+    /// Every indexed row, including superseded ones, as Tantivy's own BM25
+    /// `max_doc` statistic: a term's document frequency never exceeds it.
+    fn indexed_documents(&self) -> Result<u64>;
+    fn total_tokens(&self, field: Field) -> Result<u64>;
+    /// Whether this stored row is the selected live record.
+    fn current(&self, id: &str, version: u64) -> Result<bool>;
+}
+
+impl ShardAccess for TextSnapshot {
+    fn shard_count(&self) -> usize {
+        1
+    }
+    fn with_searcher(
+        &self,
+        _shard: usize,
+        visit: &mut dyn FnMut(&Searcher) -> Result<()>,
+    ) -> Result<()> {
+        visit(&self.searcher)
+    }
+    fn indexed_documents(&self) -> Result<u64> {
+        Bm25StatisticsProvider::total_num_docs(&self.searcher).map_err(search_error)
+    }
+    fn total_tokens(&self, field: Field) -> Result<u64> {
+        Bm25StatisticsProvider::total_num_tokens(&self.searcher, field).map_err(search_error)
+    }
+    fn current(&self, _id: &str, _version: u64) -> Result<bool> {
+        // Deletes are applied to the resident index itself.
+        Ok(true)
+    }
+}
+
+/// BM25 statistics fixed before any shard is scored: every shard's weight
+/// uses the same totals, so a row scores as it would in one index.
+struct Statistics {
+    documents: u64,
+    tokens: HashMap<Field, u64>,
+    doc_freq: HashMap<Term, u64>,
+}
+impl Bm25StatisticsProvider for Statistics {
+    fn total_num_tokens(&self, field: Field) -> tantivy::Result<u64> {
+        self.tokens.get(&field).copied().ok_or_else(|| {
+            tantivy::TantivyError::InternalError("text field statistic not prepared".into())
+        })
+    }
+    fn total_num_docs(&self) -> tantivy::Result<u64> {
+        Ok(self.documents)
+    }
+    fn doc_freq(&self, term: &Term) -> tantivy::Result<u64> {
+        self.doc_freq.get(term).copied().ok_or_else(|| {
+            tantivy::TantivyError::InternalError("uncharged text term in scoring".into())
+        })
+    }
+}
+
+#[derive(Clone)]
+enum Expander {
+    Fuzzy(Arc<levenshtein_automata::DFA>),
+    Prefix(Vec<u8>),
+}
+
+struct Expansion {
+    field: Field,
+    expander: Expander,
+    terms: BTreeSet<String>,
+}
+
+enum Clause {
+    Term(Field, String),
+    Fuzzy(usize),
+    Prefix(usize),
+}
+
+enum Alternative {
+    Phrase(Field, Vec<(usize, String)>),
+    /// One field must hold every term.
+    Conjunction(Vec<Clause>),
+}
+
+/// Plan, expand, charge and score one request across `access`'s shards. Every
+/// shard is opened once to expand fuzzy and prefix terms, once to read global
+/// document frequencies and once to score; one shard is open at a time.
+pub(crate) fn run_search(
+    layout: &TextLayout,
+    access: &dyn ShardAccess,
+    request: &TextSearch,
+    cap: usize,
+    cancellation: &QueryCancellation,
+) -> Result<BTreeMap<String, f32>> {
+    cancellation.check()?;
+    if request.query.len() > 4096 {
+        return Err(invalid("text query exceeds 4096 UTF-8 bytes"));
+    }
+    let fields = layout
+        .indexes
+        .get(&request.index)
+        .ok_or_else(|| Error::new(ErrorCode::IndexRequired, "named text index does not exist"))?;
+    let fuzzy = request.mode == TextMode::Fuzzy;
+    let surface_query = fuzzy || request.mode == TextMode::Prefix;
+    if fuzzy && request.fuzzy_distance() > 2 {
+        return Err(invalid("fuzzy distance must be 0, 1, or 2"));
+    }
+    let terms = tokens(fields.analyzer, &request.query, surface_query, 64)?;
+    if terms.is_empty() {
+        return Err(invalid("text query contains no searchable tokens"));
+    }
+    let mut tokenizations = vec![terms];
+    if fuzzy && fields.analyzer == Analyzer::JapaneseV1 {
+        // A typo can alter morphological segmentation (図書官 -> 図書 + 官,
+        // while 図書館 is a single indexed term). Try the unsegmented words
+        // as an alternative, with the same expansion and postings budgets.
+        let normalized: String = request.query.nfkc().flat_map(char::to_lowercase).collect();
+        let words: Vec<(usize, String)> = normalized
+            .split_whitespace()
+            .enumerate()
+            .map(|(position, word)| (position, word.to_owned()))
             .collect();
-        for terms in &tokenizations {
-            cancellation.check()?;
-            if request.mode == TextMode::Phrase && terms.len() > 1 {
-                for &field in &searched {
-                    cancellation.check()?;
-                    for (_, text) in terms {
-                        self.charge_term(field, text, &mut posting_work, posting_limit)?;
-                    }
-                    alternatives.push(Box::new(PhraseQuery::new_with_offset(
-                        terms
-                            .iter()
-                            .map(|(position, text)| (*position, Term::from_field_text(field, text)))
-                            .collect(),
-                    )));
-                }
-                continue;
+        if !words.is_empty()
+            && words.len() <= 64
+            && words.iter().all(|(_, word)| word.len() <= 240)
+            && words != tokenizations[0]
+        {
+            tokenizations.push(words);
+        }
+    }
+    let searched: Vec<Field> = fields
+        .paths
+        .iter()
+        .map(|(_, ranked, surface)| if surface_query { *surface } else { *ranked })
+        .collect();
+
+    // Plan every alternative before reading any shard.
+    let mut alternatives = Vec::new();
+    let mut expansions: Vec<Expansion> = Vec::new();
+    for terms in &tokenizations {
+        cancellation.check()?;
+        if request.mode == TextMode::Phrase && terms.len() > 1 {
+            for &field in &searched {
+                alternatives.push(Alternative::Phrase(field, terms.clone()));
             }
-            // Every searched field requires every term. A term's fuzzy automaton
-            // depends only on its text, so one is built per term and shared by
-            // all fields, and only one is alive at a time.
-            let mut clauses: Vec<Vec<(Occur, Box<dyn Query>)>> =
-                searched.iter().map(|_| Vec::new()).collect();
-            for (i, (_, text)) in terms.iter().enumerate() {
-                cancellation.check()?;
-                let dfa = if fuzzy {
-                    let japanese = fields.analyzer == Analyzer::JapaneseV1;
-                    if !japanese && request.fuzzy_distance() > 0 && text.chars().count() < 3 {
-                        return Err(invalid("fuzzy term is too short"));
-                    }
-                    // Single-character Japanese particles remain exact; editing
-                    // them would expand to nearly the entire term dictionary.
-                    let distance = if japanese && text.chars().count() < 2 {
-                        0
-                    } else {
-                        request.fuzzy_distance()
-                    };
-                    Some(fuzzy_automaton(text, distance)?)
+            continue;
+        }
+        let mut clauses: Vec<Vec<Clause>> = searched.iter().map(|_| Vec::new()).collect();
+        for (i, (_, text)) in terms.iter().enumerate() {
+            cancellation.check()?;
+            // A term's fuzzy automaton depends only on its text, so one is
+            // built per term and shared by every field.
+            let dfa = if fuzzy {
+                let japanese = fields.analyzer == Analyzer::JapaneseV1;
+                if !japanese && request.fuzzy_distance() > 0 && text.chars().count() < 3 {
+                    return Err(invalid("fuzzy term is too short"));
+                }
+                // Single-character Japanese particles remain exact; editing
+                // them would expand to nearly the entire term dictionary.
+                let distance = if japanese && text.chars().count() < 2 {
+                    0
                 } else {
-                    None
+                    request.fuzzy_distance()
                 };
-                for (&field, field_clauses) in searched.iter().zip(&mut clauses) {
-                    cancellation.check()?;
-                    let query: Box<dyn Query> = if let Some(dfa) = &dfa {
-                        let expansions = self.expand(
-                            field,
-                            Dfa(dfa.clone()),
-                            &mut expanded_count,
-                            cancellation,
-                        )?;
-                        for term in &expansions {
-                            self.charge_term(field, term, &mut posting_work, posting_limit)?;
-                        }
-                        let queries: Vec<Box<dyn Query>> = expansions
-                            .into_iter()
-                            .map(|term| {
-                                let state = term
-                                    .bytes()
-                                    .fold(dfa.initial_state(), |state, b| dfa.transition(state, b));
-                                let distance = match dfa.distance(state) {
-                                    levenshtein_automata::Distance::Exact(d) => d,
-                                    _ => 2,
-                                };
-                                Box::new(BoostQuery::new(
-                                    Box::new(TermQuery::new(
-                                        Term::from_field_text(field, &term),
-                                        IndexRecordOption::WithFreqs,
-                                    )),
-                                    1.0 / (1 + distance) as f32,
-                                )) as Box<dyn Query>
-                            })
-                            .collect();
-                        disjunction(queries)
-                    } else if request.mode == TextMode::Prefix && i + 1 == terms.len() {
-                        let expansions = self.expand(
-                            field,
-                            Prefix(text.as_bytes().to_vec()),
-                            &mut expanded_count,
-                            cancellation,
-                        )?;
-                        for term in &expansions {
-                            self.charge_term(field, term, &mut posting_work, posting_limit)?;
-                        }
-                        disjunction(
-                            expansions
-                                .into_iter()
-                                .map(|term| {
-                                    Box::new(TermQuery::new(
-                                        Term::from_field_text(field, &term),
-                                        IndexRecordOption::WithFreqs,
-                                    )) as Box<dyn Query>
-                                })
-                                .collect(),
-                        )
-                    } else {
-                        self.charge_term(field, text, &mut posting_work, posting_limit)?;
-                        Box::new(TermQuery::new(
-                            Term::from_field_text(field, text),
-                            IndexRecordOption::WithFreqs,
-                        ))
-                    };
-                    field_clauses.push((Occur::Must, query));
-                }
-            }
-            for field_clauses in clauses {
-                alternatives.push(Box::new(BooleanQuery::new(field_clauses)));
+                Some(fuzzy_automaton(text, distance)?)
+            } else {
+                None
+            };
+            for (&field, field_clauses) in searched.iter().zip(&mut clauses) {
+                let clause = if let Some(dfa) = &dfa {
+                    expansions.push(Expansion {
+                        field,
+                        expander: Expander::Fuzzy(dfa.clone()),
+                        terms: BTreeSet::new(),
+                    });
+                    Clause::Fuzzy(expansions.len() - 1)
+                } else if request.mode == TextMode::Prefix && i + 1 == terms.len() {
+                    expansions.push(Expansion {
+                        field,
+                        expander: Expander::Prefix(text.as_bytes().to_vec()),
+                        terms: BTreeSet::new(),
+                    });
+                    Clause::Prefix(expansions.len() - 1)
+                } else {
+                    Clause::Term(field, text.clone())
+                };
+                field_clauses.push(clause);
             }
         }
-        let query = disjunction(alternatives);
-        let weight = query
-            .weight(EnableScoring::enabled_from_searcher(&self.searcher))
-            .map_err(search_error)?;
-        let mut matches = BTreeMap::new();
-        // Drive scorers ourselves: TopDocs(limit) limits output, not matching work.
-        for segment in self.searcher.segment_readers() {
-            cancellation.check()?;
-            // Reuse at most one decompressed ID block for this segment and
-            // query. Nothing in the captured generation retains the block.
-            let stored = segment.get_store_reader(1).map_err(search_error)?;
-            let mut scorer = weight.scorer(segment, 1.0).map_err(search_error)?;
-            while scorer.doc() != TERMINATED {
-                cancellation.check()?;
-                let doc = scorer.doc();
-                if segment.is_deleted(doc) {
-                    scorer.advance();
-                    continue;
-                }
-                if matches.len() >= cap {
-                    return Err(exhausted("text candidate budget exceeded"));
-                }
-                let record: TantivyDocument = stored.get(doc).map_err(search_error)?;
-                let mut ids = record.get_all(self.core.id_field);
-                let id = ids
-                    .next()
-                    .and_then(|id| id.as_str())
-                    .filter(|id| kasumi_types::validate_name(id).is_ok())
-                    .ok_or_else(|| search_error("missing or invalid stored document ID"))?;
-                if ids.next().is_some() || matches.insert(id.to_owned(), scorer.score()).is_some() {
-                    return Err(search_error("duplicate stored document ID"));
-                }
-                scorer.advance();
-            }
-        }
-        Ok(matches)
+        alternatives.extend(clauses.into_iter().map(Alternative::Conjunction));
     }
 
-    fn charge_term(&self, field: Field, text: &str, work: &mut u64, limit: u64) -> Result<()> {
-        *work = work.saturating_add(
-            self.searcher
-                .doc_freq(&Term::from_field_text(field, text))
-                .map_err(search_error)?,
-        );
-        if *work > limit {
+    // Expand fuzzy and prefix terms over every shard's dictionary.
+    if !expansions.is_empty() {
+        let mut expanded_count = 0;
+        for shard in 0..access.shard_count() {
+            cancellation.check()?;
+            access.with_searcher(shard, &mut |searcher| {
+                for expansion in &mut expansions {
+                    match expansion.expander.clone() {
+                        Expander::Fuzzy(dfa) => expand(
+                            searcher,
+                            expansion.field,
+                            Dfa(dfa),
+                            &mut expansion.terms,
+                            &mut expanded_count,
+                            cancellation,
+                        )?,
+                        Expander::Prefix(prefix) => expand(
+                            searcher,
+                            expansion.field,
+                            Prefix(prefix),
+                            &mut expansion.terms,
+                            &mut expanded_count,
+                            cancellation,
+                        )?,
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        cancellation.check()?;
+    }
+
+    // Charge planned postings against global document frequencies. Intersecting
+    // two very common terms can produce few hits while reading huge postings
+    // lists. Limit planned postings, as well as returned hits.
+    let mut occurrences: Vec<Term> = Vec::new();
+    for alternative in &alternatives {
+        match alternative {
+            Alternative::Phrase(field, terms) => occurrences.extend(
+                terms
+                    .iter()
+                    .map(|(_, text)| Term::from_field_text(*field, text)),
+            ),
+            Alternative::Conjunction(clauses) => {
+                for clause in clauses {
+                    match clause {
+                        Clause::Term(field, text) => {
+                            occurrences.push(Term::from_field_text(*field, text))
+                        }
+                        Clause::Fuzzy(index) | Clause::Prefix(index) => {
+                            let expansion = &expansions[*index];
+                            occurrences.extend(
+                                expansion
+                                    .terms
+                                    .iter()
+                                    .map(|term| Term::from_field_text(expansion.field, term)),
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let mut doc_freq: HashMap<Term, u64> = occurrences.iter().map(|t| (t.clone(), 0)).collect();
+    for shard in 0..access.shard_count() {
+        cancellation.check()?;
+        access.with_searcher(shard, &mut |searcher| {
+            for (term, frequency) in doc_freq.iter_mut() {
+                cancellation.check()?;
+                *frequency =
+                    frequency.saturating_add(searcher.doc_freq(term).map_err(search_error)?);
+            }
+            Ok(())
+        })?;
+    }
+    let posting_limit = cap.saturating_mul(8) as u64;
+    let mut posting_work = 0u64;
+    for term in &occurrences {
+        posting_work = posting_work.saturating_add(doc_freq[term]);
+        if posting_work > posting_limit {
             return Err(exhausted(
                 "text postings budget exceeded (8 times candidate budget)",
             ));
         }
-        Ok(())
     }
 
-    fn expand<A: Automaton>(
-        &self,
-        field: Field,
-        automaton: A,
-        total: &mut usize,
-        cancellation: &QueryCancellation,
-    ) -> Result<BTreeSet<String>>
-    where
-        A::State: Clone,
-    {
-        let automaton = CancellableAutomaton {
-            inner: automaton,
-            cancellation,
-        };
-        let mut expansions = BTreeSet::new();
-        for segment in self.searcher.segment_readers() {
+    // Assemble the query tree once; each shard builds its own weight from it.
+    let mut queries: Vec<Box<dyn Query>> = Vec::new();
+    for alternative in &alternatives {
+        match alternative {
+            Alternative::Phrase(field, terms) => {
+                queries.push(Box::new(PhraseQuery::new_with_offset(
+                    terms
+                        .iter()
+                        .map(|(position, text)| (*position, Term::from_field_text(*field, text)))
+                        .collect(),
+                )))
+            }
+            Alternative::Conjunction(clauses) => {
+                let mut must: Vec<(Occur, Box<dyn Query>)> = Vec::new();
+                for clause in clauses {
+                    let query: Box<dyn Query> = match clause {
+                        Clause::Term(field, text) => Box::new(TermQuery::new(
+                            Term::from_field_text(*field, text),
+                            IndexRecordOption::WithFreqs,
+                        )),
+                        Clause::Fuzzy(index) => {
+                            let expansion = &expansions[*index];
+                            let Expander::Fuzzy(dfa) = &expansion.expander else {
+                                unreachable!("fuzzy clause has a fuzzy expansion")
+                            };
+                            disjunction(
+                                expansion
+                                    .terms
+                                    .iter()
+                                    .map(|term| {
+                                        let state = term
+                                            .bytes()
+                                            .fold(dfa.initial_state(), |s, b| dfa.transition(s, b));
+                                        let distance = match dfa.distance(state) {
+                                            levenshtein_automata::Distance::Exact(d) => d,
+                                            _ => 2,
+                                        };
+                                        Box::new(BoostQuery::new(
+                                            Box::new(TermQuery::new(
+                                                Term::from_field_text(expansion.field, term),
+                                                IndexRecordOption::WithFreqs,
+                                            )),
+                                            1.0 / (1 + distance) as f32,
+                                        )) as Box<dyn Query>
+                                    })
+                                    .collect(),
+                            )
+                        }
+                        Clause::Prefix(index) => {
+                            let expansion = &expansions[*index];
+                            disjunction(
+                                expansion
+                                    .terms
+                                    .iter()
+                                    .map(|term| {
+                                        Box::new(TermQuery::new(
+                                            Term::from_field_text(expansion.field, term),
+                                            IndexRecordOption::WithFreqs,
+                                        )) as Box<dyn Query>
+                                    })
+                                    .collect(),
+                            )
+                        }
+                    };
+                    must.push((Occur::Must, query));
+                }
+                queries.push(Box::new(BooleanQuery::new(must)));
+            }
+        }
+    }
+    let query = disjunction(queries);
+    let mut tokens_by_field = HashMap::new();
+    for &field in &searched {
+        tokens_by_field.insert(field, access.total_tokens(field)?);
+    }
+    let statistics = Statistics {
+        documents: access.indexed_documents()?,
+        tokens: tokens_by_field,
+        doc_freq,
+    };
+    let mut matches = BTreeMap::new();
+    for shard in 0..access.shard_count() {
+        cancellation.check()?;
+        access.with_searcher(shard, &mut |searcher| {
+            score_shard(
+                layout,
+                access,
+                searcher,
+                query.as_ref(),
+                &statistics,
+                cap,
+                &mut matches,
+                cancellation,
+            )
+        })?;
+    }
+    Ok(matches)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn score_shard(
+    layout: &TextLayout,
+    access: &dyn ShardAccess,
+    searcher: &Searcher,
+    query: &dyn Query,
+    statistics: &Statistics,
+    cap: usize,
+    matches: &mut BTreeMap<String, f32>,
+    cancellation: &QueryCancellation,
+) -> Result<()> {
+    let weight = query
+        .weight(EnableScoring::enabled_from_statistics_provider(
+            statistics, searcher,
+        ))
+        .map_err(search_error)?;
+    // Drive scorers ourselves: TopDocs(limit) limits output, not matching work.
+    for segment in searcher.segment_readers() {
+        cancellation.check()?;
+        // Reuse at most one decompressed ID block for this segment and
+        // query. Nothing in the captured generation retains the block.
+        let stored = segment.get_store_reader(1).map_err(search_error)?;
+        let mut scorer = weight.scorer(segment, 1.0).map_err(search_error)?;
+        while scorer.doc() != TERMINATED {
             cancellation.check()?;
-            let inverted = segment.inverted_index(field).map_err(search_error)?;
-            let mut stream = inverted
-                .terms()
-                .search(&automaton)
-                .into_stream()
-                .map_err(search_error)?;
-            while stream.advance() {
-                cancellation.check()?;
-                let term = std::str::from_utf8(stream.key())
-                    .map_err(search_error)?
-                    .to_owned();
-                if expansions.insert(term) {
-                    *total += 1;
-                    if expansions.len() > 64 || *total > 256 {
-                        return Err(exhausted(
-                            "text expansion budget exceeded (64 per term, 256 per query)",
-                        ));
-                    }
+            let doc = scorer.doc();
+            if segment.is_deleted(doc) {
+                scorer.advance();
+                continue;
+            }
+            let record: TantivyDocument = stored.get(doc).map_err(search_error)?;
+            let (id, version) = layout.row(&record)?;
+            if !access.current(id, version)? {
+                scorer.advance();
+                continue;
+            }
+            if matches.len() >= cap {
+                return Err(exhausted("text candidate budget exceeded"));
+            }
+            if matches.insert(id.to_owned(), scorer.score()).is_some() {
+                return Err(search_error("duplicate stored document ID"));
+            }
+            scorer.advance();
+        }
+    }
+    Ok(())
+}
+
+fn expand<A: Automaton>(
+    searcher: &Searcher,
+    field: Field,
+    automaton: A,
+    expansions: &mut BTreeSet<String>,
+    total: &mut usize,
+    cancellation: &QueryCancellation,
+) -> Result<()>
+where
+    A::State: Clone,
+{
+    let automaton = CancellableAutomaton {
+        inner: automaton,
+        cancellation,
+    };
+    for segment in searcher.segment_readers() {
+        cancellation.check()?;
+        let inverted = segment.inverted_index(field).map_err(search_error)?;
+        let mut stream = inverted
+            .terms()
+            .search(&automaton)
+            .into_stream()
+            .map_err(search_error)?;
+        while stream.advance() {
+            cancellation.check()?;
+            let term = std::str::from_utf8(stream.key())
+                .map_err(search_error)?
+                .to_owned();
+            if expansions.insert(term) {
+                *total += 1;
+                if expansions.len() > 64 || *total > 256 {
+                    return Err(exhausted(
+                        "text expansion budget exceeded (64 per term, 256 per query)",
+                    ));
                 }
             }
         }
-        cancellation.check()?;
-        Ok(expansions)
     }
+    cancellation.check()?;
+    Ok(())
 }
 
 fn disjunction(mut queries: Vec<Box<dyn Query>>) -> Box<dyn Query> {
@@ -672,36 +1009,20 @@ impl Automaton for Prefix {
 }
 
 impl TextCore {
-    fn document(&self, id: &str, body: &Value) -> TantivyDocument {
-        let mut indexed = TantivyDocument::default();
-        indexed.add_text(self.id_field, id);
-        for fields in self.indexes.values() {
-            for (path, ranked, surface) in &fields.paths {
-                let values: Vec<&str> = match body.pointer(path) {
-                    Some(Value::String(text)) => vec![text.as_str()],
-                    Some(Value::Array(values)) => values.iter().filter_map(Value::as_str).collect(),
-                    _ => Vec::new(),
-                };
-                for text in values {
-                    let normalized: String = text.nfkc().collect();
-                    indexed.add_text(*ranked, &normalized);
-                    indexed.add_text(*surface, &normalized);
-                }
-            }
-        }
-        indexed
-    }
     fn capture(&self) -> Result<Searcher> {
-        let reader: IndexReader = self
-            .index
-            .reader_builder()
-            .doc_store_cache_num_blocks(0)
-            .reload_policy(ReloadPolicy::Manual)
-            .try_into()
-            .map_err(search_error)?;
-        reader.reload().map_err(search_error)?;
-        Ok(reader.searcher())
+        capture(&self.index)
     }
+}
+
+fn capture(index: &Index) -> Result<Searcher> {
+    let reader: IndexReader = index
+        .reader_builder()
+        .doc_store_cache_num_blocks(0)
+        .reload_policy(ReloadPolicy::Manual)
+        .try_into()
+        .map_err(search_error)?;
+    reader.reload().map_err(search_error)?;
+    Ok(reader.searcher())
 }
 
 #[cfg(test)]

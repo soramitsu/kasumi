@@ -443,6 +443,7 @@ impl TenantEngine {
                     &changed,
                     previous.document_resolver(),
                     previous.document_resolver(),
+                    self.text_residency(),
                 )
                 .map_err(crate::index_source::into_anyhow)?,
             )

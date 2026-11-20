@@ -326,6 +326,8 @@ pub struct TenantEngine {
     local_snapshot_form: LocalSnapshotForm,
     /// Edit journal custody of the ordinary primary directory.
     pub(crate) primary: crate::application_primary::PrimaryOwner,
+    /// Journal and generation custody of the persisted text directory.
+    pub(crate) text: crate::application_text::TextOwner,
 }
 
 /// How a standalone (`local-v1`) group stores the snapshots it keeps for its own
@@ -864,6 +866,19 @@ impl kasumi_raft::StateMachineBackend for TenantEngine {
                     store,
                     &generation.state,
                     &context.meta,
+                    context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
+                    &mut writes,
+                )?;
+            }
+            // The text directory follows the installed sources: reopen keeps
+            // a current one at or ahead of this snapshot, and anything else
+            // selects a generation rebuilt from it.
+            if selection.is_some() {
+                crate::application_text::prepare_restore(
+                    &self.text,
+                    store,
+                    &generation.state,
+                    generation.document_resolver(),
                     context.mode == kasumi_raft::SnapshotRestoreMode::Reopen,
                     &mut writes,
                 )?;
@@ -1613,6 +1628,17 @@ impl TenantEngine {
     /// Installed before Raft replay or native publication. Pure arithmetic
     /// engine fixtures have no store; a serving database retains this exact
     /// capability through generation reads and ordered state publication.
+    /// Directory text once ordered publication can maintain it: application
+    /// sources and the snapshot store are both installed. Earlier generations
+    /// keep a resident index.
+    pub(crate) fn text_residency(&self) -> kasumi_query::TextResidency {
+        if self.application_sources.get().is_some() && self.snapshot_store.get().is_some() {
+            kasumi_query::TextResidency::Directory
+        } else {
+            kasumi_query::TextResidency::Resident
+        }
+    }
+
     pub(crate) fn install_storage_access(
         &self,
         store: &Arc<kasumi_store::TenantStore>,
@@ -1864,6 +1890,7 @@ impl TenantEngine {
             staged_digest(&(&state.restored_from, &state.restore_lineage))?.0;
         Ok(Self {
             primary: Default::default(),
+            text: Default::default(),
             local_snapshot_form: LocalSnapshotForm::from_process_default(),
             restoration_identity,
             bootstrap_sha256: std::sync::OnceLock::new(),
@@ -2688,6 +2715,7 @@ impl TenantEngine {
                     &changed,
                     previous.document_resolver(),
                     previous.document_resolver(),
+                    self.text_residency(),
                 )
                 .map_err(crate::index_source::into_anyhow)?,
             )
@@ -3464,7 +3492,7 @@ impl TenantEngine {
         // passes above would decrypt and decode each staged body three times.
         check()?;
         let indexes = Arc::new(
-            crate::index_source::build_with_resolver(&state, resolver)
+            crate::index_source::build_with_resolver(&state, resolver, self.text_residency())
                 .map_err(crate::index_source::into_anyhow)?,
         );
         check()?;

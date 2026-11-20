@@ -355,6 +355,9 @@ impl AcceptedGeneration<'_> {
         first_revision: u64,
         can_join: impl FnOnce(&[kasumi_store::WriteOp]) -> bool,
     ) -> anyhow::Result<PreparedApplicationWrites> {
+        // Index pending after-images before they are staged: their bodies are
+        // still resident, and staged bodies are unreadable until committed.
+        let mut text = self.prepare_text()?;
         let mut documents = self.prepare_documents_since(roots, first_revision)?;
         let mut receipts = std::mem::take(&mut self.receipt_publications);
         if !receipts.is_empty()
@@ -383,10 +386,16 @@ impl AcceptedGeneration<'_> {
             writes.try_reserve_exact(rows.len())?;
             writes.extend(rows);
         }
+        if let Some(text) = text.as_mut() {
+            let rows = text.take_writes();
+            writes.try_reserve_exact(rows.len())?;
+            writes.extend(rows);
+        }
         Ok(PreparedApplicationWrites {
             writes,
             _documents: documents,
             _receipts: receipts,
+            _text: text,
             _primary: primary,
         })
     }
@@ -408,6 +417,24 @@ impl AcceptedGeneration<'_> {
             &self.candidate.state,
             &self.delta.changed,
             Some(crate::application_primary::entry_applied(position)?),
+        )
+    }
+
+    /// The text directory's edit and manifest for this candidate, published
+    /// with the rest of its writes. Nothing without an installed store.
+    fn prepare_text(&self) -> anyhow::Result<Option<crate::application_text::TextPublication>> {
+        let engine = self.owner.engine;
+        let Some(store) = engine.snapshot_store.get() else {
+            return Ok(None);
+        };
+        let previous = &self.owner.previous;
+        crate::application_text::prepare_publication(
+            &engine.text,
+            store,
+            &previous.state,
+            &self.candidate.state,
+            &self.delta.changed,
+            &crate::application_text::ResolverBodies(previous.document_resolver()),
         )
     }
 
@@ -607,6 +634,8 @@ pub(super) struct PreparedApplicationWrites {
     _receipts: Vec<crate::mutation_receipt::PreparedPublication>,
     // Funds the primary page rows copied into `writes`.
     _primary: Option<crate::application_primary::PrimaryPublication>,
+    // Funds the text directory rows copied into `writes`.
+    _text: Option<crate::application_text::TextPublication>,
 }
 impl PreparedApplicationWrites {
     pub(super) fn writes(&self) -> &[kasumi_store::WriteOp] {

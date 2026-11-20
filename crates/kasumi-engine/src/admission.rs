@@ -1143,6 +1143,7 @@ struct SnapshotStartups {
     inventory: Option<Reservation>,
 }
 pub struct NodeAdmission {
+    pub(crate) text_shards: Mutex<crate::application_text::ShardCache>,
     core: Arc<MemoryCore>,
     snapshot_startup_drain: tokio::sync::Mutex<kasumi_types::drain::DrainReport>,
     // Report is destroyed before an inventory charge retained for its failures.
@@ -1188,6 +1189,7 @@ impl NodeAdmission {
         owners.try_reserve_exact(core.data.config.max_snapshot_startups)?;
         owners.resize_with(core.data.config.max_snapshot_startups, || None);
         let facade = Arc::new(Self {
+            text_shards: Default::default(),
             core,
             snapshot_startups: Mutex::new(SnapshotStartups {
                 closed: false,
