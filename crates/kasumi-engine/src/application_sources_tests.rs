@@ -1876,6 +1876,20 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         );
         let detached = Arc::new(reopened.read_view(collections, vec![]));
         let persisted = detached.document_source("docs")?;
+        let mut visited = Vec::new();
+        kasumi_query::CollectionRecords::visit_records(&persisted, |id, record| {
+            if id == "point" {
+                assert!(
+                    matches!(record, kasumi_query::Record::Live(document) if document.body == body)
+                );
+            }
+            visited.push(id.to_owned());
+            Ok(())
+        })
+        .map_err(crate::index_source::into_anyhow)?;
+        assert!(visited.windows(2).all(|pair| pair[0] < pair[1]));
+        assert!(visited.iter().any(|id| id == "point"));
+        assert!(!visited.iter().any(|id| id == "absent"));
         persisted
             .with_record("point", Some(slot.version()), &cancellation, |record| {
                 let Some(kasumi_query::Record::Live(document)) = record else {

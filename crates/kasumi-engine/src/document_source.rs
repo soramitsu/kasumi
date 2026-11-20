@@ -308,6 +308,69 @@ impl CollectionRecords for GenerationDocumentSource<'_> {
     ) -> ReadResult<(), Self::Failure> {
         // Checked before each load: the visit loads a record, then lends it.
         self.check_deadline()?;
+        if let Some(selection) = self.generation.application_selection.get() {
+            // Release the header loan before decoding any body through the same
+            // selected reader. Both the page and the exclusive cursor are bounded.
+            const ROWS: usize = 32;
+            let state = &self.generation.state;
+            let cancellation = QueryCancellation::default();
+            let mut cursor = [0; 256];
+            let mut length = 0;
+            loop {
+                let after = (length != 0).then(|| {
+                    std::str::from_utf8(&cursor[..length]).expect("validated document ID")
+                });
+                let selected = selection
+                    .with_serving_primary(self.directory_reader(), state, |tree, memory, layout| {
+                        if layout < kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
+                            return Ok(None);
+                        }
+                        let grant = crate::document_restore::ReadAdmissionFailure::reserve(
+                            memory,
+                            (ROWS * (256 + std::mem::size_of::<(String, u64)>()) + 2048) as u64,
+                        )?;
+                        let mut page = Vec::with_capacity(ROWS);
+                        crate::application_records::visit_snapshot_headers(
+                            tree,
+                            &self.collection,
+                            after,
+                            state.revision,
+                            |id, version, _| {
+                                self.check_deadline()?;
+                                page.push((id.to_owned(), version));
+                                Ok(page.len() < ROWS)
+                            },
+                        )?;
+                        Ok(Some((page, grant)))
+                    })
+                    .map_err(|e| kasumi_query::ReadFailure::Source(DocumentSourceFailure(e)))?;
+                let Some((page, _grant)) = selected.flatten() else {
+                    if length != 0 {
+                        return Err(corruption(
+                            "selected record enumeration lost its primary directory",
+                        )
+                        .into());
+                    }
+                    break;
+                };
+                for (id, version) in &page {
+                    self.with_record(id, Some(*version), &cancellation, |record| {
+                        lend(
+                            id,
+                            record.ok_or_else(|| {
+                                corruption("selected primary header lost its record")
+                            })?,
+                        )
+                    })?;
+                }
+                if page.len() < ROWS {
+                    return Ok(());
+                }
+                let id = page.last().expect("full record window").0.as_bytes();
+                length = id.len();
+                cursor[..length].copy_from_slice(id);
+            }
+        }
         crate::index_source::visit(
             self.collection(),
             self.generation.state.revision,
