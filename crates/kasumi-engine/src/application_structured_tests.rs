@@ -686,6 +686,130 @@ async fn structured_edits_borrow_overflow_values_until_the_producer_fits() {
     fixture.close().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn native_compound_unique_proof_resolves_swaps_sparse_values_and_preserves_failures() {
+    let fixture = Fixture::new().await;
+    let genesis = genesis();
+    let mut definition = (*definition(&[])).clone();
+    definition.indexes.push(IndexDefinition {
+        name: "group_serial".into(),
+        unique: true,
+        text: None,
+        fields: vec![
+            IndexField {
+                path: "/group".into(),
+                kind: ScalarType::String,
+            },
+            IndexField {
+                path: "/serial".into(),
+                kind: ScalarType::Number,
+            },
+        ],
+    });
+    let group = "business-group-".repeat(30);
+    let body = |n: usize| json!({"group": group, "serial": n});
+    let first = genesis.next(
+        (0..40).map(|n| (format!("d{n:03}"), body(n))).collect(),
+        &[],
+        Some(Some(Arc::new(definition))),
+    );
+    assert!(fixture.publish(&StructuredOwner::default(), &genesis, &first, 1));
+    let manifest = fixture.manifest();
+    let view = fixture.store.read_view().unwrap();
+    let reader = TreeReader::new(&view, &manifest.page_space, manifest.records, None).unwrap();
+    let candidate = |rows: Vec<(&str, Value)>| {
+        let mut next = first.state.clone();
+        next.revision += 1;
+        let collection = next.collections.get_mut("docs").unwrap();
+        collection.data_epoch = next.revision;
+        let mut ids = BTreeSet::new();
+        for (id, body) in rows {
+            ids.insert(id.to_owned());
+            collection.documents.insert(
+                id.to_owned(),
+                Arc::new(DocumentSlot::Pending(Arc::new(Document {
+                    id: id.to_owned(),
+                    version: next.revision,
+                    body,
+                }))),
+            );
+        }
+        (next, BTreeMap::from([("docs".to_owned(), ids)]))
+    };
+    let check = |rows, expected, accepts| {
+        let (next, changed) = candidate(rows);
+        assert_eq!(
+            unique::prove(&reader, &first.indexes, &first.state, &next, &changed, None).unwrap(),
+            expected
+        );
+        let actual =
+            crate::index_source::validate_changes(&first.indexes, &first.state, &next, &changed);
+        if accepts {
+            actual.unwrap();
+        } else {
+            assert!(
+                matches!(actual,Err(kasumi_query::ReadFailure::Query(ref e)) if e.code == kasumi_types::ErrorCode::Conflict)
+            );
+        }
+    };
+    // The first component alone has forty rows, above the sixteen-ID anchor
+    // bound. Its second native prefix resolves each owner and the opposite
+    // original document is explicitly released by the same batch.
+    check(vec![("d000", body(1)), ("d001", body(0))], true, true);
+    check(vec![("new", body(1))], false, false);
+    check(vec![("new1", body(70)), ("new2", body(70))], false, false);
+    check(
+        vec![
+            ("sparse-a", json!({"group":group})),
+            ("sparse-b", json!({"group":group})),
+        ],
+        true,
+        true,
+    );
+    check(
+        vec![
+            ("nil-a", json!({"group":null,"serial":12})),
+            ("nil-b", json!({"group":null,"serial":12})),
+        ],
+        false,
+        false,
+    );
+
+    struct Failing<'a>(&'a kasumi_store::TenantReadView);
+    impl PageSource for Failing<'_> {
+        fn check_access(&self) -> Result<()> {
+            Ok(())
+        }
+        fn read_row(&self, _: &str, _: &[u8], _: usize) -> Result<Option<ordered_pages::PageRow>> {
+            Err(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "original unique page read",
+            )
+            .into())
+        }
+        fn memory(&self) -> Arc<dyn kasumi_store::NodeDiskMemoryAdmission> {
+            self.0.memory()
+        }
+        fn domain(&self) -> &str {
+            self.0.domain()
+        }
+    }
+    let failed = Failing(&view);
+    let broken = TreeReader::new(&failed, &manifest.page_space, manifest.records, None).unwrap();
+    let (next, changed) = candidate(vec![("same", body(1))]);
+    let error =
+        unique::prove(&broken, &first.indexes, &first.state, &next, &changed, None).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<std::io::Error>().unwrap().kind(),
+        std::io::ErrorKind::UnexpectedEof
+    );
+    assert_eq!(error.to_string(), "original unique page read");
+    drop(broken);
+    drop(reader);
+    view.close().unwrap();
+    fixture.close().await;
+}
+
 fn small(n: usize) -> Value {
     json!({"status": format!("s{:04}", n % 97), "n": n})
 }

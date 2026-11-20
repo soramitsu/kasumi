@@ -1468,7 +1468,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                         path: format!("/{name}"),
                         kind,
                     }],
-                    unique: false,
+                    unique: name == "value",
                     text: None,
                 })
                 .collect(),
@@ -1489,6 +1489,14 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             kasumi_types::MutationBatch::new().upsert("docs", "alpha", second_body.clone()),
         )
         .await?;
+    let duplicates_original = source_db
+        .mutate(
+            context.clone(),
+            kasumi_types::MutationBatch::new().upsert("docs", "duplicate", body.clone()),
+        )
+        .await
+        .unwrap_err();
+    assert_eq!(duplicates_original.code, kasumi_types::ErrorCode::Conflict);
     // Ordinary writes alone keep the structured directory current. Before any
     // snapshot exists, the leader's generation reads its postings from the
     // directory its own publication committed with the applied cursor.
