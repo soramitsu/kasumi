@@ -22,6 +22,10 @@ struct Fixture {
 }
 impl Fixture {
     async fn new() -> Result<Self> {
+        Self::with_provider(Arc::new(LocalKeyProvider::new([39; 32]))).await
+    }
+
+    async fn with_provider(provider: Arc<LocalKeyProvider>) -> Result<Self> {
         let directory = kasumi_store::test_utils::private_tempdir()?;
         let control_key = ring::signature::Ed25519KeyPair::from_seed_unchecked(&[71; 32])
             .map_err(|_| anyhow::anyhow!("fixture Control signing key failed"))?;
@@ -77,7 +81,7 @@ impl Fixture {
         let store = TenantStore::initialize_catalog(
             node.clone(),
             format!("kasumi.target.{}.1", installed.root.control_incarnation),
-            Arc::new(LocalKeyProvider::new([39; 32])),
+            provider,
             StorageAccess::target_journal(&installed.root, &installed.node)?,
         )
         .await?;
@@ -1567,7 +1571,8 @@ async fn marked_initial_dispatch_requires_exact_phase_attempt_and_lifecycle() ->
 
 #[tokio::test]
 async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() -> Result<()> {
-    let f = Fixture::new().await?;
+    let provider = Arc::new(LocalKeyProvider::new([39; 32]));
+    let f = Fixture::with_provider(provider.clone()).await?;
     let journal = f.create()?;
     let (mut lifecycle, _, _) = initial_dispatch(&f, true)?;
     let partition = ControlAuthorityPartition {
@@ -1589,9 +1594,27 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
     journal.validate_intent(&intent)?;
     let binding = GenerationBinding::from_intent(&intent);
     let token = kasumi_query::QueryCancellation::default();
-    journal.visit_key_dependencies(&token, |_, _| {
-        anyhow::bail!("empty journal returned a dependency")
-    })?;
+    let mut catalogs = Vec::new();
+    journal.visit_key_dependencies(
+        &token,
+        |row| {
+            ensure!(
+                matches!(
+                    row.reference,
+                    kasumi_types::KeyReference::Catalog {
+                        node_id: 1,
+                        domain: kasumi_types::KeyCatalogDomain::TargetJournal,
+                        ..
+                    }
+                ),
+                "empty journal returned an unowned reference"
+            );
+            catalogs.push(row.key);
+            Ok(())
+        },
+        |_, _| anyhow::bail!("empty journal returned a checkpoint"),
+    )?;
+    assert!(!catalogs.is_empty());
     let intent_key = intent_key(intent.intent.request.command_id);
     let generation_key = generation_key(&binding.tenant, binding.target_incarnation);
     let intent_bytes = serde_json::to_vec(&intent)?;
@@ -1604,10 +1627,12 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
         + generation_bytes.len() as u64
         + GENERATION_RESERVE;
     let head_bytes = serde_json::to_vec(&head)?;
+    write_plaintext_copy_for_fixture(&f.store, NS, &intent_key, &intent_bytes)?;
+    assert_eq!(provider.rotate(), 2);
+    f.store.rotate_data_key().await?;
     FixtureWriteBatch::prepare(
         &f.store,
         &[
-            FixtureWrite::Put(NS, &intent_key, &intent_bytes),
             FixtureWrite::Put(NS, &generation_key, &generation_bytes),
             FixtureWrite::Put(NS, b"metadata", &head_bytes),
         ],
@@ -1616,18 +1641,59 @@ async fn current_intent_and_generation_require_current_writer_bytes_on_reopen() 
     drop(journal);
     let reopened = f.reopen()?;
     let mut dependencies = Vec::new();
-    reopened.visit_key_dependencies(&token, |id, checkpoint| {
-        dependencies.push((id, checkpoint.clone()));
-        Ok(())
-    })?;
+    let mut record_keys = Vec::new();
+    let authenticated = reopened.visit_key_dependencies(
+        &token,
+        |row| {
+            if let kasumi_types::KeyReference::TargetJournal {
+                node_id,
+                incarnation,
+            } = row.reference
+            {
+                ensure!(
+                    node_id == 1 && incarnation == binding.target_incarnation,
+                    "unrelated journal reference"
+                );
+                record_keys.push(row.key);
+            }
+            Ok(())
+        },
+        |id, checkpoint| {
+            dependencies.push((id, checkpoint.clone()));
+            Ok(())
+        },
+    )?;
     assert_eq!(
         dependencies,
         [(binding.target_incarnation, binding.checkpoint)]
     );
+    assert_eq!(record_keys.len(), 2);
+    assert_eq!(
+        record_keys
+            .iter()
+            .map(|key| key.version)
+            .collect::<std::collections::BTreeSet<_>>(),
+        [1, 2].into()
+    );
+    assert!(record_keys.iter().any(|key| catalogs.contains(key)));
+    let original = f.store.get(NS, b"metadata")?.unwrap();
+    let mut false_head = head.clone();
+    false_head.generations = 0;
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", &serde_json::to_vec(&false_head)?)?;
+    assert!(
+        reopened
+            .visit_key_dependencies(&token, |_| Ok(()), |_, _| Ok(()))
+            .is_err()
+    );
+    write_plaintext_copy_for_fixture(&f.store, NS, b"metadata", original.as_bytes())?;
+    assert_eq!(
+        reopened.visit_key_dependencies(&token, |_| Ok(()), |_, _| Ok(()))?,
+        authenticated
+    );
     token.cancel();
     assert!(
         reopened
-            .visit_key_dependencies(&token, |_, _| Ok(()))
+            .visit_key_dependencies(&token, |_| Ok(()), |_, _| Ok(()))
             .is_err()
     );
     drop(reopened);

@@ -606,7 +606,11 @@ impl TargetJournal {
         Ok((terminal, row.lifecycle.request.target_incarnation))
     }
 
-    pub(super) fn validate_dispatch_record(&self, key: &[u8], bytes: &[u8]) -> Result<AcceptedInitialDispatch> {
+    pub(super) fn validate_dispatch_record(
+        &self,
+        key: &[u8],
+        bytes: &[u8],
+    ) -> Result<AcceptedInitialDispatch> {
         ensure!(
             bytes.len() <= MAX_RECORD,
             "target dispatch record exceeds bound"
@@ -727,7 +731,8 @@ impl TargetJournal {
         };
         let key = InitialMembershipTerminal::from_history(&history)?.key();
         if let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
-            self.validate_dispatch_terminal(&key, &bytes)?.0
+            self.validate_dispatch_terminal(&key, &bytes)?
+                .0
                 .require_current_history(&history)?;
         }
         Ok(history)
@@ -812,7 +817,8 @@ impl TargetJournal {
         let terminal = InitialMembershipTerminal::from_history(&history)?;
         let key = terminal.key();
         if let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
-            self.validate_dispatch_terminal(&key, &bytes)?.0
+            self.validate_dispatch_terminal(&key, &bytes)?
+                .0
                 .require_current_history(&history)?;
             return Ok(history);
         }
@@ -837,7 +843,8 @@ impl TargetJournal {
             .store
             .get_bounded(NS, &key, MAX_RECORD)?
             .context("first-membership terminal absent after write")?;
-        self.validate_dispatch_terminal(&key, &readback)?.0
+        self.validate_dispatch_terminal(&key, &readback)?
+            .0
             .require_current_history(&history)?;
         snapshot_ensure!(
             readback == encoded,

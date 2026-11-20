@@ -341,8 +341,7 @@ impl TargetJournal {
             .store
             .get_bounded(NS, key.as_bytes(), MAX_RECORD)?
             .context("Initialize association accepted dispatch absent")?;
-        self.validate_dispatch_record(key.as_bytes(), &bytes)?;
-        let accepted: AcceptedInitialDispatch = decode_current(&bytes)?;
+        let accepted = self.validate_dispatch_record(key.as_bytes(), &bytes)?;
         ensure!(
             accepted.expected_raft_prebind(&bytes)? == *expected,
             "Initialize association differs from accepted dispatch"

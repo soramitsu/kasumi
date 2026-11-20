@@ -311,46 +311,112 @@ impl TargetJournal {
         (&self.installed, &self.store)
     }
 
-    /// Each permanent generation retains an external checkpoint. A journal
-    /// authenticates its binding but cannot prove the checkpoint's key roster.
+    /// Each encrypted row retains its observed wrapping version. The caller must
+    /// obtain the independent external key graph for each permanent checkpoint.
     pub(crate) fn visit_key_dependencies(
         &self,
         token: &kasumi_query::QueryCancellation,
+        mut version: impl FnMut(kasumi_types::KeyRetentionEntry) -> Result<()>,
         mut checkpoint: impl FnMut(Uuid, &kasumi_types::FullBackupCheckpoint) -> Result<()>,
-    ) -> Result<()> {
+    ) -> Result<[u8; 32]> {
+        use kasumi_types::{KeyCatalogDomain, KeyReference, KeyRetentionEntry, KeyVersionRef};
+        use sha2::{Digest, Sha256};
+        token.check()?;
         let _workspace = self
             .admission
             .reserve((MAX_RECORD * 8) as u64, Some(token.clone()))?;
-        let count = self.metadata()?.generations;
-        let mut observed = 0u64;
-        if count > 0 {
-            self.store.visit(NS, MAX_RECORD, |key, value| {
+        // Opening and inventory share the full accounting checks. Hold the writer
+        // while the validators follow immutable links to their original records.
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let head = self.metadata()?;
+        let node_id = self.installed.node.node_id;
+        let mut entry = |reference: KeyReference, provider: &str, key_ref: &str, version_number| {
+            token.check()?;
+            ensure!(
+                provider.len() <= kasumi_types::MAX_KEY_PROVIDER_BYTES
+                    && key_ref.len() <= kasumi_types::MAX_KEY_REF_BYTES,
+                "target journal wrapping identity exceeds its bound"
+            );
+            let row = KeyRetentionEntry {
+                key: KeyVersionRef {
+                    provider: provider.into(),
+                    key_ref: key_ref.into(),
+                    version: version_number,
+                },
+                reference,
+            };
+            row.validate()?;
+            version(row)
+        };
+        let view = self.store.read_view()?;
+        let result = (|| -> Result<[u8; 32]> {
+            let physical = view.wrapping_inventory()?;
+            let mut digest = Sha256::new();
+            digest.update(b"kasumi.target-journal-key-inventory.v1\0");
+            digest.update(
+                physical.visit_catalog(|catalog_id, provider, key_ref, number| {
+                    entry(
+                        KeyReference::Catalog {
+                            node_id,
+                            catalog_id,
+                            domain: KeyCatalogDomain::TargetJournal,
+                        },
+                        provider,
+                        key_ref,
+                        number,
+                    )
+                })?,
+            );
+            let mut accounting = accounting::JournalAccounting::new();
+            physical.visit_records(NS, MAX_RECORD, |key, value, provider, key_ref, number| {
                 token.check()?;
-                if key.starts_with(b"generation/") {
-                    let row: GenerationBinding = decode_current(value)?;
+                let owner = accounting.observe(self, key, value, |row| {
                     ensure!(
-                        key == generation_key(&row.tenant, row.target_incarnation)
-                            && row.control_incarnation == self.installed.root.control_incarnation
+                        row.control_incarnation == self.installed.root.control_incarnation
                             && row.checkpoint.tenant == row.tenant
                             && row.checkpoint.source_incarnation
                                 == row.source_incarnation.to_string(),
                         "target journal generation differs from its checkpoint"
                     );
                     row.checkpoint.validate()?;
-                    checkpoint(row.target_incarnation, &row.checkpoint)?;
-                    observed = observed
-                        .checked_add(1)
-                        .context("target generation count exhausted")?;
+                    checkpoint(row.target_incarnation, &row.checkpoint)
+                })?;
+                if let Some(incarnation) = owner {
+                    entry(
+                        KeyReference::TargetJournal {
+                            node_id,
+                            incarnation,
+                        },
+                        provider,
+                        key_ref,
+                        number,
+                    )?;
+                } else {
+                    ensure!(
+                        decode_current::<Metadata>(value)? == head,
+                        "target journal head changed during inventory"
+                    );
+                }
+                serde_json::to_writer(&mut digest, &(provider, key_ref, number))?;
+                for field in [key, value] {
+                    digest.update((field.len() as u64).to_be_bytes());
+                    digest.update(field);
                 }
                 Ok(())
             })?;
+            accounting.verify(&head)?;
+            token.check()?;
+            physical.check_current()?;
+            Ok(digest.finalize().into())
+        })();
+        match (result, view.close()) {
+            (Ok(digest), Ok(())) => Ok(digest),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Err(error), Err(close)) => Err(error.context(close)),
         }
-        token.check()?;
-        ensure!(
-            observed == count && self.metadata()?.generations == count,
-            "target journal generation membership changed during key inventory"
-        );
-        Ok(())
     }
 
     /// The installed runner must first close and drain its operations. Retained

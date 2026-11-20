@@ -69,13 +69,12 @@ impl TargetJournal {
             .store
             .get_bounded(NS, accepted_key.as_bytes(), MAX_RECORD)?
             .context("Start observation lacks accepted dispatch")?;
-        self.validate_dispatch_record(accepted_key.as_bytes(), &accepted)?;
+        let original = self.validate_dispatch_record(accepted_key.as_bytes(), &accepted)?;
         ensure!(
             hex::encode(Sha256::digest(&accepted)) == row.prebind.journal_row_sha256,
             "Start observation accepted dispatch digest differs"
         );
-        let accepted: super::dispatch::AcceptedInitialDispatch = decode_current(&accepted)?;
-        accepted.require_start_prebind(&row.prebind)?;
+        original.require_start_prebind(&row.prebind)?;
         Ok(row)
     }
 

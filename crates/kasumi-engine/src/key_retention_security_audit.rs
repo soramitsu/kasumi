@@ -274,10 +274,7 @@ impl SecurityAudit {
                 signer.and_then(|owner| owner.store.upgrade()),
                 KeyCatalogDomain::LiveSignerTrust,
             ),
-            KeyRetentionScope::TargetJournal {} => (
-                journal.map(|owner| owner.key_inventory_owner().1.clone()),
-                KeyCatalogDomain::TargetJournal,
-            ),
+            KeyRetentionScope::TargetJournal {} => (None, KeyCatalogDomain::TargetJournal),
             // This scope visits its physical catalog and rows together at one native root.
             KeyRetentionScope::LocalRecovery {} => (None, KeyCatalogDomain::SecurityAudit),
             _ => {
@@ -323,8 +320,9 @@ impl SecurityAudit {
                     })
                     .map_err(Error::from_physical_source)?,
             )
-        } else if matches!(request.scope, KeyRetentionScope::LocalRecovery {})
-            && local_recovery.is_some()
+        } else if journal.is_some()
+            || (matches!(request.scope, KeyRetentionScope::LocalRecovery {})
+                && local_recovery.is_some())
         {
             None
         } else {
@@ -372,28 +370,29 @@ impl SecurityAudit {
             None
         };
         let journal_digest = if let Some(journal) = journal {
-            let mut digest = Sha256::new();
-            digest.update(staged_digest(journal.key_inventory_owner().0)?.0.as_bytes());
-            journal
-                .visit_key_dependencies(token, |id, checkpoint| {
-                    digest.update(staged_digest(&(id, checkpoint))?.0.as_bytes());
-                    add_missing(
-                        &mut missing,
-                        &mut truncated,
-                        MissingKeyDependency::RecordUnreadable {
-                            record_kind: KeyReferenceKind::TargetJournal,
-                            id: id.to_string(),
-                        },
-                    );
-                    Ok(())
-                })
+            let digest = journal
+                .visit_key_dependencies(
+                    token,
+                    |row| Ok(consider_entry(request, &mut entries, row)?),
+                    |id, _checkpoint| {
+                        add_missing(
+                            &mut missing,
+                            &mut truncated,
+                            MissingKeyDependency::RecordUnreadable {
+                                record_kind: KeyReferenceKind::TargetJournal,
+                                id: id.to_string(),
+                            },
+                        );
+                        Ok(())
+                    },
+                )
                 .map_err(|error| {
                     error
                         .downcast_ref::<Error>()
                         .cloned()
                         .unwrap_or_else(|| Error::from_physical_source(error))
                 })?;
-            Some(<[u8; 32]>::from(digest.finalize()))
+            Some(digest)
         } else {
             None
         };
