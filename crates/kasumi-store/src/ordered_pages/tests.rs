@@ -974,11 +974,23 @@ async fn sampled_crash_cuts_of_a_staged_tree_selection_keeps_one_complete_tree()
     for cut in (0..mutations)
         .step_by((mutations / 40).max(1))
         .chain([mutations])
+        .map(Some)
+        .chain([None])
     {
         let disk = starting.crash();
         let stores = pair(disk.clone(), scratch.clone(), false).await;
-        disk.fail_after(cut);
+        // Each stage uses fresh physical IDs. A measured cut may still
+        // interrupt another stage of the same logical size.
+        if let Some(limit) = cut {
+            disk.fail_after(limit);
+        }
         let result = run(&stores);
+        if let Err(error) = &result {
+            ensure!(
+                disk.rejected_mutation(),
+                "stage failed without an injected mutation at {cut:?}: {error:#}"
+            );
+        }
         let crashed = disk.crash();
         disk.disarm();
         let reopened = pair(crashed, scratch.clone(), false).await;
@@ -991,20 +1003,32 @@ async fn sampled_crash_cuts_of_a_staged_tree_selection_keeps_one_complete_tree()
         let manifest = ApplicationManifest::load_at(&view)?;
         if root == old_root {
             old += 1;
+            assert!(
+                result.is_err(),
+                "acknowledged selection lost at cut {cut:?}"
+            );
             assert!(manifest.is_none());
             assert_eq!(selected.namespace(0), INITIAL_PAGE_SPACE[0]);
-            assert_eq!(entries.len(), 50, "old tree torn at cut {cut}");
+            assert_eq!(entries.len(), 50, "old tree torn at cut {cut:?}");
+            for (n, (found, value)) in entries.iter().enumerate() {
+                assert_eq!(found.as_slice(), key(n as u64));
+                assert_eq!(value.as_slice(), [2; 40]);
+            }
         } else {
             new += 1;
-            assert!(result.is_ok() || cut < mutations);
             assert_eq!(manifest.context("missing selected manifest")?.records, root);
-            assert_eq!(entries.len(), 400, "new tree torn at cut {cut}");
+            assert_eq!(entries.len(), 400, "new tree torn at cut {cut:?}");
+            for (n, (found, value)) in entries.iter().enumerate() {
+                assert_eq!(found.as_slice(), key(n as u64));
+                assert_eq!(value.len(), 3000);
+                assert!(value.iter().all(|byte| *byte == (n % 251) as u8));
+            }
             let mut left = 0;
             store.visit(SPACE, MAX_PAGE_BYTES, |_, _| {
                 left += 1;
                 Ok(())
             })?;
-            assert_eq!(left, 0, "retired space leaked at cut {cut}");
+            assert_eq!(left, 0, "retired space leaked at cut {cut:?}");
         }
         view.close()?;
     }

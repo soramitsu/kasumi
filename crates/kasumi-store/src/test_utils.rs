@@ -1123,6 +1123,8 @@ impl Default for FaultBackend {
 #[derive(Debug, Default)]
 struct FaultState {
     remaining: Option<usize>,
+    #[cfg(test)]
+    rejected_mutation: bool,
     operations: usize,
     syncs: usize,
     advance_on_sync: Option<(std::sync::Arc<ManualClock>, Duration)>,
@@ -1145,7 +1147,16 @@ impl FaultBackend {
         Self::default()
     }
     pub fn fail_after(&self, mutations: usize) {
-        self.state.lock().remaining = Some(mutations);
+        let mut state = self.state.lock();
+        state.remaining = Some(mutations);
+        #[cfg(test)]
+        {
+            state.rejected_mutation = false;
+        }
+    }
+    #[cfg(test)]
+    pub(crate) fn rejected_mutation(&self) -> bool {
+        self.state.lock().rejected_mutation
     }
     pub fn disarm(&self) {
         self.state.lock().remaining = None;
@@ -1186,6 +1197,10 @@ impl FaultBackend {
         let mut state = self.state.lock();
         if let Some(remaining) = &mut state.remaining {
             if *remaining == 0 {
+                #[cfg(test)]
+                {
+                    state.rejected_mutation = true;
+                }
                 return Err(std::io::Error::other("injected storage failure"));
             }
             *remaining -= 1;
