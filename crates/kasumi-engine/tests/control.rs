@@ -164,6 +164,88 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         assert!(missing.contains(&MissingKeyDependency::MemberUnreported { node_id: id }));
     }
     drop(audit_keys);
+    let signer_query = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::Signer {},
+        cursor: None,
+        limit: 8,
+    };
+    let no_signer = db
+        .read_key_retention(&operator, signer_query.clone())
+        .await
+        .unwrap();
+    assert!(no_signer.entries.is_empty());
+    assert!(
+        matches!(&no_signer.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
+        if missing.contains(&MissingKeyDependency::MemberUnreported { node_id }))
+    );
+    drop(no_signer);
+    let verifier = TrustVerifierIdentity {
+        installation_id: uuid::Uuid::new_v4(),
+        node_id,
+    };
+    let signer_node = physical
+        .storage
+        .create_new(
+            root.path().join("verifier.kv"),
+            kasumi_store::node_store_ids::signer_verifier(&verifier).unwrap(),
+        )
+        .unwrap();
+    let signer = TenantStore::initialize_catalog(
+        signer_node.clone(),
+        verifier.tenant(),
+        Arc::new(LocalKeyProvider::new([38; 32])),
+        kasumi_store::StorageAccess::live_signer_trust(verifier.clone()).unwrap(),
+    )
+    .await
+    .unwrap();
+    let authority_id = uuid::Uuid::new_v4();
+    let partitions = BTreeSet::from([(authority_id, 0)]);
+    assert!(
+        db.install_signer_key_inventory(&store, &verifier, partitions.clone())
+            .is_err()
+    );
+    db.install_signer_key_inventory(&signer, &verifier, partitions)
+        .unwrap();
+    let mut expected = BTreeSet::new();
+    signer
+        .visit_wrapping_identities(|catalog_id, provider, key_ref, version| {
+            expected.insert(KeyRetentionEntry {
+                key: KeyVersionRef {
+                    provider: provider.into(),
+                    key_ref: key_ref.into(),
+                    version,
+                },
+                reference: KeyReference::Catalog {
+                    node_id,
+                    catalog_id,
+                    domain: KeyCatalogDomain::LiveSignerTrust,
+                },
+            });
+            Ok(())
+        })
+        .unwrap();
+    assert!(!expected.is_empty());
+    let signer_keys = db
+        .read_key_retention(&operator, signer_query.clone())
+        .await
+        .unwrap();
+    assert_eq!(
+        signer_keys.entries,
+        expected.into_iter().collect::<Vec<_>>()
+    );
+    assert!(
+        matches!(&signer_keys.coverage, KeyRetentionCoverage::Incomplete { missing, .. }
+        if missing.contains(&MissingKeyDependency::AuthorityPartitionUnreported {authority_id, partition: 0})
+        && !missing.contains(&MissingKeyDependency::MemberUnreported {node_id}))
+    );
+    drop(signer_keys);
+    assert!(
+        db.read_key_retention(&context("writer", CONTROL_TENANT), signer_query)
+            .await
+            .is_err()
+    );
+    signer.shutdown().await.unwrap();
+    signer_node.shutdown().await.unwrap();
     let captured = db.engine().generation().unwrap();
     let revision = captured.revision();
     let audits = captured.state.audits.len();

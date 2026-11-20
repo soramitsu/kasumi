@@ -1175,6 +1175,7 @@ pub struct Database {
     audit_cursor_key: std::sync::OnceLock<ring::hmac::Key>,
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
+    signer_keys: std::sync::OnceLock<Arc<key_retention::SignerCatalog>>,
     archive_flights: history_export::ArchiveFlights,
     query_slots: Arc<tokio::sync::Semaphore>,
     clock: Arc<dyn LeaseClock>,
@@ -1584,6 +1585,7 @@ impl Database {
             proposal_gate: Arc::new(tokio::sync::Mutex::new(())),
             proposals: proposal_jobs::Jobs::default(),
             backup_control: Default::default(),
+            signer_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),
         });

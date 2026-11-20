@@ -278,6 +278,24 @@ pub(crate) struct InstalledSignerVerifier {
     drain_report: std::sync::Mutex<kasumi_types::drain::DrainReport>,
 }
 impl InstalledSignerVerifier {
+    pub(crate) fn install_key_inventory(
+        &self,
+        control: &kasumi_engine::Database,
+        trusts: &BTreeMap<String, AuthorityTrust>,
+    ) -> Result<()> {
+        let partitions = trusts
+            .values()
+            .flat_map(|trust| {
+                let manifest = trust.manifest();
+                manifest
+                    .partitions
+                    .keys()
+                    .map(move |&partition| (manifest.authority_id, partition))
+            })
+            .collect();
+        control.install_signer_key_inventory(&self.store, &self.installed_identity, partitions)
+    }
+
     /// The parent runtime's acknowledged handoff activates this already
     /// retained worker; installation and abandoned opens remain dormant.
     pub(crate) fn activate_cache_warming(&self) -> Result<()> {

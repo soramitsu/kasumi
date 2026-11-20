@@ -71,10 +71,13 @@ pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
             let result = match action.as_str() {
                 "read" => {
                     let request: ReadKeyRetentionRequest = serde_json::from_slice(&input)?;
-                    if matches!(request.scope, KeyRetentionScope::SecurityAudit {}) {
+                    if matches!(
+                        request.scope,
+                        KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
+                    ) {
                         ensure!(
                             matches!(profile.resource, CredentialResource::Control { .. }),
-                            "service audit key inventory requires a Control profile"
+                            "independent key inventory requires a Control profile"
                         );
                     } else {
                         require_key_scope(&profile, &request.scope)?;

@@ -394,6 +394,11 @@ impl ReadKeyRetentionRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum MissingKeyDependency {
+    /// The installed independent issuer partition has not reported its own catalogs.
+    AuthorityPartitionUnreported {
+        authority_id: Uuid,
+        partition: u16,
+    },
     /// The durable backup session index is not installed or not readable.
     SessionIndexUnavailable {},
     ArchiveUnavailable {
@@ -414,7 +419,10 @@ pub enum MissingKeyDependency {
 impl MissingKeyDependency {
     pub fn validate(&self) -> Result<()> {
         match self {
-            Self::SessionIndexUnavailable {} => Ok(()),
+            Self::AuthorityPartitionUnreported { authority_id, .. } if authority_id.is_nil() => {
+                Err(invalid("invalid unreported authority partition"))
+            }
+            Self::AuthorityPartitionUnreported { .. } | Self::SessionIndexUnavailable {} => Ok(()),
             Self::ArchiveUnavailable { id } | Self::RecordUnreadable { id, .. } => {
                 validate_name(id)
             }

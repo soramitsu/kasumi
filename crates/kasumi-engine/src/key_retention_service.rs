@@ -10,6 +10,7 @@ mod member;
 mod retirement;
 #[path = "key_retention_security_audit.rs"]
 mod security_audit;
+pub(super) use security_audit::SignerCatalog;
 
 /// One observation of a whole scope at one selected generation. The page
 /// holds the entries the request selected; the coverage, dependency position
@@ -444,14 +445,17 @@ impl Database {
         request.scope.validate()?;
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
-        let service_audit = matches!(request.scope, KeyRetentionScope::SecurityAudit {});
-        let control = if service_audit && !probe {
+        let independent = matches!(
+            request.scope,
+            KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
+        );
+        let control = if independent && !probe {
             if context.tenant != crate::control::CONTROL_TENANT
                 || self.store.tenant() != context.tenant
             {
                 return Err(Error::new(
                     ErrorCode::Forbidden,
-                    "service audit key inventory requires Control administration",
+                    "independent key inventory requires Control administration",
                 ));
             }
             true
@@ -499,9 +503,10 @@ impl Database {
                 "local node lacks a current membership report",
             ));
         }
-        if service_audit {
+        if independent {
             context.authorization.require_control(&state.incarnation)?;
             let audit = self.security_audit.clone();
+            let signer = self.signer_keys.get().cloned();
             let request = request.clone();
             let term = metrics.current_term;
             let membership = *membership.log_id();
@@ -509,7 +514,13 @@ impl Database {
                 .retained_read(cancellation, move |reservation, token| {
                     let _registration = registration;
                     let state = &generation.state;
-                    let page = audit.key_inventory_page(&generation, &request, &metrics, token)?;
+                    let page = audit.key_inventory_page(
+                        &generation,
+                        &request,
+                        &metrics,
+                        signer.as_deref(),
+                        token,
+                    )?;
                     let revision = state.revision;
                     Ok((
                         KeyRetentionObservation {

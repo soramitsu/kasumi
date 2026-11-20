@@ -1697,6 +1697,9 @@ impl NodeRuntime {
                 )
             }
         };
+        if let (Some(control), Some(verifier)) = (&control, &signer_verifier) {
+            verifier.install_key_inventory(&control.database, &authority_trusts)?;
+        }
         let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
