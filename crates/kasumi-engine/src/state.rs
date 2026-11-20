@@ -2155,7 +2155,6 @@ impl TenantEngine {
             check,
         )
         .map_err(SnapshotFailure::from)?;
-        drop(records);
         phase.complete();
         let phase = VerificationPhase::start("restore.rebind", None);
         check()?;
@@ -2167,7 +2166,41 @@ impl TenantEngine {
         let phase = VerificationPhase::start("restore.genesis_snapshot", None);
         check()?;
         let generation = engine.generation()?;
-        let image = Self::logical_snapshot_of(&generation, &scratch_disk, Some(check))?;
+        if !generation.snapshot_accounting.fits(&generation.state)? {
+            return Err(
+                Error::new(ErrorCode::Corruption, "snapshot byte accounting mismatch").into(),
+            );
+        }
+        let limit = crate::target_resolution::snapshot_limit(&generation.state)?;
+        let logical = generation.encoded_snapshot_bytes()?;
+        // A target with enough scratch can stream the two unchanged classes
+        // out of its verified source. If the extra simultaneous extent does
+        // not fit, release that source and use its already staged objects.
+        let image = match snapshot_api::reserved_spool(&scratch_disk, limit, logical) {
+            Ok(mut spool) => {
+                crate::snapshot_codec::write_verified_genesis(
+                    &generation,
+                    &records,
+                    &mut snapshot_api::CheckedIo {
+                        io: &mut spool,
+                        check,
+                    },
+                )
+                .map_err(snapshot_encoding_failure::encoding_error)?;
+                drop(records);
+                kasumi_store::SnapshotImage::freeze(spool)
+                    .map_err(snapshot_encoding_failure::encoding_error)?
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::StorageFull => {
+                drop(records);
+                check()?;
+                Self::logical_snapshot_of(&generation, &scratch_disk, Some(check))?
+            }
+            Err(error) => {
+                return Err(snapshot_encoding_failure::encoding_error(error.into()).into());
+            }
+        };
+
         check()?;
         engine
             .bootstrap_sha256

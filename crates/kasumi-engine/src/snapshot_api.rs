@@ -24,10 +24,19 @@ pub(super) fn capture_reserved(
     logical: u64,
     write: impl FnOnce(&mut dyn Write) -> anyhow::Result<()>,
 ) -> anyhow::Result<SnapshotImage> {
-    let mut spool = kasumi_store::EncryptedSpool::new(disk, limit)?;
-    spool.reserve(logical)?;
+    let mut spool = reserved_spool(disk, limit, logical)?;
     write(&mut spool)?;
     SnapshotImage::freeze(spool)
+}
+
+pub(super) fn reserved_spool(
+    disk: &Arc<kasumi_store::ScratchDisk>,
+    limit: u64,
+    logical: u64,
+) -> std::io::Result<kasumi_store::EncryptedSpool> {
+    let mut spool = kasumi_store::EncryptedSpool::new(disk, limit)?;
+    spool.reserve(logical)?;
+    Ok(spool)
 }
 
 /// A fully verified backend image, staged without changing live state or Raft

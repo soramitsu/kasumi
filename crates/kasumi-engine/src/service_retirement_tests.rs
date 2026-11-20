@@ -495,6 +495,13 @@ async fn verified_restore_rekeys_compact_bodies_before_target_source_installatio
     )
     .unwrap();
     let target_engine = Arc::new(target_engine);
+    // The independent ordinary writer reloads target-scoped physical objects.
+    // Its complete framing, rebound metadata and feed must match the image
+    // that copied the verified source's unchanged document record classes.
+    let conventional = target_engine.logical_snapshot(&fixture.storage.scratch).unwrap();
+    assert_eq!(target_image.sha256(), conventional.sha256());
+    assert_eq!(target_image.len(), conventional.len());
+    drop(conventional);
     let before_install = target_engine.generation().unwrap();
     assert_eq!(before_install.state.incarnation, target_incarnation);
     assert!(matches!(

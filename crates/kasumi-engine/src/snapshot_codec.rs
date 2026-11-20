@@ -524,12 +524,26 @@ impl Write for Bounded {
     }
 }
 
+enum EncodedPosition {
+    Record((u8, String, String)),
+    EndOfKind(u8),
+}
+
+impl EncodedPosition {
+    fn precedes(&self, next: &(u8, String, String)) -> bool {
+        match self {
+            Self::Record(previous) => previous < next,
+            Self::EndOfKind(previous) => *previous < next.0,
+        }
+    }
+}
+
 pub(crate) struct Encoder<'a> {
     writer: &'a mut dyn Write,
     digest: Sha256,
     count: u64,
     total: u64,
-    previous: Option<(u8, String, String)>,
+    previous: Option<EncodedPosition>,
 }
 impl<'a> Encoder<'a> {
     pub(crate) fn new(writer: &'a mut dyn Write) -> anyhow::Result<Self> {
@@ -550,10 +564,10 @@ impl<'a> Encoder<'a> {
         anyhow::ensure!(
             self.previous
                 .as_ref()
-                .is_none_or(|previous| previous < &key),
+                .is_none_or(|previous| previous.precedes(&key)),
             "snapshot records duplicated or unordered"
         );
-        self.previous = Some(key);
+        self.previous = Some(EncodedPosition::Record(key));
         let mut buffer = Bounded(Vec::new());
         serde_json::to_writer(&mut buffer, &record)?;
         anyhow::ensure!(
@@ -576,6 +590,63 @@ impl<'a> Encoder<'a> {
             .checked_add(FRAME_HEADER_BYTES as u64)
             .and_then(|n| n.checked_add(buffer.0.len() as u64))
             .ok_or_else(|| anyhow::anyhow!("snapshot byte overflow"))?;
+        Ok(())
+    }
+    /// Copy a whole ordered class from the same immutable image whose typed
+    /// records built this target. Rebinding changes neither live documents
+    /// nor feed items. Both the source AEAD and the new stream digest cover
+    /// every copied byte, including the record lengths and kind tags.
+    fn verified_documents(&mut self, source: &VerifiedRecords, kind: u8) -> anyhow::Result<()> {
+        use std::io::{Seek, SeekFrom};
+
+        anyhow::ensure!(matches!(kind, 3 | 10), "unexpected verified document class");
+        let layout = source.summary().kinds[usize::from(kind)];
+        if layout.records == 0 {
+            anyhow::ensure!(
+                layout.framed_bytes == 0,
+                "empty verified document class has bytes"
+            );
+            return Ok(());
+        }
+        anyhow::ensure!(
+            self.previous
+                .as_ref()
+                .is_none_or(|previous| match previous {
+                    EncodedPosition::Record((last, _, _)) | EncodedPosition::EndOfKind(last) =>
+                        *last < kind,
+                }),
+            "verified snapshot class is out of order"
+        );
+        let offset = source.summary().kinds[..usize::from(kind)]
+            .iter()
+            .try_fold(MAGIC.len() as u64, |offset, row| {
+                offset
+                    .checked_add(row.framed_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("verified snapshot offset overflow"))
+            })?;
+        let mut reader = source.image().reader();
+        reader.seek(SeekFrom::Start(offset))?;
+        let mut remaining = layout.framed_bytes;
+        let mut buffer = zeroize::Zeroizing::new(vec![0u8; 64 << 10]);
+        while remaining > 0 {
+            let take = remaining.min(buffer.len() as u64) as usize;
+            let chunk = &mut buffer[..take];
+            reader.read_exact(chunk)?;
+            // The materialization writer checks the original deadline and
+            // access before each bounded output block.
+            self.writer.write_all(chunk)?;
+            self.digest.update(chunk);
+            remaining -= take as u64;
+        }
+        self.count = self
+            .count
+            .checked_add(layout.records)
+            .ok_or_else(|| anyhow::anyhow!("snapshot record count overflow"))?;
+        self.total = self
+            .total
+            .checked_add(layout.framed_bytes)
+            .ok_or_else(|| anyhow::anyhow!("snapshot framing overflow"))?;
+        self.previous = Some(EncodedPosition::EndOfKind(kind));
         Ok(())
     }
     pub(crate) fn finish(self) -> anyhow::Result<()> {
@@ -614,6 +685,49 @@ pub(crate) fn write_with_resolver(
     resolver: Option<&dyn DocumentResolver>,
     writer: &mut dyn Write,
 ) -> anyhow::Result<()> {
+    write_records(
+        state,
+        receipts,
+        backup_bindings,
+        terminals,
+        target_resolutions,
+        DocumentFrames::Resolve(resolver),
+        writer,
+    )
+}
+
+/// Only the freshly rebound target may reuse these bytes. Subsequent
+/// generations always use their own selected resolver.
+pub(crate) fn write_verified_genesis(
+    generation: &crate::Generation,
+    source: &VerifiedRecords,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
+    write_records(
+        &generation.state,
+        &generation.receipts,
+        &generation.backup_bindings,
+        &generation.terminals,
+        &generation.target_resolutions,
+        DocumentFrames::Verified(source),
+        writer,
+    )
+}
+
+enum DocumentFrames<'a> {
+    Resolve(Option<&'a dyn DocumentResolver>),
+    Verified(&'a VerifiedRecords),
+}
+
+fn write_records(
+    state: &TenantState,
+    receipts: &crate::mutation_receipt::View,
+    backup_bindings: &crate::backup_binding::View,
+    terminals: &crate::staged_terminal::View,
+    target_resolutions: &crate::target_resolution::View,
+    documents: DocumentFrames<'_>,
+    writer: &mut dyn Write,
+) -> anyhow::Result<()> {
     anyhow::ensure!(
         terminals.head() == &state.staged_terminal_head,
         "snapshot terminal owner differs"
@@ -630,6 +744,14 @@ pub(crate) fn write_with_resolver(
                 encoder.record(Record::Receipt(Box::new(row?)))?;
             }
         } else {
+            let resolver = match documents {
+                DocumentFrames::Verified(source) if matches!(kind, 3 | 10) => {
+                    encoder.verified_documents(source, kind)?;
+                    continue;
+                }
+                DocumentFrames::Resolve(resolver) => resolver,
+                DocumentFrames::Verified(_) => None,
+            };
             for record in records_with_resolver(state, kind, None, resolver)? {
                 encoder.record(record?)?;
             }
