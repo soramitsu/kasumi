@@ -15,6 +15,13 @@ pub trait RemoteBackupTransport: Send + Sync {
         source: Arc<BackupSourceCapability>,
         action: RemoteBackupAction,
     ) -> RemoteBackupFuture<'a, Option<RemoteBackupRecord>>;
+    fn inventory<'a>(
+        &'a self,
+        _source: Arc<BackupSourceCapability>,
+        _read: BackupInventoryRead,
+    ) -> RemoteBackupFuture<'a, BackupInventoryPage> {
+        Box::pin(async { Err(unavailable()) })
+    }
 }
 pub trait RemoteBackupSourceVerifier: Send + Sync {
     fn confirm<'a>(
@@ -26,6 +33,7 @@ pub trait RemoteBackupSourceVerifier: Send + Sync {
 }
 
 pub struct BackupSourceCapability {
+    restore_session: Option<uuid::Uuid>,
     reference: RemoteBackupReference,
     group: RaftGroup,
     engine: Arc<TenantEngine>,
@@ -113,14 +121,17 @@ impl BackupSourceCapability {
         }
         let confirmation = RemoteBackupConfirmation {
             original: challenge.clone(),
-            restore_source_incarnation: self
-                .engine
-                .generation()?
-                .state
-                .restore_lineage
-                .iter()
-                .find(|link| link.checkpoint.backup_id == self.reference.session)
-                .map(|link| link.checkpoint.source_incarnation.clone()),
+            restore_source_incarnation: match self.restore_session {
+                Some(id) => self
+                    .engine
+                    .generation()?
+                    .state
+                    .restore_lineage
+                    .iter()
+                    .find(|link| link.checkpoint.backup_id == id)
+                    .map(|link| link.checkpoint.source_incarnation.clone()),
+                None => None,
+            },
             policy_epoch: self.epoch,
             purpose_sha256: staged_digest(purpose)?.0,
             source_certificate_sha256: identity.node.certificate_sha256.clone(),
@@ -190,16 +201,16 @@ impl Database {
         Ok(())
     }
 
-    pub(super) async fn remote_backup_action(
+    fn backup_source_capability(
         &self,
         transport: &Arc<dyn RemoteBackupTransport>,
         context: &RequestContext,
-        action: RemoteBackupAction,
-    ) -> Result<Option<RemoteBackupRecord>> {
+        session: uuid::Uuid,
+        action_sha256: String,
+        restore_session: Option<uuid::Uuid>,
+    ) -> Result<ActiveSource> {
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
-        let fence = self.response_fence(context)?;
-        action.validate()?;
         let generation = self.engine.generation()?;
         let reference = RemoteBackupReference {
             nonce: uuid::Uuid::new_v4(),
@@ -207,11 +218,12 @@ impl Database {
             source_node: self.group.node_id(),
             tenant: context.tenant.clone(),
             source_incarnation: generation.incarnation().into(),
-            session: action.session(),
-            action_sha256: staged_digest(&action)?.0,
+            session,
+            action_sha256,
         };
         reference.validate()?;
         let cap = ActiveSource(Arc::new(BackupSourceCapability {
+            restore_session,
             reference,
             group: self.group.clone(),
             engine: self.engine.clone(),
@@ -223,6 +235,44 @@ impl Database {
             deadline: tokio::time::Instant::now() + Duration::from_secs(30),
         }));
         cap.0.live()?;
+        Ok(cap)
+    }
+
+    pub(in crate::service) async fn remote_inventory_page(
+        &self,
+        transport: &Arc<dyn RemoteBackupTransport>,
+        context: &RequestContext,
+        read: BackupInventoryRead,
+    ) -> Result<BackupInventoryPage> {
+        let fence = self.response_fence(context)?;
+        let cap =
+            self.backup_source_capability(transport, context, read.scan, read.digest()?, None)?;
+        let command = BackupInventoryCommand {
+            reference: cap.0.reference.clone(),
+            read: read.clone(),
+        };
+        let page = transport.inventory(cap.0.clone(), read).await?;
+        page.validate(&command)?;
+        cap.0.live()?;
+        fence.check()?;
+        Ok(page)
+    }
+
+    pub(super) async fn remote_backup_action(
+        &self,
+        transport: &Arc<dyn RemoteBackupTransport>,
+        context: &RequestContext,
+        action: RemoteBackupAction,
+    ) -> Result<Option<RemoteBackupRecord>> {
+        let fence = self.response_fence(context)?;
+        action.validate()?;
+        let cap = self.backup_source_capability(
+            transport,
+            context,
+            action.session(),
+            staged_digest(&action)?.0,
+            Some(action.session()),
+        )?;
         let observed = transport.execute(cap.0.clone(), action).await?;
         if let Some(record) = &observed {
             record.validate()?;
@@ -291,15 +341,15 @@ impl Database {
         }
         Ok(())
     }
-    async fn confirm_remote_source(
+    async fn confirm_backup_reference(
         &self,
         verifier: &dyn RemoteBackupSourceVerifier,
         actor: &RequestContext,
         peer: &str,
-        command: &RemoteBackupCommand,
-    ) -> Result<(RemoteBackupConfirmation, u64, u64)> {
+        reference: &RemoteBackupReference,
+    ) -> Result<RemoteBackupConfirmation> {
         let challenge = RemoteBackupChallenge {
-            reference: command.reference.clone(),
+            reference: reference.clone(),
             challenge: uuid::Uuid::new_v4(),
         };
         let confirmation = verifier.confirm(&challenge, actor, peer).await?;
@@ -307,6 +357,18 @@ impl Database {
         if confirmation.original != challenge {
             return Err(wrong_owner());
         }
+        Ok(confirmation)
+    }
+    async fn confirm_remote_source(
+        &self,
+        verifier: &dyn RemoteBackupSourceVerifier,
+        actor: &RequestContext,
+        peer: &str,
+        command: &RemoteBackupCommand,
+    ) -> Result<(RemoteBackupConfirmation, u64, u64)> {
+        let confirmation = self
+            .confirm_backup_reference(verifier, actor, peer, &command.reference)
+            .await?;
         if let RemoteBackupAction::Claim { claim } = &command.action
             && claim.source_purpose_sha256 != confirmation.purpose_sha256
         {
@@ -487,3 +549,6 @@ fn same_authority(one: &RemoteBackupConfirmation, two: &RemoteBackupConfirmation
         && one.voters == two.voters
         && two.committed_index >= one.committed_index
 }
+
+#[path = "remote_backup_inventory_control.rs"]
+mod inventory;

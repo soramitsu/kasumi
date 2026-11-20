@@ -58,6 +58,28 @@ impl KasumiAdminClient {
         Ok(observed)
     }
 
+    pub async fn read_backup_inventory(
+        &mut self,
+        bearer: &str,
+        command: &kasumi_types::BackupInventoryCommand,
+    ) -> Result<kasumi_types::BackupInventoryPage, ClientError> {
+        command
+            .validate()
+            .map_err(|_| ClientError::InvalidResponse("invalid backup inventory command"))?;
+        let mut request = self.authorized(bearer, request(command)?)?;
+        request.set_timeout(Duration::from_secs(30));
+        let reply = self
+            .inner
+            .clone()
+            .max_decoding_message_size(MAX_PROTOBUF_BYTES)
+            .read_backup_inventory(request)
+            .await?;
+        let page: kasumi_types::BackupInventoryPage = decode(reply.into_inner())?;
+        page.validate(command)
+            .map_err(|_| ClientError::InvalidResponse("different backup inventory page"))?;
+        Ok(page)
+    }
+
     pub async fn confirm_backup_source(
         &mut self,
         bearer: &str,

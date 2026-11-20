@@ -997,6 +997,26 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
             .await;
         self.private_read_reply(&actor, result, fence).await
     }
+    async fn read_backup_inventory(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let actor = verified(&self.auth, &request).await?;
+        let peer = backup_peer(&request)?;
+        let body = backup_body::<kasumi_types::BackupInventoryCommand>(request)?;
+        let Some(crate::remote_backup::Endpoint::Control(control)) = &self.backup else {
+            return Err(Status::unavailable("backup Control unavailable"));
+        };
+        let fence = self
+            .auth
+            .audit_result(&actor, control.admitted_response_fence(&actor))
+            .await
+            .map_err(status)?;
+        let result = control
+            .read_remote_backup_inventory(actor.clone(), peer, body)
+            .await;
+        self.private_read_reply(&actor, result, fence).await
+    }
     async fn confirm_backup_source(
         &self,
         request: Request<PrivateReadJsonRequest>,

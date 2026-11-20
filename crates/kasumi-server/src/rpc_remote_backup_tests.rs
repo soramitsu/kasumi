@@ -60,6 +60,13 @@ impl RemoteBackupTransport for SourceTrace {
             result
         })
     }
+    fn inventory<'a>(
+        &'a self,
+        source: Arc<BackupSourceCapability>,
+        read: BackupInventoryRead,
+    ) -> RemoteBackupFuture<'a, BackupInventoryPage> {
+        self.0.inventory(source, read)
+    }
 }
 struct ControlTrace(Arc<ControlVerifier>);
 impl RemoteBackupSourceVerifier for ControlTrace {
@@ -873,6 +880,77 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         .await
         .unwrap();
     assert_eq!(cleanup.session_id, aborted_id);
+    let retention = ReadKeyRetentionRequest {
+        scope: KeyRetentionScope::Tenant {
+            tenant: tenant.into(),
+        },
+        cursor: None,
+        limit: 256,
+    };
+    write_token(&callback_path, &routing_token);
+    assert_eq!(
+        admin
+            .read_key_retention(&operator, &retention)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::Forbidden)
+    );
+    write_token(&callback_path, &callback);
+    let mut scan = retention.clone();
+    let mut references = BTreeSet::new();
+    loop {
+        let page = admin.read_key_retention(&operator, &scan).await.unwrap();
+        if let KeyRetentionCoverage::Incomplete { missing, .. } = &page.coverage {
+            assert!(
+                !missing.iter().any(|e| matches!(
+                    e,
+                    MissingKeyDependency::SessionIndexUnavailable {}
+                        | MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::BackupSession
+                                | KeyReferenceKind::CompletedBackup,
+                            ..
+                        }
+                )),
+                "{missing:?}"
+            );
+        }
+        references.extend(page.entries.into_iter().map(|entry| entry.reference));
+        let Some(next) = page.next_cursor else { break };
+        assert_ne!(scan.cursor.as_ref(), Some(&next));
+        scan.cursor = Some(next);
+    }
+    assert!(references.contains(&KeyReference::BackupSession {
+        session_id: session
+    }));
+    assert!(references.contains(&KeyReference::BackupSession {
+        session_id: aborted_id
+    }));
+    assert!(
+        references.iter().any(
+            |r| matches!(r,KeyReference::CompletedBackup{backup_id,..} if *backup_id==session)
+        )
+    );
+    let manifest = PathBuf::from(format!(
+        "external/sessions/{session}/objects/{session}.kasumi"
+    ));
+    let offline = manifest.with_extension("offline");
+    let move_object = |from: &Path, to: &Path| {
+        let disk = &physicals[source_index].persistent;
+        let file = disk.open_file("fixture", from).unwrap();
+        drop(disk.publish_file(file, "fixture", to).unwrap());
+    };
+    move_object(&manifest, &offline);
+    let partial = admin.read_key_retention(&operator, &retention).await;
+    move_object(&offline, &manifest);
+    let KeyRetentionCoverage::Incomplete { missing, .. } = partial.unwrap().coverage else {
+        panic!("remote completed backup with absent physical manifest reported complete");
+    };
+    assert!(missing.contains(&MissingKeyDependency::RecordUnreadable {
+        record_kind: KeyReferenceKind::CompletedBackup,
+        id: session.to_string()
+    }));
+    assert!(!missing.contains(&MissingKeyDependency::SessionIndexUnavailable {}));
     // A live transport token and unchanged member pin cannot restore a
     // revoked tenant administrator. Only the replacement administrator may
     // restore that committed application policy.
@@ -889,6 +967,14 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         .administer(source_operator, Operation::SetPolicy(changed))
         .await
         .unwrap();
+    assert_eq!(
+        admin
+            .read_key_retention(&operator, &retention)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::Forbidden)
+    );
     let refused = CreateBackupCheckpoint {
         destination: "approved".into(),
         session_id: Uuid::new_v4(),
@@ -965,6 +1051,14 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     assert_eq!(
         admin
             .backup_session_status(&operator, &status)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::Conflict)
+    );
+    assert_eq!(
+        admin
+            .read_key_retention(&operator, &retention)
             .await
             .unwrap_err()
             .code(),

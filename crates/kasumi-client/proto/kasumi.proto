@@ -54,6 +54,7 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 // Bind only to the administrative listener. These methods still enforce the
 // current tenant/collection admin policy in consensus order.
 service KasumiAdmin {
+  rpc ReadBackupInventory(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc ExchangeBackupBinding(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc ConfirmBackupSource(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   // Reads the application or Control stream bound to the verified credential.

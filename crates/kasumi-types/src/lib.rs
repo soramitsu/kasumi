@@ -54,6 +54,8 @@ mod backup;
 pub use backup::*;
 mod remote_backup;
 pub use remote_backup::*;
+mod remote_backup_inventory;
+pub use remote_backup_inventory::*;
 mod atomic;
 pub use atomic::*;
 mod mutation_capacity;

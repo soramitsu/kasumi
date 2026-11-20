@@ -28,7 +28,7 @@ fn wrong_owner() -> Error {
 /// Position at which the data group confirmed this source's authority. This
 /// is independent of the original application's snapshot revision and of the
 /// subsequent Control log entry. A caller cannot deserialize this evidence.
-struct SourceQuorum {
+pub(super) struct SourceQuorum {
     group: RaftGroup,
     term: u64,
     leader: u64,
@@ -44,7 +44,7 @@ impl SourceQuorum {
         )
     }
 
-    async fn observe(group: &RaftGroup) -> Result<Option<Self>> {
+    pub(super) async fn observe(group: &RaftGroup) -> Result<Option<Self>> {
         if group.is_local() {
             return Ok(None);
         }
@@ -65,7 +65,7 @@ impl SourceQuorum {
         Ok(Some(position))
     }
 
-    fn check(&self) -> Result<()> {
+    pub(super) fn check(&self) -> Result<()> {
         let current = self.group.metrics();
         if current.current_term != self.term
             || current.current_leader != Some(self.leader)
@@ -89,6 +89,35 @@ impl SourceQuorum {
         }
         Ok(())
     }
+}
+
+pub(super) fn read_tenant_binding(
+    view: &crate::backup_binding::View,
+    tenant: &str,
+    ordinal: u64,
+) -> anyhow::Result<Option<RemoteBackupRecord>> {
+    let row = view.row(ordinal)?;
+    if row.terminal.is_some() || row.record.claim.tenant != tenant {
+        return Ok(None);
+    }
+    let terminal = view
+        .terminal(row.record.claim.session_id)?
+        .and_then(|row| row.terminal);
+    Ok(Some(RemoteBackupRecord {
+        record: row.record,
+        terminal,
+    }))
+}
+pub(super) fn check_inventory_recovery(id: &str, operation: &RecoveryRecord) -> Result<()> {
+    if id != operation.request.operation_id.to_string()
+        || operation.request.digest()? != operation.request_sha256
+    {
+        return Err(Error::new(
+            ErrorCode::Corruption,
+            "selected recovery identity differs",
+        ));
+    }
+    Ok(())
 }
 
 pub(super) type SelectedBackup = RemoteBackupRecord;

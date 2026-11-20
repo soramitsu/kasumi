@@ -301,6 +301,63 @@ impl Drop for Pending<'_> {
             .remove(&self.nonce);
     }
 }
+impl DataTransport {
+    async fn exchange<T, F, R>(
+        &self,
+        source: Arc<BackupSourceCapability>,
+        request: F,
+    ) -> kasumi_types::Result<T>
+    where
+        F: Fn(KasumiAdminClient, zeroize::Zeroizing<String>) -> R,
+        R: std::future::Future<Output = Result<T, ClientError>>,
+    {
+        let _workspace = self
+            .admission
+            .reserve_waiting(3 * MAX_REMOTE_BACKUP_BYTES as u64, None)?;
+        let nonce = source.reference().nonce;
+        {
+            let mut pending = self.pending.lock().map_err(|_| unavailable())?;
+            if pending.len() >= 64 || pending.contains_key(&nonce) {
+                return Err(Error::new(
+                    ErrorCode::ResourceExhausted,
+                    "backup source callbacks occupied",
+                ));
+            }
+            pending.insert(nonce, source);
+        }
+        let _pending = Pending { data: self, nonce };
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(29);
+        let mut last = None;
+        for route in self.routes.values() {
+            let outcome = tokio::time::timeout_at(deadline, async {
+                let client =
+                    tokio::time::timeout(Duration::from_secs(3), KasumiAdminClient::connect(route))
+                        .await
+                        .map_err(|error| ClientError::Connection(error.into()))??;
+                let bearer = token(&self.bearer).map_err(ClientError::Connection)?;
+                request(client, bearer).await
+            })
+            .await
+            .map_err(physical)?;
+            match outcome {
+                Ok(value) => return Ok(value),
+                Err(error)
+                    if matches!(error, ClientError::Connection(_))
+                        || matches!(
+                            error.code(),
+                            Some(ErrorCode::Unavailable | ErrorCode::UnknownOutcome)
+                        )
+                        || matches!(&error,ClientError::Transport(s) if matches!(s.code(),tonic::Code::Unavailable|tonic::Code::DeadlineExceeded)) =>
+                {
+                    last = Some(client_error(error))
+                }
+                Err(error) => return Err(client_error(error)),
+            }
+        }
+        Err(last.unwrap_or_else(unavailable))
+    }
+}
+
 impl RemoteBackupTransport for DataTransport {
     fn control_incarnation(&self) -> Uuid {
         self.incarnation
@@ -311,57 +368,34 @@ impl RemoteBackupTransport for DataTransport {
         action: RemoteBackupAction,
     ) -> RemoteBackupFuture<'a, Option<RemoteBackupRecord>> {
         Box::pin(async move {
-            let _workspace = self
-                .admission
-                .reserve_waiting(3 * MAX_REMOTE_BACKUP_BYTES as u64, None)?;
             let command = RemoteBackupCommand {
                 reference: source.reference().clone(),
                 action,
             };
             command.validate()?;
-            let nonce = command.reference.nonce;
-            {
-                let mut pending = self.pending.lock().map_err(|_| unavailable())?;
-                if pending.len() >= 64 || pending.contains_key(&nonce) {
-                    return Err(Error::new(
-                        ErrorCode::ResourceExhausted,
-                        "backup source callbacks occupied",
-                    ));
-                }
-                pending.insert(nonce, source);
-            }
-            let _pending = Pending { data: self, nonce };
-            let deadline = tokio::time::Instant::now() + Duration::from_secs(29);
-            let mut last = None;
-            for route in self.routes.values() {
-                let outcome = tokio::time::timeout_at(deadline, async {
-                    let mut client = tokio::time::timeout(
-                        Duration::from_secs(3),
-                        KasumiAdminClient::connect(route),
-                    )
-                    .await
-                    .map_err(|error| ClientError::Connection(error.into()))??;
-                    let bearer = token(&self.bearer).map_err(ClientError::Connection)?;
-                    client.exchange_backup_binding(&bearer, &command).await
-                })
-                .await
-                .map_err(physical)?;
-                match outcome {
-                    Ok(value) => return Ok(value),
-                    Err(error)
-                        if matches!(error, ClientError::Connection(_))
-                            || matches!(
-                                error.code(),
-                                Some(ErrorCode::Unavailable | ErrorCode::UnknownOutcome)
-                            )
-                            || matches!(&error,ClientError::Transport(s) if matches!(s.code(),tonic::Code::Unavailable|tonic::Code::DeadlineExceeded)) =>
-                    {
-                        last = Some(client_error(error))
-                    }
-                    Err(error) => return Err(client_error(error)),
-                }
-            }
-            Err(last.unwrap_or_else(unavailable))
+            let command = &command;
+            self.exchange(source, |mut client, bearer| async move {
+                client.exchange_backup_binding(&bearer, command).await
+            })
+            .await
+        })
+    }
+    fn inventory<'a>(
+        &'a self,
+        source: Arc<BackupSourceCapability>,
+        read: kasumi_types::BackupInventoryRead,
+    ) -> RemoteBackupFuture<'a, kasumi_types::BackupInventoryPage> {
+        Box::pin(async move {
+            let command = kasumi_types::BackupInventoryCommand {
+                reference: source.reference().clone(),
+                read,
+            };
+            command.validate()?;
+            let command = &command;
+            self.exchange(source, |mut client, bearer| async move {
+                client.read_backup_inventory(&bearer, command).await
+            })
+            .await
         })
     }
 }
