@@ -18,13 +18,13 @@ mod accounting;
 mod retirements;
 use retirements::JournalCheckpointPermit;
 #[derive(Debug)]
-pub struct MissingDispatchWriter;
-impl std::fmt::Display for MissingDispatchWriter {
+pub struct MissingTargetWriter;
+impl std::fmt::Display for MissingTargetWriter {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str("first dispatch requires its original journal writer observation")
+        formatter.write_str("first target journal write requires its original writer observation")
     }
 }
-impl std::error::Error for MissingDispatchWriter {}
+impl std::error::Error for MissingTargetWriter {}
 pub use retirements::{CurrentTargetJournalWriter, TargetWriterRead};
 const NS: &str = "target.journal";
 #[cfg(test)]
@@ -1450,6 +1450,22 @@ impl TargetJournal {
     /// Must precede local scope closure and any physical deletion. The returned
     /// value describes a permanent stop only, never completed local cleanup.
     pub fn stop(&self, op: &TargetOperation, proof: &VerifiedTargetStop) -> Result<()> {
+        self.record_stop(op, proof, None)
+    }
+    pub fn stop_observed(
+        &self,
+        op: &TargetOperation,
+        proof: &VerifiedTargetStop,
+        writer: &CurrentTargetJournalWriter,
+    ) -> Result<()> {
+        self.record_stop(op, proof, Some(writer))
+    }
+    fn record_stop(
+        &self,
+        op: &TargetOperation,
+        proof: &VerifiedTargetStop,
+        writer: Option<&CurrentTargetJournalWriter>,
+    ) -> Result<()> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
             .mutation
@@ -1499,6 +1515,9 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            writer
+                .ok_or(MissingTargetWriter)?
+                .require(self, &metadata.retirements)?;
             let mut binding = binding;
             binding.stop_before_prepare = true;
             let encoded = serde_json::to_vec(&binding)?;

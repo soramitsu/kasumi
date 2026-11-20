@@ -80,7 +80,10 @@ impl LifecycleSigner {
             control
                 .submit(
                     context.clone(),
-                    Operation::RegisterTargetJournalWriter(participant.clone()),
+                    Operation::RegisterTargetJournalWriter(TargetWriterRegistration::WithCatalog {
+                        participant: participant.clone(),
+                        catalog_minimums: challenge.catalog_minimums.clone(),
+                    }),
                 )
                 .await?;
             quorum.release().await?;

@@ -294,7 +294,7 @@ impl MaterialFixture {
         request: &TargetRuntimeRequest,
     ) -> anyhow::Result<kasumi_engine::InitialDispatchReservation> {
         match journal.reserve_initial_dispatch(root, phase, intent, request) {
-            Err(error) if error.is::<kasumi_engine::MissingDispatchWriter>() => journal
+            Err(error) if error.is::<kasumi_engine::MissingTargetWriter>() => journal
                 .reserve_observed_initial_dispatch(
                     root,
                     phase,
@@ -2563,9 +2563,16 @@ async fn expired_completion_with_missing_journal_recovers_only_exact_inspection_
 impl MaterialFixture {
     /// Actual issuer phase without constructing any application provider/store.
     async fn journal_scope(&self, intent: &SignedControlIntent) -> Arc<TargetOperationScope> {
+        self.journal_scope_at(intent, 1).await
+    }
+    async fn journal_scope_at(
+        &self,
+        intent: &SignedControlIntent,
+        id: u64,
+    ) -> Arc<TargetOperationScope> {
         let issuer = self.issuer.leader().await;
         let trust = self.issuer.trust.clone();
-        let identity = nodes().first().unwrap().clone();
+        let identity = nodes().into_iter().find(|node| node.node_id == id).unwrap();
         let verified = ControlTrust::install(self.control.root.clone())
             .unwrap()
             .verify_intent(intent)
@@ -2837,6 +2844,23 @@ async fn independent_target_journal_reserves_stop_after_normal_quota_and_recover
         .await;
     let stop_scope = f.journal_scope(&stop_intent).await;
     let stop_op = stop_scope.begin_operation(60_000).unwrap();
+    let second_scope = f.journal_scope_at(&stop_intent, 2).await;
+    let second_op = second_scope.begin_operation(60_000).unwrap();
+    let (fresh, other_store, other_node) =
+        serving_tests::journal(&f, 2, &f.physical[&2].path("first-stop-journal.kv"), true).await;
+    assert!(
+        matches!(fresh.stop(&second_op,&proof),Err(error) if error.is::<kasumi_engine::MissingTargetWriter>())
+    );
+    fresh
+        .stop_observed(&second_op, &proof, &f.writer(&fresh))
+        .unwrap();
+    fresh.stop(&second_op, &proof).unwrap();
+    drop(second_op);
+    second_scope.close();
+    second_scope.drain().await;
+    fresh.shutdown().await.unwrap();
+    other_store.shutdown().await.unwrap();
+    other_node.shutdown().await.unwrap();
     journal.stop(&stop_op, &proof).unwrap();
     use kasumi_engine::TargetOwnerDrain::*;
     assert!(

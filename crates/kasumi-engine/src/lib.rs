@@ -159,7 +159,7 @@ mod target_journal;
 pub use target_journal::{
     AcceptedInitialDispatchPrebind, CurrentTargetJournalWriter, InitialDispatchReservation,
     InitialDispatchStatus, InitialInitializePermit, MaterializationFile, MaterializationNode,
-    MissingDispatchWriter, ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetCleanup,
+    MissingTargetWriter, ResolvedInitialMembershipHistory, ResolvedInitialStart, TargetCleanup,
     TargetCleanupStage, TargetFileBinding, TargetJournal, TargetJournalInstallation,
     TargetJournalIntent, TargetOwnerDrain, TargetWriterRead, VerifiedInitialMembership,
     VerifiedTargetInitializationAssociation, VerifiedTargetServingProjection,

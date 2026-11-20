@@ -363,19 +363,59 @@ impl TargetJournal {
         )?;
         let workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let view = self.store.read_view()?;
-        let physical = (|| -> Result<Uuid> {
+        let physical = (|| -> Result<_> {
             let mut catalog = None;
-            view.wrapping_inventory()?.visit_catalog(|id, _, _, _| {
-                ensure!(
-                    catalog.replace(id).is_none_or(|old| old == id),
-                    "journal wrapping identities differ"
-                );
-                Ok(())
-            })?;
-            catalog.context("journal lacks a wrapping catalog")
+            let mut minimums = std::collections::BTreeMap::new();
+            let mut retained_bytes = 0usize;
+            view.wrapping_inventory()?
+                .visit_catalog(|id, provider, key_ref, version| {
+                    ensure!(
+                        catalog.replace(id).is_none_or(|old| old == id),
+                        "journal wrapping identities differ"
+                    );
+                    ensure!(
+                        provider.len() <= kasumi_types::MAX_KEY_PROVIDER_BYTES
+                            && key_ref.len() <= kasumi_types::MAX_KEY_REF_BYTES,
+                        "journal wrapping identity exceeds its bound"
+                    );
+                    let identity = kasumi_types::KeyIdentityRef {
+                        provider: provider.to_owned(),
+                        key_ref: key_ref.to_owned(),
+                    };
+                    identity.validate()?;
+                    match minimums.entry(identity) {
+                        std::collections::btree_map::Entry::Occupied(mut entry) => {
+                            let old = *entry.get();
+                            entry.insert(u64::min(old, version));
+                        }
+                        std::collections::btree_map::Entry::Vacant(entry) => {
+                            retained_bytes = retained_bytes
+                                .checked_add(provider.len() + key_ref.len() + 128)
+                                .context("journal wrapping identity charge overflow")?;
+                            ensure!(
+                                retained_bytes <= kasumi_types::MAX_KEY_RETIREMENT_STATE_BYTES,
+                                "journal wrapping minimums exceed signed observation bound"
+                            );
+                            entry.insert(version);
+                        }
+                    }
+                    Ok(())
+                })?;
+            let versions = minimums
+                .into_iter()
+                .map(|(key, version)| kasumi_types::KeyVersionRef {
+                    provider: key.provider,
+                    key_ref: key.key_ref,
+                    version,
+                })
+                .collect();
+            Ok((
+                catalog.context("journal lacks a wrapping catalog")?,
+                kasumi_types::KeyDependencySet::new(versions)?,
+            ))
         })();
-        let catalog = match (physical, view.close()) {
-            (Ok(id), Ok(())) => id,
+        let (catalog, catalog_minimums) = match (physical, view.close()) {
+            (Ok(original), Ok(())) => original,
             (Err(e), Ok(())) | (Ok(_), Err(e)) => return Err(e),
             (Err(e), Err(close)) => return Err(e.context(close)),
         };
@@ -386,6 +426,7 @@ impl TargetJournal {
                 root: self.installed.root.clone(),
                 verifier: self.installed.node.verifier.clone(),
                 catalog,
+                catalog_minimums,
                 lifecycle_command,
                 nonce: Uuid::new_v4(),
             },

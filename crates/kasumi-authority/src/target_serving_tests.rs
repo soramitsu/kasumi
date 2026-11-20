@@ -8,7 +8,7 @@ fn journal_path(f: &MaterialFixture, id: u64) -> std::path::PathBuf {
     f.physical[&id].path(format!("serving-journal-{id}.kv"))
 }
 
-async fn journal(
+pub(super) async fn journal(
     f: &MaterialFixture,
     id: u64,
     path: &std::path::Path,

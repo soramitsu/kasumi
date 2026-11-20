@@ -30,7 +30,7 @@ impl Fixture {
         request: &kasumi_types::TargetRuntimeRequest,
     ) -> Result<InitialDispatchReservation> {
         match journal.reserve_initial_dispatch(root, phase, intent, request) {
-            Err(error) if error.is::<MissingDispatchWriter>() => {
+            Err(error) if error.is::<MissingTargetWriter>() => {
                 let read = journal.begin_writer_read()?;
                 let observation = kasumi_types::TargetWriterObservation {
                     challenge: read.challenge().clone(),
@@ -894,7 +894,7 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         let journal = f.create()?;
         let (lifecycle, phase, request) = signed_initial_dispatch(&f, initialize)?;
         assert!(
-            matches!(journal.reserve_initial_dispatch(&f.installed.root,&phase,&lifecycle,&request),Err(error) if error.is::<MissingDispatchWriter>())
+            matches!(journal.reserve_initial_dispatch(&f.installed.root,&phase,&lifecycle,&request),Err(error) if error.is::<MissingTargetWriter>())
         );
         let Decision::NewlyAccepted(candidate) =
             f.dispatch(&journal, &f.installed.root, &phase, &lifecycle, &request)?
@@ -2747,6 +2747,38 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
     let initial = sign(read.challenge(), 2, &KeyRetirementState::default())?;
     let prior_writer = read.admit(&initial)?;
     let existing_intent = journal.prepare_observed(&existing, &existing_digest, &prior_writer)?;
+    let original = journal.begin_writer_read()?;
+    let physical = original.challenge().catalog_minimums.versions()[0].clone();
+    let incompatible = RetireKeyVersionsRequest {
+        identity: physical.identity(),
+        retire_below_version: physical.version + 1,
+        ..request.clone()
+    };
+    let mut retired = KeyRetirementState::default();
+    retired.begin(
+        &BeginKeyRetirement {
+            request: incompatible.clone(),
+            membership_epoch: 3,
+            expected_dependency_sha256: "aa".repeat(32),
+        },
+        5,
+    )?;
+    retired.complete(
+        &CompleteKeyRetirement {
+            retirement_id: incompatible.retirement_id.clone(),
+            request_sha256: incompatible.request_sha256()?,
+            completed_coverage_sha256: "bb".repeat(32),
+            expected_dependency_sha256: "cc".repeat(32),
+        },
+        6,
+    )?;
+    let enrollment = kasumi_types::TargetWriterRegistration::WithCatalog {
+        participant: original.challenge().participant(),
+        catalog_minimums: original.challenge().catalog_minimums.clone(),
+    };
+    assert!(enrollment.checked_participant(&retired).is_err());
+    let blocked = sign(original.challenge(), 6, &retired)?;
+    assert!(original.admit(&blocked).is_err());
     let before_signed = f
         .store
         .get(NS, b"metadata")?

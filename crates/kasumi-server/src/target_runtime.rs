@@ -1365,7 +1365,20 @@ impl TargetRecoveryRuntime {
             phase.check_request(&admission, &context, &bearer).await?;
             let operation = phase.scope().begin_admitted(admission)?;
             let proof = phase.target_stop(&operation, reference).await?;
-            self.journal.stop(&operation, &proof)?;
+            match self.journal.stop(&operation, &proof) {
+                Err(error) if error.is::<kasumi_engine::MissingTargetWriter>() => {
+                    let writer = operation
+                        .run(async {
+                            let (original, signed) = self
+                                .observe_current_writer(&context, &bearer, Some(&operation))
+                                .await?;
+                            original.admit(&signed)
+                        })
+                        .await?;
+                    self.journal.stop_observed(&operation, &proof, &writer)?;
+                }
+                result => result?,
+            }
             failure.accepted();
             operation
                 .run::<_, SnapshotFailure>(async {

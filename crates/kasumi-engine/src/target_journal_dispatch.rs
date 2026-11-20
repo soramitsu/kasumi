@@ -949,7 +949,7 @@ impl TargetJournal {
             );
         } else {
             writer
-                .ok_or(MissingDispatchWriter)?
+                .ok_or(MissingTargetWriter)?
                 .require(self, &metadata.retirements)?;
             ensure!(
                 !metadata.retirements.requires_graph(),

@@ -339,7 +339,7 @@ impl RuntimeTargetPhase {
                 intent,
                 request,
             ) {
-                Err(error) if error.is::<kasumi_engine::MissingDispatchWriter>() => {
+                Err(error) if error.is::<kasumi_engine::MissingTargetWriter>() => {
                     let read = journal.begin_dispatch_writer_read(&original)?;
                     let enrollment = signer.sign_writer_challenge(&read)?;
                     let signed = admission

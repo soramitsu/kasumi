@@ -928,7 +928,7 @@ pub enum Operation {
     /// Remove the fence of an undecided retirement.
     AbortKeyRetirement(AbortKeyRetirement),
     /// Independent target writer decisions have their own ordinal sequence.
-    RegisterTargetJournalWriter(TargetWriterParticipant),
+    RegisterTargetJournalWriter(TargetWriterRegistration),
     CompleteTargetJournalRetirement(CompleteKeyRetirement),
     AbortTargetJournalRetirement(AbortKeyRetirement),
 }

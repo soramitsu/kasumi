@@ -59,7 +59,7 @@ fn scope_of(state: &KeyRetirementState, retirement_id: &str) -> Result<KeyRetent
 pub(crate) fn register_writer(
     state: &mut TenantState,
     command: &Command,
-    participant: &TargetWriterParticipant,
+    registration: &TargetWriterRegistration,
     revision: u64,
 ) -> Result<(Result<WriteReceipt>, bool)> {
     authorize(
@@ -67,6 +67,7 @@ pub(crate) fn register_writer(
         &command.context,
         &KeyRetentionScope::TargetJournal {},
     )?;
+    let participant = registration.checked_participant(&state.target_journal_retirements)?;
     participant.verifier.validate()?;
     if participant.catalog.is_nil() {
         return Err(Error::new(

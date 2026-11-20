@@ -861,6 +861,37 @@ pub struct TargetWriterParticipant {
     pub verifier: crate::TrustVerifierIdentity,
     pub catalog: Uuid,
 }
+/// Older journal-registration entries predate retirement and carry only
+/// their physical identity. Current registrations authenticate every KEK minimum.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged, deny_unknown_fields)]
+pub enum TargetWriterRegistration {
+    WithCatalog {
+        participant: TargetWriterParticipant,
+        catalog_minimums: KeyDependencySet,
+    },
+    Original(TargetWriterParticipant),
+}
+impl TargetWriterRegistration {
+    pub fn checked_participant(
+        &self,
+        retirements: &KeyRetirementState,
+    ) -> Result<&TargetWriterParticipant> {
+        match self {
+            Self::WithCatalog {
+                participant,
+                catalog_minimums,
+            } => {
+                retirements.require_writer_catalog(catalog_minimums)?;
+                Ok(participant)
+            }
+            Self::Original(participant) if retirements.is_empty() => Ok(participant),
+            Self::Original(_) => Err(conflict(
+                "historical writer registration cannot cross a retirement",
+            )),
+        }
+    }
+}
 pub(crate) fn writer_participants<'de, D: Deserializer<'de>>(
     d: D,
 ) -> std::result::Result<Vec<TargetWriterParticipant>, D::Error> {
@@ -884,7 +915,7 @@ impl TargetWriterChallenge {
 /// target obtains and checks that state independently from its original Control.
 /// Every affirmative writer protects first prepare, initial dispatch and terminal
 /// records. Peers implementing an earlier read-only protocol cannot acknowledge it.
-pub const TARGET_WRITER_PROTOCOL: u16 = 1;
+pub const TARGET_WRITER_PROTOCOL: u16 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
@@ -938,6 +969,7 @@ pub struct TargetWriterChallenge {
     pub protocol: u16,
     pub root: crate::ControlSigningRoot,
     pub verifier: crate::TrustVerifierIdentity,
+    pub catalog_minimums: KeyDependencySet,
     pub catalog: uuid::Uuid,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_command: Option<Uuid>,
@@ -973,6 +1005,8 @@ impl TargetWriterObservation {
             ));
         }
         self.retirements
+            .require_writer_catalog(&self.challenge.catalog_minimums)?;
+        self.retirements
             .validate_journal_scope(self.observed_revision)
     }
 }
@@ -983,6 +1017,21 @@ pub struct SignedTargetWriterObservation {
     pub signature: String,
 }
 impl KeyRetirementState {
+    pub fn require_writer_catalog(&self, minimums: &KeyDependencySet) -> Result<()> {
+        if minimums.is_empty() || staged_digest(minimums)?.1 > MAX_KEY_RETIREMENT_STATE_BYTES {
+            return Err(invalid(
+                "target writer physical catalog minimums are absent or too large",
+            ));
+        }
+        for minimum in minimums.versions() {
+            if minimum.version < self.floor(&minimum.identity()) {
+                return Err(conflict(
+                    "physical target catalog depends on a retired wrapping version",
+                ));
+            }
+        }
+        Ok(())
+    }
     pub fn is_empty(&self) -> bool {
         self.fence.is_none() && self.completed.is_empty() && self.aborted.is_empty()
     }
