@@ -1488,7 +1488,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     // Ordinary writes alone keep the structured directory current. Before any
     // snapshot exists, the leader's generation reads its postings from the
     // directory its own publication committed with the applied cursor.
-    if std::env::var_os("KASUMI_TRIAGE_WITHOUT_STRUCTURED").is_none() {
+    {
         use kasumi_query::DocumentSource as _;
         use std::ops::Bound::Included;
         let ordinary = source_engine.generation()?;
@@ -1691,7 +1691,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     // The installed snapshot selected a rebuilt structured directory; the
     // encrypted reopen verified and kept it, so the postings read below come
     // from the ordinary directory at this exact revision.
-    if std::env::var_os("KASUMI_TRIAGE_WITHOUT_STRUCTURED").is_none() {
+    {
         assert_eq!(
             selection.with_structured_records(
                 &reopened.state,

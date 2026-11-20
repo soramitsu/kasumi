@@ -104,14 +104,6 @@ impl StructuredOwner {
     }
 }
 
-/// TRIAGE ONLY (removed before export): run a test binary without the
-/// directory to attribute a failure to it or to the base.
-#[cfg(test)]
-fn disabled_for_triage() -> bool {
-    static DISABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *DISABLED.get_or_init(|| std::env::var_os("KASUMI_TRIAGE_WITHOUT_STRUCTURED").is_some())
-}
-
 fn log_sha256(log_id: &kasumi_raft::LogId<u64>) -> Result<[u8; 32]> {
     let mut hash = Sha256::new();
     serde_json::to_writer(&mut hash, &("kasumi.structured.log.v1", log_id))?;
@@ -476,10 +468,6 @@ pub(crate) fn prepare_restore(
     reopen: bool,
     writes: &mut Vec<WriteOp>,
 ) -> Result<()> {
-    #[cfg(test)]
-    if disabled_for_triage() {
-        return Ok(());
-    }
     ordered_pages::recover_abandoned_edits_in(store, structured::FAMILY)?;
     owner.recovery_pending.store(false, Ordering::Release);
     NamespaceStage::reclaim_family(store, structured::FAMILY)?;
@@ -631,10 +619,6 @@ pub(crate) fn prepare_publication(
     candidate_indexes: &QueryIndexes,
     applied: Option<StructuredApplied>,
 ) -> Result<Option<StructuredPublication>> {
-    #[cfg(test)]
-    if disabled_for_triage() {
-        return Ok(None);
-    }
     match follow(
         owner,
         store,

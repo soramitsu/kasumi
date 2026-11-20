@@ -341,7 +341,7 @@ fn body(n: usize) -> Value {
             body.insert("status".into(), json!(statuses[n % statuses.len()]));
         }
     }
-    if n % 5 != 0 {
+    if !n.is_multiple_of(5) {
         let number: Value = serde_json::from_str(&format!("{}.25", n as i64 - 20)).unwrap();
         body.insert("n".into(), number);
         body.insert(
