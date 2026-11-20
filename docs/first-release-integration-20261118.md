@@ -318,6 +318,23 @@ after 2,472.77 seconds. Its write deadline remains recorded as a failure.
 | G12, G14 | On native macOS ARM64, `dd43ef28` passed formatting, 457 Python cases, locked offline all-target/all-feature workspace checking (674.031 seconds) and strict workspace Clippy (501.841 seconds). Building all three production binaries took 7,765.595 seconds. The focused Engine library reported 762 passes and three failures, its separate binary target failed one case, and the Server library reported 531 passes and six failures. The Store run also identified an impossible randomized key-generation request. `081933ba` fixes its fixture. No complete passing workspace run exists for this candidate. |
 | G13 | The installed corpus retained 6,768 authenticated documents. The next startup on the earlier daemon failed after 1,639.309 seconds and its drain reported an unavailable security-audit key lease. The frozen `dd43ef28` daemon subsequently reopened the same installation, authenticated the original last eight receipts at revision 848, and stopped cleanly in 24.207 seconds including startup and readback. A separate attempt continues writing from that verified boundary. The reference Linux run, physical capacity operations and 24-hour soak remain open. |
 
+On macOS ARM64, the frozen OpenBao interoperability test ran against the actual
+OpenBao 2.6.2 Transit daemon and passed in 5.555 seconds. It checked a round
+trip, rotation, backup reads and warm revocation. The OpenBao archive SHA-256
+was `4e495376174accc0e014d31e9901f518a974f966850c839f626347eaac05fd52`.
+The Kasumi test executable SHA-256 was
+`c2ca9b506f3b7ce599df67b17f806878095bec3b2d99bd33087a366ae6f89294`.
+The native result, command, limits and log SHA-256 are in
+`openbao-native-dd43-repeat/result.json` in the private evidence index.
+
+Two executions of the frozen Store crash-cut test reached different results
+on adjacent native installations. One passed in 128.632 seconds. The other
+failed after 125.735 seconds because a random stage still incurred an injected
+mutation at the count measured on another stage. Its original log SHA-256 is
+`be9d585d4a77f91b25fe19797b8af542509cae6dc4cd00b4d8f70dcb5da09b64`.
+The corrected case records the actual rejected backend mutation and verifies
+every recovered key and byte against the selected tree.
+
 The native macOS production executable hashes for `dd43ef28` are
 `e19de27289bea7c22254572f38bc741089224324c521132bb77396ce8bfd154e`
 (kasumid, 126,799,168 bytes),
