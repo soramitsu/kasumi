@@ -1929,12 +1929,11 @@ impl TargetRecoveryRuntime {
                 startup,
             )
             .await?;
-            let group = replica.database().raft_group();
             let name = format!("{}/{}", key.0, key.1);
             let check = stores.clone();
-            self.cluster.register_group_with_bootstrap(
+            self.cluster.register_database_group(
                 name.clone(),
-                group.raft().clone(),
+                replica.database(),
                 first.fact.origin.input.voters.keys().copied().collect(),
                 first.fact.bootstrap_sha256.clone(),
                 Arc::new(move || check.check_access()),

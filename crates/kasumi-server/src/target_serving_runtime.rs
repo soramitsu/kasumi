@@ -376,9 +376,9 @@ impl TargetRecoveryRuntime {
         let name = format!("{tenant}/{incarnation}");
         let check = stores.clone();
         *stage = RecoveryStage::PeerRegistration;
-        self.cluster.register_group_with_bootstrap(
+        self.cluster.register_database_group(
             name.clone(),
-            database.raft_group().raft().clone(),
+            &database,
             owner.bootstrap().voters.keys().copied().collect(),
             execution
                 .completion

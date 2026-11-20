@@ -2113,9 +2113,9 @@ impl NodeRuntime {
                     crate::startup_preparation::checkpoint(config.database_id, "data-database");
                     let group = format!("{}/{}", store.tenant(), opened.bootstrap.incarnation);
                     let bootstrap_store = store.clone();
-                    network.register_group_with_bootstrap(
+                    network.register_database_group(
                         group,
-                        opened.database.raft_group().raft().clone(),
+                        &opened.database,
                         replication.peers.iter().map(|peer| peer.node_id).collect(),
                         fingerprint,
                         Arc::new(move || bootstrap_store.check_access()),
@@ -5444,6 +5444,81 @@ mod lifecycle_tests {
         mock.await.unwrap().unwrap();
     }
 
+    async fn verify_member_key_pages(
+        databases: &[Arc<Database>],
+        leader: usize,
+        context: &RequestContext,
+    ) {
+        use kasumi_types::{KeyReference, KeyRetentionScope, ReadKeyRetentionRequest};
+        let expected = databases
+            .iter()
+            .flat_map(|database| {
+                let group = database.raft_group();
+                let binding = group.storage_domains().custody().binding();
+                [
+                    (group.node_id(), binding.application_catalog()),
+                    (group.node_id(), binding.custody_catalog()),
+                ]
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(expected.len(), 6);
+        let started = std::time::Instant::now();
+        loop {
+            let mut observed = BTreeSet::new();
+            let mut cursor = None;
+            let mut last = None;
+            let mut complete = false;
+            for _ in 0..32 {
+                let request = ReadKeyRetentionRequest {
+                    scope: KeyRetentionScope::Tenant {
+                        tenant: context.tenant.clone(),
+                    },
+                    limit: 1,
+                    cursor: cursor.take(),
+                };
+                let page = match databases[leader].read_key_retention(context, request).await {
+                    Ok(page) => page,
+                    Err(error)
+                        if matches!(
+                            error.code,
+                            kasumi_types::ErrorCode::CursorExpired
+                                | kasumi_types::ErrorCode::Unavailable
+                        ) =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("read member key catalogs: {error:?}"),
+                };
+                assert!(page.entries.len() <= 1);
+                for entry in &page.entries {
+                    assert!(last.as_ref().is_none_or(|previous| previous < entry));
+                    last = Some(entry.clone());
+                    if let KeyReference::Catalog {
+                        node_id,
+                        catalog_id,
+                        ..
+                    } = entry.reference
+                    {
+                        observed.insert((node_id, catalog_id));
+                    }
+                }
+                cursor = page.next_cursor.clone();
+                if cursor.is_none() {
+                    complete = true;
+                    break;
+                }
+            }
+            if complete && observed == expected {
+                return;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(45),
+                "paged catalog did not include all installed members: observed={observed:?} expected={expected:?}"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 6)]
     async fn three_runtime_nodes_replicate_with_control_quorum_over_audited_pinned_mtls() {
         replicated_runtime_fixture(false, None).await;
@@ -6272,6 +6347,15 @@ mod lifecycle_tests {
         .await
         .unwrap();
         fixture_stage!("data leader selected: node {leader}");
+        if canonical
+            && !fenced_source
+            && !protected_prepare_only
+            && !initial_start_only
+            && restart_initial_inspection.is_none()
+        {
+            Box::pin(verify_member_key_pages(&databases, leader, &context)).await;
+        }
+
         fixture_stage!("creating docs collection");
         let creation = fixture_operation(|| {
             databases[leader].administer(

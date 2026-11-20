@@ -4,6 +4,8 @@
 use super::*;
 #[path = "backup_key_inventory.rs"]
 mod backup_keys;
+#[path = "key_retention_member.rs"]
+mod member;
 #[path = "key_retirement_service.rs"]
 mod retirement;
 
@@ -356,15 +358,6 @@ impl Database {
         {
             missing.insert(MissingKeyDependency::SessionIndexUnavailable {});
         }
-        for (&node_id, _) in membership.membership().nodes() {
-            if node_id != local {
-                add_missing(
-                    &mut missing,
-                    &mut truncated,
-                    MissingKeyDependency::MemberUnreported { node_id },
-                );
-            }
-        }
         let (mut entries, history_digest) = self
             .history_key_inventory(
                 state,
@@ -373,6 +366,24 @@ impl Database {
                 &cancellation,
                 &mut missing,
                 &mut truncated,
+            )
+            .await?;
+        let distributed = membership.membership().nodes().any(|(&id, _)| id != local);
+        let page_limit = if distributed {
+            request
+                .limit
+                .min(kasumi_raft::member_catalog::MEMBER_CATALOG_LIMIT)
+        } else {
+            request.limit
+        };
+        let member_digest = self
+            .observe_member_catalogs(
+                &metrics,
+                request,
+                probe,
+                &cancellation,
+                &mut entries,
+                (&mut missing, &mut truncated),
             )
             .await?;
         let session_digest = if control {
@@ -511,13 +522,13 @@ impl Database {
                 }
                 let inventory_sha256 = staged_digest(&(
                     // The fence and floors are part of what a page observed.
-                    ("kasumi.key-retention.local.v6", &state.key_retirements),
+                    ("kasumi.key-retention.members.v1", &state.key_retirements),
                     &scope_hash,
                     &state.incarnation,
                     epoch,
                     membership_epoch,
                     local,
-                    digest,
+                    (digest, member_digest),
                     hex::encode(history_digest),
                     session_digest,
                     &state.backup_binding_head,
@@ -552,7 +563,7 @@ impl Database {
                 let coverage_sha256 =
                     staged_digest(&("kasumi.key-retention.coverage.v1", &inventory_sha256))?.0;
                 let mut page_entries =
-                    Vec::with_capacity(entries.len().min(usize::from(request.limit)));
+                    Vec::with_capacity(entries.len().min(usize::from(page_limit)));
                 let mut bytes = 0;
                 let mut more = false;
                 for entry in entries {
@@ -560,7 +571,7 @@ impl Database {
                     // Leave room for the full cursor (which repeats the final
                     // entry), missing-dependency list and framing. Strings may
                     // expand sixfold under JSON escaping.
-                    if page_entries.len() == usize::from(request.limit)
+                    if page_entries.len() == usize::from(page_limit)
                         || bytes + encoded + 1 > MAX_KEY_RETENTION_PAGE_BYTES - (128 << 10)
                     {
                         more = true;

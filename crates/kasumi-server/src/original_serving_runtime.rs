@@ -1824,9 +1824,9 @@ impl Administration {
                         ..
                     } = opened;
                     let store = stores.application().clone();
-                    if let Err(error) = network.register_group_with_bootstrap(
+                    if let Err(error) = network.register_database_group(
                         group.as_ref().expect("unpublished route").clone(),
-                        database.raft_group().raft().clone(),
+                        &database,
                         self.config
                             .replication
                             .as_ref()

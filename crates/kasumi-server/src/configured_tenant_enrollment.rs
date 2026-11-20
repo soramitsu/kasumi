@@ -668,9 +668,9 @@ impl Administration {
                 .map_err(|failure| failure.observation())?;
             let group = format!("{name}/{incarnation}");
             let store = stores.application().clone();
-            network.register_group_with_bootstrap(
+            network.register_database_group(
                 group.clone(),
-                resident.database.raft_group().raft().clone(),
+                &resident.database,
                 replication.peers.iter().map(|peer| peer.node_id).collect(),
                 fingerprint,
                 Arc::new(move || store.check_access()),

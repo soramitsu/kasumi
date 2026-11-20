@@ -114,6 +114,7 @@ struct GroupRoute {
     allowed_peers: BTreeSet<u64>,
     bootstrap: Option<BootstrapFence>,
     peer_fence: Option<PeerAccessFence>,
+    database: Option<std::sync::Weak<kasumi_engine::Database>>,
 }
 
 pub struct ClusterNetwork {
@@ -416,7 +417,7 @@ impl ClusterNetwork {
         raft: Raft,
         allowed_peers: BTreeSet<u64>,
     ) -> Result<()> {
-        self.register(group, raft, allowed_peers, None)
+        self.register(group, raft, allowed_peers, None, None)
     }
     pub fn register_group_with_bootstrap(
         &self,
@@ -426,6 +427,33 @@ impl ClusterNetwork {
         sha256: String,
         access: BootstrapAccess,
     ) -> Result<()> {
+        self.register(
+            group,
+            raft,
+            allowed_peers,
+            Some(Self::bootstrap(sha256, access)?),
+            None,
+        )
+    }
+
+    pub(crate) fn register_database_group(
+        &self,
+        group: String,
+        database: &Arc<kasumi_engine::Database>,
+        allowed_peers: BTreeSet<u64>,
+        sha256: String,
+        access: BootstrapAccess,
+    ) -> Result<()> {
+        self.register(
+            group,
+            database.raft_group().raft().clone(),
+            allowed_peers,
+            Some(Self::bootstrap(sha256, access)?),
+            Some(Arc::downgrade(database)),
+        )
+    }
+
+    fn bootstrap(sha256: String, access: BootstrapAccess) -> Result<BootstrapFence> {
         ensure!(
             sha256.len() == 64
                 && sha256
@@ -434,19 +462,16 @@ impl ClusterNetwork {
             "invalid bootstrap fingerprint"
         );
         access()?;
-        self.register(
-            group,
-            raft,
-            allowed_peers,
-            Some(BootstrapFence { sha256, access }),
-        )
+        Ok(BootstrapFence { sha256, access })
     }
+
     fn register(
         &self,
         group: String,
         raft: Raft,
         allowed_peers: BTreeSet<u64>,
         bootstrap: Option<BootstrapFence>,
+        database: Option<std::sync::Weak<kasumi_engine::Database>>,
     ) -> Result<()> {
         kasumi_types::validate_name(&group).map_err(|_| anyhow::anyhow!("invalid group name"))?;
         ensure!(
@@ -470,6 +495,7 @@ impl ClusterNetwork {
                 allowed_peers,
                 bootstrap,
                 peer_fence: None,
+                database,
             },
         );
         Ok(())
@@ -546,6 +572,39 @@ impl ClusterNetwork {
     }
 
     fn authorize(&self, group: &str, peer: u64) -> Result<Raft> {
+        self.with_authorized(group, peer, |route| Ok(route.raft.clone()))
+    }
+
+    fn catalog_owner(
+        &self,
+        group: &str,
+        peer: u64,
+        fingerprint: Option<&str>,
+    ) -> Result<Arc<kasumi_engine::Database>> {
+        self.with_authorized(group, peer, |route| {
+            let enrolled = route
+                .bootstrap
+                .as_ref()
+                .context("catalog requires an installed group")?;
+            ensure!(
+                fingerprint == Some(enrolled.sha256.as_str()),
+                "catalog bootstrap binding changed"
+            );
+            (enrolled.access)()?;
+            route
+                .database
+                .as_ref()
+                .and_then(std::sync::Weak::upgrade)
+                .context("installed catalog owner unavailable")
+        })
+    }
+
+    fn with_authorized<T>(
+        &self,
+        group: &str,
+        peer: u64,
+        select: impl FnOnce(&GroupRoute) -> Result<T>,
+    ) -> Result<T> {
         let groups = self
             .groups
             .read()
@@ -568,7 +627,7 @@ impl ClusterNetwork {
                     .contains(group),
             "test network partition blocks this group peer"
         );
-        Ok(route.raft.clone())
+        select(route)
     }
 }
 
@@ -577,6 +636,18 @@ fn request_source_authorized(raft: &Raft, request: &RpcRequest, source: u64) -> 
         RpcRequest::Append(request) => request.vote.leader_id.voted_for() == Some(source),
         RpcRequest::Vote(request) => request.vote.leader_id.voted_for() == Some(source),
         RpcRequest::Snapshot(request) => request.vote.leader_id.voted_for() == Some(source),
+        RpcRequest::MemberCatalog(query) => {
+            let metrics = raft.metrics();
+            let current = metrics.borrow();
+            query.leader == source
+                && current.current_leader == Some(source)
+                && current.current_term == query.term
+                && current
+                    .membership_config
+                    .membership()
+                    .voter_ids()
+                    .any(|id| id == source)
+        }
         RpcRequest::ReadIndex { .. } => raft
             .metrics()
             .borrow()
@@ -645,6 +716,41 @@ async fn receive(
     match network.fingerprint(&message.group) {
         Ok(expected) if expected == message.bootstrap_sha256.0 => {}
         _ => return network.denied(source, &message.group).await,
+    }
+    if let RpcRequest::MemberCatalog(request) = message.request {
+        let binding = message.bootstrap_sha256.0.as_deref();
+        let Ok(owner) = network.catalog_owner(&message.group, message.source, binding) else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        let Ok(report) = owner.member_key_catalog((*request).clone()).await else {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        };
+        let limit =
+            kasumi_raft::member_catalog::MEMBER_CATALOG_BYTES.min(network.limits.max_rpc_bytes);
+        let Ok(bytes) = encode_bounded(&report, limit) else {
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+        };
+        if request.check_position(owner.raft_group()).is_err()
+            || !network
+                .catalog_owner(&message.group, message.source, binding)
+                .is_ok_and(|current| Arc::ptr_eq(&current, &owner))
+        {
+            return StatusCode::SERVICE_UNAVAILABLE.into_response();
+        }
+        struct ChargedReport {
+            bytes: Vec<u8>,
+            _report: kasumi_engine::AdmittedOutput<RpcResponse>,
+        }
+        impl AsRef<[u8]> for ChargedReport {
+            fn as_ref(&self) -> &[u8] {
+                &self.bytes
+            }
+        }
+        let body = axum::body::Bytes::from_owner(ChargedReport {
+            bytes,
+            _report: report,
+        });
+        return ([("content-type", "application/json")], body).into_response();
     }
     let response = dispatch_rpc(&raft, message.request).await;
     match encode_bounded(&response, network.limits.max_rpc_bytes) {
@@ -767,6 +873,11 @@ impl RaftTransport for ClusterNetwork {
             request,
             bootstrap_sha256: RequiredBootstrapBinding(self.fingerprint(group)?),
         };
+        let response_limit = if matches!(message.request, RpcRequest::MemberCatalog(_)) {
+            kasumi_raft::member_catalog::MEMBER_CATALOG_BYTES.min(self.limits.max_rpc_bytes)
+        } else {
+            self.limits.max_rpc_bytes
+        };
         let hint = smaller_append(&message.request);
         let bytes = encode_bounded(&message, self.limits.max_rpc_bytes)
             .map_err(|error| hint.clone().map_or(error, anyhow::Error::new))?;
@@ -796,7 +907,7 @@ impl RaftTransport for ClusterNetwork {
             .map_err(|_| anyhow::anyhow!("reading cluster response failed"))?
         {
             ensure!(
-                bytes.len().saturating_add(chunk.len()) <= self.limits.max_rpc_bytes,
+                bytes.len().saturating_add(chunk.len()) <= response_limit,
                 "raft response exceeds transport byte limit"
             );
             bytes.extend_from_slice(&chunk);

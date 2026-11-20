@@ -96,6 +96,7 @@ mod lifetime;
 mod local;
 #[cfg(any(test, feature = "test-utils"))]
 pub use local::JoinedAppendCounts;
+pub mod member_catalog;
 mod network;
 mod quorum;
 mod scratch_failure_inventory;
@@ -135,7 +136,8 @@ pub use network::{
 #[cfg(any(test, feature = "test-utils"))]
 pub use openraft::error::Fatal as RaftFatal;
 pub use openraft::{
-    BasicNode, Config, LogId, MembershipObserver, SnapshotMeta, SnapshotPolicy, StoredMembership,
+    BasicNode, Config, LogId, MembershipObserver, RaftMetrics, SnapshotMeta, SnapshotPolicy,
+    StoredMembership,
 };
 pub use snapshot_buffer::{
     ApplicationSourceBinding, ApplicationSourceCustody, SNAPSHOT_BUFFER_SLOTS, SnapshotBuffer,

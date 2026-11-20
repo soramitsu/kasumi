@@ -40,6 +40,8 @@ CASES = {
     "incomplete-dependency-rejection": [("kasumi-engine", "kasumi_engine",
                                          "completed_backup_inventory_discards_partial_key_evidence_when_the_root_is_missing")],
     "race-safe-retirement": [
+        ("kasumi-raft", "kasumi_raft",
+         "report_binds_the_request_member_physical_catalogs_and_ordered_window"),
         ("kasumi-engine", "kasumi_engine",
          "retirement_decision_rechecks_the_ordered_membership_and_dependency_position"),
         ("kasumi-store", "kasumi_store",
