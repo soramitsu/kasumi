@@ -618,3 +618,67 @@ publication records in the standalone recovery inventory. `1bb3af71`
 includes the journaled archive objects, their declared wrapping versions and
 the physical ciphertext and inode checks. The external backup graph and
 independent generation inventory still require separate evidence.
+
+## November 20 native evidence through 07:49 UTC
+
+The common qualification export remains `99cfb12e`. On macOS ARM64 its three
+fixture-free binaries built in 2,926.249 seconds. SHA-256 digests for
+`kasumid`, `kasumictl` and `kasumi-authority` respectively were
+`ced4f7b7e9ad01c871ca7e1f2b369123126d9a194f24bab24003461b7b5ceef6`,
+`9b298600809c0e3c9eb6e01f880a2acef209cb323f57245988125766b9636dd9` and
+`12459dfe346b8c5cf7db31869713d1e1c0affcccf693ca28ff18a0bf2e9ccaff`.
+The installed macOS lifecycle exercised 16 scenarios and 64 processes in
+115.945 seconds. The three-Authority deletion test killed the issuer during
+grace, finished on its successor and reopened the first member's physical
+store in 24.180 seconds. Native development Linux ARM64 clients on the same
+source passed OpenBao in 52.741 seconds and MinIO in 16.907 seconds. Each
+provider restarted during its run. The provider receipt SHA-256 is
+`b723bf69968676812875444f918d9323ca35285f699c3d4400a3cf732413818c`.
+
+Four unoptimized macOS three-node component tests overflowed the default test
+thread stack during their first backup. The four original failures, crash
+reports and native function frame sizes are recorded with the test binary.
+With the debug server's 64 MiB stack, the same binary passed the owned-target
+restart in 567.677 seconds and the unavailable-original-node case in 573.509
+seconds. The regular workspace uses its declared test profile and has a
+separate result. The cancelled administrative drain and protected metrics
+tests also passed on this component binary.
+
+The explicit recovery publication owner in `7a7db191` and the authenticated
+versions for individual target journal rows in `db5684a1` passed the
+all-features Engine and Server compilation check including tests in 909.24
+seconds. Two earlier test builds lost their shared Cargo directory before
+execution. The source export, failures and repeats use separate receipts.
+`fe81c6b8` reads Control members' audit catalogs and archives. `e893c49c`
+does the same for each enrolled Authority using its own partition credential.
+Both bind each response to the member and the physical stream. The protected
+peer report's Raft wire regression passed on `fe81c6b8`. Complete Data,
+external checkpoint and generation coverage remain open.
+
+On Btrfs the 102 terminal files produced by 51 original sessions each pinned
+a distinct 2,166,784-byte extent after publication. The inode block counts
+alone underreported that allocation. `abda500e` clears only stale tail
+chunks before synchronizing and publishing the same inode. After two forced
+process exits a third process reopened six original ciphertexts. The six
+distinct retained extents each measured 4,096 bytes. The physical receipt
+SHA-256 is `5fde790bdece374f8819d430d9149949e926b8567e7b70e4ede5810ca030684d`.
+In the regular macOS Store suite eight session admission cases passed and one
+failed on the pre-publication allocation check. A direct APFS experiment
+measured 2,166,784 bytes after a 12,377-byte prefix write and 4,096 bytes
+after publication-sized truncation. `98d9bbdc` measures the successful writes
+issued by Kasumi and the published allocation separately. The 100,001-session
+cold-replay floor still needs its own complete process receipts.
+
+`af2152c9` restricts host receipt collection for OCI probing to the seven
+required inputs and records separate copies for each generation. All nine
+adapter tests passed on both ARM64 platforms. The first real Linux Docker
+run then failed during initialization because the policies inherited
+world-readable permissions. `327798c3` creates them with owner-only access.
+The matching native development Docker rerun passed 33 steps in 76.795
+seconds, including authenticated native and MCP requests before and after
+restart, exit and cleanup. It used the `820ebd90` binaries, Debian ARM64
+manifest `6bd27d44e6c32a66bbd72d7cb2b76a8ae3497ec2e5274a81abd1b37f6013fa1f`
+and image `1946c8842f0bac6e4cb5e064e9358b3528af7e253328392433ab51f8f2fa071f`
+on two virtual CPUs with 16,360,792 KiB guest memory. The receipt SHA-256
+is `5a0efcd5c628926d9b6cc34519c05eec96793a0ecef0d31c9d544a3d6f840fcb`.
+Packaged smoke and independently built release artifacts remain outstanding.
