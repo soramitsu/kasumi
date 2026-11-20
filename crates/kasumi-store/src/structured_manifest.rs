@@ -120,6 +120,14 @@ impl StructuredManifest {
         self.status == StructuredStatus::Current
     }
 
+    pub fn matches_applied(&self, actual: Option<&StructuredApplied>) -> bool {
+        match (self.applied.as_ref(), actual) {
+            (Some(stored), Some(actual)) => stored.same_position(actual),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     /// The edited successor at `revision`; tree identity and space are kept.
     pub fn advance(
         &self,
@@ -222,11 +230,19 @@ impl StructuredManifest {
                 && self.records.tree == previous.records.tree,
             "structured directory successor changes its tree or scope"
         );
-        // Only a current directory may go stale at its own revision: a
-        // replayed boundary that differs from it.
+        // Genesis membership can bind the already verified bootstrap tree
+        // without changing its rows, layout or logical revision.
+        let binds_genesis = previous.applied.is_none()
+            && self.revision == self.revision_base
+            && self
+                .applied
+                .as_ref()
+                .is_some_and(|p| p.index == 0 && p.command_sha256.is_some())
+            && self.records == previous.records
+            && self.layout_sha256 == previous.layout_sha256;
         ensure!(
             self.revision > previous.revision
-                || (self.revision == previous.revision && !self.is_current()),
+                || (self.revision == previous.revision && (!self.is_current() || binds_genesis)),
             "structured directory cannot move backward or repeat a revision"
         );
         // A stale successor keeps the last tree it could vouch for.

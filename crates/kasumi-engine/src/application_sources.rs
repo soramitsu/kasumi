@@ -234,6 +234,33 @@ impl SelectedApplication {
             .get()
             .is_some_and(|position| position.applied().is_none())
     }
+    pub(crate) fn matches_structured_boundary(
+        &self,
+        manifest: &kasumi_store::structured_manifest::StructuredManifest,
+    ) -> Result<bool> {
+        let Some(position) =
+            self.cell.position.get().filter(|p| {
+                self.cell.frozen.get() == Some(&false) && !p.is_covered_reconstruction()
+            })
+        else {
+            return Ok(false);
+        };
+        let applied = match position.applied() {
+            Some(kasumi_raft::SelectedAppliedRef::Entry {
+                log_id,
+                command_sha256,
+                ..
+            }) => Some(crate::application_structured::entry_identity(
+                &log_id,
+                command_sha256,
+            )?),
+            Some(kasumi_raft::SelectedAppliedRef::Snapshot { meta, .. }) => {
+                crate::application_structured::snapshot_applied(meta)?
+            }
+            None => None,
+        };
+        Ok(manifest.matches_applied(applied.as_ref()))
+    }
     pub(crate) fn matches_primary_boundary(
         &self,
         manifest: &kasumi_store::primary_manifest::PrimaryManifest,

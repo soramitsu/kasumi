@@ -7,6 +7,26 @@ use kasumi_types::{
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 
+// These storage component fixtures supply their own synthetic apply history.
+fn prepare_publication(
+    owner: &StructuredOwner,
+    store: &Arc<TenantStore>,
+    previous: &TenantState,
+    previous_indexes: &QueryIndexes,
+    candidate: &TenantState,
+    candidate_indexes: &QueryIndexes,
+    applied: Option<StructuredApplied>,
+) -> Result<Option<StructuredPublication>> {
+    prepare_publication_at(
+        owner,
+        store,
+        (previous, previous_indexes),
+        (candidate, candidate_indexes),
+        applied,
+        |_| Ok(true),
+    )
+}
+
 struct Fixture {
     _directory: tempfile::TempDir,
     _storage: crate::test_utils::FixtureStorage,

@@ -1139,6 +1139,49 @@ impl TenantEngine {
         });
     }
     #[cfg(test)]
+    pub(crate) fn select_wrong_structured_history_for_test(
+        &self,
+        applied: kasumi_store::structured_manifest::StructuredApplied,
+    ) -> anyhow::Result<()> {
+        use kasumi_store::{
+            NamespaceStage, SelectedGeneration, ordered_pages::TreeRoot,
+            structured_manifest as structured,
+        };
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let sources = self.application_sources.get().expect("installed sources");
+        let selected = current
+            .application_selection
+            .get()
+            .expect("selected Raft boundary");
+        let store = sources.primary_installation().0.application();
+        let family =
+            SelectedGeneration::adopt(store, structured::FAMILY, &structured::INITIAL_SPACE)?;
+        let stage = NamespaceStage::begin_generation(store, structured::FAMILY)?;
+        stage.seal_empty()?;
+        // An empty directory would lose the matching query row if selected.
+        // Only the supplied log or command identity distinguishes it.
+        let manifest = structured::StructuredManifest::new(
+            &current.state.tenant,
+            &current.state.incarnation,
+            current.state.revision_base,
+            current.state.revision,
+            Some(applied),
+            current.indexes.structured_layout_sha256(),
+            stage.namespace(),
+            TreeRoot::new_tree(),
+        );
+        let mut writes = family.switch_writes(store, &[&stage])?;
+        writes.push(manifest.write()?);
+        store.write_batch(&writes)?;
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selected, None)?,
+            "field fixture could not reselect actual Raft position"
+        );
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn select_wrong_primary_history_for_test(&self) -> anyhow::Result<()> {
         use kasumi_store::primary_manifest::PrimaryManifest;
         let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;

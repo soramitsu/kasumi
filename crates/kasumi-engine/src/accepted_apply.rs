@@ -574,14 +574,16 @@ impl AcceptedGeneration<'_> {
         prepared: &mut PreparedApplicationWrites,
     ) -> anyhow::Result<Option<crate::application_structured::StructuredPublication>> {
         let (stores, _) = roots.primary_installation();
-        let mut publication = crate::application_structured::prepare_publication(
+        let mut publication = crate::application_structured::prepare_publication_at(
             &roots.structured,
             stores.application(),
-            &self.owner.previous.state,
-            &self.owner.previous.indexes,
-            &self.candidate.state,
-            &self.candidate.indexes,
+            (&self.owner.previous.state, &self.owner.previous.indexes),
+            (&self.candidate.state, &self.candidate.indexes),
             Some(crate::application_structured::entry_applied(position)?),
+            |manifest| match self.owner.previous.application_selection.get() {
+                Some(selected) => selected.matches_structured_boundary(manifest),
+                None => Ok(false),
+            },
         )?;
         if let Some(publication) = publication.as_mut() {
             let rows = publication.take_writes();
