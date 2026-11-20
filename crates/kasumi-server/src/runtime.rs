@@ -1528,6 +1528,8 @@ impl NodeRuntime {
         }?;
         #[cfg(not(test))]
         let mcp_auth = Authenticator::mcp(config.auth.clone())?;
+        let auth = auth.on_node(&admission)?;
+        let mcp_auth = mcp_auth.on_node(&admission)?;
         let registry = DatabaseRegistry::default();
         registry.set_approved_nodes(
             config

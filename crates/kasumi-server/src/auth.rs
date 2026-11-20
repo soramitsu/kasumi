@@ -353,6 +353,11 @@ struct RefreshState {
     signer: Option<SignerFileIdentity>,
 }
 
+enum SignerReads {
+    Independent(kasumi_serving::BlockingChildren),
+    Node(Arc<kasumi_engine::admission::NodeAdmission>),
+}
+
 pub struct Authenticator {
     config: AuthConfig,
     /// The audience this authenticator's listener serves.
@@ -361,7 +366,8 @@ pub struct Authenticator {
     client: reqwest::Client,
     cache: RwLock<Option<CachedKeys>>,
     /// Serializes refreshes; requests whose key is cached never wait on it.
-    refresh: tokio::sync::Mutex<RefreshState>,
+    refresh: Arc<tokio::sync::Mutex<RefreshState>>,
+    signer_reads: SignerReads,
     /// Local signer reloads begun, numbered while holding `refresh`.
     reloads: AtomicU64,
     audit: std::sync::OnceLock<Arc<dyn RequestAuditSink>>,
@@ -373,6 +379,17 @@ pub struct Authenticator {
 }
 
 impl Authenticator {
+    /// Bind a fresh listener to the node that drains its physical signer reads.
+    pub(crate) fn on_node(
+        mut self: Arc<Self>,
+        admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+    ) -> anyhow::Result<Arc<Self>> {
+        Arc::get_mut(&mut self)
+            .ok_or_else(|| anyhow::anyhow!("signer read owner must be installed before serving"))?
+            .signer_reads = SignerReads::Node(admission.clone());
+        Ok(self)
+    }
+
     pub(crate) fn signer_admission_deadline(
         &self,
         not_after_ms: u64,
@@ -488,7 +505,11 @@ impl Authenticator {
             clock,
             client,
             cache: RwLock::new(None),
-            refresh: tokio::sync::Mutex::new(RefreshState::default()),
+            refresh: Arc::new(tokio::sync::Mutex::new(RefreshState::default())),
+            signer_reads: SignerReads::Independent(kasumi_serving::BlockingChildren::new(
+                "local signer reload",
+                1,
+            )?),
             reloads: AtomicU64::new(0),
             audit: std::sync::OnceLock::new(),
             audit_failed: AtomicBool::new(false),
@@ -646,7 +667,7 @@ impl Authenticator {
             return Ok(());
         }
         let begun = self.reloads.load(Ordering::Acquire);
-        let mut state = self.refresh.lock().await;
+        let state = self.refresh.clone().lock_owned().await;
         if self.cached(requested_kid).await? {
             return Ok(());
         }
@@ -673,13 +694,28 @@ impl Authenticator {
                     }
                 }
                 let reload = self.reloads.fetch_add(1, Ordering::AcqRel) + 1;
-                state.signer = identity;
                 let signer_file = signer_file.clone();
-                let keys = tokio::task::spawn_blocking(move || {
-                    crate::local_auth::trusted_keys(&signer_file)
-                })
-                .await
-                .map_err(|_| unavailable())?
+                // A disconnected waiter must neither release the serial read
+                // guard early nor mark unpublished keys as already cached.
+                let read = move || {
+                    let mut state = state;
+                    match crate::local_auth::trusted_keys(&signer_file) {
+                        Ok(keys) => Ok((state, keys)),
+                        Err(error) => {
+                            state.signer = identity;
+                            Err(kasumi_serving::ChildFailure::Failed(error))
+                        }
+                    }
+                };
+                let (mut state, keys) = match &self.signer_reads {
+                    SignerReads::Node(admission) => admission.adapter_child(read).await,
+                    SignerReads::Independent(children) => children
+                        .start(read)
+                        .map_err(|_| unavailable())?
+                        .wait()
+                        .await
+                        .map_err(|_| unavailable())?,
+                }
                 .map_err(|_| unavailable())?;
                 let mut cache = self.cache.write().await;
                 let now = self.clock.elapsed_clock().now();
@@ -688,6 +724,7 @@ impl Authenticator {
                     Some(current) if current.keys == keys => current.fetched = now,
                     _ => *cache = Some(CachedKeys::new(keys, now)),
                 }
+                state.signer = identity;
                 state.loaded = reload;
                 return Ok(());
             }
@@ -2021,6 +2058,8 @@ mod tests {
             require_certificate_binding: false,
         })
         .unwrap();
+        let admission = kasumi_engine::admission::NodeAdmission::new(Default::default()).unwrap();
+        let auth = auth.on_node(&admission).unwrap();
         let kid = |generation: usize| {
             crate::local_auth::trusted_keys(&signer).unwrap().keys[generation]
                 .common
@@ -2131,8 +2170,27 @@ mod tests {
         crate::local_auth::rotate_signer(&signer).unwrap();
         let second = kid(1);
         assert_eq!(second, next);
+        // Hold the real cache at publication after a successful rotation read.
+        // Disconnecting here must allow this same file identity to be retried.
+        let previous = auth.cache.read().await;
+        let pending = tokio::spawn({
+            let auth = auth.clone();
+            let second = second.clone();
+            async move { auth.refresh_keys(&second).await }
+        });
+        tokio::time::timeout(Duration::from_secs(15), async {
+            while auth.cache.try_read().is_ok() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("signer read did not reach cache publication");
+        pending.abort();
+        assert!(pending.await.unwrap_err().is_cancelled());
+        drop(previous);
+        admission.drain_blocking_children().await.unwrap();
         auth.refresh_keys(&second).await.unwrap();
-        assert_eq!(begun(&auth), 4);
+        assert_eq!(begun(&auth), 5);
         assert!(auth.cached(&first).await.unwrap() && auth.cached(&second).await.unwrap());
     }
 

@@ -331,7 +331,7 @@ impl AuthorityRuntime {
             pending.signer_original_recoveries = Some(config.signer_verifier.node_start_inventory(&admission)?);
             let persistent_disk = crate::persistent_disk::open(&config.persistent_disk, &storage)?;
             let scratch_disk = storage.open_scratch(&config.scratch_disk)?;
-            let auth = Authenticator::new(config.auth.clone())?;
+            let auth = Authenticator::new(config.auth.clone())?.on_node(&admission)?;
             let native_tls = kasumi_transport::ReloadableServerConfig::new(config.native.load()?);
             let identity = config.replication.listener.tls.load()?;
             let ca = read_bounded(&config.replication.listener.client_ca, 1 << 20)?;
