@@ -81,6 +81,10 @@ impl DocumentReads {
         })
     }
 
+    pub(crate) fn shared(&self) -> Option<&dyn SharedRead> {
+        self.shared.as_deref()
+    }
+
     pub(crate) fn source(&self, collection: &str) -> Result<GenerationDocumentSource<'_>> {
         source(&self.generation, collection, Some(self))
     }
@@ -98,7 +102,7 @@ impl DocumentReads {
         )
     }
 
-    fn check_deadline(&self) -> Result<()> {
+    pub(crate) fn check_deadline(&self) -> Result<()> {
         if Instant::now() >= self.deadline {
             return Err(Self::deadline_error());
         }
@@ -115,6 +119,12 @@ impl GenerationDocumentSource<'_> {
         // The source retains this immutable allocation. No later engine
         // publication or hydration view can remove its validated collection.
         &self.generation.state.collections[&self.collection]
+    }
+
+    fn directory_reader(&self) -> Option<&crate::document_store::SelectedRead> {
+        self.reads
+            .and_then(DocumentReads::shared)
+            .map(SharedRead::selected)
     }
 
     fn resolver(&self) -> Option<&dyn DocumentResolver> {
@@ -140,7 +150,7 @@ impl GenerationDocumentSource<'_> {
         let state = &self.generation.state;
         if let Some(selection) = self.generation.application_selection.get() {
             let selected = selection
-                .with_serving_primary(state, |tree, memory, _| {
+                .with_serving_primary(self.directory_reader(), state, |tree, memory, _| {
                     let mut leases = Vec::new();
                     let point = crate::application_records::snapshot_point(
                         tree,
@@ -247,6 +257,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         // one falls back to the ranked dictionaries of its exact snapshot.
         let ordinary = selection
             .with_structured_records(
+                self.directory_reader(),
                 state,
                 || self.generation.indexes.structured_layout_sha256(),
                 |tree| {
@@ -280,7 +291,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
             return Ok(false);
         }
         let selected = selection
-            .with_snapshot_records(state, |tree, _, layout| {
+            .with_snapshot_records(self.directory_reader(), state, |tree, _, layout| {
                 let check = || {
                     cancellation.check()?;
                     self.check_deadline()
@@ -338,17 +349,21 @@ impl DocumentSource for GenerationDocumentSource<'_> {
             return Ok(None);
         };
         let selected = selection
-            .with_text_records(state, |tree, source, manifest, memory| {
-                crate::application_text::search_collection(
-                    tree,
-                    source,
-                    manifest,
-                    &self.collection,
-                    self.collection(),
-                    memory,
-                    search,
-                )
-            })
+            .with_text_records(
+                self.directory_reader(),
+                state,
+                |tree, source, manifest, memory| {
+                    crate::application_text::search_collection(
+                        tree,
+                        source,
+                        manifest,
+                        &self.collection,
+                        self.collection(),
+                        memory,
+                        search,
+                    )
+                },
+            )
             .map_err(|error| kasumi_query::ReadFailure::Source(DocumentSourceFailure(error)))?;
         self.check_deadline()?;
         match selected {
@@ -406,7 +421,7 @@ impl DocumentSource for GenerationDocumentSource<'_> {
         let state = &self.generation.state;
         if let Some(selection) = self.generation.application_selection.get() {
             let selected = selection
-                .with_serving_primary(state, |tree, memory, layout| {
+                .with_serving_primary(self.directory_reader(), state, |tree, memory, layout| {
                     if layout < kasumi_store::application_manifest::DOCUMENT_HEADERS_LAYOUT {
                         return Ok(None);
                     }

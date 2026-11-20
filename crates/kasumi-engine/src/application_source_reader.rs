@@ -23,6 +23,40 @@ impl SourceRoots {
     }
 }
 impl SelectedApplication {
+    pub(crate) fn same_selection(&self, other: &Self) -> bool {
+        self.cell.ptr_eq(&other.cell)
+    }
+
+    fn with_record_reader<T>(
+        &self,
+        roots: &SourceRootsRef,
+        shared: Option<&crate::document_store::SelectedRead>,
+        read: impl FnOnce(&SourceReader) -> Result<T>,
+    ) -> Result<T> {
+        if let Some(shared) = shared {
+            return shared.with_directory_reader(self, |reader| match reader {
+                DocumentReader::Fork(reader) => read(reader),
+                DocumentReader::Borrowed { .. } => self.with_fresh_record_reader(roots, read),
+            });
+        }
+        self.with_fresh_record_reader(roots, read)
+    }
+
+    fn with_fresh_record_reader<T>(
+        &self,
+        roots: &SourceRootsRef,
+        read: impl FnOnce(&SourceReader) -> Result<T>,
+    ) -> Result<T> {
+        let reader = self.open_selected_reader(roots)?;
+        let result = read(&reader);
+        let close = reader.close();
+        match (result, close) {
+            (Err(error), Err(close)) => Err(error.context(close)),
+            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
+            (Ok(result), Ok(())) => Ok(result),
+        }
+    }
+
     /// An ordinary selected entry can carry the previous snapshot while its
     /// log advances. Only an exact, unfrozen logical position may lend the
     /// snapshot's document directory to a serving read.
@@ -45,7 +79,7 @@ impl SelectedApplication {
         id: &str,
         admit: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<Option<crate::application_records::PrimaryPoint>> {
-        self.with_snapshot_records(state, |tree, _, _| {
+        self.with_snapshot_records(None, state, |tree, _, _| {
             crate::application_records::snapshot_point(tree, collection, id, state.revision, admit)
         })
     }
@@ -54,6 +88,7 @@ impl SelectedApplication {
     /// A deployed snapshot without a manifest must use its original reader.
     pub(crate) fn with_snapshot_records<T>(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
@@ -65,7 +100,9 @@ impl SelectedApplication {
             self.has_exact_snapshot(state.revision_base, state.revision),
             "record read requires the exact selected snapshot"
         );
-        self.with_base_snapshot_records(state, |tree, memory, layout, _| read(tree, memory, layout))
+        self.with_base_snapshot_records(shared, state, |tree, memory, layout, _| {
+            read(tree, memory, layout)
+        })
     }
 
     /// A serving entry may retain its authenticated predecessor snapshot.
@@ -73,6 +110,7 @@ impl SelectedApplication {
     /// it owns with the selected log tail.
     pub(crate) fn with_base_snapshot_records<T>(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
@@ -108,8 +146,7 @@ impl SelectedApplication {
             .roots
             .upgrade()
             .context("selected record installation absent")?;
-        let reader = self.open_selected_reader(&roots)?;
-        let outcome: Result<_> = (|| {
+        self.with_record_reader(&roots, shared, |reader| {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned primary view");
@@ -169,18 +206,13 @@ impl SelectedApplication {
             kasumi_raft::with_published_snapshot_at(view, &roots.limits, workspace, read_snapshot)?
                 .context("application directory lacks its selected Raft snapshot")
                 .map(Some)
-        })();
-        let close = reader.close();
-        match (outcome, close) {
-            (Err(error), Err(close)) => Err(error.context(close)),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Ok(point), Ok(())) => Ok(point),
-        }
+        })
     }
 
     /// Read primary descriptors and headers from the tree owned by this revision.
     pub(crate) fn with_serving_primary<T>(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
@@ -189,9 +221,9 @@ impl SelectedApplication {
         ) -> Result<T>,
     ) -> Result<Option<T>> {
         if self.has_exact_snapshot(state.revision_base, state.revision) {
-            return self.with_snapshot_records(state, read);
+            return self.with_snapshot_records(shared, state, read);
         }
-        self.with_primary_records(state, |tree, memory| {
+        self.with_primary_records(shared, state, |tree, memory| {
             read(
                 tree,
                 memory,
@@ -208,6 +240,7 @@ impl SelectedApplication {
     /// their first restore, a stale directory, covered reconstruction).
     pub(crate) fn with_primary_records<T>(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
@@ -239,8 +272,7 @@ impl SelectedApplication {
             .roots
             .upgrade()
             .context("selected record installation absent")?;
-        let reader = self.open_selected_reader(&roots)?;
-        let outcome: Result<_> = (|| {
+        self.with_record_reader(&roots, shared, |reader| {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned primary view");
@@ -261,25 +293,20 @@ impl SelectedApplication {
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             let memory = kasumi_store::ordered_pages::PageSource::memory(view.as_ref());
             read(&tree, &memory).map(Some)
-        })();
-        let close = reader.close();
-        match (outcome, close) {
-            (Err(error), Err(close)) => Err(error.context(close)),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Ok(point), Ok(())) => Ok(point),
-        }
+        })
     }
 
     /// One document's live or archived record from the pinned primary
     /// directory at this exact revision. A miss there is authoritative.
     pub(crate) fn primary_point(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         collection: &str,
         id: &str,
         admit: impl FnMut(&[u8]) -> Result<()>,
     ) -> Result<Option<crate::application_records::PrimaryPoint>> {
-        self.with_serving_primary(state, |tree, _, _| {
+        self.with_serving_primary(shared, state, |tree, _, _| {
             crate::application_records::snapshot_point(tree, collection, id, state.revision, admit)
         })
     }
@@ -291,6 +318,7 @@ impl SelectedApplication {
     /// when the pinned root holds no current directory at this revision.
     pub(crate) fn with_text_records<T>(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         read: impl FnOnce(
             &kasumi_store::ordered_pages::TreeReader<'_>,
@@ -323,8 +351,7 @@ impl SelectedApplication {
             .roots
             .upgrade()
             .context("selected text installation absent")?;
-        let reader = self.open_selected_reader(&roots)?;
-        let outcome: Result<_> = (|| {
+        self.with_record_reader(&roots, shared, |reader| {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned text view");
@@ -341,13 +368,7 @@ impl SelectedApplication {
             let tree =
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             read(&tree, view.as_ref(), &manifest, &reader.roots.admission).map(Some)
-        })();
-        let close = reader.close();
-        match (outcome, close) {
-            (Err(error), Err(close)) => Err(error.context(close)),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Ok(found), Ok(())) => Ok(found),
-        }
+        })
     }
 
     /// Validate the immutable owner pairing without opening a reader or
@@ -440,6 +461,7 @@ impl SelectedApplication {
     /// below the directory, a frozen selection or a covered reconstruction.
     pub(crate) fn with_structured_records<T>(
         &self,
+        shared: Option<&crate::document_store::SelectedRead>,
         state: &kasumi_types::TenantState,
         layout_sha256: impl FnOnce() -> [u8; 32],
         read: impl FnOnce(&kasumi_store::ordered_pages::TreeReader<'_>) -> Result<T>,
@@ -470,8 +492,7 @@ impl SelectedApplication {
             .roots
             .upgrade()
             .context("selected record installation absent")?;
-        let reader = self.open_selected_reader(&roots)?;
-        let outcome: Result<_> = (|| {
+        self.with_record_reader(&roots, shared, |reader| {
             reader.check_access()?;
             let permit = SourceReader::loan(&reader.roots, &reader.cell, false, false)?;
             let view = permit.view.as_ref().expect("loaned structured view");
@@ -490,13 +511,7 @@ impl SelectedApplication {
             let tree =
                 TreeReader::new(view.as_ref(), &manifest.page_space, manifest.records, None)?;
             read(&tree).map(Some)
-        })();
-        let close = reader.close();
-        match (outcome, close) {
-            (Err(error), Err(close)) => Err(error.context(close)),
-            (Err(error), Ok(())) | (Ok(_), Err(error)) => Err(error),
-            (Ok(read), Ok(())) => Ok(read),
-        }
+        })
     }
 }
 

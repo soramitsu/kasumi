@@ -350,6 +350,7 @@ pub(crate) trait GenerationDocuments: DocumentResolver {
 /// and rechecks key access before lending its document. `finish` retires the
 /// view and fails if the view failed or key access ended.
 pub(crate) trait SharedRead: DocumentResolver {
+    fn selected(&self) -> &SelectedRead;
     fn finish(self: Box<Self>) -> Result<()>;
 }
 
@@ -616,6 +617,18 @@ impl SelectedRead {
         result
     }
 
+    pub(crate) fn with_directory_reader<T>(
+        &self,
+        selection: &SelectedApplication,
+        read: impl FnOnce(&DocumentReader) -> Result<T>,
+    ) -> Result<T> {
+        ensure!(
+            self.documents.selected.same_selection(selection),
+            "directory and body selected different native roots"
+        );
+        self.with_reader(|reader| read(reader))
+    }
+
     /// `SelectedDocuments::with_source` through the shared view.
     pub(crate) fn with_source<T>(&self, read: impl FnOnce() -> Result<T>) -> Result<T> {
         self.with_reader(|reader| reader.check_access())?;
@@ -637,6 +650,9 @@ impl DocumentResolver for SelectedRead {
     }
 }
 impl SharedRead for SelectedRead {
+    fn selected(&self) -> &SelectedRead {
+        self
+    }
     fn finish(self: Box<Self>) -> Result<()> {
         match self.reader.into_inner().unwrap_or_else(|p| p.into_inner()) {
             Some(reader) => reader.close(),

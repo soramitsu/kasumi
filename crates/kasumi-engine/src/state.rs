@@ -1115,8 +1115,9 @@ impl TenantEngine {
         self.object_gc.step(&crate::document_gc::Step {
             state: &current.state,
             snapshot_revision: &|| {
-                selection
-                    .with_base_snapshot_records(&current.state, |_, _, _, revision| Ok(revision))
+                selection.with_base_snapshot_records(None, &current.state, |_, _, _, revision| {
+                    Ok(revision)
+                })
             },
             store: sources.primary_installation().0.application(),
             scope,

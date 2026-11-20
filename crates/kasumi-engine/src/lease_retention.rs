@@ -654,7 +654,7 @@ impl LeaseManager {
                 let handle = root.handle.clone();
                 drop(entries);
                 drop(current);
-                let read = selection.with_serving_primary(&metadata, |tree, _, layout| {
+                let read = selection.with_serving_primary(None, &metadata, |tree, _, layout| {
                     let check = || -> anyhow::Result<()> {
                         cancellation.check()?;
                         context.authorization.check_live()?;

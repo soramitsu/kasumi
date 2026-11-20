@@ -158,7 +158,7 @@ impl Database {
                 let generation = read.generation.clone();
                 let state = &generation.state;
                 let result = if let Some(selection) = generation.application_selection.get() {
-                    selection.with_base_snapshot_records(state, |tree, memory, _, revision| {
+                    selection.with_base_snapshot_records(None, state, |tree, memory, _, revision| {
                         let disk = crate::application_records::SnapshotFeed::open(tree, memory, revision, state)?;
                         Ok(read.build(&actor, token, disk))
                     }).map_err(document_load_error)?

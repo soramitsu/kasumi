@@ -178,26 +178,46 @@ impl PointRead {
                 .application_selection
                 .get()
                 .expect("application selection checked above");
-            let point = selection
-                .primary_point(state, &collection, &id, |bytes| {
-                    let work =
-                        crate::snapshot_codec::inspect_external_json_work(bytes, &mut || {
-                            token.check()?;
+            let point = with_document_reads(&generation, deadline.into_std(), |reads| {
+                token.check()?;
+                let point = selection
+                    .primary_point(
+                        reads
+                            .shared()
+                            .map(crate::document_store::SharedRead::selected),
+                        state,
+                        &collection,
+                        &id,
+                        |bytes| {
+                            let work = crate::snapshot_codec::inspect_external_json_work(
+                                bytes,
+                                &mut || {
+                                    token.check()?;
+                                    Ok(())
+                                },
+                            )?;
+                            self.claim(
+                                work.checked_add((bytes.len() as u64).saturating_mul(2))
+                                    .and_then(|n| n.checked_add(256))
+                                    .ok_or_else(query_workspace_overflow)?,
+                            )?;
                             Ok(())
-                        })?;
-                    self.claim(
-                        work.checked_add((bytes.len() as u64).saturating_mul(2))
-                            .and_then(|n| n.checked_add(256))
-                            .ok_or_else(query_workspace_overflow)?,
-                    )?;
-                    Ok(())
-                })
-                .map_err(document_load_error)?;
-            // Snapshots written by deployed revisions precede the directory.
-            let point = match point {
-                Some(point) => point,
-                None => resident(state, &collection, &id)?,
-            };
+                        },
+                    )
+                    .map_err(document_load_error)?;
+                // Snapshots written by deployed revisions precede the directory.
+                let point = match point {
+                    Some(point) => point,
+                    None => resident(state, &collection, &id)?,
+                };
+                if let (Some(source), PrimaryPoint::Live(slot)) = (reads.shared(), &point) {
+                    token.check()?;
+                    reads.check_deadline()?;
+                    self.document =
+                        Some(slot.load_owned(Some(source)).map_err(document_load_error)?);
+                }
+                Ok(point)
+            })?;
             token.check()?;
             self.primary_bytes = self
                 .memory
@@ -233,10 +253,12 @@ impl PointRead {
             let _permit = permit;
             worker_cancellation.check()?;
             let generation = self.generation.as_ref().expect("selected point generation");
-            self.document = Some(
-                slot.load_owned(generation.document_resolver())
-                    .map_err(document_load_error)?,
-            );
+            if self.document.is_none() {
+                self.document = Some(
+                    slot.load_owned(generation.document_resolver())
+                        .map_err(document_load_error)?,
+                );
+            }
             drop(slot);
             worker_cancellation.check()?;
             let response = Some(select(&mut self)?);
@@ -350,12 +372,9 @@ impl Database {
                     .await?
             }
             PrimaryPoint::Missing => {
-                let charge = read.retain_charge();
-                return Ok(RegisteredPoint {
-                    response: None,
-                    _registration: read.registration.clone().expect("point registration"),
-                    _charge: charge,
-                });
+                read.retain_charge();
+                drop(permit);
+                PendingPoint { response: None, read }
             }
             PrimaryPoint::Archived(reference) => {
                 let generation = read.generation.as_ref().expect("selected point generation");

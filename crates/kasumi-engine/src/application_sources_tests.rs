@@ -1499,6 +1499,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         // Four presence rows and seven postings, four of them absences.
         assert_eq!(
             selection.with_structured_records(
+                None,
                 &ordinary.state,
                 || ordinary.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
@@ -1694,6 +1695,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     {
         assert_eq!(
             selection.with_structured_records(
+                None,
                 &reopened.state,
                 || reopened.indexes.structured_layout_sha256(),
                 |tree| Ok(tree.root().count()),
@@ -1706,7 +1708,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         (Some("alpha"), 2, vec!["point"]),
         (Some("point"), 1, vec![]),
     ] {
-        let ids = selection.with_snapshot_records(&reopened.state, |tree, _, _| {
+        let ids = selection.with_snapshot_records(None, &reopened.state, |tree, _, _| {
             crate::application_records::snapshot_ids_after(tree, "docs", after, limit, || Ok(()))
         })?;
         assert_eq!(ids.context("reopened primary directory missing")?, expected);
@@ -2012,7 +2014,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
     let mut visited = Vec::new();
     let feed = &reopened.state.change_feed;
     selection
-        .with_snapshot_records(&reopened.state, |tree, memory, _| {
+        .with_snapshot_records(None, &reopened.state, |tree, memory, _| {
             let snapshot_feed = crate::application_records::SnapshotFeed::open(
                 tree,
                 memory,
@@ -2089,7 +2091,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         .application_selection
         .get()
         .unwrap()
-        .with_base_snapshot_records(&latest.state, |tree, memory, _, revision| {
+        .with_base_snapshot_records(None, &latest.state, |tree, memory, _, revision| {
             let prefix = crate::application_records::SnapshotFeed::open(
                 tree,
                 memory,
@@ -2684,7 +2686,7 @@ async fn selected_sources_ordinary_primary_directory_follows_apply_and_reopens()
             .context("generation selection")?;
         Ok(
             match selection
-                .primary_point(&generation.state, "docs", id, |_| Ok(()))?
+                .primary_point(None, &generation.state, "docs", id, |_| Ok(()))?
                 .context("selected generation has no current primary directory")?
             {
                 crate::application_records::PrimaryPoint::Live(slot) => Some(slot.version()),

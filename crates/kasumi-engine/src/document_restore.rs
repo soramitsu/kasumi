@@ -1099,6 +1099,9 @@ impl DocumentResolver for BootstrapRead {
     }
 }
 impl SharedRead for BootstrapRead {
+    fn selected(&self) -> &SelectedRead {
+        &self.selected
+    }
     fn finish(self: Box<Self>) -> Result<()> {
         SharedRead::finish(Box::new(self.selected))
     }
