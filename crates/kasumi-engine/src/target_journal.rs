@@ -1074,6 +1074,16 @@ impl TargetJournal {
         Ok(())
     }
     fn validate_cleanup(&self, cleanup: &TargetCleanup) -> Result<()> {
+        let binding =
+            self.materialization_file_binding(&cleanup.tenant, cleanup.target_incarnation)?;
+        self.validate_cleanup_binding(cleanup, binding.as_ref())
+    }
+
+    fn validate_cleanup_binding(
+        &self,
+        cleanup: &TargetCleanup,
+        binding: Option<&TargetFileBinding>,
+    ) -> Result<()> {
         kasumi_types::validate_name(&cleanup.tenant)?;
         ensure!(
             self.store
@@ -1086,9 +1096,7 @@ impl TargetJournal {
             "target cleanup precedes its permanent stop"
         );
         ensure!(
-            cleanup.binding
-                == self
-                    .materialization_file_binding(&cleanup.tenant, cleanup.target_incarnation)?,
+            cleanup.binding.as_ref() == binding,
             "target cleanup differs from the enrolled storage binding"
         );
         ensure!(
@@ -1364,7 +1372,37 @@ impl TargetJournal {
                 && request.target_incarnation == cleanup.target_incarnation,
             "target cleanup belongs to another phase"
         );
-        self.validate_cleanup(cleanup)?;
+        let writes = self.cleanup_writes(cleanup)?;
+        op.check()?;
+        if writes.is_empty() {
+            return Ok(());
+        }
+        self.store.write_batch(&writes).map_err(journal_unknown)?;
+        op.check().map_err(journal_unknown)
+    }
+
+    // Called under the original operation's journal mutation lock. A first
+    // binding, progress and their permanent capacity belong to one transaction.
+    fn cleanup_writes(&self, cleanup: &TargetCleanup) -> Result<Vec<WriteOp>> {
+        let enrolled =
+            self.materialization_file_binding(&cleanup.tenant, cleanup.target_incarnation)?;
+        // If creation stopped before enrollment, the native stamp binds the
+        // original directory. Publish this binding and Deleting together: on
+        // restart an already-bound rootless directory always has its progress.
+        let new_binding = match (enrolled.as_ref(), cleanup.binding.as_ref()) {
+            (None, Some(binding)) if cleanup.stage == TargetCleanupStage::Deleting => {
+                ensure!(
+                    binding.tenant == cleanup.tenant
+                        && binding.target_incarnation == cleanup.target_incarnation
+                        && binding.directory_stamp.is_some(),
+                    "unbound cleanup requires the original materialization stamp"
+                );
+                self.validate_binding(binding)?;
+                Some(binding)
+            }
+            _ => None,
+        };
+        self.validate_cleanup_binding(cleanup, enrolled.as_ref().or(new_binding))?;
         let bytes = serde_json::to_vec(cleanup)?;
         ensure!(
             bytes.len() <= CLEANUP_RESERVE,
@@ -1374,10 +1412,13 @@ impl TargetJournal {
         let mut writes = vec![WriteOp::put(NS, key.clone(), bytes)];
         match self.store.get_bounded(NS, &key, MAX_RECORD)? {
             Some(old) => {
+                ensure!(
+                    new_binding.is_none(),
+                    "recorded target cleanup lost its storage binding"
+                );
                 let old: TargetCleanup = decode_current(&old)?;
                 if old == *cleanup {
-                    op.check()?;
-                    return Ok(());
+                    return Ok(Vec::new());
                 }
                 ensure!(
                     old.stage.permits_successor(cleanup.stage) && old.binding == cleanup.binding,
@@ -1389,10 +1430,23 @@ impl TargetJournal {
                     cleanup.binding.is_none() || cleanup.stage == TargetCleanupStage::Deleting,
                     "bound storage must record deletion in progress before completion"
                 );
+                let binding_bytes = if let Some(binding) = new_binding {
+                    let bytes = serde_json::to_vec(binding)?;
+                    let size = bytes.len() as u64;
+                    writes.push(WriteOp::put(
+                        NS,
+                        binding_key(&cleanup.tenant, cleanup.target_incarnation),
+                        bytes,
+                    ));
+                    size
+                } else {
+                    0
+                };
                 let mut metadata = self.metadata()?;
                 metadata.charged_bytes = metadata
                     .charged_bytes
-                    .checked_add(CLEANUP_RESERVE as u64)
+                    .checked_add(binding_bytes)
+                    .and_then(|total| total.checked_add(CLEANUP_RESERVE as u64))
                     .context("journal cleanup bytes exhausted")?;
                 ensure!(
                     metadata.charged_bytes <= self.limits.max_metadata_bytes,
@@ -1405,9 +1459,7 @@ impl TargetJournal {
                 ));
             }
         }
-        op.check()?;
-        self.store.write_batch(&writes).map_err(journal_unknown)?;
-        op.check().map_err(journal_unknown)
+        Ok(writes)
     }
 
     fn validate_stop(&self, stop: &TargetJournalStop) -> Result<()> {

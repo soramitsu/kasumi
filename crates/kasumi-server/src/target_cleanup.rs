@@ -17,8 +17,8 @@ use uuid::Uuid;
 /// the target journal under the operation's StopLocal phase.
 pub(super) trait CleanupLedger {
     fn binding(&self) -> Result<Option<TargetFileBinding>>;
-    fn bind(&self, binding: &TargetFileBinding) -> Result<()>;
     fn cleanup(&self) -> Result<Option<TargetCleanup>>;
+    /// The first Deleting record also enrolls an originally stamped unbound directory.
     fn record(&self, cleanup: &TargetCleanup) -> Result<()>;
     /// The operation fence, checked before the first unlink.
     fn check(&self) -> Result<()>;
@@ -104,7 +104,7 @@ pub(super) fn delete_exact(
             }
             // An unbound materialization may have synced its stamped directory
             // before creating the root file. The creation journal validates the
-            // stamp in bind(). Once bound, only Deleting explains a missing root.
+            // stamp when recording Deleting. Once bound, only Deleting explains a missing root.
             let claimed = file.claim(storage)?;
             let directory = if existing.is_some() {
                 claimed.identity()?.directory
@@ -126,8 +126,6 @@ pub(super) fn delete_exact(
                     existing == binding,
                     "target storage is not its originally enrolled directory"
                 );
-            } else {
-                ledger.bind(&binding)?;
             }
             ledger.record(&file.cleanup(TargetCleanupStage::Deleting, Some(binding.clone())))?;
             boundary(file.path, "deleting")?;

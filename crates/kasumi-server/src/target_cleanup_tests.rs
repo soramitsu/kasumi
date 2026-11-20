@@ -12,10 +12,7 @@ struct MemoryLedger {
     cleanup: Mutex<Option<TargetCleanup>>,
     records: Mutex<usize>,
 }
-impl CleanupLedger for MemoryLedger {
-    fn binding(&self) -> Result<Option<TargetFileBinding>> {
-        Ok(self.binding.lock().unwrap().clone())
-    }
+impl MemoryLedger {
     fn bind(&self, binding: &TargetFileBinding) -> Result<()> {
         if let Some(expected) = self.creation_stamp {
             ensure!(
@@ -31,13 +28,22 @@ impl CleanupLedger for MemoryLedger {
         *bound = Some(binding.clone());
         Ok(())
     }
+}
+impl CleanupLedger for MemoryLedger {
+    fn binding(&self) -> Result<Option<TargetFileBinding>> {
+        Ok(self.binding.lock().unwrap().clone())
+    }
     fn cleanup(&self) -> Result<Option<TargetCleanup>> {
         Ok(self.cleanup.lock().unwrap().clone())
     }
     fn record(&self, cleanup: &TargetCleanup) -> Result<()> {
         let mut recorded = self.cleanup.lock().unwrap();
         match recorded.as_ref() {
-            None => {}
+            None => {
+                if let Some(binding) = &cleanup.binding {
+                    self.bind(binding)?;
+                }
+            }
             Some(old) if old == cleanup => return Ok(()),
             Some(old)
                 if old.stage.permits_successor(cleanup.stage) && old.binding == cleanup.binding => {
@@ -328,6 +334,13 @@ async fn rootless_materialization_requires_original_creation_and_no_prior_bindin
         creation_stamp: binding.directory_stamp,
         ..Default::default()
     };
+    interruption::stop_after(&path, "deleting");
+    assert!(delete_exact(&original, &fixture.storage(), &target).is_err());
+    assert_eq!(original.binding().unwrap().as_ref(), Some(&binding));
+    assert_eq!(
+        original.cleanup().unwrap(),
+        Some(target.cleanup(TargetCleanupStage::Deleting, Some(binding.clone())))
+    );
     delete_exact(&original, &fixture.storage(), &target).unwrap();
     assert_eq!(
         original.cleanup().unwrap(),
