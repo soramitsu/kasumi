@@ -4198,61 +4198,48 @@ mod tests {
     #[tokio::test]
     async fn response_fence_retains_adapter_charges_in_its_entry_until_drop() {
         let fixture = CredentialFixture::new().await;
-        let before = fixture.db.admission().snapshot();
         let mut fence = fixture
             .db
             .admitted_response_fence(&fixture.context)
             .unwrap();
-        let fixed = fixture.db.admission().snapshot();
-        assert!(fixed.reserved_bytes > before.reserved_bytes);
-        assert!(fixed.reserved_bytes - before.reserved_bytes < 16 << 10);
-        let idle: Vec<_> = (0..99)
+        // Background maintenance shares this node. Track the ledger identity
+        // of each response until its reservation is released or its slot reused.
+        let observe = fence.workspace.observe_fixture_charge();
+        let (fixed, resident) = observe().unwrap();
+        assert!(resident);
+        assert!((1..16 << 10).contains(&fixed));
+        let (idle, observers): (Vec<_>, Vec<_>) = (0..99)
             .map(|_| {
-                fixture
+                let idle = fixture
                     .db
                     .admitted_response_fence(&fixture.context)
-                    .unwrap()
+                    .unwrap();
+                let observe = idle.workspace.observe_fixture_charge();
+                assert_eq!(observe(), Some((fixed, true)));
+                (idle, observe)
             })
-            .collect();
-        assert_eq!(
-            fixture.db.admission().snapshot().inflight_operations,
-            before.inflight_operations
-        );
+            .unzip();
         drop(idle);
+        assert!(observers.iter().all(|observe| observe().is_none()));
         fence.retain_response_bytes(4096).unwrap();
+        assert_eq!(observe(), Some((fixed + 4096, true)));
         fence.retain_response_bytes(1 << 20).unwrap();
-        let charged = fixture.db.admission().snapshot();
-        assert_eq!(
-            charged.reserved_bytes,
-            fixed.reserved_bytes + 4096 + (1 << 20)
-        );
-        // Adapter charges join the fence's retained entry: no ledger entry or
-        // operation slot of their own, and nothing to leak on a later error.
-        assert_eq!(charged.live_reservations, fixed.live_reservations);
-        assert_eq!(charged.inflight_operations, before.inflight_operations);
-        // A charge beyond the node budget is refused before any allocation
-        // and leaves the retained charge unchanged.
+        let charged = Some((fixed + 4096 + (1 << 20), true));
+        assert_eq!(observe(), charged);
         let refused = fence.retain_response_bytes(u64::MAX / 2).unwrap_err();
         assert_eq!(refused.code, ErrorCode::ResourceExhausted);
-        assert_eq!(
-            fixture.db.admission().snapshot().reserved_bytes,
-            charged.reserved_bytes
-        );
+        assert_eq!(observe(), charged);
         fence.check().unwrap();
-        // Pressure-cancelled responses take no further materialization.
         fence.cancellation.cancel();
         assert_eq!(
             fence.retain_response_bytes(1).unwrap_err().code,
             ErrorCode::ResourceExhausted
         );
-        assert_eq!(
-            fixture.db.admission().snapshot().reserved_bytes,
-            charged.reserved_bytes
-        );
+        assert_eq!(observe(), charged);
         drop(fence);
-        let released = fixture.db.admission().snapshot();
-        assert_eq!(released.reserved_bytes, before.reserved_bytes);
-        assert_eq!(released.live_reservations, before.live_reservations);
+        assert_eq!(observe(), None);
+        drop(observe);
+        drop(observers);
         fixture.close().await;
     }
 }

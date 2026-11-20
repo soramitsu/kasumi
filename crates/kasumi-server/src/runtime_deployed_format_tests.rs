@@ -34,6 +34,10 @@ use std::time::{Duration, Instant};
 mod support;
 use support::{FIRST_CLEAN, FIRST_KILLED, Fixtures, SECOND_CLEAN, layout};
 
+// All three deployed copies retain the same installation UUID. The serving
+// registry admits one owner for that UUID in a process, including through reopen.
+static DEPLOYED_SERVING_OWNER: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 const TENANT: &str = "default";
 /// Manifests carry a digest instead of any longer string.
 const LONG_STRING: usize = 4096;
@@ -1199,6 +1203,9 @@ async fn serve_deployed_copy(source: Source<'_>) -> Result<()> {
 }
 
 fn run(name: &'static str, fixture: &'static str) {
+    let _owner = DEPLOYED_SERVING_OWNER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     // The installed stack of a generated installation needs more than
     // libtest's thread.
     std::thread::Builder::new()
@@ -1245,6 +1252,9 @@ fn a_named_local_copy_serves_like_the_committed_ones() {
     let Some(copy) = std::env::var_os("KASUMI_DEPLOYED_FORMAT_COPY") else {
         return;
     };
+    let _owner = DEPLOYED_SERVING_OWNER
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     std::thread::Builder::new()
         .name("deployed local copy".into())
         .stack_size(64 << 20)

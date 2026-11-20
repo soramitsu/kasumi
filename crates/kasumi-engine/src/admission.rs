@@ -1523,6 +1523,19 @@ impl Drop for OrdinaryProtection {
     }
 }
 impl Reservation {
+    #[cfg(test)]
+    pub(crate) fn observe_fixture_charge(&self) -> impl Fn() -> Option<(u64, bool)> + use<> {
+        let core = self.core.clone();
+        let slot = self.slot;
+        let id = self.id;
+        move || {
+            let state = core.data.state.lock().unwrap_or_else(|p| p.into_inner());
+            state
+                .charge(slot, id)
+                .map(|charge| (charge.bytes, charge.kind == ChargeKind::Resident))
+        }
+    }
+
     /// The node's table of blocking children. A child started here stays with
     /// the installed core when its caller is cancelled or times out, and
     /// `NodeAdmission::drain_blocking_children` joins it.

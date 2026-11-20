@@ -1085,14 +1085,28 @@ async fn exercise_lifecycle_intent_history(count: u64, with_backup: bool) -> Res
         let mut insufficient = state.clone();
         insufficient.limits.max_backup_binding_bytes = state.backup_binding_head.encoded_bytes - 1;
         let mut image = tempfile::tempfile_in(directory.path())?;
-        crate::snapshot_codec::write(
+        let refusal = crate::snapshot_codec::write(
             &insufficient,
             &crate::mutation_receipt::View::empty(&state.tenant, &state.incarnation)?,
             &installed,
             &crate::staged_terminal::View::empty(&state.tenant, &state.incarnation)?,
             &crate::target_resolution::View::empty(&state.tenant, &state.incarnation)?,
             &mut image,
-        )?;
+        )
+        .err()
+        .context("writer accepted an over-budget installed backup head")?;
+        ensure!(
+            format!("{refusal:#}")
+                .contains("backup binding head differs from installed Control state")
+        );
+        ensure!(image.metadata()?.len() == 0);
+        // Independently feed the decoder the under-budget header. It must
+        // refuse the declared prefix before allocating or consuming data rows.
+        let mut encoder = crate::snapshot_codec::Encoder::new(&mut image)?;
+        for header in crate::snapshot_codec::records(&insufficient, 0, None)? {
+            encoder.record(header?)?;
+        }
+        encoder.finish()?;
         image.seek(SeekFrom::Start(0))?;
         let refusal = crate::snapshot_codec::read(&disk, &mut image)
             .err()
