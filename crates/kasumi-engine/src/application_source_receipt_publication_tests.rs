@@ -351,45 +351,6 @@ async fn ordinary_receipts_share_one_native_commit_for_success_rejection_delete_
     fixture.close().await
 }
 
-#[allow(
-    clippy::result_large_err,
-    reason = "Reopen retains the original native drain/startup errors."
-)]
-async fn reopen(
-    mut fixture: OrdinaryFixture,
-) -> crate::test_fixture_failure::FixtureResult<OrdinaryFixture> {
-    fixture.engine.seal();
-    require_positive_drain(fixture.fixture._buffers.drain_startup().await);
-    require_positive_drain(std::future::poll_fn(|cx| fixture.fixture.roots.poll_drain(cx)).await);
-    // Retire these exact startup/source owners. The shared admission registry
-    // must remain open for this fixture's physical reopen; final Fixture::close
-    // seals and drains that registry after the replacement owner is done.
-    fixture.fixture.stores.shutdown().await?;
-    fixture.fixture.node.shutdown().await?;
-    fixture.fixture.node = fixture.fixture.storage.open_existing(
-        fixture.fixture._directory.path().join("persistent/node.kv"),
-        kasumi_store::test_utils::NODE_STORE_ID,
-    )?;
-    fixture.fixture.stores = TenantStorageSet::open_existing_fixture(
-        fixture.fixture.node.clone(),
-        "selected-sources".into(),
-        Arc::new(LocalKeyProvider::new([119; 32])),
-        Arc::new(LocalKeyProvider::new([120; 32])),
-    )
-    .await?;
-    let (roots, binding) = SourceRoots::new(
-        fixture.fixture.stores.clone(),
-        fixture.fixture.storage.admission.clone(),
-        RaftLimits::default(),
-    )?;
-    let buffers = fixture.fixture.storage.admission.snapshot_buffer_owner()?;
-    roots.bind_lifecycle(&buffers, binding)?;
-    fixture.fixture.roots = roots;
-    fixture.fixture._buffers = buffers;
-    drop(fixture.engine);
-    OrdinaryFixture::over(fixture.fixture)
-}
-
 #[tokio::test]
 #[allow(
     clippy::result_large_err,
@@ -428,7 +389,7 @@ async fn ordinary_receipt_and_cursor_recover_together_before_and_after_publicati
         assert_eq!(previous.state.mutation_receipt_head.count, 0);
         drop(previous);
         drop(original);
-        let fixture = reopen(fixture).await?;
+        let fixture = fixture.reopen().await?;
         // Read the real reopened encrypted file before replaying either input.
         for (namespace, key, bytes) in &observed.receipt_rows {
             let stored = fixture.fixture.stores.application().get(namespace, key)?;
@@ -588,7 +549,7 @@ async fn ordinary_receipt_private_publication_reconciles_only_exact_orphan_pairs
         .context("before-commit failure acknowledged")?;
         assert!(!captured.committed);
         drop(original);
-        let fixture = reopen(fixture).await?;
+        let fixture = fixture.reopen().await?;
         fixture.apply(&create, || {})?;
         // These are the exact private bytes from the actual producer, captured
         // before any receipt/cursor commit. Emulate an old writer's orphan pair.
@@ -727,7 +688,7 @@ async fn ordinary_receipt_private_publication_reconciles_only_exact_orphan_pairs
             drop(previous);
             // Retire this owner and physically reopen before independently
             // inspecting the immutable evidence; no apply owner was reset.
-            reopen(fixture).await?
+            fixture.reopen().await?
         };
         for (namespace, key, _) in &captured.receipt_rows {
             let expected = rows

@@ -698,7 +698,13 @@ impl State {
         if !self.registrations.is_empty()
             && (deleting || self.registration_slots >= self.budgets.register_flush_digests)
         {
-            return self.register(step);
+            self.register(step)?;
+            // A stream of writes may enqueue a new manifest before every step.
+            // Once all its owners are durable, the same step may also spend its
+            // deletion budget. Remaining registrations still preclude deletion.
+            if !deleting || !self.registrations.is_empty() {
+                return Ok(());
+            }
         }
         if self.cycle.is_none() {
             if self.pending.is_empty() {

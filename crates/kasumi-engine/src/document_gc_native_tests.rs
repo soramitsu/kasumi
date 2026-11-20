@@ -141,21 +141,31 @@ impl Replica {
 
     /// What a restart does: reopen the machine, which restores the engine
     /// from the stored snapshot, then replay every entry after it.
-    async fn reopen(&mut self) -> crate::test_fixture_failure::FixtureResult<()> {
-        self.machine = Self::open(&self.fixture).await?;
-        let (applied, _) = self
-            .machine
+    async fn reopen(self) -> crate::test_fixture_failure::FixtureResult<Self> {
+        let Self {
+            fixture,
+            machine,
+            log,
+        } = self;
+        drop(machine);
+        let fixture = fixture.reopen().await?;
+        let mut machine = Self::open(&fixture).await?;
+        let (applied, _) = machine
             .applied_state()
             .await
             .map_err(|error| anyhow::anyhow!("{error}"))?;
         let applied = applied.map_or(0, |log| log.index);
-        for (index, command) in self.log.iter().filter(|(index, _)| *index > applied) {
-            self.machine
+        for (index, command) in log.iter().filter(|(index, _)| *index > applied) {
+            machine
                 .apply([entry(*index, command)])
                 .await
                 .map_err(|error| anyhow::anyhow!("{error}"))?;
         }
-        Ok(())
+        Ok(Self {
+            fixture,
+            machine,
+            log,
+        })
     }
 
     /// The objects a new replica holds after installing this one's state:
@@ -516,7 +526,10 @@ async fn document_gc_native_interrupted_collection_resumes_after_a_reopen()
 
     // The process dies here. Its restart restores the stored snapshot, which
     // reconciles both object namespaces, and replays the entry after it.
-    replica.reopen().await?;
+    drop(store);
+    replica = replica.reopen().await?;
+    replica.gc().set_budgets(tiny_budgets());
+    let store = replica.store().clone();
     assert_eq!(published(&store, <[u8]>::len)?, named);
     assert_no_stale_owner(&store)?;
     serves(&replica, 1)?;
@@ -529,7 +542,7 @@ async fn document_gc_native_interrupted_collection_resumes_after_a_reopen()
             .await?;
     }
     replica.settle().await?;
-    assert!(replica.gc().stats().deleted_bodies >= interrupted.deleted_bodies + DOCUMENTS);
+    assert!(replica.gc().stats().deleted_bodies >= DOCUMENTS);
     assert_eq!(
         published(&store, <[u8]>::len)?,
         replica.named_objects().await?
@@ -541,7 +554,10 @@ async fn document_gc_native_interrupted_collection_resumes_after_a_reopen()
     // displaces a manifest before any owner is counted again: its own chunks
     // still go with it, and the chunk the other documents share stays.
     replica.snapshot().await?;
-    replica.reopen().await?;
+    drop(store);
+    replica = replica.reopen().await?;
+    replica.gc().set_budgets(tiny_budgets());
+    let store = replica.store().clone();
     assert!(rows(&store, LINKS)?.is_empty());
     let before = replica.gc().stats();
     replica

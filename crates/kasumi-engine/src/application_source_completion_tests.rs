@@ -47,6 +47,43 @@ impl OrdinaryFixture {
         engine.install_application_sources(fixture.roots.clone(), &fixture.image)?;
         Ok(Self { fixture, engine })
     }
+    #[allow(
+        clippy::result_large_err,
+        reason = "Reopen retains the original native drain/startup errors."
+    )]
+    pub(super) async fn reopen(mut self) -> crate::test_fixture_failure::FixtureResult<Self> {
+        self.engine.seal();
+        require_positive_drain(self.fixture._buffers.drain_startup().await);
+        require_positive_drain(std::future::poll_fn(|cx| self.fixture.roots.poll_drain(cx)).await);
+        // Retire these exact startup/source owners. The shared admission registry
+        // must remain open for this fixture's physical reopen; final Fixture::close
+        // seals and drains that registry after the replacement owner is done.
+        self.fixture.stores.shutdown().await?;
+        self.fixture.node.shutdown().await?;
+        self.fixture.node = self.fixture.storage.open_existing(
+            self.fixture._directory.path().join("persistent/node.kv"),
+            kasumi_store::test_utils::NODE_STORE_ID,
+        )?;
+        self.fixture.stores = TenantStorageSet::open_existing_fixture(
+            self.fixture.node.clone(),
+            "selected-sources".into(),
+            Arc::new(LocalKeyProvider::new([119; 32])),
+            Arc::new(LocalKeyProvider::new([120; 32])),
+        )
+        .await?;
+        let (roots, binding) = SourceRoots::new(
+            self.fixture.stores.clone(),
+            self.fixture.storage.admission.clone(),
+            RaftLimits::default(),
+        )?;
+        let buffers = self.fixture.storage.admission.snapshot_buffer_owner()?;
+        roots.bind_lifecycle(&buffers, binding)?;
+        self.fixture.roots = roots;
+        self.fixture._buffers = buffers;
+        drop(self.engine);
+        Self::over(self.fixture)
+    }
+
     pub(super) fn input(&self, operation: Operation) -> Result<Input> {
         let current = self.engine.generation()?;
         let revision = current
