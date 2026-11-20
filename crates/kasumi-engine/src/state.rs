@@ -1138,6 +1138,84 @@ impl TenantEngine {
             scope,
         });
     }
+    #[cfg(test)]
+    pub(crate) fn seed_idle_primary_rebuild_for_test(&self) -> anyhow::Result<()> {
+        use kasumi_store::primary_manifest::PrimaryManifest;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let state = &apply.current().state;
+        let selection = apply
+            .current()
+            .application_selection
+            .get()
+            .expect("installed sources");
+        let applied = selection.primary_entry()?.expect("selected ordinary entry");
+        let store = self
+            .application_sources
+            .get()
+            .expect("installed store")
+            .primary_installation()
+            .0
+            .application();
+        self.primary.caught_up();
+        let manifest = PrimaryManifest::load(store)?.expect("current directory");
+        store.write_batch(&[manifest
+            .stale(state.revision, Some(applied.clone()))
+            .write()?])?;
+        crate::application_primary::maintain(&self.primary, store, state, &applied)?;
+        anyhow::ensure!(
+            PrimaryManifest::load(store)?
+                .expect("seeded directory")
+                .rebuild()
+                .is_some(),
+            "idle fixture failed to seed a resumable directory"
+        );
+        Ok(())
+    }
+
+    /// The registered idle monitor and the foreground writer share the same
+    /// apply owner. Cold completion selects the same committed logical state
+    /// on the new physical root. Existing readers keep their previous root.
+    pub(crate) fn primary_maintenance_step(&self) -> anyhow::Result<()> {
+        if !self.primary.needs_maintenance() || kasumi_store::deferred_batch_waiting() {
+            return Ok(());
+        }
+        let Some(sources) = self
+            .application_sources
+            .get()
+            .filter(|s| s.rebases_selections())
+        else {
+            return Ok(());
+        };
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let Some(selection) = current
+            .application_selection
+            .get()
+            .filter(|_| !current.state.retired)
+        else {
+            return Ok(());
+        };
+        let Some(applied) = selection.primary_entry()? else {
+            self.primary.caught_up();
+            return Ok(());
+        };
+        if crate::application_primary::maintain(
+            &self.primary,
+            sources.primary_installation().0.application(),
+            &current.state,
+            &applied,
+        )? {
+            if selection
+                .with_primary_records(None, &current.state, |_, _| Ok(()))?
+                .is_none()
+                && !self.rebase_selected(sources, current, selection, None)?
+            {
+                return Ok(());
+            }
+            self.primary.caught_up();
+        }
+        Ok(())
+    }
     pub(crate) fn seal_application_source_consumers(&self) {
         if let Some(sources) = self.application_sources.get() {
             kasumi_raft::ApplicationSourceCustody::seal_consumers(sources.as_ref());
@@ -1216,7 +1294,17 @@ impl TenantEngine {
         else {
             return Ok(false);
         };
-        let Some(selected) = sources.rebase(selection, stale.bootstrap.as_ref())? else {
+        self.rebase_selected(sources, previous, selection, stale.bootstrap.as_ref())
+    }
+
+    fn rebase_selected(
+        &self,
+        sources: &crate::application_sources::SourceRootsRef,
+        previous: &Generation,
+        selection: &crate::application_sources::SelectedApplication,
+        bootstrap: Option<&kasumi_store::SnapshotImage>,
+    ) -> anyhow::Result<bool> {
+        let Some(selected) = sources.rebase(selection, bootstrap)? else {
             return Ok(false);
         };
         let resolver = previous.resolver_for_selection(sources.clone(), selected.clone())?;

@@ -85,6 +85,16 @@ fn header_prefix(collection: &str) -> Vec<u8> {
     KeyBuilder::new(26).text(collection).finish()
 }
 
+pub(super) fn has_primary_header(
+    tree: &kasumi_store::ordered_pages::TreeReader<'_>,
+    collection: &str,
+    id: &str,
+) -> Result<bool> {
+    let mut key = header_prefix(collection);
+    key.extend_from_slice(id.as_bytes());
+    tree.with_value(&key, 9, |value| Ok(value.is_some()))
+}
+
 pub(crate) fn visit_snapshot_headers(
     tree: &kasumi_store::ordered_pages::TreeReader<'_>,
     collection: &str,
