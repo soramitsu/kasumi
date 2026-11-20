@@ -327,8 +327,8 @@ pub(crate) fn maintain(
     }
     let Some(mut base) = manifest.filter(|m| positioned && m.rebuild().is_some()) else {
         if may_replace {
-            let writes = if bulk_workspace(indexes).is_some() {
-                rebuild(store, state, indexes, applied.cloned(), Some(owner))?
+            let writes = if let Some(cost) = bulk_workspace(indexes) {
+                rebuild(store, state, indexes, applied.cloned(), Some(owner), cost)?
             } else {
                 seed(owner, store, state, indexes, applied)?.take_writes()
             };

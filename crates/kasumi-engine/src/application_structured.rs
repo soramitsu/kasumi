@@ -69,6 +69,7 @@ const INLINE_EDIT_BYTES: u64 = 512 << 10;
 /// Presence and posting rows a publication may rebuild into a replacement
 /// generation when the directory cannot follow it.
 pub(crate) const MAX_REBUILD_ROWS: usize = 65_536;
+const MAX_REBUILD_BYTES: usize = 16 << 20;
 /// Revisions to wait before checking again whether an oversized index has
 /// become small enough to rebuild.
 const REBUILD_RETRY_REVISIONS: u64 = 4096;
@@ -418,9 +419,16 @@ pub(crate) fn verify_rows(
         "structured directory scope or layout differs from the selected state"
     );
     let mut expected = Sha256::new();
-    let mut rows = 0u64;
+    let mut remaining_rows = manifest.records.count();
+    let mut remaining_bytes = manifest.records.bytes();
     visit_rows(indexes, |key, value| {
-        rows += 1;
+        remaining_rows = remaining_rows
+            .checked_sub(1)
+            .context("structured directory row count differs from the selected state")?;
+        remaining_bytes = remaining_bytes
+            .checked_sub(key.len() as u64)
+            .and_then(|n| n.checked_sub(value.len() as u64))
+            .context("structured directory byte count differs from the selected state")?;
         record_digest(
             &mut expected,
             key,
@@ -430,8 +438,8 @@ pub(crate) fn verify_rows(
         Ok(())
     })?;
     ensure!(
-        rows == manifest.records.count(),
-        "structured directory row count differs from the selected state"
+        remaining_rows == 0 && remaining_bytes == 0,
+        "structured directory row or byte count differs from the selected state"
     );
     let reader = TreeReader::new(source, &manifest.page_space, manifest.records, None)?;
     let mut selected = Sha256::new();
@@ -451,24 +459,35 @@ pub(crate) fn verify_rows(
     Ok(())
 }
 
-/// Count the longest possible in-memory sort run and the overflow payload
-/// before starting a synchronous generation. Numeric encodings fit inline.
+/// Count encoded native rows and bytes before synchronous build or proof. The
+/// first refused row ends the visit. Only long strings can join a sort run.
 fn bulk_workspace(indexes: &QueryIndexes) -> Option<u64> {
     if !indexes.structured_rows_within(MAX_REBUILD_ROWS) {
         return None;
     }
+    let mut rows = 0usize;
     let mut bytes = 0usize;
+    let mut charge = |size: usize| -> Option<()> {
+        rows = rows.checked_add(1)?;
+        bytes = bytes.checked_add(size)?;
+        (rows <= MAX_REBUILD_ROWS && bytes <= MAX_REBUILD_BYTES).then_some(())
+    };
     let mut largest = 0usize;
-    for (_, fields) in indexes.structured_collections() {
-        for field in fields {
+    for (collection, fields) in indexes.structured_collections() {
+        for (ordinal, field) in fields.enumerate() {
+            let prefix = field_prefix(PRESENT, collection, ordinal).len();
+            for id in field.present() {
+                charge(prefix + id.len())?;
+            }
             let mut long = 0usize;
-            for posting in field.values() {
-                if posting.value.bytes.len() > INLINE_VALUE {
-                    bytes = bytes.checked_add(posting.value.bytes.len())?;
-                    if bytes > 16 << 20 {
-                        return None;
-                    }
+            for postings in field.values() {
+                let mut component = Vec::new();
+                if push_value(&mut component, &postings.value).ok()? {
+                    charge(prefix + component.len() + postings.value.bytes.len())?;
                     long += 1;
+                }
+                for id in postings.ids() {
+                    charge(prefix + component.len() + id.len())?;
                 }
             }
             largest = largest.max(long);
@@ -484,6 +503,26 @@ fn bulk_workspace(indexes: &QueryIndexes) -> Option<u64> {
     )
 }
 
+/// Covered replay can only select rows it actually proved. Large trees move
+/// to the recoverable non-serving path, including when a false small root
+/// understates the selected resident input.
+fn verify_bounded(
+    source: &dyn PageSource,
+    manifest: &StructuredManifest,
+    state: &TenantState,
+    indexes: &QueryIndexes,
+) -> Result<()> {
+    ensure!(
+        manifest.records.count() <= MAX_REBUILD_ROWS as u64
+            && manifest.records.bytes() <= MAX_REBUILD_BYTES as u64,
+        "structured root exceeds the ordinary verification budget"
+    );
+    let cost = bulk_workspace(indexes)
+        .context("structured input exceeds the ordinary verification budget")?;
+    let _sort = source.memory().reserve_installed(cost)?;
+    verify_rows(source, manifest, state, indexes)
+}
+
 /// Bulk-build the rows of `indexes` into a fresh staged generation. The
 /// returned writes select it with its manifest and retire the replaced space;
 /// they must join the publication that selects `state`.
@@ -493,9 +532,8 @@ fn rebuild(
     indexes: &QueryIndexes,
     applied: Option<StructuredApplied>,
     owner: Option<&StructuredOwner>,
+    cost: u64,
 ) -> Result<Vec<WriteOp>> {
-    let cost =
-        bulk_workspace(indexes).context("structured replacement exceeds its synchronous budget")?;
     let _sort = store
         .plaintext_memory_owner()
         .clone()
@@ -557,19 +595,18 @@ pub(crate) fn prepare_restore(
         if manifest.revision == state.revision
             && manifest.matches_applied(applied.as_ref())
             && (manifest.rebuild().is_some()
-                || verify_rows(&**store, &manifest, state, indexes).is_ok())
+                || verify_bounded(&**store, &manifest, state, indexes).is_ok())
         {
             return Ok(());
         }
     }
     // The replaced generation retires when this publication commits; the
     // next restore or replacement reclaims it in bounded batches.
-    if bulk_workspace(indexes).is_none() {
-        writes.extend(
+    match bulk_workspace(indexes) {
+        Some(cost) => writes.extend(rebuild(store, state, indexes, applied, None, cost)?),
+        None => writes.extend(
             incremental::seed(owner, store, state, indexes, applied.as_ref())?.take_writes(),
-        );
-    } else {
-        writes.extend(rebuild(store, state, indexes, applied, None)?);
+        ),
     }
     Ok(())
 }
@@ -768,7 +805,7 @@ fn follow(
             }
             let same = binds_genesis || manifest.matches_applied(applied.as_ref());
             let verified = if same {
-                verify_rows(&**store, &manifest, candidate, candidate_indexes)
+                verify_bounded(&**store, &manifest, candidate, candidate_indexes)
             } else {
                 Err(anyhow::anyhow!(
                     "replayed entry differs from the structured directory boundary"
@@ -878,7 +915,7 @@ fn replace(
             Ordering::Release,
         )
     };
-    if bulk_workspace(indexes).is_none() {
+    let Some(cost) = bulk_workspace(indexes) else {
         owner.maintenance_due.store(true, Ordering::Release);
         let applied = applied.as_ref();
         return match incremental::seed(owner, store, candidate, indexes, applied) {
@@ -888,12 +925,12 @@ fn replace(
                 None
             }
         };
-    }
+    };
     let built = (|| {
         // An earlier attempt whose publication never committed left a sealed
         // stage; a committed one left the generation it replaced.
         owner.recover(store)?;
-        rebuild(store, candidate, indexes, applied, Some(owner))
+        rebuild(store, candidate, indexes, applied, Some(owner), cost)
     })();
     match built {
         Ok(writes) => Some(StructuredPublication::only(writes)),

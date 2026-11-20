@@ -764,6 +764,34 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_resumes_a_large_one(
     NamespaceStage::reclaim_family(&fixture.store, structured::FAMILY).unwrap();
     assert_eq!(fixture.space_rows(&before.page_space), 0);
     assert_eq!(fixture.space_rows(structured::INITIAL_SPACE[0]), 0);
+    // Covered ordinary replay reaches the installed 71,393-row boundary.
+    // Its current read lease remains valid while the new selection explicitly
+    // withdraws the unbounded proof and the registered owner seeds it again.
+    let pinned = fixture.store.read_view().unwrap();
+    let original = fixture.manifest();
+    assert!(fixture.publish(&restarted, &fifth, &fifth, 1));
+    let stale = fixture.manifest();
+    assert_eq!(stale.status, structured::StructuredStatus::Stale);
+    assert_eq!(stale.records, original.records);
+    assert_eq!(
+        StructuredManifest::load_at(&pinned).unwrap().unwrap(),
+        original
+    );
+    assert!(
+        !maintain(
+            &restarted,
+            &fixture.store,
+            &fifth.state,
+            &fifth.indexes,
+            None,
+            Some(&applied(&fifth.state, 1))
+        )
+        .unwrap()
+    );
+    let replacement = fixture.manifest();
+    assert!(replacement.rebuild().is_some());
+    assert_eq!(replacement.records.count(), 0);
+    pinned.close().unwrap();
     fixture.close().await;
 }
 
