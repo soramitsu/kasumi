@@ -23,6 +23,22 @@ pub enum CatalogPurpose {
     #[default]
     Group,
     ControlSigner,
+    /// An enrolled read-only Control inventory principal delegates this one
+    /// physical Data member read through its current authenticated Data leader.
+    DataJournal {
+        installation_id: Uuid,
+        control: Uuid,
+        expires_at_ms: u64,
+    },
+    /// The authenticated leader obtained this bounded physical read under a
+    /// current Control-wide administrator grant. Recipients independently check
+    /// this committed policy position and the credential deadline.
+    ControlJournal {
+        control: Uuid,
+        policy_epoch: u64,
+        principal_sha256: [u8; 32],
+        expires_at_ms: u64,
+    },
     /// A Data-group leader addresses the exact physical verifier on its voter.
     DataSigner {
         installation_id: Uuid,
@@ -36,9 +52,11 @@ pub enum CatalogPurpose {
 impl CatalogPurpose {
     pub fn data_installation(self) -> Option<Uuid> {
         match self {
-            Self::DataSigner { installation_id } | Self::DataServiceAudit { installation_id } => {
-                Some(installation_id)
+            Self::DataSigner { installation_id }
+            | Self::DataJournal {
+                installation_id, ..
             }
+            | Self::DataServiceAudit { installation_id } => Some(installation_id),
             _ => None,
         }
     }
@@ -99,6 +117,24 @@ impl MemberCatalogRequest {
                 && (1..=MEMBER_CATALOG_LIMIT).contains(&self.limit),
             "invalid member catalog window"
         );
+        if let CatalogPurpose::ControlJournal {
+            control,
+            expires_at_ms,
+            ..
+        }
+        | CatalogPurpose::DataJournal {
+            control,
+            expires_at_ms,
+            ..
+        } = self.purpose
+        {
+            ensure!(
+                !control.is_nil()
+                    && expires_at_ms != 0
+                    && !matches!(self.start, CatalogStart::Identity { .. }),
+                "invalid Control journal read"
+            );
+        }
         if let Some(installation_id) = self.purpose.data_installation() {
             ensure!(
                 !installation_id.is_nil(),
@@ -313,6 +349,83 @@ impl MemberAuditReport {
     }
 }
 
+/// One physical journal and its verified historical backup dependencies.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MemberJournalReport {
+    /// The receiving Control member proved that its original dedicated
+    /// enrollment excludes a target. In that case catalog identifies the
+    /// encrypted security store holding the enrollment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub excluded_by_enrollment: Option<[u8; 32]>,
+    pub request_sha256: String,
+    pub verifier: kasumi_types::TrustVerifierIdentity,
+    pub catalog: Uuid,
+    pub dependencies_sha256: [u8; 32],
+    pub entries: Vec<KeyRetentionEntry>,
+    pub unreadable_targets: Vec<Uuid>,
+    pub truncated: bool,
+}
+impl MemberJournalReport {
+    pub fn validate(&self, request: &MemberCatalogRequest, node: u64) -> Result<()> {
+        request.validate()?;
+        self.verifier.validate()?;
+        if self.excluded_by_enrollment.is_some() {
+            ensure!(
+                matches!(request.purpose, CatalogPurpose::ControlJournal { .. })
+                    && self.entries.is_empty()
+                    && self.unreadable_targets.is_empty()
+                    && !self.truncated,
+                "dedicated Control enrollment cannot report physical journal keys"
+            );
+        }
+        if let CatalogPurpose::DataJournal {
+            installation_id, ..
+        } = request.purpose
+        {
+            ensure!(
+                self.verifier.installation_id == installation_id,
+                "target journal returned another physical Data verifier"
+            );
+        }
+
+        ensure!(
+            matches!(
+                request.purpose,
+                CatalogPurpose::ControlJournal { .. } | CatalogPurpose::DataJournal { .. }
+            ) && self.verifier.node_id == node
+                && self.request_sha256 == staged_digest(request)?.0
+                && !self.catalog.is_nil()
+                && self.entries.len() <= usize::from(request.limit) + 1
+                && self.entries.windows(2).all(|w| w[0] < w[1])
+                && self.unreadable_targets.len() <= kasumi_types::MAX_MISSING_KEY_DEPENDENCIES
+                && (!self.truncated
+                    || self.unreadable_targets.len() == kasumi_types::MAX_MISSING_KEY_DEPENDENCIES)
+                && self.unreadable_targets.iter().all(|id| !id.is_nil())
+                && self.unreadable_targets.windows(2).all(|w| w[0] < w[1]),
+            "invalid member journal report"
+        );
+        for entry in &self.entries {
+            entry.validate()?;
+            ensure!(
+                request.start.includes(entry)
+                    && match entry.reference {
+                        KeyReference::Catalog {
+                            node_id,
+                            catalog_id,
+                            domain: KeyCatalogDomain::TargetJournal,
+                        } => node_id == node && catalog_id == self.catalog,
+                        KeyReference::TargetJournal { node_id, .. } => node_id == node,
+                        KeyReference::CompletedBackup { .. } => true,
+                        _ => false,
+                    },
+                "journal report contains another physical source or window"
+            );
+        }
+        Ok(())
+    }
+}
+
 impl RaftGroup {
     pub fn reserve_member_catalog_workspace(&self) -> Result<kasumi_store::DiskMemoryLease> {
         Ok(self
@@ -450,6 +563,27 @@ impl RaftGroup {
         }
     }
 
+    pub async fn read_member_journal_catalog(
+        &self,
+        node_id: u64,
+        node: &BasicNode,
+        request: &MemberCatalogRequest,
+    ) -> Result<MemberJournalReport> {
+        ensure!(
+            matches!(
+                request.purpose,
+                CatalogPurpose::ControlJournal { .. } | CatalogPurpose::DataJournal { .. }
+            ),
+            "Control journal purpose required"
+        );
+        match self.request_member_catalog(node_id, node, request).await? {
+            RpcResponse::MemberJournalCatalog(report) => {
+                report.validate(request, node_id)?;
+                Ok(*report)
+            }
+            _ => anyhow::bail!("physical target journal unavailable"),
+        }
+    }
     pub async fn read_member_audit_catalog(
         &self,
         node_id: u64,
@@ -492,8 +626,12 @@ impl RaftGroup {
             node,
             RpcRequest::MemberCatalog(Box::new(request.clone())),
         );
-        // Service audit reads also authenticate each retained archive from its destination.
-        let timeout = if request.purpose.is_service_audit() {
+        // Service audit and target journal reads also authenticate retained objects at their destination.
+        let timeout = if request.purpose.is_service_audit()
+            || matches!(
+                request.purpose,
+                CatalogPurpose::ControlJournal { .. } | CatalogPurpose::DataJournal { .. }
+            ) {
             30
         } else {
             3
@@ -549,6 +687,44 @@ mod tests {
         };
         let application = KeyCatalogDomain::Application;
         report.validate(&request, 2, application)?;
+        let journal_request = MemberCatalogRequest {
+            purpose: CatalogPurpose::ControlJournal {
+                control: Uuid::new_v4(),
+                policy_epoch: 8,
+                principal_sha256: [21; 32],
+                expires_at_ms: 101,
+            },
+            ..request.clone()
+        };
+        let journal = MemberJournalReport {
+            excluded_by_enrollment: None,
+            request_sha256: staged_digest(&journal_request)?.0,
+            verifier: kasumi_types::TrustVerifierIdentity {
+                node_id: 2,
+                installation_id: Uuid::new_v4(),
+            },
+            catalog: app,
+            dependencies_sha256: [44; 32],
+            entries: vec![entry(1, app, KeyCatalogDomain::TargetJournal)],
+            unreadable_targets: Vec::new(),
+            truncated: false,
+        };
+        journal.validate(&journal_request, 2)?;
+        let mut excluded = journal.clone();
+        excluded.excluded_by_enrollment = Some([6; 32]);
+        assert!(excluded.validate(&journal_request, 2).is_err());
+        excluded.entries.clear();
+        excluded.validate(&journal_request, 2)?;
+        assert!(journal.validate(&request, 2).is_err());
+        assert!(journal.validate(&journal_request, 3).is_err());
+        let mut wrong = journal.clone();
+        wrong.entries[0].reference = KeyReference::LocalRecovery {
+            operation_id: Uuid::new_v4(),
+        };
+        assert!(wrong.validate(&journal_request, 2).is_err());
+        let mut wrong = journal;
+        wrong.truncated = true;
+        assert!(wrong.validate(&journal_request, 2).is_err());
         let signer_request = MemberCatalogRequest {
             purpose: CatalogPurpose::ControlSigner,
             ..request.clone()

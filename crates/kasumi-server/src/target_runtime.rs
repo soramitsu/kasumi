@@ -629,6 +629,20 @@ pub(crate) async fn shutdown_target(owner: &mut Option<Arc<TargetRecoveryRuntime
     Ok(())
 }
 impl TargetRecoveryRuntime {
+    pub(crate) fn install_data_key_inventory(
+        self: &Arc<Self>,
+        data: &Arc<kasumi_engine::Database>,
+        root: &kasumi_types::ControlSigningRoot,
+    ) -> Result<()> {
+        data.install_data_target_inventory(
+            &self.journal,
+            root,
+            Arc::new(checkpoint_inventory::Installed {
+                runtime: Arc::downgrade(self),
+                control: Arc::downgrade(data),
+            }),
+        )
+    }
     pub(crate) fn install_key_inventory(
         self: &Arc<Self>,
         control: &Arc<kasumi_engine::Database>,

@@ -306,11 +306,13 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     };
     let router = Arc::new(catalog::Groups::default());
     let mut signers = Vec::new();
+    let mut journals = Vec::new();
     let mut data = vec![];
     let mut controls = vec![];
     let mut stores = vec![];
     let mut audits = vec![];
     let mut physicals = vec![];
+    let mut database_ids = Vec::new();
     for id in 1..=6 {
         let base = dir.path().join(format!("member-{id}"));
         private_files::create_directory(&base).unwrap();
@@ -329,8 +331,10 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
             admission,
         )
         .unwrap();
+        let database_id = Uuid::new_v4();
+        database_ids.push(database_id);
         let node = disks
-            .create_new(base.join("persistent/node.kv"), Uuid::new_v4())
+            .create_new(base.join("persistent/node.kv"), database_id)
             .unwrap();
         let sec = TenantStore::initialize_catalog(
             node.clone(),
@@ -434,6 +438,7 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         signers.push(signer_store);
         router.register(format!("{name}/{}", bootstrap.incarnation), id, &db);
         if id <= 3 {
+            journals.push(catalog::open_data_journal(&base, &disks, &db, &root).await);
             data.push(db);
         } else {
             controls.push(db);
@@ -657,6 +662,7 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     let listener = crate::data_member_catalog::DataCatalogListener {
         control: control_inc,
         grant: Arc::new(crate::data_member_catalog::CatalogReaderGrant {
+            target_journals: true,
             principal: "catalog-reader".into(),
             client_certificate_pins: BTreeSet::from([ids.pin(11)]),
             groups: BTreeMap::from([(tenant.to_owned(), data_inc)]),
@@ -743,6 +749,10 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
         incarnation: data_inc,
         source: source_id,
         signers: &signers,
+        journals: &journals,
+        control_bootstrap: &control_config,
+        control_members: &controls,
+        database_ids: &database_ids,
         audits: &audits,
     })
     .await;
@@ -1306,6 +1316,10 @@ async fn dedicated_backup_transport_rechecks_both_quorums_and_original_after_los
     }
     for signer in signers {
         signer.shutdown().await.unwrap();
+    }
+    for (journal, _, file) in journals {
+        journal.shutdown().await.unwrap();
+        file.shutdown().await.unwrap();
     }
     for node in stores {
         node.shutdown().await.unwrap();

@@ -15,6 +15,7 @@ pub const DATA_MEMBER_CATALOG_BYTES: usize = 320 << 10;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataMemberService {
+    TargetJournal,
     Signer,
     SecurityAudit,
 }
@@ -92,6 +93,11 @@ pub enum DataCatalogContents {
     Signer {
         partitions_sha256: String,
     },
+    TargetJournal {
+        #[serde(deserialize_with = "unreadable_ids")]
+        unreadable_targets: BTreeSet<Uuid>,
+        truncated: bool,
+    },
     SecurityAudit {
         stream: Uuid,
         archives_sha256: [u8; 32],
@@ -130,6 +136,18 @@ impl DataMemberCatalogPage {
             ));
         }
         let (domain, audit_stream) = match (&self.contents, read.service) {
+            (
+                DataCatalogContents::TargetJournal {
+                    unreadable_targets,
+                    truncated,
+                },
+                DataMemberService::TargetJournal,
+            ) if unreadable_targets.len() <= MAX_MISSING_KEY_DEPENDENCIES
+                && (!truncated || unreadable_targets.len() == MAX_MISSING_KEY_DEPENDENCIES)
+                && !unreadable_targets.contains(&Uuid::nil()) =>
+            {
+                (KeyCatalogDomain::TargetJournal, None)
+            }
             (DataCatalogContents::Signer { partitions_sha256 }, DataMemberService::Signer) => {
                 validate_sha256(partitions_sha256)?;
                 (KeyCatalogDomain::LiveSignerTrust, None)
@@ -165,6 +183,13 @@ impl DataMemberCatalogPage {
                             && actual == domain
                     }
                     KeyReference::AuditArchive { stream_id, .. } => audit_stream == Some(stream_id),
+                    KeyReference::TargetJournal { node_id, .. } => {
+                        domain == KeyCatalogDomain::TargetJournal
+                            && node_id == self.verifier.node_id
+                    }
+                    KeyReference::CompletedBackup { .. } => {
+                        domain == KeyCatalogDomain::TargetJournal
+                    }
                     _ => false,
                 }
             {

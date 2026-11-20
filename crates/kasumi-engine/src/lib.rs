@@ -96,7 +96,8 @@ pub use service::{
     Database, LocalRecoveryCheckpoint, LocalRecoveryKeyFinding, LocalRecoveryKeyInventory,
     LocalRecoveryKeyRead, RemoteBackupFuture, RemoteBackupSourceVerifier, RemoteBackupTransport,
     RemoteDataCatalogReader, ResponseFence, RetiredCustody, RetirementResponseFence, SignerCatalog,
-    TargetCheckpointInventory, TargetCheckpointSource, VerifiedBackupSource,
+    TargetCheckpointInventory, TargetCheckpointSource, TargetJournalExclusion,
+    VerifiedBackupSource,
 };
 pub use state::{
     Generation, LocalSnapshotArchive, PreparedSnapshotRestore, TenantEngine,

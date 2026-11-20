@@ -7,6 +7,8 @@ use kasumi_raft::member_catalog::{
 
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) enum ServiceIdentity {
+    JournalExcluded(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
+    Journal(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
     Signer(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
     Audit {
         catalog: uuid::Uuid,
@@ -19,7 +21,9 @@ pub(super) enum ServiceIdentity {
 impl ServiceIdentity {
     fn catalog(&self) -> uuid::Uuid {
         match self {
-            Self::Signer(_, id, _) => *id,
+            Self::Signer(_, id, _) | Self::Journal(_, id, _) | Self::JournalExcluded(_, id, _) => {
+                *id
+            }
             Self::Audit { catalog, .. } => *catalog,
         }
     }
@@ -215,6 +219,15 @@ impl Database {
         report: &kasumi_raft::RpcResponse,
         request: &MemberCatalogRequest,
     ) -> Result<()> {
+        if let kasumi_raft::RpcResponse::MemberJournalCatalog(original) = report {
+            let next = self.member_key_catalog(request.clone()).await?;
+            if !matches!(&*next,kasumi_raft::RpcResponse::MemberJournalCatalog(current) if current==original)
+            {
+                return Err(unavailable(
+                    "member target journal dependencies changed before release",
+                ));
+            }
+        }
         if let kasumi_raft::RpcResponse::MemberAuditCatalog(original) = report {
             let next = self.member_key_catalog(request.clone()).await?;
             if !matches!(&*next, kasumi_raft::RpcResponse::MemberAuditCatalog(current) if current == original)
@@ -268,6 +281,12 @@ impl Database {
         let group = self.group.clone();
         let control = self.store.tenant() == crate::control::CONTROL_TENANT;
         let signer = self.signer_keys.get().cloned();
+        let journal = matches!(
+            request.purpose,
+            CatalogPurpose::ControlJournal { .. } | CatalogPurpose::DataJournal { .. }
+        )
+        .then(|| super::journal_member::InstalledJournal::open(self, &request))
+        .transpose()?;
         let audit = self.security_audit.clone();
         charge
             .retained_read(token, move |mut charge, token| {
@@ -277,7 +296,11 @@ impl Database {
                 } else {
                     KeyCatalogDomain::Application
                 };
-                let response = if matches!(
+                let response = if let Some(journal) = &journal {
+                    kasumi_raft::RpcResponse::MemberJournalCatalog(Box::new(
+                        journal.capture(&request, token)?,
+                    ))
+                } else if matches!(
                     request.purpose,
                     CatalogPurpose::ControlSigner | CatalogPurpose::DataSigner { .. }
                 ) {
@@ -318,6 +341,9 @@ impl Database {
     pub(super) async fn observe_service_members(
         &self,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
+        context: &RequestContext,
+        policy_epoch: u64,
+        control_incarnation: &str,
         page: &ReadKeyRetentionRequest,
         token: &QueryCancellation,
     ) -> Result<MemberInventories> {
@@ -327,6 +353,24 @@ impl Database {
             .reserve_resident((6 * MEMBER_CATALOG_BYTES) as u64)?;
         let mut result = MemberInventories::default();
         let (purpose, partitions) = match page.scope {
+            KeyRetentionScope::TargetJournal {} => {
+                context.authorization.check_live()?;
+                let control = uuid::Uuid::parse_str(control_incarnation)
+                    .map_err(|error| Error::from_physical_source(error.into()))?;
+                let deadline = now_ms()?.saturating_add(30_000);
+                (
+                    CatalogPurpose::ControlJournal {
+                        control,
+                        policy_epoch,
+                        principal_sha256: Sha256::digest(context.principal.as_bytes()).into(),
+                        expires_at_ms: context
+                            .authorization
+                            .expires_at_ms()
+                            .map_or(deadline, |expires| expires.min(deadline)),
+                    },
+                    None,
+                )
+            }
             KeyRetentionScope::SecurityAudit {} => (CatalogPurpose::ServiceAudit, None),
             KeyRetentionScope::Signer {} => {
                 let Some(signer) = self.signer_keys.get() else {
@@ -342,7 +386,11 @@ impl Database {
         let mut observed = std::collections::BTreeMap::new();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         for recheck in [false, true] {
-            for (&node_id, node) in members.nodes().filter(|(id, _)| **id != metrics.id) {
+            for (&node_id, node) in members.nodes().filter(|(id, _)| {
+                **id != metrics.id
+                    || (matches!(purpose, CatalogPurpose::ControlJournal { .. })
+                        && self.journal_exclusion.get().is_some())
+            }) {
                 token.check()?;
                 if recheck && !observed.contains_key(&node_id) {
                     continue;
@@ -406,7 +454,43 @@ impl Database {
                                 report.truncated,
                             ))
                         }
+                        CatalogPurpose::ControlJournal { .. } => {
+                            let report = if node_id == metrics.id {
+                                let local = self.member_key_catalog(request.clone()).await?;
+                                let kasumi_raft::RpcResponse::MemberJournalCatalog(report) =
+                                    &*local
+                                else {
+                                    anyhow::bail!("unexpected local Control enrollment report")
+                                };
+                                self.check_member_catalog_release(&local, &request).await?;
+                                report.as_ref().clone()
+                            } else {
+                                self.group
+                                    .read_member_journal_catalog(node_id, node, &request)
+                                    .await?
+                            };
+                            let identity = if report.excluded_by_enrollment.is_some() {
+                                ServiceIdentity::JournalExcluded(
+                                    report.verifier,
+                                    report.catalog,
+                                    report.dependencies_sha256,
+                                )
+                            } else {
+                                ServiceIdentity::Journal(
+                                    report.verifier,
+                                    report.catalog,
+                                    report.dependencies_sha256,
+                                )
+                            };
+                            Ok((
+                                identity,
+                                report.entries,
+                                report.unreadable_targets,
+                                report.truncated,
+                            ))
+                        }
                         CatalogPurpose::Group
+                        | CatalogPurpose::DataJournal { .. }
                         | CatalogPurpose::DataSigner { .. }
                         | CatalogPurpose::DataServiceAudit { .. } => {
                             anyhow::bail!("unexpected Control service inventory purpose")
@@ -451,7 +535,12 @@ impl Database {
                         &mut result.missing,
                         &mut result.truncated,
                         MissingKeyDependency::RecordUnreadable {
-                            record_kind: KeyReferenceKind::AuditArchive,
+                            record_kind: if matches!(purpose, CatalogPurpose::ControlJournal { .. })
+                            {
+                                KeyReferenceKind::TargetJournal
+                            } else {
+                                KeyReferenceKind::AuditArchive
+                            },
                             id: id.to_string(),
                         },
                     );

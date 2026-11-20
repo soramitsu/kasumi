@@ -2544,19 +2544,75 @@ impl Fixture {
             cursor: None,
             limit: 64,
         };
-        let page = control
+        let before = control
             .read_key_retention(&operator, request.clone())
             .await
             .unwrap();
-        let has_checkpoint = |page: &KeyRetentionPage| {
-            page.entries.iter().any(|entry| matches!(entry.reference, KeyReference::CompletedBackup {backup_id, ..} if backup_id == checkpoint.backup_id))
+        let KeyRetentionCoverage::Incomplete { missing, .. } = &before.coverage else {
+            panic!("absent peer journals returned complete coverage")
         };
+        for remote in controls
+            .iter()
+            .filter(|db| db.raft_group().node_id() != control.raft_group().node_id())
+        {
+            let id = remote.raft_group().node_id();
+            assert!(missing.contains(&MissingKeyDependency::MemberUnreported { node_id: id }));
+            self.targets
+                .iter()
+                .find(|target| target.node_id() == id)
+                .unwrap()
+                .install_key_inventory(remote)
+                .unwrap();
+        }
+        drop(before);
+        async fn pages(
+            control: &kasumi_engine::Database,
+            operator: &RequestContext,
+            initial: &ReadKeyRetentionRequest,
+        ) -> kasumi_types::Result<(BTreeSet<KeyRetentionEntry>, KeyRetentionCoverage)> {
+            let mut next = initial.clone();
+            next.limit = 2;
+            let mut entries = BTreeSet::new();
+            loop {
+                let page = control.read_key_retention(operator, next.clone()).await?;
+                for row in &page.entries {
+                    assert!(
+                        entries.insert(row.clone()),
+                        "duplicate journal inventory entry"
+                    );
+                }
+                next.cursor = page.next_cursor.clone();
+                if next.cursor.is_none() {
+                    return Ok((entries, page.coverage.clone()));
+                }
+            }
+        }
+        let (entries, coverage) = pages(control, &operator, &request).await.unwrap();
         assert!(
-            has_checkpoint(&page),
-            "target backup graph absent: {:?}",
-            page.coverage
+            matches!(coverage, KeyRetentionCoverage::Complete { .. }),
+            "incomplete physical journal coverage {coverage:?}"
         );
-        drop(page);
+        let catalogs = entries
+            .iter()
+            .filter_map(|row| match row.reference {
+                KeyReference::Catalog {
+                    node_id,
+                    catalog_id,
+                    domain: KeyCatalogDomain::TargetJournal,
+                } => Some((node_id, catalog_id)),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(catalogs.len(), 3);
+        assert_eq!(catalogs.values().collect::<BTreeSet<_>>().len(), 3);
+        for db in controls {
+            let id = db.raft_group().node_id();
+            assert!(entries.iter().any(|row|matches!(row.reference,KeyReference::TargetJournal{node_id,incarnation} if node_id==id && incarnation==self.target)));
+        }
+        let has_checkpoint = |entries: &BTreeSet<KeyRetentionEntry>| {
+            entries.iter().any(|row|matches!(row.reference,KeyReference::CompletedBackup{backup_id,..} if backup_id==checkpoint.backup_id))
+        };
+        assert!(has_checkpoint(&entries), "target backup graph absent");
         let source = self.source_observer.upgrade().unwrap();
         let source_index = usize::try_from(source.raft_group().node_id() - 1).unwrap();
         let crate::administration::DestinationConfig::Filesystem { directory, .. } =
@@ -2568,20 +2624,18 @@ impl Fixture {
         let manifest = directory.join(format!("sessions/{id}/objects/{id}.kasumi"));
         let withheld = self.directory.join("withheld-target-checkpoint");
         std::fs::rename(&manifest, &withheld).unwrap();
-        let unavailable = control.read_key_retention(&operator, request.clone()).await;
+        let unavailable = pages(control, &operator, &request).await;
         std::fs::rename(&withheld, &manifest).unwrap();
         let unavailable = unavailable.unwrap();
-        assert!(!has_checkpoint(&unavailable));
+        assert!(!has_checkpoint(&unavailable.0));
         assert!(
-            matches!(&unavailable.coverage, KeyRetentionCoverage::Incomplete {missing,..} if missing.contains(&MissingKeyDependency::RecordUnreadable {record_kind:KeyReferenceKind::TargetJournal,id:self.target.to_string()}))
+            matches!(&unavailable.1,KeyRetentionCoverage::Incomplete{missing,..} if missing.contains(&MissingKeyDependency::RecordUnreadable{record_kind:KeyReferenceKind::TargetJournal,id:self.target.to_string()}))
         );
-        drop(unavailable);
-        assert!(has_checkpoint(
-            &control
-                .read_key_retention(&operator, request)
-                .await
-                .unwrap()
-        ));
+        let restored = pages(control, &operator, &request).await.unwrap();
+        assert!(
+            matches!(restored.1, KeyRetentionCoverage::Complete { .. })
+                && has_checkpoint(&restored.0)
+        );
     }
     pub async fn databases(&self) -> Vec<Arc<kasumi_engine::Database>> {
         let mut databases = Vec::new();

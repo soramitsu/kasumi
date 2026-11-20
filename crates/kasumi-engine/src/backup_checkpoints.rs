@@ -16,7 +16,7 @@ enum BackupReadAuthority<'a> {
         policy_epoch: u64,
     },
     Recovery {
-        control: &'a ResponseFence<'a>,
+        control: &'a super::key_retention::RecoveryInventoryFence<'a>,
         keys: Arc<dyn kasumi_store::KeyProvider>,
     },
 }
@@ -209,7 +209,7 @@ impl Database {
     /// administrator's fence governs release of wrapping references only.
     pub(super) async fn recovery_checkpoint_keys(
         &self,
-        control: &ResponseFence<'_>,
+        control: &super::key_retention::RecoveryInventoryFence<'_>,
         selected: &super::key_retention::RecoveryGraph<'_>,
         cancellation: &QueryCancellation,
         observe: &KeyObserver<'_>,
