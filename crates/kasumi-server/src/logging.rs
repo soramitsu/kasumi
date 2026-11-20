@@ -1,23 +1,30 @@
 //! Daemon diagnostics contain operational events, never request bodies or secrets.
 use tracing_subscriber::{filter::Targets, layer::SubscriberExt, util::SubscriberInitExt};
 
-fn targets() -> Targets {
+fn targets(restore_timings: bool) -> Targets {
     // Dependencies can trace entire commands/documents. They must remain disabled
     // even when the host has an unrelated RUST_LOG setting. OpenRaft formats
     // storage error chains, so its fatal outcomes surface only through Kasumi's
     // fixed closure and typed failure classes. Kasumi's own engine, Raft and store warnings carry
     // fixed labels and component names, never error chains or tenant data.
-    Targets::new()
+    let targets = Targets::new()
         .with_target("kasumi_server", tracing::Level::INFO)
         .with_target("kasumi_engine", tracing::Level::WARN)
         .with_target("kasumi_raft", tracing::Level::WARN)
-        .with_target("kasumi_store", tracing::Level::WARN)
+        .with_target("kasumi_store", tracing::Level::WARN);
+    if restore_timings {
+        targets.with_target("kasumi_engine::restore_phase", tracing::Level::DEBUG)
+    } else {
+        targets
+    }
 }
 
 /// Install JSON diagnostics on stderr. CLI result documents remain on stdout.
 pub fn initialize() -> anyhow::Result<()> {
     tracing_subscriber::registry()
-        .with(targets())
+        .with(targets(
+            std::env::var("KASUMI_RESTORE_PHASE_TIMINGS").as_deref() == Ok("1"),
+        ))
         .with(
             tracing_subscriber::fmt::layer()
                 .json()
@@ -396,9 +403,24 @@ mod tests {
     }
 
     #[test]
+    fn installed_restore_timings_enable_only_the_fixed_engine_phase_events() {
+        let level = &tracing::Level::DEBUG;
+        for enabled in [false, true] {
+            let filter = targets(enabled);
+            assert_eq!(
+                filter.would_enable("kasumi_engine::restore_phase", level),
+                enabled
+            );
+            for target in ["kasumi_engine", "kasumi_server", "kasumi_store", "openraft"] {
+                assert!(!filter.would_enable(target, level));
+            }
+        }
+    }
+
+    #[test]
     fn json_diagnostics_exclude_dependency_payloads_and_span_fields() {
         let bytes = Buffer(Arc::new(Mutex::new(Vec::new())));
-        let subscriber = tracing_subscriber::registry().with(targets()).with(
+        let subscriber = tracing_subscriber::registry().with(targets(false)).with(
             tracing_subscriber::fmt::layer()
                 .json()
                 .with_ansi(false)
