@@ -202,9 +202,9 @@ fn the_directory_step_follows_the_exact_predecessor_and_skips_covered_replay() {
     let (s1, _) = next(&s0, s0.revision + 1, "docs", &["a"], &[]);
     let (s2, _) = next(&s1, s1.revision + 1, "docs", &["b"], &[]);
     let (s3, _) = next(&s2, s2.revision + 1, "docs", &["c"], &[]);
-    // A pristine store starts its first tree; a deployed one waits.
+    // A pristine store starts its first tree. A populated deployed store can rebuild.
     assert_eq!(step(None, &s0, &s1), Step::Edit);
-    assert_eq!(step(None, &s1, &s2), Step::Nothing);
+    assert_eq!(step(None, &s1, &s2), Step::Replace);
     let at = |state: &TenantState| {
         PrimaryManifest::new(
             &state.tenant,
@@ -224,12 +224,23 @@ fn the_directory_step_follows_the_exact_predecessor_and_skips_covered_replay() {
     assert_eq!(step(Some(&m2), &s2, &s3), Step::Edit);
     // A replayed group whose members straddle the directory cannot be edited.
     assert!(matches!(step(Some(&m2), &s1, &s3), Step::Stale(_)));
-    assert_eq!(step(Some(&m2.stale(3, None)), &s2, &s3), Step::Nothing);
+    assert_eq!(
+        step(Some(&m2.stale(s3.revision, None)), &s2, &s3),
+        Step::Nothing
+    );
+    assert_eq!(
+        step(Some(&m2.stale(s2.revision, None)), &s2, &s3),
+        Step::Replace
+    );
     let foreign = PrimaryManifest {
         incarnation: uuid::Uuid::from_u128(6).to_string(),
         ..m2
     };
     assert!(matches!(step(Some(&foreign), &s2, &s3), Step::Stale(_)));
+    assert!(matches!(
+        step(Some(&foreign.stale(s2.revision, None)), &s2, &s3),
+        Step::Stale(_)
+    ));
 }
 
 #[test]
@@ -336,23 +347,29 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     assert!(store.write_batch(&[backward.write().unwrap()]).is_err());
     fixture.verify(&s3);
 
+    let before_replacement = store.read_view().unwrap();
     // A replayed boundary from another history goes stale at its revision.
     fixture
         .publish(prepare_publication(&owner, store, &s2, &s3, &changed, applied(&s3, 9)).unwrap());
     let stale = fixture.current();
     assert!(!stale.is_current() && stale.revision == s3.revision);
     let (s4, changed) = next(&s3, s3.revision + 1, "docs", &["e"], &[]);
+    // Covered replay cannot replace the stale later position. Preparing a
+    // replacement without publishing it never changes the selected root.
     assert!(
-        prepare_publication(&owner, store, &s3, &s4, &changed, applied(&s4, 1))
+        prepare_publication(&owner, store, &s1, &s2, &changed, applied(&s2, 1))
             .unwrap()
             .is_none()
     );
-
-    // Restore replaces the stale directory with a rebuilt generation.
-    let mut writes = Vec::new();
-    prepare_restore(&owner, store, &s4, &snapshot_meta(&s4), true, &mut writes).unwrap();
-    assert!(!writes.is_empty());
-    store.write_batch(&writes).unwrap();
+    let mut boundary = snapshot_applied(&snapshot_meta(&s4)).unwrap().unwrap();
+    boundary.command_sha256 = Some([4; 32]);
+    let abandoned = prepare_publication(&owner, store, &s3, &s4, &changed, Some(boundary.clone()))
+        .unwrap()
+        .expect("small ordinary candidate can replace a stale directory");
+    drop(abandoned);
+    assert_eq!(fixture.current(), stale);
+    fixture
+        .publish(prepare_publication(&owner, store, &s3, &s4, &changed, Some(boundary)).unwrap());
     fixture.verify(&s4);
     assert_ne!(fixture.current().records.tree, tree);
     assert_ne!(fixture.current().page_space, primary::INITIAL_SPACE[0]);
@@ -379,6 +396,18 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     .unwrap();
     view.close().unwrap();
     assert_eq!(initial, 0);
+    let retained = PrimaryManifest::load_at(&before_replacement)
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.revision, s3.revision);
+    verify_rows(
+        &before_replacement,
+        &retained,
+        &s3,
+        store.plaintext_memory_owner(),
+    )
+    .unwrap();
+    before_replacement.close().unwrap();
 
     // Ordinary edits continue on the rebuilt tree; an oversized delta goes
     // stale instead of failing the apply.

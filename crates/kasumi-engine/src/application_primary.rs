@@ -18,8 +18,9 @@
 //!
 //! Ordinary edits are bounded. A candidate whose delta exceeds the bound, or
 //! whose edit cannot be prepared, publishes a stale manifest instead of
-//! fencing the replica; nothing edits a stale directory until the next
-//! restore replaces it. Staged edit batches written before a publication that
+//! fencing the replica. A later ordinary publication can replace an absent or
+//! stale directory by streaming a bounded candidate into a new generation.
+//! Staged edit batches written before a publication that
 //! never commits are journaled and recovered under the same apply owner.
 use crate::application_records;
 use anyhow::{Context, Result, ensure};
@@ -34,7 +35,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
 /// Changed document IDs by collection, as the accepted producer supplies them.
@@ -44,10 +45,14 @@ pub(crate) type ChangedIds = BTreeMap<String, BTreeSet<String>>;
 pub(crate) const MAX_EDIT_IDS: usize = 4096;
 /// Encoded key and value bytes of those documents' rows.
 pub(crate) const MAX_EDIT_BYTES: usize = 16 << 20;
+/// Period between attempts after a staged replacement exhausts its byte budget
+/// or encounters an error. An oversized document count requires no I/O.
+const REBUILD_RETRY_REVISIONS: u64 = 4096;
 
 /// Per-engine edit journal custody. Only the apply owner reads or changes it.
 pub(crate) struct PrimaryOwner {
     recovery_pending: AtomicBool,
+    rebuild_after: AtomicU64,
 }
 
 impl Default for PrimaryOwner {
@@ -56,6 +61,7 @@ impl Default for PrimaryOwner {
         // journaled batches behind.
         Self {
             recovery_pending: AtomicBool::new(true),
+            rebuild_after: AtomicU64::new(0),
         }
     }
 }
@@ -170,12 +176,19 @@ fn rebuild(
     store: &Arc<TenantStore>,
     state: &TenantState,
     applied: Option<PrimaryApplied>,
+    mut byte_budget: usize,
 ) -> Result<Vec<WriteOp>> {
     let family = SelectedGeneration::adopt(store, primary::FAMILY, &primary::INITIAL_SPACE)?;
     let stage = NamespaceStage::begin_generation(store, primary::FAMILY)?;
     let memory = store.plaintext_memory_owner().clone();
     let records = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
-        application_records::visit_primary(state, &memory, |key, value| builder.push(key, value))
+        application_records::visit_primary(state, &memory, |key, value| {
+            byte_budget = byte_budget
+                .checked_sub(key.len())
+                .and_then(|remaining| remaining.checked_sub(value.len()))
+                .context("primary directory exceeds the replacement byte budget")?;
+            builder.push(key, value)
+        })
     })?;
     let manifest = PrimaryManifest::new(
         &state.tenant,
@@ -229,7 +242,7 @@ pub(crate) fn prepare_restore(
             return Ok(());
         }
     }
-    writes.extend(rebuild(store, state, applied)?);
+    writes.extend(rebuild(store, state, applied, usize::MAX)?);
     Ok(())
 }
 
@@ -278,8 +291,10 @@ impl PrimaryPublication {
 /// What the directory must do for one candidate.
 #[derive(Debug, PartialEq, Eq)]
 enum Step {
-    /// No current directory to keep (absent and not pristine, or stale).
+    /// A stale directory ahead of the predecessor must survive covered replay.
     Nothing,
+    /// The candidate can start a new page space for an absent or stale directory.
+    Replace,
     /// A covered replay below the directory's revision.
     Covered,
     /// A covered replay reaching the directory's revision.
@@ -299,17 +314,21 @@ fn step(
         return if pristine(previous) {
             Step::Edit
         } else {
-            Step::Nothing
+            Step::Replace
         };
     };
-    if !manifest.is_current() {
-        return Step::Nothing;
-    }
     if manifest.tenant != candidate.tenant
         || manifest.incarnation != candidate.incarnation
         || manifest.revision_base != candidate.revision_base
     {
         return Step::Stale("primary directory scope differs from the candidate");
+    }
+    if !manifest.is_current() {
+        return if manifest.revision <= previous.revision {
+            Step::Replace
+        } else {
+            Step::Nothing
+        };
     }
     if candidate.revision < manifest.revision {
         return Step::Covered;
@@ -342,16 +361,19 @@ fn changed_ids(
     candidate: &TenantState,
     changed: &ChangedIds,
 ) -> Option<BTreeMap<String, BTreeSet<String>>> {
-    let mut ids = changed.clone();
-    let mut count: usize = ids.values().map(BTreeSet::len).sum();
+    let mut count = changed
+        .values()
+        .try_fold(0usize, |count, ids| count.checked_add(ids.len()))?;
     if count > MAX_EDIT_IDS {
         return None;
     }
-    let names: BTreeSet<&String> = previous
-        .collections
-        .keys()
-        .chain(candidate.collections.keys())
-        .collect();
+    let mut ids = changed.clone();
+    let names = previous.collections.keys().chain(
+        candidate
+            .collections
+            .keys()
+            .filter(|name| !previous.collections.contains_key(*name)),
+    );
     let same = |old: &CollectionState, new: &CollectionState| {
         old.documents.ptr_eq(&new.documents)
             && old.archived_documents.ptr_eq(&new.archived_documents)
@@ -389,7 +411,8 @@ fn changed_ids(
 
 /// Under the apply owner, after the candidate's after-images are stored.
 /// `None` publishes nothing here: there is no current directory to keep, or a
-/// covered replay is below it. Every other failure to follow the candidate,
+/// covered replay is below it. A bounded candidate may replace an absent or
+/// stale directory. Every other failure to follow the candidate,
 /// including a replayed boundary that differs, publishes a stale manifest;
 /// errors are reserved for failing to read the selected manifest itself.
 pub(crate) fn prepare_publication(
@@ -405,6 +428,7 @@ pub(crate) fn prepare_publication(
     };
     let base = match step(manifest.as_ref(), previous, candidate) {
         Step::Nothing | Step::Covered => return Ok(None),
+        Step::Replace => return replace(owner, store, candidate, applied),
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
             let same = manifest.applied.as_ref().zip(applied.as_ref()).map_or(
@@ -476,6 +500,54 @@ pub(crate) fn prepare_publication(
     }
 }
 
+/// A fresh stage can be selected only by the candidate's paired publication.
+/// A lost publication leaves a sealed, unselected stage for family recovery.
+/// Count the actual live and archive rows. The tenant's logical document
+/// counter alone cannot bound both passes over the primary directory.
+fn replace(
+    owner: &PrimaryOwner,
+    store: &Arc<TenantStore>,
+    candidate: &TenantState,
+    applied: Option<PrimaryApplied>,
+) -> Result<Option<PrimaryPublication>> {
+    if candidate.revision < owner.rebuild_after.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    let mut remaining = MAX_EDIT_IDS;
+    for collection in candidate.collections.values() {
+        let Some(count) = remaining
+            .checked_sub(collection.documents.len())
+            .and_then(|n| n.checked_sub(collection.archived_documents.len()))
+        else {
+            return Ok(None);
+        };
+        remaining = count;
+    }
+    let built = (|| {
+        owner.recover(store)?;
+        NamespaceStage::reclaim_family(store, primary::FAMILY)?;
+        rebuild(store, candidate, applied, MAX_EDIT_BYTES)
+    })();
+    match built {
+        Ok(writes) => Ok(Some(PrimaryPublication::only(writes))),
+        Err(error) => {
+            if let Err(access) = store.check_access() {
+                return Err(error.context(access));
+            }
+            owner.rebuild_after.store(
+                candidate.revision.saturating_add(REBUILD_RETRY_REVISIONS),
+                Ordering::Release,
+            );
+            tracing::warn!(
+                revision = candidate.revision,
+                io_kind = ?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
+                "bounded primary directory replacement did not complete"
+            );
+            Ok(None)
+        }
+    }
+}
+
 fn stale(
     manifest: &PrimaryManifest,
     candidate: &TenantState,
@@ -486,7 +558,7 @@ fn stale(
 
         revision = candidate.revision,
         io_kind = ?reason.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
-        "primary directory stops following ordinary apply until the next restore"
+        "primary directory stops following ordinary apply until it is replaced"
     );
     // A replayed boundary that differs goes stale at its own revision.
     if candidate.revision < manifest.revision || !manifest.is_current() {
