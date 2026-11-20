@@ -76,10 +76,10 @@ impl TargetRecoveryRuntime {
                     };
                     // Failure remains non-serving and retries the exact retained
                     // candidate. It never downgrades or opens a source provider.
-                    let mut stage = RecoveryStage::Projection;
+                    let mut stage = RecoveryStage::Admission;
                     match runtime.reconcile_serving(&tenant, &mut stage).await {
                         Ok(()) => runtime.record_recovery(&tenant, None),
-                        Err(_) => runtime.record_recovery(&tenant, Some(stage)),
+                        Err(error) => runtime.record_recovery(&tenant, Some((stage, &error))),
                     }
                 }
             }
@@ -181,6 +181,7 @@ impl TargetRecoveryRuntime {
         tenant: &str,
         stage: &mut RecoveryStage,
     ) -> std::result::Result<(), TargetTaskFailure> {
+        *stage = RecoveryStage::Projection;
         snapshot_ensure!(
             !self.closing.load(Ordering::Acquire),
             "target runtime closing"
@@ -435,6 +436,7 @@ pub(super) fn detach_owned_data(
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum RecoveryStage {
+    Admission,
     Projection,
     Ownership,
     Custody,
@@ -471,6 +473,7 @@ impl TargetRecoveryRuntime {
         };
         match health.failures.get(tenant).map(|failure| failure.stage) {
             None => "NoRecordedFailure",
+            Some(RecoveryStage::Admission) => "Admission",
             Some(RecoveryStage::Projection) => "Projection",
             Some(RecoveryStage::Ownership) => "Ownership",
             Some(RecoveryStage::Custody) => "Custody",
@@ -481,11 +484,11 @@ impl TargetRecoveryRuntime {
             Some(RecoveryStage::DataRegistration) => "DataRegistration",
         }
     }
-    fn record_recovery(&self, tenant: &str, stage: Option<RecoveryStage>) {
+    fn record_recovery(&self, tenant: &str, failure: Option<(RecoveryStage, &TargetCallFailure)>) {
         let Ok(mut health) = self.recovery_health.lock() else {
             return;
         };
-        let Some(stage) = stage else {
+        let Some((stage, _original)) = failure else {
             if health.failures.remove(tenant).is_some() {
                 tracing::info!(tenant, "installed target recovery resumed");
             }
@@ -526,6 +529,10 @@ impl TargetRecoveryRuntime {
                 .is_none_or(|last| last.elapsed() >= Duration::from_secs(1))
         {
             tracing::warn!(tenant, recovery_stage = ?stage, "installed target remains non-serving; check the configured authority, storage and recovery service for this stage");
+            #[cfg(test)]
+            _original.with_original(|cause| {
+                eprintln!("installed target reconciliation {tenant}: stage={stage:?} disposition={_original} original={cause:?}");
+            });
             health.last_log = Some(std::time::Instant::now());
             health
                 .failures
