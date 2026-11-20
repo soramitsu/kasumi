@@ -64,6 +64,9 @@ pub struct AuthorityCatalogPage {
     pub term: u64,
     pub membership_index: u64,
     pub applied_index: u64,
+    /// The live installed voters and learners at the observed Raft membership.
+    pub members: Vec<u64>,
+    pub membership_sha256: String,
     pub application_catalog: Uuid,
     pub custody_catalog: Uuid,
     #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
@@ -77,10 +80,15 @@ impl AuthorityCatalogPage {
     pub fn validate(&self, query: &AuthorityCatalogRequest) -> Result<()> {
         query.validate()?;
         validate_sha256(&self.inventory_sha256)?;
+        validate_sha256(&self.membership_sha256)?;
         ensure!(
             self.request_sha256 == staged_digest(query)?.0
                 && self.term > 0
                 && self.applied_index >= self.membership_index
+                && (3..=64).contains(&self.members.len())
+                && self.members[0] > 0
+                && self.members.windows(2).all(|ids| ids[0] < ids[1])
+                && self.members.binary_search(&query.node_id).is_ok()
                 && !self.application_catalog.is_nil()
                 && !self.custody_catalog.is_nil()
                 && self.application_catalog != self.custody_catalog

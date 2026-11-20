@@ -4,10 +4,22 @@ use super::*;
 pub(in crate::service) struct SignerCatalog {
     store: std::sync::Weak<TenantStore>,
     verifier: TrustVerifierIdentity,
-    partitions: BTreeSet<(uuid::Uuid, u16)>,
+    pub(super) partitions: BTreeSet<(uuid::Uuid, u16)>,
 }
 
 impl Database {
+    pub fn install_authority_signer_key_inventory(
+        &self,
+        inventory: std::sync::Weak<dyn AuthoritySignerKeyInventory>,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.signer_keys.get().is_some(),
+            "install the enrolled Control signer before attaching its issuer reader"
+        );
+        self.authority_signer_keys
+            .set(inventory)
+            .map_err(|_| anyhow::anyhow!("Authority signer inventory is already installed"))
+    }
     pub fn install_local_recovery_key_inventory(
         &self,
         store: &Arc<TenantStore>,
@@ -90,8 +102,57 @@ impl Database {
 
 pub(in crate::service) struct InstalledInventories<'a> {
     pub(super) signer: Option<&'a SignerCatalog>,
+    pub(super) issuers: Option<IssuerCoverage>,
     pub(super) journal: Option<&'a crate::TargetJournal>,
     pub(super) local_recovery: Option<&'a dyn LocalRecoveryKeyInventory>,
+}
+
+#[derive(Default)]
+pub(super) struct IssuerCoverage {
+    entries: BTreeSet<KeyRetentionEntry>,
+    digest: Sha256,
+    missing: BTreeSet<MissingKeyDependency>,
+    truncated: bool,
+}
+
+impl IssuerCoverage {
+    pub(super) fn observe(
+        &mut self,
+        (authority_id, partition): (uuid::Uuid, u16),
+        request: &ReadKeyRetentionRequest,
+        report: anyhow::Result<AuthoritySignerKeys>,
+    ) -> Result<()> {
+        self.digest.update(authority_id.as_bytes());
+        self.digest.update(partition.to_be_bytes());
+        match report {
+            Ok(report) => {
+                if report.entries.len() > usize::from(request.limit) + 1 {
+                    return Err(Error::new(
+                        ErrorCode::Unavailable,
+                        "issuer inventory exceeded the requested window",
+                    ));
+                }
+                self.digest.update([1]);
+                self.digest.update(report.inventory_sha256);
+                for entry in report.entries {
+                    consider_entry(request, &mut self.entries, entry)?;
+                }
+            }
+            Err(error) => {
+                tracing::warn!(%authority_id, %partition, %error, "issuer signer inventory unavailable");
+                self.digest.update([0]);
+                add_missing(
+                    &mut self.missing,
+                    &mut self.truncated,
+                    MissingKeyDependency::AuthorityPartitionUnreported {
+                        authority_id,
+                        partition,
+                    },
+                );
+            }
+        }
+        Ok(())
+    }
 }
 
 impl SecurityAudit {
@@ -105,6 +166,7 @@ impl SecurityAudit {
     ) -> Result<KeyRetentionPage> {
         let InstalledInventories {
             signer,
+            issuers,
             journal,
             local_recovery,
         } = owners;
@@ -135,10 +197,20 @@ impl SecurityAudit {
         let _topology = self.admission().reserve_resident(size)?;
         let roster =
             crate::control::ControlPlane::applied_topology(state, generation.document_resolver())?;
-        if matches!(
-            request.scope,
-            KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
-        ) && let Some(signer) = signer
+        let issuer_digest = if let Some(issuers) = issuers {
+            entries = issuers.entries;
+            missing = issuers.missing;
+            truncated = issuers.truncated;
+            Some(<[u8; 32]>::from(issuers.digest.finalize()))
+        } else {
+            None
+        };
+        if issuer_digest.is_none()
+            && matches!(
+                request.scope,
+                KeyRetentionScope::SecurityAudit {} | KeyRetentionScope::Signer {}
+            )
+            && let Some(signer) = signer
         {
             for &(authority_id, partition) in &signer.partitions {
                 add_missing(
@@ -341,6 +413,7 @@ impl SecurityAudit {
             catalog_digest,
             archive_digest,
             journal_digest.or(local_digest),
+            issuer_digest,
             &missing,
             truncated,
         ))?

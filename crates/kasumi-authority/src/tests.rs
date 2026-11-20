@@ -205,6 +205,15 @@ async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation
         .await
         .unwrap();
     assert_eq!(first.entries.len(), 1);
+    assert_eq!(
+        first.members,
+        fixture
+            .settings
+            .installed_members
+            .keys()
+            .copied()
+            .collect::<Vec<_>>()
+    );
     let continuation = AuthorityCatalogRequest {
         nonce: Uuid::new_v4(),
         cursor: Some(first.next.clone().unwrap()),
@@ -214,6 +223,7 @@ async fn authority_catalogs_follow_the_named_member_through_quorum_loss_rotation
         .await
         .unwrap();
     assert_eq!(second.entries.len(), 1);
+    assert_eq!(first.membership_sha256, second.membership_sha256);
     assert!(second.next.is_none());
     assert!(first.entries[0] < second.entries[0]);
     drop(second_fence);

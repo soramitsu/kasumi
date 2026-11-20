@@ -62,7 +62,10 @@ mod history_export;
 mod history_reads;
 #[path = "key_retention_service.rs"]
 mod key_retention;
-pub use key_retention::{LocalRecoveryKeyFinding, LocalRecoveryKeyInventory};
+pub use key_retention::{
+    AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryKeyFinding,
+    LocalRecoveryKeyInventory,
+};
 
 #[path = "point_read.rs"]
 mod point_read;
@@ -1185,6 +1188,7 @@ pub struct Database {
     archive_destinations: Mutex<BTreeMap<String, Arc<dyn BackupDestination>>>,
     backup_control: std::sync::OnceLock<backup_control_service::BackupControl>,
     local_recovery_keys: std::sync::OnceLock<Arc<dyn LocalRecoveryKeyInventory>>,
+    authority_signer_keys: std::sync::OnceLock<std::sync::Weak<dyn AuthoritySignerKeyInventory>>,
     signer_keys: std::sync::OnceLock<Arc<key_retention::SignerCatalog>>,
     target_keys: std::sync::OnceLock<std::sync::Weak<crate::TargetJournal>>,
     archive_flights: history_export::ArchiveFlights,
@@ -1597,6 +1601,7 @@ impl Database {
             proposals: proposal_jobs::Jobs::default(),
             backup_control: Default::default(),
             local_recovery_keys: Default::default(),
+            authority_signer_keys: Default::default(),
             signer_keys: Default::default(),
             target_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),

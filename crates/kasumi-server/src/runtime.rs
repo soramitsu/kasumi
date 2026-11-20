@@ -1953,11 +1953,14 @@ impl NodeRuntime {
             let mut native_admin = NativeAdmin::new(registry.clone(), auth.clone(), runtime.original_recoveries.take().expect("same prepaid RPC inventory")).with_management(administration.clone()).with_telemetry(runtime.telemetry.clone());
             // Control signer maintenance publishes into a hosted Control group.
             if let (Some(verifier), Some(control)) = (&runtime.signer_verifier, &runtime.control) {
-                native_admin = native_admin.with_control_signer(crate::control_signer_runtime::ControlSignerRuntime::new(
+                let signer = crate::control_signer_runtime::ControlSignerRuntime::new(
                     config.replication.as_ref().context("remote signer requires installed replication")?.node_id,
                     control.database.clone(), verifier.clone(), config.serving_authorities.clone(),
                     runtime.authority_trusts.clone(), config.admin.tls.clone(), credential.clone(),
-                )?);
+                )?;
+                let reader: Arc<dyn kasumi_engine::AuthoritySignerKeyInventory> = signer.clone();
+                control.database.install_authority_signer_key_inventory(Arc::downgrade(&reader))?;
+                native_admin = native_admin.with_control_signer(signer);
             }
             #[cfg(test)]
             { runtime.audit_release_gate = native_admin.audit_release_gate(); }

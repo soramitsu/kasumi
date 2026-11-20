@@ -259,6 +259,67 @@ async fn control_updates_require_operator_authority_cas_and_survive_reopen() {
         && !missing.contains(&MissingKeyDependency::MemberUnreported {node_id}))
     );
     drop(signer_keys);
+    struct Issuer {
+        id: uuid::Uuid,
+        row: KeyRetentionEntry,
+    }
+    #[async_trait::async_trait]
+    impl kasumi_engine::AuthoritySignerKeyInventory for Issuer {
+        async fn read_partition(
+            &self,
+            id: uuid::Uuid,
+            partition: u16,
+            _: &ReadKeyRetentionRequest,
+        ) -> anyhow::Result<kasumi_engine::AuthoritySignerKeys> {
+            anyhow::ensure!(id == self.id && partition == 0);
+            Ok(kasumi_engine::AuthoritySignerKeys {
+                inventory_sha256: [5; 32],
+                entries: vec![self.row.clone()],
+            })
+        }
+    }
+    let row = KeyRetentionEntry {
+        key: KeyVersionRef {
+            provider: "issuer".into(),
+            key_ref: "installed-key".into(),
+            version: 1,
+        },
+        reference: KeyReference::Catalog {
+            node_id: 42,
+            catalog_id: uuid::Uuid::new_v4(),
+            domain: KeyCatalogDomain::IndependentAuthority,
+        },
+    };
+    let issuer: Arc<dyn kasumi_engine::AuthoritySignerKeyInventory> = Arc::new(Issuer {
+        id: authority_id,
+        row: row.clone(),
+    });
+    db.install_authority_signer_key_inventory(Arc::downgrade(&issuer))
+        .unwrap();
+    let connected = db
+        .read_key_retention(&operator, signer_query.clone())
+        .await
+        .unwrap();
+    assert!(connected.entries.contains(&row));
+    if let KeyRetentionCoverage::Incomplete { missing, .. } = &connected.coverage {
+        assert!(
+            !missing.contains(&MissingKeyDependency::AuthorityPartitionUnreported {
+                authority_id,
+                partition: 0
+            })
+        );
+    }
+    drop(connected);
+    drop(issuer);
+    let disconnected = db
+        .read_key_retention(&operator, signer_query.clone())
+        .await
+        .unwrap();
+    assert!(!disconnected.entries.contains(&row));
+    assert!(
+        matches!(&disconnected.coverage, KeyRetentionCoverage::Incomplete {missing, ..} if missing.contains(&MissingKeyDependency::AuthorityPartitionUnreported {authority_id, partition:0}))
+    );
+    drop(disconnected);
     assert!(
         db.read_key_retention(&context("writer", CONTROL_TENANT), signer_query)
             .await

@@ -8,6 +8,9 @@ use kasumi_client::{KasumiAuthorityPool, KasumiClientConfig};
 use kasumi_serving::*;
 use std::{collections::BTreeMap, sync::Arc};
 
+#[path = "authority_signer_inventory.rs"]
+mod key_inventory;
+
 pub(crate) struct ControlSignerRuntime {
     node_id: u64,
     control: Arc<kasumi_engine::Database>,

@@ -20,6 +20,7 @@ struct OperationalObservation {
 pub(super) struct CatalogObservation {
     position: MemberCatalogRequest,
     catalog: [u8; 32],
+    membership_sha256: String,
     operational: Option<OperationalObservation>,
     _workspace: kasumi_store::DiskMemoryLease,
 }
@@ -29,6 +30,11 @@ impl CatalogObservation {
         self.position
             .check_position(&authority.group)
             .map_err(unavailable)?;
+        if authority.catalog_membership()?.1 != self.membership_sha256 {
+            return Err(unavailable(
+                "Authority operational membership changed before release",
+            ));
+        }
         authority
             .group
             .check_member_catalog_digest(&self.catalog)
@@ -46,6 +52,34 @@ impl CatalogObservation {
 }
 
 impl IndependentAuthority {
+    fn catalog_membership(&self) -> Result<(Vec<u64>, String)> {
+        let current = self
+            .backend
+            .operational_configuration()
+            .map_err(unavailable)?;
+        let raft = self.group.metrics();
+        let membership = raft.membership_config.membership();
+        if current.pending_operation.is_some()
+            || !current
+                .membership
+                .members
+                .keys()
+                .copied()
+                .eq(membership.nodes().map(|(id, _)| *id))
+            || !current
+                .membership
+                .voters
+                .iter()
+                .copied()
+                .eq(membership.voter_ids())
+        {
+            return Err(unavailable(
+                "Authority operational and Raft membership are unsettled",
+            ));
+        }
+        let digest = staged_digest(&current.membership)?.0;
+        Ok((current.membership.members.keys().copied().collect(), digest))
+    }
     /// The parent runtime retains shutdown ownership of both opened stores.
     pub fn install_operational_key_catalogs(
         &self,
@@ -149,6 +183,7 @@ impl IndependentAuthority {
         let metrics = self.group.metrics();
         let membership = (*metrics.membership_config.log_id())
             .ok_or_else(|| unavailable("Authority catalog has no installed membership"))?;
+        let (members, membership_sha256) = self.catalog_membership()?;
         let position = MemberCatalogRequest {
             nonce: query.nonce,
             leader: metrics
@@ -217,6 +252,7 @@ impl IndependentAuthority {
             epoch,
             position.term,
             membership,
+            &membership_sha256,
             physical.application_catalog,
             physical.custody_catalog,
             physical.catalog_sha256,
@@ -241,6 +277,8 @@ impl IndependentAuthority {
             term: position.term,
             membership_index: membership.index,
             applied_index: applied.index,
+            members,
+            membership_sha256: membership_sha256.clone(),
             application_catalog: physical.application_catalog,
             custody_catalog: physical.custody_catalog,
             operational_catalogs: operational.as_ref().map(|v| v.ids.clone()),
@@ -260,6 +298,7 @@ impl IndependentAuthority {
         fence.member_catalog = Some(CatalogObservation {
             position,
             catalog: physical.catalog_sha256,
+            membership_sha256,
             operational,
             _workspace: workspace,
         });

@@ -29,6 +29,22 @@ pub trait LocalRecoveryKeyInventory: Send + Sync {
     ) -> anyhow::Result<[u8; 32]>;
 }
 
+/// A complete observation from the pinned members of one installed issuer.
+pub struct AuthoritySignerKeys {
+    pub inventory_sha256: [u8; 32],
+    pub entries: Vec<KeyRetentionEntry>,
+}
+
+#[async_trait::async_trait]
+pub trait AuthoritySignerKeyInventory: Send + Sync {
+    async fn read_partition(
+        &self,
+        authority_id: uuid::Uuid,
+        partition: u16,
+        request: &ReadKeyRetentionRequest,
+    ) -> anyhow::Result<AuthoritySignerKeys>;
+}
+
 /// One observation of a whole scope at one selected generation. The page
 /// holds the entries the request selected; the coverage, dependency position
 /// and retirement state describe the entire scope, whatever the page shows.
@@ -527,6 +543,32 @@ impl Database {
             context.authorization.require_control(&state.incarnation)?;
             let audit = self.security_audit.clone();
             let signer = self.signer_keys.get().cloned();
+            let issuer_keys = if matches!(request.scope, KeyRetentionScope::Signer {}) {
+                let inventory = self
+                    .authority_signer_keys
+                    .get()
+                    .and_then(std::sync::Weak::upgrade);
+                if let (Some(owner), Some(inventory)) = (signer.as_deref(), inventory) {
+                    let _wire = self.admission().reserve_resident(24 << 20)?;
+                    let mut reports = security_audit::IssuerCoverage::default();
+                    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+                    for &(id, partition) in &owner.partitions {
+                        self.engine
+                            .authorize_release(context, None, Action::Admin, epoch)?;
+                        let report = tokio::select! {
+                            value = inventory.read_partition(id, partition, request) => value,
+                            _ = cancelled(&cancellation) => return Err(cancelled_error()),
+                            _ = tokio::time::sleep_until(deadline) => Err(anyhow::anyhow!("issuer key inventory deadline elapsed")),
+                        };
+                        reports.observe((id, partition), request, report)?;
+                    }
+                    Some(reports)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let journal = self.target_keys.get().and_then(std::sync::Weak::upgrade);
             let local_recovery = self.local_recovery_keys.get().cloned();
             let request = request.clone();
@@ -542,6 +584,7 @@ impl Database {
                         &metrics,
                         security_audit::InstalledInventories {
                             signer: signer.as_deref(),
+                            issuers: issuer_keys,
                             journal: journal.as_deref(),
                             local_recovery: local_recovery.as_deref(),
                         },
