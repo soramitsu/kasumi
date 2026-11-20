@@ -562,7 +562,15 @@ fn failed_descriptor_close_keeps_the_exact_owner_and_blocks_the_census() {
     // is the eviction's own.
     let group = reopen(&path, &disk, 2);
     assert_eq!(group.cached_files(), 2);
-    assert_eq!(read_all(&group, GroupFile::segment(2)), b"two");
+    // Filesystem iteration order determines which segment occupies slot zero.
+    // Keep that slot hot so the original EIO always occurs in the other slot.
+    let first = group.state.read().slots[0].file.unwrap();
+    let expected = if first == GroupFile::segment(1) {
+        b"one"
+    } else {
+        b"two"
+    };
+    assert_eq!(read_all(&group, first), expected);
     let before = disk.snapshot();
     let bytes = tree(directory.path());
     NodeDiskFile::fail_next_native_close(libc::EIO);

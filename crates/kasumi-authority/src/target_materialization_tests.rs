@@ -3094,21 +3094,30 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         missing.custody().phase(),
         kasumi_store::NodeStartupPhase::Failed
     );
-    let (original_address, original_allocation, cause_address) = {
+    let (original_address, original_allocation, cause_address, expected_step, kind, errno) = {
         let report = missing.custody().opening().report();
         let kasumi_store::TerminalObservation::Returned(Err(original)) = report.acquisition()
         else {
             panic!("missing enrolled replay lost its original acquisition error");
         };
-        // Outside removal changes enrolled parent metadata. The canonical walk
-        // fails during preparation, before opening the missing child or native
-        // database; the typed opening keeps that exact filesystem original.
+        // The parent walk sees changed directory allocation on some filesystems.
+        // Others reach the missing enrolled child's openat. Keep the exact error,
+        // step and original allocation through the later custody observation.
         let outer: &(dyn std::error::Error + Send + Sync + 'static) = original.as_ref();
         let cause = outer
             .downcast_ref::<std::io::Error>()
             .expect("missing enrolled replay must retain the original outer filesystem error");
-        assert_eq!(cause.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(cause.raw_os_error(), None);
+        let expected_step = match cause.kind() {
+            std::io::ErrorKind::InvalidData => {
+                assert_eq!(cause.raw_os_error(), None);
+                kasumi_store::NodeDiskDirectoryOperationStep::Prepared
+            }
+            std::io::ErrorKind::NotFound => {
+                assert!(cause.raw_os_error().is_some());
+                kasumi_store::NodeDiskDirectoryOperationStep::OpenChild
+            }
+            other => panic!("unexpected missing enrolled directory failure {other:?}"),
+        };
         assert!(matches!(
             report.opening_outer(),
             kasumi_store::TerminalObservation::NotEntered
@@ -3125,6 +3134,9 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
             std::ptr::from_ref(original) as usize,
             std::ptr::from_ref(outer) as *const () as usize,
             std::ptr::from_ref(cause) as usize,
+            expected_step,
+            cause.kind(),
+            cause.raw_os_error(),
         )
     };
     let physical_failure = node
@@ -3135,16 +3147,13 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         physical_failure.kind,
         kasumi_store::NodeDiskDirectoryOperationKind::Open
     );
-    assert_eq!(
-        physical_failure.step,
-        kasumi_store::NodeDiskDirectoryOperationStep::Prepared
-    );
+    assert_eq!(physical_failure.step, expected_step);
     let acquisition_failure = physical_failure
         .failure
         .expect("actual enrolled-directory acquisition failure missing");
     assert_eq!(acquisition_failure.step, physical_failure.step);
-    assert_eq!(acquisition_failure.kind, std::io::ErrorKind::InvalidData);
-    assert_eq!(acquisition_failure.errno, None);
+    assert_eq!(acquisition_failure.kind, kind);
+    assert_eq!(acquisition_failure.errno, errno);
     assert!(physical_failure.close_failure.is_none());
     assert!(physical_failure.uncertain_close_descriptor.is_none());
     assert_eq!(
@@ -3177,8 +3186,8 @@ async fn target_file_creation_outcome_distinguishes_original_creation_from_stric
         let cause = outer
             .downcast_ref::<std::io::Error>()
             .expect("retained missing replay changed its original outer filesystem error");
-        assert_eq!(cause.kind(), std::io::ErrorKind::InvalidData);
-        assert_eq!(cause.raw_os_error(), None);
+        assert_eq!(cause.kind(), kind);
+        assert_eq!(cause.raw_os_error(), errno);
         assert_eq!(std::ptr::from_ref(cause) as usize, cause_address);
     }
     drop(retained_missing);

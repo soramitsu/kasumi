@@ -264,6 +264,8 @@ struct Resources {
     directory: Option<NodeDiskDirectory>,
     root: Option<NodeDiskFile>,
     root_failed: bool,
+    // Preserve the descriptor that first fenced this group during eviction.
+    failed_eviction_slot: Option<usize>,
     entries: Vec<Entry>,
     // Admits the entry table's current capacity.
     charge: Option<DiskMemoryLease>,
@@ -674,6 +676,7 @@ impl NodeSegmentGroup {
             directory: Some(directory),
             root: None,
             root_failed: false,
+            failed_eviction_slot: None,
             entries: Vec::new(),
             charge: None,
             high_water: [0; 2],
@@ -850,8 +853,10 @@ impl NodeSegmentGroup {
             // and original error in the same slot instead of starting a retry.
             #[cfg(test)]
             self.census_checkpoint(CensusTestStage::RetryClose)?;
-            for slot in slots.iter_mut().filter(|slot| slot.handle.is_some()) {
-                self.evict(resources, slot)?;
+            for (index, slot) in slots.iter_mut().enumerate() {
+                if slot.handle.is_some() {
+                    self.evict(resources, index, slot)?;
+                }
             }
             // Retain the paid entry allocation, root and directory across the
             // bounded retry. No file was written during this opening census.
@@ -1072,11 +1077,11 @@ impl NodeSegmentGroup {
             .min_by_key(|(_, slot)| slot.used.load(Ordering::Relaxed))
             .map(|(index, _)| index)
             .ok_or(io::ErrorKind::StorageFull)?;
-        self.evict(resources, &mut slots[victim])?;
+        self.evict(resources, victim, &mut slots[victim])?;
         Ok(victim)
     }
 
-    fn evict(&self, resources: &mut Resources, slot: &mut Slot) -> io::Result<()> {
+    fn evict(&self, resources: &mut Resources, index: usize, slot: &mut Slot) -> io::Result<()> {
         let handle = slot.handle.as_mut().expect("occupied cache cell");
         if slot.dirty.load(Ordering::Acquire) {
             // Closing needs a settled extent. This synchronizes the file and
@@ -1105,6 +1110,7 @@ impl NodeSegmentGroup {
             NodeDiskCloseOutcome::Entered(Err(error)) => {
                 // The exact owner and its original outcome stay in this cell.
                 slot.failed = true;
+                resources.failed_eviction_slot = Some(index);
                 self.fence();
                 Err(error)
             }
@@ -1803,7 +1809,10 @@ impl NodeSegmentGroup {
         let mut first = None;
         let mut retained = false;
         let mut retryable = true;
-        for slot in slots.iter_mut() {
+        // A secondary refusal from a lower-numbered cache slot must not hide
+        // the original eviction failure, including on subsequent drain calls.
+        let (earlier, remaining) = slots.split_at_mut(resources.failed_eviction_slot.unwrap_or(0));
+        for slot in remaining.iter_mut().chain(earlier) {
             let Some(handle) = slot.handle.as_mut() else {
                 continue;
             };

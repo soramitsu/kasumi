@@ -2155,6 +2155,32 @@ fn unenrolled_missing_leaf_preserves_admission_without_allocating() {
     disk.delete_file(retained).unwrap();
 }
 
+/// A filesystem whose directory allocation changed can reject the parent walk.
+/// Otherwise the exact missing leaf must fence execution before any effect.
+fn assert_missing_enrolled_file<T>(
+    prepared: io::Result<T>,
+    path: &Path,
+    already_removed: bool,
+    execute: impl FnOnce(T) -> io::Result<NodeDiskFile>,
+) -> bool {
+    match prepared {
+        Err(error) => {
+            assert!(already_removed);
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+            false
+        }
+        Ok(prepared) => {
+            if !already_removed {
+                std::fs::remove_file(path).unwrap();
+            }
+            let (result, allocations) = crate::allocation_tests::measure(|| execute(prepared));
+            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
+            assert_eq!(allocations, 0);
+            true
+        }
+    }
+}
+
 #[test]
 fn disappeared_censused_and_closed_created_names_fence_without_credit() {
     let fixture_memory = crate::test_utils::TestDiskMemory::new(256 << 20, 4096);
@@ -2182,21 +2208,13 @@ fn disappeared_censused_and_closed_created_names_fence_without_credit() {
         let path = config.roots["data"].join("nested/file");
         if before_preparation {
             std::fs::remove_file(&path).unwrap();
-            // The enrolled parent's changed metadata now fences preparation.
-            let error = disk
-                .prepare_file("data", Path::new("nested/file"), None)
-                .err()
-                .unwrap();
-            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
-        } else {
-            let prepared = disk
-                .prepare_file("data", Path::new("nested/file"), None)
-                .unwrap();
-            std::fs::remove_file(&path).unwrap();
-            let (result, allocations) = crate::allocation_tests::measure(|| prepared.execute());
-            assert_eq!(result.unwrap_err().kind(), io::ErrorKind::NotFound);
-            assert_eq!(allocations, 0);
         }
+        assert_missing_enrolled_file(
+            disk.prepare_file("data", Path::new("nested/file"), None),
+            &path,
+            before_preparation,
+            |prepared| prepared.execute(),
+        );
         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
         assert_eq!(disk.snapshot().persistent_files, 1);
@@ -2294,53 +2312,26 @@ fn missing_enrolled_target_cannot_be_recreated_or_published_over() {
         if before_preparation {
             std::fs::remove_file(&target).unwrap();
         }
-        let result = if let Some(source) = source {
-            match disk.prepare_publication(source, "data", Path::new("target")) {
-                Ok(prepared) => {
-                    assert!(!before_preparation);
-                    std::fs::remove_file(&target).unwrap();
-                    let (result, allocations) =
-                        crate::allocation_tests::measure(|| prepared.execute());
-                    assert_eq!(allocations, 0);
-                    result
-                }
-                Err(error) => {
-                    assert!(before_preparation);
-                    Err(error)
-                }
-            }
+        let entered = if let Some(source) = source {
+            assert_missing_enrolled_file(
+                disk.prepare_publication(source, "data", Path::new("target")),
+                &target,
+                before_preparation,
+                |prepared| prepared.execute(),
+            )
         } else {
-            match disk.prepare_file("data", Path::new("target"), Some(DiskWork::Foreground)) {
-                Ok(prepared) => {
-                    assert!(!before_preparation);
-                    std::fs::remove_file(&target).unwrap();
-                    let (result, allocations) =
-                        crate::allocation_tests::measure(|| prepared.execute());
-                    assert_eq!(allocations, 0);
-                    result
-                }
-                Err(error) => {
-                    assert!(before_preparation);
-                    Err(error)
-                }
-            }
+            assert_missing_enrolled_file(
+                disk.prepare_file("data", Path::new("target"), Some(DiskWork::Foreground)),
+                &target,
+                before_preparation,
+                |prepared| prepared.execute(),
+            )
         };
-        assert_eq!(
-            result.unwrap_err().kind(),
-            if before_preparation {
-                io::ErrorKind::InvalidData
-            } else {
-                io::ErrorKind::NotFound
-            }
-        );
         assert!(!target.exists());
         assert_eq!(disk.snapshot().phase, NodeDiskPhase::Failed);
         assert_eq!(disk.snapshot().charged_bytes, before.charged_bytes);
         assert_eq!(disk.snapshot().persistent_files, before.persistent_files);
-        assert_eq!(
-            disk.snapshot().open_files,
-            u32::from(publish && !before_preparation)
-        );
+        assert_eq!(disk.snapshot().open_files, u32::from(publish && entered));
         if publish {
             clean(&disk, &["source"]);
         } else {
