@@ -202,6 +202,11 @@ enum AuditOpen {
 }
 
 impl SecurityAudit {
+    // The archive worker and one transport record may run simultaneously.
+    // Both charges stay with the writer until its final joined drain.
+    pub(crate) const WORKSPACE_BYTES: u64 =
+        AuditRetentionBudget::MAINTENANCE_BYTES + jobs::JOB_BYTES;
+
     /// Create the canonical stream exactly once at explicit installation time.
     /// The caller must own a newly provisioned security domain and its node.
     pub fn initialize(
@@ -301,7 +306,7 @@ impl SecurityAudit {
             }
             return Ok(Arc::new(Self { writer }));
         }
-        let mut workspace = admission.reserve(AuditRetentionBudget::MAINTENANCE_BYTES, None)?;
+        let mut workspace = admission.reserve(Self::WORKSPACE_BYTES, None)?;
         workspace.retain_workspace();
         let (head, retired) = match mode {
             AuditOpen::Initialize => (
@@ -420,15 +425,18 @@ impl SecurityAudit {
         transport: Option<TransportAuditMetadata>,
         database_registration: Option<WorkRegistration>,
     ) -> Result<()> {
-        self.run_owned(move |work, id| async move {
-            let owner = work.writer.clone();
-            let outcome = tokio::task::spawn_blocking(move || {
-                let _database_registration = database_registration;
-                work.record(event, transport)
-            })
-            .await;
-            owner.observe_join("audit record", id, outcome)
-        })
+        self.run_owned(
+            jobs::JobClass::AuthenticatedRecord,
+            move |work, id| async move {
+                let owner = work.writer.clone();
+                let outcome = tokio::task::spawn_blocking(move || {
+                    let _database_registration = database_registration;
+                    work.record(event, transport)
+                })
+                .await;
+                owner.observe_join("audit record", id, outcome)
+            },
+        )
         .await
     }
 

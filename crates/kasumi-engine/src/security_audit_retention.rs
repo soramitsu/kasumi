@@ -516,7 +516,7 @@ impl SecurityAudit {
         &self,
         read: impl FnOnce(&Self) -> Result<T> + Send + 'static,
     ) -> Result<T> {
-        self.run_owned(move |work, id| async move {
+        self.run_owned(jobs::JobClass::Shared, move |work, id| async move {
             let audit = work.writer.clone();
             let joined = tokio::task::spawn_blocking(move || {
                 let accepted = work;
@@ -589,7 +589,7 @@ impl SecurityAudit {
 
     /// Cancellation of the caller does not cancel owned archive publication.
     pub async fn maintain(&self) -> Result<SecurityAuditStatus> {
-        self.run_owned(|work, _| async move {
+        self.run_owned(jobs::JobClass::Shared, |work, _| async move {
             if let Err(error) = work.writer.maintenance_inner().await {
                 work.writer.report_maintenance_failure();
                 return Err(error);
@@ -1016,7 +1016,7 @@ impl SecurityAudit {
     /// Verify one immutable object and its place in the committed chain: its
     /// link to the preceding root, and the exact head when it is the last root.
     pub async fn verify_archive(&self, index: u64) -> Result<AuditArchiveReference> {
-        self.run_owned(move |work, _| async move {
+        self.run_owned(jobs::JobClass::Shared, move |work, _| async move {
             let _serial = work.writer.writer.maintenance.lock().await;
             let (head, retained) = {
                 let state = work
@@ -1085,7 +1085,7 @@ impl SecurityAudit {
         prune: ArchivePrune,
     ) -> Result<SecurityAuditPruneResult> {
         request.validate()?;
-        self.run_owned(move |work, _| async move {
+        self.run_owned(jobs::JobClass::Shared, move |work, _| async move {
             // Publication, export, verification and pruning share this lock,
             // so the archive chain checked here is the one retired below.
             let _serial = work.writer.writer.maintenance.lock().await;
@@ -1455,7 +1455,7 @@ impl SecurityAudit {
         if let Some(cursor) = &cursor {
             cursor.validate()?;
         }
-        self.run_owned(move |work, _| async move {
+        self.run_owned(jobs::JobClass::Shared, move |work, _| async move {
             let audit = &work.writer;
             // Held for the whole page: no archive publication can move the
             // hot prefix between this status and the reads below.

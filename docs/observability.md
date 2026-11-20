@@ -87,9 +87,11 @@ memory pressure (the RSS high-water) nor exhausted operation slots or bytes can
 refuse it. A second concurrent observation tries the shared pool as before and
 otherwise waits up to 2 s for the slot, then returns 503 (`admission`). Each
 observation is bounded by the 1 MiB response limit, so one slot bounds the
-permanent charge. The authentication record that every protected request
-writes to the service audit store is part of the protected boundary and still
-needs storage admission: a full disk or RSS pressure that refuses that write
+permanent charge. The service audit writer reserves another 4 KiB for one
+authenticated record when ordinary request slots are exhausted. The record
+keeps that reservation until its task joins. Concurrent records need ordinary
+admission while the slot is occupied. Each protected request still needs a
+durable write to the service audit store: a full disk or RSS pressure that refuses that write
 returns 503 (`audit_unavailable`). A scrape never waits on a database's
 maintenance: storage figures are copies the node workers publish (below).
 

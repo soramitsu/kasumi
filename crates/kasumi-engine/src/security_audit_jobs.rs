@@ -4,6 +4,13 @@ use anyhow::{Context, Result};
 use kasumi_types::drain::{DrainFailure, DrainIssueRef};
 use std::{future::Future, sync::Arc};
 
+pub(super) const JOB_BYTES: u64 = 4096;
+
+pub(super) enum JobClass {
+    AuthenticatedRecord,
+    Shared,
+}
+
 #[derive(Default)]
 pub(super) struct Jobs {
     next: usize,
@@ -14,7 +21,9 @@ struct Job {
     handle: tokio::task::JoinHandle<()>,
     // Charge retained task/registry metadata until the actual handle is reaped.
     // The separately reserved maintenance worker never needs this admission.
-    _reservation: Arc<parking_lot::Mutex<crate::admission::Reservation>>,
+    // None spends the writer's single prepaid record slot. The original
+    // handle keeps that slot occupied until it is joined, even after cancellation.
+    reservation: Option<Arc<parking_lot::Mutex<crate::admission::Reservation>>>,
 }
 
 // The worker owns its execution slot through persistence. Its retained join
@@ -72,7 +81,7 @@ impl SecurityAudit {
     /// Keep accepted work and its reply task owned through actual completion.
     /// Persistence errors and child panics are retained by their exact producer;
     /// ordinary read, validation and recoverable maintenance errors remain replies.
-    pub(super) async fn run_owned<T, F, R>(&self, run: R) -> Result<T>
+    pub(super) async fn run_owned<T, F, R>(&self, class: JobClass, run: R) -> Result<T>
     where
         T: Send + 'static,
         F: Future<Output = Result<T>> + Send + 'static,
@@ -96,10 +105,18 @@ impl SecurityAudit {
                 }
             }
             let work = self.begin()?;
-            let reservation = Arc::new(parking_lot::Mutex::new(
-                self.writer.admission.reserve(4096, None)?,
-            ));
-            let execution = AuditExecution(reservation.clone());
+            let reservation = match self.writer.admission.reserve(JOB_BYTES, None) {
+                Ok(charge) => Some(Arc::new(parking_lot::Mutex::new(charge))),
+                Err(error)
+                    if error.code == kasumi_types::ErrorCode::ResourceExhausted
+                        && matches!(class, JobClass::AuthenticatedRecord)
+                        && jobs.handles.iter().all(|job| job.reservation.is_some()) =>
+                {
+                    None
+                }
+                Err(error) => return Err(error.into()),
+            };
+            let execution = reservation.clone().map(AuditExecution);
             let id = jobs.next;
             jobs.next = id.checked_add(1).context("audit job identity exhausted")?;
             // No await between dispatch and retained registration. The caller
@@ -115,7 +132,7 @@ impl SecurityAudit {
                     drop(execution);
                     let _ = send.send(outcome);
                 }),
-                _reservation: reservation,
+                reservation,
             });
         }
         receiver
@@ -159,6 +176,15 @@ mod tests {
 
     #[tokio::test]
     async fn cancelled_record_and_drain_retain_actual_blocking_panic_before_physical_reopen() {
+        cancelled_record_reopen(false).await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_record_keeps_the_single_prepaid_slot_until_join_and_reopen() {
+        cancelled_record_reopen(true).await;
+    }
+
+    async fn cancelled_record_reopen(fill_slots: bool) {
         let directory = kasumi_store::test_utils::private_tempdir().unwrap();
         let (persistent_config, scratch_config) =
             crate::test_utils::fixture_disk_configs(directory.path()).unwrap();
@@ -185,6 +211,13 @@ mod tests {
         let audit =
             SecurityAudit::initialize(store.clone(), Default::default(), storage.admission.clone())
                 .unwrap();
+        let mut held = Vec::new();
+        if fill_slots {
+            while let Ok(charge) = storage.admission.reserve(1, None) {
+                held.push(charge);
+            }
+            assert!(!held.is_empty());
+        }
         let (entered, waiting) = tokio::sync::oneshot::channel();
         let (release, blocked) = std::sync::mpsc::channel();
         *audit.writer.record_fault.lock().unwrap() = Some(RecordFault {
@@ -201,6 +234,14 @@ mod tests {
             .unwrap();
         caller.abort();
         assert!(caller.await.unwrap_err().is_cancelled());
+        if fill_slots {
+            let refused = audit.record_transport(event(1), None).await.unwrap_err();
+            assert_eq!(
+                refused.downcast_ref::<kasumi_types::Error>().unwrap().code,
+                kasumi_types::ErrorCode::ResourceExhausted
+            );
+        }
+        drop(held);
         let mut first = Box::pin(audit.shutdown());
         std::future::poll_fn(|cx| {
             assert!(first.as_mut().poll(cx).is_pending());

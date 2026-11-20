@@ -28,7 +28,7 @@ impl Plan {
         let snapshots =
             kasumi_raft::SnapshotBufferOwner::required_bytes(kasumi_raft::SNAPSHOT_BUFFER_SLOTS)?;
         let sources = crate::application_sources::SourceRoots::required_fixed_admission_bytes()?;
-        let security_audit = kasumi_types::AuditRetentionBudget::MAINTENANCE_BYTES;
+        let security_audit = crate::SecurityAudit::WORKSPACE_BYTES;
         let audit_escrow = NodeAuditMaintenance::WORKSPACE_BYTES;
         let ordinary_protection = NodeAuditMaintenance::WORKSPACE_BYTES;
         let mut total = 0_u64;
