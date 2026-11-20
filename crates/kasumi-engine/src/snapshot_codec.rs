@@ -969,6 +969,11 @@ pub(crate) fn visit<E: From<anyhow::Error>>(
                         intent_record_limit = installed.saturating_add(256).min(head.encoded_bytes);
                     }
                     header.audit_retention.validate()?;
+                    header.key_retirements.validate_scope(
+                        &header.tenant,
+                        crate::control::CONTROL_TENANT,
+                        header.revision,
+                    )?;
                     audit = Some(header.audit_retention.pruned_before);
                     audit_next = header.audit_retention.next_sequence;
                 }

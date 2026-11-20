@@ -4312,6 +4312,11 @@ pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result
 }
 fn validate_audits(state: &TenantState) -> Result<()> {
     state.audit_retention.validate()?;
+    state.key_retirements.validate_scope(
+        &state.tenant,
+        crate::control::CONTROL_TENANT,
+        state.revision,
+    )?;
     if !crate::accounting::audit_fits(state)
         || state.audit_retention.archive_bytes > state.limits.audit_retention.archive_bytes
     {

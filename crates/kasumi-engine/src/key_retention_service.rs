@@ -530,30 +530,26 @@ impl Database {
                 // Strict read auditing may advance the application revision between
                 // pages. Keep the original revision only if the observed inventory
                 // and membership still match, including catalog-only rotations.
-                let coverage_revision = if let Some(cursor) =
-                    request.cursor.as_ref().filter(|_| !probe)
-                {
-                    if cursor.inventory_sha256 != inventory_sha256
-                        || cursor.membership_epoch != membership_epoch
-                        || cursor.coverage_revision > revision
-                    {
-                        return Err(Error::new(
-                            ErrorCode::CursorExpired,
-                            "key retention inventory changed",
-                        ));
-                    }
-                    cursor.coverage_revision
-                } else {
-                    revision
-                };
+                let coverage_revision =
+                    if let Some(cursor) = request.cursor.as_ref().filter(|_| !probe) {
+                        if cursor.inventory_sha256 != inventory_sha256
+                            || cursor.membership_epoch != membership_epoch
+                            || cursor.coverage_revision > revision
+                        {
+                            return Err(Error::new(
+                                ErrorCode::CursorExpired,
+                                "key retention inventory changed",
+                            ));
+                        }
+                        cursor.coverage_revision
+                    } else {
+                        revision
+                    };
                 // Every current member reported and every referenced record
                 // authenticated: the digest commits to the whole scope listing,
                 // not to the entries this request selected.
-                let coverage_sha256 = staged_digest(&(
-                    "kasumi.key-retention.coverage.v1",
-                    &inventory_sha256,
-                ))?
-                .0;
+                let coverage_sha256 =
+                    staged_digest(&("kasumi.key-retention.coverage.v1", &inventory_sha256))?.0;
                 let mut page_entries =
                     Vec::with_capacity(entries.len().min(usize::from(request.limit)));
                 let mut bytes = 0;

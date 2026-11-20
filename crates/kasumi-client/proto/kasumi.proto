@@ -55,6 +55,9 @@ message AuthorityReceiptRequest { string tenant = 1; string command_id = 2; }
 service KasumiAdmin {
   // Reads the application or Control stream bound to the verified credential.
   rpc ReadKeyRetention(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc RetireKeyVersions(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc AbortKeyRetirement(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
+  rpc KeyRetirementStatus(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc TenantAuditStatus(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc TenantAuditCapacity(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);
   rpc VerifyTenantAudit(PrivateReadJsonRequest) returns (PrivateReadJsonResponse);

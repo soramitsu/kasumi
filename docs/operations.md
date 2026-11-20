@@ -608,3 +608,15 @@ tenant audit segments and authenticated history manifest and chunk objects.
 A history object that cannot be authenticated appears by ID in the missing
 dependencies. Each page checks the full selected history inventory. A rotation or membership change
 expires the cursor. An incomplete report cannot authorize retiring a key.
+
+Use `key-retention status` with the scope and a decimal `retirement_id` to
+read the last accepted ordinal. On a fresh installation it is zero. For
+`key-retention retire`, use the next ordinal as a decimal string, the exact
+coverage digest, the provider and key reference, and the first version to
+keep. Retain the request until the decision is known. After an interrupted
+request, repeat the identical request or read its status. To cancel an
+undecided fence, submit the identical request with `key-retention abort`.
+The replicated floor rejects later writes that depend on an older version.
+The operator controls key removal at the provider. A completed scope record
+covers only that scope. Check all other installations and scopes that use the
+same provider key before changing it.

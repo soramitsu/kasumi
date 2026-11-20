@@ -44,30 +44,60 @@ fn binding(profile: &ClientProfile) -> Result<Binding> {
         ca_sha256: hex::encode(Sha256::digest(&connection.trusted_ca_pem)),
     })
 }
+fn require_key_scope(profile: &ClientProfile, scope: &KeyRetentionScope) -> Result<()> {
+    ensure!(
+        matches!((scope, &profile.resource),
+            (KeyRetentionScope::Tenant { tenant }, CredentialResource::Database { .. }) if tenant == &profile.tenant)
+            || matches!(
+                (scope, &profile.resource),
+                (
+                    KeyRetentionScope::Control {},
+                    CredentialResource::Control { .. }
+                )
+            ),
+        "key retention scope differs from the selected profile"
+    );
+    Ok(())
+}
+
 pub(crate) async fn command(arguments: &[String]) -> Result<bool> {
     match arguments {
-        [command, action, profile, input] if command == "key-retention" && action == "read" => {
+        [command, action, profile, input] if command == "key-retention" => {
             let profile = ClientProfile::load(Path::new(profile))?;
-            let request: ReadKeyRetentionRequest =
-                serde_json::from_slice(&private_files::read(Path::new(input), 128 << 10)?)?;
-            ensure!(
-                matches!((&request.scope, &profile.resource),
-                (KeyRetentionScope::Tenant { tenant }, CredentialResource::Database { .. }) if tenant == &profile.tenant)
-                    || matches!(
-                        (&request.scope, &profile.resource),
-                        (
-                            KeyRetentionScope::Control {},
-                            CredentialResource::Control { .. }
-                        )
-                    ),
-                "key retention scope differs from the selected profile"
-            );
+            let input = private_files::read(Path::new(input), 128 << 10)?;
             let mut client =
                 kasumi_client::KasumiAdminClient::connect(&profile.connection(true)?).await?;
-            let page = client
-                .read_key_retention(&profile.bearer()?, &request)
-                .await?;
-            println!("{}", serde_json::to_string_pretty(&page)?);
+            let bearer = profile.bearer()?;
+            let result = match action.as_str() {
+                "read" => {
+                    let request: ReadKeyRetentionRequest = serde_json::from_slice(&input)?;
+                    require_key_scope(&profile, &request.scope)?;
+                    serde_json::to_string_pretty(
+                        &client.read_key_retention(&bearer, &request).await?,
+                    )?
+                }
+                "status" => {
+                    let request: KeyRetirementStatusRequest = serde_json::from_slice(&input)?;
+                    require_key_scope(&profile, &request.scope)?;
+                    serde_json::to_string_pretty(
+                        &client.key_retirement_status(&bearer, &request).await?,
+                    )?
+                }
+                "retire" | "abort" => {
+                    let request: RetireKeyVersionsRequest = serde_json::from_slice(&input)?;
+                    require_key_scope(&profile, &request.scope)?;
+                    let status = if action == "retire" {
+                        client.retire_key_versions(&bearer, &request).await?
+                    } else {
+                        client.abort_key_retirement(&bearer, &request).await?
+                    };
+                    serde_json::to_string_pretty(&status)?
+                }
+                _ => anyhow::bail!(
+                    "usage: kasumid key-retention read|retire|abort|status PROFILE REQUEST_JSON"
+                ),
+            };
+            println!("{result}");
         }
         [command, action, profile]
             if command == "tenant-audit" && matches!(action.as_str(), "status" | "capacity") =>

@@ -6,7 +6,11 @@ use super::*;
 
 /// The Control scope belongs to the Control tenant and every other tenant
 /// retires only its own scope.
-fn authorize(state: &TenantState, context: &RequestContext, scope: &KeyRetentionScope) -> Result<()> {
+fn authorize(
+    state: &TenantState,
+    context: &RequestContext,
+    scope: &KeyRetentionScope,
+) -> Result<()> {
     authorize_state(state, context, None, Action::Admin)?;
     let owned = match scope {
         KeyRetentionScope::Tenant { tenant } => {

@@ -82,6 +82,15 @@ fn spent() -> Error {
 }
 
 impl Database {
+    // Admit the returned record before cloning a fence or committing a decision.
+    fn retirement_reply_charge(&self) -> Result<Arc<crate::admission::Reservation>> {
+        self.admission()
+            .reserve_resident(
+                MAX_KEY_RETIREMENT_STATE_BYTES as u64 + crate::output::OUTPUT_CHARGE_BYTES,
+            )
+            .map(Arc::new)
+    }
+
     /// Retire every version of one wrapping key identity below a bound.
     /// Returns the permanent completed record, or the original failure with
     /// no version retired. Repeating the exact request resumes a retirement
@@ -90,8 +99,13 @@ impl Database {
         &self,
         context: &RequestContext,
         request: RetireKeyVersionsRequest,
-    ) -> Result<KeyRetirementStatus> {
-        let result = Box::pin(self.retire_key_versions_inner(context, &request)).await;
+    ) -> Result<AdmittedOutput<KeyRetirementStatus>> {
+        let result = async {
+            let charge = self.retirement_reply_charge()?;
+            let status = Box::pin(self.retire_key_versions_inner(context, &request)).await?;
+            Ok(AdmittedOutput::new(status, charge))
+        }
+        .await;
         self.audit_write_result(context, result).await
     }
 
@@ -105,6 +119,7 @@ impl Database {
         match self
             .retained_key_retirement(context, &request.scope, &request.retirement_id)
             .await?
+            .status
         {
             Some(KeyRetirementStatus::Completed { record })
                 if record.fence.request_sha256 == request_sha256 =>
@@ -154,8 +169,7 @@ impl Database {
                         .await
                 {
                     tracing::warn!(
-                        retirement_id = %request.retirement_id,
-                        %error,
+                        code = ?error.code,
                         "a failed key retirement kept its fence"
                     );
                 }
@@ -239,6 +253,7 @@ impl Database {
             return match self
                 .retained_key_retirement(context, &request.scope, &request.retirement_id)
                 .await?
+                .status
             {
                 Some(KeyRetirementStatus::Completed { record })
                     if record.fence.request_sha256 == request_sha256 =>
@@ -283,7 +298,7 @@ impl Database {
         context: &RequestContext,
         scope: &KeyRetentionScope,
         retirement_id: &str,
-    ) -> Result<Option<KeyRetirementStatus>> {
+    ) -> Result<KeyRetirementStatusResponse> {
         self.access()?;
         self.engine.authorize(context, None, Action::Admin)?;
         let control = self.key_retention_scope(context, scope)?;
@@ -295,10 +310,13 @@ impl Database {
         }
         self.engine
             .authorize_release(context, None, Action::Admin, state.policy_epoch)?;
-        Ok(state
-            .key_retirements
-            .status(retirement_id)
-            .filter(|status| status.request().scope == *scope))
+        Ok(KeyRetirementStatusResponse {
+            last_ordinal: state.key_retirements.last_ordinal()?,
+            status: state
+                .key_retirements
+                .status(retirement_id)
+                .filter(|status| status.request().scope == *scope),
+        })
     }
 
     /// Remove the fence of an undecided retirement. The identity stays spent.
@@ -306,8 +324,13 @@ impl Database {
         &self,
         context: &RequestContext,
         request: RetireKeyVersionsRequest,
-    ) -> Result<KeyRetirementStatus> {
-        let result = self.abort_key_retirement_inner(context, &request).await;
+    ) -> Result<AdmittedOutput<KeyRetirementStatus>> {
+        let result = async {
+            let charge = self.retirement_reply_charge()?;
+            let status = self.abort_key_retirement_inner(context, &request).await?;
+            Ok(AdmittedOutput::new(status, charge))
+        }
+        .await;
         self.audit_write_result(context, result).await
     }
 
@@ -331,6 +354,7 @@ impl Database {
         .await?;
         self.retained_key_retirement(context, &request.scope, &request.retirement_id)
             .await?
+            .status
             .ok_or_else(|| {
                 Error::new(
                     ErrorCode::UnknownOutcome,
@@ -343,15 +367,15 @@ impl Database {
         &self,
         context: &RequestContext,
         request: KeyRetirementStatusRequest,
-    ) -> Result<KeyRetirementStatusResponse> {
+    ) -> Result<AdmittedOutput<KeyRetirementStatusResponse>> {
         let result = async {
             request.validate()?;
-            let status = self
+            let charge = self.retirement_reply_charge()?;
+            let response = self
                 .retained_key_retirement(context, &request.scope, &request.retirement_id)
                 .await?;
-            let response = KeyRetirementStatusResponse { status };
             response.validate(&request)?;
-            Ok(response)
+            Ok(AdmittedOutput::new(response, charge))
         }
         .await;
         self.audit_result(context, result).await

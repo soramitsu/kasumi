@@ -563,9 +563,20 @@ pub struct RetireKeyVersionsRequest {
     pub expected_coverage_sha256: String,
 }
 
+/// Per-scope request ordinals stay spent after a bounded status record expires.
+fn retirement_number(id: &str) -> Result<u64> {
+    let number = id
+        .parse::<u64>()
+        .map_err(|_| invalid("invalid key retirement ordinal"))?;
+    if number == 0 || number.to_string() != id {
+        return Err(invalid("noncanonical key retirement ordinal"));
+    }
+    Ok(number)
+}
+
 impl RetireKeyVersionsRequest {
     pub fn validate(&self) -> Result<()> {
-        validate_name(&self.retirement_id)?;
+        retirement_number(&self.retirement_id)?;
         self.scope.validate()?;
         self.identity.validate()?;
         validate_sha256(&self.expected_coverage_sha256)?;
@@ -736,7 +747,7 @@ pub struct CompleteKeyRetirement {
 
 impl CompleteKeyRetirement {
     pub fn validate(&self) -> Result<()> {
-        validate_name(&self.retirement_id)?;
+        retirement_number(&self.retirement_id)?;
         validate_sha256(&self.request_sha256)?;
         validate_sha256(&self.completed_coverage_sha256)?;
         validate_sha256(&self.expected_dependency_sha256)
@@ -753,7 +764,7 @@ pub struct AbortKeyRetirement {
 
 impl AbortKeyRetirement {
     pub fn validate(&self) -> Result<()> {
-        validate_name(&self.retirement_id)?;
+        retirement_number(&self.retirement_id)?;
         validate_sha256(&self.request_sha256)
     }
 }
@@ -768,7 +779,7 @@ pub struct KeyRetirementStatusRequest {
 impl KeyRetirementStatusRequest {
     pub fn validate(&self) -> Result<()> {
         self.scope.validate()?;
-        validate_name(&self.retirement_id)
+        retirement_number(&self.retirement_id).map(|_| ())
     }
 }
 
@@ -777,6 +788,8 @@ impl KeyRetirementStatusRequest {
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct KeyRetirementStatusResponse {
+    /// Greatest ordinal ever admitted in this scope, zero on a fresh scope.
+    pub last_ordinal: u64,
     #[serde(deserialize_with = "crate::require_explicit_option")]
     pub status: Option<KeyRetirementStatus>,
 }
@@ -788,7 +801,8 @@ impl KeyRetirementStatusResponse {
             return Ok(());
         };
         status.validate()?;
-        if status.request().retirement_id != request.retirement_id
+        if retirement_number(&status.request().retirement_id)? > self.last_ordinal
+            || status.request().retirement_id != request.retirement_id
             || status.request().scope != request.scope
         {
             return Err(invalid("key retirement status belongs to another request"));
@@ -834,6 +848,52 @@ pub struct KeyRetirementState {
 impl KeyRetirementState {
     pub fn is_empty(&self) -> bool {
         self.fence.is_none() && self.completed.is_empty() && self.aborted.is_empty()
+    }
+
+    fn retained_fences(&self) -> impl Iterator<Item = &KeyRetirementFence> {
+        self.fence
+            .iter()
+            .chain(self.completed.iter().map(|record| &record.fence))
+            .chain(self.aborted.iter().map(|record| &record.fence))
+    }
+
+    /// The newest fence survives in the active, completed or recent-abort set
+    /// until a strictly newer request takes its place.
+    pub fn last_ordinal(&self) -> Result<u64> {
+        self.retained_fences().try_fold(0, |greatest, fence| {
+            Ok(greatest.max(retirement_number(&fence.request.retirement_id)?))
+        })
+    }
+
+    pub fn validate_scope(&self, tenant: &str, control_tenant: &str, revision: u64) -> Result<()> {
+        self.validate()?;
+        let mut seen = std::collections::BTreeSet::new();
+        for fence in self.retained_fences() {
+            let owned = match &fence.request.scope {
+                KeyRetentionScope::Tenant { tenant: name } => {
+                    name == tenant && tenant != control_tenant
+                }
+                KeyRetentionScope::Control {} => tenant == control_tenant,
+                _ => false,
+            };
+            if !owned
+                || fence.fence_revision > revision
+                || !seen.insert(&fence.request.retirement_id)
+            {
+                return Err(invalid(
+                    "key retirement scope, position or identity differs",
+                ));
+            }
+        }
+        if self
+            .completed
+            .iter()
+            .any(|r| r.completed_revision > revision)
+            || self.aborted.iter().any(|r| r.aborted_revision > revision)
+        {
+            return Err(invalid("key retirement decision is ahead of the snapshot"));
+        }
+        Ok(())
     }
 
     pub fn validate(&self) -> Result<()> {
@@ -895,7 +955,9 @@ impl KeyRetirementState {
                 && request.identity.key_ref == key_ref
                 && version < request.retire_below_version
         };
-        self.fence.as_ref().is_some_and(|fence| names(&fence.request))
+        self.fence
+            .as_ref()
+            .is_some_and(|fence| names(&fence.request))
             || self
                 .completed
                 .iter()
@@ -955,6 +1017,11 @@ impl KeyRetirementState {
             }
             None => {}
         }
+        if self.last_ordinal()?.checked_add(1) != Some(retirement_number(&request.retirement_id)?) {
+            return Err(conflict(
+                "key retirement ordinal is spent or out of sequence",
+            ));
+        }
         if self.fence.is_some() {
             return Err(conflict("another key retirement holds the fence"));
         }
@@ -978,9 +1045,26 @@ impl KeyRetirementState {
             fence_revision: revision,
             membership_epoch: command.membership_epoch,
         });
-        // The completed record replaces at most the identity's previous one,
-        // so a state that holds this fence also holds its decision.
         next.check_bytes()?;
+        // Both terminal transitions must still fit after future revision growth.
+        // Trial the actual encodings on copies before publishing the fence.
+        let request_sha256 = request.request_sha256()?;
+        next.clone().complete(
+            &CompleteKeyRetirement {
+                retirement_id: request.retirement_id.clone(),
+                request_sha256: request_sha256.clone(),
+                completed_coverage_sha256: "f".repeat(64),
+                expected_dependency_sha256: command.expected_dependency_sha256.clone(),
+            },
+            u64::MAX,
+        )?;
+        next.clone().abort(
+            &AbortKeyRetirement {
+                retirement_id: request.retirement_id.clone(),
+                request_sha256,
+            },
+            u64::MAX,
+        )?;
         *self = next;
         Ok(KeyRetirementTransition::Applied)
     }
@@ -1315,7 +1399,7 @@ mod tests {
 
     fn retirement() -> RetireKeyVersionsRequest {
         RetireKeyVersionsRequest {
-            retirement_id: "retire-a".into(),
+            retirement_id: "1".into(),
             scope: tenant(),
             identity: KeyIdentityRef {
                 provider: "file".into(),
@@ -1952,6 +2036,66 @@ mod tests {
         let kinds: BTreeSet<_> = references().iter().map(KeyReference::kind).collect();
         assert_eq!(kinds.len(), references().len());
         assert!(references().is_sorted());
+    }
+
+    #[test]
+    fn spent_retirement_ordinals_survive_abort_eviction_and_floor_replacement() {
+        let mut state = KeyRetirementState::default();
+        for n in 1..=12u64 {
+            let request = RetireKeyVersionsRequest {
+                retirement_id: n.to_string(),
+                retire_below_version: n + 1,
+                ..retirement()
+            };
+            let request_sha256 = request.request_sha256().unwrap();
+            let begin = BeginKeyRetirement {
+                request: request.clone(),
+                expected_dependency_sha256: "a".repeat(64),
+                membership_epoch: 1,
+            };
+            state.begin(&begin, n * 2).unwrap();
+            if n <= 10 {
+                state
+                    .abort(
+                        &AbortKeyRetirement {
+                            retirement_id: n.to_string(),
+                            request_sha256,
+                        },
+                        n * 2 + 1,
+                    )
+                    .unwrap();
+            } else {
+                state
+                    .complete(
+                        &CompleteKeyRetirement {
+                            retirement_id: n.to_string(),
+                            request_sha256,
+                            expected_dependency_sha256: "b".repeat(64),
+                            completed_coverage_sha256: "c".repeat(64),
+                        },
+                        n * 2 + 1,
+                    )
+                    .unwrap();
+            }
+            assert_eq!(state.last_ordinal().unwrap(), n);
+        }
+        assert!(state.status("1").is_none());
+        assert!(state.status("11").is_none());
+        let saved = serde_json::to_vec(&state).unwrap();
+        let mut reopened: KeyRetirementState = serde_json::from_slice(&saved).unwrap();
+        for id in ["1", "11", "14", "013"] {
+            let begin = BeginKeyRetirement {
+                request: RetireKeyVersionsRequest {
+                    retirement_id: id.into(),
+                    retire_below_version: 100,
+                    ..retirement()
+                },
+                expected_dependency_sha256: "a".repeat(64),
+                membership_epoch: 1,
+            };
+            assert!(reopened.begin(&begin, 26).is_err());
+            assert_eq!(state, reopened);
+        }
     }
 
     #[test]

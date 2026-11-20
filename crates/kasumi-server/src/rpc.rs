@@ -957,6 +957,51 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         .await
     }
 
+    async fn retire_key_versions(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::RetireKeyVersionsRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.retire_key_versions(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn abort_key_retirement(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::RetireKeyVersionsRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.abort_key_retirement(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
+    async fn key_retirement_status(
+        &self,
+        request: Request<PrivateReadJsonRequest>,
+    ) -> Result<Response<PrivateReadJsonResponse>, Status> {
+        let (input, context, database, fence) = self
+            .private_read_input::<kasumi_types::KeyRetirementStatusRequest>(request)
+            .await?;
+        self.private_read_reply(
+            &context,
+            database.key_retirement_status(&context, input).await,
+            fence,
+        )
+        .await
+    }
+
     async fn tenant_audit_status(
         &self,
         request: Request<PrivateReadJsonRequest>,
