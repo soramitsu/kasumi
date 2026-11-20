@@ -3,6 +3,9 @@
 use anyhow::Context;
 use kasumi_server::authority_runtime::EnrollmentFailure;
 use kasumi_server::authority_runtime::{AuthorityRuntime, AuthorityRuntimeConfig};
+
+const USAGE: &str = "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>";
+
 fn main() -> std::process::ExitCode {
     kasumi_server::process_runtime::block_on(async_main)
 }
@@ -88,6 +91,10 @@ impl std::fmt::Display for CommandFailure {
 }
 async fn run(args: &[String]) -> std::result::Result<(), CommandFailure> {
     match args {
+        [command] if matches!(command.as_str(), "help" | "--help" | "-h") => {
+            println!("{USAGE}");
+            Ok(())
+        }
         [command, path] if command == "check-config" => {
             AuthorityRuntimeConfig::load(path)?;
             Ok(())
@@ -104,15 +111,19 @@ async fn run(args: &[String]) -> std::result::Result<(), CommandFailure> {
                 .context("installing authority signal handlers")?;
             kasumi_server::logging::daemon_starting();
             let opening = AuthorityRuntime::open(AuthorityRuntimeConfig::load(path)?);
-            let Some(runtime) = signals.open(opening).await.context("opening independent authority")? else {
+            let Some(runtime) = signals
+                .open(opening)
+                .await
+                .context("opening independent authority")?
+            else {
                 return Ok(());
             };
             let reload = runtime.tls_reload_handle();
-            signals.serve(reload, |shutdown| runtime.serve(shutdown)).await
+            signals
+                .serve(reload, |shutdown| runtime.serve(shutdown))
+                .await
                 .map_err(CommandFailure::Operation)
         }
-        _ => Err(anyhow::anyhow!(
-            "usage: kasumi-authority check-config <config.json> | provision-node <config.json> | serve <config.json>"
-        ).into()),
+        _ => Err(anyhow::anyhow!(USAGE).into()),
     }
 }
