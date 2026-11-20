@@ -66,6 +66,23 @@ struct CollectionIndexes {
     text: Option<Arc<TextSnapshot>>,
 }
 
+impl CollectionIndexes {
+    fn prepare<R: CollectionRecords>(
+        source: &index_input::CheckedRecords<'_, R>,
+    ) -> ReadResult<Self, R::Failure> {
+        let definition = source.definition();
+        let validator = validation::validate_definition_and_compile(definition)?;
+        let structured = Structured::build(source, &validator)?;
+        Ok(Self {
+            validator,
+            schema_sha256: validation::schema_sha256(&definition.schema)?,
+            definition_sha256: index_input::definition_sha256(definition)?,
+            structured,
+            text: None,
+        })
+    }
+}
+
 /// Where a generation's text indexes live.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum TextResidency {
@@ -327,14 +344,7 @@ impl QueryIndexes {
             if !names.insert(name.clone()) {
                 return Err(invalid("duplicate index collection source").into());
             }
-            let validator = validation::validate_collection_and_compile(&source)?;
-            let indexes = CollectionIndexes {
-                validator,
-                schema_sha256: validation::schema_sha256(&source.definition().schema)?,
-                definition_sha256: index_input::definition_sha256(source.definition())?,
-                structured: Structured::build(&source)?,
-                text: None,
-            };
+            let indexes = CollectionIndexes::prepare(&source)?;
             prepared.push((name, source, indexes));
         }
         let mut collections = BTreeMap::new();
@@ -422,13 +432,7 @@ impl QueryIndexes {
                 IndexUpdate::Rebuild(source) => {
                     let source = index_input::CheckedRecords::new(source)?;
                     let name = claim_name(&source.definition().name)?;
-                    let indexes = CollectionIndexes {
-                        validator: validation::validate_collection_and_compile(&source)?,
-                        schema_sha256: validation::schema_sha256(&source.definition().schema)?,
-                        definition_sha256: index_input::definition_sha256(source.definition())?,
-                        structured: Structured::build(&source)?,
-                        text: None,
-                    };
+                    let indexes = CollectionIndexes::prepare(&source)?;
                     prepared.push(PreparedIndexCollection {
                         name,
                         indexes,

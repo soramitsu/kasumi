@@ -42,6 +42,7 @@ struct Rows {
     rows: Vec<(String, Encoded)>,
     owner: Box<u8>,
     active: Cell<bool>,
+    visits: Cell<usize>,
 }
 impl Rows {
     fn new(name: &str, rows: &[(&str, Value)], unique: bool, text: bool) -> Self {
@@ -103,6 +104,7 @@ impl Rows {
             rows,
             owner: Box::new(1),
             active: Cell::new(false),
+            visits: Cell::new(0),
         }
     }
     fn definition(&self) -> &CollectionDefinition {
@@ -145,6 +147,7 @@ impl CollectionRecords for &Rows {
         &self,
         mut lend: impl for<'a> FnMut(&'a str, Record<'a>) -> Result<()>,
     ) -> ReadResult<(), Self::Failure> {
+        self.visits.set(self.visits.get() + 1);
         for (id, row) in &self.rows {
             assert!(!self.active.replace(true));
             let _active = Active(&self.active);
@@ -472,6 +475,37 @@ fn checked_inputs_reject_unordered_ids_cross_scope_and_changed_replay_versions()
     assert!(
         matches!(QueryIndexes::build([&duplicate]), Err(ReadFailure::Query(error)) if error.code == ErrorCode::Corruption)
     );
+}
+
+#[test]
+fn directory_rebuild_validates_and_indexes_each_document_in_one_loan() {
+    let rows = Rows::new(
+        "docs",
+        &[
+            ("a", serde_json::json!({"key": 1})),
+            ("b", serde_json::json!({"key": 2})),
+        ],
+        true,
+        false,
+    );
+    let indexes = QueryIndexes::build_with_residency([&rows], TextResidency::Directory).unwrap();
+    assert_eq!(rows.visits.get(), 1);
+    assert_eq!(indexes.collections["docs"].structured.ids.len(), 2);
+
+    let invalid = Rows::new(
+        "docs",
+        &[
+            ("a", serde_json::json!({"key": 1})),
+            ("b", serde_json::json!({"key": 1})),
+            ("c", serde_json::json!({"key": "invalid"})),
+        ],
+        true,
+        false,
+    );
+    assert!(
+        matches!(QueryIndexes::build([&invalid]), Err(ReadFailure::Query(error)) if error.code == ErrorCode::SchemaViolation)
+    );
+    assert_eq!(invalid.visits.get(), 1);
 }
 
 #[test]

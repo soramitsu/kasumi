@@ -185,9 +185,13 @@ impl Structured {
         })?;
         Ok(unique)
     }
-    pub fn build<R: CollectionRecords + ?Sized>(source: &R) -> ReadResult<Self, R::Failure> {
+    pub fn build<R: CollectionRecords + ?Sized>(
+        source: &R,
+        validator: &jsonschema::Validator,
+    ) -> ReadResult<Self, R::Failure> {
+        let definition = source.definition();
         let mut fields = BTreeMap::new();
-        for index in &source.definition().indexes {
+        for index in &definition.indexes {
             for field in &index.fields {
                 fields
                     .entry(field.path.clone())
@@ -198,29 +202,49 @@ impl Structured {
                     });
             }
         }
-        let mut ids = IdSet::new();
-        let mut unique = Self::empty_unique(source.definition());
+        let mut result = Self {
+            ids: IdSet::new(),
+            unique: Self::empty_unique(definition),
+            fields,
+        };
+        let mut index_failure = None;
         source.visit_records(|id, record| {
-            ids.insert(id.to_owned());
-            for (path, index) in &mut fields {
-                let value = record_value(record, path);
-                if value.is_some() {
-                    index.present.insert(id.to_owned());
-                }
-                for key in indexed_values(value, index.kind)? {
-                    index.entries.entry(key).or_default().insert(id.to_owned());
-                }
+            if let Record::Live(document) = record {
+                crate::validation::validate_document_with_validator(
+                    definition,
+                    &document.body,
+                    validator,
+                )?;
             }
-            for (name, index) in &mut unique {
-                index.insert(name, id, record)?;
+            // A later schema or source failure has always taken precedence
+            // over a conflict in these unpublished roots. Keep checking rows
+            // under their original loan even after the first index failure.
+            if index_failure.is_none() {
+                index_failure = result.insert_record(id, record).err();
             }
             Ok(())
         })?;
-        Ok(Self {
-            fields,
-            ids,
-            unique,
-        })
+        if let Some(error) = index_failure {
+            return Err(error.into());
+        }
+        Ok(result)
+    }
+
+    fn insert_record(&mut self, id: &str, record: Record<'_>) -> Result<()> {
+        self.ids.insert(id.to_owned());
+        for (path, index) in &mut self.fields {
+            let value = record_value(record, path);
+            if value.is_some() {
+                index.present.insert(id.to_owned());
+            }
+            for key in indexed_values(value, index.kind)? {
+                index.entries.entry(key).or_default().insert(id.to_owned());
+            }
+        }
+        for (name, index) in &mut self.unique {
+            index.insert(name, id, record)?;
+        }
+        Ok(())
     }
 
     pub fn field_kind(&self, path: &str, allow_scan: bool) -> Result<Option<ScalarType>> {
