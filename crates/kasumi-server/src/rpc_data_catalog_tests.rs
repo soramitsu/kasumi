@@ -52,6 +52,75 @@ impl RaftTransport for Groups {
         Ok(serde_json::from_slice(&bytes)?)
     }
 }
+pub(super) type Journal = (
+    Arc<kasumi_engine::TargetJournal>,
+    Arc<TenantStore>,
+    kasumi_store::NodeStore,
+);
+
+struct EmptyCheckpoints;
+impl kasumi_engine::TargetCheckpointInventory for EmptyCheckpoints {
+    fn source(
+        &self,
+        _: Uuid,
+        _: &FullBackupCheckpoint,
+    ) -> anyhow::Result<Option<kasumi_engine::TargetCheckpointSource>> {
+        anyhow::bail!("fresh Data journal unexpectedly contains a permanent checkpoint")
+    }
+}
+
+pub(super) async fn open_data_journal(
+    base: &Path,
+    disks: &kasumi_engine::test_utils::FixtureStorage,
+    db: &Arc<Database>,
+    root: &ControlSigningRoot,
+) -> Journal {
+    let app = db.stores().application();
+    let kasumi_store::StoragePurpose::Serving { identity, .. } = app.storage_access().purpose()
+    else {
+        panic!("fixture expected a Data member")
+    };
+    let verifier = &identity.node.verifier;
+    let id =
+        kasumi_store::node_store_ids::target_journal(root.control_incarnation, verifier).unwrap();
+    let file = disks
+        .create_new(base.join("persistent/target-journal.kv"), id)
+        .unwrap();
+    let owner = TenantStore::initialize_catalog(
+        file.clone(),
+        format!(
+            "kasumi.target.{}.{}",
+            root.control_incarnation, verifier.node_id
+        ),
+        Arc::new(LocalKeyProvider::new([64 + verifier.node_id as u8; 32])),
+        StorageAccess::target_journal(root, &identity.node).unwrap(),
+    )
+    .await
+    .unwrap();
+    let (cache, destination) = app.installed_tenant_audit_placement().unwrap().unwrap();
+    assert_eq!(cache, destination);
+    let placement = crate::audit_destination::TenantAuditPlacementConfig::LocalReplicaOnly
+        .canonical_binding()
+        .unwrap();
+    let journal = kasumi_engine::TargetJournal::create_new(
+        owner.clone(),
+        kasumi_engine::TargetJournalInstallation {
+            root: root.clone(),
+            node: identity.node.clone(),
+            audit_placement_bindings: BTreeMap::from([(identity.tenant.clone(), placement)]),
+            source_key_bindings_sha256: None,
+        },
+        TargetJournalLimits {
+            max_metadata_bytes: 4 << 20,
+        },
+        disks.admission.clone(),
+    )
+    .unwrap();
+    db.install_data_target_inventory(&journal, root, Arc::new(EmptyCheckpoints))
+        .unwrap();
+    (journal, owner, file)
+}
+
 pub(super) struct Installation<'a> {
     pub ids: &'a Identities,
     pub routes: BTreeMap<u64, AuthorityEndpoint>,
@@ -66,8 +135,95 @@ pub(super) struct Installation<'a> {
     pub tenant: &'a str,
     pub incarnation: Uuid,
     pub source: u64,
+    pub journals: &'a [Journal],
+    pub control_bootstrap: &'a ReplicatedBootstrap,
+    pub control_members: &'a [Arc<Database>],
+    pub database_ids: &'a [Uuid],
     pub signers: &'a [Arc<TenantStore>],
     pub audits: &'a [Arc<kasumi_engine::SecurityAudit>],
+}
+impl Installation<'_> {
+    fn enroll_dedicated_control(
+        &self,
+        sources: &DataCatalogSources,
+        remote: &kasumi_engine::control::ControlTopology,
+    ) {
+        let ReplicatedGenesis::Control(genesis) = &self.control_bootstrap.genesis else {
+            panic!("missing Control genesis")
+        };
+        let kasumi_engine::ControlLifecycleGenesis::Installed {
+            command_id,
+            installation,
+        } = &genesis.lifecycle
+        else {
+            panic!("missing installed Control lifecycle")
+        };
+        for db in self.control_members {
+            let id = db.raft_group().node_id();
+            let i = (id - 1) as usize;
+            let mut config = crate::runtime::example_config(
+                kasumi_store::DirectoryPolicy::fixture(),
+                kasumi_store::FileAllocationPolicy::fixture(),
+            )
+            .unwrap();
+            config.database_id = self.database_ids[i];
+            config.tenants.clear();
+            config.target_recovery = None;
+            config.remote_control = None;
+            let verifier = kasumi_serving::test_utils::fixture_verifier(id);
+            config.signer_verifier.as_mut().unwrap().identity = verifier.clone();
+            let hosted = config.control.as_mut().unwrap();
+            hosted.incarnation = Some(self.root.to_string());
+            hosted.remote_data = Some(remote.clone());
+            hosted.catalog_sources = Some(sources.clone());
+            hosted.lifecycle = Some(crate::lifecycle_runtime::LifecycleRuntimeConfig {
+                command_id: *command_id,
+                installation: installation.clone(),
+                signing_key: "/fixture/control-root".into(),
+                recovery: None,
+            });
+            let replica = config.replication.as_mut().unwrap();
+            replica.node_id = id;
+            replica.initial_voters = self.control_bootstrap.voters.keys().copied().collect();
+            replica.peers = self
+                .control_bootstrap
+                .voters
+                .iter()
+                .map(|(&node_id, placement)| crate::runtime::ReplicaConfig {
+                    node_id,
+                    endpoint: placement.address.clone(),
+                    failure_domain: placement.failure_domain.clone(),
+                    certificate_pins: vec![self.ids.pin(node_id as usize)],
+                })
+                .collect();
+            crate::control_genesis::dedicated_topology(&config, remote).unwrap();
+            let store = self.audits[i].store();
+            let input = crate::node_enrollment::Input::Data {
+                configuration: Box::new(config),
+            };
+            let enrollment = crate::node_enrollment::Enrollment::begin(store, &input).unwrap();
+            enrollment
+                .record_genesis_tenant(
+                    store,
+                    crate::runtime::CONTROL_TENANT,
+                    self.root,
+                    crate::runtime::persisted_replicated_bootstrap_fingerprint(db.stores())
+                        .unwrap(),
+                )
+                .unwrap();
+            enrollment.complete(store).unwrap();
+            let proof = crate::node_enrollment::target_journal_exclusion(
+                self.database_ids[i],
+                self.audits[i].admission(),
+            );
+            let token = kasumi_query::QueryCancellation::default();
+            proof(store, &verifier, &installation.root, &token).unwrap();
+            let mut wrong = verifier.clone();
+            wrong.installation_id = Uuid::new_v4();
+            assert!(proof(store, &wrong, &installation.root, &token).is_err());
+            db.install_target_journal_exclusion(proof).unwrap();
+        }
+    }
 }
 pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     let mut remote = f.topology.clone();
@@ -86,6 +242,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         })
         .collect();
     let sources = DataCatalogSources {
+        target_journals: true,
         tls: f.ids.files[11].clone(),
         server_ca: f.ids.ca.clone(),
         principal: "catalog-reader".into(),
@@ -101,6 +258,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
         )]),
     };
     sources.validate(&remote, None).unwrap();
+    f.enroll_dedicated_control(&sources, &remote);
     let mut expanded = remote.clone();
     expanded.nodes.insert(
         12,
@@ -280,6 +438,33 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
             .await
             .is_err()
     );
+    let mut journal_request = read.clone();
+    journal_request.service = DataMemberService::TargetJournal;
+    let follower = (1..=3).find(|id| *id != f.source).unwrap();
+    journal_request.verifier = kasumi_serving::test_utils::fixture_verifier(follower);
+    let journal_page = client
+        .read_data_member_catalog(f.reader_token, &journal_request)
+        .await
+        .unwrap();
+    assert!(
+        matches!(journal_page.contents, DataCatalogContents::TargetJournal { ref unreadable_targets, truncated:false } if unreadable_targets.is_empty())
+    );
+    let owner = &f.journals[follower as usize - 1].1;
+    owner
+        .visit_wrapping_identities(|catalog, _, _, _| {
+            assert_eq!(journal_page.catalog, catalog);
+            Ok(())
+        })
+        .unwrap();
+    assert_eq!(
+        client
+            .read_data_member_catalog(f.denied_token, &journal_request)
+            .await
+            .unwrap_err()
+            .code(),
+        Some(ErrorCode::Forbidden)
+    );
+
     let mut other = read;
     other.incarnation = f.root;
     assert_eq!(
@@ -293,6 +478,7 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
     for scope in [
         KeyRetentionScope::Signer {},
         KeyRetentionScope::SecurityAudit {},
+        KeyRetentionScope::TargetJournal {},
     ] {
         let mut request = ReadKeyRetentionRequest {
             scope: scope.clone(),
@@ -306,11 +492,23 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
                 .read_key_retention(f.operator, request.clone())
                 .await
                 .unwrap();
+            if matches!(scope, KeyRetentionScope::TargetJournal {}) {
+                assert!(
+                    matches!(page.coverage, KeyRetentionCoverage::Complete { .. }),
+                    "journal coverage with authentic role exclusions: {:?}",
+                    page.coverage
+                );
+            }
             if let KeyRetentionCoverage::Incomplete { missing, .. } = &page.coverage {
+                let present = if matches!(scope, KeyRetentionScope::TargetJournal {}) {
+                    1..=3
+                } else {
+                    1..=6
+                };
                 assert!(
                     missing.iter().all(|m| !matches!(
                         m,
-                        MissingKeyDependency::MemberUnreported { node_id: 1..=6 }
+                        MissingKeyDependency::MemberUnreported { node_id } if present.contains(node_id)
                     )),
                     "missing enrolled members {missing:?}"
                 );
@@ -323,8 +521,15 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
                 break;
             }
         }
-        for node in 1..=6 {
-            let (store, domain) = if matches!(scope, KeyRetentionScope::Signer {}) {
+        let count = if matches!(scope, KeyRetentionScope::TargetJournal {}) {
+            3
+        } else {
+            6
+        };
+        for node in 1..=count {
+            let (store, domain) = if matches!(scope, KeyRetentionScope::TargetJournal {}) {
+                (&f.journals[node - 1].1, KeyCatalogDomain::TargetJournal)
+            } else if matches!(scope, KeyRetentionScope::Signer {}) {
                 (&f.signers[node - 1], KeyCatalogDomain::LiveSignerTrust)
             } else {
                 (f.audits[node - 1].store(), KeyCatalogDomain::SecurityAudit)
@@ -336,6 +541,44 @@ pub(super) async fn assert_cross_group_reads(f: Installation<'_>) {
             }).unwrap();
         }
     }
+    let control_follower = f
+        .control_members
+        .iter()
+        .find(|db| db.raft_group().node_id() != f.control.raft_group().node_id())
+        .unwrap()
+        .raft_group()
+        .node_id();
+    let encrypted = f.audits[control_follower as usize - 1].store();
+    let original = encrypted
+        .get_bounded("node.enrollment", b"head", 4096)
+        .unwrap()
+        .unwrap();
+    encrypted
+        .write_batch(&[kasumi_store::WriteOp::delete("node.enrollment", b"head")])
+        .unwrap();
+    let missing_original = f
+        .control
+        .read_key_retention(
+            f.operator,
+            ReadKeyRetentionRequest {
+                scope: KeyRetentionScope::TargetJournal {},
+                cursor: None,
+                limit: 2,
+            },
+        )
+        .await;
+    encrypted
+        .write_batch(&[kasumi_store::WriteOp::put(
+            "node.enrollment",
+            b"head",
+            original.to_vec(),
+        )])
+        .unwrap();
+    let missing_original = missing_original.unwrap();
+    assert!(
+        matches!(&missing_original.coverage,KeyRetentionCoverage::Incomplete{missing,..}
+        if missing.contains(&MissingKeyDependency::MemberUnreported{node_id:control_follower}))
+    );
     // Replacing the dedicated reader with a valid backup writer leaves all
     // three physical Data nodes explicit in the Control coverage.
     write_token(f.token_path, f.denied_token);

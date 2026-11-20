@@ -1735,6 +1735,15 @@ impl NodeRuntime {
         if let (Some(control), Some(catalog)) = (&control, &signer_catalog) {
             control.database.install_member_signer_key_inventory(catalog)?;
         }
+        if let Some(owner) = &control
+            && config.control.as_ref().is_some_and(|hosted| hosted.remote_data.is_some()
+                && hosted.catalog_sources.as_ref().is_some_and(|sources| sources.target_journals))
+            && config.target_recovery.is_none()
+        {
+            owner.database.install_target_journal_exclusion(
+                crate::node_enrollment::target_journal_exclusion(config.database_id, &admission),
+            )?;
+        }
         let serving_registration = crate::serving_owner::Registration::new(crate::serving_owner::Kind::Data, config.database_id, audit.admission())?;
         retained_runtime = Some(Self {
             serving_registration: Some(serving_registration),
@@ -1945,6 +1954,17 @@ impl NodeRuntime {
             }
             if config.target_recovery.is_some() {
                 runtime.target_recovery=Some(crate::target_runtime::TargetRecoveryRuntime::open(config.clone(),runtime.authority_trusts.clone(),credential.clone(),admission.clone(),runtime.audit.clone(),runtime.cluster.clone().context("target requires installed cluster")?,destinations.clone(),registry.clone(),runtime.original_recoveries.as_ref().expect("same installed original inventory")).await?);
+            }
+            if let (Some(remote), Some(target), Some(cluster)) =
+                (&config.remote_control, &runtime.target_recovery, &runtime.cluster)
+                && let Some(grant) = &remote.catalog_reader
+                && grant.target_journals
+            {
+                cluster.install_data_journals(crate::data_member_catalog::DataTargetJournals {
+                    root: remote.root.clone(),
+                    grant: grant.clone(),
+                    runtime: Arc::downgrade(target),
+                })?;
             }
             if let (Some(control), Some(target)) = (&runtime.control, &runtime.target_recovery) {
                 target.install_key_inventory(&control.database)?;

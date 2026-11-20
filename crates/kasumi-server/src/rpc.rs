@@ -1059,7 +1059,11 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
             .map_err(status)?;
         let observed = self
             .auth
-            .audit_result(&actor, db.read_data_member_catalog(&read).await)
+            .audit_result(
+                &actor,
+                db.read_enrolled_data_member_catalog(&read, listener.control, &actor)
+                    .await,
+            )
             .await
             .map_err(status)?;
         let (_, bytes) = kasumi_types::staged_digest(observed.as_ref()).map_err(status)?;
@@ -1074,8 +1078,13 @@ impl kasumi_admin_server::KasumiAdmin for NativeAdmin {
         self.auth
             .audit_result(
                 &actor,
-                db.check_data_member_catalog_release(&read, &observed, &actor)
-                    .await,
+                db.check_enrolled_data_member_catalog_release(
+                    &read,
+                    &observed,
+                    &actor,
+                    listener.control,
+                )
+                .await,
             )
             .await
             .map_err(status)?;

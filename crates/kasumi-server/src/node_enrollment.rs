@@ -145,6 +145,14 @@ pub(crate) fn require_complete(
     database_id: Uuid,
     kind: Kind,
 ) -> Result<()> {
+    complete_input(store, database_id, kind).map(|_| ())
+}
+
+fn complete_input(
+    store: &Arc<TenantStore>,
+    database_id: Uuid,
+    kind: Kind,
+) -> Result<(kasumi_store::PlaintextValue, [u8; 32])> {
     let view = store.read_view()?;
     let head =
         decode_head(&view.get(NS, b"head", MAX_HEAD)?.context(
@@ -161,8 +169,9 @@ pub(crate) fn require_complete(
     let bytes = view
         .get(NS, b"input", MAX_INPUT)?
         .context("node enrollment input absent")?;
+    let digest: [u8; 32] = Sha256::digest(&bytes).into();
     ensure!(
-        hex::encode(Sha256::digest(&bytes)) == head.input_sha256,
+        hex::encode(digest) == head.input_sha256,
         "node enrollment input digest differs"
     );
     let input = retained::RetainedInput::decode(&bytes)?;
@@ -171,7 +180,27 @@ pub(crate) fn require_complete(
         "node enrollment input identity differs"
     );
     input.require_genesis(store, &head.input_sha256)?;
-    Ok(())
+    Ok((bytes, digest))
+}
+
+/// Reread the original encrypted input, completed head and Control genesis
+/// every time a voter attests that its dedicated installation excludes targets.
+pub(crate) fn target_journal_exclusion(
+    database_id: Uuid,
+    admission: &Arc<kasumi_engine::admission::NodeAdmission>,
+) -> Arc<kasumi_engine::TargetJournalExclusion> {
+    let admission = Arc::downgrade(admission);
+    Arc::new(move |store, verifier, root, token| {
+        token.check()?;
+        let admission = admission
+            .upgrade()
+            .context("dedicated Control admission closed")?;
+        let _workspace = admission.reserve((MAX_INPUT * 8) as u64, Some(token.clone()))?;
+        let (input, digest) = complete_input(store, database_id, Kind::Data)?;
+        retained::require_dedicated_journal_exclusion(&input, verifier, root)?;
+        token.check()?;
+        Ok(digest)
+    })
 }
 
 /// A completed data enrollment fixes whether this node hosts Control or

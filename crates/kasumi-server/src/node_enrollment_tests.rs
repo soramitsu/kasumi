@@ -682,6 +682,7 @@ async fn dedicated_backup_transport_data_enrollment_binds_control_routes_root_an
     let remote = RemoteControlConfig {
         catalog_reader: Some(std::sync::Arc::new(
             crate::data_member_catalog::CatalogReaderGrant {
+                target_journals: false,
                 principal: "inventory-reader".into(),
                 client_certificate_pins: BTreeSet::from(["ac".repeat(32)]),
                 groups: BTreeMap::from([(
@@ -719,11 +720,17 @@ async fn dedicated_backup_transport_data_enrollment_binds_control_routes_root_an
     require_complete(&store, verified.database_id, Kind::Data)?;
     require_control_placement(&store, &verified)?;
     let original = records(&store)?;
-    for what in ["writer", "callback", "endpoint", "root", "reader", "grant"] {
+    for what in [
+        "writer", "callback", "endpoint", "root", "reader", "grant", "journals",
+    ] {
         let mut changed = verified.clone();
         let remote = changed.remote_control.as_mut().unwrap();
         let backup = remote.backup.as_mut().unwrap();
         match what {
+            "journals" => {
+                std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap()).target_journals =
+                    true;
+            }
             "reader" => {
                 std::sync::Arc::make_mut(remote.catalog_reader.as_mut().unwrap()).principal =
                     "another-reader".into();
@@ -763,6 +770,7 @@ async fn dedicated_catalog_source_enrollment_binds_verifier_reader_and_listener(
         unreachable!()
     };
     let source = DataCatalogSources {
+        target_journals: false,
         tls: configuration.admin.tls.clone(),
         server_ca: configuration.admin.client_ca.clone(),
         principal: "catalog-reader".into(),
@@ -795,7 +803,14 @@ async fn dedicated_catalog_source_enrollment_binds_verifier_reader_and_listener(
     record_genesis(&enrollment, &store, &input)?;
     enrollment.complete(&store)?;
     require_control_placement(&store, &original)?;
-    for replacement in ["installation", "listener", "reader", "group", "drop"] {
+    for replacement in [
+        "installation",
+        "listener",
+        "reader",
+        "group",
+        "journals",
+        "drop",
+    ] {
         let mut different = original.clone();
         let installed = &mut different.control.as_mut().unwrap().catalog_sources;
         let source = installed.as_mut().unwrap();
@@ -812,6 +827,7 @@ async fn dedicated_catalog_source_enrollment_binds_verifier_reader_and_listener(
                 source.members.get_mut(&10).unwrap().admin.certificate_pins =
                     BTreeSet::from(["aa".repeat(32)])
             }
+            "journals" => source.target_journals = true,
             "reader" => source.principal = "different-reader".into(),
             "group" => source.groups.get_mut("books").unwrap().incarnation = Uuid::new_v4(),
             _ => *installed = None,

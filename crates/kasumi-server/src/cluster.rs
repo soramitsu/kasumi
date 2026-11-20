@@ -130,6 +130,7 @@ pub struct ClusterNetwork {
     limits: PeerLimits,
     audit: OnceLock<Arc<dyn RequestAuditSink>>,
     signer_catalog: OnceLock<Arc<kasumi_engine::SignerCatalog>>,
+    data_journals: OnceLock<crate::data_member_catalog::DataTargetJournals>,
     readiness: OnceLock<std::sync::Weak<dyn EnrollmentReadinessProvider>>,
     maintenance: OnceLock<std::sync::Weak<kasumi_authority::IndependentAuthority>>,
 }
@@ -276,11 +277,32 @@ impl ClusterNetwork {
             limits,
             audit: OnceLock::new(),
             signer_catalog: OnceLock::new(),
+            data_journals: OnceLock::new(),
             readiness: OnceLock::new(),
             maintenance: OnceLock::new(),
         }))
     }
 
+    pub(crate) fn install_data_journals(
+        &self,
+        source: crate::data_member_catalog::DataTargetJournals,
+    ) -> Result<()> {
+        // Serialize installation with group registration so neither can miss a new host.
+        let mut groups = self
+            .groups
+            .write()
+            .map_err(|_| anyhow::anyhow!("Data journal group routes unavailable"))?;
+        for db in groups
+            .values_mut()
+            .filter_map(|r| r.database.as_ref().and_then(std::sync::Weak::upgrade))
+        {
+            source.attach(&db)?;
+        }
+        self.data_journals
+            .set(source)
+            .map_err(|_| anyhow::anyhow!("Data journal routes already installed"))?;
+        Ok(())
+    }
     pub(crate) fn install_signer_catalog(
         &self,
         catalog: Arc<kasumi_engine::SignerCatalog>,
@@ -512,6 +534,13 @@ impl ClusterNetwork {
             .groups
             .write()
             .map_err(|_| anyhow::anyhow!("cluster routes unavailable"))?;
+        if let (Some(source), Some(database)) = (
+            self.data_journals.get(),
+            database.as_ref().and_then(std::sync::Weak::upgrade),
+        ) {
+            source.attach(&database)?;
+        }
+
         ensure!(!groups.contains_key(&group), "group already registered");
         groups.insert(
             group,

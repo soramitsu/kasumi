@@ -22,6 +22,23 @@ impl MemberInventories {
     ) -> Result<()> {
         let id = page.verifier.node_id;
         let identity = match page.contents {
+            DataCatalogContents::TargetJournal {
+                unreadable_targets,
+                truncated,
+            } => {
+                self.truncated |= truncated;
+                for id in unreadable_targets {
+                    add_missing(
+                        &mut self.missing,
+                        &mut self.truncated,
+                        MissingKeyDependency::RecordUnreadable {
+                            record_kind: KeyReferenceKind::TargetJournal,
+                            id: id.to_string(),
+                        },
+                    );
+                }
+                ServiceIdentity::Journal(page.verifier, page.catalog, page.catalog_sha256)
+            }
             DataCatalogContents::Signer { .. } => {
                 ServiceIdentity::Signer(page.verifier, page.catalog, page.catalog_sha256)
             }
@@ -273,6 +290,9 @@ impl Database {
                     .map(|d| d.0),
             ),
             KeyRetentionScope::SecurityAudit {} => (DataMemberService::SecurityAudit, None),
+            KeyRetentionScope::TargetJournal {} if reader.target_journals() => {
+                (DataMemberService::TargetJournal, None)
+            }
             _ => return Err(unavailable("unsupported Data member catalog scope")),
         };
         let pass = CatalogPass {

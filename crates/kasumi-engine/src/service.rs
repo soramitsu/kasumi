@@ -72,6 +72,7 @@ pub use key_retention::{
     AuthoritySignerKeyInventory, AuthoritySignerKeys, LocalRecoveryCheckpoint,
     LocalRecoveryKeyFinding, LocalRecoveryKeyInventory, LocalRecoveryKeyRead,
     RemoteDataCatalogReader, SignerCatalog, TargetCheckpointInventory, TargetCheckpointSource,
+    TargetJournalExclusion,
 };
 
 #[path = "point_read.rs"]
@@ -1200,6 +1201,7 @@ pub struct Database {
     authority_signer_keys: std::sync::OnceLock<std::sync::Weak<dyn AuthoritySignerKeyInventory>>,
     remote_data_catalog_reader: std::sync::OnceLock<Arc<dyn RemoteDataCatalogReader>>,
     signer_keys: std::sync::OnceLock<Arc<key_retention::SignerCatalog>>,
+    journal_exclusion: std::sync::OnceLock<Arc<TargetJournalExclusion>>,
     target_checkpoint_keys: std::sync::OnceLock<Arc<dyn TargetCheckpointInventory>>,
     target_keys: std::sync::OnceLock<std::sync::Weak<crate::TargetJournal>>,
     archive_flights: history_export::ArchiveFlights,
@@ -1618,6 +1620,7 @@ impl Database {
             signer_keys: Default::default(),
             remote_data_catalog_reader: Default::default(),
             target_keys: Default::default(),
+            journal_exclusion: Default::default(),
             target_checkpoint_keys: Default::default(),
             backup_producers: backup_producer_jobs::Jobs::default(),
             command_clock: Mutex::new(clocks.command),

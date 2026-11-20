@@ -172,6 +172,74 @@ impl RetainedInput {
     }
 }
 
+// Decode these fields only for an opted-in journal exclusion, after the normal
+// retained reader authenticated the full bytes and every original genesis.
+pub(super) fn require_dedicated_journal_exclusion(
+    bytes: &[u8],
+    verifier: &kasumi_types::TrustVerifierIdentity,
+    root: &kasumi_types::ControlSigningRoot,
+) -> Result<()> {
+    #[derive(Deserialize)]
+    struct Original {
+        configuration: Dedicated,
+    }
+    #[derive(Deserialize)]
+    struct Dedicated {
+        mode: crate::runtime::DeploymentMode,
+        tenants: Vec<serde::de::IgnoredAny>,
+        #[serde(deserialize_with = "kasumi_types::require_explicit_option")]
+        target_recovery: Option<serde::de::IgnoredAny>,
+        remote_control: Option<serde::de::IgnoredAny>,
+        control: Hosted,
+        replication: Replica,
+        signer_verifier: Signer,
+    }
+    #[derive(Deserialize)]
+    struct Hosted {
+        incarnation: Uuid,
+        remote_data: Option<serde::de::IgnoredAny>,
+        lifecycle: Lifecycle,
+        catalog_sources: Catalogs,
+    }
+    #[derive(Deserialize)]
+    struct Replica {
+        node_id: u64,
+    }
+    #[derive(Deserialize)]
+    struct Signer {
+        identity: kasumi_types::TrustVerifierIdentity,
+    }
+    #[derive(Deserialize)]
+    struct Lifecycle {
+        installation: Installation,
+    }
+    #[derive(Deserialize)]
+    struct Installation {
+        root: kasumi_types::ControlSigningRoot,
+    }
+    #[derive(Deserialize)]
+    struct Catalogs {
+        target_journals: bool,
+    }
+    let original: Original = serde_json::from_slice(bytes)?;
+    let config = original.configuration;
+    let hosted = config.control;
+    ensure!(
+        config.mode == crate::runtime::DeploymentMode::Replicated
+            && config.target_recovery.is_none()
+            && config.tenants.is_empty()
+            && config.remote_control.is_none()
+            && hosted.remote_data.is_some()
+            && hosted.catalog_sources.target_journals
+            && hosted.incarnation == root.control_incarnation
+            && &hosted.lifecycle.installation.root == root
+            && config.replication.node_id == verifier.node_id
+            && &config.signer_verifier.identity == verifier,
+        "original dedicated Control enrollment does not prove exclusion of this journal"
+    );
+    Ok(())
+}
+
 // This preflight retains only keys for each active object and relies on the
 // JSON decoder's depth bound. It does not reinterpret any operational setting.
 struct UniqueKeys;

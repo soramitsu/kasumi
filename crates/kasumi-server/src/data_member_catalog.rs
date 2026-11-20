@@ -9,6 +9,8 @@ use uuid::Uuid;
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CatalogReaderGrant {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_journals: bool,
     pub principal: String,
     pub client_certificate_pins: BTreeSet<String>,
     pub groups: BTreeMap<String, Uuid>,
@@ -64,7 +66,8 @@ impl CatalogReaderGrant {
     ) -> kasumi_types::Result<()> {
         let denied = || Error::new(ErrorCode::Forbidden, "Data inventory reader refused");
         actor.authorization.check_live()?;
-        if actor.tenant != crate::runtime::CONTROL_TENANT
+        if (read.service == kasumi_types::DataMemberService::TargetJournal && !self.target_journals)
+            || actor.tenant != crate::runtime::CONTROL_TENANT
             || actor.principal != self.principal
             || actor.scopes.len() != 1
             || !actor.scopes.contains(&Action::Audit)
@@ -104,6 +107,8 @@ pub struct DataCatalogSource {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DataCatalogSources {
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub target_journals: bool,
     pub tls: TlsFiles,
     pub server_ca: PathBuf,
     pub principal: String,
@@ -250,6 +255,9 @@ impl InstalledReader {
 }
 
 impl RemoteDataCatalogReader for InstalledReader {
+    fn target_journals(&self) -> bool {
+        self.sources.target_journals
+    }
     fn groups(&self) -> &BTreeMap<String, DataCatalogGroup> {
         &self.sources.groups
     }
@@ -309,4 +317,28 @@ pub(crate) struct DataCatalogListener {
     pub(crate) control: Uuid,
     pub(crate) grant: Arc<CatalogReaderGrant>,
     pub(crate) admission: Arc<NodeAdmission>,
+}
+
+/// The Data node attaches the original root and journal only to generations
+/// explicitly named in the read grant. It keeps no target worker alive.
+pub(crate) struct DataTargetJournals {
+    pub(crate) root: kasumi_types::ControlSigningRoot,
+    pub(crate) grant: Arc<CatalogReaderGrant>,
+    pub(crate) runtime: std::sync::Weak<crate::target_runtime::TargetRecoveryRuntime>,
+}
+impl DataTargetJournals {
+    pub(crate) fn attach(&self, database: &Arc<kasumi_engine::Database>) -> Result<()> {
+        let access = database.stores().application().storage_access();
+        let kasumi_store::StoragePurpose::Serving { identity, .. } = access.purpose() else {
+            return Ok(());
+        };
+        if self.grant.groups.get(&identity.tenant) != Some(&identity.incarnation) {
+            return Ok(());
+        }
+        let target = self
+            .runtime
+            .upgrade()
+            .context("enrolled Data target journal closed")?;
+        target.install_data_key_inventory(database, &self.root)
+    }
 }

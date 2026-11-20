@@ -74,6 +74,7 @@ impl Database {
         let (installation, store) = journal.key_inventory_owner();
         anyhow::ensure!(
             self.store.tenant() == crate::control::CONTROL_TENANT
+                && self.journal_exclusion.get().is_none()
                 && installation.node.node_id == self.group.node_id()
                 && Arc::ptr_eq(self.store.persistent_disk(), store.persistent_disk()),
             "target journal differs from the installed Control member or disk owner"
@@ -379,6 +380,32 @@ impl SecurityAudit {
                 );
             }
         }
+        if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
+            for operation in state.recovery_control.operations.values() {
+                token.check()?;
+                for (&id, node) in &operation.request.target_nodes {
+                    let verifier = if id == local {
+                        journal.map(|owner| &owner.key_inventory_owner().0.node.verifier)
+                    } else {
+                        member_inventories.as_ref().and_then(|members| {
+                            match members.reported.get(&id) {
+                                Some(member::ServiceIdentity::Journal(verifier, _, _)) => {
+                                    Some(verifier)
+                                }
+                                _ => None,
+                            }
+                        })
+                    };
+                    if verifier != Some(&node.verifier) {
+                        add_missing(
+                            &mut missing,
+                            &mut truncated,
+                            MissingKeyDependency::MemberUnreported { node_id: id },
+                        );
+                    }
+                }
+            }
+        }
         let service_audit = matches!(request.scope, KeyRetentionScope::SecurityAudit {});
         if service_audit
             && let Some(issuer) = &issuers
@@ -466,6 +493,13 @@ impl SecurityAudit {
                     .map_err(Error::from_physical_source)?,
             )
         } else if journal.is_some()
+            || (matches!(request.scope, KeyRetentionScope::TargetJournal {})
+                && member_inventories.as_ref().is_some_and(|peers| {
+                    matches!(
+                        peers.reported.get(&local),
+                        Some(member::ServiceIdentity::JournalExcluded(..))
+                    )
+                }))
             || (matches!(request.scope, KeyRetentionScope::LocalRecovery {})
                 && local_recovery.is_some())
         {
@@ -515,50 +549,38 @@ impl SecurityAudit {
             None
         };
         let journal_digest = if let Some(journal) = journal {
-            let rows = std::cell::RefCell::new(&mut entries);
-            let mut external = Sha256::new();
             let read = LocalRecoveryKeyRead {
-                context,
-                request,
+                authority: RecoveryInventoryAuthority::Operator(context),
+                selection: InventoryWindowSelection::from_page(request),
+                scope: &request.scope,
                 security: self,
                 token,
             };
-            let digest = journal
-                .visit_key_dependencies(
-                    token,
-                    |row| Ok(consider_entry(request, &mut rows.borrow_mut(), row)?),
-                    |id, checkpoint| {
-                        let graph = match target_checkpoints {
-                            Some(inventory) => {
-                                read.target_checkpoint(journal, inventory, id, checkpoint, |row| {
-                                    Ok(consider_entry(request, &mut rows.borrow_mut(), row)?)
-                                })?
-                            }
-                            None => None,
-                        };
-                        serde_json::to_writer(&mut external, &(id, graph))?;
-                        if graph.is_some() {
-                            return Ok(());
-                        }
-                        add_missing(
-                            &mut missing,
-                            &mut truncated,
-                            MissingKeyDependency::RecordUnreadable {
-                                record_kind: KeyReferenceKind::TargetJournal,
-                                id: id.to_string(),
-                            },
-                        );
-                        Ok(())
+            let rows = read.journal_rows(journal, target_checkpoints)?;
+            if member_inventories
+                .as_ref()
+                .is_some_and(|peers| peers.catalogs.contains(&rows.catalog))
+            {
+                return Err(Error::new(
+                    ErrorCode::Unavailable,
+                    "multiple Control members claimed one physical target journal",
+                ));
+            }
+            for entry in rows.entries {
+                consider_entry(request, &mut entries, entry)?;
+            }
+            truncated |= rows.truncated;
+            for target in rows.unreadable {
+                add_missing(
+                    &mut missing,
+                    &mut truncated,
+                    MissingKeyDependency::RecordUnreadable {
+                        record_kind: KeyReferenceKind::TargetJournal,
+                        id: target.to_string(),
                     },
-                )
-                .map_err(|error| {
-                    error
-                        .downcast_ref::<Error>()
-                        .cloned()
-                        .unwrap_or_else(|| Error::from_physical_source(error))
-                })?;
-            external.update(digest);
-            Some(<[u8; 32]>::from(external.finalize()))
+                );
+            }
+            Some(rows.digest)
         } else {
             None
         };
@@ -571,8 +593,9 @@ impl SecurityAudit {
                         self.store(),
                         local,
                         &LocalRecoveryKeyRead {
-                            context,
-                            request,
+                            authority: RecoveryInventoryAuthority::Operator(context),
+                            selection: InventoryWindowSelection::from_page(request),
+                            scope: &request.scope,
                             security: self,
                             token,
                         },

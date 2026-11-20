@@ -649,6 +649,17 @@ routes are part of the original node enrollment. A protected key inventory
 reports missing coverage when a currently enrolled physical catalog cannot
 be verified through the group's leader.
 
+To include a Data member's installed target journal, set `target_journals` to
+`true` in both `control.catalog_sources` and its `remote_control.catalog_reader`
+grant at enrollment. Each journal must identify the enrolled Control root and
+the physical verifier for its Data group. During inventory the member verifies
+each retained checkpoint against its original source and reports unreadable
+materializations in the returned coverage. Dedicated Control
+voters authenticate their original encrypted enrollment and Control genesis
+on each page to establish that their role excludes a target. A voter with a
+missing enrollment, a different verifier or an unreported recovery target
+leaves coverage incomplete.
+
 Run `kasumid check-config` and provision with these routes on each new member.
 Startup compares the configured delegation to the original encrypted enrollment.
 Install rotating bearer values by atomic replacement of their original private

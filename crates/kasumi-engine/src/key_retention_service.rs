@@ -9,8 +9,12 @@ mod data_member;
 #[path = "key_retention_data_sources.rs"]
 mod data_sources;
 pub use data_member::RemoteDataCatalogReader;
+#[path = "key_retention_journal_member.rs"]
+mod journal_member;
 #[path = "key_retention_member.rs"]
 mod member;
+pub(super) use journal_member::RecoveryInventoryFence;
+use journal_member::{InventoryWindowSelection, RecoveryInventoryAuthority};
 #[path = "key_retirement_service.rs"]
 mod retirement;
 #[path = "key_retention_security_audit.rs"]
@@ -42,6 +46,16 @@ pub struct TargetCheckpointSource {
     pub keys: Arc<dyn kasumi_store::KeyProvider>,
 }
 
+/// Reread a dedicated Control member's original enrollment from this security store.
+pub type TargetJournalExclusion = dyn Fn(
+        &Arc<TenantStore>,
+        &TrustVerifierIdentity,
+        &kasumi_types::ControlSigningRoot,
+        &QueryCancellation,
+    ) -> anyhow::Result<[u8; 32]>
+    + Send
+    + Sync;
+
 pub trait TargetCheckpointInventory: Send + Sync {
     fn source(
         &self,
@@ -63,8 +77,9 @@ pub(super) struct RecoveryGraph<'a> {
 }
 
 pub struct LocalRecoveryKeyRead<'a> {
-    context: &'a RequestContext,
-    request: &'a ReadKeyRetentionRequest,
+    authority: RecoveryInventoryAuthority<'a>,
+    selection: InventoryWindowSelection<'a>,
+    scope: &'a KeyRetentionScope,
     security: &'a SecurityAudit,
     token: &'a QueryCancellation,
 }
@@ -85,7 +100,7 @@ impl LocalRecoveryKeyRead<'_> {
     ) -> anyhow::Result<Option<[u8; 32]>> {
         self.token.check()?;
         anyhow::ensure!(
-            matches!(self.request.scope, KeyRetentionScope::LocalRecovery {}),
+            matches!(self.scope, KeyRetentionScope::LocalRecovery {}),
             "standalone journal scope required"
         );
         selected.source_purpose.validate_application_identity(
@@ -122,7 +137,7 @@ impl LocalRecoveryKeyRead<'_> {
     ) -> anyhow::Result<Option<[u8; 32]>> {
         self.token.check()?;
         anyhow::ensure!(
-            matches!(self.request.scope, KeyRetentionScope::TargetJournal {}),
+            matches!(self.scope, KeyRetentionScope::TargetJournal {}),
             "target journal scope required"
         );
         let Some(source) = inventory.source(target, checkpoint)? else {
@@ -179,8 +194,9 @@ impl LocalRecoveryKeyRead<'_> {
     ) -> anyhow::Result<Option<[u8; 32]>> {
         self.token.check()?;
         anyhow::ensure!(
-            control.store.tenant() == crate::control::CONTROL_TENANT
-                && self.context.tenant == control.store.tenant()
+            (control.store.tenant() == crate::control::CONTROL_TENANT
+                || matches!(&self.authority,RecoveryInventoryAuthority::Member(request)
+                if matches!(request.purpose,kasumi_raft::member_catalog::CatalogPurpose::DataJournal{..})))
                 && Arc::ptr_eq(self.security.store(), control.security_audit.store())
                 && Arc::ptr_eq(self.security.store(), tenant.security_audit.store())
                 && Arc::ptr_eq(
@@ -189,16 +205,9 @@ impl LocalRecoveryKeyRead<'_> {
                 ),
             "local recovery key reader belongs to another installation"
         );
-        control
-            .engine
-            .authorize(self.context, None, Action::Admin)?;
-        let fence = ResponseFence::capture_workspace(
-            ResponseDatabase::Borrowed(control),
-            self.context,
-            true,
-        )?;
+        let fence = self.authority.fence(control)?;
         let _page = control.admission().reserve(
-            (u64::from(self.request.limit) + 2)
+            (u64::from(self.selection.limit) + 2)
                 * (MAX_KEY_REF_BYTES + MAX_KEY_PROVIDER_BYTES + 1024) as u64,
             Some(self.token.clone()),
         )?;
@@ -213,8 +222,7 @@ impl LocalRecoveryKeyRead<'_> {
                 provider.len() <= MAX_KEY_PROVIDER_BYTES && key_ref.len() <= MAX_KEY_REF_BYTES,
                 "backup key identity exceeds bound"
             );
-            consider_entry(
-                self.request,
+            self.selection.consider(
                 &mut rows.lock().unwrap_or_else(|e| e.into_inner()),
                 KeyRetentionEntry {
                     key: KeyVersionRef {
@@ -438,18 +446,7 @@ fn consider_entry(
     entries: &mut BTreeSet<KeyRetentionEntry>,
     entry: KeyRetentionEntry,
 ) -> Result<()> {
-    entry.validate()?;
-    if request
-        .cursor
-        .as_ref()
-        .is_none_or(|cursor| entry > cursor.after)
-    {
-        entries.insert(entry);
-        if entries.len() > usize::from(request.limit) + 1 {
-            entries.pop_last();
-        }
-    }
-    Ok(())
+    InventoryWindowSelection::from_page(request).consider(entries, entry)
 }
 
 fn add_missing(
@@ -814,20 +811,39 @@ impl Database {
                 None
             };
             let journal = self.target_keys.get().and_then(std::sync::Weak::upgrade);
-            let member_inventories = if matches!(
+            let data_services = matches!(
                 request.scope,
                 KeyRetentionScope::Signer {} | KeyRetentionScope::SecurityAudit {}
-            ) && (membership
-                .membership()
-                .nodes()
-                .any(|(&id, _)| id != local)
-                || self.remote_data_catalog_reader.get().is_some())
+            ) || (matches!(request.scope, KeyRetentionScope::TargetJournal {})
+                && self
+                    .remote_data_catalog_reader
+                    .get()
+                    .is_some_and(|reader| reader.target_journals()));
+            let service_scope =
+                data_services || matches!(request.scope, KeyRetentionScope::TargetJournal {});
+            let peers = membership.membership().nodes().any(|(&id, _)| id != local);
+            let member_inventories = if service_scope
+                && (peers || (data_services && self.remote_data_catalog_reader.get().is_some()))
             {
                 let mut members = self
-                    .observe_service_members(&metrics, request, &cancellation)
+                    .observe_service_members(
+                        &metrics,
+                        context,
+                        epoch,
+                        &state.incarnation,
+                        request,
+                        &cancellation,
+                    )
                     .await?;
-                self.observe_remote_data_sources(&generation, request, &cancellation, &mut members)
+                if data_services {
+                    self.observe_remote_data_sources(
+                        &generation,
+                        request,
+                        &cancellation,
+                        &mut members,
+                    )
                     .await?;
+                }
                 Some(members)
             } else {
                 None

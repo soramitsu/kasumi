@@ -32,6 +32,23 @@ impl Database {
         &self,
         read: &DataMemberCatalogRead,
     ) -> Result<AdmittedOutput<DataMemberCatalogPage>> {
+        self.read_member_service(read, None).await
+    }
+
+    pub async fn read_enrolled_data_member_catalog(
+        &self,
+        read: &DataMemberCatalogRead,
+        control: uuid::Uuid,
+        actor: &RequestContext,
+    ) -> Result<AdmittedOutput<DataMemberCatalogPage>> {
+        self.read_member_service(read, Some((control, actor))).await
+    }
+
+    async fn read_member_service(
+        &self,
+        read: &DataMemberCatalogRead,
+        journal_grant: Option<(uuid::Uuid, &RequestContext)>,
+    ) -> Result<AdmittedOutput<DataMemberCatalogPage>> {
         read.validate()?;
         self.data_member_catalog_access(read)?;
         let token = QueryCancellation::default();
@@ -63,6 +80,20 @@ impl Database {
             })?;
             let request = MemberCatalogRequest {
                 purpose: match read.service {
+                    DataMemberService::TargetJournal => {
+                        let (control, actor) = journal_grant.ok_or_else(|| {
+                            unavailable("Data journal requires an enrolled Control reader")
+                        })?;
+                        actor.authorization.check_live()?;
+                        let expires = actor.authorization.expires_at_ms().ok_or_else(|| {
+                            unavailable("Data journal requires a finite inventory grant")
+                        })?;
+                        CatalogPurpose::DataJournal {
+                            installation_id: read.verifier.installation_id,
+                            control,
+                            expires_at_ms: expires.min(now_ms()?.saturating_add(30_000)),
+                        }
+                    }
                     DataMemberService::Signer => CatalogPurpose::DataSigner {
                         installation_id: read.verifier.installation_id,
                     },
@@ -103,6 +134,15 @@ impl Database {
                 &*local
             } else {
                 remote = match read.service {
+                    DataMemberService::TargetJournal => {
+                        kasumi_raft::RpcResponse::MemberJournalCatalog(Box::new(
+                            self.group
+                                .read_member_journal_catalog(id, target, &request)
+                                .await
+                                .map_err(unavailable)?,
+                        ))
+                    }
+
                     DataMemberService::Signer => {
                         kasumi_raft::RpcResponse::MemberSignerCatalog(Box::new(
                             self.group
@@ -123,6 +163,23 @@ impl Database {
                 &remote
             };
             let (catalog, catalog_sha256, contents, entries) = match reply {
+                kasumi_raft::RpcResponse::MemberJournalCatalog(report) => {
+                    report.validate(&request, id).map_err(unavailable)?;
+                    if report.verifier != read.verifier {
+                        return Err(unavailable(
+                            "journal differs from enrolled Data installation",
+                        ));
+                    }
+                    (
+                        report.catalog,
+                        report.dependencies_sha256,
+                        DataCatalogContents::TargetJournal {
+                            unreadable_targets: report.unreadable_targets.iter().copied().collect(),
+                            truncated: report.truncated,
+                        },
+                        report.entries.clone(),
+                    )
+                }
                 kasumi_raft::RpcResponse::MemberSignerCatalog(report) => {
                     report.validate(&request, id).map_err(unavailable)?;
                     if report.verifier != read.verifier {
@@ -186,6 +243,28 @@ impl Database {
         first: &DataMemberCatalogPage,
         actor: &RequestContext,
     ) -> Result<()> {
+        self.check_member_service_release(read, first, actor, None)
+            .await
+    }
+
+    pub async fn check_enrolled_data_member_catalog_release(
+        &self,
+        read: &DataMemberCatalogRead,
+        first: &DataMemberCatalogPage,
+        actor: &RequestContext,
+        control: uuid::Uuid,
+    ) -> Result<()> {
+        self.check_member_service_release(read, first, actor, Some(control))
+            .await
+    }
+
+    async fn check_member_service_release(
+        &self,
+        read: &DataMemberCatalogRead,
+        first: &DataMemberCatalogPage,
+        actor: &RequestContext,
+        control: Option<uuid::Uuid>,
+    ) -> Result<()> {
         first.validate(read)?;
         actor.authorization.check_live()?;
         self.security_audit
@@ -198,7 +277,9 @@ impl Database {
             })
             .await
             .map_err(Error::from_physical_source)?;
-        let next = self.read_data_member_catalog(read).await?;
+        let next = self
+            .read_member_service(read, control.map(|root| (root, actor)))
+            .await?;
         if next.membership != first.membership
             || next.applied_index < first.applied_index
             || next.verifier != first.verifier
@@ -218,6 +299,9 @@ impl Database {
 /// Installed read-only Data services. The retained route map is the sole
 /// authority for selecting a pinned listener and its physical installation.
 pub trait RemoteDataCatalogReader: Send + Sync {
+    fn target_journals(&self) -> bool {
+        false
+    }
     fn groups(&self) -> &BTreeMap<String, kasumi_types::DataCatalogGroup>;
     fn verifier(&self, node: u64) -> Option<&TrustVerifierIdentity>;
     fn read<'a>(
