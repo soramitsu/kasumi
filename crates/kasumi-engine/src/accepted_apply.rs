@@ -418,7 +418,7 @@ impl AcceptedGeneration<'_> {
             &self.delta.changed,
             Some(crate::application_primary::entry_applied(position)?),
             |manifest| match self.owner.previous.application_selection.get() {
-                Some(selected) => selected.matches_primary_boundary(manifest),
+                Some(selected) => selected.matches_primary_predecessor(manifest),
                 None => Ok(false),
             },
         )
@@ -444,7 +444,7 @@ impl AcceptedGeneration<'_> {
             &crate::application_text::ResolverBodies(previous.document_resolver()),
             &crate::application_text::TextPosition {
                 previous: match previous.application_selection.get() {
-                    Some(selected) => selected.text_boundary()?,
+                    Some(selected) => selected.text_predecessor()?,
                     None => None,
                 },
                 current: crate::application_text::entry_boundary(
@@ -594,7 +594,7 @@ impl AcceptedGeneration<'_> {
             (&self.candidate.state, &self.candidate.indexes),
             Some(crate::application_structured::entry_applied(position)?),
             |manifest| match self.owner.previous.application_selection.get() {
-                Some(selected) => selected.matches_structured_boundary(manifest),
+                Some(selected) => selected.matches_structured_predecessor(manifest),
                 None => Ok(false),
             },
         )?;

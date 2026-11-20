@@ -127,10 +127,17 @@ pub(crate) fn entry_identity(
     if hex::decode_to_slice(digest, &mut command).is_err() {
         command = Sha256::digest(digest.as_bytes()).into();
     }
+    log_applied(log, Some(command))
+}
+
+pub(crate) fn log_applied(
+    log: &kasumi_raft::LogId<u64>,
+    command_sha256: Option<[u8; 32]>,
+) -> Result<StructuredApplied> {
     Ok(StructuredApplied {
         index: log.index,
         log_sha256: log_sha256(log)?,
-        command_sha256: Some(command),
+        command_sha256,
     })
 }
 
@@ -139,13 +146,7 @@ pub(crate) fn snapshot_applied(
     meta: &kasumi_raft::SnapshotMeta<u64, kasumi_raft::BasicNode>,
 ) -> Result<Option<StructuredApplied>> {
     meta.last_log_id
-        .map(|log_id| {
-            Ok(StructuredApplied {
-                index: log_id.index,
-                log_sha256: log_sha256(&log_id)?,
-                command_sha256: None,
-            })
-        })
+        .map(|log_id| log_applied(&log_id, None))
         .transpose()
 }
 
