@@ -942,8 +942,7 @@ impl ValidatedApplicationSnapshot {
     ) -> anyhow::Result<()> {
         let h = &self.header;
         h.audit_retention.validate()?;
-        h.key_retirements
-            .validate_scope(&h.tenant, crate::control::CONTROL_TENANT, h.revision)?;
+        h.validate_key_retirement_scopes(crate::control::CONTROL_TENANT)?;
         ensure!(
             crate::accounting::audit_fits(&self.target_budget_state()?)
                 && h.audit_retention.archive_bytes <= h.limits.audit_retention.archive_bytes,

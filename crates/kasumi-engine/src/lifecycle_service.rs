@@ -12,6 +12,68 @@ pub struct LifecycleSigner {
     key: Ed25519KeyPair,
 }
 impl LifecycleSigner {
+    /// Sign only the currently committed state of this Control after both
+    /// quorum checks. No caller-supplied fence or key identity is signed.
+    pub async fn observe_target_writer(
+        &self,
+        control: &Arc<Database>,
+        context: &RequestContext,
+        challenge: &kasumi_types::TargetWriterChallenge,
+    ) -> Result<AdmittedOutput<kasumi_types::SignedTargetWriterObservation>> {
+        use super::control_administration::ControlObservationAccess;
+        let quorum = control
+            .authorize_control_quorum(context.clone(), ControlObservationAccess::Administration)
+            .await?;
+        if self.root != quorum.installation().root || challenge.root != self.root {
+            return Err(Error::new(
+                ErrorCode::Forbidden,
+                "target writer belongs to another Control installation",
+            ));
+        }
+        let charge = Arc::new(control.admission().reserve_resident(
+            3 * MAX_KEY_RETIREMENT_STATE_BYTES as u64 + 4096 + crate::output::OUTPUT_CHARGE_BYTES,
+        )?);
+        let observed = {
+            let generation = control.engine.generation()?;
+            let observation = kasumi_types::TargetWriterObservation {
+                challenge: challenge.clone(),
+                membership_epoch: quorum.membership_epoch(),
+                observed_term: quorum.term(),
+                observed_revision: generation.state.revision,
+                observed_policy_epoch: quorum.policy_epoch(),
+                retirements: generation.state.target_journal_retirements.clone(),
+            };
+            observation.validate()?;
+            observation
+        };
+        quorum.release().await?;
+        let signature = hex::encode(
+            self.key
+                .sign(
+                    &serde_json::to_vec(&("kasumi.target-journal-writer.v1", &observed))
+                        .map_err(encoding)?,
+                )
+                .as_ref(),
+        );
+        quorum.release().await?;
+        let state = control.engine.generation()?;
+        if state.state.target_journal_retirements != observed.retirements
+            || state.state.revision < observed.observed_revision
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "original target writer state changed before signing release",
+            ));
+        }
+        quorum.check()?;
+        Ok(AdmittedOutput::new(
+            kasumi_types::SignedTargetWriterObservation {
+                observation: observed,
+                signature,
+            },
+            charge,
+        ))
+    }
     pub async fn sign_topology(
         &self,
         proof: &super::control_topology_service::VerifiedControlTopology,

@@ -832,6 +832,7 @@ impl Database {
                         epoch,
                         &state.incarnation,
                         request,
+                        probe,
                         &cancellation,
                     )
                     .await?;
@@ -840,6 +841,7 @@ impl Database {
                         &generation,
                         request,
                         &cancellation,
+                        probe,
                         &mut members,
                     )
                     .await?;
@@ -862,6 +864,7 @@ impl Database {
                         &generation,
                         &request,
                         &metrics,
+                        probe,
                         security_audit::InstalledInventories {
                             context: &control_context,
                             signer: signer.as_deref(),

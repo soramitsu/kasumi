@@ -8,27 +8,26 @@ use kasumi_raft::member_catalog::{
 pub(super) struct InventoryWindowSelection<'a> {
     pub(super) limit: u16,
     after: Option<&'a KeyRetentionEntry>,
+    from_identity: Option<&'a KeyIdentityRef>,
 }
 impl<'a> InventoryWindowSelection<'a> {
     pub(super) fn from_page(request: &'a ReadKeyRetentionRequest) -> Self {
         Self {
             limit: request.limit,
             after: request.cursor.as_ref().map(|cursor| &cursor.after),
+            from_identity: None,
         }
     }
     fn from_member(request: &'a MemberCatalogRequest) -> Result<Self> {
-        let after = match &request.start {
-            CatalogStart::First => None,
-            CatalogStart::After { entry } => Some(entry),
-            CatalogStart::Identity { .. } => {
-                return Err(unavailable(
-                    "target journal requires an ordered public page",
-                ));
-            }
+        let (after, from_identity) = match &request.start {
+            CatalogStart::First => (None, None),
+            CatalogStart::After { entry } => (Some(entry), None),
+            CatalogStart::Identity { identity } => (None, Some(identity)),
         };
         Ok(Self {
             limit: request.limit,
             after,
+            from_identity,
         })
     }
     pub(super) fn consider(
@@ -37,7 +36,11 @@ impl<'a> InventoryWindowSelection<'a> {
         entry: KeyRetentionEntry,
     ) -> Result<()> {
         entry.validate()?;
-        if self.after.is_none_or(|start| entry > *start) {
+        if self.after.is_none_or(|start| entry > *start)
+            && self.from_identity.is_none_or(|from| {
+                (&entry.key.provider, &entry.key.key_ref) >= (&from.provider, &from.key_ref)
+            })
+        {
             entries.insert(entry);
             if entries.len() > usize::from(self.limit) + 1 {
                 entries.pop_last();
@@ -383,6 +386,7 @@ impl ExcludedJournal {
         .map_err(|error| Error::from_physical_source(error.into()))?;
         let report = MemberJournalReport {
             excluded_by_enrollment: Some(enrollment),
+            writer_state_sha256: None,
             request_sha256: staged_digest(request)?.0,
             verifier: self.verifier.clone(),
             catalog,
@@ -471,6 +475,11 @@ impl ActiveJournal {
         )?;
         let report = MemberJournalReport {
             excluded_by_enrollment: None,
+            writer_state_sha256: Some(
+                self.journal
+                    .writer_state_sha256()
+                    .map_err(Error::from_physical_source)?,
+            ),
             request_sha256: staged_digest(request)?.0,
             verifier: self.journal.key_inventory_owner().0.node.verifier.clone(),
             catalog: rows.catalog,
@@ -486,6 +495,40 @@ impl ActiveJournal {
     }
 }
 
+impl Database {
+    /// Reconcile only this installed physical journal. This path has the
+    /// original current Control administrator and signer. The enrolled
+    /// inventory reader remains a read-only projection.
+    pub async fn reconcile_local_target_writer(
+        self: &Arc<Self>,
+        context: &RequestContext,
+        signer: &crate::LifecycleSigner,
+    ) -> Result<String> {
+        let journal = self
+            .target_keys
+            .get()
+            .and_then(std::sync::Weak::upgrade)
+            .ok_or_else(|| unavailable("local target journal is unavailable"))?;
+        let installed = journal.key_inventory_owner().0;
+        if self.group.node_id() != installed.node.node_id
+            || self
+                .signer_keys
+                .get()
+                .is_none_or(|keys| keys.verifier != installed.node.verifier)
+        {
+            return Err(unavailable(
+                "local journal lacks its original protected enrollment",
+            ));
+        }
+        let read = journal
+            .begin_writer_read()
+            .map_err(Error::from_physical_source)?;
+        let signed = signer
+            .observe_target_writer(self, context, read.challenge())
+            .await?;
+        read.accept(&signed).map_err(Error::from_physical_source)
+    }
+}
 impl Database {
     /// A dedicated Control role may prove that its original encrypted enrollment
     /// excludes a target. Every physical read authenticates that source again.

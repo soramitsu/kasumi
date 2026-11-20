@@ -60,6 +60,31 @@ pub async fn read_target_deletion_status(
 }
 
 impl KasumiTargetClient {
+    pub async fn refresh_writer(
+        &mut self,
+        bearer: &str,
+        query: &RefreshTargetWriter,
+    ) -> std::result::Result<TargetWriterReceipt, ClientError> {
+        query.validate()?;
+        if query.verifier.node_id != self.node_id || query.root != *self.control.root() {
+            return Err(ClientError::Authorization);
+        }
+        let reply = self
+            .inner
+            .clone()
+            .max_decoding_message_size(4096)
+            .refresh_target_writer(authorized(
+                bearer,
+                proto::ControlJsonRequest {
+                    request_json: encode(query)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let receipt: TargetWriterReceipt = serde_json::from_slice(&reply.response_json)?;
+        receipt.validate_for(query)?;
+        Ok(receipt)
+    }
     pub async fn connect(
         config: &KasumiClientConfig,
         control: ControlTrust,

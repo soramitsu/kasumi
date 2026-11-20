@@ -927,6 +927,9 @@ pub enum Operation {
     CompleteKeyRetirement(CompleteKeyRetirement),
     /// Remove the fence of an undecided retirement.
     AbortKeyRetirement(AbortKeyRetirement),
+    /// Independent target writer decisions have their own ordinal sequence.
+    CompleteTargetJournalRetirement(CompleteKeyRetirement),
+    AbortTargetJournalRetirement(AbortKeyRetirement),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -1110,6 +1113,10 @@ pub struct TenantState {
     /// before any retirement began has none, and an empty value is not written.
     #[serde(default, skip_serializing_if = "KeyRetirementState::is_empty")]
     pub key_retirements: KeyRetirementState,
+    /// The Control log orders target-journal writer fences independently of
+    /// the Control store's own wrapping identities and request ordinals.
+    #[serde(default, skip_serializing_if = "KeyRetirementState::is_empty")]
+    pub target_journal_retirements: KeyRetirementState,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

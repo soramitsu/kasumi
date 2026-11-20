@@ -205,6 +205,7 @@ message CustodyStatusResponse { bytes response_json = 1; }
 // only. JSON statuses are recovery facts; only signed commitments can reach the
 // independent issuer, and only its separate finite grants authorize effects.
 service KasumiLifecycleControl {
+  rpc ObserveTargetWriter(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Execute(ControlJsonRequest) returns (ControlJsonResponse);
   rpc ObserveIntent(ControlIntentReference) returns (ControlJsonResponse);
   rpc ObserveChange(ControlChangeReference) returns (ControlJsonResponse);
@@ -220,6 +221,7 @@ message ControlChangeReference { string command_id = 1; string authority_partiti
 // Fixed installed target templates and actual issuer/Control capabilities.
 // No endpoint, key, filesystem path or deserialized live proof is accepted.
 service KasumiTargetRecovery {
+  rpc RefreshTargetWriter(ControlJsonRequest) returns (ControlJsonResponse);
   rpc Execute(TargetExecuteRequest) returns (TargetRuntimeResponse);
   rpc ReadInitialMembershipHistory(TargetHistoryQuery) returns (TargetHistoryStatus);
   rpc ReadInitialStart(TargetStartQuery) returns (TargetStartStatus);

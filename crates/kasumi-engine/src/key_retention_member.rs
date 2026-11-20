@@ -8,7 +8,7 @@ use kasumi_raft::member_catalog::{
 #[derive(Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) enum ServiceIdentity {
     JournalExcluded(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
-    Journal(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
+    Journal(TrustVerifierIdentity, uuid::Uuid, [u8; 32], Option<String>),
     Signer(TrustVerifierIdentity, uuid::Uuid, [u8; 32]),
     Audit {
         catalog: uuid::Uuid,
@@ -21,9 +21,9 @@ pub(super) enum ServiceIdentity {
 impl ServiceIdentity {
     fn catalog(&self) -> uuid::Uuid {
         match self {
-            Self::Signer(_, id, _) | Self::Journal(_, id, _) | Self::JournalExcluded(_, id, _) => {
-                *id
-            }
+            Self::Signer(_, id, _)
+            | Self::Journal(_, id, _, _)
+            | Self::JournalExcluded(_, id, _) => *id,
             Self::Audit { catalog, .. } => *catalog,
         }
     }
@@ -345,6 +345,7 @@ impl Database {
         policy_epoch: u64,
         control_incarnation: &str,
         page: &ReadKeyRetentionRequest,
+        probe: bool,
         token: &QueryCancellation,
     ) -> Result<MemberInventories> {
         let members = metrics.membership_config.membership();
@@ -405,8 +406,17 @@ impl Database {
                         .last_applied
                         .ok_or_else(|| unavailable("no applied Control signer position"))?,
                     start: page.cursor.as_ref().map_or(CatalogStart::First, |cursor| {
-                        CatalogStart::After {
-                            entry: cursor.after.clone(),
+                        if probe {
+                            CatalogStart::Identity {
+                                identity: KeyIdentityRef {
+                                    provider: cursor.after.key.provider.clone(),
+                                    key_ref: cursor.after.key.key_ref.clone(),
+                                },
+                            }
+                        } else {
+                            CatalogStart::After {
+                                entry: cursor.after.clone(),
+                            }
                         }
                     }),
                     limit: if recheck {
@@ -480,6 +490,7 @@ impl Database {
                                     report.verifier,
                                     report.catalog,
                                     report.dependencies_sha256,
+                                    report.writer_state_sha256,
                                 )
                             };
                             Ok((

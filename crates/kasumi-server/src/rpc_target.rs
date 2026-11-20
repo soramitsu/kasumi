@@ -42,6 +42,54 @@ fn executed_release(failure: crate::target_runtime::TargetCallFailure) -> Status
 }
 #[tonic::async_trait]
 impl kasumi_target_recovery_server::KasumiTargetRecovery for NativeTargetRecovery {
+    async fn refresh_target_writer(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        let context = verified(&self.auth, &request).await?;
+        context
+            .authorization
+            .require_control(&self.runtime.control_root().control_incarnation.to_string())
+            .map_err(status)?;
+        if request
+            .extensions()
+            .get::<crate::tls::AuthenticatedTlsPeer>()
+            .and_then(|peer| peer.certificate_pin())
+            .is_none()
+        {
+            return Err(Status::unauthenticated("actual mutual TLS required"));
+        }
+        let bearer = Zeroizing::new(
+            request
+                .metadata()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+                .ok_or_else(|| Status::unauthenticated("original bearer unavailable"))?
+                .to_owned(),
+        );
+        let body = request.into_inner().request_json;
+        if body.len() > 4096 {
+            return Err(Status::resource_exhausted(
+                "target writer refresh exceeds bound",
+            ));
+        }
+        let query: kasumi_types::RefreshTargetWriter = decode_json(&body).map_err(status)?;
+        let result = self
+            .runtime
+            .refresh_writer(&context, bearer, &query)
+            .await
+            .map_err(kasumi_types::Error::from_physical_source);
+        let receipt = self
+            .auth
+            .audit_result(&context, result)
+            .await
+            .map_err(status)?;
+        context.authorization.check_live().map_err(status)?;
+        Ok(Response::new(ControlJsonResponse {
+            response_json: encode_json(&receipt).map_err(status)?,
+        }))
+    }
     async fn read_deletion_status(
         &self,
         request: Request<kasumi_client::proto::TargetDeletionQuery>,

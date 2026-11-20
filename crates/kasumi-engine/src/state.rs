@@ -293,6 +293,7 @@ fn genesis_metadata(
                 .expect("digest width"),
         )),
         key_retirements: KeyRetirementState::default(),
+        target_journal_retirements: KeyRetirementState::default(),
         audits: imbl::Vector::new(),
     };
     Ok(state)
@@ -440,6 +441,12 @@ impl ApplyScope {
             Operation::BeginKeyRetirement(begin) => Some(begin.membership_epoch),
             Operation::CompleteKeyRetirement(complete) => state
                 .key_retirements
+                .fence
+                .as_ref()
+                .filter(|fence| fence.request_sha256 == complete.request_sha256)
+                .map(|fence| fence.membership_epoch),
+            Operation::CompleteTargetJournalRetirement(complete) => state
+                .target_journal_retirements
                 .fence
                 .as_ref()
                 .filter(|fence| fence.request_sha256 == complete.request_sha256)
@@ -1299,6 +1306,8 @@ impl TenantEngine {
                     | Operation::AppendStaged(_)
                     | Operation::StopStaged(_)
                     | Operation::BeginKeyRetirement(_)
+                    | Operation::CompleteTargetJournalRetirement(_)
+                    | Operation::AbortTargetJournalRetirement(_)
                     | Operation::CompleteKeyRetirement(_)
                     | Operation::AbortKeyRetirement(_)
             ) {
@@ -2569,6 +2578,8 @@ impl TenantEngine {
             Operation::RetireSource(_) => "retire",
             Operation::AbortRetirement(_) => "retire_stop",
             Operation::BeginKeyRetirement(_) => "key_retirement_fence",
+            Operation::CompleteTargetJournalRetirement(_) => "target_journal_key_retirement",
+            Operation::AbortTargetJournalRetirement(_) => "target_journal_key_retirement_stop",
             Operation::CompleteKeyRetirement(_) => "key_retirement",
             Operation::AbortKeyRetirement(_) => "key_retirement_stop",
             Operation::Audit(_) | Operation::AuditBatch(_) | Operation::MaintenanceAudit(_) => {
@@ -3773,10 +3784,16 @@ fn apply_operation(
             key_retirement::begin(state, command, request, revision).map_err(Into::into)
         }
         Operation::CompleteKeyRetirement(request) => {
-            key_retirement::complete(state, command, request, revision).map_err(Into::into)
+            key_retirement::complete(state, command, request, revision, false).map_err(Into::into)
+        }
+        Operation::CompleteTargetJournalRetirement(request) => {
+            key_retirement::complete(state, command, request, revision, true).map_err(Into::into)
         }
         Operation::AbortKeyRetirement(request) => {
-            key_retirement::abort(state, command, request, revision).map_err(Into::into)
+            key_retirement::abort(state, command, request, revision, false).map_err(Into::into)
+        }
+        Operation::AbortTargetJournalRetirement(request) => {
+            key_retirement::abort(state, command, request, revision, true).map_err(Into::into)
         }
         Operation::Audit(event) => {
             validate_read_audit(state, command, event, revision)?;
@@ -4488,11 +4505,7 @@ pub(crate) fn append_audit(state: &mut TenantState, event: AuditEvent) -> Result
 }
 fn validate_audits(state: &TenantState) -> Result<()> {
     state.audit_retention.validate()?;
-    state.key_retirements.validate_scope(
-        &state.tenant,
-        crate::control::CONTROL_TENANT,
-        state.revision,
-    )?;
+    state.validate_key_retirement_scopes(crate::control::CONTROL_TENANT)?;
     if !crate::accounting::audit_fits(state)
         || state.audit_retention.archive_bytes > state.limits.audit_retention.archive_bytes
     {

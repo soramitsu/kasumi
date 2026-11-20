@@ -255,6 +255,7 @@ impl SecurityAudit {
         generation: &crate::Generation,
         request: &ReadKeyRetentionRequest,
         metrics: &kasumi_raft::RaftMetrics<u64, kasumi_raft::BasicNode>,
+        probe: bool,
         owners: InstalledInventories<'_>,
         token: &QueryCancellation,
     ) -> Result<KeyRetentionPage> {
@@ -381,6 +382,34 @@ impl SecurityAudit {
             }
         }
         if matches!(request.scope, KeyRetentionScope::TargetJournal {}) {
+            if !state.target_journal_retirements.is_empty() {
+                let expected = state.target_journal_retirements.target_writer_digest()?;
+                if let Some(owner) = journal {
+                    if owner
+                        .writer_state_sha256()
+                        .map_err(Error::from_physical_source)?
+                        != expected
+                    {
+                        add_missing(
+                            &mut missing,
+                            &mut truncated,
+                            MissingKeyDependency::MemberUnreported { node_id: local },
+                        );
+                    }
+                }
+                if let Some(peers) = &member_inventories {
+                    for (&node_id, identity) in &peers.reported {
+                        if matches!(identity,member::ServiceIdentity::Journal(_,_,_,position) if position.as_ref()!=Some(&expected))
+                        {
+                            add_missing(
+                                &mut missing,
+                                &mut truncated,
+                                MissingKeyDependency::MemberUnreported { node_id },
+                            );
+                        }
+                    }
+                }
+            }
             for operation in state.recovery_control.operations.values() {
                 token.check()?;
                 for (&id, node) in &operation.request.target_nodes {
@@ -389,7 +418,7 @@ impl SecurityAudit {
                     } else {
                         member_inventories.as_ref().and_then(|members| {
                             match members.reported.get(&id) {
-                                Some(member::ServiceIdentity::Journal(verifier, _, _)) => {
+                                Some(member::ServiceIdentity::Journal(verifier, _, _, _)) => {
                                     Some(verifier)
                                 }
                                 _ => None,
@@ -669,6 +698,6 @@ impl SecurityAudit {
             revision,
             membership_epoch,
         }
-        .page(request, page_limit, false)
+        .page(request, page_limit, probe)
     }
 }

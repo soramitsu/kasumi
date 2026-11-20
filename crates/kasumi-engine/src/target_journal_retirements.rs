@@ -89,8 +89,9 @@ impl TargetJournal {
             .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
         confirm()?;
         let mut head = self.metadata()?;
+        state.validate_journal_scope(revision)?;
         let next = WriterRetirements {
-            revision,
+            revision: state.last_transition_revision(),
             state: state.clone(),
         };
         head.retirements.require_successor(&next)?;
@@ -144,6 +145,15 @@ impl JournalCheckpointPermit {
 }
 
 impl TargetJournal {
+    pub(crate) fn writer_state_sha256(&self) -> Result<String> {
+        let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
+        let _guard = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        Ok(self.metadata()?.retirements.state.target_writer_digest()?)
+    }
+
     pub(crate) fn writer_admission(&self) -> &Arc<crate::admission::NodeAdmission> {
         &self.admission
     }
@@ -254,11 +264,18 @@ impl TargetJournal {
 pub struct TargetWriterRead {
     journal: Arc<TargetJournal>,
     challenge: kasumi_types::TargetWriterChallenge,
-    deadline: std::time::Instant,
+    deadline: kasumi_clock::ElapsedDeadline,
     _workspace: crate::admission::Reservation,
 }
 impl TargetJournal {
     pub fn begin_writer_read(self: &Arc<Self>) -> Result<TargetWriterRead> {
+        let observation = kasumi_clock::EpochClock::system()?.observe()?;
+        let deadline = observation.until(
+            observation
+                .utc_ms()
+                .checked_add(30_000)
+                .context("target writer deadline overflow")?,
+        )?;
         let workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let view = self.store.read_view()?;
         let physical = (|| -> Result<Uuid> {
@@ -285,7 +302,7 @@ impl TargetJournal {
                 catalog,
                 nonce: Uuid::new_v4(),
             },
-            deadline: std::time::Instant::now() + std::time::Duration::from_secs(30),
+            deadline,
             _workspace: workspace,
         })
     }
@@ -301,10 +318,7 @@ impl TargetWriterRead {
             signed.observation.observed_revision,
             &signed.observation.retirements,
             || {
-                ensure!(
-                    std::time::Instant::now() < self.deadline,
-                    "original target writer observation expired"
-                );
+                self.deadline.check()?;
                 self.journal.store.check_access()
             },
         )

@@ -66,6 +66,27 @@ impl KasumiLifecycleClient {
             .into_inner();
         Ok(serde_json::from_slice(&response.response_json)?)
     }
+    pub async fn observe_target_writer(
+        &mut self,
+        bearer: &str,
+        challenge: &TargetWriterChallenge,
+    ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
+        let reply = self
+            .inner
+            .clone()
+            .max_decoding_message_size(2 * MAX_KEY_RETIREMENT_STATE_BYTES)
+            .observe_target_writer(self.authorized(
+                bearer,
+                proto::ControlJsonRequest {
+                    request_json: encode(challenge)?,
+                },
+            )?)
+            .await?
+            .into_inner();
+        let signed: SignedTargetWriterObservation = serde_json::from_slice(&reply.response_json)?;
+        self.trust.verify_target_writer(challenge, &signed)?;
+        Ok(signed)
+    }
     pub async fn observe_intent(
         &mut self,
         bearer: &str,

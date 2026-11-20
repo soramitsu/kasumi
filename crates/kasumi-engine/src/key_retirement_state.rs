@@ -17,6 +17,9 @@ fn authorize(
             *tenant == state.tenant && state.tenant != crate::control::CONTROL_TENANT
         }
         KeyRetentionScope::Control {} => state.tenant == crate::control::CONTROL_TENANT,
+        KeyRetentionScope::TargetJournal {} => {
+            state.tenant == crate::control::CONTROL_TENANT && state.lifecycle_control.is_some()
+        }
         _ => false,
     };
     if !owned {
@@ -31,8 +34,13 @@ fn authorize(
 /// The observed dependency position must still be this state's. A history
 /// archive, audit segment, recovery record, session binding or authority
 /// change that committed after the observation rejects the command.
-fn require_position(state: &TenantState, expected: &str) -> Result<()> {
-    if state.key_dependency_sha256()? != expected {
+fn require_position(state: &TenantState, expected: &str, journal: bool) -> Result<()> {
+    let position = if journal {
+        state.journal_writer_dependency_sha256()?
+    } else {
+        state.key_dependency_sha256()?
+    };
+    if position != expected {
         return Err(Error::new(
             ErrorCode::Conflict,
             "key dependencies changed after their coverage was observed",
@@ -41,9 +49,8 @@ fn require_position(state: &TenantState, expected: &str) -> Result<()> {
     Ok(())
 }
 
-fn scope_of(state: &TenantState, retirement_id: &str) -> Result<KeyRetentionScope> {
+fn scope_of(state: &KeyRetirementState, retirement_id: &str) -> Result<KeyRetentionScope> {
     state
-        .key_retirements
         .status(retirement_id)
         .map(|status| status.request().scope.clone())
         .ok_or_else(|| Error::new(ErrorCode::NotFound, "key retirement is not retained"))
@@ -61,14 +68,24 @@ pub(crate) fn begin(
 ) -> Result<(Result<WriteReceipt>, bool)> {
     request.validate()?;
     authorize(state, &command.context, &request.request.scope)?;
-    let mut retirements = state.key_retirements.clone();
+    let journal = matches!(request.request.scope, KeyRetentionScope::TargetJournal {});
+    let mut retirements = if journal {
+        &state.target_journal_retirements
+    } else {
+        &state.key_retirements
+    }
+    .clone();
     let transition = retirements.begin(request, revision)?;
     if transition == KeyRetirementTransition::Applied {
-        require_position(state, &request.expected_dependency_sha256)?;
+        require_position(state, &request.expected_dependency_sha256, journal)?;
         if state.tenant != crate::control::CONTROL_TENANT {
             state.policy_epoch = next_policy_epoch(state.policy_epoch)?;
         }
-        state.key_retirements = retirements;
+        if journal {
+            state.target_journal_retirements = retirements;
+        } else {
+            state.key_retirements = retirements;
+        }
     }
     Ok((
         Ok(WriteReceipt {
@@ -84,15 +101,25 @@ pub(crate) fn complete(
     command: &Command,
     request: &CompleteKeyRetirement,
     revision: u64,
+    journal: bool,
 ) -> Result<(Result<WriteReceipt>, bool)> {
     request.validate()?;
-    let scope = scope_of(state, &request.retirement_id)?;
+    let selected = if journal {
+        &state.target_journal_retirements
+    } else {
+        &state.key_retirements
+    };
+    let scope = scope_of(selected, &request.retirement_id)?;
     authorize(state, &command.context, &scope)?;
-    let mut retirements = state.key_retirements.clone();
+    let mut retirements = selected.clone();
     let transition = retirements.complete(request, revision)?;
     if transition == KeyRetirementTransition::Applied {
-        require_position(state, &request.expected_dependency_sha256)?;
-        state.key_retirements = retirements;
+        require_position(state, &request.expected_dependency_sha256, journal)?;
+        if journal {
+            state.target_journal_retirements = retirements;
+        } else {
+            state.key_retirements = retirements;
+        }
     }
     Ok((
         Ok(WriteReceipt {
@@ -108,13 +135,23 @@ pub(crate) fn abort(
     command: &Command,
     request: &AbortKeyRetirement,
     revision: u64,
+    journal: bool,
 ) -> Result<(Result<WriteReceipt>, bool)> {
     request.validate()?;
-    let scope = scope_of(state, &request.retirement_id)?;
+    let selected = if journal {
+        &state.target_journal_retirements
+    } else {
+        &state.key_retirements
+    };
+    let scope = scope_of(selected, &request.retirement_id)?;
     authorize(state, &command.context, &scope)?;
-    let mut retirements = state.key_retirements.clone();
+    let mut retirements = selected.clone();
     if retirements.abort(request, revision)? == KeyRetirementTransition::Applied {
-        state.key_retirements = retirements;
+        if journal {
+            state.target_journal_retirements = retirements;
+        } else {
+            state.key_retirements = retirements;
+        }
     }
     Ok((
         Ok(WriteReceipt {

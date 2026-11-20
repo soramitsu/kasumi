@@ -23,6 +23,7 @@ impl MemberInventories {
         let id = page.verifier.node_id;
         let identity = match page.contents {
             DataCatalogContents::TargetJournal {
+                writer_state_sha256,
                 unreadable_targets,
                 truncated,
             } => {
@@ -37,7 +38,12 @@ impl MemberInventories {
                         },
                     );
                 }
-                ServiceIdentity::Journal(page.verifier, page.catalog, page.catalog_sha256)
+                ServiceIdentity::Journal(
+                    page.verifier,
+                    page.catalog,
+                    page.catalog_sha256,
+                    writer_state_sha256,
+                )
             }
             DataCatalogContents::Signer { .. } => {
                 ServiceIdentity::Signer(page.verifier, page.catalog, page.catalog_sha256)
@@ -95,6 +101,7 @@ struct CatalogPass<'a> {
     reader: &'a dyn RemoteDataCatalogReader,
     roster: &'a crate::control::ControlTopology,
     request: &'a ReadKeyRetentionRequest,
+    probe: bool,
     token: &'a QueryCancellation,
     service: DataMemberService,
     partitions: Option<String>,
@@ -146,10 +153,17 @@ impl CatalogPass<'_> {
                         verifier: verifier.clone(),
                         service: self.service,
                         nonce: uuid::Uuid::new_v4(),
+                        from_identity: self.request.cursor.as_ref().filter(|_| self.probe).map(
+                            |cursor| KeyIdentityRef {
+                                provider: cursor.after.key.provider.clone(),
+                                key_ref: cursor.after.key.key_ref.clone(),
+                            },
+                        ),
                         after: self
                             .request
                             .cursor
                             .as_ref()
+                            .filter(|_| !self.probe)
                             .map(|cursor| cursor.after.clone()),
                         limit: self.request.limit.min(DATA_MEMBER_CATALOG_LIMIT),
                     };
@@ -257,6 +271,7 @@ impl Database {
         generation: &crate::Generation,
         request: &ReadKeyRetentionRequest,
         token: &QueryCancellation,
+        probe: bool,
         result: &mut MemberInventories,
     ) -> Result<()> {
         let Some(reader) = self.remote_data_catalog_reader.get() else {
@@ -297,6 +312,7 @@ impl Database {
         };
         let pass = CatalogPass {
             reader: reader.as_ref(),
+            probe,
             roster: &roster.topology,
             request,
             token,

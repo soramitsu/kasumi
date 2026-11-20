@@ -2326,6 +2326,8 @@ impl Database {
                 | Operation::RetireSource(_)
                 | Operation::AbortRetirement(_)
                 | Operation::BeginKeyRetirement(_)
+                | Operation::CompleteTargetJournalRetirement(_)
+                | Operation::AbortTargetJournalRetirement(_)
                 | Operation::CompleteKeyRetirement(_)
                 | Operation::AbortKeyRetirement(_)
         ) {

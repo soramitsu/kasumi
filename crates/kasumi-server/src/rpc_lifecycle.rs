@@ -61,6 +61,41 @@ impl NativeLifecycleControl {
 }
 #[tonic::async_trait]
 impl kasumi_lifecycle_control_server::KasumiLifecycleControl for NativeLifecycleControl {
+    async fn observe_target_writer(
+        &self,
+        request: Request<ControlJsonRequest>,
+    ) -> Result<Response<ControlJsonResponse>, Status> {
+        let actor = self.context(&request).await?;
+        let body = request.into_inner().request_json;
+        if body.len() > 4096 {
+            return Err(Status::resource_exhausted(
+                "target writer challenge exceeds bound",
+            ));
+        }
+        let challenge = decode_json(&body).map_err(status)?;
+        let fence = self
+            .database
+            .admitted_response_fence(&actor)
+            .map_err(status)?;
+        let result = self
+            .signer
+            .observe_target_writer(&self.database, &actor, &challenge)
+            .await;
+        let output = self
+            .auth
+            .audit_result(&actor, result)
+            .await
+            .map_err(status)?;
+        response_owner::PendingReply::new(output, fence)
+            .convert(|value, fence| {
+                Ok(ControlJsonResponse {
+                    response_json: response_owner::encode_json(value, fence)?,
+                })
+            })
+            .map_err(status)?
+            .release(&self.auth, &actor)
+            .await
+    }
     async fn observe_topology(
         &self,
         request: Request<ControlJsonRequest>,
