@@ -2135,8 +2135,16 @@ async fn local_recovery_inventory_case() {
         .next_cursor
         .clone()
         .unwrap();
-    let withheld = root.path().join("original-manifest");
-    std::fs::rename(&manifest, &withheld).unwrap();
+    // The journal and backup share one enrolled disk. Withhold the original
+    // inode through its owner so the journal remains readable during the test.
+    // An out-of-band rename fences that entire disk until a new census.
+    let disk = runtime.security_audit().store().persistent_disk();
+    let withheld = manifest.with_file_name("withheld-manifest");
+    let (root_name, original_name) = settings.binding(&manifest).unwrap();
+    let (held_root, held_name) = settings.binding(&withheld).unwrap();
+    let original = disk.open_file(root_name, original_name).unwrap();
+    let identity = original.identity().unwrap();
+    let held = disk.publish_file(original, held_root, held_name).unwrap();
     let incomplete = db
         .read_key_retention(&control, query.clone())
         .await
@@ -2160,7 +2168,9 @@ async fn local_recovery_inventory_case() {
             .code,
         ErrorCode::CursorExpired
     );
-    std::fs::rename(&withheld, &manifest).unwrap();
+    let restored = disk.publish_file(held, root_name, original_name).unwrap();
+    assert_eq!(restored.identity().unwrap(), identity);
+    drop(restored);
     // This operation stopped before dispatching a target and has no archive
     // ownership rows. Its cleanup receipt alone cannot prove current absence.
     let store = runtime.security_audit().store();
