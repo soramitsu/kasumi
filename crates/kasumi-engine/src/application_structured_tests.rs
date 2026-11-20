@@ -642,7 +642,7 @@ fn small(n: usize) -> Value {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_oversized_change_rebuilds_a_small_directory_and_stales_a_large_one() {
+async fn an_oversized_change_rebuilds_a_small_directory_and_resumes_a_large_one() {
     let fixture = Fixture::new().await;
     let owner = StructuredOwner::default();
     let genesis = genesis();
@@ -662,8 +662,7 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_stales_a_large_one()
     assert_eq!(fixture.manifest().page_space, rebuilt.page_space);
     fixture.verify(&second);
 
-    // 9,000 more documents exceed both bounds: the directory goes stale at
-    // that revision and keeps naming its last tree.
+    // An oversized complete replacement starts as an empty non-serving tree.
     let third = second.next(
         (2000..11_000)
             .map(|n| (format!("d{n:06}"), small(n)))
@@ -674,17 +673,38 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_stales_a_large_one()
     assert!(!third.indexes.structured_rows_within(MAX_REBUILD_ROWS));
     let before = fixture.manifest();
     assert!(fixture.publish(&owner, &second, &third, 1));
-    let stale = fixture.manifest();
-    assert!(!stale.is_current());
-    assert_eq!(stale.revision, third.state.revision);
-    assert_eq!(stale.records, before.records);
-    // Nothing edits or replaces a stale oversized directory.
-    let fourth = third.next(vec![("d000011".into(), small(6000))], &[], None);
-    assert!(!fixture.publish(&owner, &third, &fourth, 1));
-    assert_eq!(fixture.manifest(), stale);
-
-    // The next restore replaces it with a generation built from the restored
-    // indexes, whatever its size, and ordinary edits follow again.
+    let rebuilding = fixture.manifest();
+    assert!(rebuilding.rebuild().is_some());
+    assert_ne!(rebuilding.page_space, before.page_space);
+    assert_eq!(rebuilding.records.count(), 0);
+    for _ in 0..3 {
+        assert!(
+            !maintain(
+                &owner,
+                &fixture.store,
+                &third.state,
+                &third.indexes,
+                None,
+                Some(&applied(&third.state, 1))
+            )
+            .unwrap()
+        );
+    }
+    let partial = fixture.manifest();
+    assert!(partial.rebuild().unwrap().cursor.is_some());
+    assert!(partial.records.count() <= 3 * 256);
+    // Change and delete rows already scanned, alongside later rows. The
+    // retained cursor stays fixed while the original ordinary delta commits.
+    let fourth = third.next(
+        vec![
+            ("d000011".into(), small(6000)),
+            ("d010998".into(), small(9000)),
+        ],
+        &[],
+        None,
+    );
+    assert!(fixture.publish(&owner, &third, &fourth, 1));
+    assert_eq!(fixture.manifest().rebuild(), partial.rebuild());
     let restarted = StructuredOwner::default();
     let mut writes = Vec::new();
     prepare_restore(
@@ -697,10 +717,24 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_stales_a_large_one()
         &mut writes,
     )
     .unwrap();
-    assert!(!writes.is_empty());
-    fixture.store.write_batch(&writes).unwrap();
+    assert!(writes.is_empty());
+    assert_eq!(fixture.manifest().rebuild(), partial.rebuild());
+    let mut steps = 0;
+    while !maintain(
+        &restarted,
+        &fixture.store,
+        &fourth.state,
+        &fourth.indexes,
+        None,
+        Some(&applied(&fourth.state, 1)),
+    )
+    .unwrap()
+    {
+        steps += 1;
+        assert!(steps < 2000);
+    }
     let restored = fixture.manifest();
-    assert_ne!(restored.page_space, stale.page_space);
+    assert_eq!(restored.page_space, rebuilding.page_space);
     // Two presence rows and five postings (three of them absences) each.
     assert_eq!(restored.records.count(), 7 * 10_199);
     fixture.verify(&fourth);
@@ -728,8 +762,87 @@ async fn an_oversized_change_rebuilds_a_small_directory_and_stales_a_large_one()
     );
     // The replaced generations are reclaimed in bounded batches.
     NamespaceStage::reclaim_family(&fixture.store, structured::FAMILY).unwrap();
-    assert_eq!(fixture.space_rows(&stale.page_space), 0);
+    assert_eq!(fixture.space_rows(&before.page_space), 0);
     assert_eq!(fixture.space_rows(structured::INITIAL_SPACE[0]), 0);
+    fixture.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_partial_structured_array_resumes_by_row_key_across_reordering_and_deletion() {
+    let fixture = Fixture::new().await;
+    let owner = StructuredOwner::default();
+    let genesis = genesis();
+    let prefix = "long-prefix".repeat(24);
+    let mut array: Vec<String> = (0..400).map(|i| format!("{prefix}{i:05}")).collect();
+    let first = genesis.next(
+        vec![("a".into(), json!({"tags":array})), ("z".into(), small(2))],
+        &[],
+        None,
+    );
+    let mut seeded = incremental::seed(
+        &owner,
+        &fixture.store,
+        &first.state,
+        &first.indexes,
+        Some(&applied(&first.state, 1)),
+    )
+    .unwrap();
+    fixture.store.write_batch(&seeded.take_writes()).unwrap();
+    assert!(
+        !maintain(
+            &owner,
+            &fixture.store,
+            &first.state,
+            &first.indexes,
+            None,
+            Some(&applied(&first.state, 1))
+        )
+        .unwrap()
+    );
+    let partial = fixture.manifest();
+    let progress = partial.rebuild().unwrap();
+    assert!(progress.cursor.as_ref().unwrap().field.is_some());
+    let mut forged = partial.clone();
+    forged.status = structured::StructuredStatus::Current;
+    assert!(
+        fixture
+            .store
+            .write_batch(&[forged.write().unwrap()])
+            .is_err()
+    );
+    let retained = fixture.store.read_view().unwrap();
+    array.reverse();
+    array.pop();
+    array.push(format!("{prefix}additional"));
+    let second = first.next(
+        vec![
+            ("a".into(), json!({"tags":array})),
+            ("mid".into(), small(3)),
+        ],
+        &["z"],
+        None,
+    );
+    assert!(fixture.publish(&owner, &first, &second, 1));
+    let mut steps = 0;
+    while !maintain(
+        &owner,
+        &fixture.store,
+        &second.state,
+        &second.indexes,
+        None,
+        Some(&applied(&second.state, 1)),
+    )
+    .unwrap()
+    {
+        steps += 1;
+        assert!(steps < 30);
+    }
+    fixture.verify(&second);
+    assert_eq!(
+        StructuredManifest::load_at(&retained).unwrap().unwrap(),
+        partial
+    );
+    retained.close().unwrap();
     fixture.close().await;
 }
 

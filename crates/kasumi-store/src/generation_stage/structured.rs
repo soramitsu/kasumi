@@ -55,7 +55,7 @@ pub(crate) fn validate_structured_manifest(
         );
         if switched.is_some() {
             ensure!(
-                next.is_current(),
+                next.is_current() || next.is_rebuild_seed(),
                 "a replacement structured generation must be current"
             );
             continue;

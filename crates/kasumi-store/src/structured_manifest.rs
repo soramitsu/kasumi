@@ -41,10 +41,61 @@ const FORMAT: u32 = 1;
 /// Whether the tree holds exactly the rows at `revision`. A stale directory
 /// keeps naming its last tree so its space stays owned, but readers and
 /// ordinary edits ignore it until a replacement generation is selected.
-#[derive(Clone, Copy, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StructuredStatus {
     Current,
     Stale,
+    Rebuilding(Box<StructuredRebuild>),
+}
+
+/// A partial, non-serving generation. The original final document bounds the
+/// scan even when ordinary writes append documents to its collection.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StructuredRebuild {
+    pub captured: Option<StructuredApplied>,
+    pub through: crate::primary_manifest::PrimaryCursor,
+    pub cursor: Option<StructuredCursor>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct StructuredCursor {
+    pub document: crate::primary_manifest::PrimaryCursor,
+    /// None means the complete document or collection has been visited.
+    pub field: Option<StructuredFieldCursor>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(deny_unknown_fields)]
+pub struct StructuredFieldCursor {
+    pub ordinal: u32,
+    pub after: Vec<u8>,
+}
+
+impl Ord for StructuredCursor {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.document
+            .cmp(&other.document)
+            .then_with(|| match (&self.field, &other.field) {
+                (Some(a), Some(b)) => a.cmp(b),
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (Some(_), None) => std::cmp::Ordering::Less,
+            })
+    }
+}
+impl PartialOrd for StructuredCursor {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+impl StructuredRebuild {
+    pub fn finished(&self) -> bool {
+        self.cursor
+            .as_ref()
+            .is_some_and(|c| c.document == self.through && c.field.is_none())
+    }
 }
 
 /// The producer boundary of the revision: the applied Raft log position and,
@@ -120,6 +171,18 @@ impl StructuredManifest {
         self.status == StructuredStatus::Current
     }
 
+    pub fn rebuild(&self) -> Option<&StructuredRebuild> {
+        match &self.status {
+            StructuredStatus::Rebuilding(progress) => Some(progress),
+            _ => None,
+        }
+    }
+    pub(crate) fn is_rebuild_seed(&self) -> bool {
+        self.rebuild().is_some_and(|p| {
+            p.cursor.is_none() && self.records.count() == 0 && self.applied == p.captured
+        })
+    }
+
     pub fn matches_applied(&self, actual: Option<&StructuredApplied>) -> bool {
         match (self.applied.as_ref(), actual) {
             (Some(stored), Some(actual)) => stored.same_position(actual),
@@ -188,6 +251,40 @@ impl StructuredManifest {
                 ),
             "structured manifest boundary differs from its revision"
         );
+        if let Some(progress) = self.rebuild() {
+            ensure!(
+                match (&progress.captured, &self.applied) {
+                    (Some(captured), Some(current)) => captured.index <= current.index,
+                    (None, None) => self.revision == self.revision_base,
+                    (None, Some(_)) => true,
+                    _ => false,
+                },
+                "invalid captured structured position"
+            );
+            kasumi_types::validate_name(&progress.through.collection)?;
+            kasumi_types::validate_name(
+                progress
+                    .through
+                    .after_document
+                    .as_deref()
+                    .context("missing terminal structured document")?,
+            )?;
+            if let Some(cursor) = &progress.cursor {
+                kasumi_types::validate_name(&cursor.document.collection)?;
+                if let Some(id) = &cursor.document.after_document {
+                    kasumi_types::validate_name(id)?;
+                }
+                ensure!(
+                    cursor.document <= progress.through
+                        && cursor.field.as_ref().is_none_or(|field| cursor
+                            .document
+                            .after_document
+                            .is_some()
+                            && field.after.len() <= crate::ordered_pages::MAX_KEY_BYTES),
+                    "invalid structured rebuild cursor"
+                );
+            }
+        }
         kasumi_types::validate_name(&self.tenant)?;
         kasumi_types::validate_name(&self.incarnation)?;
         validate_record(&self.page_space, &[], 0)?;
@@ -219,7 +316,7 @@ impl StructuredManifest {
     /// same batch does not select a replacement generation.
     pub(crate) fn check_successor(&self, previous: &Self) -> Result<()> {
         ensure!(
-            previous.is_current(),
+            previous.is_current() || previous.rebuild().is_some(),
             "a stale structured directory needs a replacement generation"
         );
         ensure!(
@@ -229,6 +326,44 @@ impl StructuredManifest {
                 && self.page_space == previous.page_space
                 && self.records.tree == previous.records.tree,
             "structured directory successor changes its tree or scope"
+        );
+        if let Some(prior) = previous.rebuild() {
+            let next = self.rebuild();
+            if let Some(next) = next {
+                ensure!(
+                    next.captured == prior.captured
+                        && next.through == prior.through
+                        && next.cursor >= prior.cursor
+                        && self.layout_sha256 == previous.layout_sha256,
+                    "structured rebuild changed its layout, source or cursor"
+                );
+            }
+            if self.is_current() {
+                ensure!(
+                    prior.finished() && self.layout_sha256 == previous.layout_sha256,
+                    "partial structured directory cannot become current"
+                );
+            }
+            let advanced = next.is_some_and(|next| next.cursor > prior.cursor) || next.is_none();
+            ensure!(
+                self.revision > previous.revision
+                    || (self.revision == previous.revision
+                        && self.applied == previous.applied
+                        && advanced),
+                "structured rebuild repeated a position without progress"
+            );
+            if self.status == StructuredStatus::Stale {
+                ensure!(
+                    self.records == previous.records
+                        && self.layout_sha256 == previous.layout_sha256,
+                    "stale structured rebuild changed its tree"
+                );
+            }
+            return Ok(());
+        }
+        ensure!(
+            self.rebuild().is_none(),
+            "structured rebuild requires a new generation"
         );
         // Genesis membership can bind the already verified bootstrap tree
         // without changing its rows, layout or logical revision.

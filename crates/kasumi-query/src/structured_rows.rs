@@ -205,6 +205,24 @@ impl QueryIndexes {
             .map(|indexes| indexes.structured.fields.len())
     }
 
+    /// The field value used to build the resident presence and scalar postings.
+    /// Archived rows lend their authenticated stored projection.
+    pub fn structured_field_value<'a>(
+        &self,
+        collection: &str,
+        ordinal: usize,
+        record: crate::Record<'a>,
+    ) -> Option<(kasumi_types::ScalarType, Option<&'a serde_json::Value>)> {
+        let (path, field) = self
+            .collections
+            .get(collection)?
+            .structured
+            .fields
+            .iter()
+            .nth(ordinal)?;
+        Some((field.kind, crate::structured::record_value(record, path)))
+    }
+
     /// Every collection's indexed fields in name order, each collection's
     /// fields in ordinal order. The borrowed postings stay in the resident
     /// persistent maps; nothing is copied until a caller encodes a row.

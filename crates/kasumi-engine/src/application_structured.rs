@@ -33,6 +33,12 @@
 //! publishes a stale manifest instead of fencing the replica. Readers ignore a
 //! stale directory, and serve from it again once a publication or restore has
 //! selected a replacement generation.
+#[path = "application_structured_rebuild.rs"]
+mod incremental;
+pub(crate) use incremental::maintain;
+#[cfg(test)]
+pub(crate) use incremental::seed as seed_for_test;
+
 use anyhow::{Context, Result, ensure};
 use kasumi_query::{FieldPredicate, FieldValue, QueryIndexes, StructuredRow};
 use kasumi_store::{
@@ -79,6 +85,8 @@ const DIGEST: usize = 32;
 pub(crate) struct StructuredOwner {
     recovery_pending: AtomicBool,
     rebuild_after: AtomicU64,
+    pub(super) maintenance_due: AtomicBool,
+    replacement: crate::directory_replacement::DirectoryReplacement,
 }
 
 impl Default for StructuredOwner {
@@ -88,11 +96,18 @@ impl Default for StructuredOwner {
         Self {
             recovery_pending: AtomicBool::new(true),
             rebuild_after: AtomicU64::new(0),
+            maintenance_due: AtomicBool::new(true),
+            replacement: Default::default(),
         }
     }
 }
 
 impl StructuredOwner {
+    #[cfg(test)]
+    pub(crate) fn finish_replacement_for_test(&self, store: &Arc<TenantStore>) -> Result<bool> {
+        self.replacement
+            .advance(store, structured::FAMILY, &structured::INITIAL_SPACE)
+    }
     /// Finish displaced-row reclamation of published edits and abandon the
     /// rows of unpublished ones before the next edit begins.
     fn recover(&self, store: &Arc<TenantStore>) -> Result<()> {
@@ -435,6 +450,39 @@ pub(crate) fn verify_rows(
     Ok(())
 }
 
+/// Count the longest possible in-memory sort run and the overflow payload
+/// before starting a synchronous generation. Numeric encodings fit inline.
+fn bulk_workspace(indexes: &QueryIndexes) -> Option<u64> {
+    if !indexes.structured_rows_within(MAX_REBUILD_ROWS) {
+        return None;
+    }
+    let mut bytes = 0usize;
+    let mut largest = 0usize;
+    for (_, fields) in indexes.structured_collections() {
+        for field in fields {
+            let mut long = 0usize;
+            for posting in field.values() {
+                if posting.value.bytes.len() > INLINE_VALUE {
+                    bytes = bytes.checked_add(posting.value.bytes.len())?;
+                    if bytes > 16 << 20 {
+                        return None;
+                    }
+                    long += 1;
+                }
+            }
+            largest = largest.max(long);
+        }
+    }
+    // Vec growth can retain twice the used capacity. Escaped prefixes can
+    // double in size, and their temporary scalar components can also grow.
+    Some(
+        4096 + (largest as u64)
+            * (4 * (INLINE_VALUE + DIGEST + 16)
+                + 2 * std::mem::size_of::<(Vec<u8>, kasumi_query::StructuredPostings<'_>)>())
+                as u64,
+    )
+}
+
 /// Bulk-build the rows of `indexes` into a fresh staged generation. The
 /// returned writes select it with its manifest and retire the replaced space;
 /// they must join the publication that selects `state`.
@@ -443,9 +491,21 @@ fn rebuild(
     state: &TenantState,
     indexes: &QueryIndexes,
     applied: Option<StructuredApplied>,
+    owner: Option<&StructuredOwner>,
 ) -> Result<Vec<WriteOp>> {
+    let cost =
+        bulk_workspace(indexes).context("structured replacement exceeds its synchronous budget")?;
+    let _sort = store
+        .plaintext_memory_owner()
+        .clone()
+        .reserve_installed(cost)?;
     let family = SelectedGeneration::adopt(store, structured::FAMILY, &structured::INITIAL_SPACE)?;
-    let stage = NamespaceStage::begin_generation(store, structured::FAMILY)?;
+    let stage = match owner {
+        Some(owner) => owner
+            .replacement
+            .begin(store, structured::FAMILY, family.namespace(0))?,
+        None => NamespaceStage::begin_generation(store, structured::FAMILY)?,
+    };
     let records = ordered_pages::stage_tree(&stage, TreeRoot::new_tree().tree, |builder| {
         visit_rows(indexes, |key, value| builder.push(key, value))
     })?;
@@ -479,11 +539,13 @@ pub(crate) fn prepare_restore(
     ordered_pages::recover_abandoned_edits_in(store, structured::FAMILY)?;
     owner.recovery_pending.store(false, Ordering::Release);
     NamespaceStage::reclaim_family(store, structured::FAMILY)?;
+    owner.replacement.recovered()?;
+    owner.maintenance_due.store(true, Ordering::Release);
     owner.rebuild_after.store(0, Ordering::Release);
     let applied = snapshot_applied(meta)?;
     if reopen
         && let Some(Some(manifest)) = load_or_skip(store)?
-        && manifest.is_current()
+        && (manifest.is_current() || manifest.rebuild().is_some())
         && manifest.tenant == state.tenant
         && manifest.incarnation == state.incarnation
         && manifest.revision_base == state.revision_base
@@ -492,19 +554,22 @@ pub(crate) fn prepare_restore(
             return Ok(());
         }
         if manifest.revision == state.revision
-            && manifest
-                .applied
-                .as_ref()
-                .zip(applied.as_ref())
-                .is_some_and(|(selected, snapshot)| selected.same_position(snapshot))
-            && verify_rows(&**store, &manifest, state, indexes).is_ok()
+            && manifest.matches_applied(applied.as_ref())
+            && (manifest.rebuild().is_some()
+                || verify_rows(&**store, &manifest, state, indexes).is_ok())
         {
             return Ok(());
         }
     }
     // The replaced generation retires when this publication commits; the
     // next restore or replacement reclaims it in bounded batches.
-    writes.extend(rebuild(store, state, indexes, applied)?);
+    if bulk_workspace(indexes).is_none() {
+        writes.extend(
+            incremental::seed(owner, store, state, indexes, applied.as_ref())?.take_writes(),
+        );
+    } else {
+        writes.extend(rebuild(store, state, indexes, applied, None)?);
+    }
     Ok(())
 }
 
@@ -581,7 +646,7 @@ fn step(
             Step::Replace
         };
     };
-    if !manifest.is_current() {
+    if !manifest.is_current() && manifest.rebuild().is_none() {
         // A stale directory ahead of this candidate belongs to a later
         // position: covered replay must not move it.
         return if manifest.revision <= previous.revision {
@@ -636,6 +701,7 @@ pub(crate) fn prepare_publication_at(
     ) {
         Ok(publication) => Ok(publication),
         Err(error) => {
+            owner.maintenance_due.store(true, Ordering::Release);
             if let Err(access) = store.check_access() {
                 return Err(error.context(access));
             }
@@ -660,16 +726,35 @@ fn follow(
 ) -> Result<Option<StructuredPublication>> {
     let (previous, previous_indexes) = previous;
     let (candidate, candidate_indexes) = candidate;
+    if !owner
+        .replacement
+        .advance(store, structured::FAMILY, &structured::INITIAL_SPACE)?
+    {
+        owner.maintenance_due.store(true, Ordering::Release);
+    }
     let Some(manifest) = load_or_skip(store)? else {
         return Ok(None);
     };
     let base = match step(manifest.as_ref(), previous, previous_indexes, candidate) {
         Step::Nothing | Step::Covered => return Ok(None),
         Step::Replace => {
+            owner.maintenance_due.store(true, Ordering::Release);
             return Ok(replace(owner, store, candidate, candidate_indexes, applied));
         }
         Step::Boundary => {
             let manifest = manifest.expect("boundary directory");
+            if manifest.rebuild().is_some() {
+                if manifest.matches_applied(applied.as_ref()) {
+                    return Ok(None);
+                }
+                owner.maintenance_due.store(true, Ordering::Release);
+                return stale(
+                    &manifest,
+                    candidate,
+                    applied,
+                    anyhow::anyhow!("covered structured rebuild differs from its producer"),
+                );
+            }
             let binds_genesis = manifest.applied.is_none()
                 && manifest.revision == manifest.revision_base
                 && applied
@@ -691,6 +776,7 @@ fn follow(
                 }
                 Ok(()) => Ok(None),
                 Err(error) => {
+                    owner.maintenance_due.store(true, Ordering::Release);
                     store.check_access()?;
                     stale(
                         &manifest,
@@ -702,11 +788,13 @@ fn follow(
             };
         }
         Step::Stale(reason) => {
+            owner.maintenance_due.store(true, Ordering::Release);
             let manifest = manifest.expect("stale directory");
             return stale(&manifest, candidate, applied, anyhow::anyhow!(reason));
         }
         Step::Edit => match manifest {
             Some(manifest) if !matches_predecessor(&manifest)? => {
+                owner.maintenance_due.store(true, Ordering::Release);
                 return stale(
                     &manifest,
                     candidate,
@@ -748,6 +836,10 @@ fn follow(
         Err(error) => error,
     };
     store.check_access()?;
+    owner.maintenance_due.store(true, Ordering::Release);
+    if base.rebuild().is_some() {
+        return stale(&base, candidate, applied, reason);
+    }
     if let Some(publication) = replace(owner, store, candidate, candidate_indexes, applied.clone())
     {
         tracing::info!(
@@ -780,16 +872,22 @@ fn replace(
             Ordering::Release,
         )
     };
-    if !indexes.structured_rows_within(MAX_REBUILD_ROWS) {
-        retry();
-        return None;
+    if bulk_workspace(indexes).is_none() {
+        owner.maintenance_due.store(true, Ordering::Release);
+        let applied = applied.as_ref();
+        return match incremental::seed(owner, store, candidate, indexes, applied) {
+            Ok(publication) => Some(publication),
+            Err(error) => {
+                tracing::warn!(revision=candidate.revision, reason=%error, "structured rebuild seed deferred");
+                None
+            }
+        };
     }
     let built = (|| {
         // An earlier attempt whose publication never committed left a sealed
         // stage; a committed one left the generation it replaced.
         owner.recover(store)?;
-        NamespaceStage::reclaim_family(store, structured::FAMILY)?;
-        rebuild(store, candidate, indexes, applied)
+        rebuild(store, candidate, indexes, applied, Some(owner))
     })();
     match built {
         Ok(writes) => Some(StructuredPublication::only(writes)),
@@ -819,7 +917,9 @@ fn stale(
         "structured directory stops following ordinary apply until it is replaced"
     );
     // A replayed boundary that differs goes stale at its own revision.
-    if candidate.revision < manifest.revision || !manifest.is_current() {
+    if candidate.revision < manifest.revision
+        || (!manifest.is_current() && manifest.rebuild().is_none())
+    {
         return Ok(None);
     }
     Ok(Some(StructuredPublication::only(vec![
@@ -838,6 +938,9 @@ fn edit(
 ) -> Result<Option<StructuredPublication>> {
     owner.recover(store)?;
     let layout = candidate_indexes.structured_layout_sha256();
+    if base.rebuild().is_some() && layout != base.layout_sha256 {
+        return Ok(None);
+    }
     let mut rows: BTreeMap<Vec<u8>, Option<Vec<u8>>> = BTreeMap::new();
     let mut bytes = 0usize;
     let within = candidate_indexes.visit_structured_changes(
@@ -855,12 +958,11 @@ fn edit(
     if !within {
         return Ok(None);
     }
+    let mut next = base.advance(candidate.revision, applied, layout, base.records);
+    next.status = base.status.clone();
     if rows.is_empty() {
         // Metadata, denials and unindexed changes only move the boundary.
-        return Ok(Some(StructuredPublication::only(vec![
-            base.advance(candidate.revision, applied, layout, base.records)
-                .write()?,
-        ])));
+        return Ok(Some(StructuredPublication::only(vec![next.write()?])));
     }
     let memory = store.plaintext_memory_owner();
     let rows_lease = memory
@@ -882,14 +984,18 @@ fn edit(
             drop(inline);
             // A staged edit writes journaled batches before its publication.
             owner.recovery_pending.store(true, Ordering::Release);
-            ordered_pages::edit_tree_staged(store, &base.page_space, &base.records, &edits)?
+            ordered_pages::edit_tree_staged_batches(
+                store,
+                &base.page_space,
+                &base.records,
+                incremental::MAX_BATCHES,
+                |apply| apply(&edits),
+            )?
         };
     let (root, mut writes, workspace) = edit.into_parts();
     drop(edits);
-    writes.push(
-        base.advance(candidate.revision, applied, layout, root)
-            .write()?,
-    );
+    next.records = root;
+    writes.push(next.write()?);
     Ok(Some(StructuredPublication {
         writes,
         _workspace: Some(workspace),

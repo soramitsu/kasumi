@@ -1183,6 +1183,40 @@ impl TenantEngine {
     }
 
     #[cfg(test)]
+    pub(crate) fn seed_structured_rebuild_for_test(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let sources = self.application_sources.get().expect("installed sources");
+        let selected = current
+            .application_selection
+            .get()
+            .expect("selected source");
+        let applied = selected.structured_applied()?.expect("authenticated entry");
+        let store = sources.primary_installation().0.application();
+        // A previous small generation could still own a handful of retired
+        // pages. Its real scheduled cleanup must settle before seeding another.
+        while !sources.structured.finish_replacement_for_test(store)? {}
+        let mut partial = crate::application_structured::seed_for_test(
+            &sources.structured,
+            store,
+            &current.state,
+            &current.indexes,
+            applied.as_ref(),
+        )?;
+        store.write_batch(&partial.take_writes())?;
+        anyhow::ensure!(
+            self.rebase_selected(sources, current, selected, None)?,
+            "partial field directory was not selected"
+        );
+        sources
+            .structured
+            .maintenance_due
+            .store(true, Ordering::Release);
+        Ok(())
+    }
+
+    #[cfg(test)]
     pub(crate) fn substitute_text_history_for_test(
         &self,
         boundary: Option<kasumi_store::text_manifest::TextBoundary>,
@@ -1323,6 +1357,59 @@ impl TenantEngine {
                 return Ok(());
             }
             self.primary.caught_up();
+        }
+        Ok(())
+    }
+    /// Publish one bounded structured-index window against the exact selected
+    /// generation. The apply owner prevents a producer from moving the cursor
+    /// or its physical source during this native transaction.
+    pub(crate) fn structured_maintenance_step(&self) -> anyhow::Result<()> {
+        use std::sync::atomic::Ordering;
+        let Some(sources) = self
+            .application_sources
+            .get()
+            .filter(|s| s.rebases_selections())
+        else {
+            return Ok(());
+        };
+        let owner = &sources.structured;
+        if !owner.maintenance_due.load(Ordering::Acquire) || kasumi_store::deferred_batch_waiting()
+        {
+            return Ok(());
+        }
+        let apply = ApplyOwner::lock(self, || anyhow::anyhow!("tenant apply lock poisoned"))?;
+        let current = apply.current();
+        let Some(selection) = current
+            .application_selection
+            .get()
+            .filter(|_| !current.state.retired)
+        else {
+            return Ok(());
+        };
+        let Some(applied) = selection.structured_applied()? else {
+            return Ok(());
+        };
+        if crate::application_structured::maintain(
+            owner,
+            sources.primary_installation().0.application(),
+            &current.state,
+            &current.indexes,
+            current.document_resolver(),
+            applied.as_ref(),
+        )? {
+            if selection
+                .with_structured_records(
+                    None,
+                    &current.state,
+                    || current.indexes.structured_layout_sha256(),
+                    |_| Ok(()),
+                )?
+                .is_none()
+                && !self.rebase_selected(sources, current, selection, None)?
+            {
+                return Ok(());
+            }
+            owner.maintenance_due.store(false, Ordering::Release);
         }
         Ok(())
     }

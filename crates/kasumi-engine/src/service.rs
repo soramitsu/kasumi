@@ -2031,6 +2031,10 @@ impl Database {
                                             io_kind=?error.downcast_ref::<std::io::Error>().map(std::io::Error::kind),
                                             "primary maintenance deferred until its next scheduled step");
                                     }
+                                    if !pressured && let Err(error) = db.engine.structured_maintenance_step() {
+                                        tracing::warn!(event="structured_maintenance_deferred", reason=%error,
+                                            "structured maintenance deferred until its next scheduled step");
+                                    }
                                 }
                                 if !pressured && access.is_ok() && let Ok(generation) = db.engine.generation() {
                                     db.warm_selected_text(&generation);

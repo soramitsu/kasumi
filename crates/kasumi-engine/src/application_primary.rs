@@ -34,7 +34,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ops::Bound;
 use std::sync::{
-    Arc, Mutex,
+    Arc,
     atomic::{AtomicBool, AtomicU64, Ordering},
 };
 
@@ -62,13 +62,7 @@ pub(crate) struct PrimaryOwner {
     rebuild_after: AtomicU64,
     prefer_incremental: AtomicBool,
     maintenance_due: AtomicBool,
-    replacement: Mutex<Option<PendingReplacement>>,
-}
-
-struct PendingReplacement {
-    previous: String,
-    candidate: String,
-    _workspace: kasumi_store::DiskMemoryLease,
+    replacement: crate::directory_replacement::DirectoryReplacement,
 }
 
 impl Default for PrimaryOwner {
@@ -80,7 +74,7 @@ impl Default for PrimaryOwner {
             rebuild_after: AtomicU64::new(0),
             prefer_incremental: AtomicBool::new(false),
             maintenance_due: AtomicBool::new(true),
-            replacement: Mutex::new(None),
+            replacement: Default::default(),
         }
     }
 }
@@ -101,68 +95,17 @@ impl PrimaryOwner {
     pub(crate) fn caught_up(&self) {
         self.maintenance_due.store(false, Ordering::Release);
     }
-    fn replacement_slot(&self) -> Result<std::sync::MutexGuard<'_, Option<PendingReplacement>>> {
-        self.replacement
-            .lock()
-            .map_err(|_| anyhow::anyhow!("primary replacement owner poisoned"))
-    }
-
-    /// A failed Native begin can have a durable outcome. Record the original
-    /// proposed namespace before starting it and retain the two exact names.
     fn begin_replacement(
         &self,
         store: &Arc<TenantStore>,
         previous: &str,
     ) -> Result<NamespaceStage> {
-        let mut slot = self.replacement_slot()?;
-        ensure!(
-            slot.is_none(),
-            "previous primary replacement still owns native pages"
-        );
-        let workspace = store
-            .plaintext_memory_owner()
-            .clone()
-            .reserve_installed(1024)?;
-        let candidate = format!("{}@{}", primary::FAMILY, uuid::Uuid::new_v4());
-        *slot = Some(PendingReplacement {
-            previous: previous.to_owned(),
-            candidate,
-            _workspace: workspace,
-        });
-        NamespaceStage::begin(
-            store,
-            &slot
-                .as_ref()
-                .expect("installed original replacement")
-                .candidate,
-        )
+        self.replacement.begin(store, primary::FAMILY, previous)
     }
 
-    /// The paired selector determines whether the prior or proposed space is
-    /// unselected. Four deletion commits bound one ordinary application.
-    /// A process restart recovers the same durable native owners on reopen.
     fn advance_replacement_cleanup(&self, store: &Arc<TenantStore>) -> Result<bool> {
-        let mut slot = self.replacement_slot()?;
-        let Some(pending) = slot.as_ref() else {
-            return Ok(true);
-        };
-        let selected = SelectedGeneration::load(store, primary::FAMILY, &primary::INITIAL_SPACE)?;
-        let unselected = if selected.namespace(0) == pending.candidate {
-            &pending.previous
-        } else {
-            ensure!(
-                selected.namespace(0) == pending.previous,
-                "primary replacement selection changed"
-            );
-            &pending.candidate
-        };
-        for _ in 0..4 {
-            if NamespaceStage::reclaim(store, unselected)? {
-                *slot = None;
-                return Ok(true);
-            }
-        }
-        Ok(false)
+        self.replacement
+            .advance(store, primary::FAMILY, &primary::INITIAL_SPACE)
     }
 
     fn pending(&self) {
@@ -329,7 +272,7 @@ pub(crate) fn prepare_restore(
     ordered_pages::recover_abandoned_edits_in(store, primary::FAMILY)?;
     owner.settled();
     NamespaceStage::reclaim_family(store, primary::FAMILY)?;
-    *owner.replacement_slot()? = None;
+    owner.replacement.recovered()?;
     owner.prefer_incremental.store(false, Ordering::Release);
     owner.maintenance_due.store(true, Ordering::Release);
     let applied = snapshot_applied(meta)?;

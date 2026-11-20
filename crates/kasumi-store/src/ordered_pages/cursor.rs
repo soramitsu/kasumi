@@ -83,6 +83,13 @@ impl<'s> TreeReader<'s> {
         Ok(decoded)
     }
 
+    /// Check row presence without decoding its overflow value.
+    pub fn contains_key(&self, key: &[u8]) -> Result<bool> {
+        let present = self.find(key, |value| Ok(value.is_some()))?;
+        self.source.check_access()?;
+        Ok(present)
+    }
+
     /// Copy the value at `key` into `out`, overflow included.
     pub fn get(&self, key: &[u8], out: &mut Vec<u8>) -> Result<bool> {
         self.find(key, |value| match value {

@@ -1401,7 +1401,7 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         assert!(snapshot.bytes > 0 && snapshot.chunks > 0);
         assert!(!proof.is_covered_reconstruction());
     }
-    let source = Fixture::new().await?;
+    let source = Fixture::with_admission(1, None, NodeAdmission::new_fixture).await?;
     let source_audit = audit(&source.node, &source.storage.admission, false).await?;
     crate::test_utils::install_fixture_audit_placement(source.stores.application())?;
     let source_engine = Arc::new(TenantEngine::from_bootstrap(
@@ -1629,10 +1629,55 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
             source.stores.application(),
         )?
         .unwrap();
-        assert_eq!(fields.is_current(), current);
-        if current {
+        assert!(!current || fields.is_current());
+        if fields.is_current() {
             assert_eq!(fields.records.count(), 11);
         }
+    }
+    // A registered idle worker repairs an actual selected generation with
+    // disk-backed documents. A reader pinned before recovery keeps its root.
+    {
+        let retained = source_engine.generation()?;
+        let expected = retained.state.revision;
+        source_engine.seed_structured_rebuild_for_test()?;
+        tokio::time::timeout(std::time::Duration::from_secs(30), async {
+            loop {
+                let current = source_engine.generation()?;
+                anyhow::ensure!(
+                    current.state.revision == expected,
+                    "structured repair changed its logical revision"
+                );
+                if current
+                    .application_selection
+                    .get()
+                    .unwrap()
+                    .with_structured_records(
+                        None,
+                        &current.state,
+                        || current.indexes.structured_layout_sha256(),
+                        |t| Ok(t.root().count()),
+                    )?
+                    == Some(11)
+                {
+                    return Ok::<_, anyhow::Error>(());
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
+        })
+        .await??;
+        assert_eq!(
+            retained
+                .application_selection
+                .get()
+                .unwrap()
+                .with_structured_records(
+                    None,
+                    &retained.state,
+                    || retained.indexes.structured_layout_sha256(),
+                    |t| Ok(t.root().count())
+                )?,
+            Some(11)
+        );
     }
     let expected = source_db
         .raft_group()
