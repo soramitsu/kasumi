@@ -419,12 +419,31 @@ impl TargetJournal {
             // Keep the authenticated root pinned, but release the writer before
             // the visitor contacts a backup destination or a historical provider.
             drop(_guard);
-            if head.generations != 0 {
+            if head.generations != 0 || head.dispatches != 0 {
                 view.visit(NS, MAX_RECORD, |key, value| {
                     token.check()?;
                     if key.starts_with(b"generation/") {
                         let row: GenerationBinding = decode_current(value)?;
                         checkpoint(row.target_incarnation, &row.checkpoint)?;
+                    } else if key.starts_with(b"dispatch/") {
+                        let row = self.validate_dispatch_record(key, value)?;
+                        let request = &row.lifecycle.request;
+                        let generation =
+                            generation_key(&request.tenant, request.target_incarnation);
+                        if let Some(bytes) = view.get(NS, &generation, MAX_RECORD)? {
+                            let original: GenerationBinding = decode_current(&bytes)?;
+                            ensure!(
+                                original.checkpoint == request.checkpoint
+                                    && original.source_incarnation == request.source_incarnation
+                                    && original.source_epoch == request.source_authority_epoch
+                                    && original.nodes == request.target_nodes,
+                                "target dispatch differs from its retained generation"
+                            );
+                        } else {
+                            // A lost initial dispatch can precede the first local
+                            // prepare. Its immutable checkpoint is already retained.
+                            checkpoint(request.target_incarnation, &request.checkpoint)?;
+                        }
                     }
                     Ok(())
                 })?;

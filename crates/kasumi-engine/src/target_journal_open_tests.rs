@@ -869,6 +869,22 @@ async fn accepted_dispatch_derives_only_exact_signed_initial_membership() -> Res
         else {
             anyhow::bail!("signed first dispatch returned no candidate")
         };
+        let mut checkpoints = Vec::new();
+        journal.visit_key_dependencies(
+            &kasumi_query::QueryCancellation::default(),
+            |_| Ok(()),
+            |id, checkpoint| {
+                checkpoints.push((id, checkpoint.clone()));
+                Ok(())
+            },
+        )?;
+        assert_eq!(
+            checkpoints,
+            [(
+                lifecycle.request.target_incarnation,
+                lifecycle.request.checkpoint.clone()
+            )]
+        );
         let membership = candidate
             .verify_initial_membership(f.installed.node.node_id, LifecyclePhase::Initialize)?;
         let expected: std::collections::BTreeMap<u64, String> = (1..=3)
