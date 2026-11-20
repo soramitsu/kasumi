@@ -23,6 +23,7 @@ pub(super) struct PointRead {
     pub(super) registration: Option<Arc<WorkRegistration>>,
     memory: Option<QueryMemory<Reservation>>,
     charge: Option<Arc<Reservation>>,
+    primary_bytes: u64,
 }
 impl PointRead {
     pub(super) fn new(reservation: Reservation) -> Self {
@@ -33,6 +34,7 @@ impl PointRead {
             registration: None,
             memory: Some(QueryMemory::empty(reservation)),
             charge: None,
+            primary_bytes: 0,
         }
     }
     fn claim(&mut self, bytes: u64) -> Result<()> {
@@ -42,12 +44,12 @@ impl PointRead {
             .reserve(bytes)
     }
     fn retain_charge(&mut self) -> Arc<Reservation> {
-        let mut reservation = self
-            .memory
-            .take()
-            .expect("point workspace present")
-            .into_workspace();
-        reservation.retain_workspace();
+        let memory = self.memory.take().expect("point workspace present");
+        // The lookup strings and typed primary descriptor have been dropped.
+        // Only the registration and the selected output survive this handoff.
+        let retained = memory.live_bytes() - self.primary_bytes;
+        let mut reservation = memory.into_workspace();
+        reservation.retain(retained);
         let charge = Arc::new(reservation);
         self.charge = Some(charge.clone());
         charge
@@ -156,6 +158,11 @@ impl PointRead {
         }
         // Query input and typed descriptor allocations outlive the forked
         // native reader. Charge them to the operation before taking ownership.
+        let before_primary = self
+            .memory
+            .as_ref()
+            .expect("point workspace present")
+            .live_bytes();
         self.claim((collection.len() + id.len()) as u64 + 4096)?;
         let collection = collection.to_owned();
         let id = id.to_owned();
@@ -192,6 +199,12 @@ impl PointRead {
                 None => resident(state, &collection, &id)?,
             };
             token.check()?;
+            self.primary_bytes = self
+                .memory
+                .as_ref()
+                .expect("point workspace present")
+                .live_bytes()
+                - before_primary;
             Ok((self, permit, point))
         });
         tokio::select! {
@@ -224,6 +237,7 @@ impl PointRead {
                 slot.load_owned(generation.document_resolver())
                     .map_err(document_load_error)?,
             );
+            drop(slot);
             worker_cancellation.check()?;
             let response = Some(select(&mut self)?);
             drop(self.document.take());
@@ -351,6 +365,7 @@ impl Database {
                     )) => result.map_err(|_| point_deadline_error())??,
                     _ = cancelled(&cancellation) => return Err(cancelled_error()),
                 };
+                drop(reference);
                 read.document = Some(document);
                 cancellation.check()?;
                 let response = Some(select(&mut read)?);

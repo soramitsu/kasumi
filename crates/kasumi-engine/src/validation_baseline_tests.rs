@@ -772,8 +772,8 @@ fn binding_candidate(
     }
     row.record.position.index = 2;
     let mut builder = crate::backup_binding::Builder::new(disk, 64 << 20, &state.incarnation)?;
-    builder.push(&row, &state)?;
     crate::backup_binding::advance(&mut state.backup_binding_head, &row)?;
+    builder.push(&row, &state)?;
     let bindings = builder.finish(&state.backup_binding_head)?;
     let mut candidate = Candidate::empty(state)?;
     candidate.bindings = bindings;
