@@ -7,6 +7,8 @@ use kasumi_store::{EncryptedTable, EncryptedTableBatch, SnapshotImage};
 use std::io::{Read, Seek, SeekFrom};
 
 type Key = (u8, String, String);
+#[path = "snapshot_index_locations.rs"]
+mod locations;
 const KINDS: usize = crate::snapshot_codec::RECORD_KINDS as usize;
 
 pub(crate) struct StagedSnapshot {
@@ -60,6 +62,7 @@ impl StagedSnapshot {
             let mut previous_change_item = None;
             let mut group: Option<(u8, String, u64, u64, u64)> = None;
             let mut pending = PendingIndex::new(&index);
+            let mut locations: Option<locations::LocationPage> = None;
             let summary = crate::snapshot_codec::visit::<anyhow::Error>(
                 &mut image.reader(),
                 |position, record| {
@@ -72,6 +75,9 @@ impl StagedSnapshot {
                         .as_ref()
                         .is_some_and(|(kind, primary, _, _, _)| *kind != key.0 || primary != &key.1)
                     {
+                        if let Some(page) = &mut locations {
+                            page.flush(&mut pending, &mut check)?;
+                        }
                         write_group(
                             &mut pending,
                             group.take().expect("present group"),
@@ -193,10 +199,25 @@ impl StagedSnapshot {
                     let mut location = [0u8; 16];
                     location[..8].copy_from_slice(&position.offset.to_be_bytes());
                     location[8..].copy_from_slice(&position.bytes.to_be_bytes());
-                    pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
+                    if locations::packed(key.0) {
+                        if locations.is_none() {
+                            locations = Some(locations::LocationPage::new(&image)?);
+                        }
+                        locations.as_mut().expect("installed location page").push(
+                            &key,
+                            &location,
+                            &mut pending,
+                            &mut check,
+                        )?;
+                    } else {
+                        pending.insert(&serde_json::to_vec(&key)?, &location, &mut check)?;
+                    }
                     check()
                 },
             )?;
+            if let Some(page) = &mut locations {
+                page.flush(&mut pending, &mut check)?;
+            }
             if let Some(group) = group {
                 write_group(&mut pending, group, &mut check)?;
             }
@@ -441,10 +462,20 @@ fn require(index: &EncryptedTable, key: &Key) -> Result<()> {
 }
 
 fn get_record(image: &SnapshotImage, index: &EncryptedTable, key: &Key) -> Result<Option<Record>> {
-    let Some(bytes) = index.get(&serde_json::to_vec(key)?)? else {
+    let location = if locations::packed(key.0) {
+        locations::get(index, key)?
+    } else {
+        index
+            .get(&serde_json::to_vec(key)?)?
+            .map(|row| {
+                <[u8; 16]>::try_from(row.as_bytes())
+                    .map_err(|_| anyhow::anyhow!("snapshot index location differs"))
+            })
+            .transpose()?
+    };
+    let Some(bytes) = location else {
         return Ok(None);
     };
-    ensure!(bytes.len() == 16, "snapshot index location differs");
     let position = RecordPosition {
         offset: u64::from_be_bytes(bytes[..8].try_into()?),
         bytes: u64::from_be_bytes(bytes[8..].try_into()?),

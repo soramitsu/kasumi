@@ -395,6 +395,26 @@ impl EncryptedTable {
             .get(key)?
             .map(|value| ScratchTableValue::new(value, self.owner.clone())))
     }
+    /// Read the first row at or above the bound in one point-index namespace.
+    pub fn first_at_or_after(
+        &self,
+        prefix: &[u8],
+        key: &[u8],
+    ) -> Result<Option<ScratchTableValue>> {
+        ensure!(
+            !prefix.is_empty() && key.starts_with(prefix),
+            "scratch index bound differs from its prefix"
+        );
+        let reader = self.owner.database().begin_read()?;
+        let table = reader.open_table(TABLE)?;
+        let Some((found, value)) = table.range(key..)?.next().transpose()? else {
+            return Ok(None);
+        };
+        Ok(found
+            .value()
+            .starts_with(prefix)
+            .then(|| ScratchTableValue::new(value, self.owner.clone())))
+    }
     /// Replace a scratch accumulator. Permanent identities use `insert`, which
     /// rejects duplicates; this operation is only for unpublished working tables.
     pub fn set(&self, key: &[u8], value: &[u8]) -> Result<()> {

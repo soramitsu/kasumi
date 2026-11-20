@@ -184,6 +184,35 @@ fn image(scope: &ScratchScope, records: Vec<Record>) -> SnapshotImage {
 }
 
 #[test]
+fn document_point_reads_seek_across_encrypted_location_pages_and_collection_boundaries() {
+    let scope = scratch();
+    let mut records = vec![collection("alpha"), collection("beta")];
+    let mut rows: Vec<_> = (0..520).map(|id| document("alpha", id)).collect();
+    rows.sort_by_key(Record::order);
+    let keys: Vec<_> = rows.iter().map(Record::order).collect();
+    records.extend(rows);
+    records.push(document("beta", 7));
+    let staged = StagedSnapshot::new(image(&scope, records), 64 << 20, || Ok(())).unwrap();
+    for offset in [0, 255, 256, 511, 512, 519] {
+        let (kind, collection, id) = &keys[offset];
+        assert_eq!(
+            staged.get(*kind, collection, id).unwrap().unwrap().order(),
+            keys[offset]
+        );
+        assert!(
+            staged
+                .get(*kind, collection, &format!("{id}!"))
+                .unwrap()
+                .is_none()
+        );
+    }
+    assert!(staged.get(3, "alpha", "zzzz").unwrap().is_none());
+    assert!(staged.get(3, "absent", "row-07").unwrap().is_none());
+    assert!(staged.get(3, "beta", "row-07").unwrap().is_some());
+    assert!(staged.get(4, "beta", "row-07").unwrap().is_none());
+}
+
+#[test]
 fn staged_index_flushes_parent_kinds_and_retains_group_cursors_across_batches() {
     let scope = scratch();
     let mut records = vec![collection("alpha"), collection("beta")];
