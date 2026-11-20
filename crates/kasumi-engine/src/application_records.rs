@@ -608,6 +608,7 @@ pub(crate) fn primary_rows(
     revision: u64,
     memory: &Arc<dyn kasumi_store::NodeDiskMemoryAdmission>,
     rows: &mut BTreeMap<Vec<u8>, Option<Vec<u8>>>,
+    leases: &mut Vec<kasumi_store::DiskMemoryLease>,
 ) -> Result<usize> {
     let mut added = 0usize;
     let mut insert = |key: Vec<u8>, value: Option<Vec<u8>>| {
@@ -616,18 +617,19 @@ pub(crate) fn primary_rows(
             .saturating_add(value.as_ref().map_or(0, Vec::len));
         rows.insert(key, value);
     };
+    let mut encode = |record: DurableRecord<'_>| -> Result<Vec<u8>> {
+        let PrimaryValue { bytes, _lease } = encode_primary(&record, memory)?;
+        leases.push(_lease);
+        Ok(bytes)
+    };
     let live = collection
         .and_then(|collection| collection.documents.get(id))
-        .map(|slot| -> Result<Vec<u8>> {
-            Ok(encode_primary(&DurableRecord::Document(stored(slot)?), memory)?.bytes)
-        })
+        .map(|slot| -> Result<Vec<u8>> { encode(DurableRecord::Document(stored(slot)?)) })
         .transpose()?;
     insert(document_key(name, id), live);
     let archived = collection
         .and_then(|collection| collection.archived_documents.get(id))
-        .map(|archived| -> Result<Vec<u8>> {
-            Ok(encode_primary(&DurableRecord::Archived(archived), memory)?.bytes)
-        })
+        .map(|archived| encode(DurableRecord::Archived(archived)))
         .transpose()?;
     insert(archive_key(name, id), archived);
     let header = collection

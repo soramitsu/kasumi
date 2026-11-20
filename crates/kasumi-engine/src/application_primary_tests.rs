@@ -1,8 +1,8 @@
 use super::*;
 use kasumi_store::test_utils::LocalKeyProvider;
 use kasumi_types::{
-    CollectionDefinition, CollectionRetentionClass, CollectionWriteMode, DocumentSlot, Limits,
-    Policy, StoredDocument,
+    CollectionDefinition, CollectionRetentionClass, CollectionState, CollectionWriteMode,
+    DocumentSlot, Limits, Policy, StoredDocument,
 };
 
 struct Fixture {
@@ -243,6 +243,24 @@ fn the_directory_step_follows_the_exact_predecessor_and_skips_covered_replay() {
     ));
 }
 
+fn changed_ids(
+    previous: &TenantState,
+    candidate: &TenantState,
+    changed: &ChangedIds,
+) -> Result<ChangedIds> {
+    let mut observed = ChangedIds::new();
+    visit_changed_ids(previous, candidate, changed, |collection, id| {
+        assert!(
+            observed
+                .entry(collection.into())
+                .or_default()
+                .insert(id.into())
+        );
+        Ok(())
+    })?;
+    Ok(observed)
+}
+
 #[test]
 fn the_edit_set_uses_the_producer_delta_and_whole_changed_collections() {
     let s0 = genesis();
@@ -284,10 +302,12 @@ fn the_edit_set_uses_the_producer_delta_and_whole_changed_collections() {
         BTreeSet::from(["b".into(), "c".into()])
     );
     // Beyond the bound the directory cannot be edited in place.
-    let many: Vec<String> = (0..=MAX_EDIT_IDS).map(|n| format!("id-{n:05}")).collect();
+    let many: Vec<String> = (0..=MAX_REBUILD_IDS)
+        .map(|n| format!("id-{n:05}"))
+        .collect();
     let many: Vec<&str> = many.iter().map(String::as_str).collect();
     let (large, changed) = next(&s2, s2.revision + 1, "docs", &many, &[]);
-    assert!(changed_ids(&s2, &large, &changed).is_none());
+    assert_eq!(changed_ids(&s2, &large, &changed).unwrap(), changed);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -409,19 +429,48 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     .unwrap();
     before_replacement.close().unwrap();
 
-    // Ordinary edits continue on the rebuilt tree; an oversized delta goes
-    // stale instead of failing the apply.
+    // A delta larger than the entire synchronous rebuild allowance streams
+    // through one bounded journal. Subsequent writes retain the same tree.
     let (s5, changed) = next(&s4, s4.revision + 1, "docs", &["f"], &["a"]);
     fixture
         .publish(prepare_publication(&owner, store, &s4, &s5, &changed, applied(&s5, 1)).unwrap());
     fixture.verify(&s5);
-    let many: Vec<String> = (0..=MAX_EDIT_IDS).map(|n| format!("bulk-{n:05}")).collect();
+    let many: Vec<String> = (0..=MAX_REBUILD_IDS)
+        .map(|n| format!("bulk-{n:05}"))
+        .collect();
     let many: Vec<&str> = many.iter().map(String::as_str).collect();
     let (s6, changed) = next(&s5, s5.revision + 1, "docs", &many, &[]);
     fixture
         .publish(prepare_publication(&owner, store, &s5, &s6, &changed, applied(&s6, 1)).unwrap());
-    let stale = fixture.current();
-    assert!(!stale.is_current() && stale.revision == s6.revision);
+    fixture.verify(&s6);
+    let large_root = fixture.current();
+    let (s7, changed) = next(
+        &s6,
+        s6.revision + 1,
+        "docs",
+        &["bulk-00300"],
+        &["bulk-00001"],
+    );
+    fixture
+        .publish(prepare_publication(&owner, store, &s6, &s7, &changed, applied(&s7, 1)).unwrap());
+    fixture.verify(&s7);
+    assert_eq!(fixture.current().records.tree, large_root.records.tree);
+
+    // A genuinely stale large base must not trigger a full foreground rebuild.
+    let stale = fixture.current().stale(s7.revision, applied(&s7, 1));
+    store.write_batch(&[stale.write().unwrap()]).unwrap();
+    let (s8, changed) = next(&s7, s7.revision + 1, "docs", &["another"], &[]);
+    assert!(
+        prepare_publication(&owner, store, &s7, &s8, &changed, applied(&s8, 1))
+            .unwrap()
+            .is_none()
+    );
+    assert_eq!(fixture.current(), stale);
+    // Installing an authenticated snapshot uses the streaming bulk recovery path.
+    let mut writes = Vec::new();
+    prepare_restore(&owner, store, &s8, &snapshot_meta(&s8), false, &mut writes).unwrap();
+    store.write_batch(&writes).unwrap();
+    fixture.verify(&s8);
     fixture.close().await;
 }
 
