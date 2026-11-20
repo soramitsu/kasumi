@@ -471,9 +471,21 @@ async fn ordinary_publications_edit_one_tree_and_replay_cannot_move_it() {
     fixture.verify(&s7);
     assert_eq!(fixture.current().records.tree, large_root.records.tree);
 
-    // A genuinely stale large base must not trigger a full foreground rebuild.
-    let stale = fixture.current().stale(s7.revision, applied(&s7, 1));
-    store.write_batch(&[stale.write().unwrap()]).unwrap();
+    // Covered replay at the same genuine boundary must not synchronously
+    // verify this whole directory. An already selected reader keeps its
+    // complete authenticated root while the new selection is withdrawn.
+    let pinned = store.read_view().unwrap();
+    let original = fixture.current();
+    fixture
+        .publish(prepare_publication(&owner, store, &s6, &s7, &changed, applied(&s7, 1)).unwrap());
+    let stale = fixture.current();
+    assert_eq!(stale, original.stale(s7.revision, applied(&s7, 1)));
+    assert_eq!(
+        PrimaryManifest::load_at(&pinned).unwrap().unwrap(),
+        original
+    );
+    verify_rows(&pinned, &original, &s7, store.plaintext_memory_owner()).unwrap();
+    pinned.close().unwrap();
     let (s8, changed) = next(&s7, s7.revision + 1, "docs", &["another"], &[]);
     fixture
         .publish(prepare_publication(&owner, store, &s7, &s8, &changed, applied(&s8, 1)).unwrap());

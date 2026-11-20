@@ -36,6 +36,7 @@ impl VerifiedTargetMaterialization {
             .check_target(self.stores.application(), self.phase)?;
         let stores = self.stores.clone();
         let expected = self.fact.bootstrap_sha256.clone();
+        let authorization = TargetPublication::new(operation);
         let reservation = Arc::new(self.admission.reserve(
             (CHUNK * 3 + 64 * 1024) as u64,
             Some(operation.token.clone()),
@@ -45,7 +46,7 @@ impl VerifiedTargetMaterialization {
                 operation
                     .deadline
                     .blocking(reservation, Some(operation.work.clone()), move || {
-                        verify_persisted_digest(&stores, &expected)
+                        verify_persisted_digest(&stores, &expected, || authorization.check())
                     })
                     .await
             })
@@ -53,7 +54,12 @@ impl VerifiedTargetMaterialization {
         self.release.check(operation)
     }
 }
-fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow::Result<()> {
+pub(super) fn verify_persisted_digest(
+    stores: &TenantStorageSet,
+    expected: &str,
+    mut check: impl FnMut() -> anyhow::Result<()>,
+) -> anyhow::Result<()> {
+    check()?;
     stores.check_access()?;
     let manifest = read_current_manifest(stores.application())?
         .ok_or_else(|| anyhow::anyhow!("target bootstrap absent"))?;
@@ -64,6 +70,7 @@ fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow:
     let mut digest = Sha256::new();
     let mut read = 0;
     for index in 0..manifest.chunks {
+        check()?;
         let bytes = stores
             .application()
             .get_bounded(NS, &index.to_be_bytes(), CHUNK)?
@@ -76,6 +83,7 @@ fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow:
         digest.update(&bytes);
         stores.check_access()?;
     }
+    check()?;
     anyhow::ensure!(
         read == manifest.bytes && hex::encode(digest.finalize()) == expected,
         "target durable bootstrap digest differs"
@@ -89,7 +97,8 @@ fn verify_persisted_digest(stores: &TenantStorageSet, expected: &str) -> anyhow:
             == Some(serde_json::to_vec(expected)?.as_slice()),
         "target custody bootstrap binding differs"
     );
-    stores.check_access()
+    stores.check_access()?;
+    check()
 }
 #[allow(clippy::too_many_arguments)]
 pub async fn materialize_target_replica(
@@ -267,11 +276,7 @@ async fn materialize_origin(
     let publication_workspace = restored.publication_workspace();
     let bytes = restored.bytes;
     let expected = restored.sha256.clone();
-    let authorization = TargetPublication {
-        invocation: operation.invocation().clone(),
-        token: operation.token.clone(),
-        deadline: operation.deadline,
-    };
+    let authorization = TargetPublication::new(operation);
     operation
         .run(operation.deadline.blocking(
             publication_workspace,
@@ -285,7 +290,7 @@ async fn materialize_origin(
                     .get_bounded(NS, b"manifest", MAX_BOOTSTRAP_MANIFEST_BYTES)?
                     .is_some()
                 {
-                    verify_persisted_digest(&stores, &expected)?;
+                    verify_persisted_digest(&stores, &expected, || authorization.check())?;
                 } else {
                     persist_target(&stores, &bytes, &identity, &authorization)?;
                 }
@@ -326,15 +331,19 @@ async fn materialize_origin(
     })
 }
 struct TargetPublication {
-    invocation: crate::TargetLifecycleInvocation,
-    token: kasumi_query::QueryCancellation,
+    work: Arc<crate::backup_verify::VerificationWork>,
     deadline: crate::backup_verify::VerificationDeadline,
 }
 impl TargetPublication {
+    fn new(operation: &TargetOperation) -> Self {
+        Self {
+            work: operation.work.clone(),
+            deadline: operation.deadline,
+        }
+    }
     fn check(&self) -> anyhow::Result<()> {
-        self.token.check()?;
         self.deadline.check()?;
-        self.invocation.check()?;
+        self.work.check()?;
         Ok(())
     }
 }

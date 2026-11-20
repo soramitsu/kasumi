@@ -263,6 +263,41 @@ impl QueryIndexes {
             128,
         )?)?;
         indexes.structured.validate(&filter, false)?;
+        if matches!(filter, structured::Node::All) {
+            let baseline = memory.live_bytes();
+            let mut ids = Vec::<String>::new();
+            let mut slots = 0usize;
+            let available = source.visit_primary_ids(cancellation, |id| {
+                cancellation.check()?;
+                if ids.last().is_some_and(|previous| previous.as_str() >= id) {
+                    return Err(Error::new(
+                        ErrorCode::Corruption,
+                        "unordered primary directory",
+                    ));
+                }
+                structured::check_size(ids.len() + 1, limits.max_query_candidates)?;
+                if ids.len() == slots {
+                    let next = slots
+                        .saturating_mul(2)
+                        .max(32)
+                        .min(limits.max_query_candidates);
+                    // A reallocating result may briefly own both buffers.
+                    memory.reserve(allocation::vec_bytes::<String>(next)?)?;
+                    ids.reserve_exact(next - slots);
+                    memory.release(allocation::vec_bytes::<String>(slots)?)?;
+                    slots = next;
+                }
+                memory.reserve(allocation::string_clone_bytes(id)?)?;
+                ids.push(id.to_owned());
+                Ok(())
+            })?;
+            if available {
+                return Ok((ids, memory.live_bytes() - baseline));
+            }
+            if !ids.is_empty() {
+                return Err(Error::new(ErrorCode::Corruption, "partial primary directory").into());
+            }
+        }
         let candidates = match indexes.structured.stored_posting(
             source,
             &filter,

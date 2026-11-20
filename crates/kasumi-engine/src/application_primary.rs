@@ -180,8 +180,20 @@ pub(crate) fn verify_rows(
             && manifest.logical_bytes == state.logical_bytes,
         "primary directory scope or totals differ from the selected state"
     );
+    // The authenticated root describes every key and value byte. A damaged
+    // or foreign directory cannot make us hash more resident rows than it
+    // could possibly contain.
+    let mut remaining_rows = manifest.records.count();
+    let mut remaining_bytes = manifest.records.bytes();
     let mut expected = Sha256::new();
     application_records::visit_primary(state, memory, |key, value| {
+        remaining_rows = remaining_rows
+            .checked_sub(1)
+            .context("primary directory row count differs")?;
+        remaining_bytes = remaining_bytes
+            .checked_sub(key.len() as u64)
+            .and_then(|left| left.checked_sub(value.len() as u64))
+            .context("primary directory byte count differs")?;
         record_digest(
             &mut expected,
             key,
@@ -190,6 +202,10 @@ pub(crate) fn verify_rows(
         );
         Ok(())
     })?;
+    ensure!(
+        remaining_rows == 0 && remaining_bytes == 0,
+        "primary directory row or byte count differs"
+    );
     let reader = TreeReader::new(source, &manifest.page_space, manifest.records, None)?;
     let mut selected = Sha256::new();
     reader.scan(Bound::Unbounded, Direction::Forward, &mut |key, value| {
@@ -496,6 +512,18 @@ pub(crate) fn prepare_publication_at(
             let same = manifest.matches_applied(applied.as_ref());
             let verified = if same && manifest.rebuild().is_some() {
                 Ok(())
+            } else if same
+                && (manifest.records.count() > 2 * MAX_REBUILD_IDS as u64
+                    || manifest.records.bytes() > MAX_EDIT_BYTES as u64)
+            {
+                // An ordinary Raft replay must not verify the whole population
+                // inline. Keep prior readers on their root, withdraw this root
+                // from the new selection and repair it under the writer's
+                // existing bounded cursor at the committed position.
+                owner.prefer_incremental.store(true, Ordering::Release);
+                Err(anyhow::anyhow!(
+                    "primary boundary exceeds the ordinary verification budget"
+                ))
             } else if same {
                 verify_rows(
                     &**store,
