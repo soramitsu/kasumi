@@ -36,11 +36,15 @@ pub(super) struct LocationPage {
 
 impl LocationPage {
     pub(super) fn new(image: &SnapshotImage) -> Result<Self> {
+        // This temporary structural index stores keys and offsets. Charge its
+        // buffers as required snapshot work, like its encrypted scratch table.
+        // A document-source lease would reserve another cache-work corridor
+        // while the enclosing verifier already holds its admitted index budget.
         let charge = image
             .disk()
             .memory()
             .clone()
-            .reserve_document_decode((PAGE_BYTES + KEY_BYTES + 256) as u64)?;
+            .reserve_installed((PAGE_BYTES + KEY_BYTES + 256) as u64)?;
         Ok(Self {
             bytes: Vec::with_capacity(PAGE_BYTES),
             last: Vec::with_capacity(KEY_BYTES),
