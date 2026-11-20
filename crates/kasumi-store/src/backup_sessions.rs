@@ -1381,13 +1381,21 @@ mod tests {
         );
         read.audit_verifier(access.purpose(), keys.as_ref())
             .unwrap();
-        let mut versions = Vec::new();
-        read.visit_wrapping_keys(|_, _, v| {
-            versions.push(v);
+        let mut original_keys = Vec::new();
+        store
+            .visit_wrapping_identities(|_, provider, key_ref, version| {
+                original_keys.push((provider.to_owned(), key_ref.to_owned(), version));
+                Ok(())
+            })
+            .unwrap();
+        let mut observed = Vec::new();
+        read.visit_wrapping_keys(|provider, key_ref, version| {
+            observed.push((provider.to_owned(), key_ref.to_owned(), version));
             Ok(())
         })
         .unwrap();
-        assert_eq!(versions, vec![1]);
+        assert!(!original_keys.is_empty());
+        assert_eq!(observed, original_keys);
         assert!(
             verify_target_journal_backup_session(&destination, &checkpoint, &store, keys.clone())
                 .await
