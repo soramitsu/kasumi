@@ -188,11 +188,11 @@ async fn host_one_original_issuer_member() -> Result<()> {
         .get(caller)
         .context("member outside fixture")?
         .clone();
-    if std::env::var_os("KASUMI_ISSUER_CRASH_PROVISION").is_some() {
-        if let Err(original) = config.provision_node().await {
-            eprintln!("issuer member enrollment failed: {original:?}");
-            std::panic::panic_any(original);
-        }
+    if std::env::var_os("KASUMI_ISSUER_CRASH_PROVISION").is_some()
+        && let Err(original) = config.provision_node().await
+    {
+        eprintln!("issuer member enrollment failed: {original:?}");
+        std::panic::panic_any(original);
     }
     let runtime = AuthorityRuntime::open(config).await?;
     let authority = runtime.authority.clone();
