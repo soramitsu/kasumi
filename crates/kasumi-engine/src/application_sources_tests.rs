@@ -1779,11 +1779,21 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
         // Remove the resident descriptors from a private read view. The
         // installed query still resolves the durable point and its body.
         let mut collections = reopened.state.collections.clone();
-        collections
-            .get_mut("docs")
-            .unwrap()
-            .documents
-            .remove("point");
+        let local = collections.get_mut("docs").unwrap();
+        local.documents.remove("point");
+        // A stale resident archive entry must never trigger an external read:
+        // the authenticated directory owns both the point and the scan.
+        local.archived_documents.insert(
+            "absent".into(),
+            Arc::new(kasumi_types::ArchivedDocument {
+                version: slot.version(),
+                archive_id: "unselected".into(),
+                chunk_index: 0,
+                document_sha256: "00".repeat(32),
+                document_bytes: 1,
+                indexed_fields: Default::default(),
+            }),
+        );
         let detached = Arc::new(reopened.read_view(collections, vec![]));
         let persisted = detached.document_source("docs")?;
         persisted
@@ -1801,6 +1811,27 @@ async fn selected_sources_actual_snapshot_install_and_encrypted_reopen_preserve_
                 Ok(())
             })
             .map_err(crate::index_source::into_anyhow)?;
+        for id in ["point", "absent"] {
+            assert!(
+                persisted
+                    .history_reference(id, &cancellation, |_| {
+                        panic!("live or missing point requested archive workspace")
+                    })
+                    .map_err(crate::index_source::into_anyhow)?
+                    .is_none()
+            );
+        }
+        let mut history_rows = Vec::new();
+        persisted
+            .visit_history_scan(&cancellation, |id, archived| {
+                history_rows.push((id.to_owned(), archived));
+                Ok(())
+            })
+            .map_err(crate::index_source::into_anyhow)?;
+        assert_eq!(
+            history_rows,
+            [("alpha".to_owned(), false), ("point".to_owned(), false)]
+        );
         for (after, expected) in [
             (None, Some("alpha")),
             (Some("alpha"), Some("point")),
