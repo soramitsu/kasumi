@@ -72,7 +72,7 @@ def plan(parameters, image, python, probe):
     volume = name + ":/var/lib/kasumi"
     reference = image["reference"]
     inputs = init_inputs(port)
-    write = "mkdir " + INPUTS + " && " + " && ".join(
+    write = "umask 077 && mkdir " + INPUTS + " && " + " && ".join(
         "printf '%s' '" + json.dumps(inputs[key], sort_keys=True, separators=(",", ":"))
         + "' > " + INPUTS + "/" + key + ".json" for key in sorted(inputs))
     profile = INSTALLATION + "/profiles/"

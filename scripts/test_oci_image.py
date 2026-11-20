@@ -10,6 +10,7 @@ import http.server
 import io
 import json
 from pathlib import Path
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -434,6 +435,14 @@ class SmokeTests(ImageFixture):
         self.assertEqual(commands["mcp"][:5], ["/usr/bin/python3", "-I", "-B", "-S",
                                                "/frozen/scripts/mcp_probe.py"])
         self.assertIn('"mcp_listen":"127.0.0.1:9440"', commands["inputs"][-1])
+        directory = self.root / "policy-inputs"
+        script = commands["inputs"][-1].replace(smoke.INPUTS, shlex.quote(str(directory)))
+        subprocess.run(["/bin/sh", "-c", "umask 022; " + script], check=True)
+        self.assertEqual(directory.stat().st_mode & 0o777, 0o700)
+        for name, expected in smoke.init_inputs(parameters["base_port"]).items():
+            policy = directory / (name + ".json")
+            self.assertEqual(policy.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(policy.read_text()), expected)
         self.assertEqual({scenario for _, scenario, _ in steps if scenario},
                          {"load-image", "fresh-install", "native", "mcp", "restart", "clean-stop"})
 
