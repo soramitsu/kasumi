@@ -16,6 +16,7 @@ use uuid::Uuid;
 mod accounting;
 #[path = "target_journal_retirements.rs"]
 mod retirements;
+use retirements::JournalCheckpointPermit;
 pub use retirements::TargetWriterRead;
 const NS: &str = "target.journal";
 #[cfg(test)]
@@ -638,6 +639,14 @@ impl TargetJournal {
         op: &TargetOperation,
         exact_input_sha256: &str,
     ) -> Result<TargetJournalIntent> {
+        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None)
+    }
+    fn prepare_with_checkpoint_permit(
+        &self,
+        op: &TargetOperation,
+        exact_input_sha256: &str,
+        permit: Option<&JournalCheckpointPermit>,
+    ) -> Result<TargetJournalIntent> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
             .mutation
@@ -704,7 +713,13 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
-            metadata.retirements.require_verified_checkpoint()?;
+            if metadata.retirements.requires_graph() {
+                permit
+                    .context(
+                        "new target checkpoint requires verification at its durable writer fence",
+                    )?
+                    .require(self, &binding, &metadata.retirements)?;
+            }
             let encoded = serde_json::to_vec(&binding)?;
             metadata.generations = metadata
                 .generations

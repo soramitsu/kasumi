@@ -1380,7 +1380,16 @@ impl TargetRecoveryRuntime {
         trace_owned_stage(request.command_id, "check_request", started, &checked);
         checked?;
         let operation = phase.scope().begin_followup(admission)?;
-        self.journal.prepare(&operation, &input_hash)?;
+        self.journal
+            .prepare_runtime(&operation, &request.step, &input_hash, |input| {
+                self.materialization_source(
+                    &template,
+                    intent.request.source_incarnation,
+                    input,
+                    true,
+                )
+            })
+            .await?;
         failure.accepted();
         // From this accepted durable identity onward, any local failure is an
         // unresolved effect. No caller infers abort from absence or an RPC error.
@@ -1820,6 +1829,43 @@ impl TargetRecoveryRuntime {
             .install(stores.application(), None)?;
         Ok(stores)
     }
+    fn materialization_source(
+        &self,
+        template: &TargetTenantTemplate,
+        incarnation: Uuid,
+        input: &TargetMaterializationInput,
+        writer_verification: bool,
+    ) -> Result<kasumi_engine::RestoreSource> {
+        let source = template
+            .source_backups
+            .get(&incarnation)
+            .ok_or_else(|| missing_target_owner("source backup key lineage is not installed"))?;
+        ensure!(
+            source.destination_alias == input.destination_alias,
+            "backup destination differs from installed lineage"
+        );
+        Ok(kasumi_engine::RestoreSource {
+            destination_alias: source.destination_alias.clone(),
+            destination: self
+                .destinations
+                .get(&source.destination_alias)
+                .ok_or_else(|| missing_target_owner("backup destination missing"))?
+                .clone(),
+            keys: match &source.read_key_binding {
+                Some(binding) => crate::local_recovery::keys::RecoveryKeys::open_with(
+                    &source.keys,
+                    &source.historical_keys,
+                    self.credential.clone(),
+                )?
+                .bound_digest(binding)?,
+                None if writer_verification => {
+                    anyhow::bail!("target writer lacks independently bound historical keys")
+                }
+                None => source.keys.provider(self.credential.clone())?,
+            },
+            timeout_ms: self.installed.limits.operation_timeout_ms,
+        })
+    }
     async fn perform_materialization_owned(
         &self,
         g: &mut Generation,
@@ -1843,33 +1889,9 @@ impl TargetRecoveryRuntime {
             _ => unreachable!(),
         };
         self.placement(input)?;
-        let source = template
-            .source_backups
-            .get(&intent.request.source_incarnation)
-            .ok_or_else(|| missing_target_owner("source backup key lineage is not installed"))?;
-        snapshot_ensure!(
-            source.destination_alias == input.destination_alias,
-            "backup destination differs from installed lineage"
-        );
         op.check()?;
-        let source = kasumi_engine::RestoreSource {
-            destination_alias: source.destination_alias.clone(),
-            destination: self
-                .destinations
-                .get(&source.destination_alias)
-                .ok_or_else(|| missing_target_owner("backup destination missing"))?
-                .clone(),
-            keys: match &source.read_key_binding {
-                Some(binding) => crate::local_recovery::keys::RecoveryKeys::open_with(
-                    &source.keys,
-                    &source.historical_keys,
-                    self.credential.clone(),
-                )?
-                .bound_digest(binding)?,
-                None => source.keys.provider(self.credential.clone())?,
-            },
-            timeout_ms: self.installed.limits.operation_timeout_ms,
-        };
+        let source =
+            self.materialization_source(template, intent.request.source_incarnation, input, false)?;
         let configuration = kasumi_engine::TargetMaterializationConfig {
             node_id: self.installed.node.node_id,
             incarnation: key.1,

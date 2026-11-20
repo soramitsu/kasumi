@@ -601,7 +601,20 @@ impl EncryptedBackup {
         owner: &TenantStore,
         visit: impl FnMut(&str, &str, u64) -> Result<()>,
     ) -> Result<BackupContents> {
-        let contents = self.decrypt(owner.tenant(), provider, owner).await?;
+        self.decrypt_and_visit_source_keys(owner.tenant(), provider, owner, visit)
+            .await
+    }
+
+    /// The expected tenant belongs to the authenticated source. A journal can
+    /// independently own memory and the access lifetime for its verification.
+    pub async fn decrypt_and_visit_source_keys(
+        &self,
+        source_tenant: &str,
+        provider: Arc<dyn KeyProvider>,
+        owner: &TenantStore,
+        visit: impl FnMut(&str, &str, u64) -> Result<()>,
+    ) -> Result<BackupContents> {
+        let contents = self.decrypt(source_tenant, provider, owner).await?;
         self.visit_catalog_keys(visit)?;
         owner.check_access()?;
         Ok(contents)

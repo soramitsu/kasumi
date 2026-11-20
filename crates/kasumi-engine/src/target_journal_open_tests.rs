@@ -2456,6 +2456,115 @@ async fn stopped_cleanup_recovers_its_original_binding_after_native_reopen() -> 
     Ok(())
 }
 
+/// Acquire the real Control commitment and issuer lease for a fresh, exact
+/// materialization. The journal owns no application store or restore state.
+fn writer_operation(
+    f: &Fixture,
+) -> Result<(
+    crate::TargetOperation,
+    kasumi_types::TargetRuntimeStep,
+    String,
+)> {
+    use kasumi_serving::{
+        AuthorityManifest, AuthorityPartition, LeasePurpose, LifecycleBoot, LifecycleGate,
+        LifecycleLeaseClaims,
+    };
+    use kasumi_types::{
+        Action, CredentialResource, RequestAuthorization, RequestContext, TargetRuntimeStep,
+    };
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| anyhow::anyhow!("fixture authority root generation failed"))?;
+    let root = kasumi_serving::test_utils::FixtureSigningRoot::from_pkcs8(pkcs8.as_ref())?;
+    let manifest = AuthorityManifest {
+        authority_id: Uuid::new_v4(),
+        max_lease_ms: 60_000,
+        clock_rate_error_ppm: 0,
+        lifecycle_controls: std::collections::BTreeMap::from([(
+            f.installed.root.control_incarnation,
+            f.installed.root.public_key.clone(),
+        )]),
+        partitions: std::collections::BTreeMap::from([(
+            0,
+            AuthorityPartition {
+                group: "writer-test".into(),
+                public_key: root.public_key(),
+            },
+        )]),
+    };
+    let signer = root
+        .install(manifest.clone(), 0)?
+        .for_verifier(f.installed.node.verifier.clone())?;
+    let partition = manifest.control_partition(0)?;
+    let origin = crate::target_completion_machine::tests::origin();
+    let mut intent = origin.materialization;
+    let mut input = origin.input;
+    let target = Uuid::new_v4();
+    input.target_incarnation = target;
+    let digest = input.digest()?;
+    let observed = kasumi_clock::EpochClock::system()?.observe()?;
+    let expires = observed.utc_ms() + 600_000;
+    intent.control_incarnation = f.installed.root.control_incarnation;
+    intent.accepted_at_ms = observed.utc_ms();
+    intent.original_credential_expires_at_ms = expires;
+    intent.request.command_id = Uuid::new_v4();
+    intent.request.target_incarnation = target;
+    intent.request.phase_input_sha256 = digest.clone();
+    intent.request.authority_partition = partition.key();
+    let node = intent
+        .request
+        .target_nodes
+        .get_mut(&f.installed.node.node_id)
+        .unwrap();
+    node.principal = f.installed.node.principal.clone();
+    node.verifier = f.installed.node.verifier.clone();
+    node.certificate_sha256 = f.installed.node.certificate_sha256.clone();
+    intent.request_sha256 = kasumi_types::staged_digest(&intent.request)?.0;
+    input.validate(&intent)?;
+    let context = RequestContext {
+        tenant: "__kasumi_control".into(),
+        principal: intent.original_principal.clone(),
+        request_id: "journal-writer-original".into(),
+        scopes: std::collections::BTreeSet::from([Action::Admin]),
+        authorization: RequestAuthorization::from_verified_credential(
+            expires,
+            &observed,
+            CredentialResource::Control {
+                incarnation: intent.control_incarnation,
+            },
+        )?,
+    };
+    let proof = f.sign_control_observation(kasumi_types::ControlIntentCommitment {
+        root: f.installed.root.clone(),
+        authority_partition: partition,
+        partition_set_sha256: "bc".repeat(32),
+        observed_policy_epoch: intent.request.expected_policy_epoch,
+        observed_revision: intent.revision,
+        observed_term: 1,
+        intent,
+    })?;
+    let boot = LifecycleBoot::new(signer.trust, f.installed.node.clone())?;
+    let attempt = boot.begin(&proof)?;
+    let lease = attempt.verify(signer.signer.sign_lifecycle_lease(LifecycleLeaseClaims {
+        request: attempt.request().clone(),
+        commitment: proof.observation().clone(),
+        authority_id: manifest.authority_id,
+        partition: 0,
+        authority_term: 1,
+        authority_revision: 1,
+        application_purpose: Some(LeasePurpose::RestorePreparation),
+        lifetime_ms: manifest.max_lease_ms,
+        credential_lifetime_ms: manifest.max_lease_ms,
+    })?)?;
+    let scope = crate::TargetOperationScope::new(crate::TargetLifecycleInvocation::from_verified(
+        LifecycleGate::new(context, lease)?,
+    )?)?;
+    Ok((
+        scope.begin_operation(60_000)?,
+        TargetRuntimeStep::Materialize(input),
+        digest,
+    ))
+}
+
 #[tokio::test]
 async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reopen() -> Result<()>
 {
@@ -2520,27 +2629,51 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
             let signed = sign(read.challenge(), revision, state)?;
             read.accept(&signed)
         };
-    let check = |journal: &TargetJournal| {
-        journal
-            .metadata()?
-            .retirements
-            .require_verified_checkpoint()
+    let check = |journal: &TargetJournal, version| {
+        journal.metadata()?.retirements.admit_version(
+            &identity.provider,
+            &identity.key_ref,
+            version,
+        )
     };
-    check(&journal)?;
+    check(&journal, 1)?;
+    let (existing, _, existing_digest) = writer_operation(&f)?;
+    let existing_intent = journal.prepare(&existing, &existing_digest)?;
+    let before_signed = f
+        .store
+        .get(NS, b"metadata")?
+        .context("original target was not admitted")?;
     let original = journal.begin_writer_read()?;
     let signed = sign(original.challenge(), 5, &state)?;
     assert!(journal.begin_writer_read()?.accept(&signed).is_err());
     let mut wrong = signed.clone();
     wrong.signature = "00".repeat(64);
     assert!(original.accept(&wrong).is_err());
-    assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before);
+    assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before_signed);
     let accepted = apply(&journal, 5, &state)?;
     assert_eq!(accepted, apply(&journal, 5, &state)?);
-    assert!(check(&journal).is_err());
-
+    assert!(check(&journal, 2).is_err());
+    check(&journal, 3)?;
+    assert_eq!(
+        journal.prepare(&existing, &existing_digest)?,
+        existing_intent
+    );
+    let (new, step, new_digest) = writer_operation(&f)?;
+    let before_new = f
+        .store
+        .get(NS, b"metadata")?
+        .context("fenced head missing")?;
+    assert!(journal.prepare(&new, &new_digest).is_err());
+    let result = journal
+        .prepare_runtime(&new, &step, &new_digest, |_| {
+            anyhow::bail!("original backup unavailable")
+        })
+        .await;
+    assert!(matches!(result,Err(ref e) if e.to_string().contains("original backup unavailable")));
+    assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before_new);
     drop(journal);
     let reopened = f.reopen()?;
-    assert!(check(&reopened).is_err());
+    assert!(check(&reopened, 1).is_err());
     let active = state.clone();
     state.complete(
         &CompleteKeyRetirement {
@@ -2556,7 +2689,7 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
     assert!(apply(&reopened, 7, &KeyRetirementState::default()).is_err());
     drop(reopened);
     let final_journal = f.reopen()?;
-    assert!(check(&final_journal).is_err());
-
+    assert!(check(&final_journal, 2).is_err());
+    check(&final_journal, 3)?;
     Ok(())
 }

@@ -44,6 +44,7 @@ use kasumi_types::*;
 use sha2::{Digest, Sha256};
 #[path = "backup_checkpoints.rs"]
 mod backup_checkpoints;
+pub(crate) use backup_checkpoints::verify_target_writer_checkpoint;
 #[path = "backup_control_service.rs"]
 mod backup_control_service;
 pub use backup_control_service::{

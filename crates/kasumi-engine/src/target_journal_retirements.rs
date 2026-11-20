@@ -61,12 +61,15 @@ impl WriterRetirements {
         }
         Ok(())
     }
-    pub(super) fn require_verified_checkpoint(&self) -> Result<()> {
+    pub(super) fn admit_version(&self, provider: &str, key_ref: &str, version: u64) -> Result<()> {
         ensure!(
-            self.state.fence.is_none() && self.state.completed.is_empty(),
-            "new target checkpoint requires verification at its durable writer fence"
+            !self.state.rejects_version(provider, key_ref, version),
+            "new target checkpoint references a fenced wrapping key"
         );
         Ok(())
+    }
+    pub(super) fn requires_graph(&self) -> bool {
+        self.state.fence.is_some() || !self.state.completed.is_empty()
     }
 }
 
@@ -111,6 +114,138 @@ impl TargetJournal {
         }
         confirm().map_err(journal_unknown)?;
         Ok(digest)
+    }
+}
+
+/// This value can only be constructed after checking every authenticated
+/// wrapping identity against the exact writer position for this checkpoint.
+pub(super) struct JournalCheckpointPermit {
+    installation: kasumi_types::TrustVerifierIdentity,
+    control: kasumi_types::ControlSigningRoot,
+    binding: GenerationBinding,
+    position: WriterRetirements,
+}
+impl JournalCheckpointPermit {
+    pub(super) fn require(
+        &self,
+        journal: &TargetJournal,
+        binding: &GenerationBinding,
+        position: &WriterRetirements,
+    ) -> Result<()> {
+        ensure!(
+            self.installation == journal.installed.node.verifier
+                && self.control == journal.installed.root
+                && self.binding == *binding
+                && self.position == *position,
+            "checkpoint verification differs from the current journal or writer fence"
+        );
+        Ok(())
+    }
+}
+
+impl TargetJournal {
+    pub(crate) fn writer_admission(&self) -> &Arc<crate::admission::NodeAdmission> {
+        &self.admission
+    }
+
+    fn new_checkpoint_position(
+        &self,
+        operation: &TargetOperation,
+    ) -> Result<Option<(TargetJournalIntent, WriterRetirements)>> {
+        let _workspace = self
+            .admission
+            .reserve((MAX_RECORD * 8) as u64, Some(operation.token.clone()))?;
+        let _lock = self
+            .mutation
+            .lock()
+            .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
+        let position = self.metadata()?.retirements;
+        if !position.requires_graph() {
+            return Ok(None);
+        }
+        let original = self.intent(operation)?;
+        let binding = GenerationBinding::from_intent(&original);
+        if let Some(existing) = self.store.get_bounded(
+            NS,
+            &generation_key(&binding.tenant, binding.target_incarnation),
+            MAX_RECORD,
+        )? {
+            ensure!(
+                decode_current::<GenerationBinding>(&existing)? == binding,
+                "target generation binding differs"
+            );
+            return Ok(None);
+        }
+        Ok(Some((original, position)))
+    }
+
+    /// Admit an immutable checkpoint under the durable writer position. The
+    /// provider is opened only for a new generation subject to a fence/floor.
+    pub async fn prepare_runtime(
+        &self,
+        operation: &TargetOperation,
+        step: &kasumi_types::TargetRuntimeStep,
+        exact_input_sha256: &str,
+        original_source: impl FnOnce(
+            &kasumi_types::TargetMaterializationInput,
+        ) -> Result<crate::RestoreSource>
+        + Send,
+    ) -> std::result::Result<TargetJournalIntent, crate::SnapshotFailure> {
+        let Some((original, position)) = self.new_checkpoint_position(operation)? else {
+            return Ok(self.prepare(operation, exact_input_sha256)?);
+        };
+        let input = match step {
+            kasumi_types::TargetRuntimeStep::Materialize(input) => {
+                input.validate(&original.intent)?;
+                input
+            }
+            kasumi_types::TargetRuntimeStep::ResumeMaterialization(origin) => {
+                origin.accepts_phase(&original.intent, LifecyclePhase::ResumeMaterialize)?;
+                if original.intent.request.resume_origin.as_ref() != Some(origin)
+                    || original.intent.request.phase_input_sha256 != origin.resume_digest()?
+                {
+                    return Err(anyhow::anyhow!(
+                        "resumption differs from the committed source checkpoint"
+                    )
+                    .into());
+                }
+                &origin.input
+            }
+            _ => {
+                return Err(anyhow::anyhow!(
+                    "new generation lacks its original materialization source"
+                )
+                .into());
+            }
+        };
+        let source = original_source(input)?;
+        if source.destination_alias != input.destination_alias {
+            return Err(anyhow::anyhow!(
+                "target writer destination differs from original materialization"
+            )
+            .into());
+        }
+        let binding = GenerationBinding::from_intent(&original);
+        let observe = |provider: &str, key_ref: &str, version: u64| {
+            position.admit_version(provider, key_ref, version)
+        };
+        operation
+            .run(crate::service::verify_target_writer_checkpoint(
+                self,
+                operation,
+                &source,
+                &binding.checkpoint,
+                input,
+                &observe,
+            ))
+            .await?;
+        let permit = JournalCheckpointPermit {
+            installation: self.installed.node.verifier.clone(),
+            control: self.installed.root.clone(),
+            binding,
+            position,
+        };
+        Ok(self.prepare_with_checkpoint_permit(operation, exact_input_sha256, Some(&permit))?)
     }
 }
 
