@@ -374,7 +374,10 @@ impl Database {
             PrimaryPoint::Missing => {
                 read.retain_charge();
                 drop(permit);
-                PendingPoint { response: None, read }
+                PendingPoint {
+                    response: None,
+                    read,
+                }
             }
             PrimaryPoint::Archived(reference) => {
                 let generation = read.generation.as_ref().expect("selected point generation");
