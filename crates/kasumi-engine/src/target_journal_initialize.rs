@@ -19,6 +19,9 @@ pub(crate) struct InitialInitializeAssociation {
     start: TargetFirstMembershipPrebind,
 }
 impl InitialInitializeAssociation {
+    pub(in crate::target_journal) fn target_incarnation(&self) -> Uuid {
+        self.initialize.target_incarnation
+    }
     fn key(&self) -> Vec<u8> {
         format!(
             "dispatch-initialize/{}/{}",

@@ -36,7 +36,7 @@ macro_rules! snapshot_ensure {
 pub(super) struct AcceptedInitialDispatch {
     control_root: ControlSigningRoot,
     node: NodeIdentity,
-    lifecycle: LifecycleIntent,
+    pub(super) lifecycle: LifecycleIntent,
     phase: RecoveryPhaseRecord,
     terminal_reserve_bytes: u64,
 }
@@ -564,7 +564,7 @@ impl TargetJournal {
         &self,
         key: &[u8],
         bytes: &[u8],
-    ) -> Result<InitialMembershipTerminal> {
+    ) -> Result<(InitialMembershipTerminal, Uuid)> {
         ensure!(
             bytes.len() <= DISPATCH_OBSERVATION_LIMIT,
             "first-membership terminal exceeds its original reservation"
@@ -586,8 +586,7 @@ impl TargetJournal {
             .store
             .get_bounded(NS, accepted_key.as_bytes(), MAX_RECORD)?
             .context("first-membership terminal lacks its accepted dispatch")?;
-        self.validate_dispatch_record(accepted_key.as_bytes(), &accepted)?;
-        let row: AcceptedInitialDispatch = decode_current(&accepted)?;
+        let row = self.validate_dispatch_record(accepted_key.as_bytes(), &accepted)?;
         let expected = row.expected_raft_prebind(&accepted)?;
         let local_prebind = match &row.phase.input {
             RecoveryDispatch::Target { request, .. }
@@ -604,10 +603,10 @@ impl TargetJournal {
                     == hex::encode(Sha256::digest(serde_json::to_vec(&local_prebind)?)),
             "first-membership terminal differs from its accepted dispatch"
         );
-        Ok(terminal)
+        Ok((terminal, row.lifecycle.request.target_incarnation))
     }
 
-    pub(super) fn validate_dispatch_record(&self, key: &[u8], bytes: &[u8]) -> Result<()> {
+    pub(super) fn validate_dispatch_record(&self, key: &[u8], bytes: &[u8]) -> Result<AcceptedInitialDispatch> {
         ensure!(
             bytes.len() <= MAX_RECORD,
             "target dispatch record exceeds bound"
@@ -618,7 +617,7 @@ impl TargetJournal {
             key == row.key()? && serde_json::to_vec(&row)? == bytes,
             "target dispatch key or canonical bytes differ"
         );
-        Ok(())
+        Ok(row)
     }
 
     /// Read only the exact accepted identity. This does not open a generation
@@ -641,8 +640,7 @@ impl TargetJournal {
         let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? else {
             return Ok(InitialDispatchStatus::NoLocalRecord);
         };
-        self.validate_dispatch_record(&key, &bytes)?;
-        let row: AcceptedInitialDispatch = serde_json::from_slice(&bytes)?;
+        let row = self.validate_dispatch_record(&key, &bytes)?;
         let RecoveryDispatch::Target {
             node_id,
             request: stored,
@@ -729,7 +727,7 @@ impl TargetJournal {
         };
         let key = InitialMembershipTerminal::from_history(&history)?.key();
         if let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
-            self.validate_dispatch_terminal(&key, &bytes)?
+            self.validate_dispatch_terminal(&key, &bytes)?.0
                 .require_current_history(&history)?;
         }
         Ok(history)
@@ -814,7 +812,7 @@ impl TargetJournal {
         let terminal = InitialMembershipTerminal::from_history(&history)?;
         let key = terminal.key();
         if let Some(bytes) = self.store.get_bounded(NS, &key, MAX_RECORD)? {
-            self.validate_dispatch_terminal(&key, &bytes)?
+            self.validate_dispatch_terminal(&key, &bytes)?.0
                 .require_current_history(&history)?;
             return Ok(history);
         }
@@ -839,7 +837,7 @@ impl TargetJournal {
             .store
             .get_bounded(NS, &key, MAX_RECORD)?
             .context("first-membership terminal absent after write")?;
-        self.validate_dispatch_terminal(&key, &readback)?
+        self.validate_dispatch_terminal(&key, &readback)?.0
             .require_current_history(&history)?;
         snapshot_ensure!(
             readback == encoded,

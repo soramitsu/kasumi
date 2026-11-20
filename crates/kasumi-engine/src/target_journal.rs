@@ -12,6 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+#[path = "target_journal_accounting.rs"]
+mod accounting;
 const NS: &str = "target.journal";
 #[cfg(test)]
 #[path = "target_journal_open_tests.rs"]
@@ -479,125 +481,12 @@ impl TargetJournal {
         let metadata = journal.metadata()?;
         // Streaming startup verification retains one bounded encrypted record at
         // a time. Permanent identities are never silently dropped or truncated.
-        let mut intents = 0u64;
-        let mut generations = 0u64;
-        let mut dispatches = 0u64;
-        let mut dispatch_terminals = 0u64;
-        let mut dispatch_starts = 0u64;
-        let mut dispatch_initializes = 0u64;
-        let mut charged = MAX_RECORD as u64;
+        let mut accounting = accounting::JournalAccounting::new();
         journal.store.visit(NS, MAX_RECORD, |key, value| {
-            if key.starts_with(b"intent/") {
-                intents = intents.checked_add(1).context("journal count exhausted")?;
-                let i: TargetJournalIntent = decode_current(value)?;
-                journal.validate_intent(&i)?;
-                ensure!(
-                    key == intent_key(i.intent.request.command_id),
-                    "journal intent key differs"
-                );
-                charged = charged
-                    .checked_add(value.len() as u64 + COMPLETION_RESERVE)
-                    .context("journal bytes exhausted")?;
-            } else if key.starts_with(b"generation/") {
-                generations = generations
-                    .checked_add(1)
-                    .context("journal count exhausted")?;
-                let target: GenerationBinding = decode_current(value)?;
-                ensure!(
-                    journal
-                        .installed
-                        .audit_placement_bindings
-                        .contains_key(&target.tenant),
-                    "target generation has no installed audit placement"
-                );
-                ensure!(
-                    key == generation_key(&target.tenant, target.target_incarnation),
-                    "journal generation key differs"
-                );
-                charged = charged
-                    .checked_add(value.len() as u64 + GENERATION_RESERVE)
-                    .context("journal bytes exhausted")?;
-            } else if key.starts_with(b"dispatch/") {
-                dispatches = dispatches
-                    .checked_add(1)
-                    .context("journal dispatch count exhausted")?;
-                journal.validate_dispatch_record(key, value)?;
-                charged = charged
-                    .checked_add(value.len() as u64 + DISPATCH_TERMINAL_RESERVE)
-                    .context("journal dispatch bytes exhausted")?;
-            } else if key.starts_with(b"file/") {
-                let file: FileCreation = decode_current(value)?;
-                journal.validate_file_creation(key, &file)?;
-                charged = charged
-                    .checked_add(value.len() as u64)
-                    .context("journal file bytes exhausted")?;
-            } else if key.starts_with(b"dispatch-terminal/") {
-                dispatch_terminals = dispatch_terminals
-                    .checked_add(1)
-                    .context("journal dispatch terminal count exhausted")?;
-                journal.validate_dispatch_terminal(key, value)?;
-                // Its original dispatch already charged the full bounded
-                // terminal reserve; publication never needs more capacity.
-            } else if key.starts_with(b"dispatch-start/") {
-                dispatch_starts = dispatch_starts
-                    .checked_add(1)
-                    .context("journal Start observation count exhausted")?;
-                journal.validate_initial_start_record(key, value)?;
-            } else if key.starts_with(b"dispatch-initialize/") {
-                dispatch_initializes = dispatch_initializes
-                    .checked_add(1)
-                    .context("journal Initialize association count exhausted")?;
-                journal.validate_initial_initialize_record(key, value)?;
-            } else if key.starts_with(b"serving/") {
-                journal.decode_serving_candidate(key, value)?;
-            } else if key.starts_with(b"activation/") {
-                journal.decode_projection_record(key, value)?;
-            } else if key.starts_with(b"binding/") {
-                let binding: TargetFileBinding = decode_current(value)?;
-                journal.validate_binding(&binding)?;
-                ensure!(
-                    key == binding_key(&binding.tenant, binding.target_incarnation),
-                    "journal file binding key differs"
-                );
-                charged = charged
-                    .checked_add(value.len() as u64)
-                    .context("journal binding bytes exhausted")?;
-            } else if key.starts_with(b"cleanup/") {
-                let cleanup: TargetCleanup = decode_current(value)?;
-                journal.validate_cleanup(&cleanup)?;
-                ensure!(
-                    key == cleanup_key(&cleanup.tenant, cleanup.target_incarnation)
-                        && value.len() <= CLEANUP_RESERVE,
-                    "journal cleanup key differs"
-                );
-                charged = charged
-                    .checked_add(CLEANUP_RESERVE as u64)
-                    .context("journal cleanup bytes exhausted")?;
-            } else if key.starts_with(b"stop/") {
-                let stop: TargetJournalStop = decode_current(value)?;
-                journal.validate_stop(&stop)?;
-                ensure!(
-                    key == stop_key(
-                        &stop.intent.intent.request.tenant,
-                        stop.intent.intent.request.target_incarnation
-                    ),
-                    "journal stop key differs"
-                );
-            } else {
-                ensure!(key == b"metadata", "unknown target journal record");
-            }
+            accounting.observe(&journal, key, value, |_| Ok(()))?;
             Ok(())
         })?;
-        ensure!(
-            metadata.intents == intents
-                && metadata.generations == generations
-                && metadata.dispatches == dispatches
-                && metadata.dispatch_terminals == dispatch_terminals
-                && metadata.dispatch_starts == dispatch_starts
-                && metadata.dispatch_initializes == dispatch_initializes
-                && metadata.charged_bytes == charged,
-            "target journal accounting differs"
-        );
+        accounting.verify(&metadata)?;
         *owner = Arc::downgrade(&journal);
         Ok(journal)
     }

@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 #[serde(deny_unknown_fields)]
 pub(super) struct InitialStartRecord {
     format: u8,
-    prebind: TargetFirstMembershipPrebind,
+    pub(super) prebind: TargetFirstMembershipPrebind,
 }
 impl InitialStartRecord {
     fn key(&self) -> Vec<u8> {
