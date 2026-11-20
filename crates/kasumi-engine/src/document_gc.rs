@@ -830,10 +830,10 @@ impl State {
 
     /// Count each queued manifest that has no marker yet, in one transaction.
     fn register(&mut self, step: &Step<'_>) -> Result<()> {
-        let mut points = step
-            .store
-            .read_view()?
-            .prepare_point_reads(LINKS.len(), LINK_KEY_BYTES, 8)?;
+        let mut points =
+            step.store
+                .read_view()?
+                .prepare_point_reads(LINKS.len(), LINK_KEY_BYTES, 8)?;
         let batch = self.registration_batch(step.scope, &mut points);
         let (operations, taken, registered) = points.finish(batch)?;
         if !operations.is_empty() {
