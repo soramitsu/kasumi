@@ -155,6 +155,16 @@ impl PrimaryManifest {
         self.status == PrimaryStatus::Current
     }
 
+    /// Bootstrap has no applied boundary. A retained snapshot can vouch
+    /// for an entry at the same log position without a command digest.
+    pub fn matches_applied(&self, actual: Option<&PrimaryApplied>) -> bool {
+        match (self.applied.as_ref(), actual) {
+            (Some(stored), Some(actual)) => stored.same_position(actual),
+            (None, None) => true,
+            _ => false,
+        }
+    }
+
     pub fn rebuild(&self) -> Option<&PrimaryRebuild> {
         match &self.status {
             PrimaryStatus::Rebuilding(progress) => Some(progress),
