@@ -682,3 +682,28 @@ and image `1946c8842f0bac6e4cb5e064e9358b3528af7e253328392433ab51f8f2fa071f`
 on two virtual CPUs with 16,360,792 KiB guest memory. The receipt SHA-256
 is `5a0efcd5c628926d9b6cc34519c05eec96793a0ecef0d31c9d544a3d6f840fcb`.
 Packaged smoke and independently built release artifacts remain outstanding.
+
+## November 20 native results through 08:32 UTC
+
+The common provisional source for macOS ARM64, Linux ARM64 and Linux x86-64
+is `04cd8265e5aa9d942343731e418509ae6d198fd3`. Its 2,367-file archive
+contains 71,516,160 bytes and has SHA-256
+`30062b56e3108573dda32d2c8891e61d12799480c746df8d38bdac910b0d03f3`.
+Its native macOS RustSec scan checked 483 packages against 1,550 advisories
+at upstream `074ea9a7ed619f511b5b7374c7a97e98d1e98be4`. It reported zero
+known vulnerabilities and the reviewed LRU informational advisory. The scan
+receipt SHA-256 is `6710bbd83f025bc65ff36e8b79faeaa5335dec70831d4eb851d77401aedd2caa`.
+
+| Goals | Native development result | Outstanding qualification |
+| --- | --- | --- |
+| G01, G07 | The five installed deployed-format cases passed in 139.32 s on `99cfb12e`. Cancelled shutdown retained the original target monitor until its journal reopened in 1.71 s. All four original three-node debug regressions passed with the server debug stack size in 567.677, 573.509, 479.450 and 126.936 s. The original stack overflows are retained. | Repeat under the packaged candidate and installed topology. |
+| G02, G03, G13 | On the 16-core, 128 GiB macOS ARM64 host the original 98,400-document database reopened in 3,123.568 s. Its 3,224,371,200-byte corpus produced the original checkpoint, which passed cold verification in 229.911 s under the 300 s limit. Shutdown drained cleanly. Receipt SHA-256 `fe165b95ed9efdd7dcb9e35188d58847667e19e4061f66e8700c4866e01855cb`. | Validate fresh filesystem and S3 restores, all prescribed workloads and the full-duration soak on the final source. |
+| G02, G07, G13 | A separately initialized target read 410 byte-identical encrypted session objects totaling 3,397,487,022 bytes. The original 600 s deadline elapsed during genesis decode at 600.004 s. Its worker remained alive. In a native sample, 150 of 160 observations showed document scratch batch commits. Sample SHA-256 `60eaa5cfb572e9b1dc6ab27fc2cef383544c45841a7089c3be05d2b4bc870aad`. | `3f1b50cf` stages objects directly under their authorized target incarnation and checks the original deadline during decode and genesis writes. `82b5f6b0` compares pending duplicates in the native transaction and batches up to its physical limits. Rerun the original restore and compare every document. |
+| G05 | Native macOS passed all nine session-admission tests in 1.78 s on `98d9bbdc`. The Linux ARM64 sparse-terminal suite passed 29 cases in 2.13 s on the repair donor. The suite archive SHA-256 is `fe31db6fd949187ef9260b021abad7df66cc1ccd690794f501a0c1e4e97b299b`. A protected cold read of the failed first population confirmed its collection creation had committed despite returning UnknownOutcome. A separate native process crossed 276 original sessions. | Reach 100,001 completed or aborted originals, perform the prescribed kills and authenticate every original outcome and checkpoint. |
+| G06 | `f012ddf3` binds both active standalone recovery catalogs to the installed physical generation. Strict native workspace Clippy passed in 999.847 s. `04cd8265` binds remote backup key inventory to the dedicated Data and Control quorums. Its donor passed the six-voter regression in 18.51 s. | Verify historical recovery records, independent Data service catalogs, external checkpoint dependencies and the complete retirement lifecycle. |
+| G11, G12 | The stock macOS workspace on `99cfb12e` reproduced the stale four-member Authority assertion. On its original binary, the legacy replica-budget check differed by exactly 4,096 bytes and the real standalone backup/reopen case failed during snapshot location-page allocation. The native backtrace SHA-256 is `528fee547f1d82fd837db0d90d1cfeefa1da6b9ce3a15281e7250530196c229f`. | `5994f82e` compares the legacy floor with its historical audit obligations. `0271bbe2` charges the temporary index page as structural work. Native regressions and the full combined suites remain open. |
+
+G01–G14 remain open. Native Linux x86-64, the prescribed ARM64 reference
+placement, nine-voter HA placements, independent builders and publication
+authorization still require owners. The 86,400-second HA soak awaits the
+installed topology. The deployed fixture is already on origin/master.
