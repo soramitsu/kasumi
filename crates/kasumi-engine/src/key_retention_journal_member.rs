@@ -495,38 +495,28 @@ impl ActiveJournal {
     }
 }
 
-impl Database {
-    /// Reconcile only this installed physical journal. This path has the
-    /// original current Control administrator and signer. The enrolled
-    /// inventory reader remains a read-only projection.
-    pub async fn reconcile_local_target_writer(
-        self: &Arc<Self>,
+/// Installed, writable original recovery routes. Physical observations use the
+/// separate read-only service census to confirm which journals actually fenced.
+#[async_trait::async_trait]
+pub trait TargetWriterNetwork: Send + Sync {
+    fn verify_participant(&self, challenge: &SignedTargetWriterChallenge) -> anyhow::Result<()>;
+    async fn synchronize(
+        &self,
         context: &RequestContext,
-        signer: &crate::LifecycleSigner,
-    ) -> Result<String> {
-        let journal = self
-            .target_keys
-            .get()
-            .and_then(std::sync::Weak::upgrade)
-            .ok_or_else(|| unavailable("local target journal is unavailable"))?;
-        let installed = journal.key_inventory_owner().0;
-        if self.group.node_id() != installed.node.node_id
-            || self
-                .signer_keys
-                .get()
-                .is_none_or(|keys| keys.verifier != installed.node.verifier)
-        {
-            return Err(unavailable(
-                "local journal lacks its original protected enrollment",
-            ));
+        state_sha256: &str,
+    ) -> anyhow::Result<BTreeSet<TargetWriterParticipant>>;
+}
+impl Database {
+    pub fn install_target_writer_network(
+        &self,
+        network: std::sync::Weak<dyn TargetWriterNetwork>,
+    ) -> Result<()> {
+        if self.store.tenant() != crate::control::CONTROL_TENANT {
+            return Err(unavailable("writer network requires installed Control"));
         }
-        let read = journal
-            .begin_writer_read()
-            .map_err(Error::from_physical_source)?;
-        let signed = signer
-            .observe_target_writer(self, context, read.challenge())
-            .await?;
-        read.accept(&signed).map_err(Error::from_physical_source)
+        self.target_writer_network
+            .set(network)
+            .map_err(|_| unavailable("writer network already installed"))
     }
 }
 impl Database {

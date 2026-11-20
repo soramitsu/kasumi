@@ -294,6 +294,7 @@ fn genesis_metadata(
         )),
         key_retirements: KeyRetirementState::default(),
         target_journal_retirements: KeyRetirementState::default(),
+        target_journal_writers: Vec::new(),
         audits: imbl::Vector::new(),
     };
     Ok(state)
@@ -1306,6 +1307,7 @@ impl TenantEngine {
                     | Operation::AppendStaged(_)
                     | Operation::StopStaged(_)
                     | Operation::BeginKeyRetirement(_)
+                    | Operation::RegisterTargetJournalWriter(_)
                     | Operation::CompleteTargetJournalRetirement(_)
                     | Operation::AbortTargetJournalRetirement(_)
                     | Operation::CompleteKeyRetirement(_)
@@ -2578,6 +2580,7 @@ impl TenantEngine {
             Operation::RetireSource(_) => "retire",
             Operation::AbortRetirement(_) => "retire_stop",
             Operation::BeginKeyRetirement(_) => "key_retirement_fence",
+            Operation::RegisterTargetJournalWriter(_) => "target_journal_writer_register",
             Operation::CompleteTargetJournalRetirement(_) => "target_journal_key_retirement",
             Operation::AbortTargetJournalRetirement(_) => "target_journal_key_retirement_stop",
             Operation::CompleteKeyRetirement(_) => "key_retirement",
@@ -3785,6 +3788,9 @@ fn apply_operation(
         }
         Operation::CompleteKeyRetirement(request) => {
             key_retirement::complete(state, command, request, revision, false).map_err(Into::into)
+        }
+        Operation::RegisterTargetJournalWriter(participant) => {
+            key_retirement::register_writer(state, command, participant, revision)
         }
         Operation::CompleteTargetJournalRetirement(request) => {
             key_retirement::complete(state, command, request, revision, true).map_err(Into::into)

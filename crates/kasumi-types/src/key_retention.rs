@@ -853,6 +853,33 @@ pub struct KeyRetirementState {
     pub aborted: Vec<AbortedKeyRetirement>,
 }
 
+/// A physical catalog stays registered after its host leaves the current
+/// topology. Retiring keys requires accounting for every original writer.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TargetWriterParticipant {
+    pub verifier: crate::TrustVerifierIdentity,
+    pub catalog: Uuid,
+}
+pub(crate) fn writer_participants<'de, D: Deserializer<'de>>(
+    d: D,
+) -> std::result::Result<Vec<TargetWriterParticipant>, D::Error> {
+    ascending(d, 1024, "registered target writers")
+}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SignedTargetWriterChallenge {
+    pub challenge: TargetWriterChallenge,
+    pub signature: String,
+}
+impl TargetWriterChallenge {
+    pub fn participant(&self) -> TargetWriterParticipant {
+        TargetWriterParticipant {
+            verifier: self.verifier.clone(),
+            catalog: self.catalog,
+        }
+    }
+}
 /// Refresh one enrolled target at the expected globally committed state. The
 /// target obtains and checks that state independently from its original Control.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -903,6 +930,8 @@ pub struct TargetWriterChallenge {
     pub root: crate::ControlSigningRoot,
     pub verifier: crate::TrustVerifierIdentity,
     pub catalog: uuid::Uuid,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_command: Option<Uuid>,
     pub nonce: uuid::Uuid,
 }
 
@@ -1317,6 +1346,7 @@ impl crate::TenantState {
         Ok(staged_digest(&(
             "kasumi.target-writer-dependencies.v1",
             self.key_dependency_sha256()?,
+            &self.target_journal_writers,
             topology.version(),
             &installation.installation,
             &self.target_journal_retirements,
@@ -1324,6 +1354,21 @@ impl crate::TenantState {
         .0)
     }
     pub fn validate_key_retirement_scopes(&self, control_tenant: &str) -> Result<()> {
+        validate_ascending(
+            &self.target_journal_writers,
+            1024,
+            "registered target writers",
+        )?;
+        if self.tenant != control_tenant && !self.target_journal_writers.is_empty() {
+            return Err(invalid("target writer registrations belong to Control"));
+        }
+        let mut catalogs = BTreeSet::new();
+        for participant in &self.target_journal_writers {
+            participant.verifier.validate()?;
+            if participant.catalog.is_nil() || !catalogs.insert(participant.catalog) {
+                return Err(invalid("duplicated or missing physical target catalog"));
+            }
+        }
         self.key_retirements
             .validate_scope(&self.tenant, control_tenant, self.revision)?;
         if self.tenant != control_tenant && !self.target_journal_retirements.is_empty() {

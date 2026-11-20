@@ -69,7 +69,7 @@ impl KasumiLifecycleClient {
     pub async fn observe_target_writer(
         &mut self,
         bearer: &str,
-        challenge: &TargetWriterChallenge,
+        challenge: &SignedTargetWriterChallenge,
     ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
         let reply = self
             .inner
@@ -84,7 +84,8 @@ impl KasumiLifecycleClient {
             .await?
             .into_inner();
         let signed: SignedTargetWriterObservation = serde_json::from_slice(&reply.response_json)?;
-        self.trust.verify_target_writer(challenge, &signed)?;
+        self.trust
+            .verify_target_writer(&challenge.challenge, &signed)?;
         Ok(signed)
     }
     pub async fn observe_intent(

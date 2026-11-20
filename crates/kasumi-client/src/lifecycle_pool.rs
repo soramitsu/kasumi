@@ -81,7 +81,7 @@ impl KasumiLifecyclePool {
     }
     pub async fn observe_target_writer(
         &mut self,
-        challenge: &TargetWriterChallenge,
+        challenge: &SignedTargetWriterChallenge,
         timeout: Duration,
     ) -> std::result::Result<SignedTargetWriterObservation, ClientError> {
         self.inner

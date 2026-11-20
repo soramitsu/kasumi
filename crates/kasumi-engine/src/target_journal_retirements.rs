@@ -170,9 +170,6 @@ impl TargetJournal {
             .lock()
             .map_err(|_| anyhow::anyhow!("target journal poisoned"))?;
         let position = self.metadata()?.retirements;
-        if !position.requires_graph() {
-            return Ok(None);
-        }
         let original = self.intent(operation)?;
         let binding = GenerationBinding::from_intent(&original);
         if let Some(existing) = self.store.get_bounded(
@@ -191,19 +188,39 @@ impl TargetJournal {
 
     /// Admit an immutable checkpoint under the durable writer position. The
     /// provider is opened only for a new generation subject to a fence/floor.
-    pub async fn prepare_runtime(
+    pub fn prepare_observed(
+        &self,
+        operation: &TargetOperation,
+        exact_input_sha256: &str,
+        writer: &CurrentTargetJournalWriter,
+    ) -> Result<TargetJournalIntent> {
+        self.prepare_with_checkpoint_permit(operation, exact_input_sha256, None, Some(writer))
+    }
+
+    pub async fn prepare_runtime<F>(
         &self,
         operation: &TargetOperation,
         step: &kasumi_types::TargetRuntimeStep,
         exact_input_sha256: &str,
+        mut observe_writer: impl FnMut() -> F + Send,
         original_source: impl FnOnce(
             &kasumi_types::TargetMaterializationInput,
         ) -> Result<crate::RestoreSource>
         + Send,
-    ) -> std::result::Result<TargetJournalIntent, crate::SnapshotFailure> {
-        let Some((original, position)) = self.new_checkpoint_position(operation)? else {
+    ) -> std::result::Result<TargetJournalIntent, crate::SnapshotFailure>
+    where
+        F: std::future::Future<Output = Result<CurrentTargetJournalWriter>> + Send,
+    {
+        let Some((original, _)) = self.new_checkpoint_position(operation)? else {
             return Ok(self.prepare(operation, exact_input_sha256)?);
         };
+        let current = operation
+            .run(async { observe_writer().await.map_err(crate::SnapshotFailure::from) })
+            .await?;
+        if !current.position.requires_graph() {
+            return Ok(self.prepare_observed(operation, exact_input_sha256, &current)?);
+        }
+        let position = current.position;
         let input = match step {
             kasumi_types::TargetRuntimeStep::Materialize(input) => {
                 input.validate(&original.intent)?;
@@ -255,7 +272,17 @@ impl TargetJournal {
             binding,
             position,
         };
-        Ok(self.prepare_with_checkpoint_permit(operation, exact_input_sha256, Some(&permit))?)
+        // Long object reads may outlive their first observation. The native
+        // mutation checks both the verified graph's position and a fresh grant.
+        let current = operation
+            .run(async { observe_writer().await.map_err(crate::SnapshotFailure::from) })
+            .await?;
+        Ok(self.prepare_with_checkpoint_permit(
+            operation,
+            exact_input_sha256,
+            Some(&permit),
+            Some(&current),
+        )?)
     }
 }
 
@@ -269,6 +296,18 @@ pub struct TargetWriterRead {
 }
 impl TargetJournal {
     pub fn begin_writer_read(self: &Arc<Self>) -> Result<TargetWriterRead> {
+        self.writer_read(None)
+    }
+
+    pub fn begin_generation_writer_read(
+        self: &Arc<Self>,
+        operation: &TargetOperation,
+    ) -> Result<TargetWriterRead> {
+        let original = self.intent(operation)?;
+        self.writer_read(Some(original.intent.request.command_id))
+    }
+
+    fn writer_read(self: &Arc<Self>, lifecycle_command: Option<Uuid>) -> Result<TargetWriterRead> {
         let observation = kasumi_clock::EpochClock::system()?.observe()?;
         let deadline = observation.until(
             observation
@@ -300,6 +339,7 @@ impl TargetJournal {
                 root: self.installed.root.clone(),
                 verifier: self.installed.node.verifier.clone(),
                 catalog,
+                lifecycle_command,
                 nonce: Uuid::new_v4(),
             },
             deadline,
@@ -307,20 +347,63 @@ impl TargetJournal {
         })
     }
 }
+/// Physical journal enrollment and a bounded observation of its original Control.
+pub struct CurrentTargetJournalWriter {
+    journal: Arc<TargetJournal>,
+    position: WriterRetirements,
+    deadline: kasumi_clock::ElapsedDeadline,
+}
+impl CurrentTargetJournalWriter {
+    pub(super) fn require(
+        &self,
+        journal: &TargetJournal,
+        position: &WriterRetirements,
+    ) -> Result<()> {
+        ensure!(
+            std::ptr::eq(self.journal.as_ref(), journal) && *position == self.position,
+            "target generation writer observation differs from the current physical journal"
+        );
+        self.deadline.check()?;
+        Ok(())
+    }
+}
 impl TargetWriterRead {
     pub fn challenge(&self) -> &kasumi_types::TargetWriterChallenge {
         &self.challenge
     }
     pub fn accept(self, signed: &kasumi_types::SignedTargetWriterObservation) -> Result<String> {
+        Ok(self.accept_position(signed)?.0)
+    }
+    pub fn admit(
+        self,
+        signed: &kasumi_types::SignedTargetWriterObservation,
+    ) -> Result<CurrentTargetJournalWriter> {
+        Ok(self.accept_position(signed)?.1)
+    }
+    fn accept_position(
+        self,
+        signed: &kasumi_types::SignedTargetWriterObservation,
+    ) -> Result<(String, CurrentTargetJournalWriter)> {
         kasumi_serving::ControlTrust::install(self.journal.installed.root.clone())?
             .verify_target_writer(&self.challenge, signed)?;
-        self.journal.persist_writer_retirements(
+        let digest = self.journal.persist_writer_retirements(
             signed.observation.observed_revision,
             &signed.observation.retirements,
             || {
                 self.deadline.check()?;
                 self.journal.store.check_access()
             },
-        )
+        )?;
+        Ok((
+            digest,
+            CurrentTargetJournalWriter {
+                journal: self.journal,
+                position: WriterRetirements {
+                    revision: signed.observation.retirements.last_transition_revision(),
+                    state: signed.observation.retirements.clone(),
+                },
+                deadline: self.deadline,
+            },
+        ))
     }
 }

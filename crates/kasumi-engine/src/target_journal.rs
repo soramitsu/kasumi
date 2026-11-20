@@ -17,7 +17,7 @@ mod accounting;
 #[path = "target_journal_retirements.rs"]
 mod retirements;
 use retirements::JournalCheckpointPermit;
-pub use retirements::TargetWriterRead;
+pub use retirements::{CurrentTargetJournalWriter, TargetWriterRead};
 const NS: &str = "target.journal";
 #[cfg(test)]
 #[path = "target_journal_open_tests.rs"]
@@ -639,13 +639,14 @@ impl TargetJournal {
         op: &TargetOperation,
         exact_input_sha256: &str,
     ) -> Result<TargetJournalIntent> {
-        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None)
+        self.prepare_with_checkpoint_permit(op, exact_input_sha256, None, None)
     }
     fn prepare_with_checkpoint_permit(
         &self,
         op: &TargetOperation,
         exact_input_sha256: &str,
         permit: Option<&JournalCheckpointPermit>,
+        writer: Option<&CurrentTargetJournalWriter>,
     ) -> Result<TargetJournalIntent> {
         let _workspace = self.admission.reserve((MAX_RECORD * 8) as u64, None)?;
         let _guard = self
@@ -713,6 +714,11 @@ impl TargetJournal {
                 "target generation binding differs"
             );
         } else {
+            writer
+                .context(
+                    "first target generation requires its registered Control writer observation",
+                )?
+                .require(self, &metadata.retirements)?;
             if metadata.retirements.requires_graph() {
                 permit
                     .context(

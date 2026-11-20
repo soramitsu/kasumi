@@ -388,6 +388,88 @@ pub(crate) struct ControlRecoveryCoordinator {
     trusts: BTreeMap<String, AuthorityTrust>,
     installed_digests: BTreeMap<String, String>,
 }
+#[async_trait::async_trait]
+impl kasumi_engine::TargetWriterNetwork for ControlRecoveryCoordinator {
+    fn verify_participant(&self, input: &SignedTargetWriterChallenge) -> Result<()> {
+        let mut original = None;
+        for route in self.configured.routes.values() {
+            if let Some(member) = route.targets.get(&input.challenge.verifier.node_id)
+                && member.node.verifier == input.challenge.verifier
+            {
+                ensure!(
+                    original
+                        .replace(&member.node)
+                        .is_none_or(|old| old == &member.node),
+                    "conflicting target enrollment"
+                );
+            }
+        }
+        kasumi_engine::TargetSigner::verify_writer_challenge(
+            input,
+            original.context("physical writer is outside original recovery routes")?,
+        )
+    }
+    async fn synchronize(
+        &self,
+        context: &RequestContext,
+        state_sha256: &str,
+    ) -> Result<std::collections::BTreeSet<TargetWriterParticipant>> {
+        let mut observed = std::collections::BTreeSet::new();
+        let mut verified = std::collections::BTreeSet::new();
+        for (name, route) in &self.configured.routes {
+            context.authorization.check_live()?;
+            let authority = &self.authorities[&route.authority];
+            let trust = RouteTrust::load(route, authority)?;
+            ensure!(
+                self.installed_digests.get(name)
+                    == Some(&route.digest_with_trust(authority, &trust)?),
+                "target writer route changed from its installed trust"
+            );
+            for (&id, member) in &route.targets {
+                if !verified.insert(member.node.verifier.clone()) {
+                    continue;
+                }
+                context.authorization.check_live()?;
+                let query = RefreshTargetWriter {
+                    root: self.signer.root().clone(),
+                    verifier: member.node.verifier.clone(),
+                    state_sha256: state_sha256.into(),
+                    nonce: Uuid::new_v4(),
+                };
+                let config = connection(
+                    &member.client,
+                    trust
+                        .target_cas
+                        .get(&id)
+                        .context("missing original target CA")?,
+                )?;
+                let token = token(&FileCredentialSource::new(&member.client.token_file)?)?;
+                let receipt = tokio::time::timeout(Duration::from_secs(30), async {
+                    let mut client = KasumiTargetClient::connect(
+                        &config,
+                        ControlTrust::install(self.signer.root().clone())?,
+                        self.trusts[&route.authority].clone(),
+                        id,
+                    )
+                    .await?;
+                    Ok::<_, anyhow::Error>(client.refresh_writer(&token, &query).await?)
+                })
+                .await??;
+                context.authorization.check_live()?;
+                receipt.validate_for(&query)?;
+                observed.insert(TargetWriterParticipant {
+                    verifier: member.node.verifier.clone(),
+                    catalog: receipt.catalog,
+                });
+            }
+        }
+        ensure!(
+            !observed.is_empty(),
+            "original writer route roster is empty"
+        );
+        Ok(observed)
+    }
+}
 impl ControlRecoveryCoordinator {
     pub(crate) fn new(
         runtime: &RuntimeConfig,

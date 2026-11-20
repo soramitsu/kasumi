@@ -18,12 +18,47 @@ impl LifecycleSigner {
         &self,
         control: &Arc<Database>,
         context: &RequestContext,
-        challenge: &kasumi_types::TargetWriterChallenge,
+        signed_challenge: &kasumi_types::SignedTargetWriterChallenge,
     ) -> Result<AdmittedOutput<kasumi_types::SignedTargetWriterObservation>> {
         use super::control_administration::ControlObservationAccess;
         let quorum = control
             .authorize_control_quorum(context.clone(), ControlObservationAccess::Administration)
             .await?;
+        let challenge = &signed_challenge.challenge;
+        if let Some(command) = challenge.lifecycle_command {
+            let generation = control.engine.generation()?;
+            let original = generation.state.lifecycle_intent(command)?.ok_or_else(|| {
+                Error::new(
+                    ErrorCode::NotFound,
+                    "writer enrollment lacks its original committed lifecycle command",
+                )
+            })?;
+            let node = original
+                .request
+                .target_nodes
+                .get(&challenge.verifier.node_id)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Forbidden,
+                        "writer is outside the committed target roster",
+                    )
+                })?;
+            crate::TargetSigner::verify_writer_challenge(signed_challenge, node)
+                .map_err(Error::from_physical_source)?;
+        } else {
+            control
+                .target_writer_network
+                .get()
+                .and_then(std::sync::Weak::upgrade)
+                .ok_or_else(|| {
+                    Error::new(
+                        ErrorCode::Unavailable,
+                        "original writable recovery routes unavailable",
+                    )
+                })?
+                .verify_participant(signed_challenge)
+                .map_err(Error::from_physical_source)?;
+        }
         if self.root != quorum.installation().root || challenge.root != self.root {
             return Err(Error::new(
                 ErrorCode::Forbidden,
@@ -33,8 +68,36 @@ impl LifecycleSigner {
         let charge = Arc::new(control.admission().reserve_resident(
             3 * MAX_KEY_RETIREMENT_STATE_BYTES as u64 + 4096 + crate::output::OUTPUT_CHARGE_BYTES,
         )?);
+        let participant = challenge.participant();
+        if control
+            .engine
+            .generation()?
+            .state
+            .target_journal_writers
+            .binary_search(&participant)
+            .is_err()
+        {
+            control
+                .submit(
+                    context.clone(),
+                    Operation::RegisterTargetJournalWriter(participant.clone()),
+                )
+                .await?;
+            quorum.release().await?;
+        }
         let observed = {
             let generation = control.engine.generation()?;
+            if generation
+                .state
+                .target_journal_writers
+                .binary_search(&participant)
+                .is_err()
+            {
+                return Err(Error::new(
+                    ErrorCode::UnknownOutcome,
+                    "original target writer registration is unresolved",
+                ));
+            }
             let observation = kasumi_types::TargetWriterObservation {
                 challenge: challenge.clone(),
                 membership_epoch: quorum.membership_epoch(),

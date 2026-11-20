@@ -2638,7 +2638,11 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
     };
     check(&journal, 1)?;
     let (existing, _, existing_digest) = writer_operation(&f)?;
-    let existing_intent = journal.prepare(&existing, &existing_digest)?;
+    assert!(journal.prepare(&existing, &existing_digest).is_err());
+    let read = journal.begin_writer_read()?;
+    let initial = sign(read.challenge(), 2, &KeyRetirementState::default())?;
+    let existing_intent =
+        journal.prepare_observed(&existing, &existing_digest, &read.admit(&initial)?)?;
     let before_signed = f
         .store
         .get(NS, b"metadata")?
@@ -2665,9 +2669,17 @@ async fn journal_writer_fence_requires_the_original_signed_read_and_survives_reo
         .context("fenced head missing")?;
     assert!(journal.prepare(&new, &new_digest).is_err());
     let result = journal
-        .prepare_runtime(&new, &step, &new_digest, |_| {
-            anyhow::bail!("original backup unavailable")
-        })
+        .prepare_runtime(
+            &new,
+            &step,
+            &new_digest,
+            || async {
+                let read = journal.begin_writer_read()?;
+                let signed = sign(read.challenge(), 5, &state)?;
+                read.admit(&signed)
+            },
+            |_| anyhow::bail!("original backup unavailable"),
+        )
         .await;
     assert!(matches!(result,Err(ref e) if e.to_string().contains("original backup unavailable")));
     assert_eq!(f.store.get(NS, b"metadata")?.unwrap(), before_new);

@@ -1062,6 +1062,7 @@ impl TargetRecoveryRuntime {
         &self,
         context: &RequestContext,
         bearer: &Zeroizing<String>,
+        operation: Option<&kasumi_engine::TargetOperation>,
     ) -> Result<(
         kasumi_engine::TargetWriterRead,
         kasumi_types::SignedTargetWriterObservation,
@@ -1078,7 +1079,11 @@ impl TargetRecoveryRuntime {
             !self.closing.load(Ordering::Acquire),
             "target writer has closed"
         );
-        let original = self.journal.begin_writer_read()?;
+        let original = match operation {
+            Some(op) => self.journal.begin_generation_writer_read(op)?,
+            None => self.journal.begin_writer_read()?,
+        };
+        let signed_challenge = self.signer.sign_writer_challenge(&original)?;
         let credential = bearer.clone();
         let mut control = kasumi_client::KasumiLifecyclePool::new(
             self.installed.control_connections()?,
@@ -1086,7 +1091,7 @@ impl TargetRecoveryRuntime {
             Arc::new(move || Ok(credential.clone())),
         )?;
         let observation = control
-            .observe_target_writer(original.challenge(), std::time::Duration::from_secs(25))
+            .observe_target_writer(&signed_challenge, std::time::Duration::from_secs(25))
             .await?;
         ensure!(
             !self.closing.load(Ordering::Acquire),
@@ -1112,7 +1117,7 @@ impl TargetRecoveryRuntime {
             .clone()
             .try_acquire_owned()
             .context("target writer concurrency exhausted")?;
-        let (original, observation) = self.observe_current_writer(context, &bearer).await?;
+        let (original, observation) = self.observe_current_writer(context, &bearer, None).await?;
         let catalog = original.challenge().catalog;
         let digest = observation.observation.retirements.target_writer_digest()?;
         ensure!(
@@ -1459,14 +1464,25 @@ impl TargetRecoveryRuntime {
         checked?;
         let operation = phase.scope().begin_followup(admission)?;
         self.journal
-            .prepare_runtime(&operation, &request.step, &input_hash, |input| {
-                self.materialization_source(
-                    &template,
-                    intent.request.source_incarnation,
-                    input,
-                    true,
-                )
-            })
+            .prepare_runtime(
+                &operation,
+                &request.step,
+                &input_hash,
+                || async {
+                    let (original, signed) = self
+                        .observe_current_writer(&context, &bearer, Some(&operation))
+                        .await?;
+                    original.admit(&signed)
+                },
+                |input| {
+                    self.materialization_source(
+                        &template,
+                        intent.request.source_incarnation,
+                        input,
+                        true,
+                    )
+                },
+            )
             .await?;
         failure.accepted();
         // From this accepted durable identity onward, any local failure is an

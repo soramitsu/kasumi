@@ -56,6 +56,54 @@ fn scope_of(state: &KeyRetirementState, retirement_id: &str) -> Result<KeyRetent
         .ok_or_else(|| Error::new(ErrorCode::NotFound, "key retirement is not retained"))
 }
 
+pub(crate) fn register_writer(
+    state: &mut TenantState,
+    command: &Command,
+    participant: &TargetWriterParticipant,
+    revision: u64,
+) -> Result<(Result<WriteReceipt>, bool)> {
+    authorize(
+        state,
+        &command.context,
+        &KeyRetentionScope::TargetJournal {},
+    )?;
+    participant.verifier.validate()?;
+    if participant.catalog.is_nil() {
+        return Err(Error::new(
+            ErrorCode::InvalidArgument,
+            "nil target writer catalog",
+        ));
+    }
+    if let Err(index) = state.target_journal_writers.binary_search(participant) {
+        if state.target_journal_writers.len() >= 1024 {
+            return Err(Error::new(
+                ErrorCode::QuotaExceeded,
+                "target writer registry full",
+            ));
+        }
+        if state
+            .target_journal_writers
+            .iter()
+            .any(|p| p.catalog == participant.catalog)
+        {
+            return Err(Error::new(
+                ErrorCode::Conflict,
+                "catalog has another original writer",
+            ));
+        }
+        state
+            .target_journal_writers
+            .insert(index, participant.clone());
+    }
+    Ok((
+        Ok(WriteReceipt {
+            revision,
+            versions: BTreeMap::new(),
+        }),
+        false,
+    ))
+}
+
 /// Commit the fence. A tenant's fence advances its authority epoch, which
 /// rejects every history archive and backup session claim that was prepared
 /// before it; Control's epoch moves only through its own policy transition,

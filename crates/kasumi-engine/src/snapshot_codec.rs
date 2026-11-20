@@ -483,6 +483,7 @@ pub(crate) fn metadata_with_shared(
         audit_retention: state.audit_retention.clone(),
         key_retirements: state.key_retirements.clone(),
         target_journal_retirements: state.target_journal_retirements.clone(),
+        target_journal_writers: state.target_journal_writers.clone(),
         audits: Default::default(),
     }
 }

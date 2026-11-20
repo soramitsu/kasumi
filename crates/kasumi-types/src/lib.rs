@@ -928,6 +928,7 @@ pub enum Operation {
     /// Remove the fence of an undecided retirement.
     AbortKeyRetirement(AbortKeyRetirement),
     /// Independent target writer decisions have their own ordinal sequence.
+    RegisterTargetJournalWriter(TargetWriterParticipant),
     CompleteTargetJournalRetirement(CompleteKeyRetirement),
     AbortTargetJournalRetirement(AbortKeyRetirement),
 }
@@ -1117,6 +1118,12 @@ pub struct TenantState {
     /// the Control store's own wrapping identities and request ordinals.
     #[serde(default, skip_serializing_if = "KeyRetirementState::is_empty")]
     pub target_journal_retirements: KeyRetirementState,
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "key_retention::writer_participants"
+    )]
+    pub target_journal_writers: Vec<TargetWriterParticipant>,
     pub audits: imbl::Vector<AuditEvent>,
 }
 

@@ -14,6 +14,7 @@ mod journal_member;
 #[path = "key_retention_member.rs"]
 mod member;
 pub(super) use journal_member::RecoveryInventoryFence;
+pub use journal_member::TargetWriterNetwork;
 use journal_member::{InventoryWindowSelection, RecoveryInventoryAuthority};
 #[path = "key_retirement_service.rs"]
 mod retirement;
